@@ -1,27 +1,20 @@
 import SwiftUI
+import PhotosUI
 
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
+    @State private var tabIndex = 0
+    private let tabs = ["Clips", "Footage", "Media"]
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.xl) {
-                Text("Library").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
-
-                if store.clips.isEmpty {
-                    EmptyStateView(icon: "rectangle.stack",
-                                   title: "No clips yet",
-                                   message: "Record a script in Studio and your clips will land here.")
-                } else {
-                    ForEach(ClipStatus.allOrder, id: \.self) { status in
-                        let group = store.clips.filter { $0.status == status }
-                        if !group.isEmpty {
-                            VStack(alignment: .leading, spacing: Space.md) {
-                                SectionTitle(text: status.title)
-                                ForEach(group) { ClipCell(clip: $0) }
-                            }
-                        }
-                    }
+            VStack(alignment: .leading, spacing: Space.lg) {
+                ScreenTitle(text: "Library")
+                UnderlineTabBar(tabs: tabs, index: $tabIndex)
+                switch tabIndex {
+                case 1: FootageSection()
+                case 2: MediaSection()
+                default: ClipsSection()
                 }
             }
             .screenPadding().padding(.vertical, Space.lg)
@@ -31,27 +24,342 @@ struct LibraryView: View {
     }
 }
 
+// MARK: - Clips (rendered, grouped by status, real posters, tap → player)
+
+struct ClipsSection: View {
+    @Environment(AppStore.self) private var store
+    @State private var detail: Clip?
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            if store.clips.isEmpty {
+                EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
+                               message: "Record a script in Studio and your clips will land here.")
+            } else {
+                ForEach(ClipStatus.allOrder, id: \.self) { status in
+                    let group = store.clips.filter { $0.status == status }
+                    if !group.isEmpty {
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            SectionLabel(text: status.title)
+                            ForEach(group) { c in
+                                Button { detail = c } label: { ClipCell(clip: c) }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("library.clip")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
+    }
+}
+
 struct ClipCell: View {
     let clip: Clip
     var body: some View {
         HStack(spacing: Space.md) {
             ZStack {
-                RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                    .fill(Palette.surfaceSunken).frame(width: 54, height: 72)
-                Image(systemName: "play.fill").foregroundStyle(Palette.textTertiary)
-                if clip.status == .rendering { ProgressView().tint(Palette.gold) }
+                LocalThumbnail(path: clip.thumbnailPath ?? clip.localVideoPath, isVideo: true)
+                    .frame(width: 54, height: 72)
+                if clip.status == .rendering { ProgressView().tint(Palette.accent) }
             }
+            .frame(width: 54, height: 72)
             VStack(alignment: .leading, spacing: 4) {
-                Text(clip.caption).font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                Text(clip.title.isEmpty ? clip.caption : clip.title)
+                    .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
                 HStack(spacing: Space.sm) {
                     FormatTag(formatId: clip.formatId)
                     Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    if clip.captioned {
+                        Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
+                    }
                 }
             }
             Spacer()
             ScoreBadge(score: clip.predictedScore)
         }
         .marqueCard(padding: Space.md)
+    }
+}
+
+struct ClipDetailSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
+    @Environment(\.dismiss) private var dismiss
+    let clip: Clip
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    LocalVideoPlayer(path: clip.localVideoPath, remoteURL: clip.remoteURL)
+                        .frame(height: 340)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    HStack(spacing: Space.sm) {
+                        FormatTag(formatId: clip.formatId)
+                        Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Spacer()
+                        ScoreBadge(score: clip.predictedScore)
+                    }
+                    Text(clip.caption).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !clip.captionLines.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            SectionLabel(text: "Auto-captions", accent: Palette.accent)
+                            ForEach(Array(clip.captionLines.enumerated()), id: \.offset) { _, line in
+                                Text(line).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                            }
+                        }
+                    }
+                }
+                .screenPadding().padding(.vertical, Space.lg)
+            }
+            .background(Palette.surface.ignoresSafeArea())
+            .navigationTitle("Clip").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .safeAreaInset(edge: .bottom) {
+                if clip.status == .ready {
+                    PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
+                        dismiss(); router.selectedTab = .calendar
+                    }
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                    .background(.ultraThinMaterial)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Footage (filmed-but-undecided takes → make clips)
+
+struct FootageSection: View {
+    @Environment(AppStore.self) private var store
+    @State private var detail: Footage?
+    @State private var pickedVids: [PhotosPickerItem] = []
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            Text("Takes you've filmed but haven't turned into clips yet. Tap one to cut it into formats.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+            if store.footage.isEmpty {
+                EmptyStateView(icon: "film", title: "No footage yet",
+                               message: "Record a script in Studio, or import a video below.")
+            } else {
+                ForEach(store.footage) { f in
+                    Button { detail = f } label: { FootageCell(footage: f) }.buttonStyle(.plain)
+                }
+            }
+            PhotosPicker(selection: $pickedVids, maxSelectionCount: 10, matching: .videos) {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "square.and.arrow.down")
+                    Text("Import a video").font(AppFont.headline)
+                }
+                .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 50)
+                .background(Palette.surfaceRaised)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .strokeBorder(Palette.hairline, lineWidth: 1))
+            }
+            .onChange(of: pickedVids) { _, items in
+                guard !items.isEmpty else { return }
+                Task {
+                    for item in items {
+                        if let data = try? await item.loadTransferable(type: Data.self) {
+                            let path = MediaStore.save(data, ext: "mov")
+                            store.addFootage(path: path, title: "Imported take")
+                        }
+                    }
+                    pickedVids = []
+                }
+            }
+        }
+        .sheet(item: $detail) { FootageDetailSheet(footage: $0) }
+    }
+}
+
+struct FootageCell: View {
+    let footage: Footage
+    var body: some View {
+        HStack(spacing: Space.md) {
+            LocalThumbnail(path: footage.thumbnailPath ?? footage.localPath, isVideo: true)
+                .frame(width: 54, height: 72)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(footage.title.isEmpty ? "Untitled take" : footage.title)
+                    .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                Text(footage.seconds > 0 ? "\(footage.seconds)s · tap to make clips" : "Tap to make clips")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            }
+            Spacer()
+            Image(systemName: "scissors").foregroundStyle(Palette.textTertiary)
+        }
+        .marqueCard(padding: Space.md)
+    }
+}
+
+struct FootageDetailSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
+    @Environment(\.dismiss) private var dismiss
+    let footage: Footage
+    @State private var formats: Set<String> = []
+    @State private var working = false
+
+    private var script: Script? {
+        if let sid = footage.scriptId, let s = store.scripts.first(where: { $0.id == sid }) { return s }
+        return store.scripts.first
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    LocalVideoPlayer(path: footage.localPath)
+                        .frame(height: 340)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    if let script {
+                        Text("Cut from: \(script.title.isEmpty ? script.hook.text : script.title)")
+                            .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        SectionLabel(text: "Choose formats to cut into", accent: Palette.accent)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: Space.sm) {
+                                ForEach(Catalog.formats) { f in
+                                    Button {
+                                        if formats.contains(f.id) { formats.remove(f.id) } else { formats.insert(f.id) }
+                                    } label: { Chip(text: f.name, selected: formats.contains(f.id)) }.buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    } else {
+                        Text("Write a script in Studio first — then Marque can cut this take into formats.")
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    }
+                }
+                .screenPadding().padding(.vertical, Space.lg)
+            }
+            .background(Palette.surface.ignoresSafeArea())
+            .navigationTitle("Footage").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .safeAreaInset(edge: .bottom) {
+                if let script, !formats.isEmpty {
+                    PrimaryButton(title: working ? "Cutting…" : "Make \(formats.count) clip\(formats.count == 1 ? "" : "s")",
+                                  systemImage: "scissors") {
+                        working = true
+                        Task {
+                            await store.makeClips(from: script, formats: Array(formats), footagePath: footage.localPath)
+                            working = false; dismiss(); router.selectedTab = .library
+                        }
+                    }
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                    .background(.ultraThinMaterial)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Media corpus (bulk import; the AI references this)
+
+struct MediaSection: View {
+    @Environment(AppStore.self) private var store
+    @State private var picked: [PhotosPickerItem] = []
+    @State private var importing = false
+    @State private var edit: MediaAsset?
+    private let cols = [GridItem(.adaptive(minimum: 92), spacing: Space.sm)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            Text("Upload your photos and clips. Marque references this footage when it writes and cuts your reels — including past shots of you.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+
+            PhotosPicker(selection: $picked, maxSelectionCount: 40, matching: .any(of: [.images, .videos])) {
+                HStack(spacing: Space.sm) {
+                    if importing { ProgressView().tint(Palette.onInk) } else { Image(systemName: "plus") }
+                    Text(importing ? "Importing…" : "Import media").font(AppFont.headline)
+                }
+                .foregroundStyle(Palette.onInk).frame(maxWidth: .infinity).frame(height: 54)
+                .background(Palette.ink)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            }
+            .accessibilityIdentifier("library.importMedia")
+            .onChange(of: picked) { _, items in
+                guard !items.isEmpty else { return }
+                importing = true
+                Task {
+                    let assets = await importPickedMedia(items)
+                    store.addMedia(assets); picked = []; importing = false
+                }
+            }
+
+            if store.media.isEmpty {
+                EmptyStateView(icon: "photo.on.rectangle.angled", title: "No media yet",
+                               message: "Import a batch above to build your reference library.")
+            } else {
+                Text("\(store.media.count) item\(store.media.count == 1 ? "" : "s") in your corpus")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                LazyVGrid(columns: cols, spacing: Space.sm) {
+                    ForEach(store.media) { m in
+                        Button { edit = m } label: {
+                            LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo)
+                                .aspectRatio(1, contentMode: .fill)
+                                .frame(minHeight: 92).clipped()
+                                .overlay(alignment: .bottomLeading) {
+                                    Text(m.kind.label).font(.system(size: 9, weight: .semibold))
+                                        .foregroundStyle(.white).padding(.horizontal, 5).padding(.vertical, 2)
+                                        .background(Palette.ink.opacity(0.6)).clipShape(Capsule()).padding(4)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .sheet(item: $edit) { MediaEditSheet(asset: $0) }
+    }
+}
+
+struct MediaEditSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let asset: MediaAsset
+    @State private var kind: MediaKind
+    @State private var note: String
+    init(asset: MediaAsset) {
+        self.asset = asset
+        _kind = State(initialValue: asset.kind)
+        _note = State(initialValue: asset.note)
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    LocalThumbnail(path: asset.thumbnailPath ?? asset.localPath, isVideo: asset.isVideo)
+                        .frame(height: 280)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    SectionLabel(text: "What is this?", accent: Palette.accent)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: Space.sm) {
+                            ForEach(MediaKind.allCases) { k in
+                                Button { kind = k } label: { Chip(text: k.label, selected: kind == k) }.buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    SectionLabel(text: "Tag (optional)")
+                    TextField("e.g. gym, office, on stage", text: $note).marqueField()
+                    Button(role: .destructive) { store.removeMedia(asset); dismiss() } label: {
+                        Text("Remove from library").font(AppFont.callout).foregroundStyle(Palette.critical)
+                    }
+                    .padding(.top, Space.sm)
+                }
+                .screenPadding().padding(.vertical, Space.lg)
+            }
+            .background(Palette.surface.ignoresSafeArea())
+            .navigationTitle("Media").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save") {
+                        var a = asset; a.kind = kind; a.note = note.trimmingCharacters(in: .whitespaces)
+                        store.updateMedia(a); dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 

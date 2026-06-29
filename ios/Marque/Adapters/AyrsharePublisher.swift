@@ -21,11 +21,13 @@ struct AyrsharePublisher: Publishing {
         let platforms = post.platforms.map { $0 == .instagram ? "instagram" : "tiktok" }
         let iso = ISO8601DateFormatter().string(from: post.date)
         // mediaUrls would be the rendered clip's public R2/Stream URL once the pipeline produces it.
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "post": post.caption,
             "platforms": platforms,
             "scheduleDate": iso
         ]
+        // Attach the rendered clip's public URL so the post carries video, not just a caption.
+        if let media = post.mediaURL, media.hasPrefix("http") { body["mediaUrls"] = [media] }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
         do {

@@ -138,6 +138,7 @@ struct ScheduledPost: Codable, Hashable, Identifiable {
     var platforms: [SocialPlatform]
     var date: Date
     var autoCaptions: Bool = true       // burn captions before publishing
+    var mediaURL: String? = nil         // public render URL attached to the post (Ayrshare mediaUrls)
     var posted: Bool = false
     var metrics: PostMetrics? = nil     // populated post-publish from Insights
 }

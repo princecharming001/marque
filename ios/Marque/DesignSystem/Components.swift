@@ -180,6 +180,31 @@ struct SectionLabel: View {
     }
 }
 
+/// Minimal underline tab bar (maxapp: active = ink text + 2px ink underline; inactive = muted).
+struct UnderlineTabBar: View {
+    let tabs: [String]
+    @Binding var index: Int
+    var body: some View {
+        HStack(spacing: Space.xl) {
+            ForEach(Array(tabs.enumerated()), id: \.offset) { i, t in
+                let active = i == index
+                Button { withAnimation(Motion.quick) { index = i } } label: {
+                    VStack(spacing: 7) {
+                        Text(t)
+                            .font(active ? AppFont.headline : Typeface.sans(15, .medium))
+                            .foregroundStyle(active ? Palette.textPrimary : Palette.textTertiary)
+                        Rectangle().fill(active ? Palette.ink : Color.clear).frame(height: 2)
+                    }
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tab.\(t)")
+            }
+            Spacer()
+        }
+    }
+}
+
 struct ScoreBadge: View {
     let score: Int
     var body: some View {

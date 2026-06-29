@@ -152,6 +152,10 @@ final class AppStore {
         save()
     }
 
+    func updateMedia(_ asset: MediaAsset) {
+        if let idx = media.firstIndex(where: { $0.id == asset.id }) { media[idx] = asset; save() }
+    }
+
     // MARK: Clips
 
     func makeClips(from script: Script, formats: [String], footagePath: String? = nil) async {
@@ -192,7 +196,8 @@ final class AppStore {
         if let idx = clips.firstIndex(where: { $0.id == clip.id }) { clips[idx] = clip }
 
         let post = ScheduledPost(clipId: clip.id, caption: caption ?? clip.caption,
-                                 platforms: platforms, date: date, autoCaptions: autoCaptions)
+                                 platforms: platforms, date: date, autoCaptions: autoCaptions,
+                                 mediaURL: clip.remoteURL ?? clip.localVideoPath)
         let ok = await publisher.schedule(post)
         if ok {
             schedule.append(post)
@@ -213,6 +218,18 @@ final class AppStore {
         if let idx = clips.firstIndex(where: { $0.id == post.clipId }), clips[idx].status == .scheduled {
             clips[idx].status = .ready
         }
+        save()
+    }
+
+    /// Publish immediately (live via Ayrshare when keyed; mock otherwise) and mark posted.
+    func postNow(_ post: ScheduledPost) async {
+        var p = post
+        p.date = Date()
+        let ok = await publisher.schedule(p)
+        p.posted = ok
+        if let idx = schedule.firstIndex(where: { $0.id == post.id }) { schedule[idx] = p }
+        else { schedule.append(p) }
+        if ok, let ci = clips.firstIndex(where: { $0.id == post.clipId }) { clips[ci].status = .posted }
         save()
     }
 
