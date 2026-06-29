@@ -37,10 +37,11 @@ name: Marque — full core loop
 - assertVisible: "Connect your page"
 - tapOn: "Skip for now"
 
-# AHA — AI generated the first scripts
+# AHA — AI generated the first scripts (live Claude can take longer)
 - extendedWaitUntil:
     visible: "Enter Marque"
-    timeout: 12000
+    timeout: 45000
+- takeScreenshot: /Users/home/Marque/.shots/live-aha
 - tapOn:
     id: "onboard.finish"
 
@@ -49,6 +50,7 @@ name: Marque — full core loop
 - tapOn: "Studio"
 - assertVisible: "Your pillars"
 - assertVisible: "Ready to record"
+- takeScreenshot: /Users/home/Marque/.shots/live-studio
 
 # Script reader → Hook Lab → record
 - tapOn:
