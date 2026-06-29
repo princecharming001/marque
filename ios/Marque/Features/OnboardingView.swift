@@ -13,16 +13,23 @@ struct OnboardingView: View {
     private let lastInputStep = 5
 
     var body: some View {
+        if step == 0 {
+            HeroWelcome { advance() }
+        } else {
+            inputFlow
+        }
+    }
+
+    private var inputFlow: some View {
         ZStack {
             Palette.canvas.ignoresSafeArea()
             VStack(spacing: Space.xl) {
-                if step > 0 && step <= lastInputStep {
+                if step <= lastInputStep {
                     OnboardProgress(total: lastInputStep, index: step).padding(.top, Space.md)
                 }
                 Spacer(minLength: 0)
                 Group {
                     switch step {
-                    case 0: welcome
                     case 1: goalStep()
                     case 2: aboutStep()
                     case 3: knownForStep()
@@ -44,20 +51,6 @@ struct OnboardingView: View {
     }
 
     // MARK: Steps
-
-    private var welcome: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            Text("Marque").font(Typeface.display(52, .bold)).foregroundStyle(Palette.textPrimary)
-            Text("Film once a week.\nPost every day.")
-                .font(Typeface.display(30, .semibold)).foregroundStyle(Palette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text("We learn your voice, write scripts that sound like you, and turn one recording into a week of clips.")
-                .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
-            Spacer().frame(height: Space.sm)
-            PillButton(title: "Get started") { advance() }
-                .accessibilityIdentifier("onboard.start")
-        }
-    }
 
     private func goalStep() -> some View {
         @Bindable var store = store
@@ -162,6 +155,41 @@ struct OnboardingView: View {
 }
 
 // MARK: - Onboarding sub-views
+
+private struct HeroWelcome: View {
+    let start: () -> Void
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Image("Hero").resizable().scaledToFill().ignoresSafeArea()
+            LinearGradient(colors: [.clear, .clear, .black.opacity(0.55), .black.opacity(0.92)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+            VStack(alignment: .leading, spacing: Space.lg) {
+                Text("Film once.\nPost every day.")
+                    .font(Typeface.display(46, .semibold)).foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .shadow(color: .black.opacity(0.3), radius: 14, y: 1)
+                Text("Marque learns your voice, writes scripts that sound like you, and turns one recording into a week of clips.")
+                    .font(AppFont.bodyL).foregroundStyle(.white.opacity(0.82))
+                Button(action: start) {
+                    HStack(spacing: Space.sm) {
+                        Text("Get started").font(AppFont.headline)
+                        Image(systemName: "arrow.right").font(.system(size: 15, weight: .semibold))
+                    }
+                    .foregroundStyle(Palette.ink)
+                    .frame(maxWidth: .infinity).frame(height: 56)
+                    .background(.white)
+                    .clipShape(Capsule())
+                    .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
+                }
+                .buttonStyle(PressableStyle())
+                .accessibilityIdentifier("onboard.start")
+            }
+            .padding(.horizontal, Space.xl)
+            .padding(.bottom, Space.huge)
+        }
+    }
+}
 
 private struct StepScaffold<Content: View>: View {
     let question: String
