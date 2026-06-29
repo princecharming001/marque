@@ -18,8 +18,9 @@ final class AppStore {
     // Transient
     var isGenerating = false
 
-    // Adapters (mock in keyless mode)
-    let llm: LLMRouting = MockLLMRouter()
+    // Adapters — live Claude when an Anthropic key is present, deterministic mock otherwise.
+    let llm: LLMRouting = AppConfig.useLiveAI ? AnthropicLLMRouter() : MockLLMRouter()
+    var aiMode: String { AppConfig.useLiveAI ? "Claude" : "Mock" }
     let clipEngine: ClipEngineProtocol = MockClipEngine()
     let publisher: Publishing = MockPublisher()
     let insights: InsightsProviding = MockInsights()

@@ -31,8 +31,13 @@ struct StudioView: View {
                             }
                         }
                     }
-                    Text("Tap a pillar to write 3 fresh scripts.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    HStack(spacing: Space.xs) {
+                        Text("Tap a pillar to write 3 fresh scripts.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Spacer()
+                        Text("AI: \(store.aiMode)")
+                            .font(AppFont.micro).foregroundStyle(store.aiMode == "Claude" ? Palette.positive : Palette.textTertiary)
+                    }
                 }
 
                 // Scripts
