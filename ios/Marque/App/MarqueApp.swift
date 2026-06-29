@@ -24,6 +24,7 @@ struct MarqueApp: App {
 
 struct RootView: View {
     @Environment(AppStore.self) private var store
+    @StateObject private var net = NetworkMonitor()
     var body: some View {
         Group {
             if store.hasOnboarded {
@@ -33,5 +34,8 @@ struct RootView: View {
             }
         }
         .animation(Motion.calm, value: store.hasOnboarded)
+        .safeAreaInset(edge: .top) {
+            if !net.isOnline { OfflineBanner() }
+        }
     }
 }

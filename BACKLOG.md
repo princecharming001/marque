@@ -11,7 +11,7 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 - [x] A5. Hook Lab + steer — Hook Lab cards are now selectable (store.setHook), ids added (script.hookButton / hooklab.pickHook / script.steer); flow-extras opens Hook Lab, picks a hook, scrolls to and taps a steer chip.
 - [x] A6. Repurpose-in — PhotosPicker "Upload existing video" on Record (id record.upload) routes an imported video to the same makeClips pipeline; flow-full asserts the entry exists.
 - [x] A7. Streak + celebration — makeClips increments the consistency streak and shows a calm CelebrationView sheet (id celebration.dismiss); Brand Profile shows the session count; flow-full handles the celebration.
-- [ ] A8. States pass — ensure every screen has loading / empty / error / offline handling per the design system; add an offline banner component.
+- [x] A8. States — empty states (EmptyStateView) on Library/Studio/Insights, loading spinners on generation, calm errors; added NetworkMonitor + app-wide OfflineBanner (never red) via safeAreaInset on RootView.
 
 ## B. Key-ready integrations (compile-clean, key-gated, mock fallback — NO new SPM deps; use URLSession / StoreKit)
 - [ ] B1. AyrsharePublisher — real `URLSession` POST to Ayrshare behind `Publishing`; AppStore uses it when `AppConfig.ayrshareKey` is set, else `MockPublisher`. Untestable without a key (that's fine).
