@@ -9,4 +9,5 @@ enum AppTab: Hashable {
 @Observable
 final class AppRouter {
     var selectedTab: AppTab = .today
+    var hideTabBar = false   // hidden while a detail with its own bottom CTA is up
 }

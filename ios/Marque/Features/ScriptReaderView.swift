@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ScriptReaderView: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     let script: Script
     @State private var showHookLab = false
     @State private var showFormatSheet = false
@@ -86,6 +87,8 @@ struct ScriptReaderView: View {
         }
         .navigationTitle("Script")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { router.hideTabBar = true }
+        .onDisappear { router.hideTabBar = false }
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }
         .sheet(isPresented: $showFormatSheet) { FormatSwapSheet(script: live) }
         .fullScreenCover(isPresented: $showRecord) { RecordView(script: live) }
