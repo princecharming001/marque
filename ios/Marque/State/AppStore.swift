@@ -17,6 +17,7 @@ final class AppStore {
 
     // Transient
     var isGenerating = false
+    var showCelebration = false
 
     // Adapters — live Claude when an Anthropic key is present, deterministic mock otherwise.
     // Computed so pasting a key in Settings takes effect without relaunch.
@@ -114,7 +115,10 @@ final class AppStore {
             }
             save()
         }
-        if streak == 0 { streak = 1; save() }
+        // Consistency measures showing up: one per completed recording session.
+        streak += 1
+        save()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
 
     // MARK: Scheduling

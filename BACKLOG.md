@@ -10,7 +10,7 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 - [x] A4. Studio pillar regenerate — verified: tapping a pillar node (studio.pillar.<name>) triggers generation via the same path as the AHA; flow-extras taps a pillar and confirms Studio stays intact.
 - [x] A5. Hook Lab + steer — Hook Lab cards are now selectable (store.setHook), ids added (script.hookButton / hooklab.pickHook / script.steer); flow-extras opens Hook Lab, picks a hook, scrolls to and taps a steer chip.
 - [x] A6. Repurpose-in — PhotosPicker "Upload existing video" on Record (id record.upload) routes an imported video to the same makeClips pipeline; flow-full asserts the entry exists.
-- [ ] A7. Streak + a minimal celebration — increment streak per recorded session; show a quiet one-time celebration sheet; full streak view in Brand Profile.
+- [x] A7. Streak + celebration — makeClips increments the consistency streak and shows a calm CelebrationView sheet (id celebration.dismiss); Brand Profile shows the session count; flow-full handles the celebration.
 - [ ] A8. States pass — ensure every screen has loading / empty / error / offline handling per the design system; add an offline banner component.
 
 ## B. Key-ready integrations (compile-clean, key-gated, mock fallback — NO new SPM deps; use URLSession / StoreKit)

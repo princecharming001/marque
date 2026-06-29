@@ -59,6 +59,14 @@ struct BrandProfileView: View {
                         .overlay(alignment: .bottom) { Rectangle().fill(Palette.hairline).frame(height: 1) }
                     }
 
+                    HStack {
+                        Text("Consistency").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        Spacer()
+                        Text("\(store.streak) \(store.streak == 1 ? "session" : "sessions")")
+                            .font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                    }
+                    .marqueCard(padding: Space.md)
+
                     VStack(alignment: .leading, spacing: Space.sm) {
                         SectionTitle(text: "Pillars")
                         ForEach(store.pillars) { p in

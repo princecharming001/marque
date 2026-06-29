@@ -2,9 +2,11 @@ import SwiftUI
 
 struct RootTabView: View {
     @Environment(AppRouter.self) private var router
+    @Environment(AppStore.self) private var store
 
     var body: some View {
         @Bindable var router = router
+        @Bindable var store = store
         TabView(selection: $router.selectedTab) {
             NavigationStack { TodayView() }
                 .tabItem { Label("Today", systemImage: "sun.max") }
@@ -26,5 +28,6 @@ struct RootTabView: View {
                 .tabItem { Label("Coach", systemImage: "bubble.left.and.text.bubble.right") }
                 .tag(AppTab.coach)
         }
+        .sheet(isPresented: $store.showCelebration) { CelebrationView() }
     }
 }

@@ -73,10 +73,16 @@ name: Marque — full core loop
 - tapOn:
     id: "record.makeClips"
 
-# Clips landed in Library
+# Session celebration (streak), then clips in Library
+- extendedWaitUntil:
+    visible:
+      id: "celebration.dismiss"
+    timeout: 14000
+- tapOn:
+    id: "celebration.dismiss"
 - extendedWaitUntil:
     visible: "Library"
-    timeout: 10000
+    timeout: 6000
 - takeScreenshot: /Users/home/Marque/.shots/flow-library
 
 # Schedule a clip onto the week
