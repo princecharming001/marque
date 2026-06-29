@@ -2,11 +2,19 @@ import SwiftUI
 
 struct CoachView: View {
     @Environment(AppStore.self) private var store
+    @State private var showInsights = false
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
-                Text("Coach").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
+                HStack {
+                    Text("Coach").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
+                    Spacer()
+                    Button { showInsights = true } label: {
+                        Image(systemName: "chart.bar").foregroundStyle(Palette.textSecondary)
+                    }
+                    .accessibilityIdentifier("coach.insights")
+                }
 
                 // Teardown cards (performance feedback)
                 if !store.teardowns.isEmpty {
@@ -53,5 +61,6 @@ struct CoachView: View {
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends() }
+        .sheet(isPresented: $showInsights) { InsightsView() }
     }
 }

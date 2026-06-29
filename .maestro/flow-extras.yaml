@@ -11,3 +11,9 @@ name: Marque — extra screens (assumes onboarded)
 - inputText: " — refined"
 - tapOn: "Done"
 - assertVisible: "Today"
+# Insights (from Coach)
+- tapOn: "Coach"
+- tapOn:
+    id: "coach.insights"
+- assertVisible: "Insights"
+- tapOn: "Done"

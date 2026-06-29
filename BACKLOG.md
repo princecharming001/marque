@@ -5,7 +5,7 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 
 ## A. Verifiable app-side (build + Maestro can confirm)
 - [x] A1. Brand Profile screen — editable Brand Graph. Done: BrandProfileView (niche/what-you-do/audience/known-for, voice sliders, non-negotiable chips, pillars), person icon on Today, saves to store; flow-extras.yaml green.
-- [ ] A2. Insights screen — performance overview (mock stats from clips/schedule: posts this week, best clip by predicted score, format breakdown). Reached from Coach. Calm cards.
+- [x] A2. Insights screen — InsightsView (clips made / scheduled / streak stats, top clip, format mix), opened via a chart icon on Coach; flow-extras covers it.
 - [ ] A3. Calendar scheduling completeness — schedule a ready clip onto a day, mark it `.scheduled`, surface it as "Next up" on Today. Cover scheduling in `flow-extras.yaml`.
 - [ ] A4. Studio pillar regenerate — verify tapping a pillar generates new scripts; add Maestro step (tap a pillar id, assert script count grows).
 - [ ] A5. Hook Lab + steer — verify in Maestro: open a script, open Hook Lab, pick a hook; tap a steer chip; assert the reader updates.
