@@ -1,0 +1,62 @@
+{
+  "identifier" : "MARQUE_STOREKIT",
+  "nonRenewingSubscriptions" : [],
+  "products" : [],
+  "settings" : {
+    "_compatibilityTimeRate" : 1
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "marque_pro_group",
+      "localizationsForName" : [],
+      "name" : "Marque Pro",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "14.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "marque_pro_monthly",
+          "introductoryOffer" : {
+            "internalID" : "pro_trial",
+            "paymentMode" : "free",
+            "subscriptionPeriod" : "P1W"
+          },
+          "localizations" : [
+            {
+              "description" : "Unlimited scripts, full clips, scheduling",
+              "displayName" : "Marque Pro",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.marque.pro.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Marque Pro Monthly",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [],
+          "displayPrice" : "29.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "marque_studio_monthly",
+          "localizations" : [
+            {
+              "description" : "Pro + autopilot, faceless AI visuals, advanced analytics",
+              "displayName" : "Marque Studio",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "com.marque.studio.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Marque Studio Monthly",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 4,
+    "minor" : 0
+  }
+}

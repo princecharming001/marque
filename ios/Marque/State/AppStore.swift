@@ -28,6 +28,8 @@ final class AppStore {
     var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
     let insights: InsightsProviding = MockInsights()
     let remote: RemotePersistence = SupabaseStore()
+    let billing: Billing = MockBilling()
+    var canPublish: Bool { billing.isPro }   // hard wall at publishing (11-monetization.md)
 
     private let saveKey = "marque.state.v1"
 

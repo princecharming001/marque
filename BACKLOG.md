@@ -16,7 +16,7 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 ## B. Key-ready integrations (compile-clean, key-gated, mock fallback — NO new SPM deps; use URLSession / StoreKit)
 - [x] B1. AyrsharePublisher — URLSession POST to Ayrshare /api/post behind Publishing, key-gated (AppConfig.ayrshareKey), mock fallback on error. Compile-clean; functionally untestable without a key + public media URL.
 - [x] B2. SupabaseStore — RemotePersistence (PostgREST URLSession push/pull to an app_state row), best-effort mirror on save when supabase url+anonKey set; local UserDefaults stays source of truth otherwise.
-- [ ] B3. Paywall (StoreKit 2, no RevenueCat SDK) — a `Billing` protocol + StoreKit2 implementation + a calm paywall screen gated at "publish"; mock entitlement when no products. Add a StoreKit config file for sim testing.
+- [x] B3. Paywall (StoreKit 2) — Billing protocol + MockBilling (dev-unlocked) + StoreKitBilling, PaywallView from Settings, canPublish gate, Marque.storekit config. (was B3) — a `Billing` protocol + StoreKit2 implementation + a calm paywall screen gated at "publish"; mock entitlement when no products. Add a StoreKit config file for sim testing.
 - [ ] B4. LiveClipEngine scaffold — structural AssemblyAI + Shotstack client behind `ClipEngineProtocol`, key-gated; documents that real rendering routes through the backend (B5). Keep `MockClipEngine` as the default/fallback.
 
 ## C. Backend skeleton (separate `backend/` dir; python build-verifiable)

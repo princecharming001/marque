@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var values: [String: String] = [:]
     @State private var saved = false
+    @State private var showPaywall = false
 
     var body: some View {
         NavigationStack {
@@ -18,6 +19,20 @@ struct SettingsView: View {
                             .foregroundStyle(store.aiMode == "Claude" ? Palette.positive : Palette.textSecondary)
                     }
                     .marqueCard(padding: Space.md)
+
+                    // Upgrade
+                    Button { showPaywall = true } label: {
+                        HStack {
+                            Text("Upgrade to Pro").font(AppFont.headline).foregroundStyle(Palette.night)
+                            Spacer()
+                            Image(systemName: "sparkles").foregroundStyle(Palette.night)
+                        }
+                        .padding(Space.md)
+                        .background(Palette.gold)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("settings.upgrade")
 
                     // API keys
                     VStack(alignment: .leading, spacing: Space.md) {
@@ -60,6 +75,7 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .sheet(isPresented: $showPaywall) { PaywallView() }
         }
     }
 
