@@ -3,6 +3,7 @@ import SwiftUI
 struct TodayView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
+    @State private var showSettings = false
 
     var body: some View {
         ScrollView {
@@ -36,6 +37,7 @@ struct TodayView: View {
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends() }
+        .sheet(isPresented: $showSettings) { SettingsView() }
     }
 
     private var header: some View {
@@ -43,6 +45,11 @@ struct TodayView: View {
             Text("Today").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
             Spacer()
             if store.streak > 0 { StreakGlyph(count: store.streak) }
+            Button { showSettings = true } label: {
+                Image(systemName: "gearshape").foregroundStyle(Palette.textSecondary)
+            }
+            .accessibilityIdentifier("today.settings")
+            .padding(.leading, Space.sm)
         }
     }
 

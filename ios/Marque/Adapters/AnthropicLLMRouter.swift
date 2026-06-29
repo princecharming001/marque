@@ -1,23 +1,6 @@
 import Foundation
 
-// MARK: - Config
-// Where the app finds the Anthropic key. NOTE: the locked architecture (DECISIONS.md) routes
-// AI through the FastAPI backend so the key never ships in the app. This direct path is a
-// DEV convenience so "paste a key -> real Claude" works today; production swaps the baseURL
-// to the Marque backend (which holds the real key) and drops the x-api-key header.
-
-enum AppConfig {
-    static var anthropicKey: String {
-        if let k = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"], !k.isEmpty { return k }
-        if let k = UserDefaults.standard.string(forKey: "anthropic.key"), !k.isEmpty { return k }
-        if let k = Bundle.main.object(forInfoDictionaryKey: "ANTHROPIC_API_KEY") as? String, !k.isEmpty { return k }
-        return ""
-    }
-    static var anthropicBaseURL: String {
-        ProcessInfo.processInfo.environment["ANTHROPIC_BASE_URL"] ?? "https://api.anthropic.com"
-    }
-    static var useLiveAI: Bool { !anthropicKey.isEmpty }
-}
+// Live Claude adapter. Config (key resolution) lives in Config.swift.
 
 // MARK: - Live Claude adapter
 

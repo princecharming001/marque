@@ -19,7 +19,8 @@ final class AppStore {
     var isGenerating = false
 
     // Adapters — live Claude when an Anthropic key is present, deterministic mock otherwise.
-    let llm: LLMRouting = AppConfig.useLiveAI ? AnthropicLLMRouter() : MockLLMRouter()
+    // Computed so pasting a key in Settings takes effect without relaunch.
+    var llm: LLMRouting { AppConfig.useLiveAI ? AnthropicLLMRouter() : MockLLMRouter() }
     var aiMode: String { AppConfig.useLiveAI ? "Claude" : "Mock" }
     let clipEngine: ClipEngineProtocol = MockClipEngine()
     let publisher: Publishing = MockPublisher()

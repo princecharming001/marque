@@ -1,16 +1,18 @@
 import SwiftUI
 
-// Mock record screen: a teleprompter + simulated capture so the loop runs end-to-end.
-// Real AVFoundation camera + auto-scroll teleprompter is the next milestone (see 05-screens-produce.md).
+// Real camera on device (CameraModel/AVFoundation); simulated capture in the Simulator
+// (no camera hardware) so the batch loop stays end-to-end testable. (05-screens-produce.md)
 
 struct RecordView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var camera = CameraModel()
     let script: Script
 
     @State private var phase: Phase = .ready
     @State private var scroll = false
+    @State private var recordedURL: URL?
     @State private var selectedFormats: Set<String>
 
     enum Phase { case ready, recording, recorded, making }
@@ -22,7 +24,7 @@ struct RecordView: View {
 
     var body: some View {
         ZStack {
-            Palette.night.ignoresSafeArea()
+            background
             VStack(spacing: Space.lg) {
                 topBar
                 Spacer(minLength: 0)
@@ -31,6 +33,17 @@ struct RecordView: View {
                 controls
             }
             .padding(Space.lg)
+        }
+        .onAppear { camera.configure() }
+        .onDisappear { camera.teardown() }
+    }
+
+    @ViewBuilder private var background: some View {
+        if camera.status == .ready || camera.status == .recording {
+            CameraPreview(session: camera.session).ignoresSafeArea()
+            Color.black.opacity(0.45).ignoresSafeArea()   // legibility for the teleprompter
+        } else {
+            Palette.night.ignoresSafeArea()
         }
     }
 
@@ -45,7 +58,6 @@ struct RecordView: View {
     }
 
     private var teleprompter: some View {
-        // Pure-white teleprompter text on dark (the documented contrast exception).
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
                 Text(script.hook.text).font(Typeface.display(28, .semibold)).foregroundStyle(.white)
@@ -64,25 +76,16 @@ struct RecordView: View {
         VStack(spacing: Space.lg) {
             switch phase {
             case .ready:
-                Text("Read it once. We'll cut the rest.")
-                    .font(AppFont.body).foregroundStyle(.white.opacity(0.7))
-                recordButton {
-                    phase = .recording; scroll = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { phase = .recorded }
-                }
+                Text(camera.status == .unavailable ? "No camera in the Simulator — tap to simulate a take." : "Read it once. We'll cut the rest.")
+                    .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                recordButton { startRecording() }
             case .recording:
                 Text("Recording…").font(AppFont.body).foregroundStyle(Palette.gold)
-                recordButton(active: true) {}
+                recordButton(active: true) { stopRecording() }
             case .recorded:
                 Text("Choose the formats to cut into").font(AppFont.callout).foregroundStyle(.white.opacity(0.8))
                 formatPicker
-                Button {
-                    phase = .making
-                    Task {
-                        await store.makeClips(from: script, formats: Array(selectedFormats))
-                        dismiss(); router.selectedTab = .library
-                    }
-                } label: {
+                Button { makeClips() } label: {
                     Text("Make my clips")
                         .font(AppFont.headline).foregroundStyle(Palette.night)
                         .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
@@ -94,6 +97,41 @@ struct RecordView: View {
                 ProgressView().tint(Palette.gold)
                 Text("Cutting your clips…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
             }
+        }
+    }
+
+    // MARK: actions
+
+    private func startRecording() {
+        phase = .recording
+        scroll = true
+        if camera.hasCamera && camera.status == .ready {
+            camera.start()
+        } else {
+            // Simulator / no-camera: simulate a short take.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                if phase == .recording { phase = .recorded }
+            }
+        }
+    }
+
+    private func stopRecording() {
+        if camera.hasCamera {
+            camera.stop { url in
+                recordedURL = url
+                phase = .recorded
+            }
+        } else {
+            phase = .recorded
+        }
+    }
+
+    private func makeClips() {
+        phase = .making
+        Task {
+            await store.makeClips(from: script, formats: Array(selectedFormats))
+            dismiss()
+            router.selectedTab = .library
         }
     }
 

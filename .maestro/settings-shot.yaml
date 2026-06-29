@@ -1,0 +1,7 @@
+appId: com.marque.app
+---
+- launchApp
+- tapOn:
+    id: "today.settings"
+- assertVisible: "API keys"
+- takeScreenshot: /Users/home/Marque/.shots/settings

@@ -79,7 +79,12 @@ name: Marque — full core loop
 
 # Schedule a clip onto the week
 - tapOn: "Calendar"
-- assertVisible: "This week"
+- takeScreenshot: /Users/home/Marque/.shots/after-calendar-tap
+- extendedWaitUntil:
+    visible: "This week"
+    timeout: 6000
 - tapOn: "Coach"
-- assertVisible: "Trending in your niche"
+- extendedWaitUntil:
+    visible: "Trending in your niche"
+    timeout: 6000
 - takeScreenshot: /Users/home/Marque/.shots/flow-coach
