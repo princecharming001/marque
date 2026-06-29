@@ -8,7 +8,7 @@ struct CoachView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
                 HStack {
-                    Text("Coach").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
+                    ScreenTitle(text: "Coach")
                     Spacer()
                     Button { showInsights = true } label: {
                         Image(systemName: "chart.bar").foregroundStyle(Palette.textSecondary)

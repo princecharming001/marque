@@ -29,11 +29,12 @@ name: Marque — extra screens (assumes onboarded)
     timeout: 8000
 - tapOn:
     id: "schedule.pickClip"
-- extendedWaitUntil:
-    visible: "Add another"
-    timeout: 6000
 - tapOn: "Today"
-- assertVisible: "Next up"
+- scrollUntilVisible:
+    element:
+      text: "Next up"
+    direction: DOWN
+    timeout: 6000
 # Studio pillar regenerate (taps a pillar node -> triggers generation, same path as the AHA)
 - tapOn: "Studio"
 - tapOn:

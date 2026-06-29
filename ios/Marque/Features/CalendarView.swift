@@ -60,6 +60,7 @@ struct DayRow: View {
                         .foregroundStyle(Palette.onInk)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Palette.ink).clipShape(Capsule())
+                        .accessibilityHidden(true)   // decorative; don't collide with the "Today" tab
                 }
                 Spacer()
                 Text(day.formatted(.dateTime.month().day()))
