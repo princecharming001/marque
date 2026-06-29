@@ -1,0 +1,13 @@
+appId: com.marque.app
+name: Marque — extra screens (assumes onboarded)
+---
+- launchApp
+# Brand Profile (editable Brand Graph)
+- tapOn:
+    id: "today.profile"
+- assertVisible: "What Marque knows about you"
+- tapOn:
+    id: "profile.knownFor"
+- inputText: " — refined"
+- tapOn: "Done"
+- assertVisible: "Today"

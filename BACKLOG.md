@@ -4,7 +4,7 @@ Work top-to-bottom. Check off `[x]` when an item is DONE (built, `scripts/dev.sh
 Maestro green if UI-affecting, committed). Verifiable items first; key-gated integrations after.
 
 ## A. Verifiable app-side (build + Maestro can confirm)
-- [ ] A1. Brand Profile screen — editable Brand Graph ("What Marque knows about you"): niche, what-you-do, audience, known-for, voice sliders, non-negotiables, pillars. Reached from a person icon on Today (next to the gear). Saves to AppStore.brand + save(). Add Maestro coverage to a new `.maestro/flow-extras.yaml`.
+- [x] A1. Brand Profile screen — editable Brand Graph. Done: BrandProfileView (niche/what-you-do/audience/known-for, voice sliders, non-negotiable chips, pillars), person icon on Today, saves to store; flow-extras.yaml green.
 - [ ] A2. Insights screen — performance overview (mock stats from clips/schedule: posts this week, best clip by predicted score, format breakdown). Reached from Coach. Calm cards.
 - [ ] A3. Calendar scheduling completeness — schedule a ready clip onto a day, mark it `.scheduled`, surface it as "Next up" on Today. Cover scheduling in `flow-extras.yaml`.
 - [ ] A4. Studio pillar regenerate — verify tapping a pillar generates new scripts; add Maestro step (tap a pillar id, assert script count grows).

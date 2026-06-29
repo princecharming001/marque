@@ -4,6 +4,7 @@ struct TodayView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @State private var showSettings = false
+    @State private var showProfile = false
 
     var body: some View {
         ScrollView {
@@ -38,6 +39,7 @@ struct TodayView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends() }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showProfile) { BrandProfileView() }
     }
 
     private var header: some View {
@@ -45,6 +47,11 @@ struct TodayView: View {
             Text("Today").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
             Spacer()
             if store.streak > 0 { StreakGlyph(count: store.streak) }
+            Button { showProfile = true } label: {
+                Image(systemName: "person.crop.circle").foregroundStyle(Palette.textSecondary)
+            }
+            .accessibilityIdentifier("today.profile")
+            .padding(.leading, Space.sm)
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape").foregroundStyle(Palette.textSecondary)
             }
