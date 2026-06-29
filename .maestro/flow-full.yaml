@@ -1,0 +1,83 @@
+appId: com.marque.app
+name: Marque — full core loop
+---
+- launchApp:
+    arguments:
+      reset: "true"
+- assertVisible: "Marque"
+
+# Onboarding
+- tapOn:
+    id: "onboard.start"
+- assertVisible: "What are you here to do?"
+- tapOn: "Grow my audience"
+- tapOn: "Continue"
+- assertVisible: "Tell me about you"
+- tapOn:
+    id: "onboard.niche"
+- inputText: "Fitness coaching"
+- tapOn:
+    id: "onboard.whatYouDo"
+- inputText: "I coach busy professionals"
+- tapOn:
+    id: "onboard.audience"
+- inputText: "busy professionals"
+- tapOn:
+    point: "50%,15%"
+- tapOn: "Continue"
+- assertVisible: "What do you want to be known for?"
+- tapOn:
+    id: "onboard.knownFor"
+- inputText: "no-nonsense fitness for busy people"
+- tapOn:
+    point: "50%,15%"
+- tapOn: "Continue"
+- assertVisible: "How do you sound?"
+- tapOn: "Continue"
+- assertVisible: "Connect your page"
+- tapOn: "Skip for now"
+
+# AHA — AI generated the first scripts
+- extendedWaitUntil:
+    visible: "Enter Marque"
+    timeout: 12000
+- tapOn:
+    id: "onboard.finish"
+
+# Into the app
+- assertVisible: "Today"
+- tapOn: "Studio"
+- assertVisible: "Your pillars"
+- assertVisible: "Ready to record"
+
+# Script reader → Hook Lab → record
+- tapOn:
+    id: "studio.scriptRow"
+- assertVisible: "Shot plan"
+- tapOn:
+    id: "script.record"
+- extendedWaitUntil:
+    visible:
+      id: "record.capture"
+    timeout: 6000
+- tapOn:
+    id: "record.capture"
+- extendedWaitUntil:
+    visible:
+      id: "record.makeClips"
+    timeout: 8000
+- tapOn:
+    id: "record.makeClips"
+
+# Clips landed in Library
+- extendedWaitUntil:
+    visible: "Library"
+    timeout: 10000
+- takeScreenshot: /Users/home/Marque/.shots/flow-library
+
+# Schedule a clip onto the week
+- tapOn: "Calendar"
+- assertVisible: "This week"
+- tapOn: "Coach"
+- assertVisible: "Trending in your niche"
+- takeScreenshot: /Users/home/Marque/.shots/flow-coach

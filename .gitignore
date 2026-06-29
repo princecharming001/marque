@@ -1,0 +1,16 @@
+# Xcode / build
+ios/build/
+ios/Marque.xcodeproj/
+DerivedData/
+*.xcuserstate
+*.xcuserdatad/
+
+# macOS
+.DS_Store
+
+# Maestro local artifacts
+.maestro/tests/
+
+# Secrets (never commit) — paste keys here locally
+.env
+*.secrets.json

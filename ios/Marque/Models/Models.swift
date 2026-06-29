@@ -1,0 +1,154 @@
+import Foundation
+
+// MARK: - Core domain models (mirrors 06-brand-graph.md, 08-format-virality.md, 12-backend-data-security.md)
+
+enum Goal: String, CaseIterable, Codable, Identifiable {
+    case audience = "Grow my audience"
+    case clients = "Get clients"
+    case authority = "Build authority"
+    case monetize = "Monetize"
+    var id: String { rawValue }
+}
+
+struct VoiceFingerprint: Codable, Hashable {
+    var funnyToSerious: Double = 0.5     // 0 funny … 1 serious
+    var polishedToRaw: Double = 0.5      // 0 polished … 1 raw
+    var teacherToPeer: Double = 0.5      // 0 teacher … 1 peer
+    var bannedWords: [String] = []
+    var catchphrases: [String] = []
+}
+
+struct BrandGraph: Codable, Hashable {
+    var niche: String = ""
+    var whatYouDo: String = ""
+    var audience: String = ""
+    var knownFor: String = ""
+    var goal: Goal = .audience
+    var voice = VoiceFingerprint()
+    var nonNegotiables: [String] = []
+    var pageHandle: String = ""
+    var analyzed: Bool = false
+    var topThemes: [String] = []
+}
+
+struct Pillar: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var name: String
+    var weight: Double          // share of the content mix 0…1
+    var colorHex: UInt
+}
+
+// 8 hook signal types (08-format-virality.md)
+enum HookSignal: String, CaseIterable, Codable {
+    case stakes, authority, curiosity, patternInterrupt, specificity, contrarian, narrative, callOut
+    var label: String {
+        switch self {
+        case .stakes: return "Stakes"
+        case .authority: return "Authority"
+        case .curiosity: return "Curiosity gap"
+        case .patternInterrupt: return "Pattern interrupt"
+        case .specificity: return "Specificity"
+        case .contrarian: return "Contrarian"
+        case .narrative: return "Narrative"
+        case .callOut: return "Call-out"
+        }
+    }
+}
+
+struct Hook: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var text: String
+    var signal: HookSignal
+    var strength: Int           // virality predictor 0…100
+}
+
+// Format Library entry = a structured render-recipe
+struct VideoFormat: Codable, Hashable, Identifiable {
+    var id: String              // slug
+    var name: String
+    var blurb: String
+    var faceMode: FaceMode
+    var targetSeconds: Int
+    var bestHooks: [HookSignal]
+    enum FaceMode: String, Codable { case face, faceless, split, greenScreen }
+}
+
+struct Script: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var pillarName: String
+    var formatId: String
+    var hook: Hook
+    var altHooks: [Hook]
+    var body: String
+    var cta: String
+    var shotPlan: [String]
+    var targetSeconds: Int
+    var predictedScore: Int
+    var approved: Bool = false
+    var createdAt: Date = Date()
+}
+
+enum ClipStatus: String, Codable { case rendering, ready, scheduled, posted, failed }
+
+struct Clip: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var scriptId: UUID
+    var formatId: String
+    var formatName: String
+    var caption: String
+    var predictedScore: Int
+    var status: ClipStatus
+    var seconds: Int
+    var createdAt: Date = Date()
+}
+
+enum SocialPlatform: String, CaseIterable, Codable, Identifiable {
+    case instagram, tiktok
+    var id: String { rawValue }
+    var label: String { self == .instagram ? "Instagram" : "TikTok" }
+}
+
+struct ScheduledPost: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var clipId: UUID
+    var caption: String
+    var platforms: [SocialPlatform]
+    var date: Date
+    var posted: Bool = false
+}
+
+struct TrendItem: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var title: String
+    var why: String
+    var formatId: String
+}
+
+struct TeardownCard: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var clipCaption: String
+    var headline: String
+    var detail: String
+    var liftPercent: Int
+}
+
+// MARK: - Static catalogs
+
+enum Catalog {
+    static let formats: [VideoFormat] = [
+        .init(id: "myth-buster", name: "Myth-Buster", blurb: "“Everyone thinks X… but.” Cognitive-dissonance payoff at 6–8s.", faceMode: .face, targetSeconds: 24, bestHooks: [.contrarian, .curiosity]),
+        .init(id: "listicle", name: "3-Step Listicle", blurb: "Numbered breakdown, B-roll switch every ~2.5s.", faceMode: .face, targetSeconds: 30, bestHooks: [.specificity, .authority]),
+        .init(id: "do-this-not-that", name: "Do This, Not That", blurb: "Side-by-side wrong vs. right.", faceMode: .split, targetSeconds: 22, bestHooks: [.contrarian, .callOut]),
+        .init(id: "before-after", name: "Before / After", blurb: "Transformation reveal — drives rewatches.", faceMode: .split, targetSeconds: 26, bestHooks: [.specificity, .narrative]),
+        .init(id: "green-screen", name: "Green-Screen", blurb: "You in front of a post, chart, or screenshot.", faceMode: .greenScreen, targetSeconds: 28, bestHooks: [.curiosity, .authority]),
+        .init(id: "faceless", name: "Faceless AI-Visual", blurb: "Voiceover over generated visuals — no camera.", faceMode: .faceless, targetSeconds: 30, bestHooks: [.curiosity, .narrative]),
+        .init(id: "pov-story", name: "POV / Story", blurb: "“POV:” or mid-action open, loop-friendly ending.", faceMode: .face, targetSeconds: 28, bestHooks: [.narrative, .stakes]),
+        .init(id: "broll-hook", name: "B-roll + Caption Hook", blurb: "5–8s of B-roll with a provocative one-liner.", faceMode: .faceless, targetSeconds: 12, bestHooks: [.patternInterrupt, .contrarian]),
+    ]
+
+    static func format(_ id: String) -> VideoFormat {
+        formats.first { $0.id == id } ?? formats[0]
+    }
+
+    static let pillarColors: [UInt] = [0xC9A227, 0x6E7F6A, 0x9A6A55, 0x5E6B86, 0x8A6FA0, 0xB5852A]
+}

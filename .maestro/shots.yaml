@@ -1,0 +1,10 @@
+appId: com.marque.app
+name: Marque — proof screenshots
+---
+- launchApp
+- tapOn: "Studio"
+- takeScreenshot: /Users/home/Marque/.shots/studio
+- tapOn:
+    id: "studio.scriptRow"
+- assertVisible: "Shot plan"
+- takeScreenshot: /Users/home/Marque/.shots/reader
