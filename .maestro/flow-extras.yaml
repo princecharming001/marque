@@ -17,3 +17,15 @@ name: Marque — extra screens (assumes onboarded)
     id: "coach.insights"
 - assertVisible: "Insights"
 - tapOn: "Done"
+# Schedule a clip onto the week, then see it as "Next up" on Today
+- tapOn: "Calendar"
+- tapOn:
+    id: "calendar.addClip"
+- assertVisible: "Pick a clip"
+- tapOn:
+    id: "schedule.pickClip"
+- extendedWaitUntil:
+    visible: "This week"
+    timeout: 6000
+- tapOn: "Today"
+- assertVisible: "Next up"

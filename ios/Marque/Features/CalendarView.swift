@@ -57,6 +57,7 @@ struct DayRow: View {
                         Spacer()
                     }
                 }.buttonStyle(.plain).disabled(!hasReady)
+                .accessibilityIdentifier("calendar.addClip")
             } else {
                 ForEach(posts) { p in
                     HStack(spacing: Space.sm) {
@@ -106,6 +107,7 @@ struct SchedulePickerSheet: View {
                                     dismiss()
                                 }
                             } label: { ClipCell(clip: c) }.buttonStyle(.plain)
+                            .accessibilityIdentifier("schedule.pickClip")
                         }
                     }
                 }
