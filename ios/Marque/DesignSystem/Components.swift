@@ -9,9 +9,29 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
+// Slow diagonal highlight sweep on premium CTAs (maxapp signature).
+struct ShineSweep: View {
+    @State private var x: CGFloat = -1.2
+    var body: some View {
+        GeometryReader { geo in
+            LinearGradient(colors: [.clear, .white.opacity(0.28), .clear],
+                           startPoint: .leading, endPoint: .trailing)
+                .frame(width: geo.size.width * 0.45)
+                .offset(x: x * geo.size.width)
+                .onAppear {
+                    withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: false).delay(0.6)) {
+                        x = 1.7
+                    }
+                }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 struct PrimaryButton: View {
     let title: String
     var systemImage: String? = nil
+    var shine: Bool = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -21,7 +41,7 @@ struct PrimaryButton: View {
             }
             .foregroundStyle(Palette.onInk)
             .frame(maxWidth: .infinity).frame(height: 54)
-            .background(Palette.ink)
+            .background(ZStack { Palette.ink; if shine { ShineSweep() } })
             .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
             .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 4)
         }

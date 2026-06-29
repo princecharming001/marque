@@ -34,7 +34,7 @@ struct PaywallView: View {
                     .marqueCard()
 
                     VStack(spacing: Space.sm) {
-                        PrimaryButton(title: "Start 7-day free trial") { dismiss() }
+                        PrimaryButton(title: "Start 7-day free trial", shine: true) { dismiss() }
                             .accessibilityIdentifier("paywall.subscribe")
                         Text("Then $14.99/mo. Cancel anytime.")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)

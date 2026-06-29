@@ -180,13 +180,17 @@ private struct StepScaffold<Content: View>: View {
 private struct PillButton: View {
     let title: String
     var enabled: Bool = true
+    var shine: Bool = false
     let action: () -> Void
     var body: some View {
         Button(action: action) {
             Text(title).font(AppFont.headline)
                 .foregroundStyle(enabled ? Palette.onInk : Color(hex: 0xA4A29D))
                 .frame(maxWidth: .infinity).frame(height: 56)
-                .background(enabled ? Palette.ink : Color(hex: 0xDAD9D6))
+                .background(ZStack {
+                    (enabled ? Palette.ink : Color(hex: 0xDAD9D6))
+                    if shine && enabled { ShineSweep() }
+                })
                 .clipShape(Capsule())
         }
         .buttonStyle(PressableStyle())
