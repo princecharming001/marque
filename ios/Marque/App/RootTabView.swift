@@ -28,6 +28,7 @@ struct RootTabView: View {
                 .tabItem { Label("Coach", systemImage: "bubble.left.and.text.bubble.right") }
                 .tag(AppTab.coach)
         }
+        .tint(Palette.ink)
         .sheet(isPresented: $store.showCelebration) { CelebrationView() }
     }
 }

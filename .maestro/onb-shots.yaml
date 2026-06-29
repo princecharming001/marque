@@ -1,0 +1,18 @@
+appId: com.marque.app
+---
+- launchApp:
+    arguments:
+      reset: "true"
+- takeScreenshot: /Users/home/Marque/.shots/onb-welcome
+- tapOn:
+    id: "onboard.start"
+- assertVisible: "What are you here to do?"
+- tapOn: "Grow my audience"
+- takeScreenshot: /Users/home/Marque/.shots/onb-goal
+- tapOn: "Continue"
+- tapOn:
+    id: "onboard.niche"
+- inputText: "Fitness coaching"
+- tapOn:
+    point: "50%,12%"
+- takeScreenshot: /Users/home/Marque/.shots/onb-about

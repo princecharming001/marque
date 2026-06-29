@@ -17,7 +17,8 @@ struct MarqueApp: App {
             RootView()
                 .environment(store)
                 .environment(router)
-                .tint(Palette.gold)
+                .tint(Palette.accent)
+                .preferredColorScheme(.light)
         }
     }
 }

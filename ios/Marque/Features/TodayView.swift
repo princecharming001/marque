@@ -8,26 +8,21 @@ struct TodayView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.xl) {
+            VStack(alignment: .leading, spacing: Space.lg) {
                 header
+                commandCenter
 
-                // The single directive — the only thing Today insists on.
-                directiveCard
-
-                // One trend line (anti-clutter doctrine).
                 if let t = store.trends.first {
                     Button { router.selectedTab = .coach } label: {
                         HStack(spacing: Space.sm) {
-                            Image(systemName: "wave.3.right").font(.system(size: 13)).foregroundStyle(Palette.gold)
-                            Text(t.title).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                                .lineLimit(1)
+                            Image(systemName: "wave.3.right").font(.system(size: 13)).foregroundStyle(Palette.accent)
+                            Text(t.title).font(AppFont.callout).foregroundStyle(Palette.textSecondary).lineLimit(1)
                             Spacer()
                             Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Palette.textTertiary)
                         }
                     }.buttonStyle(.plain)
                 }
 
-                // Next scheduled post, if any.
                 if let next = store.schedule.sorted(by: { $0.date < $1.date }).first(where: { !$0.posted }) {
                     nextPostRow(next)
                 }
@@ -46,29 +41,36 @@ struct TodayView: View {
         HStack {
             Text("Today").font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
             Spacer()
-            if store.streak > 0 { StreakGlyph(count: store.streak) }
+            if store.streak > 0 { StreakGlyph(count: store.streak).padding(.trailing, Space.xs) }
             Button { showProfile = true } label: {
-                Image(systemName: "person.crop.circle").foregroundStyle(Palette.textSecondary)
+                Image(systemName: "person.crop.circle").font(.system(size: 20)).foregroundStyle(Palette.textSecondary)
             }
             .accessibilityIdentifier("today.profile")
-            .padding(.leading, Space.sm)
             Button { showSettings = true } label: {
-                Image(systemName: "gearshape").foregroundStyle(Palette.textSecondary)
+                Image(systemName: "gearshape").font(.system(size: 19)).foregroundStyle(Palette.textSecondary)
             }
             .accessibilityIdentifier("today.settings")
-            .padding(.leading, Space.sm)
+            .padding(.leading, Space.md)
         }
     }
 
-    private var directiveCard: some View {
+    private var commandCenter: some View {
         let d = store.todayDirective
-        return VStack(alignment: .leading, spacing: Space.md) {
-            Text(d.title)
-                .font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(d.subtitle)
-                .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
-            Spacer().frame(height: Space.xs)
+        return VStack(alignment: .leading, spacing: Space.lg) {
+            HStack(alignment: .center, spacing: Space.lg) {
+                ProgressRing(value: store.weekProgress,
+                             centerTop: "\(store.weekDone)/\(store.weekGoal)",
+                             centerBottom: "queued", size: 104)
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    SectionTitle(text: "This week")
+                    Text(d.title)
+                        .font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(d.subtitle)
+                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             PrimaryButton(title: ctaTitle, systemImage: ctaIcon) { ctaAction() }
                 .accessibilityIdentifier("today.cta")
         }
@@ -76,8 +78,8 @@ struct TodayView: View {
     }
 
     private var ctaTitle: String {
-        if store.scripts.contains(where: { !$0.approved }) { return "Go to Studio" }
-        if store.clips.contains(where: { $0.status == .ready }) { return "Schedule clips" }
+        if store.clips.contains(where: { $0.status == .ready }) { return "Schedule this week" }
+        if store.scripts.contains(where: { !$0.approved }) { return "Record your batch" }
         return "Open Studio"
     }
     private var ctaIcon: String {

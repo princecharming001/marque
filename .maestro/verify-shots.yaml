@@ -1,0 +1,20 @@
+appId: com.marque.app
+---
+- launchApp
+- tapOn: "Studio"
+- takeScreenshot: /Users/home/Marque/.shots/v-studio
+- tapOn:
+    id: "studio.scriptRow"
+- assertVisible: "Shot plan"
+- takeScreenshot: /Users/home/Marque/.shots/v-reader
+- tapOn: "Library"
+- takeScreenshot: /Users/home/Marque/.shots/v-library
+- tapOn: "Coach"
+- takeScreenshot: /Users/home/Marque/.shots/v-coach
+- tapOn: "Today"
+- tapOn:
+    id: "today.settings"
+- tapOn:
+    id: "settings.upgrade"
+- assertVisible: "Marque Pro"
+- takeScreenshot: /Users/home/Marque/.shots/v-paywall

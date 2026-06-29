@@ -1,7 +1,13 @@
 import SwiftUI
 
-// MARK: - Shared components (02-design-system.md)
-// Accessibility rule: gold is fill-or-glyph only; on a gold fill the label is ink, never gold-on-cream text.
+// MARK: - Shared components (maxapp recipes: ink-fill buttons, hairline surfaces, pill chips)
+
+struct PressableStyle: ButtonStyle {
+    var dim: Double = 0.9
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.opacity(configuration.isPressed ? dim : 1)
+    }
+}
 
 struct PrimaryButton: View {
     let title: String
@@ -10,16 +16,16 @@ struct PrimaryButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Space.sm) {
-                if let s = systemImage { Image(systemName: s) }
+                if let s = systemImage { Image(systemName: s).font(.system(size: 16, weight: .semibold)) }
                 Text(title).font(AppFont.headline)
             }
-            .foregroundStyle(Palette.night)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, Space.lg)
-            .background(Palette.gold)
+            .foregroundStyle(Palette.onInk)
+            .frame(maxWidth: .infinity).frame(height: 54)
+            .background(Palette.ink)
             .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 4)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle())
     }
 }
 
@@ -30,18 +36,17 @@ struct GhostButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Space.sm) {
-                if let s = systemImage { Image(systemName: s) }
-                Text(title).font(AppFont.callout)
+                if let s = systemImage { Image(systemName: s).font(.system(size: 15, weight: .medium)) }
+                Text(title).font(AppFont.headline)
             }
             .foregroundStyle(Palette.textPrimary)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, Space.md)
-            .overlay(
-                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1)
-            )
+            .frame(maxWidth: .infinity).frame(height: 54)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.7))
     }
 }
 
@@ -49,8 +54,7 @@ struct SectionTitle: View {
     let text: String
     var body: some View {
         Text(text.uppercased())
-            .font(AppFont.micro)
-            .tracking(1.4)
+            .font(AppFont.micro).tracking(0.8)
             .foregroundStyle(Palette.textTertiary)
     }
 }
@@ -58,14 +62,14 @@ struct SectionTitle: View {
 struct ScoreBadge: View {
     let score: Int
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             Circle().fill(color).frame(width: 6, height: 6)
             Text("\(score)").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
         }
         .accessibilityLabel("Predicted score \(score) of 100")
     }
     private var color: Color {
-        score >= 85 ? Palette.positive : score >= 70 ? Palette.warning : Palette.textTertiary
+        score >= 85 ? Palette.positive : score >= 70 ? Palette.accent : Palette.textTertiary
     }
 }
 
@@ -73,7 +77,7 @@ struct StreakGlyph: View {
     let count: Int
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "flame.fill").font(.system(size: 13)).foregroundStyle(Palette.gold)
+            Image(systemName: "flame.fill").font(.system(size: 12)).foregroundStyle(Palette.textPrimary)
             Text("\(count)").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
         }
         .accessibilityLabel("\(count) day streak")
@@ -86,12 +90,12 @@ struct Chip: View {
     var body: some View {
         Text(text)
             .font(AppFont.callout)
-            .foregroundStyle(selected ? Palette.night : Palette.textPrimary)
-            .padding(.horizontal, Space.md)
-            .padding(.vertical, Space.sm)
-            .background(selected ? Palette.gold : Palette.surfaceRaised)
+            .foregroundStyle(selected ? Palette.onInk : Palette.textSecondary)
+            .padding(.horizontal, 14).padding(.vertical, 9)
+            .background(selected ? Palette.ink : Palette.surfaceRaised)
             .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: selected ? 0 : 1))
+            .overlay(Capsule().strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
+            .shadow(color: selected ? .clear : .black.opacity(0.05), radius: 8, x: 0, y: 2)
     }
 }
 
@@ -100,15 +104,13 @@ struct PillarNode: View {
     var body: some View {
         VStack(spacing: Space.sm) {
             ZStack {
-                Circle()
-                    .fill(Color(hex: pillar.colorHex).opacity(0.18))
-                Circle()
-                    .strokeBorder(Color(hex: pillar.colorHex), lineWidth: 2)
+                Circle().fill(Color(hex: pillar.colorHex).opacity(0.12))
+                Circle().strokeBorder(Color(hex: pillar.colorHex), lineWidth: 1.5)
                 Text(String(pillar.name.prefix(1)))
                     .font(Typeface.display(22, .semibold))
                     .foregroundStyle(Palette.textPrimary)
             }
-            .frame(width: 66, height: 66)
+            .frame(width: 64, height: 64)
             Text(pillar.name)
                 .font(AppFont.caption)
                 .foregroundStyle(Palette.textSecondary)
@@ -123,7 +125,7 @@ struct EmptyStateView: View {
     let message: String
     var body: some View {
         VStack(spacing: Space.md) {
-            Image(systemName: icon).font(.system(size: 30)).foregroundStyle(Palette.textTertiary)
+            Image(systemName: icon).font(.system(size: 28)).foregroundStyle(Palette.textTertiary)
             Text(title).font(AppFont.title).foregroundStyle(Palette.textPrimary)
             Text(message).font(AppFont.body).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)
@@ -142,8 +144,7 @@ struct FormatTag: View {
             Text(f.name).font(AppFont.caption)
         }
         .foregroundStyle(Palette.textSecondary)
-        .padding(.horizontal, Space.sm)
-        .padding(.vertical, 5)
+        .padding(.horizontal, Space.sm).padding(.vertical, 5)
         .background(Palette.surfaceSunken)
         .clipShape(Capsule())
     }
@@ -154,5 +155,41 @@ struct FormatTag: View {
         case .split: return "rectangle.split.2x1"
         case .greenScreen: return "photo.fill"
         }
+    }
+}
+
+// Animated progress ring (maxapp home). value 0…1.
+struct ProgressRing: View {
+    let value: Double
+    let centerTop: String
+    let centerBottom: String
+    var size: CGFloat = 116
+    @State private var animated = false
+    var body: some View {
+        ZStack {
+            Circle().stroke(Palette.hairline, lineWidth: 6)
+            Circle().trim(from: 0, to: animated ? max(0.001, value) : 0)
+                .stroke(Palette.ink, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 1) {
+                Text(centerTop).font(Typeface.sans(26, .semibold)).foregroundStyle(Palette.textPrimary)
+                Text(centerBottom.uppercased()).font(AppFont.micro).tracking(1).foregroundStyle(Palette.textTertiary)
+            }
+        }
+        .frame(width: size, height: size)
+        .onAppear { withAnimation(.easeOut(duration: 0.9)) { animated = true } }
+    }
+}
+
+// Boxed text-field style (maxapp 54pt hairline field).
+extension View {
+    func marqueField() -> some View {
+        self
+            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+            .padding(.horizontal, 16).frame(height: 54)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 }

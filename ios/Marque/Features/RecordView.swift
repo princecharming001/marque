@@ -98,9 +98,9 @@ struct RecordView: View {
                 formatPicker
                 Button { makeClips() } label: {
                     Text("Make my clips")
-                        .font(AppFont.headline).foregroundStyle(Palette.night)
+                        .font(AppFont.headline).foregroundStyle(Palette.ink)
                         .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
-                        .background(Palette.gold).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .background(Palette.onInk).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("record.makeClips")
@@ -156,9 +156,9 @@ struct RecordView: View {
                     } label: {
                         Text(f.name)
                             .font(AppFont.callout)
-                            .foregroundStyle(selectedFormats.contains(f.id) ? Palette.night : .white)
+                            .foregroundStyle(selectedFormats.contains(f.id) ? Palette.ink : .white)
                             .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-                            .background(selectedFormats.contains(f.id) ? Palette.gold : Color.white.opacity(0.12))
+                            .background(selectedFormats.contains(f.id) ? Palette.onInk : Color.white.opacity(0.12))
                             .clipShape(Capsule())
                     }.buttonStyle(.plain)
                 }

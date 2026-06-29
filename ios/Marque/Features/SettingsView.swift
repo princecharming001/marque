@@ -23,12 +23,12 @@ struct SettingsView: View {
                     // Upgrade
                     Button { showPaywall = true } label: {
                         HStack {
-                            Text("Upgrade to Pro").font(AppFont.headline).foregroundStyle(Palette.night)
+                            Text("Upgrade to Pro").font(AppFont.headline).foregroundStyle(Palette.onInk)
                             Spacer()
-                            Image(systemName: "sparkles").foregroundStyle(Palette.night)
+                            Image(systemName: "sparkles").foregroundStyle(Palette.onInk)
                         }
                         .padding(Space.md)
-                        .background(Palette.gold)
+                        .background(Palette.ink)
                         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                     }
                     .buttonStyle(.plain)

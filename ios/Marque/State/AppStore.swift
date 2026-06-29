@@ -152,6 +152,11 @@ final class AppStore {
 
     // MARK: Today directive
 
+    // Weekly command-center metric (queued toward a weekly goal).
+    var weekGoal: Int { 5 }
+    var weekDone: Int { schedule.count }
+    var weekProgress: Double { min(1, Double(weekDone) / Double(weekGoal)) }
+
     var todayDirective: (title: String, subtitle: String) {
         if !hasOnboarded { return ("Let's set up your brand", "A couple of questions to learn your voice.") }
         let ready = scripts.filter { !$0.approved }.count
