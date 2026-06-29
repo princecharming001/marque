@@ -29,3 +29,8 @@ name: Marque — extra screens (assumes onboarded)
     timeout: 6000
 - tapOn: "Today"
 - assertVisible: "Next up"
+# Studio pillar regenerate (taps a pillar node -> triggers generation, same path as the AHA)
+- tapOn: "Studio"
+- tapOn:
+    id: "studio.pillar.Lessons"
+- assertVisible: "Your pillars"
