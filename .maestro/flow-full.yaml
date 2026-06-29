@@ -62,6 +62,8 @@ name: Marque — full core loop
     visible:
       id: "record.capture"
     timeout: 6000
+- assertVisible:
+    id: "record.upload"
 - tapOn:
     id: "record.capture"
 - extendedWaitUntil:

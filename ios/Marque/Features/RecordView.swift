@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 // Real camera on device (CameraModel/AVFoundation); simulated capture in the Simulator
 // (no camera hardware) so the batch loop stays end-to-end testable. (05-screens-produce.md)
@@ -13,6 +14,7 @@ struct RecordView: View {
     @State private var phase: Phase = .ready
     @State private var scroll = false
     @State private var recordedURL: URL?
+    @State private var pickedItem: PhotosPickerItem?
     @State private var selectedFormats: Set<String>
 
     enum Phase { case ready, recording, recorded, making }
@@ -36,6 +38,10 @@ struct RecordView: View {
         }
         .onAppear { camera.configure() }
         .onDisappear { camera.teardown() }
+        .onChange(of: pickedItem) { _, item in
+            // Repurpose-in: an imported long video skips capture and goes straight to cutting.
+            if item != nil { phase = .recorded }
+        }
     }
 
     @ViewBuilder private var background: some View {
@@ -79,6 +85,11 @@ struct RecordView: View {
                 Text(camera.status == .unavailable ? "No camera in the Simulator — tap to simulate a take." : "Read it once. We'll cut the rest.")
                     .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
                 recordButton { startRecording() }
+                PhotosPicker(selection: $pickedItem, matching: .videos) {
+                    Label("Upload existing video", systemImage: "square.and.arrow.up")
+                        .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                }
+                .accessibilityIdentifier("record.upload")
             case .recording:
                 Text("Recording…").font(AppFont.body).foregroundStyle(Palette.gold)
                 recordButton(active: true) { stopRecording() }

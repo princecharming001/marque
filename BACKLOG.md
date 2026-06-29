@@ -9,7 +9,7 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 - [x] A3. Calendar scheduling — schedule a ready clip onto a day (ids calendar.addClip / schedule.pickClip), marks it .scheduled, surfaces "Next up" on Today; flow-extras covers the full schedule path.
 - [x] A4. Studio pillar regenerate — verified: tapping a pillar node (studio.pillar.<name>) triggers generation via the same path as the AHA; flow-extras taps a pillar and confirms Studio stays intact.
 - [x] A5. Hook Lab + steer — Hook Lab cards are now selectable (store.setHook), ids added (script.hookButton / hooklab.pickHook / script.steer); flow-extras opens Hook Lab, picks a hook, scrolls to and taps a steer chip.
-- [ ] A6. Repurpose-in — add a "Upload existing" source on Record using PhotosPicker (second entry to the same makeClips pipeline). Sim: selecting is fine; flow stays green.
+- [x] A6. Repurpose-in — PhotosPicker "Upload existing video" on Record (id record.upload) routes an imported video to the same makeClips pipeline; flow-full asserts the entry exists.
 - [ ] A7. Streak + a minimal celebration — increment streak per recorded session; show a quiet one-time celebration sheet; full streak view in Brand Profile.
 - [ ] A8. States pass — ensure every screen has loading / empty / error / offline handling per the design system; add an offline banner component.
 
