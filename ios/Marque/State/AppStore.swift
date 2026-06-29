@@ -27,6 +27,7 @@ final class AppStore {
     // Live Ayrshare publishing when a key is present, mock otherwise.
     var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
     let insights: InsightsProviding = MockInsights()
+    let remote: RemotePersistence = SupabaseStore()
 
     private let saveKey = "marque.state.v1"
 
@@ -172,6 +173,8 @@ final class AppStore {
                             schedule: schedule, teardowns: teardowns, hasOnboarded: hasOnboarded, streak: streak)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
+            // Best-effort mirror to Supabase when configured (no-op otherwise).
+            if !AppConfig.supabaseAnonKey.isEmpty { Task { await remote.push(data) } }
         }
     }
 
