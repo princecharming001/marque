@@ -24,7 +24,8 @@ final class AppStore {
     var llm: LLMRouting { AppConfig.useLiveAI ? AnthropicLLMRouter() : MockLLMRouter() }
     var aiMode: String { AppConfig.useLiveAI ? "Claude" : "Mock" }
     let clipEngine: ClipEngineProtocol = MockClipEngine()
-    let publisher: Publishing = MockPublisher()
+    // Live Ayrshare publishing when a key is present, mock otherwise.
+    var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
     let insights: InsightsProviding = MockInsights()
 
     private let saveKey = "marque.state.v1"

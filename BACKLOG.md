@@ -14,7 +14,7 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 - [x] A8. States — empty states (EmptyStateView) on Library/Studio/Insights, loading spinners on generation, calm errors; added NetworkMonitor + app-wide OfflineBanner (never red) via safeAreaInset on RootView.
 
 ## B. Key-ready integrations (compile-clean, key-gated, mock fallback — NO new SPM deps; use URLSession / StoreKit)
-- [ ] B1. AyrsharePublisher — real `URLSession` POST to Ayrshare behind `Publishing`; AppStore uses it when `AppConfig.ayrshareKey` is set, else `MockPublisher`. Untestable without a key (that's fine).
+- [x] B1. AyrsharePublisher — URLSession POST to Ayrshare /api/post behind Publishing, key-gated (AppConfig.ayrshareKey), mock fallback on error. Compile-clean; functionally untestable without a key + public media URL.
 - [ ] B2. SupabaseStore — REST (`URLSession`) persistence adapter behind a `Persistence` protocol; used when supabase url+anonKey set, else the local UserDefaults store. Mirror scripts/clips/schedule.
 - [ ] B3. Paywall (StoreKit 2, no RevenueCat SDK) — a `Billing` protocol + StoreKit2 implementation + a calm paywall screen gated at "publish"; mock entitlement when no products. Add a StoreKit config file for sim testing.
 - [ ] B4. LiveClipEngine scaffold — structural AssemblyAI + Shotstack client behind `ClipEngineProtocol`, key-gated; documents that real rendering routes through the backend (B5). Keep `MockClipEngine` as the default/fallback.
