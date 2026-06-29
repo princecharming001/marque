@@ -23,7 +23,10 @@ final class AppStore {
     // Computed so pasting a key in Settings takes effect without relaunch.
     var llm: LLMRouting { AppConfig.useLiveAI ? AnthropicLLMRouter() : MockLLMRouter() }
     var aiMode: String { AppConfig.useLiveAI ? "Claude" : "Mock" }
-    let clipEngine: ClipEngineProtocol = MockClipEngine()
+    // Live clip engine when transcription+render keys are present, mock otherwise.
+    var clipEngine: ClipEngineProtocol {
+        (AppConfig.assemblyAIKey.isEmpty || AppConfig.shotstackKey.isEmpty) ? MockClipEngine() : LiveClipEngine()
+    }
     // Live Ayrshare publishing when a key is present, mock otherwise.
     var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
     let insights: InsightsProviding = MockInsights()

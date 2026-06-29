@@ -17,9 +17,9 @@ Maestro green if UI-affecting, committed). Verifiable items first; key-gated int
 - [x] B1. AyrsharePublisher — URLSession POST to Ayrshare /api/post behind Publishing, key-gated (AppConfig.ayrshareKey), mock fallback on error. Compile-clean; functionally untestable without a key + public media URL.
 - [x] B2. SupabaseStore — RemotePersistence (PostgREST URLSession push/pull to an app_state row), best-effort mirror on save when supabase url+anonKey set; local UserDefaults stays source of truth otherwise.
 - [x] B3. Paywall (StoreKit 2) — Billing protocol + MockBilling (dev-unlocked) + StoreKitBilling, PaywallView from Settings, canPublish gate, Marque.storekit config. (was B3) — a `Billing` protocol + StoreKit2 implementation + a calm paywall screen gated at "publish"; mock entitlement when no products. Add a StoreKit config file for sim testing.
-- [ ] B4. LiveClipEngine scaffold — structural AssemblyAI + Shotstack client behind `ClipEngineProtocol`, key-gated; documents that real rendering routes through the backend (B5). Keep `MockClipEngine` as the default/fallback.
+- [x] B4. LiveClipEngine scaffold — structural AssemblyAI + Shotstack client behind `ClipEngineProtocol`, key-gated; documents that real rendering routes through the backend (B5). Keep `MockClipEngine` as the default/fallback.
 
 ## C. Backend skeleton (separate `backend/` dir; python build-verifiable)
-- [ ] C1. FastAPI app — `/healthz`, `/v1/scripts` (proxies Anthropic server-side), adapter pattern with mock providers; `requirements.txt`; a `make run` and a tiny pytest that imports the app. No secrets committed.
+- [x] C1. FastAPI app — `/healthz`, `/v1/scripts` (proxies Anthropic server-side), adapter pattern with mock providers; `requirements.txt`; a `make run` and a tiny pytest that imports the app. No secrets committed.
 
 When EVERY box above is checked, output `<promise>MARQUE BUILDOUT COMPLETE</promise>`.

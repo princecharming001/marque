@@ -14,3 +14,9 @@ DerivedData/
 # Secrets (never commit) — paste keys here locally
 .env
 *.secrets.json
+
+# Python backend
+backend/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
