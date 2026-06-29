@@ -55,6 +55,8 @@ name: Marque — full core loop
 # Script reader → Hook Lab → record
 - tapOn:
     id: "studio.scriptRow"
+- tapOn:
+    id: "studio.openScript"
 - assertVisible: "Shot plan"
 - tapOn:
     id: "script.record"
@@ -89,7 +91,7 @@ name: Marque — full core loop
 - tapOn: "Calendar"
 - takeScreenshot: /Users/home/Marque/.shots/after-calendar-tap
 - extendedWaitUntil:
-    visible: "This week"
+    visible: "Your week at a glance"
     timeout: 6000
 - tapOn: "Coach"
 - extendedWaitUntil:

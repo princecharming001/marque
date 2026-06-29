@@ -14,14 +14,15 @@ final class NetworkMonitor: ObservableObject {
     }
 }
 
-// Calm, single-line offline banner (never red — the design language stays warm).
+// Calm, single-line offline banner — neutral hairline bar, never alarming.
 struct OfflineBanner: View {
     var body: some View {
         Text("You're offline — we'll sync when you're back.")
-            .font(AppFont.caption).foregroundStyle(Palette.night)
+            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, Space.sm)
-            .background(Palette.gold)
+            .background(Palette.surfaceSunken)
+            .overlay(Rectangle().fill(Palette.hairline).frame(height: 1), alignment: .bottom)
             .accessibilityIdentifier("offline.banner")
     }
 }

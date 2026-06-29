@@ -12,8 +12,10 @@ struct RecordView: View {
     let script: Script
 
     @State private var phase: Phase = .ready
-    @State private var scroll = false
-    @State private var recordedURL: URL?
+    @State private var promptRunning = false
+    @State private var speed: Double = 1.0
+    @State private var restartToken = 0
+    @State private var footagePath: String?
     @State private var pickedItem: PhotosPickerItem?
     @State private var selectedFormats: Set<String>
 
@@ -30,7 +32,8 @@ struct RecordView: View {
             VStack(spacing: Space.lg) {
                 topBar
                 Spacer(minLength: 0)
-                teleprompter
+                Teleprompter(script: script, running: $promptRunning, speed: $speed, restartToken: $restartToken)
+                    .frame(height: 300)
                 Spacer(minLength: 0)
                 controls
             }
@@ -39,8 +42,13 @@ struct RecordView: View {
         .onAppear { camera.configure() }
         .onDisappear { camera.teardown() }
         .onChange(of: pickedItem) { _, item in
-            // Repurpose-in: an imported long video skips capture and goes straight to cutting.
-            if item != nil { phase = .recorded }
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self) {
+                    footagePath = MediaStore.save(data, ext: "mov")
+                }
+                phase = .recorded
+            }
         }
     }
 
@@ -63,27 +71,13 @@ struct RecordView: View {
         }
     }
 
-    private var teleprompter: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Space.lg) {
-                Text(script.hook.text).font(Typeface.display(28, .semibold)).foregroundStyle(.white)
-                Text(script.body).font(Typeface.body(22)).foregroundStyle(.white.opacity(0.92))
-                Text(script.cta).font(Typeface.body(22, .semibold)).foregroundStyle(Palette.gold)
-            }
-            .padding(.vertical, scroll ? 0 : 40)
-            .offset(y: scroll ? -60 : 0)
-            .animation(.linear(duration: Double(script.targetSeconds)), value: scroll)
-        }
-        .frame(maxHeight: 320)
-        .mask(LinearGradient(colors: [.clear, .black, .black, .clear], startPoint: .top, endPoint: .bottom))
-    }
-
     private var controls: some View {
         VStack(spacing: Space.lg) {
             switch phase {
             case .ready:
                 Text(camera.status == .unavailable ? "No camera in the Simulator — tap to simulate a take." : "Read it once. We'll cut the rest.")
                     .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                speedControl
                 recordButton { startRecording() }
                 PhotosPicker(selection: $pickedItem, matching: .videos) {
                     Label("Upload existing video", systemImage: "square.and.arrow.up")
@@ -91,8 +85,18 @@ struct RecordView: View {
                 }
                 .accessibilityIdentifier("record.upload")
             case .recording:
-                Text("Recording…").font(AppFont.body).foregroundStyle(Palette.gold)
-                recordButton(active: true) { stopRecording() }
+                Text("Recording…").font(AppFont.body).foregroundStyle(Palette.accent)
+                speedControl
+                HStack(spacing: Space.xl) {
+                    Button { promptRunning.toggle() } label: {
+                        Image(systemName: promptRunning ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18)).foregroundStyle(.white)
+                            .frame(width: 52, height: 52).background(Color.white.opacity(0.15)).clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.pausePrompt")
+                    recordButton(active: true) { stopRecording() }
+                }
             case .recorded:
                 Text("Choose the formats to cut into").font(AppFont.callout).foregroundStyle(.white.opacity(0.8))
                 formatPicker
@@ -105,8 +109,23 @@ struct RecordView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("record.makeClips")
             case .making:
-                ProgressView().tint(Palette.gold)
+                ProgressView().tint(Palette.accent)
                 Text("Cutting your clips…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+
+    private var speedControl: some View {
+        HStack(spacing: Space.sm) {
+            ForEach([("Slow", 0.6), ("Normal", 1.0), ("Fast", 1.5)], id: \.0) { label, val in
+                Button { speed = val } label: {
+                    Text(label).font(AppFont.caption)
+                        .foregroundStyle(speed == val ? Palette.ink : .white)
+                        .padding(.horizontal, Space.md).padding(.vertical, 7)
+                        .background(speed == val ? Palette.onInk : Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -115,11 +134,11 @@ struct RecordView: View {
 
     private func startRecording() {
         phase = .recording
-        scroll = true
+        restartToken += 1
+        promptRunning = true
         if camera.hasCamera && camera.status == .ready {
             camera.start()
         } else {
-            // Simulator / no-camera: simulate a short take.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
                 if phase == .recording { phase = .recorded }
             }
@@ -127,9 +146,12 @@ struct RecordView: View {
     }
 
     private func stopRecording() {
+        promptRunning = false
         if camera.hasCamera {
             camera.stop { url in
-                recordedURL = url
+                if let url, let data = try? Data(contentsOf: url) {
+                    footagePath = MediaStore.save(data, ext: "mov")
+                }
                 phase = .recorded
             }
         } else {
@@ -139,8 +161,14 @@ struct RecordView: View {
 
     private func makeClips() {
         phase = .making
+        // Keep the raw take in the Library so it can be re-cut later.
+        if let footagePath {
+            store.addFootage(path: footagePath, scriptId: script.id,
+                             title: script.title.isEmpty ? script.hook.text : script.title,
+                             seconds: script.targetSeconds)
+        }
         Task {
-            await store.makeClips(from: script, formats: Array(selectedFormats))
+            await store.makeClips(from: script, formats: Array(selectedFormats), footagePath: footagePath)
             dismiss()
             router.selectedTab = .library
         }
@@ -178,4 +206,48 @@ struct RecordView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("record.capture")
     }
+}
+
+// MARK: - Teleprompter (proportional, speed-adjustable, pausable auto-scroll)
+
+struct Teleprompter: View {
+    let script: Script
+    @Binding var running: Bool
+    @Binding var speed: Double
+    @Binding var restartToken: Int
+    @State private var offset: CGFloat = 0
+    @State private var contentH: CGFloat = 1
+    private let ticker = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        GeometryReader { geo in
+            let viewport = geo.size.height
+            let maxScroll = max(0, contentH - viewport * 0.5)
+            VStack(alignment: .leading, spacing: Space.lg) {
+                Text(script.hook.text).font(Typeface.display(28, .semibold)).foregroundStyle(.white)
+                Text(script.body).font(Typeface.body(23)).foregroundStyle(.white.opacity(0.94)).lineSpacing(6)
+                Text(script.cta).font(Typeface.body(23, .semibold)).foregroundStyle(Palette.accent)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: TeleHeightKey.self, value: g.size.height)
+            })
+            .offset(y: -offset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .clipped()
+            .onPreferenceChange(TeleHeightKey.self) { contentH = $0 }
+            .onChange(of: restartToken) { _, _ in offset = 0 }
+            .onReceive(ticker) { _ in
+                guard running, maxScroll > 0 else { return }
+                let pxPerSec = contentH / CGFloat(max(6, script.targetSeconds)) * CGFloat(speed)
+                offset = min(maxScroll, offset + pxPerSec / 60.0)
+            }
+        }
+        .mask(LinearGradient(colors: [.clear, .black, .black, .clear], startPoint: .top, endPoint: .bottom))
+    }
+}
+
+private struct TeleHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

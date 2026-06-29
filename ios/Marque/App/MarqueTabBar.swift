@@ -51,8 +51,12 @@ struct MarqueTabBar: View {
     private var frost: some View {
         ZStack {
             Rectangle().fill(.ultraThinMaterial)
-            Rectangle().fill(Color.white.opacity(0.55))               // milky fill
-            LinearGradient(colors: [Color.white.opacity(0.5), .clear], // top sheen
+            Rectangle().fill(Color.white.opacity(0.5))                  // milky legibility fill
+            RadialGradient(colors: [Color.white.opacity(0.75), .clear], // top-left specular
+                           center: .topLeading, startRadius: 0, endRadius: 90)
+            RadialGradient(colors: [Color.white.opacity(0.4), .clear],  // bottom-right hotspot
+                           center: .bottomTrailing, startRadius: 0, endRadius: 70)
+            LinearGradient(colors: [Color.white.opacity(0.55), .clear], // top sheen
                            startPoint: .top, endPoint: .bottom)
                 .frame(maxHeight: .infinity, alignment: .top)
         }
