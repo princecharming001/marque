@@ -22,6 +22,7 @@ struct ScriptReaderView: View {
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                     }.buttonStyle(.plain)
+                    .accessibilityIdentifier("script.hookButton")
                     HStack(spacing: Space.sm) {
                         Chip(text: live.hook.signal.label)
                         ScoreBadge(score: live.hook.strength)
@@ -64,6 +65,7 @@ struct ScriptReaderView: View {
                                     steering = true
                                     Task { await store.steer(live, instruction: label); steering = false }
                                 } label: { Chip(text: label) }.buttonStyle(.plain)
+                                .accessibilityIdentifier("script.steer")
                             }
                         }
                     }
@@ -110,12 +112,19 @@ struct HookLabSheet: View {
                         ProgressView().tint(Palette.gold).frame(maxWidth: .infinity).padding()
                     } else {
                         ForEach(hooks) { h in
-                            VStack(alignment: .leading, spacing: Space.sm) {
-                                Text(h.text).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                HStack { Chip(text: h.signal.label); Spacer(); ScoreBadge(score: h.strength) }
+                            Button {
+                                store.setHook(h, for: script.id); dismiss()
+                            } label: {
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    Text(h.text).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .multilineTextAlignment(.leading)
+                                    HStack { Chip(text: h.signal.label); Spacer(); ScoreBadge(score: h.strength) }
+                                }
+                                .marqueCard()
                             }
-                            .marqueCard()
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("hooklab.pickHook")
                         }
                     }
                 }

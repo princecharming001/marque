@@ -34,3 +34,21 @@ name: Marque — extra screens (assumes onboarded)
 - tapOn:
     id: "studio.pillar.Lessons"
 - assertVisible: "Your pillars"
+# Hook Lab (pick a hook) + steer
+- tapOn:
+    id: "studio.scriptRow"
+- assertVisible: "Shot plan"
+- tapOn:
+    id: "script.hookButton"
+- assertVisible: "Pick your hook"
+- tapOn:
+    id: "hooklab.pickHook"
+- assertVisible: "Shot plan"
+- scrollUntilVisible:
+    element:
+      id: "script.steer"
+    direction: DOWN
+    timeout: 8000
+- tapOn:
+    id: "script.steer"
+- assertVisible: "Steer"

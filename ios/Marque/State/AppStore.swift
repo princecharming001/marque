@@ -86,6 +86,12 @@ final class AppStore {
         save()
     }
 
+    func setHook(_ hook: Hook, for scriptId: UUID) {
+        guard let idx = scripts.firstIndex(where: { $0.id == scriptId }) else { return }
+        scripts[idx].hook = hook
+        save()
+    }
+
     func swapFormat(_ script: Script, to formatId: String) {
         guard let idx = scripts.firstIndex(where: { $0.id == script.id }) else { return }
         let f = Catalog.format(formatId)
