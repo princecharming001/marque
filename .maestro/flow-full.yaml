@@ -37,10 +37,10 @@ name: Marque — full core loop
 - assertVisible: "Connect your page"
 - tapOn: "Skip for now"
 
-# AHA — AI generated the first scripts (live Claude can take longer)
+# AHA — AI generated the first scripts (live Claude/Opus writes 3 rich scripts; allow time)
 - extendedWaitUntil:
     visible: "Enter Marque"
-    timeout: 45000
+    timeout: 90000
 - takeScreenshot: /Users/home/Marque/.shots/live-aha
 - tapOn:
     id: "onboard.finish"
@@ -91,7 +91,7 @@ name: Marque — full core loop
 - tapOn: "Calendar"
 - takeScreenshot: /Users/home/Marque/.shots/after-calendar-tap
 - extendedWaitUntil:
-    visible: "Your week at a glance"
+    visible: "Schedule a clip"
     timeout: 6000
 - tapOn: "Coach"
 - extendedWaitUntil:

@@ -22,21 +22,28 @@ name: Marque — extra screens (assumes onboarded)
 - tapOn:
     id: "calendar.addClip"
 - assertVisible: "Pick a clip"
+- scrollUntilVisible:
+    element:
+      id: "schedule.pickClip"
+    direction: DOWN
+    timeout: 8000
 - tapOn:
     id: "schedule.pickClip"
 - extendedWaitUntil:
-    visible: "This week"
+    visible: "Add another"
     timeout: 6000
 - tapOn: "Today"
 - assertVisible: "Next up"
 # Studio pillar regenerate (taps a pillar node -> triggers generation, same path as the AHA)
 - tapOn: "Studio"
 - tapOn:
-    id: "studio.pillar.Lessons"
+    id: "studio.pillar.Myth-busting"
 - assertVisible: "Your pillars"
 # Hook Lab (pick a hook) + steer
 - tapOn:
     id: "studio.scriptRow"
+- tapOn:
+    id: "studio.openScript"
 - assertVisible: "Shot plan"
 - tapOn:
     id: "script.hookButton"

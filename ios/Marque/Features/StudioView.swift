@@ -29,7 +29,6 @@ struct StudioView: View {
                                         generatingPillar = p.id
                                         Task { await store.generateScripts(for: p); generatingPillar = nil }
                                     }
-                                    .accessibilityIdentifier("studio.pillar.\(p.name)")
                                 }
                             }
                             .padding(.horizontal, Space.screenH)
@@ -51,7 +50,7 @@ struct StudioView: View {
                                        message: "Tap a pillar above to generate your first batch.")
                     } else {
                         ForEach(store.scripts) { s in
-                            ScriptCard(script: s).accessibilityIdentifier("studio.scriptRow")
+                            ScriptCard(script: s)
                         }
                     }
                 }
@@ -97,6 +96,7 @@ struct PillarCard: View {
             }
             .buttonStyle(PressableStyle())
             .disabled(generating)
+            .accessibilityIdentifier("studio.pillar.\(pillar.name)")
         }
         .padding(Space.md)
         .frame(width: 232, height: 158, alignment: .topLeading)
@@ -143,6 +143,7 @@ struct ScriptCard: View {
                 }
             }
             .buttonStyle(PressableStyle())
+            .accessibilityIdentifier("studio.scriptRow")
 
             if expanded {
                 VStack(alignment: .leading, spacing: Space.md) {

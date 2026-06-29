@@ -197,7 +197,9 @@ private struct StepScaffold<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            Text(question).font(Typeface.display(28, .semibold)).foregroundStyle(Palette.textPrimary)
+            // maxapp: onboarding step questions are sans-bold (serif is reserved for the
+            // hero + the "your scripts are ready" reveal).
+            Text(question).font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if let note { Text(note).font(AppFont.body).foregroundStyle(Palette.textSecondary) }
             content
