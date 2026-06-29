@@ -32,11 +32,8 @@
 		<string>Inter-500.ttf</string>
 		<string>Inter-600.ttf</string>
 		<string>Inter-700.ttf</string>
-		<string>Fraunces-400.ttf</string>
-		<string>Fraunces-400i.ttf</string>
-		<string>Fraunces-500.ttf</string>
-		<string>Fraunces-600.ttf</string>
-		<string>Fraunces-700.ttf</string>
+		<string>PlayfairDisplay.ttf</string>
+		<string>PlayfairDisplay-Italic.ttf</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>

@@ -9,6 +9,8 @@ final class AppStore {
     var pillars: [Pillar] = []
     var scripts: [Script] = []
     var clips: [Clip] = []
+    var footage: [Footage] = []          // filmed-but-undecided takes (Library "Footage")
+    var media: [MediaAsset] = []         // personal media corpus the AI references
     var schedule: [ScheduledPost] = []
     var trends: [TrendItem] = []
     var teardowns: [TeardownCard] = []
@@ -18,6 +20,7 @@ final class AppStore {
     // Transient
     var isGenerating = false
     var showCelebration = false
+    var coaching = ""                    // this-week coaching line (interpretInsights)
 
     // Adapters — live Claude when an Anthropic key is present, deterministic mock otherwise.
     // Computed so pasting a key in Settings takes effect without relaunch.
@@ -45,25 +48,35 @@ final class AppStore {
 
     // MARK: Onboarding
 
-    /// Derive starter pillars from the brand once analyzed.
+    /// A short, niche-aware fallback pillar set (used on the "skip" path). The richer set
+    /// — with each pillar's angle + example topics — comes from the LLM via analyzePage().
     func derivePillars() {
-        let names = brand.topThemes.isEmpty
-            ? ["Lessons", "Behind the scenes", "Hot takes", "How-to"]
-            : brand.topThemes
-        pillars = names.prefix(5).enumerated().map { i, n in
-            Pillar(name: n, weight: 1.0 / Double(min(5, names.count)),
-                   colorHex: Catalog.pillarColors[i % Catalog.pillarColors.count])
+        let niche = brand.niche.isEmpty ? "your field" : brand.niche
+        let specs: [(String, String)] = [
+            ("Teach the fundamentals", "Lessons that make your audience better at \(niche)."),
+            ("Myth-busting", "Contrarian takes that fix what people get wrong about \(niche)."),
+            ("Behind the scenes", "The real, unpolished story of your work."),
+            ("Hot takes", "Sharp opinions that start conversations in \(niche)."),
+            ("Proof & results", "Receipts: transformations and case studies in \(niche)."),
+        ]
+        let colors = Catalog.pillarColors
+        pillars = specs.enumerated().map { i, s in
+            Pillar(name: s.0, summary: s.1, weight: 0.2, colorHex: colors[i % colors.count])
         }
+        brand.topThemes = pillars.map { $0.name }
     }
 
+    /// "Analyze my page" — runs real inference to design pillars tailored to the creator.
     func analyzePage() async {
-        // Mock Brand Audit from a connected page.
-        try? await Task.sleep(nanoseconds: 1_100_000_000)
-        if brand.topThemes.isEmpty {
-            brand.topThemes = ["Lessons learned", "Behind the scenes", "Hot takes", "Quick how-to"]
-        }
+        try? await Task.sleep(nanoseconds: 600_000_000)   // brief "reading your page"
         brand.analyzed = true
-        derivePillars()
+        let derived = await llm.generatePillars(brand: brand)
+        if !derived.isEmpty {
+            pillars = derived
+            brand.topThemes = derived.map { $0.name }
+        } else if pillars.isEmpty {
+            derivePillars()
+        }
         save()
     }
 
@@ -75,9 +88,22 @@ final class AppStore {
 
     // MARK: Scripts
 
+    /// A compact summary of the personal-media corpus, injected so the AI plans shots that
+    /// reuse footage the creator already has.
+    var mediaContext: String {
+        guard !media.isEmpty else { return "" }
+        let byKind = Dictionary(grouping: media, by: { $0.kind })
+        let counts = byKind
+            .sorted { $0.value.count > $1.value.count }
+            .map { "\($0.value.count) \($0.key.label.lowercased())" }
+            .joined(separator: ", ")
+        let notes = media.compactMap { $0.note.isEmpty ? nil : $0.note }.prefix(6)
+        return notes.isEmpty ? counts : "\(counts) — tagged: \(notes.joined(separator: ", "))"
+    }
+
     func generateScripts(for pillar: Pillar, count: Int = 3) async {
         isGenerating = true
-        let new = await llm.generateScripts(brand: brand, pillar: pillar, count: count)
+        let new = await llm.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext)
         scripts.insert(contentsOf: new, at: 0)
         isGenerating = false
         save()
@@ -108,14 +134,38 @@ final class AppStore {
         save()
     }
 
+    // MARK: Footage + media corpus
+
+    /// Persist a filmed (or imported) take into the Library "Footage" tab.
+    func addFootage(path: String, scriptId: UUID? = nil, title: String = "", seconds: Int = 0) {
+        footage.insert(Footage(localPath: path, scriptId: scriptId, title: title, seconds: seconds), at: 0)
+        save()
+    }
+
+    func addMedia(_ assets: [MediaAsset]) {
+        media.insert(contentsOf: assets, at: 0)
+        save()
+    }
+
+    func removeMedia(_ asset: MediaAsset) {
+        media.removeAll { $0.id == asset.id }
+        save()
+    }
+
     // MARK: Clips
 
-    func makeClips(from script: Script, formats: [String]) async {
+    func makeClips(from script: Script, formats: [String], footagePath: String? = nil) async {
         let made = await clipEngine.makeClips(from: script, formats: formats)
-        clips.insert(contentsOf: made, at: 0)
+        let tagged = made.map { c -> Clip in
+            var c = c
+            c.title = script.title.isEmpty ? script.hook.text : script.title
+            c.localVideoPath = footagePath
+            return c
+        }
+        clips.insert(contentsOf: tagged, at: 0)
         save()
         // render each
-        for c in made {
+        for c in tagged {
             let status = await clipEngine.render(clipId: c.id)
             if let idx = clips.firstIndex(where: { $0.id == c.id }) {
                 clips[idx].status = status
@@ -128,10 +178,21 @@ final class AppStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
 
-    // MARK: Scheduling
+    // MARK: Scheduling / publishing
 
-    func scheduleClip(_ clip: Clip, on date: Date, platforms: [SocialPlatform]) async {
-        let post = ScheduledPost(clipId: clip.id, caption: clip.caption, platforms: platforms, date: date)
+    func scheduleClip(_ clip: Clip, on date: Date, platforms: [SocialPlatform],
+                      autoCaptions: Bool = true, caption: String? = nil) async {
+        var clip = clip
+        // Burn captions if requested and not already generated.
+        if autoCaptions && clip.captionLines.isEmpty,
+           let script = scripts.first(where: { $0.id == clip.scriptId }) {
+            clip.captionLines = await llm.captions(for: script)
+            clip.captioned = true
+        }
+        if let idx = clips.firstIndex(where: { $0.id == clip.id }) { clips[idx] = clip }
+
+        let post = ScheduledPost(clipId: clip.id, caption: caption ?? clip.caption,
+                                 platforms: platforms, date: date, autoCaptions: autoCaptions)
         let ok = await publisher.schedule(post)
         if ok {
             schedule.append(post)
@@ -140,7 +201,22 @@ final class AppStore {
         }
     }
 
-    // MARK: Coach / trends
+    /// Edit an existing scheduled post (time / platforms / caption / captions toggle).
+    func updateScheduledPost(_ post: ScheduledPost) {
+        guard let idx = schedule.firstIndex(where: { $0.id == post.id }) else { return }
+        schedule[idx] = post
+        save()
+    }
+
+    func deleteScheduledPost(_ post: ScheduledPost) {
+        schedule.removeAll { $0.id == post.id }
+        if let idx = clips.firstIndex(where: { $0.id == post.clipId }), clips[idx].status == .scheduled {
+            clips[idx].status = .ready
+        }
+        save()
+    }
+
+    // MARK: Coach / trends / insights
 
     func loadTrends() async {
         guard trends.isEmpty else { return }
@@ -153,20 +229,51 @@ final class AppStore {
         save()
     }
 
-    // MARK: Today directive
+    func loadInsights() async {
+        guard !clips.isEmpty else { return }
+        let summary = "\(activeClipCount) clips out this week, top predicted score \(bestClip?.predictedScore ?? 0), about \(weekViews) projected views and +\(weekFollows) follows."
+        coaching = await llm.interpretInsights(brand: brand, summary: summary)
+    }
 
-    // Weekly command-center metric (queued toward a weekly goal).
+    // MARK: Today directive + weekly metrics
+
     var weekGoal: Int { 5 }
     var weekDone: Int { schedule.count }
     var weekProgress: Double { min(1, Double(weekDone) / Double(weekGoal)) }
+
+    /// Clips that are scheduled or posted (the ones contributing reach this week).
+    var activeClipCount: Int { clips.filter { $0.status == .scheduled || $0.status == .posted }.count }
+    var bestClip: Clip? { clips.max { $0.predictedScore < $1.predictedScore } }
+
+    // Weekly performance. Uses real ScheduledPost.metrics when an Insights provider has
+    // populated them; otherwise projects from predicted scores so the card is never empty.
+    var weekViews: Int {
+        let real = schedule.compactMap { $0.metrics?.views }.reduce(0, +)
+        if real > 0 { return real }
+        return clips.filter { $0.status == .scheduled || $0.status == .posted }
+            .reduce(0) { $0 + $1.predictedScore * 120 }
+    }
+    var weekFollows: Int {
+        let real = schedule.compactMap { $0.metrics?.followsGained }.reduce(0, +)
+        if real > 0 { return real }
+        return clips.filter { $0.status == .scheduled || $0.status == .posted }
+            .reduce(0) { $0 + max(0, $1.predictedScore - 60) }
+    }
+    /// 7-point sparkline (normalized 0…1) seeded by recent clip scores — stable, not random.
+    var weekTrend: [Double] {
+        let scores = clips.prefix(7).map { Double($0.predictedScore) }.reversed()
+        guard !scores.isEmpty else { return [0.30, 0.42, 0.36, 0.52, 0.6, 0.58, 0.74] }
+        let maxV = max(1, scores.max() ?? 1)
+        return scores.map { $0 / maxV }
+    }
 
     var todayDirective: (title: String, subtitle: String) {
         if !hasOnboarded { return ("Let's set up your brand", "A couple of questions to learn your voice.") }
         let ready = scripts.filter { !$0.approved }.count
         let rendering = clips.contains { $0.status == .rendering }
         if rendering { return ("Your clips are cooking", "We'll nudge you the moment they're ready.") }
-        if ready > 0 { return ("You've got \(ready) scripts ready", "Record when you've got a few minutes.") }
         if clips.contains(where: { $0.status == .ready }) { return ("Clips ready to schedule", "Drop them onto this week.") }
+        if ready > 0 { return ("You've got \(ready) scripts ready", "Record when you've got a few minutes.") }
         return ("Film once. Post all week.", "Generate this week's scripts in Studio.")
     }
 
@@ -174,13 +281,15 @@ final class AppStore {
 
     private struct Snapshot: Codable {
         var brand: BrandGraph; var pillars: [Pillar]; var scripts: [Script]
-        var clips: [Clip]; var schedule: [ScheduledPost]; var teardowns: [TeardownCard]
+        var clips: [Clip]; var footage: [Footage]; var media: [MediaAsset]
+        var schedule: [ScheduledPost]; var teardowns: [TeardownCard]
         var hasOnboarded: Bool; var streak: Int
     }
 
     func save() {
         let snap = Snapshot(brand: brand, pillars: pillars, scripts: scripts, clips: clips,
-                            schedule: schedule, teardowns: teardowns, hasOnboarded: hasOnboarded, streak: streak)
+                            footage: footage, media: media, schedule: schedule, teardowns: teardowns,
+                            hasOnboarded: hasOnboarded, streak: streak)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -192,14 +301,15 @@ final class AppStore {
         guard let data = UserDefaults.standard.data(forKey: saveKey),
               let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
         brand = snap.brand; pillars = snap.pillars; scripts = snap.scripts
-        clips = snap.clips; schedule = snap.schedule; teardowns = snap.teardowns
+        clips = snap.clips; footage = snap.footage; media = snap.media
+        schedule = snap.schedule; teardowns = snap.teardowns
         hasOnboarded = snap.hasOnboarded; streak = snap.streak
     }
 
     /// For Maestro/dev: wipe everything back to first-run.
     func resetAll() {
         UserDefaults.standard.removeObject(forKey: saveKey)
-        brand = BrandGraph(); pillars = []; scripts = []; clips = []
+        brand = BrandGraph(); pillars = []; scripts = []; clips = []; footage = []; media = []
         schedule = []; trends = []; teardowns = []; hasOnboarded = false; streak = 0
     }
 }

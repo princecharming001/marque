@@ -34,7 +34,10 @@ struct BrandGraph: Codable, Hashable {
 struct Pillar: Codable, Hashable, Identifiable {
     var id = UUID()
     var name: String
-    var weight: Double          // share of the content mix 0…1
+    var summary: String = ""            // one-line what-this-pillar-is
+    var angle: String = ""             // the creator's specific take / why it's theirs
+    var exampleTopics: [String] = []   // 3 concrete video ideas
+    var weight: Double                 // share of the content mix 0…1
     var colorHex: UInt
 }
 
@@ -76,6 +79,8 @@ struct VideoFormat: Codable, Hashable, Identifiable {
 struct Script: Codable, Hashable, Identifiable {
     var id = UUID()
     var pillarName: String
+    var title: String = ""      // short human title (≤6 words) for the card heading
+    var summary: String = ""    // one-line "what this video is about"
     var formatId: String
     var hook: Hook
     var altHooks: [Hook]
@@ -95,10 +100,16 @@ struct Clip: Codable, Hashable, Identifiable {
     var scriptId: UUID
     var formatId: String
     var formatName: String
-    var caption: String
+    var title: String = ""              // mirrors the script title for display
+    var caption: String                 // social caption text
+    var captionLines: [String] = []     // burned-in / auto-caption lines (timed display)
     var predictedScore: Int
     var status: ClipStatus
     var seconds: Int
+    var localVideoPath: String? = nil   // captured/rendered file in the app container
+    var remoteURL: String? = nil        // public R2/Stream URL once rendered server-side
+    var thumbnailPath: String? = nil    // poster frame in the app container
+    var captioned: Bool = false         // whether auto-captions were burned in
     var createdAt: Date = Date()
 }
 
@@ -108,13 +119,76 @@ enum SocialPlatform: String, CaseIterable, Codable, Identifiable {
     var label: String { self == .instagram ? "Instagram" : "TikTok" }
 }
 
+struct PostMetrics: Codable, Hashable {
+    var views: Int = 0
+    var likes: Int = 0
+    var comments: Int = 0
+    var shares: Int = 0
+    var followsGained: Int = 0
+    var capturedAt: Date = Date()
+    var engagementRate: Double {        // (likes+comments+shares) / views
+        views > 0 ? Double(likes + comments + shares) / Double(views) : 0
+    }
+}
+
 struct ScheduledPost: Codable, Hashable, Identifiable {
     var id = UUID()
     var clipId: UUID
     var caption: String
     var platforms: [SocialPlatform]
     var date: Date
+    var autoCaptions: Bool = true       // burn captions before publishing
     var posted: Bool = false
+    var metrics: PostMetrics? = nil     // populated post-publish from Insights
+}
+
+// MARK: - Personal media corpus (the AI references this when writing/cutting reels)
+
+enum MediaKind: String, Codable, CaseIterable, Identifiable {
+    case selfie, bRoll, clip, screenshot, other
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .selfie: return "You"
+        case .bRoll: return "B-roll"
+        case .clip: return "Clip"
+        case .screenshot: return "Screenshot"
+        case .other: return "Other"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .selfie: return "person.fill"
+        case .bRoll: return "film"
+        case .clip: return "play.rectangle.fill"
+        case .screenshot: return "rectangle.on.rectangle"
+        case .other: return "photo"
+        }
+    }
+}
+
+/// A piece of the creator's personal media library, imported in bulk so the AI can
+/// reference real footage/photos of them when planning future reels.
+struct MediaAsset: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var localPath: String               // file in the app container
+    var kind: MediaKind = .other
+    var note: String = ""               // user/AI tag: "gym", "office desk", "on stage"
+    var isVideo: Bool = false
+    var thumbnailPath: String? = nil
+    var addedAt: Date = Date()
+}
+
+/// A take the creator filmed (or imported) but hasn't decided what to do with yet.
+/// Lives in the Library "Footage" tab; you make clips from it later.
+struct Footage: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var localPath: String
+    var scriptId: UUID? = nil           // set if it was filmed against a script
+    var title: String = ""
+    var seconds: Int = 0
+    var thumbnailPath: String? = nil
+    var addedAt: Date = Date()
 }
 
 struct TrendItem: Codable, Hashable, Identifiable {
@@ -150,5 +224,6 @@ enum Catalog {
         formats.first { $0.id == id } ?? formats[0]
     }
 
-    static let pillarColors: [UInt] = [0xC9A227, 0x6E7F6A, 0x9A6A55, 0x5E6B86, 0x8A6FA0, 0xB5852A]
+    // Calm, distinct per-pillar hues (used only as small accents + the active-card gradient).
+    static let pillarColors: [UInt] = [0x2C6BED, 0x2F9E60, 0x9A6A55, 0x8A6FA0, 0xB5791C, 0x4C6E91]
 }

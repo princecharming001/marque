@@ -5,10 +5,13 @@ import Foundation
 // loop runs without any API keys. Swapping to live = a new conformer + a key.
 
 protocol LLMRouting {
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int) async -> [Script]
+    func generatePillars(brand: BrandGraph) async -> [Pillar]
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String) async -> [Script]
     func hookLab(brand: BrandGraph, topic: String) async -> [Hook]
     func steer(script: Script, brand: BrandGraph, instruction: String) async -> Script
+    func captions(for script: Script) async -> [String]
     func teardown(for clip: Clip) async -> TeardownCard
+    func interpretInsights(brand: BrandGraph, summary: String) async -> String
 }
 
 protocol ClipEngineProtocol {
@@ -35,8 +38,10 @@ struct MockLLMRouter: LLMRouting {
     }
 
     private func topic(_ brand: BrandGraph, _ pillar: Pillar) -> String {
+        // The niche is the subject; the pillar supplies the angle, not the topic noun.
+        if !brand.niche.isEmpty { return brand.niche.lowercased() }
         let t = pillar.name.lowercased()
-        return t.isEmpty ? (brand.niche.isEmpty ? "your craft" : brand.niche.lowercased()) : t
+        return t.isEmpty ? "your craft" : t
     }
 
     private func hookText(_ signal: HookSignal, topic: String, brand: BrandGraph) -> String {
@@ -79,7 +84,7 @@ struct MockLLMRouter: LLMRouting {
         .sorted { $0.strength > $1.strength }
     }
 
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int) async -> [Script] {
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String) async -> [Script] {
         try? await Task.sleep(nanoseconds: 900_000_000)
         let top = topic(brand, pillar)
         let formats = Catalog.formats
@@ -94,10 +99,15 @@ struct MockLLMRouter: LLMRouting {
 
             let body = scriptBody(brand: brand, pillar: pillar, format: fmt, topic: top)
             let cta = ctaLine(for: brand.goal)
-            let shots = shotPlan(for: fmt)
+            var shots = shotPlan(for: fmt)
+            if !mediaContext.isEmpty { shots.append("Reuse your reference footage — \(mediaContext)") }
             let score = min(96, (hooks.first?.strength ?? 70) - 4 + Int(seed("score\(i)") % 7))
+            let title = pillar.exampleTopics.isEmpty
+                ? "\(fmt.name): \(top)"
+                : pillar.exampleTopics[i % pillar.exampleTopics.count]
+            let summary = "A \(fmt.targetSeconds)s \(fmt.name.lowercased()) — \(pillar.summary.isEmpty ? "on \(top)" : pillar.summary.lowercased())"
 
-            return Script(pillarName: pillar.name, formatId: fmt.id,
+            return Script(pillarName: pillar.name, title: title, summary: summary, formatId: fmt.id,
                           hook: hooks[0], altHooks: Array(hooks.dropFirst()),
                           body: body, cta: cta, shotPlan: shots,
                           targetSeconds: fmt.targetSeconds, predictedScore: score)
@@ -155,6 +165,77 @@ struct MockLLMRouter: LLMRouting {
             headline: "This one beat \(lift)% of your posts",
             detail: "The hook landed in the first 2 seconds and the format kept a visual change every few seconds. Make two more like it.",
             liftPercent: lift)
+    }
+
+    // Niche-specific content pillars derived from the creator's actual brand (NOT a static list).
+    func generatePillars(brand: BrandGraph) async -> [Pillar] {
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        let niche = brand.niche.isEmpty ? "your field" : brand.niche
+        let aud = brand.audience.isEmpty ? "your audience" : brand.audience.lowercased()
+        let known = brand.knownFor.isEmpty ? niche : brand.knownFor
+        let what = brand.whatYouDo.isEmpty ? "what you do" : brand.whatYouDo.lowercased()
+
+        var seeds: [(name: String, summary: String, angle: String, topics: [String])] = [
+            ("Teach the fundamentals",
+             "Bite-size lessons that make \(aud) better at \(niche).",
+             "You break \(known) into steps \(aud) can copy today — no fluff, no gatekeeping.",
+             ["The \(niche) mistake most beginners make",
+              "A 60-second framework for \(known.lowercased())",
+              "What I wish I knew about \(niche) on day one"]),
+            ("Myth-busting",
+             "Contrarian takes that fix what \(aud) get wrong about \(niche).",
+             "You call out popular \(niche) advice that quietly backfires — and show what works instead.",
+             ["The \(niche) advice hurting \(aud) most",
+              "“Everyone says this about \(niche)” — why it's wrong",
+              "Stop doing this one thing in \(niche)"]),
+            ("Behind the scenes",
+             "The real, unpolished story of \(what).",
+             "You let \(aud) watch how the work actually happens — the messy middle, not the highlight reel.",
+             ["A day in the life of \(what)",
+              "The part of \(niche) nobody shows you",
+              "How I actually \(known.lowercased())"]),
+            ("Hot takes",
+             "Sharp opinions that start conversations in \(niche).",
+             "You stake a clear position \(aud) will want to share or argue with.",
+             ["My most controversial \(niche) opinion",
+              "An unpopular truth about \(niche)",
+              "Why most \(aud) are wrong about \(known.lowercased())"]),
+            ("Proof & results",
+             "Receipts: transformations, case studies and before/afters in \(niche).",
+             "You show concrete outcomes so \(aud) trust the method, not the talk.",
+             ["A before/after that proves \(known.lowercased()) works",
+              "The result that changed how I see \(niche)",
+              "Walk through a real \(niche) win, step by step"]),
+        ]
+        if brand.goal == .clients || brand.goal == .monetize { seeds.swapAt(0, 4) }
+        else if brand.goal == .authority { seeds.swapAt(0, 1) }
+
+        let colors = Catalog.pillarColors
+        return seeds.prefix(5).enumerated().map { i, s in
+            Pillar(name: s.name, summary: s.summary, angle: s.angle, exampleTopics: s.topics,
+                   weight: 1.0 / 5.0, colorHex: colors[i % colors.count])
+        }
+    }
+
+    // On-screen / burned-in caption lines (~5 words each) from the hook + body.
+    func captions(for script: Script) async -> [String] {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        let sentences = ([script.hook.text] +
+            script.body.split(whereSeparator: { ".!?".contains($0) })
+                .map { $0.trimmingCharacters(in: .whitespaces) })
+            .filter { !$0.isEmpty }
+        return sentences.flatMap { chunk -> [String] in
+            let words = chunk.split(separator: " ")
+            var lines: [String] = []; var cur: [Substring] = []
+            for w in words { cur.append(w); if cur.count >= 5 { lines.append(cur.joined(separator: " ")); cur = [] } }
+            if !cur.isEmpty { lines.append(cur.joined(separator: " ")) }
+            return lines
+        }
+    }
+
+    func interpretInsights(brand: BrandGraph, summary: String) async -> String {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return "Your contrarian hooks are outperforming. Lean into myth-busting this week, and make two more in whichever format spiked."
     }
 }
 

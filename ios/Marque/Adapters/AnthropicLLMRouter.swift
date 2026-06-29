@@ -50,10 +50,12 @@ struct AnthropicLLMRouter: LLMRouting {
 
     private struct HookDTO: Decodable { let text: String; let signal: String?; let strength: Int? }
     private struct ScriptDTO: Decodable {
+        let title: String?; let summary: String?
         let hook: String; let hookSignal: String?; let formatId: String?
         let body: String; let cta: String; let shotPlan: [String]?
         let targetSeconds: Int?; let predictedScore: Int?; let altHooks: [HookDTO]?
     }
+    private struct PillarDTO: Decodable { let name: String; let summary: String?; let angle: String?; let exampleTopics: [String]? }
     private struct TeardownDTO: Decodable { let headline: String; let detail: String; let liftPercent: Int? }
 
     private func signal(_ raw: String?) -> HookSignal {
@@ -71,7 +73,7 @@ struct AnthropicLLMRouter: LLMRouting {
         let fid = formatId(dto.formatId)
         let primary = Hook(text: dto.hook, signal: signal(dto.hookSignal),
                            strength: min(100, max(0, dto.predictedScore ?? 80)))
-        return Script(pillarName: pillar, formatId: fid,
+        return Script(pillarName: pillar, title: dto.title ?? "", summary: dto.summary ?? "", formatId: fid,
                       hook: primary, altHooks: (dto.altHooks ?? []).map(hook),
                       body: dto.body, cta: dto.cta,
                       shotPlan: dto.shotPlan ?? [], targetSeconds: dto.targetSeconds ?? Catalog.format(fid).targetSeconds,
@@ -96,29 +98,55 @@ struct AnthropicLLMRouter: LLMRouting {
     }
 
     private let scriptSchema = """
-    Each item: {"hook": str, "hookSignal": one of [stakes,authority,curiosity,patternInterrupt,specificity,contrarian,narrative,callOut], "formatId": one of the format ids, "body": str, "cta": str, "shotPlan": [str], "targetSeconds": int, "predictedScore": int 0-100, "altHooks": [{"text": str, "signal": str, "strength": int}]}
+    Each item: {"title": str (≤6 words, a human title for the video), "summary": str (one line — what the video is about), "hook": str, "hookSignal": one of [stakes,authority,curiosity,patternInterrupt,specificity,contrarian,narrative,callOut], "formatId": one of the format ids, "body": str, "cta": str, "shotPlan": [str], "targetSeconds": int, "predictedScore": int 0-100, "altHooks": [{"text": str, "signal": str, "strength": int}]}
     """
 
     // MARK: LLMRouting
 
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int) async -> [Script] {
-        let system = "You are Marque's script engine. Write short-form video scripts in the creator's EXACT voice — match their tone sliders, never use banned phrases. Hooks must land in the first 3 seconds. Reply with ONLY valid JSON, no prose, no code fences."
+    func generatePillars(brand: BrandGraph) async -> [Pillar] {
+        let system = "You are Marque's brand strategist. Design content pillars unique to THIS creator — specific to their niche, audience and what they're known for, never generic buckets. Reply with ONLY a JSON array, no prose."
         let user = """
         \(brandBlock(brand))
-        Content pillar: \(pillar.name)
+        Design 5 content pillars for this creator's short-form video. Each must be specific to them — reference their niche, audience and angle, not generic categories.
+        Return ONLY a JSON array. Each: {"name": str (2-4 words), "summary": str (one line — what the pillar is), "angle": str (this creator's specific take / why it's theirs), "exampleTopics": [str, str, str] (concrete video ideas)}
+        """
+        do {
+            let txt = try await call(model: opus, system: system, user: user, maxTokens: 1600)
+            guard let data = extractJSON(txt, array: true) else { throw URLError(.cannotParseResponse) }
+            let dtos = try JSONDecoder().decode([PillarDTO].self, from: data)
+            let colors = Catalog.pillarColors
+            let pillars = dtos.enumerated().map { i, d in
+                Pillar(name: d.name, summary: d.summary ?? "", angle: d.angle ?? "",
+                       exampleTopics: d.exampleTopics ?? [], weight: 1.0 / Double(max(1, dtos.count)),
+                       colorHex: colors[i % colors.count])
+            }
+            return pillars.isEmpty ? await fallback.generatePillars(brand: brand) : pillars
+        } catch {
+            return await fallback.generatePillars(brand: brand)
+        }
+    }
+
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String) async -> [Script] {
+        let system = "You are Marque's script engine. Write short-form video scripts in the creator's EXACT voice — match their tone sliders, never use banned phrases. Hooks must land in the first 3 seconds. Reply with ONLY valid JSON, no prose, no code fences."
+        let media = mediaContext.isEmpty ? "" : "\nReference footage the creator already has (suggest shots that reuse it where natural): \(mediaContext)"
+        let user = """
+        \(brandBlock(brand))
+        Content pillar: \(pillar.name) — \(pillar.summary)
+        The creator's angle on this pillar: \(pillar.angle)
+        Example directions: \(pillar.exampleTopics.joined(separator: "; "))\(media)
         Available formats (choose formatId from these):
         \(formatList)
 
-        Write \(count) scripts. Return ONLY a JSON array. \(scriptSchema)
+        Write \(count) scripts on this pillar, each a distinct angle/format. Give each a short human title and a one-line summary. Return ONLY a JSON array. \(scriptSchema)
         """
         do {
-            let txt = try await call(model: opus, system: system, user: user, maxTokens: 3000)
+            let txt = try await call(model: opus, system: system, user: user, maxTokens: 3500)
             guard let data = extractJSON(txt, array: true) else { throw URLError(.cannotParseResponse) }
             let dtos = try JSONDecoder().decode([ScriptDTO].self, from: data)
             let scripts = dtos.map { baseScript($0, pillar: pillar.name) }
-            return scripts.isEmpty ? await fallback.generateScripts(brand: brand, pillar: pillar, count: count) : scripts
+            return scripts.isEmpty ? await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext) : scripts
         } catch {
-            return await fallback.generateScripts(brand: brand, pillar: pillar, count: count)
+            return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext)
         }
     }
 
@@ -183,6 +211,31 @@ struct AnthropicLLMRouter: LLMRouting {
                                 liftPercent: min(100, max(0, dto.liftPercent ?? 30)))
         } catch {
             return await fallback.teardown(for: clip)
+        }
+    }
+
+    func captions(for script: Script) async -> [String] {
+        let system = "You turn a short-form script into punchy on-screen caption lines — ≤5 words each, covering all the spoken content in order. Reply with ONLY a JSON array of strings."
+        let user = "Hook: \(script.hook.text)\nBody: \(script.body)\nReturn ONLY a JSON array of caption lines."
+        do {
+            let txt = try await call(model: haiku, system: system, user: user, maxTokens: 800)
+            guard let data = extractJSON(txt, array: true) else { throw URLError(.cannotParseResponse) }
+            let lines = try JSONDecoder().decode([String].self, from: data)
+            return lines.isEmpty ? await fallback.captions(for: script) : lines
+        } catch {
+            return await fallback.captions(for: script)
+        }
+    }
+
+    func interpretInsights(brand: BrandGraph, summary: String) async -> String {
+        let system = "You are Marque's growth coach. In ONE or two tight sentences, name what's working and the single next move. No fluff, no lists, no preamble."
+        let user = "\(brandBlock(brand))\nThis week's performance: \(summary)\nGive one or two sentences of coaching."
+        do {
+            let txt = try await call(model: haiku, system: system, user: user, maxTokens: 250)
+            let trimmed = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? await fallback.interpretInsights(brand: brand, summary: summary) : trimmed
+        } catch {
+            return await fallback.interpretInsights(brand: brand, summary: summary)
         }
     }
 }

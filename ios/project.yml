@@ -42,8 +42,5 @@ targets:
           - Inter-500.ttf
           - Inter-600.ttf
           - Inter-700.ttf
-          - Fraunces-400.ttf
-          - Fraunces-400i.ttf
-          - Fraunces-500.ttf
-          - Fraunces-600.ttf
-          - Fraunces-700.ttf
+          - PlayfairDisplay.ttf
+          - PlayfairDisplay-Italic.ttf

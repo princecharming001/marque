@@ -9,22 +9,94 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
-// Slow diagonal highlight sweep on premium CTAs (maxapp signature).
+// Slow diagonal highlight sweep on premium CTAs (maxapp signature: ~90px streak rotated 18°,
+// quick sweep then a long pause).
 struct ShineSweep: View {
-    @State private var x: CGFloat = -1.2
+    @State private var x: CGFloat = -1.0
     var body: some View {
         GeometryReader { geo in
-            LinearGradient(colors: [.clear, .white.opacity(0.28), .clear],
+            LinearGradient(colors: [.clear, .white.opacity(0.18), .clear],
                            startPoint: .leading, endPoint: .trailing)
-                .frame(width: geo.size.width * 0.45)
-                .offset(x: x * geo.size.width)
+                .frame(width: 90)
+                .rotationEffect(.degrees(18))
+                .offset(x: x * (geo.size.width * 0.7 + 90))
                 .onAppear {
-                    withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: false).delay(0.6)) {
-                        x = 1.7
+                    withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: false).delay(2.0)) {
+                        x = 1.0
                     }
                 }
         }
         .allowsHitTesting(false)
+    }
+}
+
+// MARK: - LiquidGlass (maxapp's "Apple liquid glass" surface)
+// Native blur material + corner speculars + top sheen + luminous top rim + cool float shadow.
+// Reads as glass ONLY over contrasty content — use on the tab bar, the center FAB, controls
+// over media/camera, and media-hero overlays. NOT on flat white cards (rejected on light bg).
+
+struct LiquidGlassFill: View {
+    var radius: CGFloat = 24
+    var tint: Color? = nil
+    var sheen: Double = 1
+    var corners: Bool = true
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            if let tint { tint.opacity(0.45) }
+            Color.white.opacity(0.10)                       // milky lift
+            if corners {
+                RadialGradient(colors: [.white.opacity(0.9 * sheen), .white.opacity(0.12 * sheen), .clear],
+                               center: .topLeading, startRadius: 0, endRadius: 130)
+                RadialGradient(colors: [.white.opacity(0.5 * sheen), .clear],
+                               center: .bottomTrailing, startRadius: 0, endRadius: 90)
+            }
+            LinearGradient(colors: [.white.opacity(0.55 * sheen), .white.opacity(0.06 * sheen), .clear],
+                           startPoint: .top, endPoint: .bottom)
+            VStack(spacing: 0) {                            // luminous top rim
+                Rectangle().fill(Color.white.opacity(0.95)).frame(height: 1.5)
+                Spacer(minLength: 0)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .allowsHitTesting(false)
+    }
+}
+
+struct LiquidGlass<Content: View>: View {
+    var radius: CGFloat = 24
+    var tint: Color? = nil
+    var sheen: Double = 1
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .background(LiquidGlassFill(radius: radius, tint: tint, sheen: sheen))
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.62), lineWidth: 1))
+            .shadow(color: Palette.shadowCool.opacity(0.22), radius: 26, x: 0, y: 14)
+    }
+}
+
+// Frosted secondary action (maxapp glass variant) — for use over media/contrasty surfaces.
+struct GlassButton: View {
+    let title: String
+    var systemImage: String? = nil
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Space.sm) {
+                if let s = systemImage { Image(systemName: s).font(.system(size: 15, weight: .semibold)) }
+                Text(title).font(AppFont.headline)
+            }
+            .foregroundStyle(Palette.textPrimary)
+            .frame(maxWidth: .infinity).frame(height: 54)
+            .background(LiquidGlassFill(radius: Radius.md, corners: false))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+        }
+        .buttonStyle(PressableStyle(dim: 0.7))
     }
 }
 
@@ -74,8 +146,37 @@ struct SectionTitle: View {
     let text: String
     var body: some View {
         Text(text.uppercased())
-            .font(AppFont.micro).tracking(0.8)
+            .font(AppFont.micro).tracking(Track.label)
             .foregroundStyle(Palette.textTertiary)
+    }
+}
+
+/// Big editorial screen title — lowercase Playfair, maxapp's signature move.
+struct ScreenTitle: View {
+    let text: String
+    var size: CGFloat = 30
+    var body: some View {
+        Text(text)
+            .font(Typeface.display(size, .semibold))
+            .tracking(Track.title)
+            .textCase(.lowercase)
+            .foregroundStyle(Palette.textPrimary)
+    }
+}
+
+/// UPPERCASE tracked micro-label with an optional 3px accent bar (maxapp section eyebrow).
+struct SectionLabel: View {
+    let text: String
+    var accent: Color? = nil
+    var body: some View {
+        HStack(spacing: 6) {
+            if let accent {
+                RoundedRectangle(cornerRadius: 1).fill(accent).frame(width: 3, height: 11)
+            }
+            Text(text.uppercased())
+                .font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(Palette.textTertiary)
+        }
     }
 }
 
@@ -198,6 +299,57 @@ struct ProgressRing: View {
         }
         .frame(width: size, height: size)
         .onAppear { withAnimation(.easeOut(duration: 0.9)) { animated = true } }
+    }
+}
+
+// Compact 1.2k / 3.4M number formatting for stat heroes.
+func compactNumber(_ n: Int) -> String {
+    if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+    if n >= 1_000 { return String(format: "%.1fk", Double(n) / 1_000) }
+    return "\(n)"
+}
+
+// Lightweight area sparkline for the Today momentum card.
+struct Sparkline: View {
+    let values: [Double]
+    var color: Color = Palette.accent
+    @State private var on = false
+    var body: some View {
+        GeometryReader { geo in
+            let pts = points(in: geo.size)
+            ZStack {
+                if pts.count > 1 {
+                    Path { p in
+                        p.move(to: CGPoint(x: pts[0].x, y: geo.size.height))
+                        pts.forEach { p.addLine(to: $0) }
+                        p.addLine(to: CGPoint(x: pts[pts.count - 1].x, y: geo.size.height))
+                        p.closeSubpath()
+                    }
+                    .fill(LinearGradient(colors: [color.opacity(0.18), color.opacity(0.0)],
+                                         startPoint: .top, endPoint: .bottom))
+                    Path { p in
+                        p.move(to: pts[0]); pts.dropFirst().forEach { p.addLine(to: $0) }
+                    }
+                    .trim(from: 0, to: on ? 1 : 0)
+                    .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                    if on, let last = pts.last {
+                        Circle().fill(color).frame(width: 5, height: 5).position(last)
+                    }
+                }
+            }
+        }
+        .onAppear { withAnimation(.easeOut(duration: 0.8)) { on = true } }
+    }
+    private func points(in size: CGSize) -> [CGPoint] {
+        guard values.count > 1 else { return [] }
+        let maxV = values.max() ?? 1
+        let minV = values.min() ?? 0
+        let range = max(maxV - minV, 0.0001)
+        let stepX = size.width / CGFloat(values.count - 1)
+        return values.enumerated().map { i, v in
+            CGPoint(x: CGFloat(i) * stepX,
+                    y: size.height - CGFloat((v - minV) / range) * size.height)
+        }
     }
 }
 

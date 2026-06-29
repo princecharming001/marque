@@ -1,0 +1,10 @@
+appId: com.marque.app
+---
+- launchApp
+- takeScreenshot: /Users/home/Marque/.shots/final-today
+- tapOn:
+    id: "today.settings"
+- tapOn:
+    id: "settings.upgrade"
+- assertVisible: "Marque Pro"
+- takeScreenshot: /Users/home/Marque/.shots/final-paywall
