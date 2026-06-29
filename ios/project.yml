@@ -13,7 +13,6 @@ settings:
     CODE_SIGNING_ALLOWED: "NO"
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGN_IDENTITY: ""
-    GENERATE_INFOPLIST_FILE: "YES"
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
 targets:
   Marque:
@@ -25,11 +24,26 @@ targets:
       base:
         TARGETED_DEVICE_FAMILY: "1"
         PRODUCT_BUNDLE_IDENTIFIER: com.marque.app
+        GENERATE_INFOPLIST_FILE: "NO"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        INFOPLIST_KEY_CFBundleDisplayName: Marque
-        INFOPLIST_KEY_UILaunchScreen_Generation: "YES"
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait"
-        INFOPLIST_KEY_NSCameraUsageDescription: "Marque records talking-head video so the AI can edit it into clips."
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Marque records audio with your video so your clips have sound."
-        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "Marque imports existing videos to repurpose into clips."
+    info:
+      path: Marque/Info.plist
+      properties:
+        CFBundleDisplayName: Marque
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "Marque records talking-head video so the AI can edit it into clips."
+        NSMicrophoneUsageDescription: "Marque records audio with your video so your clips have sound."
+        NSPhotoLibraryUsageDescription: "Marque imports existing videos to repurpose into clips."
+        UIAppFonts:
+          - Inter-400.ttf
+          - Inter-500.ttf
+          - Inter-600.ttf
+          - Inter-700.ttf
+          - Fraunces-400.ttf
+          - Fraunces-400i.ttf
+          - Fraunces-500.ttf
+          - Fraunces-600.ttf
+          - Fraunces-700.ttf

@@ -61,14 +61,31 @@ enum Palette {
 // MARK: - Typography (serif for hero/editorial display; sans for everything else)
 
 enum Typeface {
+    // Fraunces (serif display) + Inter (Matter-substitute sans), bundled — match maxapp.
     static func display(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
-        .system(size: size, weight: weight, design: .serif)
+        .custom(serif(weight), size: size)
     }
     static func sans(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .default)
+        .custom(inter(weight), size: size)
     }
-    // body alias kept for old call sites
     static func body(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { sans(size, weight) }
+
+    private static func serif(_ w: Font.Weight) -> String {
+        switch w {
+        case .bold, .heavy, .black: return "Fraunces-Bold"
+        case .semibold: return "Fraunces-SemiBold"
+        case .medium: return "Fraunces-Medium"
+        default: return "Fraunces-Regular"
+        }
+    }
+    private static func inter(_ w: Font.Weight) -> String {
+        switch w {
+        case .bold, .heavy, .black: return "Inter-Bold"
+        case .semibold: return "Inter-SemiBold"
+        case .medium: return "Inter-Medium"
+        default: return "Inter-Regular"
+        }
+    }
 }
 
 enum AppFont {
