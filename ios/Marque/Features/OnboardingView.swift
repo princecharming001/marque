@@ -110,15 +110,11 @@ struct OnboardingView: View {
     }
 
     private func connectStep() -> some View {
-        @Bindable var store = store
-        return StepScaffold(question: "Connect your page",
-                            note: "We'll read your recent posts to learn what already works for you. Optional — but it makes everything sharper.") {
-            TextField("@handle", text: $store.brand.pageHandle).marqueField().accessibilityIdentifier("onboard.handle")
-            if analyzing {
-                HStack(spacing: Space.sm) { ProgressView().tint(Palette.ink); Text("Reading your page…").font(AppFont.body).foregroundStyle(Palette.textSecondary) }
-            }
+        return StepScaffold(question: "Connect your accounts",
+                            note: "Link your Instagram and TikTok so Marque learns from what already works. Add more than one if you like.") {
+            ConnectAccountsView()
             VStack(spacing: Space.sm) {
-                PillButton(title: analyzing ? "Analyzing…" : "Analyze my page", enabled: !analyzing) {
+                PillButton(title: analyzing ? "Setting up…" : "Continue", enabled: !analyzing) {
                     analyzing = true
                     Task { await store.analyzePage(); analyzing = false; advance() }
                 }

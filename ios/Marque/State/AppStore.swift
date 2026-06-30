@@ -66,6 +66,22 @@ final class AppStore {
         brand.topThemes = pillars.map { $0.name }
     }
 
+    // MARK: Connected accounts
+
+    func connectPreview(handle: String, platform: String) async -> ConnectedAccount? {
+        await backend.connectPreview(handle: handle, platform: platform)
+    }
+    func addConnectedAccount(_ a: ConnectedAccount) {
+        brand.connectedAccounts.removeAll { $0.platform == a.platform && $0.handle.lowercased() == a.handle.lowercased() }
+        brand.connectedAccounts.append(a)
+        if brand.pageHandle.isEmpty { brand.pageHandle = a.handle }
+        save()
+    }
+    func removeConnectedAccount(_ a: ConnectedAccount) {
+        brand.connectedAccounts.removeAll { $0.id == a.id }
+        save()
+    }
+
     /// "Analyze my page" — runs real inference to design pillars tailored to the creator.
     func analyzePage() async {
         try? await Task.sleep(nanoseconds: 600_000_000)   // brief "reading your page"

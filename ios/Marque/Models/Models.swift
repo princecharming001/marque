@@ -30,6 +30,21 @@ struct BrandGraph: Codable, Hashable {
     var analyzed: Bool = false
     var topThemes: [String] = []
     var preferredStyles: [VideoStyle] = []   // the video styles the creator wants to make
+    var connectedAccounts: [ConnectedAccount] = []
+}
+
+/// A linked Instagram/TikTok account, verified by fetching the real public profile.
+struct ConnectedAccount: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var platform: String        // "instagram" | "tiktok"
+    var handle: String
+    var displayName: String = ""
+    var followers: Int = 0
+    var avatarUrl: String = ""
+    var bio: String = ""
+    var linkedAt: Date = Date()
+    var platformIcon: String { platform == "instagram" ? "camera.circle.fill" : "music.note" }
+    var platformLabel: String { platform == "instagram" ? "Instagram" : "TikTok" }
 }
 
 struct Pillar: Codable, Hashable, Identifiable {

@@ -185,4 +185,19 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         note(r.mode)
         return r.coaching
     }
+
+    // MARK: Connect (verify an IG/TikTok link by fetching the real public profile)
+
+    private struct ConnectPreviewResp: Decodable {
+        let found: Bool; let platform: String?; let handle: String?
+        let displayName: String?; let followers: Int?; let avatarUrl: String?; let bio: String?
+    }
+
+    func connectPreview(handle: String, platform: String) async -> ConnectedAccount? {
+        guard let data = await post("/v1/connect/preview", ["handle": handle, "platform": platform]),
+              let r = try? JSONDecoder().decode(ConnectPreviewResp.self, from: data), r.found else { return nil }
+        return ConnectedAccount(platform: r.platform ?? platform, handle: r.handle ?? handle,
+                                displayName: r.displayName ?? handle, followers: r.followers ?? 0,
+                                avatarUrl: r.avatarUrl ?? "", bio: r.bio ?? "")
+    }
 }

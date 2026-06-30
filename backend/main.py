@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import uuid
 
 import httpx
@@ -411,6 +412,94 @@ async def voice_finalize(req: VoiceFinalizeRequest):
         return {"mode": "live", "scan": derived}
     except HTTPException:
         return {"mode": "mock", "scan": mock_derive(brand, [])}
+
+
+# ----- connect Instagram / TikTok (verify a link by fetching the real public profile) -----
+
+MOBILE_UA = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 "
+             "(KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1")
+
+
+def _count(s: str) -> int:
+    s = s.replace(",", "").strip()
+    mult = 1.0
+    if s and s[-1] in "KMB":
+        mult = {"K": 1e3, "M": 1e6, "B": 1e9}[s[-1]]
+        s = s[:-1]
+    try:
+        return int(float(s) * mult)
+    except ValueError:
+        return 0
+
+
+def _unesc(s: str) -> str:
+    try:
+        return json.loads(f'"{s}"')
+    except json.JSONDecodeError:
+        return s
+
+
+class ConnectPreviewRequest(BaseModel):
+    handle: str = ""
+    platform: str = "tiktok"
+
+
+async def _fetch(url: str) -> str:
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as c:
+        r = await c.get(url, headers={"User-Agent": MOBILE_UA})
+    return r.text if r.status_code == 200 else ""
+
+
+async def preview_tiktok(handle: str) -> dict:
+    try:
+        html = await _fetch(f"https://www.tiktok.com/@{handle}")
+    except httpx.HTTPError:
+        html = ""
+    f = re.search(r'"followerCount":(\d+)', html)
+    a = re.search(r'"avatarLarger":"([^"]+)"', html) or re.search(r'"avatarMedium":"([^"]+)"', html)
+    n = re.search(r'"nickname":"([^"]+)"', html)
+    b = re.search(r'"signature":"([^"]*)"', html)
+    if not (f or a):
+        return {"found": False, "platform": "tiktok", "handle": handle}
+    return {"found": True, "platform": "tiktok", "handle": handle,
+            "displayName": _unesc(n.group(1)) if n else handle,
+            "followers": int(f.group(1)) if f else 0,
+            "avatarUrl": _unesc(a.group(1)) if a else "",
+            "bio": _unesc(b.group(1)) if b else ""}
+
+
+async def preview_instagram(handle: str) -> dict:
+    try:
+        html = await _fetch(f"https://www.instagram.com/{handle}/")
+    except httpx.HTTPError:
+        html = ""
+    img = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+    desc = re.search(r'<meta property="og:description" content="([^"]+)"', html)
+    if not (img or desc):
+        return {"found": False, "platform": "instagram", "handle": handle}
+    followers, name = 0, handle
+    if desc:
+        d = desc.group(1)
+        fm = re.search(r'([\d.,]+[KMB]?)\s+Followers', d)
+        if fm:
+            followers = _count(fm.group(1))
+        nm = re.search(r'from (.+?) \(@', d)
+        if nm:
+            name = nm.group(1)
+    return {"found": True, "platform": "instagram", "handle": handle,
+            "displayName": name, "followers": followers,
+            "avatarUrl": img.group(1).replace("&amp;", "&") if img else "", "bio": ""}
+
+
+@app.post("/v1/connect/preview")
+async def connect_preview(req: ConnectPreviewRequest):
+    """Verify a creator's IG/TikTok link by fetching their real public profile."""
+    handle = req.handle.lstrip("@").strip()
+    if not handle:
+        return {"found": False}
+    if req.platform == "instagram":
+        return await preview_instagram(handle)
+    return await preview_tiktok(handle)
 
 
 # ----- publishing (phase 2; kept so the surface is complete) -----

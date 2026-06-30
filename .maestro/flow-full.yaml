@@ -37,7 +37,7 @@ name: Marque — full core loop
 - assertVisible: "What kind of videos?"
 - tapOn: "Talking-head"
 - tapOn: "Continue"
-- assertVisible: "Connect your page"
+- assertVisible: "Connect your accounts"
 - tapOn: "Skip for now"
 
 # AHA — AI generated the first scripts (live Claude/Opus writes 3 rich scripts; allow time)
