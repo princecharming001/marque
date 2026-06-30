@@ -22,17 +22,17 @@ final class AppStore {
     var showCelebration = false
     var coaching = ""                    // this-week coaching line (interpretInsights)
 
-    // Adapters — live Claude when an Anthropic key is present, deterministic mock otherwise.
-    // Computed so pasting a key in Settings takes effect without relaunch.
-    var llm: LLMRouting { AppConfig.useLiveAI ? AnthropicLLMRouter() : MockLLMRouter() }
-    var aiMode: String { AppConfig.useLiveAI ? "Claude" : "Mock" }
+    // The AI brain lives in the backend; the app is a thin client (no vendor keys on device).
+    let backend = BackendClient()
+    var llm: LLMRouting { backend }
+    var aiMode: String { backend.lastMode }
     // Live clip engine when transcription+render keys are present, mock otherwise.
     var clipEngine: ClipEngineProtocol {
         (AppConfig.assemblyAIKey.isEmpty || AppConfig.shotstackKey.isEmpty) ? MockClipEngine() : LiveClipEngine()
     }
     // Live Ayrshare publishing when a key is present, mock otherwise.
     var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
-    let insights: InsightsProviding = MockInsights()
+    let insights: InsightsProviding = LiveInsights()
     let remote: RemotePersistence = SupabaseStore()
     let billing: Billing = MockBilling()
     var canPublish: Bool { billing.isPro }   // hard wall at publishing (11-monetization.md)
