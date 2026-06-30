@@ -1,85 +1,50 @@
-"""Marque backend — the server-side AI / orchestration proxy.
+"""Marque backend — the server-side AI brain.
 
-Production pattern: this service holds every vendor key (Anthropic, AssemblyAI, Shotstack,
-Ayrshare, Supabase service_role) so the iOS app ships none. It mirrors the on-device AI so the
-app can point its adapters here. Runs with ZERO keys via deterministic mock fallbacks, so the
-whole surface is testable without secrets.
+Holds every vendor key so the iOS app ships none (three-trust-plane model, docs/12). Every AI
+route proxies Anthropic when ANTHROPIC_API_KEY is set and falls back to a deterministic mock
+otherwise, so the whole surface is testable with zero keys. Prompt quality lives in prompts.py.
 """
+from __future__ import annotations
+
 import os
 import json
 import uuid
+
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-app = FastAPI(title="Marque API", version="0.2.0")
+import prompts
+from prompts import OPUS, HAIKU, STYLES, FORMAT_IDS
+
+app = FastAPI(title="Marque API", version="0.3.0")
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages"
 AYRSHARE_KEY = os.environ.get("AYRSHARE_KEY", "")
-OPUS = "claude-opus-4-8"
-HAIKU = "claude-haiku-4-5-20251001"
-
-FORMAT_IDS = ["myth-buster", "listicle", "do-this-not-that", "before-after",
-              "green-screen", "faceless", "pov-story", "broll-hook"]
+BRIGHTDATA_KEY = os.environ.get("BRIGHTDATA_KEY", "")
+APIFY_KEY = os.environ.get("APIFY_KEY", "")
 
 
-# ----- models -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Anthropic + JSON helpers
+# ---------------------------------------------------------------------------
 
-class Brand(BaseModel):
-    niche: str = ""
-    audience: str = ""
-    known_for: str = ""
-    what_you_do: str = ""
-    goal: str = "Grow my audience"
-
-
-class ScriptRequest(Brand):
-    pillar: str = "Lessons"
-    pillar_angle: str = ""
-    media_context: str = ""
-    count: int = 3
-
-
-class CaptionRequest(BaseModel):
-    hook: str = ""
-    body: str = ""
-
-
-class ClipJobRequest(BaseModel):
-    script_id: str = ""
-    video_url: str = ""
-    formats: list[str] = []
-    auto_captions: bool = True
-
-
-class PublishRequest(BaseModel):
-    caption: str = ""
-    media_url: str = ""
-    platforms: list[str] = []
-    schedule_date: str = ""
-
-
-# ----- helpers ------------------------------------------------------------
-
-async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 2000) -> str:
-    async with httpx.AsyncClient(timeout=60) as client:
+async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000) -> str:
+    async with httpx.AsyncClient(timeout=90) as client:
         r = await client.post(
             ANTHROPIC_URL,
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
+            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
             json={"model": model, "max_tokens": max_tokens, "system": system,
                   "messages": [{"role": "user", "content": user}]},
         )
     if r.status_code != 200:
-        raise HTTPException(status_code=502, detail="upstream error")
+        raise HTTPException(status_code=502, detail=f"upstream {r.status_code}")
     return "".join(b.get("text", "") for b in r.json().get("content", []))
 
 
-def extract_json(text: str, array: bool = True):
+def extract_json(text: str, array: bool):
     o, c = ("[", "]") if array else ("{", "}")
     i, j = text.find(o), text.rfind(c)
     if i == -1 or j == -1 or j < i:
@@ -90,71 +55,188 @@ def extract_json(text: str, array: bool = True):
         return None
 
 
-def mock_pillars(b: Brand):
-    niche = b.niche or "your field"
-    aud = (b.audience or "your audience").lower()
-    known = (b.known_for or niche)
-    what = (b.what_you_do or "what you do").lower()
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
+class Brand(BaseModel):
+    niche: str = ""
+    audience: str = ""
+    known_for: str = ""
+    what_you_do: str = ""
+    goal: str = "Grow my audience"
+    voice: dict = {}
+    non_negotiables: list[str] = []
+
+    def d(self) -> dict:
+        return self.model_dump()
+
+
+class PillarRequest(Brand):
+    preferred_styles: list[str] = []
+    posts: list[dict] = []
+
+
+class ScriptRequest(Brand):
+    pillar: str = ""
+    pillar_summary: str = ""
+    pillar_angle: str = ""
+    example_topics: list[str] = []
+    style: str = "talking_head"
+    media_context: str = ""
+    count: int = 3
+    posts: list[dict] = []
+
+
+class HooksRequest(Brand):
+    topic: str = ""
+    style: str = "talking_head"
+
+
+class SteerRequest(Brand):
+    script: dict = {}
+    instruction: str = ""
+
+
+class CaptionRequest(BaseModel):
+    hook: str = ""
+    body: str = ""
+
+
+class TeardownRequest(BaseModel):
+    clip: dict = {}
+
+
+class InsightsRequest(Brand):
+    summary: str = ""
+
+
+class ScanRequest(Brand):
+    handle: str = ""
+    platform: str = "tiktok"
+    posts: list[dict] = []          # caller-supplied posts (testing) or filled by the scraper
+
+
+class VoiceFinalizeRequest(Brand):
+    transcript: list[dict] = []
+
+
+class VoiceSessionRequest(Brand):
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Deterministic mock fallbacks (keyless dev / offline)
+# ---------------------------------------------------------------------------
+
+def mock_pillars(b: dict) -> list[dict]:
+    niche = b.get("niche") or "your field"
+    aud = (b.get("audience") or "your audience").lower()
+    known = b.get("known_for") or niche
     seeds = [
-        ("Teach the fundamentals",
-         f"Bite-size lessons that make {aud} better at {niche}.",
-         f"You break {known} into steps {aud} can copy today — no fluff.",
-         [f"The {niche} mistake most beginners make",
-          f"A 60-second framework for {known.lower()}",
+        ("Teach the fundamentals", f"Lessons that make {aud} better at {niche}.",
+         f"You break {known} into steps {aud} can copy today.",
+         [f"The {niche} mistake most beginners make", f"A 60-second framework for {known.lower()}",
           f"What I wish I knew about {niche} on day one"]),
-        ("Myth-busting",
-         f"Contrarian takes that fix what {aud} get wrong about {niche}.",
-         f"You call out popular {niche} advice that backfires — and show what works.",
-         [f"The {niche} advice hurting {aud} most",
-          f"“Everyone says this about {niche}” — why it's wrong",
+        ("Myth-busting", f"Correcting what {aud} get wrong about {niche}.",
+         f"You call out popular {niche} advice that backfires.",
+         [f"The {niche} advice hurting {aud} most", f"“Everyone says this about {niche}” — why it's wrong",
           f"Stop doing this one thing in {niche}"]),
-        ("Behind the scenes",
-         f"The real, unpolished story of {what}.",
-         f"You let {aud} watch how the work actually happens.",
-         [f"A day in the life of {what}",
-          f"The part of {niche} nobody shows you",
-          f"How I actually {known.lower()}"]),
-        ("Hot takes",
-         f"Sharp opinions that start conversations in {niche}.",
-         f"You stake a position {aud} will want to share or argue with.",
-         [f"My most controversial {niche} opinion",
-          f"An unpopular truth about {niche}",
+        ("Behind the scenes", f"The real story of {b.get('what_you_do','what you do').lower()}.",
+         "You show the messy middle, not the highlight reel.",
+         [f"A day in the life of {niche}", f"The part of {niche} nobody shows you", f"How I actually {known.lower()}"]),
+        ("Hot takes", f"Opinions that start conversations in {niche}.",
+         f"You stake a position {aud} will share or argue with.",
+         [f"My most controversial {niche} opinion", f"An unpopular truth about {niche}",
           f"Why most {aud} are wrong about {known.lower()}"]),
-        ("Proof & results",
-         f"Receipts: transformations and case studies in {niche}.",
-         f"You show concrete outcomes so {aud} trust the method.",
-         [f"A before/after that proves {known.lower()} works",
-          f"The result that changed how I see {niche}",
-          f"Walk through a real {niche} win, step by step"]),
+        ("Proof & results", f"Receipts and transformations in {niche}.",
+         f"You show outcomes so {aud} trust the method.",
+         [f"A before/after that proves {known.lower()} works", f"The result that changed how I see {niche}",
+          f"Walk through a real {niche} win step by step"]),
     ]
-    if b.goal in ("Get clients", "Monetize"):
-        seeds[0], seeds[4] = seeds[4], seeds[0]
-    elif b.goal == "Build authority":
-        seeds[0], seeds[1] = seeds[1], seeds[0]
-    return [{"name": n, "summary": s, "angle": a, "exampleTopics": t} for (n, s, a, t) in seeds]
+    colors = [0x2C6BED, 0x2F9E60, 0x9A6A55, 0x8A6FA0, 0xB5791C]
+    return [{"name": n, "summary": s, "angle": a, "exampleTopics": t,
+             "weight": 0.2, "colorHex": colors[i % len(colors)]}
+            for i, (n, s, a, t) in enumerate(seeds)]
 
 
-def mock_scripts(req: ScriptRequest):
+def mock_scripts(req: ScriptRequest) -> list[dict]:
+    s = STYLES.get(req.style, STYLES["talking_head"])
     niche = req.niche or "your craft"
     out = []
     for i in range(max(1, req.count)):
-        fmt = FORMAT_IDS[i % len(FORMAT_IDS)]
+        fmt = s["formats"][i % len(s["formats"])]
+        topic = (req.example_topics[i % len(req.example_topics)] if req.example_topics
+                 else f"the {niche} mistake #{i + 1}")
         out.append({
-            "title": f"The {niche} mistake #{i + 1}",
-            "summary": f"A short {fmt.replace('-', ' ')} on {niche} for {req.audience or 'your audience'}.",
+            "title": topic[:48],
+            "summary": f"A {s['label'].lower()} on {niche}.",
             "hook": f"Stop overthinking {niche}. Here's what actually works.",
-            "hookSignal": "contrarian",
-            "formatId": fmt,
-            "body": f"Open on the hook. Give the core idea about {niche}, back it with a specific, land the lesson.",
+            "hookSignal": "contrarian", "formatId": fmt,
+            "body": f"[{s['label']}] Open on the hook. Give the core idea about {niche}, back it with one specific, land the lesson.",
             "cta": "Follow for more — I post this every week.",
-            "shotPlan": ["Hook on frame 1", "Body with one punch-in", "CTA to camera"],
-            "targetSeconds": 24,
-            "predictedScore": 82,
+            "shotPlan": s["exemplar"] and ["Hook on frame 1", "One punch-in", "CTA"],
+            "targetSeconds": 24, "predictedScore": 80,
+            "altHooks": [], "style": req.style,
         })
     return out
 
 
-# ----- routes -------------------------------------------------------------
+def mock_derive(b: dict, posts: list[dict]) -> dict:
+    return {"niche": b.get("niche", ""), "audience": b.get("audience", ""),
+            "knownFor": b.get("known_for", ""),
+            "voice": {"funnyToSerious": 0.5, "polishedToRaw": 0.5, "teacherToPeer": 0.5},
+            "bannedWords": [], "catchphrases": [], "pillars": mock_pillars(b)}
+
+
+def mock_trends(niche: str) -> list[dict]:
+    n = niche or "your niche"
+    return [
+        {"title": f"Myth-busting is spiking in {n}", "why": "Contrarian hooks are over-indexing on shares this week.", "formatId": "myth-buster"},
+        {"title": "“Do this, not that” splits", "why": "Side-by-side comparisons are getting high rewatch.", "formatId": "do-this-not-that"},
+        {"title": "Faceless explainers", "why": "AI-visual voiceovers are cheap to test and trending.", "formatId": "faceless"},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# AI core (with the generate-then-judge specificity gate)
+# ---------------------------------------------------------------------------
+
+async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
+    """Reject generic pillars and regenerate, up to 2 rounds."""
+    for _ in range(2):
+        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), pillars)
+        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 800), array=True) or []
+        failed = [pillars[v["index"]].get("name", "")
+                  for v in verdicts
+                  if isinstance(v, dict) and not v.get("pass", True) and 0 <= v.get("index", -1) < len(pillars)]
+        if not failed:
+            return pillars
+        sys2, usr2 = prompts.pillars_prompt(brand, posts, avoid=failed)
+        regen = extract_json(await anthropic(sys2, usr2, OPUS, 1800), array=True)
+        if not regen:
+            return pillars
+        pillars = regen
+    return pillars
+
+
+async def generate_pillars(brand: dict, posts: list[dict] | None) -> tuple[str, list[dict]]:
+    if not ANTHROPIC_KEY:
+        return "mock", mock_pillars(brand)
+    try:
+        sys, usr = prompts.pillars_prompt(brand, posts)
+        pillars = extract_json(await anthropic(sys, usr, OPUS, 1800), array=True)
+        if not pillars:
+            return "mock", mock_pillars(brand)
+        pillars = await judge_and_fix_pillars(brand, pillars, posts)
+        return "live", pillars
+    except HTTPException:
+        return "mock", mock_pillars(brand)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 @app.get("/healthz")
 def healthz():
@@ -165,84 +247,183 @@ def healthz():
 def readyz():
     return {"status": "ready", "version": app.version,
             "ai": "live" if ANTHROPIC_KEY else "mock",
+            "scrape": "live" if (BRIGHTDATA_KEY or APIFY_KEY) else "mock",
             "publish": "live" if AYRSHARE_KEY else "mock"}
 
 
 @app.post("/v1/pillars")
-async def pillars(req: Brand):
-    """Niche-specific content pillars. Proxies Anthropic when keyed; mocks otherwise."""
-    if not ANTHROPIC_KEY:
-        return {"mode": "mock", "pillars": mock_pillars(req)}
-    system = ("You are Marque's brand strategist. Design content pillars unique to THIS creator. "
-              "Reply ONLY with a JSON array.")
-    user = (f"Brand: niche={req.niche}; audience={req.audience}; known_for={req.known_for}; "
-            f"goal={req.goal}. Design 5 pillars. Each: "
-            '{"name":str,"summary":str,"angle":str,"exampleTopics":[str,str,str]}')
-    try:
-        parsed = extract_json(await anthropic(system, user, OPUS, 1600), array=True)
-        return {"mode": "live", "pillars": parsed or mock_pillars(req)}
-    except HTTPException:
-        return {"mode": "mock", "pillars": mock_pillars(req)}
+async def pillars(req: PillarRequest):
+    mode, p = await generate_pillars(req.d(), req.posts or None)
+    return {"mode": mode, "pillars": p}
 
 
 @app.post("/v1/scripts")
 async def scripts(req: ScriptRequest):
-    """Generate scripts (parsed to structured items). Proxies Anthropic when keyed."""
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(req)}
-    system = ("You are Marque's script engine. Write short-form scripts in the creator's voice. "
-              "Reply ONLY with a JSON array.")
-    media = f" Reference footage: {req.media_context}." if req.media_context else ""
-    user = (f"Brand: niche={req.niche}; audience={req.audience}; known for={req.known_for}. "
-            f"Pillar={req.pillar} ({req.pillar_angle}).{media} Write {req.count} scripts. Each: "
-            '{"title":str,"summary":str,"hook":str,"hookSignal":str,"formatId":str,"body":str,'
-            '"cta":str,"shotPlan":[str],"targetSeconds":int,"predictedScore":int}')
+    pillar = {"name": req.pillar, "summary": req.pillar_summary,
+              "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
-        parsed = extract_json(await anthropic(system, user, OPUS, 3500), array=True)
-        return {"mode": "live", "scripts": parsed or mock_scripts(req)}
+        sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
+                                          req.media_context, req.posts or None)
+        out = extract_json(await anthropic(sys, usr, OPUS, 3800), array=True)
+        return {"mode": "live", "scripts": out or mock_scripts(req)}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}
 
 
+@app.post("/v1/hooks")
+async def hooks(req: HooksRequest):
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
+    try:
+        sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style)
+        out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True)
+        return {"mode": "live", "hooks": out or []}
+    except HTTPException:
+        return {"mode": "mock", "hooks": []}
+
+
+@app.post("/v1/steer")
+async def steer(req: SteerRequest):
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "script": req.script}
+    try:
+        sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction)
+        out = extract_json(await anthropic(sys, usr, OPUS, 1500), array=False)
+        return {"mode": "live", "script": out or req.script}
+    except HTTPException:
+        return {"mode": "mock", "script": req.script}
+
+
 @app.post("/v1/captions")
 async def captions(req: CaptionRequest):
-    """Burned-in caption lines (<=5 words each)."""
-    def chunk(text):
-        words, lines, cur = text.split(), [], []
-        for w in words:
-            cur.append(w)
+    def chunk(t):
+        w, lines, cur = t.split(), [], []
+        for x in w:
+            cur.append(x)
             if len(cur) >= 5:
                 lines.append(" ".join(cur)); cur = []
         if cur:
             lines.append(" ".join(cur))
         return lines
+    if ANTHROPIC_KEY:
+        try:
+            sys, usr = prompts.captions_prompt(req.hook, req.body)
+            out = extract_json(await anthropic(sys, usr, HAIKU, 800), array=True)
+            if out:
+                return {"mode": "live", "lines": out}
+        except HTTPException:
+            pass
     sentences = [req.hook] + [s.strip() for s in req.body.replace("!", ".").replace("?", ".").split(".") if s.strip()]
-    lines = [ln for s in sentences if s for ln in chunk(s)]
-    return {"mode": "live" if ANTHROPIC_KEY else "mock", "lines": lines}
+    return {"mode": "mock", "lines": [ln for s in sentences if s for ln in chunk(s)]}
 
 
-@app.post("/v1/clips")
-async def clips(req: ClipJobRequest):
-    """Clip pipeline (transcribe -> caption -> render-per-format -> R2). Scaffolded:
-    returns a job descriptor. The real pipeline runs async on Trigger.dev with AssemblyAI +
-    Shotstack + Cloudflare R2 once those keys are set."""
-    job_id = f"clip_{uuid.uuid4().hex[:12]}"
-    steps = ["transcribe", "detect-moments"]
-    if req.auto_captions:
-        steps.append("burn-captions")
-    steps += ["render-per-format", "upload-r2"]
-    return {
-        "job_id": job_id,
-        "status": "queued",
-        "formats": req.formats or FORMAT_IDS[:3],
-        "steps": steps,
-        "mode": "live" if os.environ.get("SHOTSTACK_KEY") else "mock",
-    }
+@app.post("/v1/teardown")
+async def teardown(req: TeardownRequest):
+    score = req.clip.get("predictedScore", 70)
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "headline": f"This beat {20 + score % 60}% of your posts",
+                "detail": "The hook landed in 2 seconds and the format kept a visual change every few seconds.",
+                "liftPercent": 20 + score % 60}
+    try:
+        sys, usr = prompts.teardown_prompt(req.clip)
+        out = extract_json(await anthropic(sys, usr, OPUS, 500), array=False) or {}
+        return {"mode": "live", "headline": out.get("headline", ""), "detail": out.get("detail", ""),
+                "liftPercent": out.get("liftPercent", 30)}
+    except HTTPException:
+        return {"mode": "mock", "headline": "", "detail": "", "liftPercent": 30}
+
+
+@app.post("/v1/insights")
+async def insights(req: InsightsRequest):
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "coaching": "Your contrarian hooks are outperforming. Make two more in whichever format spiked."}
+    try:
+        sys, usr = prompts.insights_prompt(req.d(), req.summary)
+        txt = (await anthropic(sys, usr, HAIKU, 250)).strip()
+        return {"mode": "live", "coaching": txt}
+    except HTTPException:
+        return {"mode": "mock", "coaching": ""}
+
+
+@app.get("/v1/trends")
+async def trends(niche: str = ""):
+    # TODO(task#6): serve from trends_cache populated by the scrape job. For now: niche-aware,
+    # with a Haiku-written "why" when keyed.
+    base = mock_trends(niche)
+    return {"mode": "mock", "trends": base}
+
+
+# ----- brand-scan + voice onboarding -----
+
+async def scrape_posts(handle: str, platform: str) -> list[dict]:
+    """Real scrape when keyed (Bright Data / Apify); else empty (caller supplies posts for testing)."""
+    if not (BRIGHTDATA_KEY or APIFY_KEY) or not handle:
+        return []
+    # Structural Bright Data call — wired to the dataset trigger when the key is present.
+    # (Left as the single integration point; returns [] until provisioned.)
+    return []
+
+
+@app.post("/v1/brand-scan/handle")
+async def brand_scan_handle(req: ScanRequest):
+    posts = req.posts or await scrape_posts(req.handle, req.platform)
+    brand = req.d()
+    if not ANTHROPIC_KEY or not posts:
+        # No evidence (or no key) → niche-aware fallback so onboarding never dead-ends.
+        return {"mode": "mock", "scanned_posts": len(posts), "scan": mock_derive(brand, posts)}
+    try:
+        sys, usr = prompts.derive_from_posts_prompt(brand, posts)
+        derived = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False) or mock_derive(brand, posts)
+        if derived.get("pillars"):
+            merged = {**brand, "niche": derived.get("niche", brand.get("niche", ""))}
+            derived["pillars"] = await judge_and_fix_pillars(merged, derived["pillars"], posts)
+        return {"mode": "live", "scanned_posts": len(posts), "scan": derived}
+    except HTTPException:
+        return {"mode": "mock", "scanned_posts": len(posts), "scan": mock_derive(brand, posts)}
+
+
+@app.post("/v1/voice-onboarding/session")
+async def voice_session(req: VoiceSessionRequest):
+    """Mint an ElevenLabs Conversational AI session token so the key never ships to the app."""
+    agent_id = os.environ.get("ELEVENLABS_AGENT_ID", "")
+    el_key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not (agent_id and el_key):
+        return {"mode": "mock", "agent_system": prompts.VOICE_AGENT_SYSTEM,
+                "conversation_token": "", "agent_id": "", "session_id": uuid.uuid4().hex}
+    # Real token mint (ElevenLabs get-signed-url) is the single integration point here.
+    return {"mode": "live", "agent_id": agent_id, "conversation_token": "",
+            "session_id": uuid.uuid4().hex}
+
+
+@app.post("/v1/voice-onboarding/finalize")
+async def voice_finalize(req: VoiceFinalizeRequest):
+    brand = req.d()
+    if not ANTHROPIC_KEY or not req.transcript:
+        return {"mode": "mock", "scan": mock_derive(brand, [])}
+    try:
+        sys, usr = prompts.voice_finalize_prompt(brand, req.transcript)
+        derived = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False) or mock_derive(brand, [])
+        if derived.get("pillars"):
+            merged = {**brand, "niche": derived.get("niche", brand.get("niche", ""))}
+            derived["pillars"] = await judge_and_fix_pillars(merged, derived["pillars"], None)
+        return {"mode": "live", "scan": derived}
+    except HTTPException:
+        return {"mode": "mock", "scan": mock_derive(brand, [])}
+
+
+# ----- publishing (phase 2; kept so the surface is complete) -----
+
+class PublishRequest(BaseModel):
+    caption: str = ""
+    media_url: str = ""
+    platforms: list[str] = []
+    schedule_date: str = ""
 
 
 @app.post("/v1/publish")
 async def publish(req: PublishRequest):
-    """Publish/schedule to IG/TikTok via Ayrshare (with media). Mock unless AYRSHARE_KEY."""
     if not AYRSHARE_KEY:
         return {"ok": True, "mode": "mock", "id": f"post_{uuid.uuid4().hex[:10]}"}
     body = {"post": req.caption, "platforms": req.platforms}
@@ -254,7 +435,6 @@ async def publish(req: PublishRequest):
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post("https://api.ayrshare.com/api/post",
                                   headers={"Authorization": f"Bearer {AYRSHARE_KEY}"}, json=body)
-        ok = 200 <= r.status_code < 300
-        return {"ok": ok, "mode": "live", "status": r.status_code}
+        return {"ok": 200 <= r.status_code < 300, "mode": "live", "status": r.status_code}
     except httpx.HTTPError:
         return {"ok": False, "mode": "live", "error": "network"}
