@@ -10,7 +10,7 @@ struct OnboardingView: View {
     @State private var analyzing = false
     @State private var generating = false
 
-    private let lastInputStep = 5
+    private let lastInputStep = 6
 
     var body: some View {
         if step == 0 {
@@ -34,7 +34,8 @@ struct OnboardingView: View {
                     case 2: aboutStep()
                     case 3: knownForStep()
                     case 4: voiceStep()
-                    case 5: connectStep()
+                    case 5: styleStep()
+                    case 6: connectStep()
                     default: ahaStep
                     }
                 }
@@ -96,6 +97,15 @@ struct OnboardingView: View {
                 VoiceSlider(label: "Teacher ⟷ Peer", value: $store.brand.voice.teacherToPeer)
             }
             PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    private func styleStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "What kind of videos?",
+                            note: "Pick the styles you want to make. Each gets its own kind of script.") {
+            StyleSelectionView(selected: $store.brand.preferredStyles)
+            PillButton(title: "Continue", enabled: !store.brand.preferredStyles.isEmpty) { advance() }
         }
     }
 

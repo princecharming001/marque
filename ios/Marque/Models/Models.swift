@@ -29,6 +29,7 @@ struct BrandGraph: Codable, Hashable {
     var pageHandle: String = ""
     var analyzed: Bool = false
     var topThemes: [String] = []
+    var preferredStyles: [VideoStyle] = []   // the video styles the creator wants to make
 }
 
 struct Pillar: Codable, Hashable, Identifiable {
@@ -76,11 +77,49 @@ struct VideoFormat: Codable, Hashable, Identifiable {
     enum FaceMode: String, Codable { case face, faceless, split, greenScreen }
 }
 
+/// The coarse video style the creator picks; each produces a structurally different script.
+enum VideoStyle: String, CaseIterable, Codable, Identifiable {
+    case talkingHead = "talking_head"
+    case faceless
+    case splitScreen = "split_screen"
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .talkingHead: return "Talking-head"
+        case .faceless: return "Faceless voiceover"
+        case .splitScreen: return "Split-screen"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .talkingHead: return "You, to camera, with animated captions."
+        case .faceless: return "Voiceover over b-roll — no on-camera."
+        case .splitScreen: return "React or compare, side by side."
+        }
+    }
+    var icon: String {
+        switch self {
+        case .talkingHead: return "person.fill"
+        case .faceless: return "film"
+        case .splitScreen: return "rectangle.split.2x1"
+        }
+    }
+    /// Fine-grained format recipes allowed within this style (mirrors the backend).
+    var formats: [String] {
+        switch self {
+        case .talkingHead: return ["myth-buster", "listicle", "pov-story", "green-screen"]
+        case .faceless: return ["faceless", "broll-hook"]
+        case .splitScreen: return ["do-this-not-that", "before-after", "green-screen"]
+        }
+    }
+}
+
 struct Script: Codable, Hashable, Identifiable {
     var id = UUID()
     var pillarName: String
     var title: String = ""      // short human title (≤6 words) for the card heading
     var summary: String = ""    // one-line "what this video is about"
+    var style: String = ""      // the video style it was written for (talking_head/faceless/split_screen)
     var formatId: String
     var hook: Hook
     var altHooks: [Hook]
@@ -223,6 +262,12 @@ enum Catalog {
 
     static func format(_ id: String) -> VideoFormat {
         formats.first { $0.id == id } ?? formats[0]
+    }
+
+    /// Map a fine-grained format slug to the coarse video style it belongs to.
+    static func style(for formatId: String) -> VideoStyle {
+        for s in VideoStyle.allCases where s.formats.contains(formatId) { return s }
+        return .talkingHead
     }
 
     // Calm, distinct per-pillar hues (used only as small accents + the active-card gradient).

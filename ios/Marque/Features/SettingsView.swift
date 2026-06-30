@@ -6,7 +6,8 @@ struct SettingsView: View {
     @State private var showPaywall = false
 
     var body: some View {
-        NavigationStack {
+        @Bindable var store = store
+        return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
                     // AI engine status
@@ -31,6 +32,15 @@ struct SettingsView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.upgrade")
+
+                    // Content styles
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        SectionTitle(text: "Content styles")
+                        Text("Which kinds of video should Marque write? Each gets its own script style.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        StyleSelectionView(selected: $store.brand.preferredStyles)
+                    }
+                    .onChange(of: store.brand.preferredStyles) { _, _ in store.save() }
 
                     // Danger zone
                     VStack(alignment: .leading, spacing: Space.md) {

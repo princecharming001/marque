@@ -60,11 +60,12 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     private func hook(_ dto: HookDTO) -> Hook {
         Hook(text: dto.text, signal: signal(dto.signal), strength: min(100, max(0, dto.strength ?? 75)))
     }
-    private func script(_ dto: ScriptDTO, pillar: String) -> Script {
+    private func script(_ dto: ScriptDTO, pillar: String, style: VideoStyle) -> Script {
         let fid = formatId(dto.formatId)
         let primary = Hook(text: dto.hook, signal: signal(dto.hookSignal),
                            strength: min(100, max(0, dto.predictedScore ?? 80)))
-        return Script(pillarName: pillar, title: dto.title ?? "", summary: dto.summary ?? "", formatId: fid,
+        return Script(pillarName: pillar, title: dto.title ?? "", summary: dto.summary ?? "",
+                      style: dto.style ?? style.rawValue, formatId: fid,
                       hook: primary, altHooks: (dto.altHooks ?? []).map(hook),
                       body: dto.body, cta: dto.cta, shotPlan: dto.shotPlan ?? [],
                       targetSeconds: dto.targetSeconds ?? Catalog.format(fid).targetSeconds,
@@ -108,21 +109,21 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
     }
 
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String) async -> [Script] {
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script] {
         var body = brandBody(brand)
         body["pillar"] = pillar.name
         body["pillar_summary"] = pillar.summary
         body["pillar_angle"] = pillar.angle
         body["example_topics"] = pillar.exampleTopics
-        body["style"] = "talking_head"          // becomes the creator's chosen style in the style task
+        body["style"] = style.rawValue
         body["count"] = count
         body["media_context"] = mediaContext
         guard let data = await post("/v1/scripts", body),
               let r = try? JSONDecoder().decode(ScriptsResp.self, from: data), !r.scripts.isEmpty else {
-            return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext)
+            return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style)
         }
         note(r.mode)
-        return r.scripts.map { script($0, pillar: pillar.name) }
+        return r.scripts.map { script($0, pillar: pillar.name, style: style) }
     }
 
     func hookLab(brand: BrandGraph, topic: String) async -> [Hook] {

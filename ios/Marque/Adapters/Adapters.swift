@@ -6,7 +6,7 @@ import Foundation
 
 protocol LLMRouting {
     func generatePillars(brand: BrandGraph) async -> [Pillar]
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String) async -> [Script]
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script]
     func hookLab(brand: BrandGraph, topic: String) async -> [Hook]
     func steer(script: Script, brand: BrandGraph, instruction: String) async -> Script
     func captions(for script: Script) async -> [String]
@@ -84,10 +84,10 @@ struct MockLLMRouter: LLMRouting {
         .sorted { $0.strength > $1.strength }
     }
 
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String) async -> [Script] {
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script] {
         try? await Task.sleep(nanoseconds: 900_000_000)
         let top = topic(brand, pillar)
-        let formats = Catalog.formats
+        let formats = style.formats.map { Catalog.format($0) }
         return (0..<count).map { i in
             let fmt = formats[Int(seed(pillar.name + "\(i)") % UInt64(formats.count))]
             let signals = fmt.bestHooks + [.specificity, .narrative]
@@ -107,7 +107,7 @@ struct MockLLMRouter: LLMRouting {
                 : pillar.exampleTopics[i % pillar.exampleTopics.count]
             let summary = "A \(fmt.targetSeconds)s \(fmt.name.lowercased()) — \(pillar.summary.isEmpty ? "on \(top)" : pillar.summary.lowercased())"
 
-            return Script(pillarName: pillar.name, title: title, summary: summary, formatId: fmt.id,
+            return Script(pillarName: pillar.name, title: title, summary: summary, style: style.rawValue, formatId: fmt.id,
                           hook: hooks[0], altHooks: Array(hooks.dropFirst()),
                           body: body, cta: cta, shotPlan: shots,
                           targetSeconds: fmt.targetSeconds, predictedScore: score)
