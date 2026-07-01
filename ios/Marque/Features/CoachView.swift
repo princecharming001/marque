@@ -21,7 +21,7 @@ struct CoachView: View {
                 // Teardown cards (performance feedback)
                 if !store.teardowns.isEmpty {
                     VStack(alignment: .leading, spacing: Space.md) {
-                        SectionTitle(text: "What worked")
+                        SectionLabel(text: "What worked", accent: Palette.accent)
                         ForEach(store.teardowns) { t in
                             VStack(alignment: .leading, spacing: Space.sm) {
                                 Text(t.headline).font(AppFont.title).foregroundStyle(Palette.textPrimary)
@@ -35,7 +35,7 @@ struct CoachView: View {
 
                 // Trend radar
                 VStack(alignment: .leading, spacing: Space.md) {
-                    SectionTitle(text: "Trending in your niche")
+                    SectionLabel(text: "Trending in your niche", accent: Palette.accent)
                     if store.trends.isEmpty {
                         ProgressView().tint(Palette.gold)
                     } else {

@@ -18,12 +18,15 @@ struct PaywallView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
                     VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "Marque Pro", accent: Palette.accent)
                         Text("Film once.\nPost all week.")
-                            .font(AppFont.displayL).foregroundStyle(Palette.textPrimary)
+                            .font(AppFont.displayXL).tracking(-1).foregroundStyle(Palette.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("Go Pro to publish everything Marque makes for you.")
                             .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+                            .lineSpacing(3)
                     }
+                    .padding(.top, Space.sm)
 
                     VStack(alignment: .leading, spacing: Space.md) {
                         ForEach(proFeatures, id: \.self) { f in
