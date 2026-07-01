@@ -56,8 +56,10 @@ enum Palette {
 
 enum Typeface {
     // Playfair Display (serif, variable — weighted via .weight) + Inter (Matter-substitute sans).
+    // maxapp's serif is Fraunces (only the 9pt Black optical cut ships — the intentionally
+    // heavy, impactful editorial face used for heroes/titles).
     static func display(_ size: CGFloat, _ weight: Font.Weight = .semibold) -> Font {
-        .custom("PlayfairDisplay-Regular", size: size).weight(weight)
+        .custom("Fraunces-9ptBlack", size: size)
     }
     static func sans(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
         .custom(matter(weight), size: size)
