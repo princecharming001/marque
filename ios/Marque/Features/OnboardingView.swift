@@ -110,6 +110,7 @@ struct OnboardingView: View {
     }
 
     private func connectStep() -> some View {
+        @Bindable var store = store
         return StepScaffold(question: "Connect your accounts",
                             note: "Link your Instagram and TikTok so Marque learns from what already works. Add more than one if you like.") {
             ConnectAccountsView()
@@ -118,9 +119,17 @@ struct OnboardingView: View {
                     analyzing = true
                     Task { await store.analyzePage(); analyzing = false; advance() }
                 }
+                Button("Teach Marque your voice instead") {
+                    store.showVoiceOnboarding = true
+                }
+                .font(AppFont.callout).foregroundStyle(Palette.accent)
+                .accessibilityIdentifier("onboard.voiceInstead")
                 Button("Skip for now") { store.derivePillars(); advance() }
                     .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
             }
+        }
+        .sheet(isPresented: $store.showVoiceOnboarding) {
+            VoiceOnboardingSheet { advance() }
         }
     }
 

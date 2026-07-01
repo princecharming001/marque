@@ -200,4 +200,97 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                                 displayName: r.displayName ?? handle, followers: r.followers ?? 0,
                                 avatarUrl: r.avatarUrl ?? "", bio: r.bio ?? "")
     }
+
+    // MARK: Brand scan (derive pillars + voice from real scraped posts)
+
+    struct BrandScanResult {
+        let pillars: [Pillar]
+        let voiceUpdate: VoiceFingerprint?
+        let topThemes: [String]
+    }
+
+    private struct BrandScanResp: Decodable {
+        let mode: String?
+        let scan: ScanBlock?
+        struct ScanBlock: Decodable {
+            let pillars: [PillarDTO]?
+            let voice: VoiceBlock?
+            let top_themes: [String]?
+            struct VoiceBlock: Decodable {
+                let funnyToSerious: Double?
+                let polishedToRaw: Double?
+                let teacherToPeer: Double?
+            }
+        }
+    }
+
+    func brandScan(handle: String, platform: String, niche: String) async -> BrandScanResult? {
+        let body: [String: Any] = ["handle": handle, "platform": platform, "niche": niche]
+        guard let data = await post("/v1/brand-scan/handle", body),
+              let r = try? JSONDecoder().decode(BrandScanResp.self, from: data),
+              let scan = r.scan else { return nil }
+        note(r.mode)
+        let colors = Catalog.pillarColors
+        let pillars = (scan.pillars ?? []).enumerated().map { i, d in
+            Pillar(name: d.name, summary: d.summary ?? "", angle: d.angle ?? "",
+                   exampleTopics: d.exampleTopics ?? [], weight: d.weight ?? 0.2,
+                   colorHex: d.colorHex ?? colors[i % colors.count])
+        }
+        var voice: VoiceFingerprint? = nil
+        if let v = scan.voice {
+            voice = VoiceFingerprint(funnyToSerious: v.funnyToSerious ?? 0.5,
+                                     polishedToRaw: v.polishedToRaw ?? 0.5,
+                                     teacherToPeer: v.teacherToPeer ?? 0.5)
+        }
+        return BrandScanResult(pillars: pillars, voiceUpdate: voice,
+                               topThemes: scan.top_themes ?? pillars.map { $0.name })
+    }
+
+    // MARK: Voice onboarding
+
+    struct VoiceSession {
+        let agentId: String
+        let conversationToken: String
+        let sessionId: String
+        let mode: String
+    }
+
+    private struct VoiceSessionResp: Decodable {
+        let mode: String?; let agent_id: String?; let conversation_token: String?; let session_id: String?
+    }
+    private struct VoiceFinalizeResp: Decodable {
+        let mode: String?; let scan: BrandScanResp.ScanBlock?
+    }
+
+    func voiceOnboardingSession(niche: String) async -> VoiceSession? {
+        guard let data = await post("/v1/voice-onboarding/session", ["niche": niche]),
+              let r = try? JSONDecoder().decode(VoiceSessionResp.self, from: data) else { return nil }
+        note(r.mode)
+        return VoiceSession(agentId: r.agent_id ?? "mock",
+                            conversationToken: r.conversation_token ?? "mock",
+                            sessionId: r.session_id ?? UUID().uuidString,
+                            mode: r.mode ?? "mock")
+    }
+
+    func voiceOnboardingFinalize(niche: String, transcript: [[String: String]]) async -> BrandScanResult? {
+        let body: [String: Any] = ["niche": niche, "transcript": transcript]
+        guard let data = await post("/v1/voice-onboarding/finalize", body),
+              let r = try? JSONDecoder().decode(VoiceFinalizeResp.self, from: data),
+              let scan = r.scan else { return nil }
+        note(r.mode)
+        let colors = Catalog.pillarColors
+        let pillars = (scan.pillars ?? []).enumerated().map { i, d in
+            Pillar(name: d.name, summary: d.summary ?? "", angle: d.angle ?? "",
+                   exampleTopics: d.exampleTopics ?? [], weight: d.weight ?? 0.2,
+                   colorHex: d.colorHex ?? colors[i % colors.count])
+        }
+        var voice: VoiceFingerprint? = nil
+        if let v = scan.voice {
+            voice = VoiceFingerprint(funnyToSerious: v.funnyToSerious ?? 0.5,
+                                     polishedToRaw: v.polishedToRaw ?? 0.5,
+                                     teacherToPeer: v.teacherToPeer ?? 0.5)
+        }
+        return BrandScanResult(pillars: pillars, voiceUpdate: voice,
+                               topThemes: scan.top_themes ?? pillars.map { $0.name })
+    }
 }

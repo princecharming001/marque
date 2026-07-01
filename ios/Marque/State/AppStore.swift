@@ -20,6 +20,7 @@ final class AppStore {
     // Transient
     var isGenerating = false
     var showCelebration = false
+    var showVoiceOnboarding = false
     var coaching = ""                    // this-week coaching line (interpretInsights)
 
     // The AI brain lives in the backend; the app is a thin client (no vendor keys on device).
@@ -83,9 +84,28 @@ final class AppStore {
     }
 
     /// "Analyze my page" — runs real inference to design pillars tailored to the creator.
+    /// When a connected account is present, calls /v1/brand-scan/handle so pillars derive
+    /// from what the creator actually posts; falls back to /v1/pillars (generic) otherwise.
     func analyzePage() async {
-        try? await Task.sleep(nanoseconds: 600_000_000)   // brief "reading your page"
+        try? await Task.sleep(nanoseconds: 600_000_000)   // brief "reading your page" UX
         brand.analyzed = true
+
+        // Prefer the brand-scan path when a handle is known — derives pillars from real posts.
+        if let account = brand.connectedAccounts.first, !account.handle.isEmpty {
+            if let result = await backend.brandScan(handle: account.handle,
+                                                     platform: account.platform,
+                                                     niche: brand.niche) {
+                if !result.pillars.isEmpty {
+                    pillars = result.pillars
+                    brand.topThemes = result.topThemes
+                    if let v = result.voiceUpdate { brand.voice = v }
+                    save()
+                    return
+                }
+            }
+        }
+
+        // Fallback: generic pillar generation from brand graph alone.
         let derived = await llm.generatePillars(brand: brand)
         if !derived.isEmpty {
             pillars = derived
@@ -93,6 +113,17 @@ final class AppStore {
         } else if pillars.isEmpty {
             derivePillars()
         }
+        save()
+    }
+
+    /// Apply a voice-onboarding finalize result (called after the conversational session).
+    func applyVoiceScan(_ result: BackendClient.BrandScanResult) {
+        if !result.pillars.isEmpty {
+            pillars = result.pillars
+            brand.topThemes = result.topThemes
+        }
+        if let v = result.voiceUpdate { brand.voice = v }
+        brand.analyzed = true
         save()
     }
 
@@ -203,6 +234,7 @@ final class AppStore {
 
     func scheduleClip(_ clip: Clip, on date: Date, platforms: [SocialPlatform],
                       autoCaptions: Bool = true, caption: String? = nil) async {
+        guard canPublish else { return }
         var clip = clip
         // Burn captions if requested and not already generated.
         if autoCaptions && clip.captionLines.isEmpty,
@@ -240,6 +272,7 @@ final class AppStore {
 
     /// Publish immediately (live via Ayrshare when keyed; mock otherwise) and mark posted.
     func postNow(_ post: ScheduledPost) async {
+        guard canPublish else { return }
         var p = post
         p.date = Date()
         let ok = await publisher.schedule(p)

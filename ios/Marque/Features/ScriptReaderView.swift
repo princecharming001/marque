@@ -8,8 +8,21 @@ struct ScriptReaderView: View {
     @State private var showFormatSheet = false
     @State private var showRecord = false
     @State private var steering = false
+    @State private var editingBody = false
+    @State private var bodyDraft = ""
+    @FocusState private var bodyFocused: Bool
 
     private var live: Script { store.scripts.first { $0.id == script.id } ?? script }
+
+    private func commitBodyEdit() {
+        let trimmed = bodyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != live.body else { editingBody = false; return }
+        if let idx = store.scripts.firstIndex(where: { $0.id == live.id }) {
+            store.scripts[idx].body = trimmed
+            store.save()
+        }
+        editingBody = false
+    }
 
     var body: some View {
         ScrollView {
@@ -41,9 +54,31 @@ struct ScriptReaderView: View {
 
                 // Body + shot plan
                 VStack(alignment: .leading, spacing: Space.md) {
-                    SectionTitle(text: "Script")
-                    Text(live.body).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        SectionTitle(text: "Script")
+                        Spacer()
+                        if editingBody {
+                            Button("Done") { commitBodyEdit() }
+                                .font(AppFont.callout).foregroundStyle(Palette.accent)
+                        } else {
+                            Button("Edit") { bodyDraft = live.body; editingBody = true; bodyFocused = true }
+                                .font(AppFont.callout).foregroundStyle(Palette.goldDeep)
+                        }
+                    }
+                    if editingBody {
+                        TextEditor(text: $bodyDraft)
+                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            .frame(minHeight: 120)
+                            .focused($bodyFocused)
+                            .scrollContentBackground(.hidden)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                            .accessibilityIdentifier("script.bodyEditor")
+                    } else {
+                        Text(live.body).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onTapGesture { bodyDraft = live.body; editingBody = true; bodyFocused = true }
+                    }
                     Text(live.cta).font(AppFont.bodyL).foregroundStyle(Palette.goldDeep)
                     Divider().background(Palette.hairline)
                     SectionTitle(text: "Shot plan")

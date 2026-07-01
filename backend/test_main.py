@@ -29,7 +29,7 @@ def test_pillars_niche_specific():
 
 
 def test_scripts_are_style_aware():
-    for style in ("talking_head", "faceless", "split_screen"):
+    for style in ("talking_head", "faceless", "split_three"):
         r = client.post("/v1/scripts", json={"niche": "fitness", "style": style, "count": 2,
                                              "pillar": "Myth-busting"})
         s = r.json()["scripts"]

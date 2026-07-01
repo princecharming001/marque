@@ -267,13 +267,25 @@ struct PostEditorSheet: View {
                 ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() } }
             }
             .safeAreaInset(edge: .bottom) {
-                PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {
-                    posting = true
-                    var p = current
-                    Task { await store.postNow(p); posting = false; dismiss() }
+                if store.canPublish {
+                    PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {
+                        posting = true
+                        let p = current
+                        Task { await store.postNow(p); posting = false; dismiss() }
+                    }
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                    .background(.ultraThinMaterial)
+                } else {
+                    NavigationLink(destination: PaywallView()) {
+                        Label("Upgrade to publish", systemImage: "lock.fill")
+                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            .frame(maxWidth: .infinity).padding(Space.md)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    }
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                    .background(.ultraThinMaterial)
                 }
-                .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                .background(.ultraThinMaterial)
             }
         }
     }

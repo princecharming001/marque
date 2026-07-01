@@ -18,11 +18,14 @@ struct RecordView: View {
     @State private var footagePath: String?
     @State private var pickedItem: PhotosPickerItem?
     @State private var selectedFormats: Set<String>
+    // Mutable copy so inline teleprompter edits flow through without modifying the store mid-take.
+    @State private var liveScript: Script
 
     enum Phase { case ready, recording, recorded, making }
 
     init(script: Script) {
         self.script = script
+        _liveScript = State(initialValue: script)
         _selectedFormats = State(initialValue: Set([script.formatId, "broll-hook", "faceless"]))
     }
 
@@ -32,7 +35,7 @@ struct RecordView: View {
             VStack(spacing: Space.lg) {
                 topBar
                 Spacer(minLength: 0)
-                Teleprompter(script: script, running: $promptRunning, speed: $speed, restartToken: $restartToken)
+                Teleprompter(script: $liveScript, running: $promptRunning, speed: $speed, restartToken: $restartToken)
                     .frame(height: 300)
                 Spacer(minLength: 0)
                 controls
@@ -168,7 +171,8 @@ struct RecordView: View {
                              seconds: script.targetSeconds)
         }
         Task {
-            await store.makeClips(from: script, formats: Array(selectedFormats), footagePath: footagePath)
+            // Use liveScript so any inline teleprompter edits are reflected in the generated clips.
+            await store.makeClips(from: liveScript, formats: Array(selectedFormats), footagePath: footagePath)
             dismiss()
             router.selectedTab = .library
         }
@@ -208,42 +212,115 @@ struct RecordView: View {
     }
 }
 
-// MARK: - Teleprompter (proportional, speed-adjustable, pausable auto-scroll)
+// MARK: - Teleprompter (speed-adjustable, pausable, inline-editable while filming)
 
 struct Teleprompter: View {
-    let script: Script
+    @Binding var script: Script
     @Binding var running: Bool
     @Binding var speed: Double
     @Binding var restartToken: Int
     @State private var offset: CGFloat = 0
     @State private var contentH: CGFloat = 1
+    @State private var editingField: EditField? = nil
+    @State private var draft = ""
+    @FocusState private var editorFocused: Bool
     private let ticker = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
+
+    enum EditField { case hook, body, cta }
+
+    private var isEditing: Bool { editingField != nil }
+
+    private func startEdit(_ field: EditField) {
+        switch field {
+        case .hook: draft = script.hook.text
+        case .body: draft = script.body
+        case .cta: draft = script.cta
+        }
+        running = false
+        editingField = field
+        editorFocused = true
+    }
+
+    private func commitEdit() {
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let field = editingField else { editingField = nil; return }
+        switch field {
+        case .hook: script.hook.text = trimmed
+        case .body: script.body = trimmed
+        case .cta: script.cta = trimmed
+        }
+        editingField = nil
+    }
 
     var body: some View {
         GeometryReader { geo in
             let viewport = geo.size.height
             let maxScroll = max(0, contentH - viewport * 0.5)
-            VStack(alignment: .leading, spacing: Space.lg) {
-                Text(script.hook.text).font(Typeface.display(28, .semibold)).foregroundStyle(.white)
-                Text(script.body).font(Typeface.body(23)).foregroundStyle(.white.opacity(0.94)).lineSpacing(6)
-                Text(script.cta).font(Typeface.body(23, .semibold)).foregroundStyle(Palette.accent)
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    teleprompterLine(script.hook.text, font: Typeface.display(28, .semibold), field: .hook)
+                    teleprompterLine(script.body, font: Typeface.body(23), field: .body)
+                    teleprompterLine(script.cta, font: Typeface.body(23, .semibold), field: .cta, color: Palette.accent)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: TeleHeightKey.self, value: g.size.height)
+                })
+                .offset(y: -offset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .clipped()
+
+                if isEditing {
+                    Color.black.opacity(0.7).ignoresSafeArea()
+                        .onTapGesture { commitEdit() }
+                    VStack(spacing: Space.md) {
+                        TextEditor(text: $draft)
+                            .font(Typeface.body(22))
+                            .foregroundStyle(.white)
+                            .scrollContentBackground(.hidden)
+                            .frame(minHeight: 120, maxHeight: 240)
+                            .padding(Space.md)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .focused($editorFocused)
+                        HStack(spacing: Space.md) {
+                            Button("Cancel") { editingField = nil }
+                                .font(AppFont.callout).foregroundStyle(.white.opacity(0.7))
+                            Spacer()
+                            Button("Done") { commitEdit() }
+                                .font(AppFont.headline).foregroundStyle(Palette.accent)
+                        }
+                    }
+                    .padding(Space.lg)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(GeometryReader { g in
-                Color.clear.preference(key: TeleHeightKey.self, value: g.size.height)
-            })
-            .offset(y: -offset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .clipped()
             .onPreferenceChange(TeleHeightKey.self) { contentH = $0 }
             .onChange(of: restartToken) { _, _ in offset = 0 }
             .onReceive(ticker) { _ in
-                guard running, maxScroll > 0 else { return }
+                guard running, !isEditing, maxScroll > 0 else { return }
                 let pxPerSec = contentH / CGFloat(max(6, script.targetSeconds)) * CGFloat(speed)
                 offset = min(maxScroll, offset + pxPerSec / 60.0)
             }
         }
         .mask(LinearGradient(colors: [.clear, .black, .black, .clear], startPoint: .top, endPoint: .bottom))
+    }
+
+    @ViewBuilder
+    private func teleprompterLine(_ text: String, font: Font, field: EditField,
+                                   color: Color = .white.opacity(0.94)) -> some View {
+        Text(text)
+            .font(font)
+            .foregroundStyle(color)
+            .lineSpacing(field == .body ? 6 : 0)
+            .fixedSize(horizontal: false, vertical: true)
+            .onTapGesture { startEdit(field) }
+            .overlay(alignment: .topTrailing) {
+                Image(systemName: "pencil")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(4)
+            }
     }
 }
 
