@@ -105,7 +105,7 @@ struct SettingsView: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }

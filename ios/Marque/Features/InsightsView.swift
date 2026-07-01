@@ -85,7 +85,7 @@ struct InsightsView: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Insights")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }

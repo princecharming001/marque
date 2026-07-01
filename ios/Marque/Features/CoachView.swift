@@ -77,7 +77,7 @@ struct CoachView: View {
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends() }
         .refreshable { await store.loadTrends() }

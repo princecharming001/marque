@@ -19,7 +19,7 @@ struct LibraryView: View {
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
     }
 }
@@ -155,7 +155,7 @@ struct ClipDetailSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Clip").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -299,7 +299,7 @@ struct FootageDetailSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Footage").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
             .safeAreaInset(edge: .bottom) {
@@ -456,7 +456,7 @@ struct MediaEditSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Media").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {

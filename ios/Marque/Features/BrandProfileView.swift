@@ -79,7 +79,7 @@ struct BrandProfileView: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Brand")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { store.save(); dismiss() } } }

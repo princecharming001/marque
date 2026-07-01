@@ -56,7 +56,7 @@ struct CalendarView: View {
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .sheet(item: $sheet) { s in
             switch s {
@@ -290,7 +290,7 @@ struct SchedulePickerSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle(day.formatted(.dateTime.weekday().month().day()))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
@@ -392,7 +392,7 @@ struct PostEditorSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Edit post").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }

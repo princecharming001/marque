@@ -157,7 +157,7 @@ struct ScriptReaderView: View {
             .screenPadding()
             .padding(.vertical, Space.lg)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .safeAreaInset(edge: .bottom) {
             PrimaryButton(title: "Record this script", systemImage: "record.circle") { showRecord = true }
                 .accessibilityIdentifier("script.record")
@@ -213,7 +213,7 @@ struct HookLabSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
         .task {
@@ -248,7 +248,7 @@ struct FormatSwapSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Choose a format")
             .navigationBarTitleDisplayMode(.inline)
         }

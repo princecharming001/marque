@@ -9,11 +9,14 @@ struct StudioView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
-                ScreenTitle(text: "Studio")
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("YOUR CONTENT ENGINE").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                    Text("Studio").font(Typeface.display(40)).tracking(-1).foregroundStyle(Palette.textPrimary)
+                }
 
                 // Pillars — each carries the creator's angle; tap to write 3 scripts on it.
                 VStack(alignment: .leading, spacing: Space.md) {
-                    SectionLabel(text: "Your pillars")
+                    SectionLabel(text: "Your pillars", accent: Palette.accent)
                     if store.pillars.isEmpty {
                         Text("Finish your brand setup to get pillars.")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
@@ -35,7 +38,7 @@ struct StudioView: View {
                 // Scripts — collapsed title card → expand for summary+hook → open full reader.
                 VStack(alignment: .leading, spacing: Space.md) {
                     HStack {
-                        SectionLabel(text: "Ready to record")
+                        SectionLabel(text: "Ready to record", accent: Palette.accent)
                         Spacer()
                         if store.isGenerating { ProgressView().tint(Palette.accent) }
                     }
@@ -51,9 +54,10 @@ struct StudioView: View {
                 }
             }
             .screenPadding()
-            .padding(.vertical, Space.lg)
+            .padding(.top, Space.lg)
+            .padding(.bottom, 110)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -85,7 +89,7 @@ struct PillarCard: View {
             HStack(spacing: 7) {
                 Circle().fill(Color(hex: pillar.colorHex)).frame(width: 8, height: 8)
                 Text(pillar.name)
-                    .font(AppFont.serifM).tracking(Track.tight).textCase(.lowercase)
+                    .font(AppFont.serifM).tracking(Track.tight)
                     .foregroundStyle(Palette.textPrimary).lineLimit(1)
             }
             Text(pillar.summary.isEmpty ? "Write fresh scripts on this pillar." : pillar.summary)
@@ -132,9 +136,13 @@ struct ScriptCard: View {
                 withAnimation(Motion.spring) { expanded.toggle() }
             } label: {
                 HStack(alignment: .top, spacing: Space.md) {
-                    VStack(alignment: .leading, spacing: Space.sm) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if !script.pillarName.isEmpty {
+                            Text("FROM \(script.pillarName.uppercased())")
+                                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                        }
                         Text(heading)
-                            .font(AppFont.serifM).tracking(Track.tight).textCase(.lowercase)
+                            .font(AppFont.headline)
                             .foregroundStyle(Palette.textPrimary)
                             .multilineTextAlignment(.leading)
                             .lineLimit(2).fixedSize(horizontal: false, vertical: true)
