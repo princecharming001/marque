@@ -337,6 +337,21 @@ final class AppStore {
         save()
     }
 
+    /// Delete a clip and any schedule entries pointing at it.
+    func deleteClip(_ clip: Clip) {
+        clips.removeAll { $0.id == clip.id }
+        schedule.removeAll { $0.clipId == clip.id }
+        save()
+    }
+
+    /// Edit a clip's social caption in place.
+    func updateClipCaption(_ clip: Clip, caption: String) {
+        if let idx = clips.firstIndex(where: { $0.id == clip.id }) {
+            clips[idx].caption = caption
+            save()
+        }
+    }
+
     /// Publish immediately (live via Ayrshare when keyed; mock otherwise) and mark posted.
     func postNow(_ post: ScheduledPost) async {
         guard canPublish else { return }
@@ -398,6 +413,10 @@ final class AppStore {
     /// Clips that are scheduled or posted (the ones contributing reach this week).
     var activeClipCount: Int { clips.filter { $0.status == .scheduled || $0.status == .posted }.count }
     var bestClip: Clip? { clips.max { $0.predictedScore < $1.predictedScore } }
+
+    /// True only once a post has real, logged metrics. The momentum hero stays in its honest
+    /// empty/teaching state until then — we never present projected numbers as measured reach.
+    var hasRealMetrics: Bool { schedule.contains { ($0.metrics?.views ?? 0) > 0 } }
 
     // Weekly performance. Uses real ScheduledPost.metrics when an Insights provider has
     // populated them; otherwise projects from predicted scores so the card is never empty.

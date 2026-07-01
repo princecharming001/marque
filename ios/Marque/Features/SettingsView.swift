@@ -1,24 +1,18 @@
 import SwiftUI
+import StoreKit
 
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var showPaywall = false
+    @State private var showDeleteConfirm = false
+    @State private var restoring = false
 
     var body: some View {
         @Bindable var store = store
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
-                    // AI engine status
-                    HStack {
-                        Text("AI engine").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                        Spacer()
-                        Text(store.aiMode).font(AppFont.callout)
-                            .foregroundStyle(store.aiMode == "Claude" ? Palette.positive : Palette.textSecondary)
-                    }
-                    .marqueCard(padding: Space.md)
-
                     // Upgrade
                     Button { showPaywall = true } label: {
                         HStack {
@@ -33,6 +27,14 @@ struct SettingsView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.upgrade")
 
+                    // Accounts — connectable after onboarding, not only during it
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        SectionTitle(text: "Accounts")
+                        Text("Link Instagram and TikTok so Marque can publish for you and learn from what works.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        ConnectAccountsView()
+                    }
+
                     // Content styles
                     VStack(alignment: .leading, spacing: Space.md) {
                         SectionTitle(text: "Content styles")
@@ -42,12 +44,42 @@ struct SettingsView: View {
                     }
                     .onChange(of: store.brand.preferredStyles) { _, _ in store.save() }
 
-                    // Danger zone
+                    // Subscription
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        SectionTitle(text: "Subscription")
+                        Button {
+                            restoring = true
+                            Task { try? await StoreKit.AppStore.sync(); restoring = false }
+                        } label: {
+                            row(restoring ? "Restoring…" : "Restore purchases", "arrow.clockwise")
+                        }
+                        .buttonStyle(.plain).disabled(restoring)
+                        Link(destination: URL(string: "https://apps.apple.com/account/subscriptions")!) {
+                            row("Manage subscription", "creditcard")
+                        }
+                    }
+
+                    // Legal
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        SectionTitle(text: "Legal")
+                        Link(destination: LegalURLs.privacy) { row("Privacy Policy", "hand.raised") }
+                        Link(destination: LegalURLs.terms) { row("Terms of Use", "doc.text") }
+                        Link(destination: LegalURLs.support) { row("Support", "questionmark.circle") }
+                    }
+
+                    // Account — deletion is an App Store requirement (5.1.1(v))
                     VStack(alignment: .leading, spacing: Space.md) {
                         SectionTitle(text: "Account")
+                        Button(role: .destructive) { showDeleteConfirm = true } label: {
+                            row("Delete account", "trash", tint: Palette.critical)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.deleteAccount")
+                        #if DEBUG
                         GhostButton(title: "Reset app to first run", systemImage: "arrow.counterclockwise") {
                             store.resetAll(); dismiss()
                         }
+                        #endif
                     }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
@@ -57,7 +89,23 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $showPaywall) { PaywallView() }
+            .alert("Delete account?", isPresented: $showDeleteConfirm) {
+                Button("Cancel", role: .cancel) {}
+                Button("Delete", role: .destructive) { store.resetAll(); dismiss() }
+            } message: {
+                Text("This permanently erases your brand, scripts, clips, and schedule from this device. This can't be undone.")
+            }
         }
     }
 
+    private func row(_ title: String, _ icon: String, tint: Color = Palette.textPrimary) -> some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: icon).foregroundStyle(tint).frame(width: 22)
+            Text(title).font(AppFont.body).foregroundStyle(tint)
+            Spacer()
+            Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
+    }
 }

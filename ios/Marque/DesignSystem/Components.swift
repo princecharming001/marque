@@ -205,12 +205,15 @@ struct UnderlineTabBar: View {
     }
 }
 
+// A predicted (not measured) virality signal. The leading sparkle + "est." keep it
+// visually distinct from real metrics, so a creator never mistakes it for a measured stat.
 struct ScoreBadge: View {
     let score: Int
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
+        HStack(spacing: 4) {
+            Image(systemName: "sparkle").font(.system(size: 8, weight: .semibold)).foregroundStyle(color)
             Text("\(score)").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            Text("est.").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
         }
         .accessibilityLabel("Predicted score \(score) of 100")
     }

@@ -61,7 +61,7 @@ struct TodayView: View {
 
     // MARK: Momentum / growth insights (the numeral-led hero)
 
-    private var hasMomentum: Bool { store.activeClipCount > 0 }
+    private var hasMomentum: Bool { store.hasRealMetrics }
 
     private var momentum: some View {
         VStack(alignment: .leading, spacing: Space.md) {
@@ -82,7 +82,7 @@ struct TodayView: View {
                     Text(compactNumber(store.weekViews))
                         .font(AppFont.heroNumeral).tracking(Track.hero)
                         .foregroundStyle(Palette.textPrimary)
-                    Text("projected views").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    Text("views this week").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         .padding(.bottom, 6)
                 }
                 Sparkline(values: store.weekTrend).frame(height: 42)
@@ -95,7 +95,7 @@ struct TodayView: View {
                 Text("Post your first clip")
                     .font(AppFont.serifL).tracking(Track.title).textCase(.lowercase)
                     .foregroundStyle(Palette.textPrimary)
-                Text("Once you schedule clips, your reach and follower growth show up here every week.")
+                Text("Once your posts start collecting views, your real reach and follower growth show up here every week.")
                     .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

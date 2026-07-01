@@ -7,8 +7,8 @@ struct MarqueTabBar: View {
     var onCreateTap: () -> Void
 
     private let leftItems: [(tab: AppTab, label: String, icon: String)] = [
-        (.home, "Home", "sun.max"),
-        (.plan, "Plan", "calendar"),
+        (.home, "Today", "sun.max"),
+        (.plan, "Calendar", "calendar"),
     ]
 
     private let rightItems: [(tab: AppTab, label: String, icon: String)] = [

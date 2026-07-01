@@ -12,11 +12,26 @@ struct InsightsView: View {
             .map { ($0.key, $0.value.count) }
             .sorted { $0.1 > $1.1 }
     }
+    // Real, self-reported results — the only measured numbers on this screen.
+    private var logged: [ScheduledPost] { store.schedule.filter { ($0.metrics?.views ?? 0) > 0 } }
+    private var totalViews: Int { logged.compactMap { $0.metrics?.views }.reduce(0, +) }
+    private var totalLikes: Int { logged.compactMap { $0.metrics?.likes }.reduce(0, +) }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
+                    if !logged.isEmpty {
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            SectionTitle(text: "How your posts did")
+                            HStack(spacing: Space.md) {
+                                stat(compactNumber(totalViews), "Views")
+                                stat(compactNumber(totalLikes), "Likes")
+                                stat("\(logged.count)", "Posts logged")
+                            }
+                        }
+                    }
+
                     HStack(spacing: Space.md) {
                         stat("\(store.clips.count)", "Clips made")
                         stat("\(store.schedule.count)", "Scheduled")
@@ -25,7 +40,7 @@ struct InsightsView: View {
 
                     if let best = bestClip {
                         VStack(alignment: .leading, spacing: Space.sm) {
-                            SectionTitle(text: "Top clip")
+                            SectionTitle(text: "Highest predicted clip")
                             Text(best.caption).font(AppFont.title).foregroundStyle(Palette.textPrimary).lineLimit(2)
                             HStack { FormatTag(formatId: best.formatId); Spacer(); ScoreBadge(score: best.predictedScore) }
                         }.marqueCard()

@@ -12,13 +12,7 @@ struct StudioView: View {
 
                 // Pillars — each carries the creator's angle; tap to write 3 scripts on it.
                 VStack(alignment: .leading, spacing: Space.md) {
-                    HStack {
-                        SectionLabel(text: "Your pillars")
-                        Spacer()
-                        Text("AI · \(store.aiMode)")
-                            .font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(store.aiMode == "Claude" ? Palette.positive : Palette.textTertiary)
-                    }
+                    SectionLabel(text: "Your pillars")
                     if store.pillars.isEmpty {
                         Text("Finish your brand setup to get pillars.")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)

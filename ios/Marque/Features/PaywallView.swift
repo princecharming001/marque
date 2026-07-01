@@ -1,8 +1,10 @@
 import SwiftUI
+import StoreKit
 
 // Calm one-screen paywall, presented at the publish gate (11-monetization.md).
 struct PaywallView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var restoring = false
 
     private let proFeatures = [
         "Unlimited scripts in your voice",
@@ -34,12 +36,24 @@ struct PaywallView: View {
                     .marqueCard()
 
                     VStack(spacing: Space.sm) {
-                        PrimaryButton(title: "Start 7-day free trial", shine: true) { dismiss() }
+                        PrimaryButton(title: "Go Pro", shine: true) { dismiss() }
                             .accessibilityIdentifier("paywall.subscribe")
-                        Text("Then $14.99/mo. Cancel anytime.")
+                        Text("$14.99/mo. Cancel anytime.")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        Button("Restore purchases") { }
-                            .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        Button(restoring ? "Restoring…" : "Restore purchases") {
+                            restoring = true
+                            Task { try? await StoreKit.AppStore.sync(); restoring = false }
+                        }
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        .disabled(restoring)
+
+                        HStack(spacing: Space.sm) {
+                            Link("Privacy Policy", destination: LegalURLs.privacy)
+                            Text("·").foregroundStyle(Palette.textTertiary)
+                            Link("Terms of Use", destination: LegalURLs.terms)
+                        }
+                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                        .padding(.top, Space.xs)
                     }
                 }
                 .screenPadding().padding(.vertical, Space.lg)

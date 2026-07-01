@@ -159,12 +159,11 @@ struct MockLLMRouter: LLMRouting {
 
     func teardown(for clip: Clip) async -> TeardownCard {
         try? await Task.sleep(nanoseconds: 400_000_000)
-        let lift = 20 + Int(clip.predictedScore % 60)
         return TeardownCard(
             clipCaption: clip.caption,
-            headline: "This one beat \(lift)% of your posts",
-            detail: "The hook landed in the first 2 seconds and the format kept a visual change every few seconds. Make two more like it.",
-            liftPercent: lift)
+            headline: "Why this one's built to land",
+            detail: "The hook lands in the first 2 seconds and the format keeps a visual change every few seconds. Make two more like it.",
+            liftPercent: 0)
     }
 
     // Niche-specific content pillars derived from the creator's actual brand (NOT a static list).
@@ -271,7 +270,7 @@ struct MockInsights: InsightsProviding {
         try? await Task.sleep(nanoseconds: 300_000_000)
         let n = niche.isEmpty ? "your niche" : niche
         return [
-            .init(title: "Myth-busting is spiking in \(n)", why: "Contrarian hooks are over-indexing on shares this week.", formatId: "myth-buster"),
+            .init(title: "Myth-busting is spiking in \(n)", why: "Contrarian hooks are getting shared a lot this week.", formatId: "myth-buster"),
             .init(title: "“Do this, not that” splits", why: "Side-by-side comparisons are getting high rewatch.", formatId: "do-this-not-that"),
             .init(title: "Faceless explainers", why: "AI-visual voiceovers are cheap to test and trending.", formatId: "faceless"),
         ]

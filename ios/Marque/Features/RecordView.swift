@@ -8,6 +8,7 @@ struct RecordView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @StateObject private var camera = CameraModel()
     let script: Script
 
@@ -70,7 +71,7 @@ struct RecordView: View {
             Spacer()
             FormatTag(formatId: script.formatId).colorScheme(.dark)
             Spacer()
-            Image(systemName: "camera.rotate").foregroundStyle(.white.opacity(0.7))
+            Image(systemName: "xmark").foregroundStyle(.clear)   // balances the close button so the tag stays centered
         }
     }
 
@@ -78,8 +79,17 @@ struct RecordView: View {
         VStack(spacing: Space.lg) {
             switch phase {
             case .ready:
-                Text(camera.status == .unavailable ? "No camera in the Simulator — tap to simulate a take." : "Read it once. We'll cut the rest.")
+                Text(camera.status == .unavailable ? "Camera access is off. Enable it in Settings, or upload a video below." : "Read it once. We'll cut the rest.")
                     .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                if camera.status == .unavailable {
+                    Button {
+                        if let url = URL(string: "app-settings:") { openURL(url) }
+                    } label: {
+                        Label("Enable camera access", systemImage: "gearshape")
+                            .font(AppFont.callout).foregroundStyle(.white)
+                    }
+                    .accessibilityIdentifier("record.openSettings")
+                }
                 speedControl
                 recordButton { startRecording() }
                 PhotosPicker(selection: $pickedItem, matching: .videos) {

@@ -209,6 +209,7 @@ struct PostEditorSheet: View {
     @State private var caption: String
     @State private var autoCaptions: Bool
     @State private var posting = false
+    @State private var showMetrics = false
 
     init(post: ScheduledPost) {
         self.post = post
@@ -253,6 +254,21 @@ struct PostEditorSheet: View {
                         Text("Auto-captions").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
                     }.tint(Palette.accent)
 
+                    // Log real results so Today/Insights/Coach learn from measured reach, not guesses.
+                    Button { showMetrics = true } label: {
+                        HStack(spacing: Space.sm) {
+                            Image(systemName: post.metrics == nil ? "chart.bar.doc.horizontal" : "checkmark.circle.fill")
+                                .foregroundStyle(post.metrics == nil ? Palette.goldDeep : Palette.positive)
+                            Text(post.metrics == nil ? "Log results" : "Results logged — edit")
+                                .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
+                        }
+                        .padding(.vertical, Space.xs)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("post.logMetrics")
+
                     Button(role: .destructive) { store.deleteScheduledPost(post); dismiss() } label: {
                         Text("Remove from schedule").font(AppFont.callout).foregroundStyle(Palette.critical)
                     }
@@ -266,6 +282,7 @@ struct PostEditorSheet: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() } }
             }
+            .sheet(isPresented: $showMetrics) { MetricsEntrySheet(post: post) }
             .safeAreaInset(edge: .bottom) {
                 if store.canPublish {
                     PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {

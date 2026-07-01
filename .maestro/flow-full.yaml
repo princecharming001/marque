@@ -91,7 +91,7 @@ name: Marque — full core loop
 - takeScreenshot: /Users/home/Marque/.shots/flow-library
 
 # Schedule a clip onto the week
-- tapOn: "Plan"
+- tapOn: "Calendar"
 - takeScreenshot: /Users/home/Marque/.shots/after-calendar-tap
 - extendedWaitUntil:
     visible: "Schedule a clip"

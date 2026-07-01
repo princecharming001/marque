@@ -87,6 +87,21 @@ struct ClipDetailSheet: View {
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
     let clip: Clip
+    @State private var caption: String
+    @State private var showDelete = false
+
+    init(clip: Clip) {
+        self.clip = clip
+        _caption = State(initialValue: clip.caption)
+    }
+
+    // A shareable file/URL for export to Photos, Messages, the platform apps, etc.
+    private var shareURL: URL? {
+        if let p = clip.localVideoPath { return MediaStore.url(for: p) }
+        if let r = clip.remoteURL, let u = URL(string: r) { return u }
+        return nil
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -100,8 +115,21 @@ struct ClipDetailSheet: View {
                         Spacer()
                         ScoreBadge(score: clip.predictedScore)
                     }
-                    Text(clip.caption).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
+
+                    // Editable caption — creators tweak the copy before it goes out.
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "Caption", accent: Palette.accent)
+                        TextField("Caption", text: $caption, axis: .vertical)
+                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            .lineLimit(2...6)
+                            .padding(Space.md)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                            .accessibilityIdentifier("clip.caption")
+                    }
+
                     if !clip.captionLines.isEmpty {
                         VStack(alignment: .leading, spacing: 6) {
                             SectionLabel(text: "Auto-captions", accent: Palette.accent)
@@ -115,15 +143,33 @@ struct ClipDetailSheet: View {
             }
             .background(Palette.surface.ignoresSafeArea())
             .navigationTitle("Clip").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        if let shareURL { ShareLink(item: shareURL) { Label("Share / Export", systemImage: "square.and.arrow.up") } }
+                        Button(role: .destructive) { showDelete = true } label: { Label("Delete clip", systemImage: "trash") }
+                    } label: { Image(systemName: "ellipsis.circle") }
+                    .accessibilityIdentifier("clip.menu")
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { store.updateClipCaption(clip, caption: caption); dismiss() }
+                }
+            }
             .safeAreaInset(edge: .bottom) {
                 if clip.status == .ready {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
+                        store.updateClipCaption(clip, caption: caption)
                         dismiss(); router.selectedTab = .plan
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
                 }
+            }
+            .confirmationDialog("Delete this clip?", isPresented: $showDelete, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) { store.deleteClip(clip); dismiss() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes the clip and any times it's scheduled. This can't be undone.")
             }
         }
     }

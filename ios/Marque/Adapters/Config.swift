@@ -26,3 +26,11 @@ enum AppConfig {
     static var assemblyAIKey: String { value(env: "ASSEMBLYAI_KEY", defaults: "assemblyai.key") }
     static var shotstackKey: String { value(env: "SHOTSTACK_KEY", defaults: "shotstack.key") }
 }
+
+// Hosted legal + support pages. These URLs MUST resolve to real pages before App Store
+// submission (Privacy Policy is required; Terms/Support are expected for a subscription app).
+enum LegalURLs {
+    static let privacy = URL(string: "https://marque.app/privacy")!
+    static let terms = URL(string: "https://marque.app/terms")!
+    static let support = URL(string: "https://marque.app/support")!
+}
