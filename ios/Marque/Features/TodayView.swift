@@ -27,6 +27,7 @@ struct TodayView: View {
             .padding(.vertical, Space.lg)
         }
         .background(Palette.surface.ignoresSafeArea())
+        .navigationTitle("Today")
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -136,8 +137,8 @@ struct TodayView: View {
         store.clips.contains(where: { $0.status == .ready }) ? "calendar" : "square.grid.2x2"
     }
     private func ctaAction() {
-        if store.clips.contains(where: { $0.status == .ready }) { router.selectedTab = .calendar }
-        else { router.selectedTab = .studio }
+        if store.clips.contains(where: { $0.status == .ready }) { router.selectedTab = .plan }
+        else { router.showCreate = true }
     }
 
     // MARK: Next up + trend

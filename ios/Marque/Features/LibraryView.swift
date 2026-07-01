@@ -119,7 +119,7 @@ struct ClipDetailSheet: View {
             .safeAreaInset(edge: .bottom) {
                 if clip.status == .ready {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
-                        dismiss(); router.selectedTab = .calendar
+                        dismiss(); router.selectedTab = .plan
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)

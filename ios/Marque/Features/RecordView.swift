@@ -175,6 +175,7 @@ struct RecordView: View {
             await store.makeClips(from: liveScript, formats: Array(selectedFormats), footagePath: footagePath)
             dismiss()
             router.selectedTab = .library
+            router.showCreate = false
         }
     }
 
