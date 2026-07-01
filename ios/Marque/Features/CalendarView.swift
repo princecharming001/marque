@@ -29,26 +29,35 @@ struct CalendarView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
-                ScreenTitle(text: "Calendar")
-                Picker("View", selection: $mode) {
-                    ForEach(CalMode.allCases) { Text($0.rawValue).tag($0) }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PLAN AHEAD").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                    ScreenTitle(text: "Calendar")
                 }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("calendar.modeToggle")
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    SectionLabel(text: "View", accent: Palette.accent)
+                    Picker("View", selection: $mode) {
+                        ForEach(CalMode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("calendar.modeToggle")
+                }
                 Text("Tap a day to schedule a ready clip; tap a post to edit, reschedule or publish. Times are shown in your timezone.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .lineSpacing(4)
 
                 if mode == .week {
-                    ForEach(week, id: \.self) { day in
-                        DayRow(day: day,
-                               posts: store.schedule
-                                .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
-                                .sorted { $0.date < $1.date },
-                               hasReady: store.clips.contains { $0.status == .ready },
-                               clipFor: { id in store.clips.first { $0.id == id } },
-                               onAdd: { sheet = .schedule(day: day, clipId: nil) },
-                               onTapPost: { sheet = .edit($0) },
-                               onDuplicate: { store.duplicatePost($0) })
+                    VStack(spacing: 12) {
+                        ForEach(week, id: \.self) { day in
+                            DayRow(day: day,
+                                   posts: store.schedule
+                                    .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
+                                    .sorted { $0.date < $1.date },
+                                   hasReady: store.clips.contains { $0.status == .ready },
+                                   clipFor: { id in store.clips.first { $0.id == id } },
+                                   onAdd: { sheet = .schedule(day: day, clipId: nil) },
+                                   onTapPost: { sheet = .edit($0) },
+                                   onDuplicate: { store.duplicatePost($0) })
+                        }
                     }
                 } else {
                     MonthGrid(schedule: store.schedule) { day in sheet = .schedule(day: day, clipId: nil) }
@@ -137,62 +146,77 @@ struct DayRow: View {
     let onDuplicate: (ScheduledPost) -> Void
 
     private var isToday: Bool { Calendar.current.isDateInToday(day) }
+    private var hasContent: Bool { !posts.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: Space.sm) {
-                Text(day.formatted(.dateTime.weekday(.wide)))
-                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                if isToday {
-                    Text("TODAY").font(.system(size: 9, weight: .bold)).tracking(0.6)
-                        .foregroundStyle(Palette.onInk)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Palette.ink).clipShape(Capsule())
-                        .accessibilityHidden(true)   // decorative; don't collide with the "Today" tab
-                }
-                Spacer()
-                Text(day.formatted(.dateTime.month().day()))
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-            }
-            if posts.isEmpty {
-                Button(action: onAdd) {
-                    HStack {
-                        Image(systemName: "plus.circle").foregroundStyle(Palette.accent)
-                        Text(hasReady ? "Schedule a clip" : "Nothing scheduled")
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                        Spacer()
-                        if hasReady {
-                            Text("best ~6 PM").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-                        }
+        HStack(spacing: 0) {
+            // 3pt accent rail — visible only when this day has posts
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(hasContent ? Palette.accent : Color.clear)
+                .frame(width: 3)
+                .padding(.vertical, Space.md)
+
+            VStack(alignment: .leading, spacing: Space.sm) {
+                HStack(spacing: Space.sm) {
+                    Text(day.formatted(.dateTime.weekday(.wide)))
+                        .font(Typeface.display(17, .semibold)).tracking(Track.tight)
+                        .foregroundStyle(Palette.textPrimary)
+                    if isToday {
+                        Text("TODAY").font(.system(size: 9, weight: .bold)).tracking(0.6)
+                            .foregroundStyle(Palette.onInk)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Palette.ink).clipShape(Capsule())
+                            .accessibilityHidden(true)
                     }
-                    .contentShape(Rectangle())   // make the whole row (incl. the Spacer) tappable
+                    Spacer()
+                    Text(day.formatted(.dateTime.month().day()))
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 }
-                .buttonStyle(.plain).disabled(!hasReady)
-                .accessibilityIdentifier("calendar.addClip")
-            } else {
-                ForEach(posts) { p in
-                    Button { onTapPost(p) } label: { PostRow(post: p, clip: clipFor(p.clipId)) }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("calendar.post")
-                        .contextMenu {
-                            Button { onTapPost(p) } label: { Label("Edit", systemImage: "pencil") }
-                            Button { onDuplicate(p) } label: { Label("Duplicate to next day", systemImage: "plus.square.on.square") }
-                        }
-                }
-                if hasReady {
+                if posts.isEmpty {
                     Button(action: onAdd) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
-                            Text("Add another").font(AppFont.caption)
+                        HStack {
+                            Image(systemName: "plus.circle").foregroundStyle(Palette.accent)
+                            Text(hasReady ? "Schedule a clip" : "Nothing scheduled")
+                                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            Spacer()
+                            if hasReady {
+                                Text("best ~6 PM").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                            }
                         }
-                        .foregroundStyle(Palette.accent)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plain).disabled(!hasReady)
                     .accessibilityIdentifier("calendar.addClip")
+                } else {
+                    ForEach(posts) { p in
+                        Button { onTapPost(p) } label: { PostRow(post: p, clip: clipFor(p.clipId)) }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("calendar.post")
+                            .contextMenu {
+                                Button { onTapPost(p) } label: { Label("Edit", systemImage: "pencil") }
+                                Button { onDuplicate(p) } label: { Label("Duplicate to next day", systemImage: "plus.square.on.square") }
+                            }
+                    }
+                    if hasReady {
+                        Button(action: onAdd) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
+                                Text("Add another").font(AppFont.caption)
+                            }
+                            .foregroundStyle(Palette.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("calendar.addClip")
+                    }
                 }
             }
+            .padding(Space.md)
         }
-        .marqueCard(padding: Space.md)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
     }
 }
 

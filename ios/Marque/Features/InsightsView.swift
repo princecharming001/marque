@@ -12,7 +12,6 @@ struct InsightsView: View {
             .map { ($0.key, $0.value.count) }
             .sorted { $0.1 > $1.1 }
     }
-    // Real, self-reported results — the only measured numbers on this screen.
     private var logged: [ScheduledPost] { store.schedule.filter { ($0.metrics?.views ?? 0) > 0 } }
     private var totalViews: Int { logged.compactMap { $0.metrics?.views }.reduce(0, +) }
     private var totalLikes: Int { logged.compactMap { $0.metrics?.likes }.reduce(0, +) }
@@ -20,62 +19,63 @@ struct InsightsView: View {
         let rates = logged.compactMap { $0.metrics?.engagementRate }
         return rates.isEmpty ? 0 : rates.reduce(0, +) / Double(rates.count)
     }
+    private var heroValue: String {
+        if totalViews > 0 { return compactNumber(totalViews) }
+        return "\(store.clips.count)"
+    }
+    private var heroLabel: String {
+        totalViews > 0 ? "total views" : "clips made"
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
+                    // Hero numeral moment
+                    heroCard
+
+                    // How posts did (if logged)
                     if !logged.isEmpty {
-                        VStack(alignment: .leading, spacing: Space.md) {
-                            SectionTitle(text: "How your posts did")
-                            HStack(spacing: Space.md) {
-                                stat(compactNumber(totalViews), "Views")
-                                stat(compactNumber(totalLikes), "Likes")
-                                stat("\(logged.count)", "Posts logged")
-                            }
-                            HStack {
-                                Text("Avg engagement").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                                Spacer()
-                                Text(String(format: "%.1f%%", avgEngagement * 100))
-                                    .font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                            }
-                            .marqueCard(padding: Space.md)
-                        }
+                        logsSection
                     } else if !store.clips.isEmpty {
                         HStack(spacing: Space.sm) {
                             Image(systemName: "info.circle").foregroundStyle(Palette.textTertiary)
-                            Text("No results logged yet. Tap “Log results” on a post to see real views and engagement here.")
+                            Text("No results logged yet. Tap \u{201C}Log results\u{201D} on a post to see real views and engagement here.")
                                 .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .marqueCard(padding: Space.md)
                     }
 
-                    HStack(spacing: Space.md) {
-                        stat("\(store.clips.count)", "Clips made")
-                        stat("\(store.schedule.count)", "Scheduled")
-                        stat("\(store.streak)", "Day streak")
-                    }
-
+                    // Best clip
                     if let best = bestClip {
                         VStack(alignment: .leading, spacing: Space.sm) {
-                            SectionTitle(text: "Highest predicted clip")
-                            Text(best.caption).font(AppFont.title).foregroundStyle(Palette.textPrimary).lineLimit(2)
-                            HStack { FormatTag(formatId: best.formatId); Spacer(); ScoreBadge(score: best.predictedScore) }
-                        }.marqueCard()
-                    }
-
-                    if !formatCounts.isEmpty {
-                        VStack(alignment: .leading, spacing: Space.md) {
-                            SectionTitle(text: "Your format mix")
-                            ForEach(formatCounts, id: \.0) { name, count in
+                            SectionLabel(text: "Highest predicted clip", accent: Palette.accent)
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                Text(best.caption)
+                                    .font(AppFont.title).foregroundStyle(Palette.textPrimary).lineLimit(2)
                                 HStack {
-                                    Text(name).font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                                    FormatTag(formatId: best.formatId)
                                     Spacer()
-                                    Text("\(count)").font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                                    ScoreBadge(score: best.predictedScore)
                                 }
                             }
-                        }.marqueCard()
+                            .marqueCard()
+                        }
+                    }
+
+                    // Format mix — visual bar rows
+                    if !formatCounts.isEmpty {
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            SectionLabel(text: "Your format mix", accent: Palette.accent)
+                            VStack(spacing: 0) {
+                                ForEach(Array(formatCounts.enumerated()), id: \.element.0) { i, item in
+                                    if i > 0 { MarqueHairline() }
+                                    FormatBarRow(name: item.0, count: item.1, maxCount: formatCounts.first?.1 ?? 1)
+                                }
+                            }
+                            .marqueCard(padding: 0)
+                        }
                     }
 
                     if store.clips.isEmpty {
@@ -92,6 +92,57 @@ struct InsightsView: View {
         }
     }
 
+    // MARK: Hero numeral
+
+    private var heroCard: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(alignment: .lastTextBaseline, spacing: Space.sm) {
+                Text(heroValue)
+                    .font(Typeface.display(56, .semibold)).tracking(Track.hero)
+                    .foregroundStyle(Palette.textPrimary)
+                Text(heroLabel)
+                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .padding(.bottom, 8)
+            }
+            HStack(spacing: Space.md) {
+                miniStat("\(store.schedule.count)", "Scheduled")
+                miniStat("\(store.streak)", "Sessions")
+                if totalLikes > 0 { miniStat(compactNumber(totalLikes), "Likes") }
+            }
+        }
+        .marqueCard(radius: 22)
+    }
+
+    private func miniStat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+            Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: Logged posts section
+
+    private var logsSection: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            SectionLabel(text: "How your posts did", accent: Palette.accent)
+            HStack(spacing: Space.md) {
+                stat(compactNumber(totalViews), "Views")
+                stat(compactNumber(totalLikes), "Likes")
+                stat("\(logged.count)", "Logged")
+            }
+            if avgEngagement > 0 {
+                HStack {
+                    Text("Avg engagement").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    Spacer()
+                    Text(String(format: "%.1f%%", avgEngagement * 100))
+                        .font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                }
+                .marqueCard(padding: Space.md)
+            }
+        }
+    }
+
     private func stat(_ value: String, _ label: String) -> some View {
         VStack(spacing: 4) {
             Text(value).font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
@@ -99,5 +150,38 @@ struct InsightsView: View {
         }
         .frame(maxWidth: .infinity)
         .marqueCard(padding: Space.md)
+    }
+}
+
+// MARK: - Format bar row
+
+struct FormatBarRow: View {
+    let name: String
+    let count: Int
+    let maxCount: Int
+
+    private var pct: Double { maxCount > 0 ? Double(count) / Double(maxCount) : 0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text(name).font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                Spacer()
+                Text("\(count) clip\(count == 1 ? "" : "s")")
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.hairline).frame(height: 5)
+                    Capsule().fill(Palette.accent)
+                        .frame(width: geo.size.width * pct, height: 5)
+                        .animation(.easeOut(duration: 0.6), value: pct)
+                }
+            }
+            .frame(height: 5)
+        }
+        .padding(.horizontal, Space.lg)
+        .padding(.vertical, Space.md)
+        .contentShape(Rectangle())
     }
 }

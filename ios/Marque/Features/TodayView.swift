@@ -16,6 +16,7 @@ struct TodayView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2)
                 momentum
+                upcomingStrip
                 command
                 quietRows
             }
@@ -111,6 +112,43 @@ struct TodayView: View {
             }
         }
         .marqueCard(radius: 22)
+    }
+
+    // MARK: Upcoming posts strip — next 3 scheduled posts
+
+    @ViewBuilder private var upcomingStrip: some View {
+        let upcoming = store.schedule
+            .filter { !$0.posted && $0.date >= Date() }
+            .sorted { $0.date < $1.date }
+            .prefix(3)
+        if !upcoming.isEmpty {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                SectionLabel(text: "Coming up", accent: Palette.accent)
+                HStack(spacing: Space.sm) {
+                    ForEach(Array(upcoming)) { post in
+                        Button { router.selectedTab = .plan } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(post.date.formatted(.dateTime.weekday(.abbreviated)))
+                                    .font(AppFont.micro).tracking(Track.label)
+                                    .foregroundStyle(Palette.textTertiary)
+                                Text(post.caption)
+                                    .font(AppFont.caption).foregroundStyle(Palette.textPrimary)
+                                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                Text(post.date.formatted(.dateTime.hour().minute()))
+                                    .font(AppFont.micro).foregroundStyle(Palette.textSecondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(Space.sm)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: Command card — directive + queued ring + next action

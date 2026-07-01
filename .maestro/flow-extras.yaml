@@ -5,7 +5,7 @@ name: Marque — extra screens (assumes onboarded)
 # Brand Profile (editable Brand Graph)
 - tapOn:
     id: "today.profile"
-- assertVisible: "What Marque knows about you"
+- assertVisible: "Your Profile"
 - tapOn:
     id: "profile.knownFor"
 - inputText: " — refined"

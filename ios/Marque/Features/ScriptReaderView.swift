@@ -43,38 +43,10 @@ struct ScriptReaderView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
-                // Hook (tap → Hook Lab; Edit → reword in place)
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    HStack {
-                        SectionTitle(text: editingHook ? "Hook" : "Hook · tap to explore")
-                        Spacer()
-                        Button(editingHook ? "Done" : "Edit") {
-                            if editingHook { commitHookEdit() } else { hookDraft = live.hook.text; editingHook = true }
-                        }
-                        .font(AppFont.callout).foregroundStyle(editingHook ? Palette.accent : Palette.goldDeep)
-                        .accessibilityIdentifier("script.editHook")
-                    }
-                    if editingHook {
-                        TextField("Hook", text: $hookDraft, axis: .vertical)
-                            .font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-                            .padding(Space.md)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                            .accessibilityIdentifier("script.hookEditor")
-                    } else {
-                        Button { showHookLab = true } label: {
-                            Text(live.hook.text)
-                                .font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-                                .multilineTextAlignment(.leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }.buttonStyle(.plain)
-                        .accessibilityIdentifier("script.hookButton")
-                    }
-                    HStack(spacing: Space.sm) {
-                        Chip(text: live.hook.signal.label)
-                        ScoreBadge(score: live.hook.strength)
-                    }
-                }
+                // Hook hero — big Fraunces serif, the editorial centerpiece
+                hookSection
+
+                MarqueHairline()
 
                 // Format chip + swap
                 HStack {
@@ -86,73 +58,10 @@ struct ScriptReaderView: View {
                 }
 
                 // Body + shot plan
-                VStack(alignment: .leading, spacing: Space.md) {
-                    HStack {
-                        SectionTitle(text: "Script")
-                        Spacer()
-                        if editingBody {
-                            Button("Done") { commitBodyEdit() }
-                                .font(AppFont.callout).foregroundStyle(Palette.accent)
-                        } else {
-                            Button("Edit") { bodyDraft = live.body; editingBody = true; bodyFocused = true }
-                                .font(AppFont.callout).foregroundStyle(Palette.goldDeep)
-                        }
-                    }
-                    if editingBody {
-                        TextEditor(text: $bodyDraft)
-                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            .frame(minHeight: 120)
-                            .focused($bodyFocused)
-                            .scrollContentBackground(.hidden)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                            .accessibilityIdentifier("script.bodyEditor")
-                    } else {
-                        Text(live.body).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .onTapGesture { bodyDraft = live.body; editingBody = true; bodyFocused = true }
-                    }
-                    if editingCTA {
-                        TextField("Call to action", text: $ctaDraft, axis: .vertical)
-                            .font(AppFont.bodyL).foregroundStyle(Palette.goldDeep)
-                            .padding(Space.sm)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                            .accessibilityIdentifier("script.ctaEditor")
-                        Button("Done") { commitCTAEdit() }
-                            .font(AppFont.callout).foregroundStyle(Palette.accent)
-                    } else {
-                        Text(live.cta).font(AppFont.bodyL).foregroundStyle(Palette.goldDeep)
-                            .onTapGesture { ctaDraft = live.cta; editingCTA = true }
-                    }
-                    Divider().background(Palette.hairline)
-                    SectionTitle(text: "Shot plan")
-                    ForEach(Array(live.shotPlan.enumerated()), id: \.offset) { _, s in
-                        HStack(alignment: .top, spacing: Space.sm) {
-                            Circle().fill(Palette.gold).frame(width: 5, height: 5).padding(.top, 7)
-                            Text(s).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                        }
-                    }
-                }
-                .marqueCard()
+                bodySection
 
                 // Refine
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    SectionTitle(text: "Refine")
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Space.sm) {
-                            ForEach(["Shorter", "More contrarian", "Funnier", "More personal"], id: \.self) { label in
-                                Button {
-                                    steering = true
-                                    Task { await store.steer(live, instruction: label); steering = false }
-                                } label: { Chip(text: label) }.buttonStyle(.plain)
-                                .accessibilityIdentifier("script.steer")
-                            }
-                        }
-                    }
-                    if steering { ProgressView().tint(Palette.gold) }
-                }
-
+                refineSection
             }
             .screenPadding()
             .padding(.vertical, Space.lg)
@@ -172,6 +81,119 @@ struct ScriptReaderView: View {
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }
         .sheet(isPresented: $showFormatSheet) { FormatSwapSheet(script: live) }
         .fullScreenCover(isPresented: $showRecord) { RecordView(script: live) }
+    }
+
+    // MARK: Hook section (serif hero)
+
+    private var hookSection: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack {
+                SectionLabel(text: editingHook ? "Hook" : "Hook · tap to explore", accent: Palette.accent)
+                Spacer()
+                Button(editingHook ? "Done" : "Edit") {
+                    if editingHook { commitHookEdit() } else { hookDraft = live.hook.text; editingHook = true }
+                }
+                .font(AppFont.callout).foregroundStyle(editingHook ? Palette.accent : Palette.goldDeep)
+                .accessibilityIdentifier("script.editHook")
+            }
+            if editingHook {
+                TextField("Hook", text: $hookDraft, axis: .vertical)
+                    .font(Typeface.display(32, .semibold)).foregroundStyle(Palette.textPrimary)
+                    .padding(Space.md)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .accessibilityIdentifier("script.hookEditor")
+            } else {
+                Button { showHookLab = true } label: {
+                    Text(live.hook.text)
+                        .font(Typeface.display(32, .semibold)).tracking(-0.5)
+                        .foregroundStyle(Palette.textPrimary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineSpacing(3)
+                }.buttonStyle(.plain)
+                .accessibilityIdentifier("script.hookButton")
+            }
+            HStack(spacing: Space.sm) {
+                Chip(text: live.hook.signal.label)
+                ScoreBadge(score: live.hook.strength)
+            }
+        }
+    }
+
+    // MARK: Body section
+
+    private var bodySection: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack {
+                SectionTitle(text: "Script")
+                Spacer()
+                if editingBody {
+                    Button("Done") { commitBodyEdit() }
+                        .font(AppFont.callout).foregroundStyle(Palette.accent)
+                } else {
+                    Button("Edit") { bodyDraft = live.body; editingBody = true; bodyFocused = true }
+                        .font(AppFont.callout).foregroundStyle(Palette.goldDeep)
+                }
+            }
+            if editingBody {
+                TextEditor(text: $bodyDraft)
+                    .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                    .frame(minHeight: 120)
+                    .focused($bodyFocused)
+                    .scrollContentBackground(.hidden)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    .accessibilityIdentifier("script.bodyEditor")
+            } else {
+                Text(live.body).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineSpacing(7)
+                    .onTapGesture { bodyDraft = live.body; editingBody = true; bodyFocused = true }
+            }
+            if editingCTA {
+                TextField("Call to action", text: $ctaDraft, axis: .vertical)
+                    .font(AppFont.bodyL).foregroundStyle(Palette.goldDeep)
+                    .padding(Space.sm)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    .accessibilityIdentifier("script.ctaEditor")
+                Button("Done") { commitCTAEdit() }
+                    .font(AppFont.callout).foregroundStyle(Palette.accent)
+            } else {
+                Text(live.cta).font(AppFont.bodyL).foregroundStyle(Palette.goldDeep)
+                    .onTapGesture { ctaDraft = live.cta; editingCTA = true }
+            }
+            Divider().background(Palette.hairline)
+            SectionTitle(text: "Shot plan")
+            ForEach(Array(live.shotPlan.enumerated()), id: \.offset) { _, s in
+                HStack(alignment: .top, spacing: Space.sm) {
+                    Circle().fill(Palette.gold).frame(width: 5, height: 5).padding(.top, 7)
+                    Text(s).font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                }
+            }
+        }
+        .marqueCard()
+    }
+
+    // MARK: Refine section
+
+    private var refineSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SectionTitle(text: "Refine")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) {
+                    ForEach(["Shorter", "More contrarian", "Funnier", "More personal"], id: \.self) { label in
+                        Button {
+                            steering = true
+                            Task { await store.steer(live, instruction: label); steering = false }
+                        } label: { Chip(text: label) }.buttonStyle(.plain)
+                        .accessibilityIdentifier("script.steer")
+                    }
+                }
+            }
+            if steering { ProgressView().tint(Palette.gold) }
+        }
     }
 }
 

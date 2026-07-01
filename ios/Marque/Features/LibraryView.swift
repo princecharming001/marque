@@ -9,7 +9,11 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
-                ScreenTitle(text: "Library")
+                // Editorial inline header — kicker + Fraunces title (maxapp signature)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("YOUR CREATIVE VAULT").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                    Text("Library").font(Typeface.display(40)).tracking(-1).foregroundStyle(Palette.textPrimary)
+                }
                 UnderlineTabBar(tabs: tabs, index: $tabIndex)
                 switch tabIndex {
                 case 1: FootageSection()
@@ -71,28 +75,45 @@ struct ClipsSection: View {
 struct ClipCell: View {
     let clip: Clip
     var body: some View {
-        HStack(spacing: Space.md) {
-            ZStack {
-                LocalThumbnail(path: clip.thumbnailPath ?? clip.localVideoPath, isVideo: true)
-                    .frame(width: 54, height: 72)
-                if clip.status == .rendering { ProgressView().tint(Palette.accent) }
-            }
-            .frame(width: 54, height: 72)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(clip.title.isEmpty ? clip.caption : clip.title)
-                    .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
-                HStack(spacing: Space.sm) {
-                    FormatTag(formatId: clip.formatId)
-                    Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    if clip.captioned {
-                        Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
-                    }
+        HStack(spacing: 0) {
+            // Leading status rail — color-coded by clip state
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(clip.status.railColor)
+                .frame(width: 3)
+                .padding(.vertical, Space.sm)
+
+            HStack(spacing: Space.md) {
+                ZStack {
+                    LocalThumbnail(path: clip.thumbnailPath ?? clip.localVideoPath, isVideo: true)
+                        .frame(width: 54, height: 72)
+                    if clip.status == .rendering { ProgressView().tint(Palette.accent) }
                 }
+                .frame(width: 54, height: 72)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(clip.title.isEmpty ? clip.caption : clip.title)
+                        .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                    HStack(spacing: Space.sm) {
+                        FormatTag(formatId: clip.formatId)
+                        Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        if clip.captioned {
+                            Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
+                        }
+                    }
+                    // Status why-line
+                    Text(clip.status.whyLine)
+                        .font(AppFont.micro).tracking(0.2)
+                        .foregroundStyle(clip.status.railColor.opacity(0.8))
+                }
+                Spacer()
+                ScoreBadge(score: clip.predictedScore)
             }
-            Spacer()
-            ScoreBadge(score: clip.predictedScore)
+            .padding(Space.md)
         }
-        .marqueCard(padding: Space.md)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
     }
 }
 
@@ -488,6 +509,24 @@ extension ClipStatus {
         case .scheduled: return "Scheduled"
         case .posted:    return "Posted"
         case .failed:    return "Failed"
+        }
+    }
+    var railColor: Color {
+        switch self {
+        case .ready:     return Palette.accent
+        case .rendering: return Palette.textTertiary
+        case .scheduled: return Color(hex: 0x9B5CF6)
+        case .posted:    return Palette.positive
+        case .failed:    return Palette.critical
+        }
+    }
+    var whyLine: String {
+        switch self {
+        case .ready:     return "Ready to schedule"
+        case .rendering: return "Rendering your clip…"
+        case .scheduled: return "Scheduled to post"
+        case .posted:    return "Posted"
+        case .failed:    return "Needs attention"
         }
     }
 }

@@ -10,7 +10,7 @@ struct OnboardingView: View {
     @State private var analyzing = false
     @State private var generating = false
 
-    private let lastInputStep = 5
+    private let lastInputStep = 6
 
     var body: some View {
         if step == 0 {
@@ -47,8 +47,9 @@ struct OnboardingView: View {
                     case 1: goalStep()
                     case 2: aboutStep()
                     case 3: knownForStep()
-                    case 4: styleStep()
-                    case 5: connectStep()
+                    case 4: voiceStep()
+                    case 5: styleStep()
+                    case 6: connectStep()
                     default: ahaStep
                     }
                 }
@@ -101,6 +102,54 @@ struct OnboardingView: View {
             Button("Skip — I'll add this later") { advance() }
                 .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 .accessibilityIdentifier("onboard.knownForSkip")
+        }
+    }
+
+    private func voiceStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "What's your voice like?",
+                            note: "Marque writes in your register — tune these to match how you actually talk.") {
+            VStack(spacing: Space.lg) {
+                voiceSliderRow("Funny", "Serious", value: $store.brand.voice.funnyToSerious)
+                MarqueHairline()
+                voiceSliderRow("Polished", "Raw", value: $store.brand.voice.polishedToRaw)
+                MarqueHairline()
+                voiceSliderRow("Teacher", "Peer", value: $store.brand.voice.teacherToPeer)
+            }
+            .marqueCard()
+
+            Text(voicePreviewLine(store: store))
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Space.sm)
+
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    private func voicePreviewLine(store: AppStore) -> String {
+        let funny = store.brand.voice.funnyToSerious
+        let polished = store.brand.voice.polishedToRaw
+        let teacher = store.brand.voice.teacherToPeer
+        let tone = funny < 0.35 ? "witty and light" : funny > 0.65 ? "grounded and serious" : "balanced"
+        let style = polished < 0.35 ? "clean and produced" : polished > 0.65 ? "unfiltered and real" : "conversational"
+        let mode = teacher < 0.35 ? "teaching the room" : teacher > 0.65 ? "talking to peers" : "guiding alongside"
+        return "\u{201C}\(tone.capitalized), \(style), \(mode).\u{201D} Marque will write every script in this voice."
+    }
+
+    private func voiceSliderRow(_ leading: String, _ trailing: String, value: Binding<Double>) -> some View {
+        VStack(spacing: Space.xs) {
+            HStack {
+                Text(leading)
+                    .font(AppFont.callout)
+                    .foregroundStyle(value.wrappedValue < 0.4 ? Palette.accent : Palette.textTertiary)
+                Spacer()
+                Text(trailing)
+                    .font(AppFont.callout)
+                    .foregroundStyle(value.wrappedValue > 0.6 ? Palette.accent : Palette.textTertiary)
+            }
+            Slider(value: value).tint(Palette.accent)
         }
     }
 
@@ -216,8 +265,6 @@ private struct StepScaffold<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            // maxapp: onboarding step questions are sans-bold (serif is reserved for the
-            // hero + the "your scripts are ready" reveal).
             Text(question).font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if let note { Text(note).font(AppFont.body).foregroundStyle(Palette.textSecondary) }

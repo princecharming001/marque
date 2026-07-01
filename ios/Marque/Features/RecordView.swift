@@ -69,11 +69,30 @@ struct RecordView: View {
 
     private var topBar: some View {
         HStack {
-            Button { dismiss() } label: { Image(systemName: "xmark").foregroundStyle(.white) }
+            // Close — LiquidGlass pill (glass reads on camera, marqueCard doesn't)
+            Button { dismiss() } label: {
+                ZStack {
+                    LiquidGlassFill(radius: 19, corners: false)
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 38, height: 38)
+                .shadow(color: Palette.shadowCool.opacity(0.18), radius: 12, x: 0, y: 6)
+            }
+            .buttonStyle(.plain)
+
             Spacer()
+
+            // Kicker — "TELEPROMPTER"
+            Text("TELEPROMPTER")
+                .font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(.white.opacity(0.7))
+
+            Spacer()
+
+            // Format pill (right side)
             FormatTag(formatId: script.formatId).colorScheme(.dark)
-            Spacer()
-            Image(systemName: "xmark").foregroundStyle(.clear)   // balances the close button so the tag stays centered
         }
     }
 
