@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CoachView: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     @State private var showInsights = false
 
     var body: some View {
@@ -13,6 +14,7 @@ struct CoachView: View {
                     Button { showInsights = true } label: {
                         Image(systemName: "chart.bar").foregroundStyle(Palette.textSecondary)
                     }
+                    .accessibilityLabel("Insights")
                     .accessibilityIdentifier("coach.insights")
                 }
 
@@ -38,10 +40,27 @@ struct CoachView: View {
                         ProgressView().tint(Palette.gold)
                     } else {
                         ForEach(store.trends) { t in
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: Space.sm) {
                                 Text(t.title).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                 Text(t.why).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                                FormatTag(formatId: t.formatId)
+                                HStack {
+                                    FormatTag(formatId: t.formatId)
+                                    Spacer()
+                                    Button {
+                                        Task { await store.generateFromTrend(title: t.title, formatId: t.formatId) }
+                                        router.showCreate = true
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: "sparkles").font(.system(size: 11, weight: .semibold))
+                                            Text("Write a script").font(AppFont.callout)
+                                        }
+                                        .foregroundStyle(Palette.onInk)
+                                        .padding(.horizontal, Space.md).frame(height: 34)
+                                        .background(Palette.ink).clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("coach.writeScript")
+                                }
                             }
                             .marqueCard(padding: Space.md)
                         }
@@ -61,6 +80,7 @@ struct CoachView: View {
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends() }
+        .refreshable { await store.loadTrends() }
         .sheet(isPresented: $showInsights) { InsightsView() }
     }
 }

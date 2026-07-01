@@ -5,6 +5,7 @@ import SwiftUI
 struct MarqueTabBar: View {
     @Binding var selected: AppTab
     var onCreateTap: () -> Void
+    @State private var createTaps = 0
 
     private let leftItems: [(tab: AppTab, label: String, icon: String)] = [
         (.home, "Today", "sun.max"),
@@ -46,6 +47,7 @@ struct MarqueTabBar: View {
 
             // Center Create FAB — raised above the tab bar
             Button {
+                createTaps += 1
                 onCreateTap()
             } label: {
                 Image(systemName: "video.badge.plus")
@@ -58,6 +60,7 @@ struct MarqueTabBar: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Studio")
+            .sensoryFeedback(.impact(weight: .medium), trigger: createTaps)
             .offset(y: -24)
         }
         .padding(.horizontal, 16)

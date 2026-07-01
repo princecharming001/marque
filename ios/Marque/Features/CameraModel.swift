@@ -8,6 +8,7 @@ import AVFoundation
 final class CameraModel: NSObject, ObservableObject {
     enum Status { case idle, ready, recording, unavailable }
     @Published var status: Status = .idle
+    @Published var hasAudio = false     // false when mic permission was denied → warn the user
 
     let session = AVCaptureSession()
     private let output = AVCaptureMovieFileOutput()
@@ -45,6 +46,7 @@ final class CameraModel: NSObject, ObservableObject {
            let aInput = try? AVCaptureDeviceInput(device: mic), session.canAddInput(aInput) {
             session.addInput(aInput)
         }
+        DispatchQueue.main.async { self.hasAudio = audio }
         if session.canAddOutput(output) { session.addOutput(output) }
         session.commitConfiguration()
         session.startRunning()

@@ -1,9 +1,14 @@
 import SwiftUI
 
+enum CalMode: String, CaseIterable, Identifiable { case week = "Week", month = "Month"; var id: String { rawValue } }
+
 struct CalendarView: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     @State private var scheduleFor: DateBox?
     @State private var editPost: ScheduledPost?
+    @State private var mode: CalMode = .week
+    @State private var preselectClipId: UUID?
 
     private var week: [Date] {
         let cal = Calendar.current
@@ -15,26 +20,98 @@ struct CalendarView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
                 ScreenTitle(text: "Calendar")
-                Text("Your week at a glance. Tap a day to schedule a ready clip; tap a post to edit, reschedule or publish.")
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                Picker("View", selection: $mode) {
+                    ForEach(CalMode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("calendar.modeToggle")
+                Text("Tap a day to schedule a ready clip; tap a post to edit, reschedule or publish. Times are shown in your timezone.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
 
-                ForEach(week, id: \.self) { day in
-                    DayRow(day: day,
-                           posts: store.schedule
-                            .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
-                            .sorted { $0.date < $1.date },
-                           hasReady: store.clips.contains { $0.status == .ready },
-                           clipFor: { id in store.clips.first { $0.id == id } },
-                           onAdd: { scheduleFor = DateBox(date: day) },
-                           onTapPost: { editPost = $0 })
+                if mode == .week {
+                    ForEach(week, id: \.self) { day in
+                        DayRow(day: day,
+                               posts: store.schedule
+                                .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
+                                .sorted { $0.date < $1.date },
+                               hasReady: store.clips.contains { $0.status == .ready },
+                               clipFor: { id in store.clips.first { $0.id == id } },
+                               onAdd: { scheduleFor = DateBox(date: day) },
+                               onTapPost: { editPost = $0 },
+                               onDuplicate: { store.duplicatePost($0) })
+                    }
+                } else {
+                    MonthGrid(schedule: store.schedule) { day in scheduleFor = DateBox(date: day) }
                 }
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $scheduleFor) { SchedulePickerSheet(day: $0.date) }
+        .sheet(item: $scheduleFor) { box in
+            SchedulePickerSheet(day: box.date, preselectClipId: preselectClipId)
+                .onDisappear { preselectClipId = nil }
+        }
         .sheet(item: $editPost) { PostEditorSheet(post: $0) }
+        .onAppear { consumePendingSchedule() }
+        .onChange(of: router.pendingScheduleClipId) { _, _ in consumePendingSchedule() }
+    }
+
+    /// Library "Schedule this clip" deep-links here — open the scheduler for today, pre-filtered to that clip.
+    private func consumePendingSchedule() {
+        guard let id = router.pendingScheduleClipId else { return }
+        preselectClipId = id
+        scheduleFor = DateBox(date: Calendar.current.startOfDay(for: Date()))
+        router.pendingScheduleClipId = nil
+    }
+}
+
+// MARK: - Month grid (bird's-eye planning view)
+
+struct MonthGrid: View {
+    let schedule: [ScheduledPost]
+    let onPickDay: (Date) -> Void
+    private let cols = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
+
+    private var days: [Date] {
+        let cal = Calendar.current
+        let now = Date()
+        guard let interval = cal.dateInterval(of: .month, for: now),
+              let firstWeekday = cal.dateComponents([.weekday], from: interval.start).weekday else { return [] }
+        let leading = firstWeekday - cal.firstWeekday
+        let start = cal.date(byAdding: .day, value: -max(0, leading), to: interval.start) ?? interval.start
+        return (0..<42).compactMap { cal.date(byAdding: .day, value: $0, to: start) }
+    }
+
+    var body: some View {
+        VStack(spacing: Space.sm) {
+            HStack {
+                ForEach(["S","M","T","W","T","F","S"], id: \.self) { d in
+                    Text(d).font(AppFont.micro).foregroundStyle(Palette.textTertiary).frame(maxWidth: .infinity)
+                }
+            }
+            LazyVGrid(columns: cols, spacing: 6) {
+                ForEach(days, id: \.self) { day in
+                    let cal = Calendar.current
+                    let inMonth = cal.isDate(day, equalTo: Date(), toGranularity: .month)
+                    let count = schedule.filter { cal.isDate($0.date, inSameDayAs: day) }.count
+                    Button { onPickDay(day) } label: {
+                        VStack(spacing: 3) {
+                            Text("\(cal.component(.day, from: day))")
+                                .font(AppFont.caption)
+                                .foregroundStyle(inMonth ? Palette.textPrimary : Palette.textTertiary)
+                            Circle().fill(count > 0 ? Palette.accent : Color.clear).frame(width: 5, height: 5)
+                        }
+                        .frame(maxWidth: .infinity).frame(height: 40)
+                        .background(cal.isDateInToday(day) ? Palette.surfaceRaised : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .opacity(inMonth ? 1 : 0.4)
+                }
+            }
+        }
+        .marqueCard(padding: Space.md)
     }
 }
 
@@ -47,6 +124,7 @@ struct DayRow: View {
     let clipFor: (UUID) -> Clip?
     let onAdd: () -> Void
     let onTapPost: (ScheduledPost) -> Void
+    let onDuplicate: (ScheduledPost) -> Void
 
     private var isToday: Bool { Calendar.current.isDateInToday(day) }
 
@@ -73,6 +151,9 @@ struct DayRow: View {
                         Text(hasReady ? "Schedule a clip" : "Nothing scheduled")
                             .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                         Spacer()
+                        if hasReady {
+                            Text("best ~6 PM").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                        }
                     }
                 }
                 .buttonStyle(.plain).disabled(!hasReady)
@@ -82,6 +163,10 @@ struct DayRow: View {
                     Button { onTapPost(p) } label: { PostRow(post: p, clip: clipFor(p.clipId)) }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("calendar.post")
+                        .contextMenu {
+                            Button { onTapPost(p) } label: { Label("Edit", systemImage: "pencil") }
+                            Button { onDuplicate(p) } label: { Label("Duplicate to next day", systemImage: "plus.square.on.square") }
+                        }
                 }
                 if hasReady {
                     Button(action: onAdd) {
@@ -119,6 +204,12 @@ struct PostRow: View {
                 }
             }
             Spacer()
+            Text(post.posted ? "Posted" : "Scheduled")
+                .font(.system(size: 9, weight: .bold)).tracking(0.4)
+                .foregroundStyle(post.posted ? Palette.positive : Palette.textSecondary)
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background((post.posted ? Palette.positive : Palette.textSecondary).opacity(0.12))
+                .clipShape(Capsule())
             Image(systemName: post.posted ? "checkmark.circle.fill" : "chevron.right")
                 .font(.system(size: 13)).foregroundStyle(post.posted ? Palette.positive : Palette.textTertiary)
         }
@@ -133,21 +224,30 @@ struct SchedulePickerSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let day: Date
+    let preselectClipId: UUID?
     @State private var platforms: Set<SocialPlatform> = [.instagram, .tiktok]
     @State private var time: Date
     @State private var autoCaptions = true
 
-    init(day: Date) {
+    init(day: Date, preselectClipId: UUID? = nil) {
         self.day = day
+        self.preselectClipId = preselectClipId
         _time = State(initialValue: Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: day) ?? day)
     }
-    private var ready: [Clip] { store.clips.filter { $0.status == .ready } }
+    // When deep-linked from a specific clip, show only that clip; otherwise all ready clips.
+    private var ready: [Clip] {
+        let all = store.clips.filter { $0.status == .ready }
+        if let id = preselectClipId, let target = all.first(where: { $0.id == id }) { return [target] }
+        return all
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     SectionLabel(text: "Time", accent: Palette.accent)
+                    Text("Evenings (around 6 PM) tend to land best for most niches.")
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     DatePicker("", selection: $time, displayedComponents: .hourAndMinute)
                         .labelsHidden().datePickerStyle(.wheel).frame(maxHeight: 130)
 
@@ -210,6 +310,7 @@ struct PostEditorSheet: View {
     @State private var autoCaptions: Bool
     @State private var posting = false
     @State private var showMetrics = false
+    @State private var showRemoveConfirm = false
 
     init(post: ScheduledPost) {
         self.post = post
@@ -269,10 +370,14 @@ struct PostEditorSheet: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("post.logMetrics")
 
-                    Button(role: .destructive) { store.deleteScheduledPost(post); dismiss() } label: {
+                    Button(role: .destructive) { showRemoveConfirm = true } label: {
                         Text("Remove from schedule").font(AppFont.callout).foregroundStyle(Palette.critical)
                     }
                     .padding(.top, Space.sm)
+                    .confirmationDialog("Remove this post from your schedule?", isPresented: $showRemoveConfirm, titleVisibility: .visible) {
+                        Button("Remove", role: .destructive) { store.deleteScheduledPost(post); dismiss() }
+                        Button("Cancel", role: .cancel) {}
+                    }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }

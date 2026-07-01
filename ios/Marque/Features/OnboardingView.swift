@@ -97,7 +97,10 @@ struct OnboardingView: View {
         return StepScaffold(question: "What do you want to be known for?",
                             note: "This is the heart of your brand. Everything we write points back here.") {
             TextField("In a sentence…", text: $store.brand.knownFor).marqueField().accessibilityIdentifier("onboard.knownFor")
-            PillButton(title: "Continue") { advance() }
+            PillButton(title: "Continue", enabled: !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty) { advance() }
+            Button("Skip — I'll add this later") { advance() }
+                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                .accessibilityIdentifier("onboard.knownForSkip")
         }
     }
 

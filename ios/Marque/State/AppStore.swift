@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UserNotifications
 
 @MainActor
 @Observable
@@ -350,6 +351,75 @@ final class AppStore {
             clips[idx].caption = caption
             save()
         }
+    }
+
+    /// Remove a filmed/imported take from the Footage tab.
+    func deleteFootage(_ f: Footage) {
+        footage.removeAll { $0.id == f.id }
+        save()
+    }
+
+    // MARK: Trend → script (Coach "Write a script for this")
+    func generateFromTrend(title: String, formatId: String) async {
+        let style = Catalog.style(for: formatId)
+        let pillar = pillars.first(where: { !$0.name.isEmpty })
+            ?? Pillar(name: title, summary: title, angle: title, exampleTopics: [title],
+                      weight: 0.2, colorHex: Catalog.pillarColors[0])
+        isGenerating = true
+        let f = Catalog.format(formatId)
+        var made = await llm.generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: mediaContext, style: style)
+        made = made.map { var s = $0; s.formatId = formatId; s.targetSeconds = f.targetSeconds; return s }
+        scripts.insert(contentsOf: made, at: 0)
+        isGenerating = false
+        save()
+    }
+
+    // MARK: Schedule helpers
+    /// Re-queue a post one day later (the "film once, post all week" reuse thesis).
+    func duplicatePost(_ post: ScheduledPost) {
+        var copy = post
+        copy.id = UUID()
+        copy.posted = false
+        copy.metrics = nil
+        copy.date = Calendar.current.date(byAdding: .day, value: 1, to: post.date) ?? post.date
+        schedule.append(copy)
+        save()
+    }
+
+    var weekPostedCount: Int { schedule.filter { $0.posted }.count }
+
+    /// Plain-language best-time guidance (evenings skew best for most creator niches). Guidance,
+    /// not a measured optimum — we never present it as a precise, data-derived number.
+    func bestPostTime(on day: Date) -> Date {
+        Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: day) ?? day
+    }
+
+    // MARK: Reminders (local notifications) — powers the "consistency" promise
+    var remindersEnabled: Bool = UserDefaults.standard.bool(forKey: "reminders.enabled") {
+        didSet {
+            UserDefaults.standard.set(remindersEnabled, forKey: "reminders.enabled")
+            if remindersEnabled { scheduleDailyReminder() }
+            else { UNUserNotificationCenter.current().removeAllPendingNotificationRequests() }
+        }
+    }
+
+    /// Request permission, then enable on grant (drives the Settings toggle).
+    func requestRemindersAndEnable() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            Task { @MainActor in self.remindersEnabled = granted }
+        }
+    }
+
+    private func scheduleDailyReminder() {
+        let center = UNUserNotificationCenter.current()
+        center.removeAllPendingNotificationRequests()
+        let content = UNMutableNotificationContent()
+        content.title = "Time to film"
+        content.body = "One recording today keeps your week full. Open Marque."
+        content.sound = .default
+        var comps = DateComponents(); comps.hour = 9; comps.minute = 0
+        let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+        center.add(UNNotificationRequest(identifier: "marque.daily", content: content, trigger: trigger))
     }
 
     /// Publish immediately (live via Ayrshare when keyed; mock otherwise) and mark posted.

@@ -16,6 +16,10 @@ struct InsightsView: View {
     private var logged: [ScheduledPost] { store.schedule.filter { ($0.metrics?.views ?? 0) > 0 } }
     private var totalViews: Int { logged.compactMap { $0.metrics?.views }.reduce(0, +) }
     private var totalLikes: Int { logged.compactMap { $0.metrics?.likes }.reduce(0, +) }
+    private var avgEngagement: Double {
+        let rates = logged.compactMap { $0.metrics?.engagementRate }
+        return rates.isEmpty ? 0 : rates.reduce(0, +) / Double(rates.count)
+    }
 
     var body: some View {
         NavigationStack {
@@ -29,7 +33,22 @@ struct InsightsView: View {
                                 stat(compactNumber(totalLikes), "Likes")
                                 stat("\(logged.count)", "Posts logged")
                             }
+                            HStack {
+                                Text("Avg engagement").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                                Spacer()
+                                Text(String(format: "%.1f%%", avgEngagement * 100))
+                                    .font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                            }
+                            .marqueCard(padding: Space.md)
                         }
+                    } else if !store.clips.isEmpty {
+                        HStack(spacing: Space.sm) {
+                            Image(systemName: "info.circle").foregroundStyle(Palette.textTertiary)
+                            Text("No results logged yet. Tap “Log results” on a post to see real views and engagement here.")
+                                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .marqueCard(padding: Space.md)
                     }
 
                     HStack(spacing: Space.md) {

@@ -16,6 +16,7 @@ struct RecordView: View {
     @State private var promptRunning = false
     @State private var speed: Double = 1.0
     @State private var restartToken = 0
+    @State private var recordStart: Date?
     @State private var footagePath: String?
     @State private var pickedItem: PhotosPickerItem?
     @State private var selectedFormats: Set<String>
@@ -27,7 +28,8 @@ struct RecordView: View {
     init(script: Script) {
         self.script = script
         _liveScript = State(initialValue: script)
-        _selectedFormats = State(initialValue: Set([script.formatId, "broll-hook", "faceless"]))
+        // Default to just the script's own format — the creator opts INTO extra cuts, we don't pre-check them.
+        _selectedFormats = State(initialValue: Set([script.formatId]))
     }
 
     var body: some View {
@@ -98,7 +100,22 @@ struct RecordView: View {
                 }
                 .accessibilityIdentifier("record.upload")
             case .recording:
-                Text("Recording…").font(AppFont.body).foregroundStyle(Palette.accent)
+                HStack(spacing: Space.sm) {
+                    Circle().fill(Palette.critical).frame(width: 8, height: 8)
+                    if let start = recordStart {
+                        TimelineView(.periodic(from: start, by: 1)) { ctx in
+                            let secs = max(0, Int(ctx.date.timeIntervalSince(start)))
+                            Text(String(format: "%d:%02d / ~%ds", secs / 60, secs % 60, liveScript.targetSeconds))
+                                .font(AppFont.body).foregroundStyle(.white).monospacedDigit()
+                        }
+                    } else {
+                        Text("Recording…").font(AppFont.body).foregroundStyle(Palette.accent)
+                    }
+                }
+                if camera.hasCamera && !camera.hasAudio {
+                    Text("Microphone is off — your clip will have no sound. Enable mic access in Settings.")
+                        .font(AppFont.caption).foregroundStyle(Palette.critical).multilineTextAlignment(.center)
+                }
                 speedControl
                 HStack(spacing: Space.xl) {
                     Button { promptRunning.toggle() } label: {
@@ -111,15 +128,22 @@ struct RecordView: View {
                     recordButton(active: true) { stopRecording() }
                 }
             case .recorded:
-                Text("Choose the formats to cut into").font(AppFont.callout).foregroundStyle(.white.opacity(0.8))
+                Text("Nice take. Choose the formats to cut it into.").font(AppFont.callout).foregroundStyle(.white.opacity(0.85)).multilineTextAlignment(.center)
+                Button { reRecord() } label: {
+                    Label("Re-record", systemImage: "arrow.counterclockwise")
+                        .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                }
+                .accessibilityIdentifier("record.reRecord")
                 formatPicker
                 Button { makeClips() } label: {
-                    Text("Make my clips")
+                    Text("Make \(selectedFormats.count) clip\(selectedFormats.count == 1 ? "" : "s")")
                         .font(AppFont.headline).foregroundStyle(Palette.ink)
                         .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
                         .background(Palette.onInk).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 }
                 .buttonStyle(.plain)
+                .disabled(selectedFormats.isEmpty)
+                .opacity(selectedFormats.isEmpty ? 0.5 : 1)
                 .accessibilityIdentifier("record.makeClips")
             case .making:
                 ProgressView().tint(Palette.accent)
@@ -148,6 +172,7 @@ struct RecordView: View {
     private func startRecording() {
         phase = .recording
         restartToken += 1
+        recordStart = Date()
         promptRunning = true
         if camera.hasCamera && camera.status == .ready {
             camera.start()
@@ -170,6 +195,13 @@ struct RecordView: View {
         } else {
             phase = .recorded
         }
+    }
+
+    private func reRecord() {
+        footagePath = nil
+        recordStart = nil
+        restartToken += 1
+        phase = .ready
     }
 
     private func makeClips() {
@@ -219,6 +251,7 @@ struct RecordView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(active ? "Stop recording" : "Start recording")
         .accessibilityIdentifier("record.capture")
     }
 }

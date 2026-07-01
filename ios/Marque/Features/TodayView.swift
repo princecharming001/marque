@@ -10,6 +10,10 @@ struct TodayView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
                 topBar
+                Text(greeting)
+                    .font(AppFont.serifL).tracking(Track.title)
+                    .foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
                 momentum
                 command
 
@@ -30,6 +34,7 @@ struct TodayView: View {
         .navigationTitle("Today")
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
+        .refreshable { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showProfile) { BrandProfileView() }
     }
@@ -38,6 +43,13 @@ struct TodayView: View {
 
     private var dateKicker: String {
         Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day()).uppercased()
+    }
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let part = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
+        if let h = store.brand.connectedAccounts.first?.handle, !h.isEmpty { return "\(part), @\(h)" }
+        return part
     }
 
     private var topBar: some View {
@@ -67,6 +79,10 @@ struct TodayView: View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack {
                 SectionLabel(text: "This week", accent: Palette.accent)
+                if store.weekPostedCount > 0 {
+                    Text("· \(store.weekPostedCount) posted")
+                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                }
                 Spacer()
                 if hasMomentum && store.weekFollows > 0 {
                     HStack(spacing: 3) {
@@ -144,17 +160,22 @@ struct TodayView: View {
     // MARK: Next up + trend
 
     private func nextPostRow(_ post: ScheduledPost) -> some View {
-        HStack(spacing: Space.md) {
-            Image(systemName: "calendar.badge.clock").font(.system(size: 18)).foregroundStyle(Palette.accent)
-            VStack(alignment: .leading, spacing: 2) {
-                SectionLabel(text: "Next up")
-                Text(post.caption).font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(1)
+        Button { router.selectedTab = .plan } label: {
+            HStack(spacing: Space.md) {
+                Image(systemName: "calendar.badge.clock").font(.system(size: 18)).foregroundStyle(Palette.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    SectionLabel(text: "Next up")
+                    Text(post.caption).font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                }
+                Spacer()
+                Text(post.date.formatted(.dateTime.weekday().hour().minute()))
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Palette.textTertiary)
             }
-            Spacer()
-            Text(post.date.formatted(.dateTime.weekday().hour().minute()))
-                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            .marqueCard(padding: Space.md)
         }
-        .marqueCard(padding: Space.md)
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("today.nextUp")
     }
 
     // MARK: Learning meter

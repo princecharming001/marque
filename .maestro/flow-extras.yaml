@@ -61,4 +61,4 @@ name: Marque — extra screens (assumes onboarded)
     timeout: 8000
 - tapOn:
     id: "script.steer"
-- assertVisible: "Steer"
+- assertVisible: "Refine"

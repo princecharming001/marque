@@ -44,6 +44,22 @@ struct SettingsView: View {
                     }
                     .onChange(of: store.brand.preferredStyles) { _, _ in store.save() }
 
+                    // Notifications — powers the consistency promise
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        SectionTitle(text: "Notifications")
+                        Toggle(isOn: Binding(
+                            get: { store.remindersEnabled },
+                            set: { on in if on { store.requestRemindersAndEnable() } else { store.remindersEnabled = false } }
+                        )) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Daily film reminder").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                                Text("A nudge each morning to keep your week full.").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            }
+                        }
+                        .tint(Palette.accent)
+                        .accessibilityIdentifier("settings.reminders")
+                    }
+
                     // Subscription
                     VStack(alignment: .leading, spacing: Space.md) {
                         SectionTitle(text: "Subscription")
@@ -81,6 +97,11 @@ struct SettingsView: View {
                         }
                         #endif
                     }
+
+                    Text("Marque \(appVersion)")
+                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, Space.sm)
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
@@ -96,6 +117,12 @@ struct SettingsView: View {
                 Text("This permanently erases your brand, scripts, clips, and schedule from this device. This can't be undone.")
             }
         }
+    }
+
+    private var appVersion: String {
+        let v = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
+        let b = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+        return b.isEmpty ? "v\(v)" : "v\(v) (\(b))"
     }
 
     private func row(_ title: String, _ icon: String, tint: Color = Palette.textPrimary) -> some View {

@@ -28,12 +28,21 @@ struct LibraryView: View {
 
 struct ClipsSection: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     @State private var detail: Clip?
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if store.clips.isEmpty {
                 EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
                                message: "Record a script in Studio and your clips will land here.")
+                Button { router.showCreate = true } label: {
+                    Label("Create your first clip", systemImage: "video.badge.plus")
+                        .font(AppFont.headline).foregroundStyle(Palette.onInk)
+                        .frame(maxWidth: .infinity).frame(height: 52)
+                        .background(Palette.ink).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("library.createFirst")
             } else {
                 ForEach(ClipStatus.allOrder, id: \.self) { status in
                     let group = store.clips.filter { $0.status == status }
@@ -44,6 +53,11 @@ struct ClipsSection: View {
                                 Button { detail = c } label: { ClipCell(clip: c) }
                                     .buttonStyle(.plain)
                                     .accessibilityIdentifier("library.clip")
+                                    .contextMenu {
+                                        Button(role: .destructive) { store.deleteClip(c) } label: {
+                                            Label("Delete clip", systemImage: "trash")
+                                        }
+                                    }
                             }
                         }
                     }
@@ -159,6 +173,7 @@ struct ClipDetailSheet: View {
                 if clip.status == .ready {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
                         store.updateClipCaption(clip, caption: caption)
+                        router.pendingScheduleClipId = clip.id
                         dismiss(); router.selectedTab = .plan
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
@@ -191,6 +206,11 @@ struct FootageSection: View {
             } else {
                 ForEach(store.footage) { f in
                     Button { detail = f } label: { FootageCell(footage: f) }.buttonStyle(.plain)
+                        .contextMenu {
+                            Button(role: .destructive) { store.deleteFootage(f) } label: {
+                                Label("Delete take", systemImage: "trash")
+                            }
+                        }
                 }
             }
             PhotosPicker(selection: $pickedVids, maxSelectionCount: 10, matching: .videos) {
@@ -337,7 +357,7 @@ struct MediaSection: View {
                 EmptyStateView(icon: "photo.on.rectangle.angled", title: "No media yet",
                                message: "Import a batch above to build your reference library.")
             } else {
-                Text("\(store.media.count) item\(store.media.count == 1 ? "" : "s") in your corpus")
+                Text("\(store.media.count) item\(store.media.count == 1 ? "" : "s") in your media library")
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 LazyVGrid(columns: cols, spacing: Space.sm) {
                     ForEach(store.media) { m in

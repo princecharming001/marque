@@ -103,7 +103,7 @@ struct VoiceOnboardingSheet: View {
                 .font(.system(size: 48)).foregroundStyle(Palette.accent)
             Text("Your voice is set.")
                 .font(Typeface.display(28, .semibold)).foregroundStyle(Palette.textPrimary)
-            Text("Marque derived \(store.pillars.count) content pillars from what you told us. They're waiting in Studio.")
+            Text("Marque built \(store.pillars.count) starter pillars from your answers — refine them anytime in Studio.")
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
             Spacer()
             PrimaryButton(title: "See my pillars") {
