@@ -2,13 +2,23 @@ import SwiftUI
 
 enum CalMode: String, CaseIterable, Identifiable { case week = "Week", month = "Month"; var id: String { rawValue } }
 
+// One sheet enum avoids the SwiftUI "two .sheet(item:) on one view" conflict where only one presents.
+enum CalSheet: Identifiable {
+    case schedule(day: Date, clipId: UUID?)
+    case edit(ScheduledPost)
+    var id: String {
+        switch self {
+        case .schedule(let day, let clip): return "sched-\(day.timeIntervalSince1970)-\(clip?.uuidString ?? "")"
+        case .edit(let p): return "edit-\(p.id.uuidString)"
+        }
+    }
+}
+
 struct CalendarView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
-    @State private var scheduleFor: DateBox?
-    @State private var editPost: ScheduledPost?
+    @State private var sheet: CalSheet?
     @State private var mode: CalMode = .week
-    @State private var preselectClipId: UUID?
 
     private var week: [Date] {
         let cal = Calendar.current
@@ -36,23 +46,24 @@ struct CalendarView: View {
                                 .sorted { $0.date < $1.date },
                                hasReady: store.clips.contains { $0.status == .ready },
                                clipFor: { id in store.clips.first { $0.id == id } },
-                               onAdd: { scheduleFor = DateBox(date: day) },
-                               onTapPost: { editPost = $0 },
+                               onAdd: { sheet = .schedule(day: day, clipId: nil) },
+                               onTapPost: { sheet = .edit($0) },
                                onDuplicate: { store.duplicatePost($0) })
                     }
                 } else {
-                    MonthGrid(schedule: store.schedule) { day in scheduleFor = DateBox(date: day) }
+                    MonthGrid(schedule: store.schedule) { day in sheet = .schedule(day: day, clipId: nil) }
                 }
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $scheduleFor) { box in
-            SchedulePickerSheet(day: box.date, preselectClipId: preselectClipId)
-                .onDisappear { preselectClipId = nil }
+        .sheet(item: $sheet) { s in
+            switch s {
+            case .schedule(let day, let clipId): SchedulePickerSheet(day: day, preselectClipId: clipId)
+            case .edit(let post): PostEditorSheet(post: post)
+            }
         }
-        .sheet(item: $editPost) { PostEditorSheet(post: $0) }
         .onAppear { consumePendingSchedule() }
         .onChange(of: router.pendingScheduleClipId) { _, _ in consumePendingSchedule() }
     }
@@ -60,8 +71,7 @@ struct CalendarView: View {
     /// Library "Schedule this clip" deep-links here — open the scheduler for today, pre-filtered to that clip.
     private func consumePendingSchedule() {
         guard let id = router.pendingScheduleClipId else { return }
-        preselectClipId = id
-        scheduleFor = DateBox(date: Calendar.current.startOfDay(for: Date()))
+        sheet = .schedule(day: Calendar.current.startOfDay(for: Date()), clipId: id)
         router.pendingScheduleClipId = nil
     }
 }
@@ -155,6 +165,7 @@ struct DayRow: View {
                             Text("best ~6 PM").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
                         }
                     }
+                    .contentShape(Rectangle())   // make the whole row (incl. the Spacer) tappable
                 }
                 .buttonStyle(.plain).disabled(!hasReady)
                 .accessibilityIdentifier("calendar.addClip")
