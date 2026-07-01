@@ -1,0 +1,8 @@
+appId: com.marque.app
+---
+- launchApp
+- tapOn: "Studio"
+- assertVisible: "Your pillars"
+- tapOn:
+    id: "studio.close"
+- assertVisible: "Today"

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct StudioView: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     @State private var generatingPillar: UUID?
     @State private var pickStyleFor: Pillar?
 
@@ -54,6 +55,15 @@ struct StudioView: View {
         }
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { router.showCreate = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textSecondary)
+                }
+                .accessibilityLabel("Close")
+                .accessibilityIdentifier("studio.close")
+            }
+        }
         .navigationDestination(for: Script.self) { ScriptReaderView(script: $0) }
         .sheet(item: $pickStyleFor) { p in
             StylePickerSheet(pillar: p, preferred: store.brand.preferredStyles) { style in
