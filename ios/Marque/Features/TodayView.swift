@@ -8,29 +8,22 @@ struct TodayView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.lg) {
+            VStack(alignment: .leading, spacing: 22) {
                 topBar
                 Text(greeting)
-                    .font(AppFont.serifL).tracking(Track.title)
+                    .font(Typeface.display(38)).tracking(-0.8)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2)
                 momentum
                 command
-
-                if let next = store.schedule.sorted(by: { $0.date < $1.date }).first(where: { !$0.posted }) {
-                    nextPostRow(next)
-                }
-                LearningMeterCard(postsLearned: store.postsLearned,
-                                  learningProgress: store.learningProgress,
-                                  winningFormula: store.learnedInsights["winning_formula"] as? String)
-                if let t = store.trends.first {
-                    trendTeaser(t)
-                }
+                quietRows
             }
-            .screenPadding()
-            .padding(.vertical, Space.lg)
+            .padding(.horizontal, 22)
+            .padding(.top, Space.lg)
+            .padding(.bottom, 110)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .navigationTitle("Today")
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
@@ -109,14 +102,15 @@ struct TodayView: View {
                 }
             } else {
                 Text("Post your first clip")
-                    .font(AppFont.serifL).tracking(Track.title).textCase(.lowercase)
+                    .font(AppFont.headline)
                     .foregroundStyle(Palette.textPrimary)
                 Text("Once your posts start collecting views, your real reach and follower growth show up here every week.")
                     .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .marqueCard()
+        .marqueCard(radius: 22)
     }
 
     // MARK: Command card — directive + queued ring + next action
@@ -128,20 +122,22 @@ struct TodayView: View {
                 ProgressRing(value: store.weekProgress,
                              centerTop: "\(store.weekDone)/\(store.weekGoal)",
                              centerBottom: "queued", size: 104)
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    SectionLabel(text: "Your move")
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    SectionLabel(text: "Your move", accent: Palette.accent)
                     Text(d.title)
-                        .font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
+                        .font(AppFont.serifL)
+                        .foregroundStyle(Palette.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(d.subtitle)
                         .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .lineSpacing(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             PrimaryButton(title: ctaTitle, systemImage: ctaIcon) { ctaAction() }
                 .accessibilityIdentifier("today.cta")
         }
-        .marqueCard()
+        .marqueCard(padding: 20, radius: 24)
     }
 
     private var ctaTitle: String {
@@ -157,38 +153,77 @@ struct TodayView: View {
         else { router.showCreate = true }
     }
 
-    // MARK: Next up + trend
+    // MARK: Quiet-row stack — next up, learning, trend in one hairline-separated card
 
-    private func nextPostRow(_ post: ScheduledPost) -> some View {
+    @ViewBuilder private var quietRows: some View {
+        let next = store.schedule.sorted { $0.date < $1.date }.first { !$0.posted }
+        let trend = store.trends.first
+        let learning = store.postsLearned > 0
+        if next != nil || learning || trend != nil {
+            VStack(spacing: 0) {
+                if let next {
+                    nextUpRow(next)
+                    if learning || trend != nil { MarqueHairline() }
+                }
+                if learning {
+                    learningRow
+                    if trend != nil { MarqueHairline() }
+                }
+                if let trend { trendRow(trend) }
+            }
+            .marqueCard(padding: Space.md, radius: 20)
+        }
+    }
+
+    private func nextUpRow(_ post: ScheduledPost) -> some View {
         Button { router.selectedTab = .plan } label: {
             HStack(spacing: Space.md) {
-                Image(systemName: "calendar.badge.clock").font(.system(size: 18)).foregroundStyle(Palette.accent)
-                VStack(alignment: .leading, spacing: 2) {
+                Image(systemName: "calendar.badge.clock").font(.system(size: 16)).foregroundStyle(Palette.accent).frame(width: 22)
+                VStack(alignment: .leading, spacing: 3) {
                     SectionLabel(text: "Next up")
-                    Text(post.caption).font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                    Text(post.caption).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
                 }
                 Spacer()
                 Text(post.date.formatted(.dateTime.weekday().hour().minute()))
                     .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Palette.textTertiary)
             }
-            .marqueCard(padding: Space.md)
+            .padding(.vertical, Space.sm).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("today.nextUp")
     }
 
-    // MARK: Learning meter
+    private var learningRow: some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: "chart.line.uptrend.xyaxis").font(.system(size: 15)).foregroundStyle(Palette.accent).frame(width: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(learningLine).font(AppFont.callout).foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if store.postsLearned < 15 {
+                    ProgressView(value: store.learningProgress).tint(Palette.accent)
+                }
+            }
+        }
+        .padding(.vertical, Space.sm)
+    }
+    private var learningLine: String {
+        if store.postsLearned >= 15, let f = store.learnedInsights["winning_formula"] as? String { return f }
+        return "Marque has learned from \(store.postsLearned) post\(store.postsLearned == 1 ? "" : "s") — recommendations sharpen at 15"
+    }
 
-    private func trendTeaser(_ t: TrendItem) -> some View {
+    private func trendRow(_ t: TrendItem) -> some View {
         Button { router.selectedTab = .coach } label: {
-            HStack(spacing: Space.sm) {
-                Image(systemName: "wave.3.right").font(.system(size: 13)).foregroundStyle(Palette.accent)
-                Text(t.title).font(AppFont.callout).foregroundStyle(Palette.textSecondary).lineLimit(1)
+            HStack(spacing: Space.md) {
+                Image(systemName: "wave.3.right").font(.system(size: 15)).foregroundStyle(Palette.accent).frame(width: 22)
+                VStack(alignment: .leading, spacing: 3) {
+                    SectionLabel(text: "Trending")
+                    Text(t.title).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                }
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(Palette.textTertiary)
             }
-            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.sm).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

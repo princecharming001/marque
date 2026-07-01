@@ -79,10 +79,10 @@ enum Typeface {
 }
 
 enum AppFont {
-    static let displayXL = Typeface.display(44, .semibold)  // serif hero (onboarding/paywall)
+    static let displayXL = Typeface.display(40, .semibold)  // serif hero (onboarding/paywall)
     static let displayL = Typeface.sans(32, .bold)          // sans screen titles
     static let displayM = Typeface.display(28, .semibold)   // serif editorial (hooks, big moments)
-    static let serifL = Typeface.display(30, .semibold)     // editorial hero/section title (often lowercase)
+    static let serifL = Typeface.display(28, .semibold)     // editorial hero/section title (often lowercase)
     static let serifM = Typeface.display(22, .semibold)     // editorial card title (often lowercase)
     static let heroNumeral = Typeface.sans(44, .bold)       // giant numeral hero (Today)
     static let question = Typeface.sans(30, .bold)          // onboarding step question (sans-bold)
@@ -148,7 +148,7 @@ extension View {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .strokeBorder(Palette.hairline, lineWidth: 1)
             )
-            .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 16, x: 0, y: 6)
+            .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
     }
 
     func screenPadding() -> some View { self.padding(.horizontal, Space.screenH) }

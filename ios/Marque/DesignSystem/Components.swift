@@ -164,19 +164,26 @@ struct ScreenTitle: View {
     }
 }
 
-/// UPPERCASE tracked micro-label with an optional 3px accent bar (maxapp section eyebrow).
+/// UPPERCASE tracked micro-label with an optional 3×14 accent bar (maxapp section eyebrow).
 struct SectionLabel: View {
     let text: String
     var accent: Color? = nil
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             if let accent {
-                RoundedRectangle(cornerRadius: 1).fill(accent).frame(width: 3, height: 11)
+                RoundedRectangle(cornerRadius: 1.5).fill(accent).frame(width: 3, height: 14)
             }
             Text(text.uppercased())
                 .font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(Palette.textTertiary)
         }
+    }
+}
+
+/// Warm hairline for zone breaks between sections (heavier than the shared card hairline).
+struct MarqueHairline: View {
+    var body: some View {
+        Rectangle().fill(Palette.textPrimary.opacity(0.12)).frame(height: 0.5)
     }
 }
 
@@ -236,15 +243,38 @@ struct StreakGlyph: View {
 struct Chip: View {
     let text: String
     var selected: Bool = false
+    var onDark: Bool = false          // over camera/media: translucent white instead of paper
+    var tint: Color? = nil            // tiny tinted variant (e.g. provenance pill)
     var body: some View {
-        Text(text)
-            .font(AppFont.callout)
-            .foregroundStyle(selected ? Palette.onInk : Palette.textSecondary)
-            .padding(.horizontal, 14).padding(.vertical, 9)
-            .background(selected ? Palette.ink : Palette.surfaceRaised)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
-            .shadow(color: selected ? .clear : .black.opacity(0.05), radius: 8, x: 0, y: 2)
+        if let tint {
+            Text(text)
+                .font(Typeface.sans(10, .medium))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 7).padding(.vertical, 2)
+                .background(Capsule().fill(tint.opacity(0.14)))
+        } else {
+            Text(text)
+                .font(AppFont.callout)
+                .foregroundStyle(fg)
+                .padding(.horizontal, 14).padding(.vertical, 9)
+                .background(bg)
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(stroke, lineWidth: 1))
+                .shadow(color: (selected || onDark) ? .clear : .black.opacity(0.05), radius: 8, x: 0, y: 2)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+        }
+    }
+    private var fg: Color {
+        if selected { return Palette.onInk }
+        return onDark ? Color.white.opacity(0.6) : Palette.textSecondary
+    }
+    private var bg: Color {
+        if selected { return Palette.ink }
+        return onDark ? Color.white.opacity(0.12) : Palette.surfaceRaised
+    }
+    private var stroke: Color {
+        if selected { return .clear }
+        return onDark ? Color.white.opacity(0.14) : Palette.hairline
     }
 }
 
