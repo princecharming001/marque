@@ -12,7 +12,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
 
     // MARK: HTTP
 
-    private func post(_ path: String, _ body: [String: Any]) async -> Data? {
+    func post(_ path: String, _ body: [String: Any]) async -> Data? {
         guard let url = URL(string: AppConfig.backendBaseURL + path) else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -25,7 +25,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return data
     }
 
-    private func get(_ path: String) async -> Data? {
+    func get(_ path: String) async -> Data? {
         guard let url = URL(string: AppConfig.backendBaseURL + path) else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 30
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }

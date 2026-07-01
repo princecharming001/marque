@@ -74,3 +74,54 @@ def test_voice_finalize():
 def test_publish_mock():
     b = client.post("/v1/publish", json={"caption": "hi", "platforms": ["instagram"]}).json()
     assert b["ok"] is True and b["mode"] == "mock"
+
+
+def test_mint_upload_url():
+    r = client.post("/v1/uploads/mint", json={"filename": "test.mov", "content_type": "video/quicktime"})
+    assert r.status_code == 200
+    b = r.json()
+    assert "upload_url" in b
+    assert "key" in b
+    assert "public_url" in b
+    assert b["mode"] in ("live", "mock")
+
+
+def test_create_clip_job():
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/footage.mov",
+        "source_id": "test-123",
+        "formats": ["myth-buster"],
+        "style": "talking_head",
+        "script": {"hook": "Stop doing this", "body": "Here is why.", "cta": "Follow me.", "formatId": "myth-buster"},
+    })
+    assert r.status_code == 200
+    b = r.json()
+    assert "job_id" in b
+    assert "clips" in b
+    assert b["mode"] in ("live", "mock")
+    assert len(b["clips"]) == 1
+    assert b["clips"][0]["format"] == "myth-buster"
+
+
+def test_get_clip_job():
+    # Create a job first
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/footage.mov",
+        "source_id": "test-456",
+        "formats": ["listicle"],
+        "style": "fast_cuts",
+        "script": {"hook": "Three tips", "body": "Tip 1. Tip 2. Tip 3.", "cta": "Save this.", "formatId": "listicle"},
+    })
+    job_id = r.json()["job_id"]
+    r2 = client.get(f"/v1/clips/{job_id}")
+    assert r2.status_code == 200
+    b = r2.json()
+    assert b["job_id"] == job_id
+    assert "status" in b
+    assert "clips" in b
+    assert b["mode"] in ("live", "mock")
+
+
+def test_get_clip_job_not_found():
+    r = client.get("/v1/clips/nonexistent-job-id")
+    assert r.status_code == 404

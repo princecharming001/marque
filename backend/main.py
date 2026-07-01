@@ -10,6 +10,7 @@ import os
 import json
 import re
 import uuid
+import asyncio
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 
 import prompts
 from prompts import OPUS, HAIKU, STYLES, FORMAT_IDS
+from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame
 
 app = FastAPI(title="Marque API", version="0.3.0")
 
@@ -124,6 +126,21 @@ class VoiceFinalizeRequest(Brand):
 
 class VoiceSessionRequest(Brand):
     pass
+
+
+class UploadMintRequest(BaseModel):
+    filename: str = "footage.mov"
+    content_type: str = "video/quicktime"
+
+
+class ClipJobRequest(BaseModel):
+    source_url: str = ""
+    source_id: str = ""
+    script: dict = {}
+    formats: list[str] = []
+    brand: dict = {}
+    style: str = "talking_head"
+    media_context: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +371,240 @@ async def trends(niche: str = ""):
     # with a Haiku-written "why" when keyed.
     base = mock_trends(niche)
     return {"mode": "mock", "trends": base}
+
+
+# ---------------------------------------------------------------------------
+# Media upload + clip pipeline
+# ---------------------------------------------------------------------------
+
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "")
+R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "")
+R2_BUCKET = os.environ.get("R2_BUCKET", "marque-media")
+R2_PUBLIC_BASE = os.environ.get("R2_PUBLIC_BASE", "https://media.marque.app")
+ASSEMBLY_KEY = os.environ.get("ASSEMBLYAI_KEY", "")
+REMOTION_SERVE_URL = os.environ.get("REMOTION_SERVE_URL", "")
+REMOTION_ACCESS_KEY = os.environ.get("REMOTION_AWS_ACCESS_KEY_ID", "")
+REMOTION_SECRET = os.environ.get("REMOTION_AWS_SECRET_ACCESS_KEY", "")
+
+# In-memory job store (replaced by Supabase clip_jobs in Phase 4)
+_clip_jobs: dict[str, dict] = {}
+
+
+@app.post("/v1/uploads/mint")
+async def mint_upload_url(req: UploadMintRequest):
+    if not R2_ACCESS_KEY:
+        key = f"mock/{uuid.uuid4()}/{req.filename}"
+        return {"mode": "mock", "upload_url": f"https://mock-r2.example.com/{key}",
+                "key": key, "public_url": f"{R2_PUBLIC_BASE}/{key}"}
+    import hmac, hashlib, datetime
+    key = f"uploads/{uuid.uuid4()}/{req.filename}"
+    public_url = f"{R2_PUBLIC_BASE}/{key}"
+    endpoint = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{R2_BUCKET}/{key}"
+    now = datetime.datetime.utcnow()
+    date_str = now.strftime("%Y%m%dT%H%M%SZ")
+    date_short = now.strftime("%Y%m%d")
+    region = "auto"
+    service = "s3"
+    scope = f"{date_short}/{region}/{service}/aws4_request"
+    canonical = (f"PUT\n/{R2_BUCKET}/{key}\n"
+                 f"X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={R2_ACCESS_KEY}%2F{scope}"
+                 f"&X-Amz-Date={date_str}&X-Amz-Expires=3600&X-Amz-SignedHeaders=content-type%3Bhost\n"
+                 f"host:{R2_ACCOUNT_ID}.r2.cloudflarestorage.com\ncontent-type:{req.content_type}\n\n"
+                 f"content-type;host\nUNSIGNED-PAYLOAD")
+    str_to_sign = (f"AWS4-HMAC-SHA256\n{date_str}\n{scope}\n"
+                   + hashlib.sha256(canonical.encode()).hexdigest())
+    def _hmac(key, msg):
+        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+    signing_key = _hmac(_hmac(_hmac(_hmac(
+        f"AWS4{R2_SECRET_KEY}".encode(), date_short), region), service), "aws4_request")
+    sig = hmac.new(signing_key, str_to_sign.encode(), hashlib.sha256).hexdigest()
+    upload_url = (f"{endpoint}?X-Amz-Algorithm=AWS4-HMAC-SHA256"
+                  f"&X-Amz-Credential={R2_ACCESS_KEY}%2F{scope}"
+                  f"&X-Amz-Date={date_str}&X-Amz-Expires=3600"
+                  f"&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature={sig}")
+    return {"mode": "live", "upload_url": upload_url, "key": key, "public_url": public_url}
+
+
+@app.post("/v1/clips")
+async def create_clip_job(req: ClipJobRequest):
+    """Create a clip editing job. Returns immediately with job_id; pipeline runs async."""
+    job_id = str(uuid.uuid4())
+    clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "queued"}
+             for f in (req.formats or ["myth-buster"])]
+    job = {
+        "job_id": job_id, "source_id": req.source_id, "status": "transcribing",
+        "clips": clips, "script": req.script, "style": req.style,
+        "brand": req.brand, "media_context": req.media_context,
+        "source_url": req.source_url, "edl": None, "error": None,
+    }
+    _clip_jobs[job_id] = job
+    if not ASSEMBLY_KEY:
+        job["status"] = "mock_ready"
+        for c in clips: c["status"] = "ready"
+        job["edl"] = _mock_edl(req.style, req.script)
+        return {"mode": "mock", "job_id": job_id, "clips": clips}
+    asyncio.create_task(_run_pipeline(job_id))
+    return {"mode": "live", "job_id": job_id, "clips": clips}
+
+
+@app.get("/v1/clips/{job_id}")
+async def get_clip_job(job_id: str):
+    if job_id not in _clip_jobs:
+        raise HTTPException(status_code=404, detail="job not found")
+    job = _clip_jobs[job_id]
+    return {
+        "mode": "mock" if job["status"] == "mock_ready" else "live",
+        "job_id": job_id,
+        "status": job["status"],
+        "clips": job["clips"],
+        "edl": job.get("edl"),
+        "error": job.get("error"),
+    }
+
+
+def _mock_edl(style: str, script: dict) -> dict:
+    """Deterministic mock EDL for dev/test."""
+    return {
+        "style": style, "format_id": script.get("formatId", "myth-buster"),
+        "segments": [{"src_in": 0, "src_out": 720}],
+        "drops": [{"src_in": 45, "src_out": 51, "reason": "filler"}],
+        "captions": [{"word": w, "frame": i*20}
+                     for i, w in enumerate(script.get("hook", "Great hook").split()[:8])],
+        "overlays": [{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}],
+        "broll": [], "layout": {"style": style, "panels": 1 if style != "split_three" else 3,
+                                "panel_boundaries": [240, 480] if style == "split_three" else []},
+        "audio": {"lufs_target": -14.0},
+    }
+
+
+async def _run_pipeline(job_id: str):
+    """Background pipeline: transcribe → edit → render."""
+    job = _clip_jobs[job_id]
+    try:
+        job["status"] = "transcribing"
+        for c in job["clips"]: c["status"] = "transcribing"
+        transcript_id = await _submit_transcription(job["source_url"])
+        if not transcript_id:
+            raise RuntimeError("transcription submit failed")
+        words = await _poll_transcription(transcript_id)
+
+        job["status"] = "editing"
+        for c in job["clips"]: c["status"] = "editing"
+        style = job["style"]
+        script = job["script"]
+        system, user = prompts.edl_prompt(style, words, script, job["brand"], job["media_context"])
+        edl_text = await anthropic(system, user, model=HAIKU, max_tokens=4000)
+        edl_data = extract_json(edl_text, array=False)
+
+        if edl_data:
+            try:
+                edl_obj = EDL(**edl_data)
+                edl_obj, issues = validate_and_repair(edl_obj)
+                edl_data = edl_obj.model_dump()
+            except Exception:
+                total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
+                edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
+                edl_data = edl_obj.model_dump()
+        else:
+            total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
+            edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
+            edl_data = edl_obj.model_dump()
+
+        job["edl"] = edl_data
+
+        job["status"] = "rendering"
+        for c in job["clips"]: c["status"] = "rendering"
+
+        if REMOTION_SERVE_URL and REMOTION_ACCESS_KEY:
+            for clip in job["clips"]:
+                render_id = await _submit_remotion_render(
+                    job["source_url"], edl_data, clip["format"], job["style"])
+                if render_id:
+                    clip["render_id"] = render_id
+                    render_url = await _poll_remotion_render(render_id)
+                    clip["render_url"] = render_url
+                    clip["status"] = "ready" if render_url else "failed"
+                else:
+                    clip["status"] = "failed"
+        else:
+            for clip in job["clips"]:
+                clip["status"] = "ready"
+                clip["render_url"] = job["source_url"]
+
+        job["status"] = "ready"
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = str(e)
+        for c in job["clips"]: c["status"] = "failed"
+
+
+async def _submit_transcription(video_url: str) -> str | None:
+    if not ASSEMBLY_KEY:
+        return None
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://api.assemblyai.com/v2/transcript",
+            headers={"authorization": ASSEMBLY_KEY},
+            json={"audio_url": video_url, "auto_highlights": True, "speaker_labels": False},
+        )
+    if r.status_code != 200:
+        return None
+    return r.json().get("id")
+
+
+async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> list[dict]:
+    if not ASSEMBLY_KEY:
+        return []
+    for _ in range(max_wait_s // 5):
+        await asyncio.sleep(5)
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.assemblyai.com/v2/transcript/{transcript_id}",
+                headers={"authorization": ASSEMBLY_KEY},
+            )
+        data = r.json()
+        if data.get("status") == "completed":
+            return data.get("words", [])
+        if data.get("status") == "error":
+            return []
+    return []
+
+
+async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str) -> str | None:
+    if not REMOTION_SERVE_URL:
+        return None
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            "https://api.remotion.dev/renders",
+            headers={"Authorization": f"Bearer {REMOTION_ACCESS_KEY}",
+                     "Content-Type": "application/json"},
+            json={
+                "serveUrl": REMOTION_SERVE_URL,
+                "composition": f"Marque_{style.title().replace('_', '')}",
+                "inputProps": {"sourceUrl": source_url, "edl": edl, "formatId": format_id},
+                "codec": "h264", "outputFormat": "mp4",
+            },
+        )
+    if r.status_code not in (200, 201):
+        return None
+    return r.json().get("renderId") or r.json().get("id")
+
+
+async def _poll_remotion_render(render_id: str, max_wait_s: int = 600) -> str | None:
+    for _ in range(max_wait_s // 10):
+        await asyncio.sleep(10)
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.remotion.dev/renders/{render_id}",
+                headers={"Authorization": f"Bearer {REMOTION_ACCESS_KEY}"},
+            )
+        data = r.json()
+        if data.get("status") == "done":
+            return data.get("outputUrl") or data.get("url")
+        if data.get("status") in ("failed", "error"):
+            return None
+    return None
 
 
 # ----- brand-scan + voice onboarding -----

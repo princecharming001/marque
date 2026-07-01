@@ -374,4 +374,13 @@ extension ClipStatus {
         case .failed: return "Needs attention"
         }
     }
+    var stageLabel: String {
+        switch self {
+        case .rendering: return "Cutting…"
+        case .ready:     return "Ready"
+        case .scheduled: return "Scheduled"
+        case .posted:    return "Posted"
+        case .failed:    return "Failed"
+        }
+    }
 }

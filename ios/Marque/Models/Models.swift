@@ -174,6 +174,7 @@ struct Clip: Codable, Hashable, Identifiable {
     var remoteURL: String? = nil        // public R2/Stream URL once rendered server-side
     var thumbnailPath: String? = nil    // poster frame in the app container
     var captioned: Bool = false         // whether auto-captions were burned in
+    var jobId: String? = nil            // backend clip-job ID for polling render status
     var createdAt: Date = Date()
 }
 

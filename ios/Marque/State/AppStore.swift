@@ -27,9 +27,9 @@ final class AppStore {
     let backend = BackendClient()
     var llm: LLMRouting { backend }
     var aiMode: String { backend.lastMode }
-    // Live clip engine when transcription+render keys are present, mock otherwise.
+    // Live clip engine when the backend URL is configured, mock otherwise.
     var clipEngine: ClipEngineProtocol {
-        (AppConfig.assemblyAIKey.isEmpty || AppConfig.shotstackKey.isEmpty) ? MockClipEngine() : LiveClipEngine()
+        AppConfig.backendBaseURL.isEmpty ? MockClipEngine() : LiveClipEngine()
     }
     // Live Ayrshare publishing when a key is present, mock otherwise.
     var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
@@ -216,18 +216,48 @@ final class AppStore {
         }
         clips.insert(contentsOf: tagged, at: 0)
         save()
-        // render each
-        for c in tagged {
-            let status = await clipEngine.render(clipId: c.id)
-            if let idx = clips.firstIndex(where: { $0.id == c.id }) {
-                clips[idx].status = status
+        // Poll job status until all clips are ready or failed.
+        if let jobId = tagged.first?.jobId {
+            Task { await pollJob(jobId: jobId, clipIds: tagged.map { $0.id }) }
+        } else {
+            // Mock path: always use MockClipEngine.render (returns .ready after a short sleep),
+            // regardless of which clipEngine is active — LiveClipEngine.render returns .rendering.
+            let mock = MockClipEngine()
+            for c in tagged {
+                let status = await mock.render(clipId: c.id)
+                if let idx = clips.firstIndex(where: { $0.id == c.id }) {
+                    clips[idx].status = status
+                }
+                save()
             }
-            save()
         }
         // Consistency measures showing up: one per completed recording session.
         streak += 1
         save()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
+    }
+
+    func pollJob(jobId: String, clipIds: [UUID]) async {
+        var done = false
+        var attempts = 0
+        while !done && attempts < 60 {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5s
+            attempts += 1
+            guard let result = await backend.pollClipJob(jobId: jobId),
+                  let jobClips = result["clips"] as? [[String: Any]] else { continue }
+            let status = result["status"] as? String ?? ""
+            for jobClip in jobClips {
+                let clipIdStr = jobClip["clip_id"] as? String ?? ""
+                let clipStatus = jobClip["status"] as? String ?? ""
+                let renderURL = jobClip["render_url"] as? String
+                if let idx = clips.firstIndex(where: { $0.id.uuidString == clipIdStr }) {
+                    clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
+                    if let url = renderURL { clips[idx].remoteURL = url }
+                }
+            }
+            save()
+            done = (status == "ready" || status == "failed" || status == "mock_ready")
+        }
     }
 
     // MARK: Scheduling / publishing
