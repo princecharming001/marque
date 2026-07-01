@@ -13,16 +13,26 @@ struct SettingsView: View {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
-                    // Upgrade
+                    // Upgrade — serif hero with an accent bloom (maxapp)
                     Button { showPaywall = true } label: {
-                        HStack {
-                            Text("Upgrade to Pro").font(AppFont.headline).foregroundStyle(Palette.onInk)
-                            Spacer()
-                            Image(systemName: "sparkles").foregroundStyle(Palette.onInk)
+                        ZStack(alignment: .topTrailing) {
+                            RadialGradient(colors: [Palette.accent.opacity(0.12), .clear],
+                                           center: .topTrailing, startRadius: 0, endRadius: 170)
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                SectionLabel(text: "Marque Pro", accent: Palette.accent)
+                                Text("Publish everything Marque makes for you.")
+                                    .font(AppFont.serifL).foregroundStyle(Palette.textPrimary)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                HStack(spacing: 6) {
+                                    Text("Go Pro").font(AppFont.callout).foregroundStyle(Palette.accent)
+                                    Image(systemName: "arrow.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.accent)
+                                }
+                                .padding(.top, 2)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(Space.md)
-                        .background(Palette.ink)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .marqueCard(radius: 24)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("settings.upgrade")
@@ -127,12 +137,15 @@ struct SettingsView: View {
 
     private func row(_ title: String, _ icon: String, tint: Color = Palette.textPrimary) -> some View {
         HStack(spacing: Space.md) {
-            Image(systemName: icon).foregroundStyle(tint).frame(width: 22)
-            Text(title).font(AppFont.body).foregroundStyle(tint)
+            Image(systemName: icon).font(.system(size: 16)).foregroundStyle(tint)
+                .frame(width: 34, height: 34)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.08)))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.10), lineWidth: 1))
+            Text(title).font(AppFont.headline).foregroundStyle(tint == Palette.critical ? Palette.critical : Palette.textPrimary)
             Spacer()
             Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
         }
         .contentShape(Rectangle())
-        .padding(.vertical, 2)
+        .padding(.vertical, 6)
     }
 }
