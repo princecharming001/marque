@@ -31,8 +31,9 @@ final class AppStore {
     var clipEngine: ClipEngineProtocol {
         AppConfig.backendBaseURL.isEmpty ? MockClipEngine() : LiveClipEngine()
     }
-    // Live Ayrshare publishing when a key is present, mock otherwise.
-    var publisher: Publishing { AppConfig.ayrshareKey.isEmpty ? MockPublisher() : AyrsharePublisher() }
+    // All publishing goes through the backend (which holds the Ayrshare key server-side).
+    // BackendPublisher falls back to MockPublisher when the backend is unreachable.
+    var publisher: Publishing { BackendPublisher() }
     let insights: InsightsProviding = LiveInsights()
     let remote: RemotePersistence = SupabaseStore()
     let billing: Billing = MockBilling()
