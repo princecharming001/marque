@@ -78,9 +78,11 @@ struct CoachView: View {
                                                 Image(systemName: "sparkles").font(.system(size: 11, weight: .semibold))
                                                 Text("Write a script").font(AppFont.callout)
                                             }
-                                            .foregroundStyle(Palette.onInk)
-                                            .padding(.horizontal, Space.md).frame(height: 34)
-                                            .background(Palette.ink).clipShape(Capsule())
+                                            .foregroundStyle(Palette.accent)
+                                            .padding(.horizontal, Space.md).frame(height: 32)
+                                            .background(Palette.accent.opacity(0.08))
+                                            .clipShape(Capsule())
+                                            .overlay(Capsule().strokeBorder(Palette.accent.opacity(0.25), lineWidth: 1))
                                         }
                                         .buttonStyle(.plain)
                                         .accessibilityIdentifier("coach.writeScript")

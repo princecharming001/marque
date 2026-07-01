@@ -12,8 +12,10 @@ struct BrandProfileView: View {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
-                    avatarHero
-                    statsStrip
+                    VStack(alignment: .leading, spacing: Space.lg) {
+                        avatarHero
+                        statsStrip
+                    }
                     brandSection(store: store)
                     voiceSection(store: store)
                     pillarsSection

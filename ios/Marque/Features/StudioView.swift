@@ -13,6 +13,7 @@ struct StudioView: View {
                     Text("YOUR CONTENT ENGINE").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
                     Text("Studio").font(Typeface.display(40)).tracking(-1).foregroundStyle(Palette.textPrimary)
                 }
+                .padding(.top, Space.md)
 
                 // Pillars — each carries the creator's angle; tap to write 3 scripts on it.
                 VStack(alignment: .leading, spacing: Space.md) {
@@ -86,17 +87,19 @@ struct PillarCard: View {
     let onGenerate: () -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: 7) {
+            HStack(alignment: .top, spacing: 7) {
                 Circle().fill(Color(hex: pillar.colorHex)).frame(width: 8, height: 8)
+                    .padding(.top, 4)
                 Text(pillar.name)
-                    .font(AppFont.serifM).tracking(Track.tight)
-                    .foregroundStyle(Palette.textPrimary).lineLimit(1)
+                    .font(Typeface.display(17, .semibold)).tracking(Track.tight)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             Text(pillar.summary.isEmpty ? "Write fresh scripts on this pillar." : pillar.summary)
                 .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Spacer(minLength: Space.sm)
+            Spacer(minLength: Space.xs)
             Button(action: onGenerate) {
                 HStack(spacing: 6) {
                     if generating { ProgressView().controlSize(.small).tint(Palette.onInk) }
@@ -104,7 +107,7 @@ struct PillarCard: View {
                     Text(generating ? "Writing…" : "Write 3 scripts").font(AppFont.callout)
                 }
                 .foregroundStyle(Palette.onInk)
-                .frame(maxWidth: .infinity).frame(height: 40)
+                .frame(maxWidth: .infinity).frame(height: 38)
                 .background(Palette.ink)
                 .clipShape(Capsule())
             }
@@ -113,7 +116,7 @@ struct PillarCard: View {
             .accessibilityIdentifier("studio.pillar.\(pillar.name)")
         }
         .padding(Space.md)
-        .frame(width: 232, height: 158, alignment: .topLeading)
+        .frame(width: 220, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)

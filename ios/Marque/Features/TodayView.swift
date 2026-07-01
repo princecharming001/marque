@@ -14,7 +14,7 @@ struct TodayView: View {
                     .font(Typeface.display(38)).tracking(-0.8)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 2)
+                    .padding(.top, Space.lg)
                 momentum
                 upcomingStrip
                 command

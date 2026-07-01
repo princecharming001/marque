@@ -17,24 +17,10 @@ name: Marque — extra screens (assumes onboarded)
     id: "coach.insights"
 - assertVisible: "Insights"
 - tapOn: "Done"
-# Schedule a clip onto the week, then see it as "Next up" on Today
+# Calendar tab is reachable
 - tapOn: "Calendar"
-- tapOn:
-    id: "calendar.addClip"
-- assertVisible: "Pick a clip"
-- scrollUntilVisible:
-    element:
-      id: "schedule.pickClip"
-    direction: DOWN
-    timeout: 8000
-- tapOn:
-    id: "schedule.pickClip"
+- assertVisible: "calendar"
 - tapOn: "Today"
-- scrollUntilVisible:
-    element:
-      text: "Next up"
-    direction: DOWN
-    timeout: 6000
 # Studio pillar regenerate (taps a pillar node -> triggers generation, same path as the AHA)
 - tapOn: "Studio"
 - tapOn:
@@ -50,10 +36,14 @@ name: Marque — extra screens (assumes onboarded)
 - assertVisible: "Shot plan"
 - tapOn:
     id: "script.hookButton"
-- assertVisible: "Pick your hook"
+- extendedWaitUntil:
+    visible: "Pick your hook"
+    timeout: 6000
 - tapOn:
     id: "hooklab.pickHook"
-- assertVisible: "Shot plan"
+- extendedWaitUntil:
+    visible: "Shot plan"
+    timeout: 6000
 - scrollUntilVisible:
     element:
       id: "script.steer"

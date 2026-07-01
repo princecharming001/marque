@@ -98,11 +98,10 @@ struct InsightsView: View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(alignment: .lastTextBaseline, spacing: Space.sm) {
                 Text(heroValue)
-                    .font(Typeface.display(56, .semibold)).tracking(Track.hero)
+                    .font(Typeface.display(44, .semibold)).tracking(Track.hero)
                     .foregroundStyle(Palette.textPrimary)
                 Text(heroLabel)
                     .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                    .padding(.bottom, 8)
             }
             HStack(spacing: Space.md) {
                 miniStat("\(store.schedule.count)", "Scheduled")
@@ -115,7 +114,7 @@ struct InsightsView: View {
 
     private func miniStat(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+            Text(value).font(Typeface.display(20, .semibold)).foregroundStyle(Palette.textPrimary)
             Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

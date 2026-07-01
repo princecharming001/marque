@@ -33,17 +33,13 @@ struct CalendarView: View {
                     Text("PLAN AHEAD").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
                     ScreenTitle(text: "Calendar")
                 }
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    SectionLabel(text: "View", accent: Palette.accent)
-                    Picker("View", selection: $mode) {
-                        ForEach(CalMode.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("calendar.modeToggle")
+                Picker("View", selection: $mode) {
+                    ForEach(CalMode.allCases) { Text($0.rawValue).tag($0) }
                 }
-                Text("Tap a day to schedule a ready clip; tap a post to edit, reschedule or publish. Times are shown in your timezone.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                    .lineSpacing(4)
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("calendar.modeToggle")
+                Text("Tap to schedule or edit posts.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
 
                 if mode == .week {
                     VStack(spacing: 12) {
