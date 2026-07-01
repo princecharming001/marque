@@ -23,6 +23,12 @@ final class AppStore {
     var showVoiceOnboarding = false
     var coaching = ""                    // this-week coaching line (interpretInsights)
 
+    // Learning loop
+    var learnedInsights: [String: Any] = [:]
+    var recommendedArms: [[String: Any]] = []
+    var learningProgress: Double = 0
+    var postsLearned: Int = 0
+
     // The AI brain lives in the backend; the app is a thin client (no vendor keys on device).
     let backend = BackendClient()
     var llm: LLMRouting { backend }
@@ -310,6 +316,9 @@ final class AppStore {
             schedule.append(post)
             if let idx = clips.firstIndex(where: { $0.id == clip.id }) { clips[idx].status = .scheduled }
             save()
+            // Register with learning loop so it tracks this arm.
+            let registered = post
+            Task { await backend.registerPost(registered, clip: clip) }
         }
     }
 
@@ -339,6 +348,26 @@ final class AppStore {
         else { schedule.append(p) }
         if ok, let ci = clips.firstIndex(where: { $0.id == post.clipId }) { clips[ci].status = .posted }
         save()
+    }
+
+    // MARK: Metrics logging
+
+    func logMetrics(_ metrics: PostMetrics, for post: ScheduledPost) {
+        if let idx = schedule.firstIndex(where: { $0.id == post.id }) {
+            schedule[idx].metrics = metrics
+            save()
+        }
+        // Register with backend learning loop
+        Task { await backend.registerPostMetrics(postId: post.id.uuidString, metrics: metrics) }
+    }
+
+    func loadRecommendations() async {
+        let arms = await backend.fetchRecommendations(niche: brand.niche)
+        recommendedArms = arms
+        let insights = await backend.fetchLearnedInsights()
+        learnedInsights = insights
+        learningProgress = insights["learning_progress"] as? Double ?? 0
+        postsLearned = insights["posts_learned"] as? Int ?? 0
     }
 
     // MARK: Coach / trends / insights

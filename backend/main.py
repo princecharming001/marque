@@ -29,6 +29,70 @@ BRIGHTDATA_KEY = os.environ.get("BRIGHTDATA_KEY", "")
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 VOYAGE_KEY = os.environ.get("VOYAGE_API_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Learning loop — in-memory bandit (Supabase arm_stats in production)
+# ---------------------------------------------------------------------------
+
+_arm_stats: dict[str, dict] = {}
+_post_registry: dict[str, dict] = {}
+
+DIMENSIONS = ["pillar", "style", "format_id", "hook_signal"]
+KAPPA = 5.0
+EXPLORATION_FLOOR = 0.15
+
+
+def _compute_y(m: dict, goal: str = "grow") -> float:
+    import math
+    reach = max(m.get("reach", 1), 1)
+    save_rate = m.get("saves", 0) / reach
+    share_rate = m.get("shares", 0) / reach
+    follow_rate = m.get("follows_gained", 0) / reach
+    watch_pct = m.get("avg_watch_pct", 0.0)
+    like_rate = m.get("likes", 0) / reach
+    comment_rate = m.get("comments", 0) / reach
+    weights = {
+        "grow":      {"follow_rate": 0.35, "share_rate": 0.25, "save_rate": 0.20, "watch_pct": 0.20},
+        "authority": {"save_rate": 0.40, "watch_pct": 0.30, "share_rate": 0.20, "comment_rate": 0.10},
+        "clients":   {"comment_rate": 0.35, "follow_rate": 0.30, "save_rate": 0.25, "share_rate": 0.10},
+        "monetize":  {"save_rate": 0.40, "follow_rate": 0.30, "share_rate": 0.20, "watch_pct": 0.10},
+    }.get(goal, {"follow_rate": 0.35, "share_rate": 0.25, "save_rate": 0.20, "watch_pct": 0.20})
+    rates = {"follow_rate": follow_rate, "share_rate": share_rate, "save_rate": save_rate,
+             "watch_pct": watch_pct, "like_rate": like_rate, "comment_rate": comment_rate}
+    raw = sum(w * rates.get(k, 0) * 100 for k, w in weights.items())
+    return 1 / (1 + math.exp(-0.5 * (raw - 2.0)))
+
+
+def _update_arm(creator_id: str, dim_value: str, y: float):
+    if creator_id not in _arm_stats:
+        _arm_stats[creator_id] = {}
+    stats = _arm_stats[creator_id]
+    if dim_value not in stats:
+        stats[dim_value] = {"n": 0, "sum_y": 0.0, "alpha": 1.0, "beta": 1.0}
+    s = stats[dim_value]
+    s["n"] += 1
+    s["sum_y"] += y
+    s["effect"] = (s["sum_y"] + KAPPA * 0.5) / (s["n"] + KAPPA)
+    s["alpha"] = 1.0 + s["sum_y"]
+    s["beta"] = 1.0 + (s["n"] - s["sum_y"])
+    s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
+
+
+def _thompson_sample(creator_id: str, candidates: list) -> list:
+    import random
+    stats = _arm_stats.get(creator_id, {})
+    scored = []
+    for c in candidates:
+        s = stats.get(c, {"alpha": 1.0, "beta": 1.0})
+        alpha, beta = s["alpha"], s["beta"]
+        mean = alpha / (alpha + beta)
+        std = (alpha * beta / ((alpha + beta)**2 * (alpha + beta + 1))) ** 0.5
+        sample = min(1.0, max(0.0, mean + std * random.gauss(0, 1)))
+        scored.append((c, sample))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +225,32 @@ class BRollMatchRequest(BaseModel):
 
 
 _media_cache: dict[str, dict] = {}
+
+
+class PostRegisterRequest(BaseModel):
+    post_id: str
+    clip_id: str = ""
+    platform: str = "instagram"
+    scheduled_at: str = ""
+    pillar: str = ""
+    style: str = ""
+    format_id: str = ""
+    hook_signal: str = ""
+    predicted_score: int = 0
+    creator_id: str = "default"
+
+
+class MetricsIngestRequest(BaseModel):
+    post_id: str
+    creator_id: str = "default"
+    views: int = 0
+    likes: int = 0
+    comments: int = 0
+    shares: int = 0
+    saves: int = 0
+    reach: int = 0
+    avg_watch_pct: float = 0.0
+    follows_gained: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -898,3 +988,126 @@ async def _fetch_pexels(query: str) -> str | None:
     files = videos[0].get("video_files", [])
     hd = next((f for f in files if f.get("quality") == "hd"), files[0] if files else None)
     return hd.get("link") if hd else None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Learning loop routes
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/posts/register")
+async def register_post(req: PostRegisterRequest):
+    """Register a scheduled post as a learning experiment."""
+    if req.post_id in _post_registry:
+        return {"mode": "mock", "status": "already_registered"}
+    _post_registry[req.post_id] = {
+        "creator_id": req.creator_id,
+        "pillar": req.pillar, "style": req.style,
+        "format_id": req.format_id, "hook_signal": req.hook_signal,
+        "predicted_score": req.predicted_score,
+        "outcome_y": None, "settled": False,
+    }
+    return {"mode": "live" if SUPABASE_URL else "mock", "status": "registered", "post_id": req.post_id}
+
+
+@app.post("/v1/metrics/ingest")
+async def ingest_metrics(req: MetricsIngestRequest):
+    """Ingest post metrics and update the learning bandit (idempotent on post_id)."""
+    entry = _post_registry.get(req.post_id, {})
+    if entry.get("settled"):
+        return {"mode": "mock", "status": "already_settled"}
+    if req.reach < 20:
+        return {"mode": "mock", "status": "below_min_reach", "reach": req.reach}
+
+    m = req.model_dump()
+    y = _compute_y(m)
+    creator_id = req.creator_id
+
+    for dim in DIMENSIONS:
+        val = entry.get(dim, "")
+        if val:
+            _update_arm(creator_id, f"{dim}:{val}", y)
+
+    entry["outcome_y"] = y
+    entry["settled"] = True
+    _post_registry[req.post_id] = entry
+
+    return {"mode": "live" if SUPABASE_URL else "mock", "status": "ingested",
+            "outcome_y": round(y, 3), "post_id": req.post_id}
+
+
+@app.get("/v1/recommendations")
+async def get_recommendations(niche: str = "", creator_id: str = "default"):
+    """Return top 3 Thompson-sampled arms for the creator's home feed."""
+    stats = _arm_stats.get(creator_id, {})
+
+    if not stats:
+        return {"mode": "mock", "arms": [
+            {"pillar": "Myth-busting", "style": "talking_head", "reason": "Top performer in your niche"},
+            {"pillar": "Teach the fundamentals", "style": "faceless", "reason": "High saves for faceless content"},
+            {"pillar": "Hot takes", "style": "fast_cuts", "reason": "Fast-cuts trend spiking"},
+        ]}
+
+    styles = ["talking_head", "faceless", "split_three", "fast_cuts", "green_screen"]
+    pillars = list(set(
+        k.split(":", 1)[1] for k in stats if k.startswith("pillar:")
+    )) or ["Myth-busting", "Teach the fundamentals", "Hot takes"]
+
+    sampled_styles = _thompson_sample(creator_id, [f"style:{s}" for s in styles])
+    sampled_pillars = _thompson_sample(creator_id, [f"pillar:{p}" for p in pillars])
+
+    arms = []
+    for i in range(min(3, len(sampled_pillars))):
+        pillar_key, pillar_score = sampled_pillars[i]
+        style_key, style_score = sampled_styles[i % len(sampled_styles)]
+        pillar = pillar_key.replace("pillar:", "")
+        style = style_key.replace("style:", "")
+        style_stats = stats.get(style_key, {})
+        effect = style_stats.get("effect", 0.5)
+        lift = round((effect - 0.5) * 200)
+        reason = (f"{style.replace('_', ' ').title()} {'outperforms' if lift > 0 else 'tracks'} "
+                  f"your average by {abs(lift)}% ({style_stats.get('confidence', 'early read')})")
+        arms.append({"pillar": pillar, "style": style, "score": round(pillar_score + style_score, 3),
+                     "reason": reason})
+
+    return {"mode": "live" if SUPABASE_URL else "mock", "arms": arms}
+
+
+@app.get("/v1/insights/learned")
+async def get_learned_insights(creator_id: str = "default"):
+    """Return the creator's winning formula derived from arm_stats."""
+    stats = _arm_stats.get(creator_id, {})
+    if not stats:
+        return {"mode": "mock", "insights": [], "posts_learned": 0,
+                "winning_formula": None, "learning_progress": 0}
+
+    total_posts = max(s.get("n", 0) for s in stats.values()) if stats else 0
+
+    confirmed = [(k, v) for k, v in stats.items()
+                 if v.get("confidence") in ("confirmed", "early_read")]
+    confirmed.sort(key=lambda x: x[1].get("effect", 0), reverse=True)
+
+    insights = []
+    for k, v in confirmed[:5]:
+        dim, val = k.split(":", 1) if ":" in k else ("", k)
+        effect = v.get("effect", 0.5)
+        lift = round((effect - 0.5) * 200)
+        n = v.get("n", 0)
+        confidence = v.get("confidence", "early_read")
+        if abs(lift) >= 5:
+            insights.append({
+                "dimension": dim, "value": val,
+                "lift_pct": lift, "n_posts": n, "confidence": confidence,
+                "label": f"{val.replace('_', ' ').title()}: {'+' if lift>0 else ''}{lift}% vs your average",
+            })
+
+    winning = None
+    if confirmed:
+        top = confirmed[0]
+        dim, val = top[0].split(":", 1) if ":" in top[0] else ("", top[0])
+        lift = round((top[1].get("effect", 0.5) - 0.5) * 200)
+        winning = f"{val.replace('_', ' ').title()} content outperforms your average by {lift}%"
+
+    target = 15
+    return {"mode": "live" if SUPABASE_URL else "mock",
+            "insights": insights, "posts_learned": total_posts,
+            "winning_formula": winning, "learning_progress": min(1.0, total_posts / target)}

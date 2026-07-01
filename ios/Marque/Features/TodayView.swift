@@ -16,6 +16,9 @@ struct TodayView: View {
                 if let next = store.schedule.sorted(by: { $0.date < $1.date }).first(where: { !$0.posted }) {
                     nextPostRow(next)
                 }
+                LearningMeterCard(postsLearned: store.postsLearned,
+                                  learningProgress: store.learningProgress,
+                                  winningFormula: store.learnedInsights["winning_formula"] as? String)
                 if let t = store.trends.first {
                     trendTeaser(t)
                 }
@@ -25,7 +28,7 @@ struct TodayView: View {
         }
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .task { await store.loadTrends(); await store.loadInsights() }
+        .task { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showProfile) { BrandProfileView() }
     }
@@ -153,6 +156,8 @@ struct TodayView: View {
         .marqueCard(padding: Space.md)
     }
 
+    // MARK: Learning meter
+
     private func trendTeaser(_ t: TrendItem) -> some View {
         Button { router.selectedTab = .coach } label: {
             HStack(spacing: Space.sm) {
@@ -164,5 +169,37 @@ struct TodayView: View {
             .padding(.horizontal, Space.md)
         }
         .buttonStyle(.plain)
+    }
+}
+
+
+struct LearningMeterCard: View {
+    let postsLearned: Int
+    let learningProgress: Double
+    let winningFormula: String?
+
+    var body: some View {
+        if postsLearned == 0 {
+            EmptyView()
+        } else if postsLearned >= 15, let formula = winningFormula {
+            HStack(spacing: Space.sm) {
+                Image(systemName: "lightbulb.fill").foregroundStyle(Palette.accent)
+                Text(formula).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .marqueCard(padding: Space.md)
+        } else {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "chart.line.uptrend.xyaxis").foregroundStyle(Palette.accent)
+                    Text("Marque has learned from \(postsLearned) post\(postsLearned == 1 ? "" : "s") — recommendations sharpen at 15")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ProgressView(value: learningProgress)
+                    .tint(Palette.accent)
+            }
+            .marqueCard(padding: Space.md)
+        }
     }
 }

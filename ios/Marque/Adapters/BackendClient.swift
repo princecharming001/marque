@@ -288,6 +288,52 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return json
     }
 
+    // MARK: Learning loop
+
+    func registerPost(_ post: ScheduledPost, clip: Clip) async {
+        let body: [String: Any] = [
+            "post_id": post.id.uuidString,
+            "clip_id": clip.id.uuidString,
+            "platform": post.platforms.first.map { $0 == .instagram ? "instagram" : "tiktok" } ?? "instagram",
+            "scheduled_at": ISO8601DateFormatter().string(from: post.date),
+            "pillar": clip.title,
+            "style": clip.formatName,
+            "format_id": clip.formatId,
+            "hook_signal": "",
+            "predicted_score": clip.predictedScore,
+        ]
+        _ = await self.post("/v1/posts/register", body)
+    }
+
+    func registerPostMetrics(postId: String, metrics: PostMetrics) async {
+        let body: [String: Any] = [
+            "post_id": postId,
+            "views": metrics.views,
+            "likes": metrics.likes,
+            "comments": metrics.comments,
+            "shares": metrics.shares,
+            "saves": metrics.saves,
+            "reach": metrics.reach,
+            "avg_watch_pct": metrics.avgWatchPct,
+            "follows_gained": metrics.followsGained,
+        ]
+        _ = await self.post("/v1/metrics/ingest", body)
+    }
+
+    func fetchRecommendations(niche: String) async -> [[String: Any]] {
+        let encoded = niche.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? niche
+        guard let data = await get("/v1/recommendations?niche=\(encoded)"),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let arms = json["arms"] as? [[String: Any]] else { return [] }
+        return arms
+    }
+
+    func fetchLearnedInsights() async -> [String: Any] {
+        guard let data = await get("/v1/insights/learned"),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
+        return json
+    }
+
     func voiceOnboardingFinalize(niche: String, transcript: [[String: String]]) async -> BrandScanResult? {
         let body: [String: Any] = ["niche": niche, "transcript": transcript]
         guard let data = await post("/v1/voice-onboarding/finalize", body),

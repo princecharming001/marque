@@ -526,3 +526,19 @@ def broll_match_prompt(cue_text: str, candidates: list[dict]) -> tuple[str, str]
             f"Candidates:\n{json.dumps(candidates, indent=2)}\n\n"
             "Which candidate index best matches the beat? Return JSON only.")
     return system, user
+
+
+def learning_block(arm_stats: list[dict]) -> str:
+    """Generate the learning context block injected into script/pillar prompts."""
+    if not arm_stats:
+        return ""
+    lines = ["CREATOR PERFORMANCE DATA (use to inform hook/format choices):"]
+    for s in arm_stats[:5]:
+        lift = s.get("lift_pct", 0)
+        label = s.get("label", "")
+        if label and abs(lift) >= 5:
+            lines.append(f"- {label} ({s.get('confidence', 'early_read')})")
+    if len(lines) == 1:
+        return ""
+    lines.append("Lean into outperforming signals; avoid confirmed underperformers.")
+    return "\n".join(lines)

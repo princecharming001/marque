@@ -190,6 +190,11 @@ struct PostMetrics: Codable, Hashable {
     var comments: Int = 0
     var shares: Int = 0
     var followsGained: Int = 0
+    var saves: Int = 0
+    var reach: Int = 0
+    var avgWatchPct: Double = 0         // 0.0–1.0
+    var linkClicks: Int = 0
+    var settled: Bool = false           // true once metrics have "settled" (T+7d)
     var capturedAt: Date = Date()
     var engagementRate: Double {        // (likes+comments+shares) / views
         views > 0 ? Double(likes + comments + shares) / Double(views) : 0

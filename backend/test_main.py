@@ -151,3 +151,45 @@ def test_broll_match():
     b = r.json()
     assert "matches" in b
     assert b["mode"] in ("live", "mock")
+
+
+def test_register_post():
+    r = client.post("/v1/posts/register", json={
+        "post_id": "test-post-1",
+        "pillar": "Myth-busting",
+        "style": "talking_head",
+        "format_id": "myth-buster",
+        "hook_signal": "contrarian",
+        "predicted_score": 82,
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] in ("registered", "already_registered")
+
+
+def test_ingest_metrics():
+    client.post("/v1/posts/register", json={"post_id": "test-post-2", "pillar": "Hot takes",
+                                             "style": "fast_cuts", "format_id": "listicle"})
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "test-post-2",
+        "views": 5000, "likes": 200, "shares": 50, "saves": 80,
+        "reach": 4500, "avg_watch_pct": 0.65, "follows_gained": 30
+    })
+    assert r.status_code == 200
+    b = r.json()
+    assert b["status"] in ("ingested", "already_settled", "below_min_reach")
+
+
+def test_recommendations():
+    r = client.get("/v1/recommendations?niche=fitness")
+    assert r.status_code == 200
+    b = r.json()
+    assert "arms" in b
+    assert len(b["arms"]) > 0
+
+
+def test_learned_insights():
+    r = client.get("/v1/insights/learned")
+    assert r.status_code == 200
+    b = r.json()
+    assert "insights" in b
+    assert "learning_progress" in b
