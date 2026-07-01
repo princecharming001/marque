@@ -22,17 +22,17 @@ enum Palette {
     static let surfaceSunken = Color(hex: 0xF2F2F2)    // insets, thumbnails
     static let canvas = Color(hex: 0xF1F1EF)           // "Stoic" off-white (onboarding/home)
 
-    // Text
-    static let textPrimary = Color(hex: 0x111113)
-    static let textSecondary = Color(hex: 0x555555)
-    static let textTertiary = Color(hex: 0x9A9A9A)
+    // Text — maxapp warm neutrals (warm near-black ink, warm muted gray)
+    static let textPrimary = Color(hex: 0x1C1A17)
+    static let textSecondary = Color(hex: 0x555049)
+    static let textTertiary = Color(hex: 0x97928A)
 
     // Lines
     static let hairline = Color(hex: 0x000000, alpha: 0.08)
     static let divider = Color(hex: 0xE5E5E5)
 
     // Ink (fills) + accent
-    static let ink = Color(hex: 0x111113)              // primary button fill
+    static let ink = Color(hex: 0x1C1A17)              // warm near-black primary fill (maxapp)
     static let onInk = Color(hex: 0xFFFFFF)            // text on ink
     static let accent = Color(hex: 0x2C6BED)           // blue — links, selection, focus
     static let accentMuted = Color(hex: 0x2C6BED, alpha: 0.10)
@@ -60,16 +60,18 @@ enum Typeface {
         .custom("PlayfairDisplay-Regular", size: size).weight(weight)
     }
     static func sans(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .custom(inter(weight), size: size)
+        .custom(matter(weight), size: size)
     }
     static func body(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font { sans(size, weight) }
 
-    private static func inter(_ w: Font.Weight) -> String {
+    // maxapp's real sans is Matter (replaces the Inter substitute).
+    private static func matter(_ w: Font.Weight) -> String {
         switch w {
-        case .bold, .heavy, .black: return "Inter-Bold"
-        case .semibold: return "Inter-SemiBold"
-        case .medium: return "Inter-Medium"
-        default: return "Inter-Regular"
+        case .bold, .heavy, .black: return "Matter-Bold"
+        case .semibold: return "Matter-SemiBold"
+        case .medium: return "Matter-Medium"
+        case .light, .thin, .ultraLight: return "Matter-Light"
+        default: return "Matter-Regular"
         }
     }
 }

@@ -46,3 +46,10 @@ targets:
           - Inter-700.ttf
           - PlayfairDisplay.ttf
           - PlayfairDisplay-Italic.ttf
+          - Matter-Light.ttf
+          - Matter-Regular.ttf
+          - Matter-Medium.ttf
+          - Matter-SemiBold.ttf
+          - Matter-Bold.ttf
+          - Fraunces-Regular.ttf
+          - Fraunces-Italic.ttf

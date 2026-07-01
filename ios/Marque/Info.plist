@@ -39,6 +39,13 @@
 		<string>Inter-700.ttf</string>
 		<string>PlayfairDisplay.ttf</string>
 		<string>PlayfairDisplay-Italic.ttf</string>
+		<string>Matter-Light.ttf</string>
+		<string>Matter-Regular.ttf</string>
+		<string>Matter-Medium.ttf</string>
+		<string>Matter-SemiBold.ttf</string>
+		<string>Matter-Bold.ttf</string>
+		<string>Fraunces-Regular.ttf</string>
+		<string>Fraunces-Italic.ttf</string>
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
