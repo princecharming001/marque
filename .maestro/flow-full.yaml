@@ -32,8 +32,6 @@ name: Marque — full core loop
 - tapOn:
     point: "50%,15%"
 - tapOn: "Continue"
-- assertVisible: "How do you sound?"
-- tapOn: "Continue"
 - assertVisible: "What kind of videos?"
 - tapOn: "Talking-head"
 - tapOn: "Continue"

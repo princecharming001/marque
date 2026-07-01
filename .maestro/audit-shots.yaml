@@ -1,0 +1,28 @@
+appId: com.marque.app
+name: Marque — UX audit proof shots (post-onboarding state)
+---
+- launchApp
+- assertVisible: "Today"
+- takeScreenshot: /Users/home/Marque/.shots/audit-today
+
+# Settings now reads as a real consumer app: Accounts, Subscription, Legal, Delete account
+- tapOn:
+    id: "today.settings"
+- assertVisible: "Settings"
+- takeScreenshot: /Users/home/Marque/.shots/audit-settings-top
+- swipe:
+    direction: UP
+    duration: 500
+- swipe:
+    direction: UP
+    duration: 500
+- assertVisible: "Delete account"
+- takeScreenshot: /Users/home/Marque/.shots/audit-settings-bottom
+- tapOn: "Done"
+
+# Library clip detail: editable caption + share/delete menu
+- tapOn: "Library"
+- tapOn:
+    id: "library.clip"
+- assertVisible: "Caption"
+- takeScreenshot: /Users/home/Marque/.shots/audit-clip-detail

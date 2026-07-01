@@ -10,7 +10,7 @@ struct OnboardingView: View {
     @State private var analyzing = false
     @State private var generating = false
 
-    private let lastInputStep = 6
+    private let lastInputStep = 5
 
     var body: some View {
         if step == 0 {
@@ -25,7 +25,21 @@ struct OnboardingView: View {
             Palette.canvas.ignoresSafeArea()
             VStack(spacing: Space.xl) {
                 if step <= lastInputStep {
-                    OnboardProgress(total: lastInputStep, index: step).padding(.top, Space.md)
+                    VStack(spacing: Space.sm) {
+                        HStack {
+                            if step >= 2 {
+                                Button { withAnimation(Motion.enter) { step -= 1 } } label: {
+                                    Image(systemName: "chevron.left")
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(Palette.textSecondary)
+                                }
+                                .accessibilityIdentifier("onboard.back")
+                            }
+                            Spacer()
+                        }
+                        OnboardProgress(total: lastInputStep, index: step)
+                    }
+                    .padding(.top, Space.md)
                 }
                 Spacer(minLength: 0)
                 Group {
@@ -33,9 +47,8 @@ struct OnboardingView: View {
                     case 1: goalStep()
                     case 2: aboutStep()
                     case 3: knownForStep()
-                    case 4: voiceStep()
-                    case 5: styleStep()
-                    case 6: connectStep()
+                    case 4: styleStep()
+                    case 5: connectStep()
                     default: ahaStep
                     }
                 }
@@ -88,18 +101,6 @@ struct OnboardingView: View {
         }
     }
 
-    private func voiceStep() -> some View {
-        @Bindable var store = store
-        return StepScaffold(question: "How do you sound?") {
-            VStack(spacing: Space.lg) {
-                VoiceSlider(label: "Funny ⟷ Serious", value: $store.brand.voice.funnyToSerious)
-                VoiceSlider(label: "Polished ⟷ Raw", value: $store.brand.voice.polishedToRaw)
-                VoiceSlider(label: "Teacher ⟷ Peer", value: $store.brand.voice.teacherToPeer)
-            }
-            PillButton(title: "Continue") { advance() }
-        }
-    }
-
     private func styleStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "What kind of videos?",
@@ -115,7 +116,7 @@ struct OnboardingView: View {
                             note: "Link your Instagram and TikTok so Marque learns from what already works. Add more than one if you like.") {
             ConnectAccountsView()
             VStack(spacing: Space.sm) {
-                PillButton(title: analyzing ? "Setting up…" : "Continue", enabled: !analyzing) {
+                PillButton(title: analyzing ? "Reading your page…" : "Continue", enabled: !analyzing) {
                     analyzing = true
                     Task { await store.analyzePage(); analyzing = false; advance() }
                 }
@@ -259,17 +260,6 @@ private struct ChoiceCard: View {
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
         .shadow(color: .black.opacity(selected ? 0 : 0.05), radius: 12, x: 0, y: 4)
-    }
-}
-
-private struct VoiceSlider: View {
-    let label: String
-    @Binding var value: Double
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text(label).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-            Slider(value: $value).tint(Palette.ink)
-        }
     }
 }
 
