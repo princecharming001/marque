@@ -490,3 +490,39 @@ VOICE_AGENT_SYSTEM = (
     "ONCE ('say more about that'). Never lecture. End by reflecting back a one-sentence summary of their brand "
     "and asking them to confirm."
 )
+
+
+def media_analyze_prompt(filename: str, kind: str = "photo") -> tuple[str, str]:
+    """Return (system, user) for multimodal media analysis."""
+    system = (
+        "You analyze creator media assets (photos and videos) to determine their B-roll suitability. "
+        "Return ONLY valid JSON matching this schema exactly:\n"
+        '{"description": str (concrete, searchable, 1-2 sentences — write as if describing it to someone '
+        "who can't see it), "
+        '"scene": str (indoor/outdoor/studio/nature/urban/other), '
+        '"subjects": [str] (list of main subjects — people, objects, actions), '
+        '"has_face": bool, '
+        '"on_screen_text": str (any text visible in the frame, empty string if none), '
+        '"motion": "none|slow|medium|fast", '
+        '"quality": "low|medium|high", '
+        '"dominant_colors": [str] (top 3 color names), '
+        '"broll_suitability": int 0-100 (100 = perfect B-roll, 0 = unusable — talking-head takes score 0-20), '
+        '"broll_suitability_reason": str (one sentence why), '
+        '"usable_as": "broll"|"take"|"thumbnail"|"other", '
+        '"suggested_kind": "photo"|"video"|"screen", '
+        '"tags": [str] (5-10 searchable tags)}'
+    )
+    user = f"Analyze this {kind} asset for B-roll use in short-form social videos. File: {filename}"
+    return system, user
+
+
+def broll_match_prompt(cue_text: str, candidates: list[dict]) -> tuple[str, str]:
+    """Return (system, user) for Haiku tie-break among B-roll candidates."""
+    system = (
+        "You select the best B-roll clip for a video beat. Given a shot description and candidates, "
+        'return ONLY: {"chosen_index": int, "reason": str (≤10 words why this clip fits the beat)}'
+    )
+    user = (f"Beat: \"{cue_text}\"\n\n"
+            f"Candidates:\n{json.dumps(candidates, indent=2)}\n\n"
+            "Which candidate index best matches the beat? Return JSON only.")
+    return system, user

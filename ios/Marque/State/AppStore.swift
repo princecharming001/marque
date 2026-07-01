@@ -194,6 +194,33 @@ final class AppStore {
     func addMedia(_ assets: [MediaAsset]) {
         media.insert(contentsOf: assets, at: 0)
         save()
+        for asset in assets { analyzeMedia(asset) }
+    }
+
+    /// Trigger async analysis of a media asset after upload. Fills aiDescription, aiTags, brollSuitability.
+    func analyzeMedia(_ asset: MediaAsset) {
+        guard !asset.contentHash.isEmpty || !asset.remoteURL.isEmpty else { return }
+        let hash = asset.contentHash.isEmpty ? asset.id.uuidString : asset.contentHash
+        if let idx = media.firstIndex(where: { $0.id == asset.id }) {
+            media[idx].analysisStatus = .analyzing
+        }
+        Task {
+            let result = await backend.analyzeMedia(
+                contentHash: hash, filename: asset.note.isEmpty ? "asset" : asset.note,
+                kind: asset.kind.rawValue, publicURL: asset.remoteURL
+            )
+            if let idx = media.firstIndex(where: { $0.id == asset.id }) {
+                media[idx].aiDescription = result["description"] as? String ?? ""
+                media[idx].aiTags = result["tags"] as? [String] ?? []
+                media[idx].brollSuitability = result["broll_suitability"] as? Int ?? 0
+                media[idx].brollSuitabilityReason = result["broll_suitability_reason"] as? String ?? ""
+                media[idx].usableAs = result["usable_as"] as? String ?? "broll"
+                media[idx].hasface = result["has_face"] as? Bool ?? false
+                media[idx].onScreenText = result["on_screen_text"] as? String ?? ""
+                media[idx].analysisStatus = .done
+                save()
+            }
+        }
     }
 
     func removeMedia(_ asset: MediaAsset) {

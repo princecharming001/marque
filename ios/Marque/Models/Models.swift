@@ -210,6 +210,10 @@ struct ScheduledPost: Codable, Hashable, Identifiable {
 
 // MARK: - Personal media corpus (the AI references this when writing/cutting reels)
 
+enum AnalysisStatus: String, Codable {
+    case none, analyzing, done, failed
+}
+
 enum MediaKind: String, Codable, CaseIterable, Identifiable {
     case selfie, bRoll, clip, screenshot, other
     var id: String { rawValue }
@@ -243,6 +247,18 @@ struct MediaAsset: Codable, Hashable, Identifiable {
     var isVideo: Bool = false
     var thumbnailPath: String? = nil
     var addedAt: Date = Date()
+    // Analysis (filled async by backend after upload)
+    var contentHash: String = ""
+    var storageKey: String = ""
+    var remoteURL: String = ""
+    var analysisStatus: AnalysisStatus = .none
+    var aiDescription: String = ""
+    var aiTags: [String] = []
+    var brollSuitability: Int = 0           // 0-100
+    var brollSuitabilityReason: String = ""
+    var usableAs: String = "broll"          // broll | take | thumbnail | other
+    var hasface: Bool = false
+    var onScreenText: String = ""
 }
 
 /// A take the creator filmed (or imported) but hasn't decided what to do with yet.

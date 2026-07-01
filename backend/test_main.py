@@ -125,3 +125,29 @@ def test_get_clip_job():
 def test_get_clip_job_not_found():
     r = client.get("/v1/clips/nonexistent-job-id")
     assert r.status_code == 404
+
+
+def test_media_analyze():
+    r = client.post("/v1/media/analyze", json={
+        "content_hash": "abc123", "filename": "test.jpg", "kind": "photo", "public_url": ""
+    })
+    assert r.status_code == 200
+    b = r.json()
+    assert "broll_suitability" in b
+    assert b["mode"] in ("live", "mock", "cached")
+
+
+def test_broll_match():
+    r = client.post("/v1/broll/match", json={
+        "cue_text": "close-up of hands kneading dough",
+        "corpus": [
+            {"asset_id": "1", "description": "close-up of hands working with bread dough",
+             "tags": ["hands", "dough", "bread", "close-up"], "broll_suitability": 85},
+            {"asset_id": "2", "description": "exterior shot of a bakery storefront",
+             "tags": ["bakery", "exterior", "shop"], "broll_suitability": 30},
+        ]
+    })
+    assert r.status_code == 200
+    b = r.json()
+    assert "matches" in b
+    assert b["mode"] in ("live", "mock")

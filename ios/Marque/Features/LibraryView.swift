@@ -342,6 +342,47 @@ struct MediaEditSheet: View {
                     }
                     SectionLabel(text: "Tag (optional)")
                     TextField("e.g. gym, office, on stage", text: $note).marqueField()
+                    // AI Analysis section
+                    if asset.analysisStatus == .analyzing {
+                        HStack(spacing: Space.sm) {
+                            ProgressView().scaleEffect(0.8)
+                            Text("Analyzing…").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        }
+                    } else if asset.analysisStatus == .done {
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            SectionLabel(text: "AI description", accent: Palette.accent)
+                            Text(asset.aiDescription).font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                            if !asset.onScreenText.isEmpty {
+                                SectionLabel(text: "On-screen text", accent: Palette.accent)
+                                Text(asset.onScreenText).font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            }
+                            SectionLabel(text: "B-roll fit", accent: Palette.accent)
+                            HStack(spacing: Space.sm) {
+                                GeometryReader { geo in
+                                    ZStack(alignment: .leading) {
+                                        Capsule().fill(Palette.hairline).frame(height: 6)
+                                        Capsule()
+                                            .fill(asset.brollSuitability > 60 ? Palette.accent : Palette.gold)
+                                            .frame(width: geo.size.width * CGFloat(asset.brollSuitability) / 100, height: 6)
+                                    }
+                                }.frame(height: 6)
+                                Text("\(asset.brollSuitability)%").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            }
+                            if !asset.brollSuitabilityReason.isEmpty {
+                                Text(asset.brollSuitabilityReason).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                            }
+                            if !asset.aiTags.isEmpty {
+                                SectionLabel(text: "Auto-tags", accent: Palette.accent)
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: Space.sm) {
+                                        ForEach(asset.aiTags, id: \.self) { tag in
+                                            Chip(text: tag)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Button(role: .destructive) { store.removeMedia(asset); dismiss() } label: {
                         Text("Remove from library").font(AppFont.callout).foregroundStyle(Palette.critical)
                     }

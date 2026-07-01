@@ -272,6 +272,22 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                             mode: r.mode ?? "mock")
     }
 
+    // MARK: Media analysis
+
+    func analyzeMedia(contentHash: String, filename: String, kind: String, publicURL: String) async -> [String: Any] {
+        let body: [String: Any] = [
+            "content_hash": contentHash, "filename": filename,
+            "kind": kind, "public_url": publicURL,
+        ]
+        guard let data = await post("/v1/media/analyze", body),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["description": "Analyzing…", "tags": [], "broll_suitability": 0,
+                    "broll_suitability_reason": "", "usable_as": "broll", "has_face": false,
+                    "on_screen_text": "", "mode": "mock"]
+        }
+        return json
+    }
+
     func voiceOnboardingFinalize(niche: String, transcript: [[String: String]]) async -> BrandScanResult? {
         let body: [String: Any] = ["niche": niche, "transcript": transcript]
         guard let data = await post("/v1/voice-onboarding/finalize", body),

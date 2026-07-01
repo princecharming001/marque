@@ -27,6 +27,8 @@ ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"
 AYRSHARE_KEY = os.environ.get("AYRSHARE_KEY", "")
 BRIGHTDATA_KEY = os.environ.get("BRIGHTDATA_KEY", "")
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
+VOYAGE_KEY = os.environ.get("VOYAGE_API_KEY", "")
+PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +143,24 @@ class ClipJobRequest(BaseModel):
     brand: dict = {}
     style: str = "talking_head"
     media_context: str = ""
+
+
+class MediaAnalyzeRequest(BaseModel):
+    content_hash: str          # SHA-256 of file bytes (dedup key)
+    filename: str = "asset"
+    kind: str = "photo"        # photo | video | screen
+    storage_key: str = ""      # R2 key (for signed URL generation)
+    public_url: str = ""       # direct URL for vision model
+
+
+class BRollMatchRequest(BaseModel):
+    cue_text: str              # the shotPlan beat description
+    style: str = "faceless"
+    corpus: list[dict] = []   # [{asset_id, description, tags, broll_suitability, duration_s}]
+    top_k: int = 5
+
+
+_media_cache: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -778,3 +798,103 @@ async def publish(req: PublishRequest):
         return {"ok": 200 <= r.status_code < 300, "mode": "live", "status": r.status_code}
     except httpx.HTTPError:
         return {"ok": False, "mode": "live", "error": "network"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: Media analysis + auto B-roll
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/media/analyze")
+async def analyze_media(req: MediaAnalyzeRequest):
+    """Analyze a media asset for B-roll suitability. Idempotent via content_hash cache."""
+    if req.content_hash in _media_cache:
+        return {"mode": "cached", **_media_cache[req.content_hash]}
+
+    if not ANTHROPIC_KEY or not req.public_url:
+        mock = {
+            "description": f"A {req.kind} asset suitable for B-roll use.",
+            "scene": "indoor", "subjects": ["person", "environment"], "has_face": False,
+            "on_screen_text": "", "motion": "slow", "quality": "high",
+            "dominant_colors": ["warm white", "natural", "neutral"],
+            "broll_suitability": 72, "broll_suitability_reason": "Good framing for B-roll.",
+            "usable_as": "broll", "suggested_kind": req.kind,
+            "tags": [req.kind, "interior", "natural light", "close-up", "lifestyle"],
+        }
+        _media_cache[req.content_hash] = mock
+        return {"mode": "mock", **mock}
+
+    system, user_text = prompts.media_analyze_prompt(req.filename, req.kind)
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.post(
+            ANTHROPIC_URL,
+            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": HAIKU, "max_tokens": 1000, "system": system,
+                  "messages": [{"role": "user", "content": [
+                      {"type": "image", "source": {"type": "url", "url": req.public_url}},
+                      {"type": "text", "text": user_text},
+                  ]}]},
+        )
+    if r.status_code != 200:
+        return {"mode": "mock", "error": f"vision {r.status_code}"}
+    text = "".join(b.get("text", "") for b in r.json().get("content", []))
+    result = extract_json(text, array=False) or {}
+    _media_cache[req.content_hash] = result
+    return {"mode": "live", **result}
+
+
+@app.post("/v1/broll/match")
+async def match_broll(req: BRollMatchRequest):
+    """Score corpus assets against a shot-plan beat; optionally use Haiku for tie-breaking."""
+    if not req.corpus:
+        return {"mode": "mock", "matches": []}
+
+    cue_lower = req.cue_text.lower()
+    scored = []
+    for i, asset in enumerate(req.corpus):
+        desc = (asset.get("description", "") + " " + " ".join(asset.get("tags", []))).lower()
+        keyword_hits = sum(1 for word in cue_lower.split() if len(word) > 3 and word in desc)
+        suitability = asset.get("broll_suitability", 50) / 100.0
+        score = 0.55 * min(1.0, keyword_hits / max(1, len(cue_lower.split()))) + 0.45 * suitability
+        scored.append({"index": i, "asset_id": asset.get("asset_id", ""), "score": round(score, 3),
+                        "description": asset.get("description", "")})
+
+    scored.sort(key=lambda x: x["score"], reverse=True)
+    top = scored[:req.top_k]
+
+    # Haiku tie-break when scores are close and we have a key
+    if ANTHROPIC_KEY and len(top) >= 2 and top[0]["score"] - top[1]["score"] < 0.05:
+        system, user = prompts.broll_match_prompt(req.cue_text, top[:3])
+        try:
+            text = await anthropic(system, user, model=HAIKU, max_tokens=100)
+            pick = extract_json(text, array=False)
+            if pick and "chosen_index" in pick:
+                chosen = scored[pick["chosen_index"]]
+                top = [chosen] + [t for t in top if t["asset_id"] != chosen["asset_id"]]
+        except Exception:
+            pass
+
+    # Pexels fallback for unmatched beats
+    if not top or top[0]["score"] < 0.3:
+        pexels = await _fetch_pexels(req.cue_text)
+        top = [{"asset_id": None, "source": "pexels", "pexels_url": pexels,
+                "score": 0.5, "description": req.cue_text}] + top
+
+    return {"mode": "live" if ANTHROPIC_KEY else "mock", "matches": top}
+
+
+async def _fetch_pexels(query: str) -> str | None:
+    if not PEXELS_KEY:
+        return None
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get("https://api.pexels.com/videos/search",
+                             headers={"Authorization": PEXELS_KEY},
+                             params={"query": query, "per_page": 1, "orientation": "portrait"})
+    if r.status_code != 200:
+        return None
+    videos = r.json().get("videos", [])
+    if not videos:
+        return None
+    files = videos[0].get("video_files", [])
+    hd = next((f for f in files if f.get("quality") == "hd"), files[0] if files else None)
+    return hd.get("link") if hd else None
