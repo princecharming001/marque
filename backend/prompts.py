@@ -68,25 +68,66 @@ STYLES = {
             '"predictedScore":84}'
         ),
     },
-    "split_screen": {
-        "label": "Split-screen / reaction",
-        "formats": ["do-this-not-that", "before-after", "green-screen"],
+    "split_three": {
+        "label": "3-Way Split",
+        "formats": ["listicle", "do-this-not-that", "before-after"],
         "rubric": (
-            "A reaction/comparison with TWO regions. The creator reacts to something on the other side (a wrong "
-            "way, a post, a screenshot, a clip). Write `body` as a reaction that EXPLICITLY names what's on the "
-            "other side ('on the left, everyone does X…'). `shotPlan` is a per-side timed plan: e.g. "
-            "['0–4s: LEFT — the wrong/old way', '4–8s: RIGHT — your way', '8s+: the one difference that matters']. "
-            "18–30 seconds."
+            "A vertical 3-panel split where THREE short segments play one after another, each a DIFFERENT point "
+            "or solution to the same problem, escalating to the best one last. Write `body` as THREE clearly-"
+            "labeled segments ('Solution 1: …', 'Solution 2: …', 'Solution 3: …'), each 1–2 sentences that stand "
+            "alone in their panel. `shotPlan` describes each panel + reveal order: ['Panel 1 (top): <segment 1 "
+            "visual>', 'Panel 2 (mid): <segment 2>', 'Panel 3 (bottom): <best, segment 3>']. 20–35 seconds."
         ),
         "exemplar": (
-            '{"title":"squat depth, fixed","summary":"A split-screen do-this-not-that on squat form.",'
-            '"hook":"Half of you are doing this squat — and it\'s why your knees hurt.","hookSignal":"callOut",'
-            '"formatId":"do-this-not-that","body":"On the left: knees caving in, heels lifting, all quads. That\'s '
-            'the version that wrecks your knees. On the right: same person, feet screwed into the floor, knees '
-            'tracking over the toes, hips back first. Same weight, zero knee pain. The only difference is where '
-            'the movement starts — hips, not knees.","cta":"Film your squat from the side and check beat one.",'
-            '"shotPlan":["0–4s: LEFT — knees caving, heels up","4–8s: RIGHT — hips-back, knees tracking",'
-            '"8s+: freeze-frame on the hip hinge — the one difference"],"targetSeconds":22,"predictedScore":83}'
+            '{"title":"3 fixes for knee pain","summary":"A 3-way split on squat knee pain, worst to best.",'
+            '"hook":"Three ways to kill squat knee pain — the third one actually works.","hookSignal":"specificity",'
+            '"formatId":"listicle","body":"Solution 1: widen your stance and point your toes out — helps a little. '
+            'Solution 2: slow the descent to three seconds — better, your knees stop caving. Solution 3, the real '
+            'fix: screw your feet into the floor and lead with your hips, not your knees — pain gone.",'
+            '"cta":"Try solution three on your next set.","shotPlan":["Panel 1 (top): wide stance, toes out",'
+            '"Panel 2 (mid): slow 3-count descent","Panel 3 (bottom): hips-back, feet screwed in — the fix"],'
+            '"targetSeconds":26,"predictedScore":85}'
+        ),
+    },
+    "fast_cuts": {
+        "label": "Fast Cuts",
+        "formats": ["listicle", "broll-hook", "myth-buster"],
+        "rubric": (
+            "A rapid-fire montage: 5–8 PUNCHY one-line beats, each a HARD CUT to a new shot, building momentum. "
+            "Write `body` as the numbered rapid-fire lines (each ≤12 words, no filler, no connective tissue). "
+            "`shotPlan` is one cut per line describing the shot: ['Cut 1: <shot>', 'Cut 2: <shot>', …]. "
+            "Energetic, 15–30 seconds."
+        ),
+        "exemplar": (
+            '{"title":"7 gym mistakes","summary":"A fast-cut list of strength mistakes.",'
+            '"hook":"Seven things killing your gym progress — go.","hookSignal":"patternInterrupt",'
+            '"formatId":"listicle","body":"One: five sets of curls, nothing for your back. Two: ego-lifting with '
+            'half reps. Three: no warm-up, straight to heavy. Four: same weight for six months. Five: skipping legs. '
+            'Six: training to failure every set. Seven: no sleep, all pre-workout.",'
+            '"cta":"How many were you? Comment the number.","shotPlan":["Cut 1: curls in the mirror",'
+            '"Cut 2: half-rep bench","Cut 3: heavy bar, no warm-up","Cut 4: same dumbbells, calendar flip",'
+            '"Cut 5: walking past the squat rack","Cut 6: collapsing after a set","Cut 7: pre-workout scoop"],'
+            '"targetSeconds":22,"predictedScore":84}'
+        ),
+    },
+    "green_screen": {
+        "label": "Green-Screen React",
+        "formats": ["green-screen"],
+        "rubric": (
+            "You stand in front of a screenshot / post / chart (green-screen) and REACT to it. Write `body` as "
+            "your spoken reaction that EXPLICITLY references what's on the screen behind you ('this post says X… "
+            "here's why that's wrong'). `shotPlan`: ['Key in the screenshot/post', 'Point + react to the specific "
+            "part', 'One-line verdict']. 18–30 seconds."
+        ),
+        "exemplar": (
+            '{"title":"reacting to bad advice","summary":"A green-screen react to a viral fitness claim.",'
+            '"hook":"This post has two million likes and it\'s completely wrong.","hookSignal":"contrarian",'
+            '"formatId":"green-screen","body":"So this post behind me says you have to train a muscle six times a '
+            'week to grow. Look at this line — \'more frequency always wins.\' No. Past a point you\'re just piling '
+            'up fatigue you can\'t recover from. Twice a week, hard, beats six times half-baked.",'
+            '"cta":"Screenshot this for the next time you see that claim.","shotPlan":["Key in the screenshot of '
+            'the post","Point at the \'six times a week\' line and react","One-line verdict: twice, hard, wins"],'
+            '"targetSeconds":24,"predictedScore":84}'
         ),
     },
 }

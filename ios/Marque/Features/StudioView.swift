@@ -3,6 +3,7 @@ import SwiftUI
 struct StudioView: View {
     @Environment(AppStore.self) private var store
     @State private var generatingPillar: UUID?
+    @State private var pickStyleFor: Pillar?
 
     var body: some View {
         ScrollView {
@@ -26,8 +27,7 @@ struct StudioView: View {
                             HStack(spacing: Space.md) {
                                 ForEach(store.pillars) { p in
                                     PillarCard(pillar: p, generating: generatingPillar == p.id) {
-                                        generatingPillar = p.id
-                                        Task { await store.generateScripts(for: p); generatingPillar = nil }
+                                        pickStyleFor = p
                                     }
                                 }
                             }
@@ -61,6 +61,12 @@ struct StudioView: View {
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(for: Script.self) { ScriptReaderView(script: $0) }
+        .sheet(item: $pickStyleFor) { p in
+            StylePickerSheet(pillar: p, preferred: store.brand.preferredStyles) { style in
+                generatingPillar = p.id
+                Task { await store.generateScripts(for: p, style: style); generatingPillar = nil }
+            }
+        }
     }
 }
 
@@ -178,5 +184,61 @@ struct ScriptCard: View {
             }
         }
         .marqueCard()
+    }
+}
+
+// MARK: - Style picker (choose the style BEFORE generating — it shapes the script)
+
+struct StylePickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let pillar: Pillar
+    let preferred: [VideoStyle]
+    let onPick: (VideoStyle) -> Void
+
+    private var ordered: [VideoStyle] {
+        preferred + VideoStyle.allCases.filter { !preferred.contains($0) }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.md) {
+                    Text("The style shapes the script you'll read. Pick how you want to make this one.")
+                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    ForEach(ordered) { style in
+                        Button { onPick(style); dismiss() } label: {
+                            StyleRow(style: style, preferred: preferred.contains(style))
+                        }
+                        .buttonStyle(PressableStyle())
+                        .accessibilityIdentifier("pick.\(style.rawValue)")
+                    }
+                }
+                .screenPadding().padding(.vertical, Space.lg)
+            }
+            .background(Palette.surface.ignoresSafeArea())
+            .navigationTitle("Choose a style").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cancel") { dismiss() } } }
+        }
+    }
+}
+
+struct StyleRow: View {
+    let style: VideoStyle
+    let preferred: Bool
+    var body: some View {
+        HStack(spacing: Space.md) {
+            StylePreview(style: style).frame(width: 46)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Text(style.label).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    if preferred { Image(systemName: "star.fill").font(.system(size: 10)).foregroundStyle(Palette.accent) }
+                }
+                Text(style.blurb).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right").font(.system(size: 13)).foregroundStyle(Palette.textTertiary)
+        }
+        .marqueCard(padding: Space.md)
     }
 }

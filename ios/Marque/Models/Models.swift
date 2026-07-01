@@ -95,36 +95,46 @@ struct VideoFormat: Codable, Hashable, Identifiable {
 /// The coarse video style the creator picks; each produces a structurally different script.
 enum VideoStyle: String, CaseIterable, Codable, Identifiable {
     case talkingHead = "talking_head"
+    case splitThree = "split_three"
     case faceless
-    case splitScreen = "split_screen"
+    case fastCuts = "fast_cuts"
+    case greenScreen = "green_screen"
     var id: String { rawValue }
     var label: String {
         switch self {
         case .talkingHead: return "Talking-head"
+        case .splitThree: return "3-way split"
         case .faceless: return "Faceless voiceover"
-        case .splitScreen: return "Split-screen"
+        case .fastCuts: return "Fast cuts"
+        case .greenScreen: return "Green-screen react"
         }
     }
     var blurb: String {
         switch self {
-        case .talkingHead: return "You, to camera, with animated captions."
+        case .talkingHead: return "You, to camera, with captions."
+        case .splitThree: return "3 panels — a different point in each, one after another."
         case .faceless: return "Voiceover over b-roll — no on-camera."
-        case .splitScreen: return "React or compare, side by side."
+        case .fastCuts: return "Rapid one-line cuts, high energy."
+        case .greenScreen: return "You reacting over a post or screenshot."
         }
     }
     var icon: String {
         switch self {
         case .talkingHead: return "person.fill"
+        case .splitThree: return "rectangle.split.1x2"
         case .faceless: return "film"
-        case .splitScreen: return "rectangle.split.2x1"
+        case .fastCuts: return "scissors"
+        case .greenScreen: return "person.crop.rectangle"
         }
     }
     /// Fine-grained format recipes allowed within this style (mirrors the backend).
     var formats: [String] {
         switch self {
-        case .talkingHead: return ["myth-buster", "listicle", "pov-story", "green-screen"]
+        case .talkingHead: return ["myth-buster", "listicle", "pov-story"]
+        case .splitThree: return ["listicle", "do-this-not-that", "before-after"]
         case .faceless: return ["faceless", "broll-hook"]
-        case .splitScreen: return ["do-this-not-that", "before-after", "green-screen"]
+        case .fastCuts: return ["listicle", "broll-hook", "myth-buster"]
+        case .greenScreen: return ["green-screen"]
         }
     }
 }

@@ -117,16 +117,10 @@ final class AppStore {
         return notes.isEmpty ? counts : "\(counts) — tagged: \(notes.joined(separator: ", "))"
     }
 
-    func generateScripts(for pillar: Pillar, count: Int = 3) async {
+    // Style is chosen BEFORE generation — it determines the script structure.
+    func generateScripts(for pillar: Pillar, style: VideoStyle, count: Int = 3) async {
         isGenerating = true
-        // Spread the batch across the creator's chosen styles so each pillar yields variety.
-        let styles = brand.preferredStyles.isEmpty ? [VideoStyle.talkingHead] : brand.preferredStyles
-        var perStyle: [VideoStyle: Int] = [:]
-        for i in 0..<count { perStyle[styles[i % styles.count], default: 0] += 1 }
-        var new: [Script] = []
-        for (style, n) in perStyle {
-            new += await llm.generateScripts(brand: brand, pillar: pillar, count: n, mediaContext: mediaContext, style: style)
-        }
+        let new = await llm.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style)
         scripts.insert(contentsOf: new, at: 0)
         isGenerating = false
         save()
@@ -134,7 +128,7 @@ final class AppStore {
 
     func generateStarterScripts() async {
         guard scripts.isEmpty, let p = pillars.first else { return }
-        await generateScripts(for: p, count: 3)
+        await generateScripts(for: p, style: brand.preferredStyles.first ?? .talkingHead, count: 3)
     }
 
     func steer(_ script: Script, instruction: String) async {

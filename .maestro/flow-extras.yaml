@@ -39,6 +39,8 @@ name: Marque — extra screens (assumes onboarded)
 - tapOn: "Studio"
 - tapOn:
     id: "studio.pillar.Myth-busting"
+- tapOn:
+    id: "pick.talking_head"
 - assertVisible: "Your pillars"
 # Hook Lab (pick a hook) + steer
 - tapOn:
