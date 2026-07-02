@@ -8,7 +8,7 @@ struct CelebrationView: View {
     var body: some View {
         VStack(spacing: Space.lg) {
             Spacer()
-            Image(systemName: "flame.fill").font(.system(size: 44)).foregroundStyle(Palette.gold)
+            Image("FlameIcon").resizable().scaledToFit().frame(width: 96, height: 96)
             Text("That's a wrap").font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
             Text("You showed up. That's \(store.streak) \(store.streak == 1 ? "session" : "sessions") in.")
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)

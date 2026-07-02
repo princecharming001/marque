@@ -17,6 +17,10 @@ struct PaywallView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
+                    Image("CameraIcon").resizable().scaledToFit().frame(width: 88, height: 88)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, Space.md)
+
                     VStack(alignment: .leading, spacing: Space.sm) {
                         SectionLabel(text: "Marque Pro", accent: Palette.accent)
                         Text("Film once.\nPost all week.")

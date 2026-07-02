@@ -321,9 +321,16 @@ struct EmptyStateView: View {
     let icon: String
     let title: String
     let message: String
+    /// Optional generated 3D-render asset name (e.g. "ClipsIcon") — replaces the SF Symbol
+    /// when set, for the empty states that warrant a bit more visual weight.
+    var graphic: String? = nil
     var body: some View {
         VStack(spacing: Space.md) {
-            Image(systemName: icon).font(.system(size: 28)).foregroundStyle(Palette.textTertiary)
+            if let graphic {
+                Image(graphic).resizable().scaledToFit().frame(width: 72, height: 72)
+            } else {
+                Image(systemName: icon).font(.system(size: 28)).foregroundStyle(Palette.textTertiary)
+            }
             Text(title).font(AppFont.title).foregroundStyle(Palette.textPrimary)
             Text(message).font(AppFont.body).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)

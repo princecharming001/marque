@@ -38,7 +38,8 @@ struct ClipsSection: View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if store.clips.isEmpty {
                 EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
-                               message: "Record a script in Studio and your clips will land here.")
+                               message: "Record a script in Studio and your clips will land here.",
+                               graphic: "ClipsIcon")
                 Button { router.showCreate = true } label: {
                     Label("Create your first clip", systemImage: "video.badge.plus")
                         .font(AppFont.headline).foregroundStyle(Palette.onInk)
