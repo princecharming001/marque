@@ -257,6 +257,28 @@ final class AppStore {
 
     // MARK: Clips
 
+    /// Save a mid-flow take as a draft clip (Library › Drafts, resumable from Film).
+    /// Nothing is submitted for editing — no streak, no celebration, no notification.
+    func saveDraft(from script: Script, footagePath: String?) {
+        // Keep the footage safe: absolute paths point outside the app container (e.g. the
+        // OS temp dir, which gets reaped), so copy those in. Documents-relative paths from
+        // MediaStore.save already live in the container and are stored as-is — the same
+        // form LocalThumbnail / MediaStore.url resolve everywhere else.
+        var storedPath = footagePath
+        if let p = footagePath, p.hasPrefix("/"),
+           let data = try? Data(contentsOf: MediaStore.url(for: p)) {
+            storedPath = MediaStore.save(data, ext: "mov")
+        }
+        let draft = Clip(scriptId: script.id, formatId: script.formatId,
+                         formatName: Catalog.format(script.formatId).name,
+                         title: script.title.isEmpty ? script.hook.text : script.title,
+                         caption: script.cta, predictedScore: script.predictedScore,
+                         status: .draft, seconds: script.targetSeconds,
+                         localVideoPath: storedPath)
+        clips.insert(draft, at: 0)
+        save()
+    }
+
     func makeClips(from script: Script, formats: [String], footagePath: String? = nil) async {
         let made = await clipEngine.makeClips(from: script, formats: formats)
         let tagged = made.map { c -> Clip in
@@ -266,6 +288,8 @@ final class AppStore {
             return c
         }
         clips.insert(contentsOf: tagged, at: 0)
+        // Submitted for editing — the script is no longer waiting in the Film queue.
+        readiedScripts.removeAll { $0.script.id == script.id }
         save()
         // Poll job status until all clips are ready or failed.
         if let jobId = tagged.first?.jobId {
@@ -274,13 +298,16 @@ final class AppStore {
             // Mock path: always use MockClipEngine.render (returns .ready after a short sleep),
             // regardless of which clipEngine is active — LiveClipEngine.render returns .rendering.
             let mock = MockClipEngine()
+            var readyCount = 0
             for c in tagged {
                 let status = await mock.render(clipId: c.id)
                 if let idx = clips.firstIndex(where: { $0.id == c.id }) {
                     clips[idx].status = status
                 }
+                if status == .ready { readyCount += 1 }
                 save()
             }
+            notifyClipsReady(count: readyCount)
         }
         // Consistency measures showing up: one per completed recording session.
         streak += 1
@@ -308,6 +335,12 @@ final class AppStore {
             }
             save()
             done = (status == "ready" || status == "failed" || status == "mock_ready")
+            // Edited clips landed — nudge the creator. ("mock_ready" is the keyless backend's
+            // ready; the .ready count guard keeps failed/empty jobs silent either way.)
+            if done && status != "failed" {
+                let readyCount = clips.filter { clipIds.contains($0.id) && $0.status == .ready }.count
+                notifyClipsReady(count: readyCount)
+            }
         }
     }
 
@@ -436,6 +469,38 @@ final class AppStore {
         var comps = DateComponents(); comps.hour = 9; comps.minute = 0
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
         center.add(UNNotificationRequest(identifier: "marque.daily", content: content, trigger: trigger))
+    }
+
+    /// "Your edited clips landed" nudge — called from both completion paths (live pollJob
+    /// and the mock render loop in makeClips). Fires only when ≥1 clip ended .ready; never
+    /// fires for drafts. Asks for permission on first use, mirroring the reminders pattern.
+    private func notifyClipsReady(count: Int) {
+        guard count > 0 else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted { AppStore.postClipsReadyNotification() }
+                }
+            case .denied:
+                break
+            default:
+                AppStore.postClipsReadyNotification()
+            }
+        }
+    }
+
+    /// Immediate local notification (nil trigger) — nonisolated so the notification-center
+    /// completion handlers above can call it straight from their background queue.
+    private nonisolated static func postClipsReadyNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Your clip is ready 🎬"
+        content.body = "The AI finished editing — review it in your Library and schedule it."
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "marque.clipsReady.\(UUID().uuidString)",
+                                  content: content, trigger: nil))
     }
 
     /// Publish immediately (live via Ayrshare when keyed; mock otherwise) and mark posted.
@@ -577,6 +642,20 @@ final class AppStore {
         conversations = snap.conversations ?? []
         editPrefs = snap.editPrefs ?? EditPrefs()
         brandSummary = snap.brandSummary
+        migrateFootageIntoMedia()
+    }
+
+    /// V3: the Library's Footage tab folded into Media — one-time migration of old takes.
+    private func migrateFootageIntoMedia() {
+        guard !footage.isEmpty else { return }
+        let migrated = footage.map { f in
+            MediaAsset(localPath: f.localPath, kind: .clip,
+                       note: f.title.isEmpty ? "Imported take" : f.title,
+                       isVideo: true, thumbnailPath: f.thumbnailPath, addedAt: f.addedAt)
+        }
+        media.insert(contentsOf: migrated, at: 0)
+        footage = []
+        save()
     }
 
     /// For Maestro/dev: wipe everything back to first-run.

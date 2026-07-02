@@ -2,7 +2,8 @@ import SwiftUI
 
 // The center Film button's destination: pick a readied script (saved from the
 // feed / chat / a mimic), continue a draft, or write your own — then into the
-// teleprompter. Phase 8 completes drafts + submit-for-editing + notification.
+// teleprompter. Drafts resume even when their script was deleted (rebuilt from
+// the draft clip); submitting for editing dequeues the script + notifies on ready.
 struct FilmView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
@@ -25,7 +26,7 @@ struct FilmView: View {
                     VStack(alignment: .leading, spacing: Space.md) {
                         SectionLabel(text: "Continue a draft", accent: Palette.warning)
                         ForEach(drafts) { d in
-                            NavigationLink(value: d.scriptId) {
+                            NavigationLink(value: resolvedScript(for: d)) {
                                 draftRow(d)
                             }
                             .buttonStyle(.plain)
@@ -82,6 +83,10 @@ struct FilmView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("film.customScript")
+                    Text("Edits follow your style — captions \(store.editPrefs.autoCaptions ? "on" : "off"), \(store.editPrefs.captionStyle.label) captions, \(store.editPrefs.fillerTrim.label.lowercased()) filler trim. Change in Settings.")
+                        .font(AppFont.caption)
+                        .foregroundStyle(Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .screenPadding()
@@ -100,12 +105,6 @@ struct FilmView: View {
             }
         }
         .navigationDestination(for: Script.self) { ScriptReaderView(script: $0) }
-        .navigationDestination(for: UUID.self) { scriptId in
-            if let s = store.scripts.first(where: { $0.id == scriptId })
-                ?? store.readiedScripts.first(where: { $0.script.id == scriptId })?.script {
-                ScriptReaderView(script: s)
-            }
-        }
         .sheet(isPresented: $showCustomEditor) { CustomScriptSheet() }
         .onAppear { consumePendingFilmScript() }
         .onChange(of: router.pendingFilmScriptId) { _, _ in consumePendingFilmScript() }
@@ -150,6 +149,30 @@ struct FilmView: View {
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
         .contentShape(Rectangle())
+    }
+
+    /// Resolve a draft back to its script; if the script's been deleted, rebuild a minimal
+    /// one from the draft clip so the reader → teleprompter path still works (no dead-ends).
+    private func resolvedScript(for d: Clip) -> Script {
+        if let s = store.scripts.first(where: { $0.id == d.scriptId })
+            ?? store.readiedScripts.first(where: { $0.script.id == d.scriptId })?.script {
+            return s
+        }
+        return Script(
+            id: d.scriptId,                 // keep the draft ↔ script link stable across resumes
+            pillarName: "Your script",
+            title: d.title,
+            summary: "Recovered from your draft",
+            style: Catalog.style(for: d.formatId).rawValue,
+            formatId: d.formatId,
+            hook: Hook(text: d.title.isEmpty ? d.caption : d.title, signal: .narrative, strength: 70),
+            altHooks: [],
+            body: "",
+            cta: d.caption,
+            shotPlan: ["Hook on frame 1, direct eye contact", "One punch-in on the key line", "CTA to camera"],
+            targetSeconds: d.seconds > 0 ? d.seconds : Catalog.format(d.formatId).targetSeconds,
+            predictedScore: d.predictedScore
+        )
     }
 
     private func draftRow(_ d: Clip) -> some View {

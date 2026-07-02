@@ -155,7 +155,7 @@ struct RecordView: View {
                 .accessibilityIdentifier("record.reRecord")
                 formatPicker
                 Button { makeClips() } label: {
-                    Text("Make \(selectedFormats.count) clip\(selectedFormats.count == 1 ? "" : "s")")
+                    Text("Submit for editing")
                         .font(AppFont.headline).foregroundStyle(Palette.ink)
                         .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
                         .background(Palette.onInk).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
@@ -164,9 +164,11 @@ struct RecordView: View {
                 .disabled(selectedFormats.isEmpty)
                 .opacity(selectedFormats.isEmpty ? 0.5 : 1)
                 .accessibilityIdentifier("record.makeClips")
+                GhostButton(title: "Save as draft") { saveDraftAndClose() }
+                    .accessibilityIdentifier("record.saveDraft")
             case .making:
                 ProgressView().tint(Palette.accent)
-                Text("Cutting your clips…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
+                Text("Sending to your editor…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
             }
         }
     }
@@ -227,6 +229,15 @@ struct RecordView: View {
         recordStart = nil
         restartToken += 1
         phase = .ready
+    }
+
+    /// Keep the take without submitting it: footage + script land as a draft clip
+    /// (Library › Drafts), resumable from the Film screen. No streak, no clips yet.
+    private func saveDraftAndClose() {
+        // liveScript so inline teleprompter edits survive into the draft (same as makeClips).
+        store.saveDraft(from: liveScript, footagePath: footagePath)
+        dismiss()
+        router.showFilm = false
     }
 
     private func makeClips() {
