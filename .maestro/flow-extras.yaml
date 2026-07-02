@@ -2,25 +2,25 @@ appId: com.marque.app
 name: Marque — extra screens (assumes onboarded)
 ---
 - launchApp
-# Brand Profile (editable Brand Graph)
-- tapOn:
-    id: "today.profile"
-- assertVisible: "Your Profile"
+# You tab — Brand identity editor
+- tapOn: "You"
+- assertVisible: "Brand identity"
+- tapOn: "Brand identity"
 - tapOn:
     id: "profile.knownFor"
 - inputText: " — refined"
-- tapOn: "Done"
-- assertVisible: "Today"
-# Insights (from Coach)
-- tapOn: "Coach"
-- tapOn:
-    id: "coach.insights"
-- assertVisible: "Insights"
-- tapOn: "Done"
-# Calendar tab is reachable
-- tapOn: "Calendar"
-- assertVisible: "calendar"
+- tapOn: "Save"
+- assertVisible: "You"
+# Queue tab is reachable (was Calendar)
+- tapOn: "Queue"
+- assertVisible: "YOUR SCHEDULE"
 - tapOn: "Today"
+# Settings reachable via You → gear
+- tapOn: "You"
+- tapOn:
+    id: "you.settings"
+- assertVisible: "Settings"
+- tapOn: "Done"
 # Studio pillar regenerate (taps a pillar node -> triggers generation, same path as the AHA)
 - tapOn: "Studio"
 - tapOn:
@@ -46,8 +46,6 @@ name: Marque — extra screens (assumes onboarded)
     timeout: 6000
 - waitForAnimationToEnd:
     timeout: 3000
-# scrollUntilVisible's auto-swipe doesn't reliably reach content past the pinned bottom CTA on
-# this screen — a manual swipe within the card area (staying clear of the pinned button) does.
 - swipe:
     start: "50%, 60%"
     end: "50%, 20%"
