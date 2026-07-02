@@ -54,16 +54,14 @@ struct ClipsSection: View {
                     if !group.isEmpty {
                         VStack(alignment: .leading, spacing: Space.md) {
                             SectionLabel(text: status.title)
-                            ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
-                                Button { detail = c } label: { ClipCell(clip: c) }
-                                    .buttonStyle(.plain)
-                                    .accessibilityIdentifier("library.clip")
-                                    .contextMenu {
-                                        Button(role: .destructive) { store.deleteClip(c) } label: {
-                                            Label("Delete clip", systemImage: "trash")
-                                        }
-                                    }
-                                    .staggerReveal(i)
+                            let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+                            LazyVGrid(columns: cols, spacing: 8) {
+                                ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
+                                    Button { detail = c } label: { ClipGridCell(clip: c) }
+                                        .buttonStyle(.plain)
+                                        .accessibilityIdentifier("library.clip")
+                                        .staggerReveal(i)
+                                }
                             }
                         }
                     }
@@ -116,6 +114,48 @@ struct ClipCell: View {
         .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
         .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
+    }
+}
+
+struct ClipGridCell: View {
+    let clip: Clip
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            // Thumbnail
+            LocalThumbnail(path: clip.thumbnailPath ?? clip.localVideoPath, isVideo: true)
+                .aspectRatio(9/16, contentMode: .fill)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+
+            // Bottom gradient + status
+            LinearGradient(colors: [.clear, .black.opacity(0.6)],
+                           startPoint: .top, endPoint: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+
+            HStack {
+                Text(statusLabel).font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.9))
+                Spacer()
+                Text("\(clip.seconds)s").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
+            }
+            .padding(6)
+        }
+        .overlay(alignment: .topTrailing) {
+            ScoreBadge(score: clip.predictedScore)
+                .scaleEffect(0.75)
+                .padding(4)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 0.5))
+    }
+    private var statusLabel: String {
+        switch clip.status {
+        case .ready:     return "READY"
+        case .scheduled: return "SCHED"
+        case .posted:    return "POSTED"
+        case .rendering: return "RENDERING"
+        case .failed:    return "FAILED"
+        }
     }
 }
 
@@ -197,7 +237,7 @@ struct ClipDetailSheet: View {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
                         store.updateClipCaption(clip, caption: caption)
                         router.pendingScheduleClipId = clip.id
-                        dismiss(); router.selectedTab = .plan
+                        dismiss(); router.selectedTab = .queue
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)

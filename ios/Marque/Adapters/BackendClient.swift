@@ -39,7 +39,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     // MARK: Serialization
 
     private func brandBody(_ b: BrandGraph) -> [String: Any] {
-        [
+        var body: [String: Any] = [
             "niche": b.niche, "audience": b.audience, "known_for": b.knownFor,
             "what_you_do": b.whatYouDo, "goal": b.goal.rawValue,
             "voice": ["funnyToSerious": b.voice.funnyToSerious,
@@ -47,6 +47,13 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                       "teacherToPeer": b.voice.teacherToPeer],
             "non_negotiables": b.nonNegotiables,
         ]
+        if let p = b.primaryPlatform { body["primary_platform"] = p.rawValue }
+        if let s = b.stage { body["stage"] = s.rawValue }
+        if let f = b.postingFrequency { body["posting_frequency"] = f.rawValue }
+        if let bl = b.biggestBlocker { body["biggest_blocker"] = bl.rawValue }
+        if let c = b.cameraComfort { body["camera_comfort"] = c.rawValue }
+        if let wt = b.weeklyTarget { body["weekly_target"] = wt }
+        return body
     }
 
     private func signal(_ raw: String?) -> HookSignal {
@@ -118,6 +125,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         body["style"] = style.rawValue
         body["count"] = count
         body["media_context"] = mediaContext
+        body["creator_id"] = "default"
         guard let data = await post("/v1/scripts", body),
               let r = try? JSONDecoder().decode(ScriptsResp.self, from: data), !r.scripts.isEmpty else {
             return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style)

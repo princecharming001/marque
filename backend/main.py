@@ -11,13 +11,15 @@ import json
 import re
 import uuid
 import asyncio
+import random
+import logging
 
 import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 import prompts
-from prompts import OPUS, HAIKU, STYLES, FORMAT_IDS
+from prompts import OPUS, HAIKU, SONNET, STYLES, FORMAT_IDS
 from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame
 
 app = FastAPI(title="Marque API", version="0.3.0")
@@ -100,28 +102,68 @@ def _thompson_sample(creator_id: str, candidates: list) -> list:
 # ---------------------------------------------------------------------------
 
 async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000) -> str:
-    async with httpx.AsyncClient(timeout=90) as client:
-        r = await client.post(
-            ANTHROPIC_URL,
-            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": model, "max_tokens": max_tokens, "system": system,
-                  "messages": [{"role": "user", "content": user}]},
-        )
-    if r.status_code != 200:
-        raise HTTPException(status_code=502, detail=f"upstream {r.status_code}")
-    return "".join(b.get("text", "") for b in r.json().get("content", []))
+    delays = [0.5, 2.0, 8.0]
+    last_err = None
+    for attempt, delay in enumerate(delays + [None]):
+        try:
+            async with httpx.AsyncClient(timeout=90) as client:
+                r = await client.post(
+                    ANTHROPIC_URL,
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                             "content-type": "application/json"},
+                    json={"model": model, "max_tokens": max_tokens, "system": system,
+                          "messages": [{"role": "user", "content": user}]},
+                )
+            if r.status_code == 200:
+                return "".join(b.get("text", "") for b in r.json().get("content", []))
+            if r.status_code in (429, 500, 502, 503, 529):
+                last_err = f"upstream {r.status_code}"
+                if delay is not None:
+                    logging.warning("anthropic: attempt %d got %d, retrying in %.1fs", attempt, r.status_code, delay)
+                    jitter = delay * 0.2 * (random.random() * 2 - 1)
+                    await asyncio.sleep(delay + jitter)
+                    continue
+            raise HTTPException(status_code=502, detail=f"upstream {r.status_code}")
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            last_err = str(e)
+            if delay is not None:
+                logging.warning("anthropic: attempt %d network error %s, retrying in %.1fs", attempt, last_err, delay)
+                jitter = delay * 0.2 * (random.random() * 2 - 1)
+                await asyncio.sleep(delay + jitter)
+                continue
+    raise HTTPException(status_code=502, detail=f"upstream error after retries: {last_err}")
 
 
 def extract_json(text: str, array: bool):
-    o, c = ("[", "]") if array else ("{", "}")
-    i, j = text.find(o), text.rfind(c)
-    if i == -1 or j == -1 or j < i:
+    open_c, close_c = ("[", "]") if array else ("{", "}")
+    start = text.find(open_c)
+    if start == -1:
+        logging.warning("extract_json: no opening bracket found in: %s", text[:200])
         return None
-    try:
-        return json.loads(text[i:j + 1])
-    except json.JSONDecodeError:
-        return None
+    depth, i = 0, start
+    in_str, escape = False, False
+    while i < len(text):
+        ch = text[i]
+        if escape:
+            escape = False
+        elif ch == '\\' and in_str:
+            escape = True
+        elif ch == '"':
+            in_str = not in_str
+        elif not in_str:
+            if ch == open_c:
+                depth += 1
+            elif ch == close_c:
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError as e:
+                        logging.warning("extract_json parse error: %s in: %s", e, text[start:i+1][:200])
+                        return None
+        i += 1
+    logging.warning("extract_json: unbalanced brackets in: %s", text[:200])
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +197,13 @@ class ScriptRequest(Brand):
     media_context: str = ""
     count: int = 3
     posts: list[dict] = []
+    creator_id: str = "default"
 
 
 class HooksRequest(Brand):
     topic: str = ""
     style: str = "talking_head"
+    creator_id: str = "default"
 
 
 class SteerRequest(Brand):
@@ -331,20 +375,43 @@ def mock_trends(niche: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
-    """Reject generic pillars and regenerate, up to 2 rounds."""
+    """Reject generic pillars; regenerate 2 candidates in parallel and pick the better one."""
     for _ in range(2):
-        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), pillars)
+        # Generate 2 candidate sets in parallel
+        sys1, usr1 = prompts.pillars_prompt(brand, posts)
+        sys2, usr2 = prompts.pillars_prompt(brand, posts)
+        results = await asyncio.gather(
+            anthropic(sys1, usr1, OPUS, 1800),
+            anthropic(sys2, usr2, OPUS, 1800),
+            return_exceptions=True
+        )
+        candidate_sets = []
+        for r in results:
+            if isinstance(r, str):
+                p = extract_json(r, array=True)
+                if p:
+                    candidate_sets.append(p)
+        if not candidate_sets:
+            return pillars
+        # Judge the first candidate set
+        all_to_judge = candidate_sets[0]
+        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), all_to_judge)
         verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 800), array=True) or []
-        failed = [pillars[v["index"]].get("name", "")
+        failed = [all_to_judge[v["index"]].get("name", "")
                   for v in verdicts
-                  if isinstance(v, dict) and not v.get("pass", True) and 0 <= v.get("index", -1) < len(pillars)]
+                  if isinstance(v, dict) and not v.get("pass", True) and 0 <= v.get("index", -1) < len(all_to_judge)]
         if not failed:
-            return pillars
-        sys2, usr2 = prompts.pillars_prompt(brand, posts, avoid=failed)
-        regen = extract_json(await anthropic(sys2, usr2, OPUS, 1800), array=True)
-        if not regen:
-            return pillars
-        pillars = regen
+            return all_to_judge
+        # Try the second candidate set if we have one
+        if len(candidate_sets) > 1:
+            jsys2, jusr2 = prompts.pillar_judge_prompt(brand.get("niche", ""), candidate_sets[1])
+            verdicts2 = extract_json(await anthropic(jsys2, jusr2, HAIKU, 800), array=True) or []
+            failed2 = [candidate_sets[1][v["index"]].get("name", "")
+                       for v in verdicts2
+                       if isinstance(v, dict) and not v.get("pass", True) and 0 <= v.get("index", -1) < len(candidate_sets[1])]
+            if len(failed2) < len(failed):
+                return candidate_sets[1]
+        pillars = all_to_judge
     return pillars
 
 
@@ -392,8 +459,10 @@ async def scripts(req: ScriptRequest):
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
+        stats = list(_arm_stats.get(req.creator_id, {}).values())
         sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
-                                          req.media_context, req.posts or None)
+                                          req.media_context, req.posts or None,
+                                          arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 3800), array=True)
         return {"mode": "live", "scripts": out or mock_scripts(req)}
     except HTTPException:
@@ -405,7 +474,8 @@ async def hooks(req: HooksRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
     try:
-        sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style)
+        stats = list(_arm_stats.get(req.creator_id, {}).values())
+        sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True)
         return {"mode": "live", "hooks": out or []}
     except HTTPException:
@@ -418,7 +488,7 @@ async def steer(req: SteerRequest):
         return {"mode": "mock", "script": req.script}
     try:
         sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction)
-        out = extract_json(await anthropic(sys, usr, OPUS, 1500), array=False)
+        out = extract_json(await anthropic(sys, usr, SONNET, 1500), array=False)
         return {"mode": "live", "script": out or req.script}
     except HTTPException:
         return {"mode": "mock", "script": req.script}

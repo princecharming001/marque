@@ -8,9 +8,11 @@ Every prompt builder returns (system, user) strings. The design principles:
 """
 from __future__ import annotations
 import json
+import logging
 
 OPUS = "claude-opus-4-8"
 HAIKU = "claude-haiku-4-5-20251001"
+SONNET = "claude-sonnet-4-6"
 
 FORMAT_IDS = [
     "myth-buster", "listicle", "do-this-not-that", "before-after",
@@ -303,18 +305,45 @@ def _post_lines(posts: list[dict] | None) -> str:
 
 def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
     v = brand.get("voice", {}) or {}
-    return (
-        "Creator brand:\n"
-        f"- niche: {brand.get('niche','')}\n"
-        f"- what they do: {brand.get('what_you_do','')}\n"
-        f"- audience: {brand.get('audience','')}\n"
-        f"- wants to be known for: {brand.get('known_for','')}\n"
-        f"- goal: {brand.get('goal','Grow my audience')}\n"
+    lines = [
+        "Creator brand:",
+        f"- niche: {brand.get('niche','')}",
+        f"- what they do: {brand.get('what_you_do','')}",
+        f"- audience: {brand.get('audience','')}",
+        f"- wants to be known for: {brand.get('known_for','')}",
+        f"- goal: {brand.get('goal','Grow my audience')}",
         f"- voice (0..1): funny→serious {v.get('funnyToSerious',0.5)}, "
-        f"polished→raw {v.get('polishedToRaw',0.5)}, teacher→peer {v.get('teacherToPeer',0.5)}\n"
-        f"- never say: {', '.join(brand.get('non_negotiables', []) or [])}"
-        + _post_lines(posts)
-    )
+        f"polished→raw {v.get('polishedToRaw',0.5)}, teacher→peer {v.get('teacherToPeer',0.5)}",
+        f"- never say: {', '.join(brand.get('non_negotiables', []) or [])}",
+    ]
+    if brand.get('primary_platform'):
+        lines.append(f"- primary platform: {brand['primary_platform']}")
+    if brand.get('stage'):
+        lines.append(f"- creator stage: {brand['stage']} (calibrate authority level accordingly)")
+    if brand.get('posting_frequency'):
+        lines.append(f"- current posting frequency: {brand['posting_frequency']}")
+    if brand.get('biggest_blocker'):
+        blocker_map = {
+            'ideas': 'generate hooks and topics generously',
+            'time': 'keep scripts tight and batch-friendly',
+            'editing': 'favor simple single-shot formats over complex cuts',
+            'confidence': 'lean toward voiceover/faceless formats to build comfort',
+        }
+        blocker = brand['biggest_blocker']
+        hint = blocker_map.get(blocker, '')
+        lines.append(f"- biggest blocker: {blocker}" + (f" → {hint}" if hint else ""))
+    if brand.get('camera_comfort'):
+        comfort_map = {
+            'natural': 'talking-head and green-screen styles preferred',
+            'getting_there': 'mix of talking-head and faceless; build confidence gradually',
+            'prefer_off': 'faceless voiceover and fast-cuts preferred; minimize on-camera',
+        }
+        comfort = brand['camera_comfort']
+        hint = comfort_map.get(comfort, '')
+        lines.append(f"- camera comfort: {comfort}" + (f" → {hint}" if hint else ""))
+    if brand.get('weekly_target'):
+        lines.append(f"- weekly post target: {brand['weekly_target']} posts (plan batch scripts to hit this)")
+    return "\n".join(lines) + _post_lines(posts)
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +395,8 @@ def pillar_judge_prompt(niche: str, pillars: list[dict]) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 
 def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
-                   media_context: str = "", posts: list[dict] | None = None) -> tuple[str, str]:
+                   media_context: str = "", posts: list[dict] | None = None,
+                   arm_stats: list[dict] | None = None) -> tuple[str, str]:
     s = STYLES.get(style, STYLES["talking_head"])
     system = (
         f"You are Marque's script engine writing {s['label']} short-form videos. "
@@ -377,7 +407,10 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
         "Reply with ONLY valid JSON, no prose, no code fences."
     )
     media = f"\nReference footage the creator already has (reuse where natural): {media_context}" if media_context else ""
+    learn = learning_block(arm_stats or [])
+    learn_section = f"\n{learn}\n" if learn else ""
     user = (
+        f"{learn_section}"
         f"{brand_block(brand, posts)}\n"
         f"Content pillar: {pillar.get('name','')} — {pillar.get('summary','')}\n"
         f"Their angle on it: {pillar.get('angle','')}\n"
@@ -393,15 +426,25 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
 # Hooks / steer / captions / teardown / insights
 # ---------------------------------------------------------------------------
 
-def hooks_prompt(brand: dict, topic: str, style: str = "talking_head") -> tuple[str, str]:
+def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
+                 arm_stats: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's hook engine. Generate scroll-stopping first-3-second hooks in the creator's voice "
-        "across the 8 signal types. Reply with ONLY a JSON array, ranked strongest first."
+        "across the 8 signal types. Each hook must be DIFFERENT in structure and signal — no two hooks "
+        "should have the same opening pattern. Ranked strongest first.\n\n"
+        "Example output for a fitness creator on 'protein intake':\n"
+        '[\n'
+        '  {"text": "You\'re eating enough protein. You\'re just eating it wrong.", "signal": "contrarian", "strength": 91},\n'
+        '  {"text": "I tracked every gram for 90 days. Here\'s what actually moved the needle.", "signal": "authority", "strength": 88},\n'
+        '  {"text": "The protein timing window is a myth — here\'s what isn\'t.", "signal": "curiosity", "strength": 85}\n'
+        "]\n\nReply with ONLY a JSON array, no prose."
     )
+    learn = learning_block(arm_stats or [])
+    extra = f"\n{learn}" if learn else ""
     user = (
-        f"{brand_block(brand)}\nTopic: {topic}\nStyle: {STYLES.get(style, STYLES['talking_head'])['label']}\n"
-        f"Return ONLY a JSON array of 6 hooks. Each: {{\"text\": str, \"signal\": one of {SIGNALS}, "
-        '"strength": int 0-100}'
+        f"{brand_block(brand)}\nTopic: {topic}\nStyle: {STYLES.get(style, STYLES['talking_head'])['label']}\n{extra}"
+        f"Return ONLY a JSON array of 6 hooks with diverse signals and structures. Each: "
+        f'{{\"text\": str, \"signal\": one of {SIGNALS}, \"strength\": int 0-100}}'
     )
     return system, user
 
@@ -428,21 +471,43 @@ def captions_prompt(hook: str, body: str) -> tuple[str, str]:
 
 
 def teardown_prompt(clip: dict) -> tuple[str, str]:
-    system = "You explain why a short-form clip performed, in one tight insight + a follow-up. Reply with ONLY a JSON object."
+    system = (
+        "You explain in one tight insight why a short-form clip performed, plus the single next move. "
+        "Reply with ONLY a JSON object.\n\n"
+        "Example (high performer):\n"
+        '{"headline": "This beat 73% of your posts", '
+        '"detail": "The contrarian open created a pattern interrupt in the first 1.5 seconds and the single '
+        'specific detail (\\"42 days\\") gave the claim credibility. Fast cuts matched the energy of the hook.", '
+        '"liftPercent": 73}\n\n'
+        "Example (average performer):\n"
+        '{"headline": "Solid clip — one tweak to punch up the next one", '
+        '"detail": "The hook opened on a question, which tends to underperform vs. a statement. '
+        'Try leading with the unexpected conclusion next time.", '
+        '"liftPercent": 12}'
+    )
+    metrics = clip.get("metrics", {}) or {}
+    metrics_line = ""
+    if metrics.get("views", 0) > 0:
+        metrics_line = (
+            f"\nReal metrics: {metrics.get('views',0)} views, {metrics.get('likes',0)} likes, "
+            f"{metrics.get('comments',0)} comments, {metrics.get('shares',0)} shares, "
+            f"{metrics.get('saves',0)} saves, {metrics.get('avg_watch_pct',0)*100:.0f}% avg watch"
+        )
     user = (
         f"Clip: format={clip.get('formatName','')}, caption=\"{clip.get('caption','')}\", "
-        f"predicted score={clip.get('predictedScore',0)}.\n"
-        'Return ONLY: {"headline": str, "detail": str, "liftPercent": int}'
+        f"predicted score={clip.get('predictedScore',0)}.{metrics_line}\n"
+        'Return ONLY: {"headline": str (≤12 words), "detail": str (2 tight sentences), "liftPercent": int}'
     )
     return system, user
 
 
 def insights_prompt(brand: dict, summary: str) -> tuple[str, str]:
     system = (
-        "You are Marque's growth coach. In ONE or two tight sentences name what's working and the single next "
-        "move. No fluff, no lists, no preamble."
+        "You are Marque's growth coach. Give exactly TWO tight sentences: "
+        "sentence 1 names the single strongest signal (format, hook type, or topic) that's working; "
+        "sentence 2 names the exact next move. No fluff, no preamble, no lists."
     )
-    return system, f"{brand_block(brand)}\nThis week's performance: {summary}\nGive one or two sentences of coaching."
+    return system, f"{brand_block(brand)}\nThis week's performance summary: {summary}\nTwo sentences."
 
 
 # ---------------------------------------------------------------------------

@@ -11,13 +11,13 @@ struct MarqueTabBar: View {
     @State private var createTaps = 0
 
     private let leftItems: [(tab: AppTab, label: String, icon: String)] = [
-        (.home, "Today", "sun.max"),
-        (.plan, "Calendar", "calendar"),
+        (.today, "Today", "sun.max"),
+        (.queue, "Queue", "calendar"),
     ]
 
     private let rightItems: [(tab: AppTab, label: String, icon: String)] = [
         (.library, "Library", "rectangle.stack"),
-        (.coach, "Coach", "sparkles"),
+        (.you, "You", "person.circle"),
     ]
 
     // NOTE: safeAreaInset's reported size does NOT reserve room for content rendered outside its

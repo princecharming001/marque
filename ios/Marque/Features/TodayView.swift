@@ -16,10 +16,14 @@ struct TodayView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, Space.lg)
                     .staggerReveal(0)
-                momentum.staggerReveal(1)
-                upcomingStrip.staggerReveal(2)
-                command.staggerReveal(3)
-                quietRows.staggerReveal(4)
+                WeekStripView(schedule: store.schedule) { day in
+                    router.pendingQueueDate = day
+                    router.selectedTab = .queue
+                }.staggerReveal(1)
+                momentum.staggerReveal(2)
+                upcomingStrip.staggerReveal(3)
+                command.staggerReveal(4)
+                quietRows.staggerReveal(5)
             }
             .padding(.horizontal, 22)
             .padding(.top, Space.lg)
@@ -127,7 +131,7 @@ struct TodayView: View {
                 SectionLabel(text: "Coming up", accent: Palette.accent)
                 HStack(spacing: Space.sm) {
                     ForEach(Array(upcoming)) { post in
-                        Button { router.selectedTab = .plan } label: {
+                        Button { router.selectedTab = .queue } label: {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(post.date.formatted(.dateTime.weekday(.abbreviated)))
                                     .font(AppFont.micro).tracking(Track.label)
@@ -188,7 +192,7 @@ struct TodayView: View {
         store.clips.contains(where: { $0.status == .ready }) ? "calendar" : "square.grid.2x2"
     }
     private func ctaAction() {
-        if store.clips.contains(where: { $0.status == .ready }) { router.selectedTab = .plan }
+        if store.clips.contains(where: { $0.status == .ready }) { router.selectedTab = .queue }
         else { router.showCreate = true }
     }
 
@@ -215,7 +219,7 @@ struct TodayView: View {
     }
 
     private func nextUpRow(_ post: ScheduledPost) -> some View {
-        Button { router.selectedTab = .plan } label: {
+        Button { router.selectedTab = .queue } label: {
             HStack(spacing: Space.md) {
                 Image(systemName: "calendar.badge.clock").font(.system(size: 16)).foregroundStyle(Palette.accent).frame(width: 22)
                 VStack(alignment: .leading, spacing: 3) {
@@ -252,7 +256,7 @@ struct TodayView: View {
     }
 
     private func trendRow(_ t: TrendItem) -> some View {
-        Button { router.selectedTab = .coach } label: {
+        Button { router.selectedTab = .you } label: {
             HStack(spacing: Space.md) {
                 Image(systemName: "wave.3.right").font(.system(size: 15)).foregroundStyle(Palette.accent).frame(width: 22)
                 VStack(alignment: .leading, spacing: 3) {

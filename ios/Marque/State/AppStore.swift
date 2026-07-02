@@ -476,7 +476,7 @@ final class AppStore {
 
     // MARK: Today directive + weekly metrics
 
-    var weekGoal: Int { 5 }
+    var weekGoal: Int { brand.weeklyTarget ?? 5 }
     var weekDone: Int { schedule.count }
     var weekProgress: Double { min(1, Double(weekDone) / Double(weekGoal)) }
 

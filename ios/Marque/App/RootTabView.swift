@@ -24,10 +24,10 @@ struct RootTabView: View {
     @ViewBuilder
     private func content(for tab: AppTab) -> some View {
         switch tab {
-        case .home: NavigationStack { TodayView() }
-        case .plan: NavigationStack { CalendarView() }
+        case .today: NavigationStack { TodayView() }
+        case .queue: NavigationStack { QueueView() }
         case .library: NavigationStack { LibraryView() }
-        case .coach: NavigationStack { CoachView() }
+        case .you: NavigationStack { YouView() }
         }
     }
 }

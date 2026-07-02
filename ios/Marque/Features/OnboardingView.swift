@@ -4,13 +4,33 @@ import UIKit
 // Stoic onboarding, modeled on maxapp: warm off-white canvas, 2px ink progress bar,
 // white pill choice cards (ink when selected), boxed hairline fields, ink pill buttons,
 // one idea per screen. Accessibility ids + button text preserved for the Maestro flow.
+//
+// Steps 0–16:
+//  0: hero           — HeroWelcome
+//  1: goal           — "What are you here to do?"
+//  2: platform       — "Where does your audience live?"
+//  3: stage          — "Where's your audience today?"
+//  4: frequency      — "How often do you post right now?"
+//  5: methodInterstitial — "Consistency beats virality"
+//  6: blocker        — "What gets in the way most?"
+//  7: niche          — niche field only
+//  8: whatYouDo      — whatYouDo + audience fields
+//  9: knownFor       — knownFor field
+// 10: mirrorInterstitial — brand mirror sentence
+// 11: voice          — sliders
+// 12: cameraComfort  — "How do you feel on camera?"
+// 13: styles         — StyleSelectionView
+// 14: pace           — "Pick your weekly pace"
+// 15: connect        — ConnectAccountsView
+// 16: aha            — scripts ready / finish
+
 struct OnboardingView: View {
     @Environment(AppStore.self) private var store
     @State private var step = 0
     @State private var analyzing = false
     @State private var generating = false
 
-    private let lastInputStep = 6
+    private let lastInputStep = 15
 
     var body: some View {
         if step == 0 {
@@ -24,11 +44,13 @@ struct OnboardingView: View {
         ZStack {
             Palette.canvas.ignoresSafeArea()
             VStack(spacing: Space.xl) {
-                if step <= lastInputStep {
+                if step >= 1 && step <= lastInputStep {
                     VStack(spacing: Space.sm) {
                         HStack {
                             if step >= 2 {
-                                Button { withAnimation(Motion.enter) { step -= 1 } } label: {
+                                Button {
+                                    withAnimation(Motion.enter) { step -= 1 }
+                                } label: {
                                     Image(systemName: "chevron.left")
                                         .font(.system(size: 16, weight: .semibold))
                                         .foregroundStyle(Palette.textSecondary)
@@ -44,12 +66,21 @@ struct OnboardingView: View {
                 Spacer(minLength: 0)
                 Group {
                     switch step {
-                    case 1: goalStep()
-                    case 2: aboutStep()
-                    case 3: knownForStep()
-                    case 4: voiceStep()
-                    case 5: styleStep()
-                    case 6: connectStep()
+                    case 1:  goalStep()
+                    case 2:  platformStep()
+                    case 3:  stageStep()
+                    case 4:  frequencyStep()
+                    case 5:  methodInterstitialStep()
+                    case 6:  blockerStep()
+                    case 7:  nicheStep()
+                    case 8:  whatYouDoStep()
+                    case 9:  knownForStep()
+                    case 10: mirrorInterstitialStep()
+                    case 11: voiceStep()
+                    case 12: cameraComfortStep()
+                    case 13: styleStep()
+                    case 14: paceStep()
+                    case 15: connectStep()
                     default: ahaStep
                     }
                 }
@@ -65,8 +96,9 @@ struct OnboardingView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
-    // MARK: Steps
+    // MARK: - Steps
 
+    // Step 1: Goal
     private func goalStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "What are you here to do?") {
@@ -81,34 +113,204 @@ struct OnboardingView: View {
         }
     }
 
-    private func aboutStep() -> some View {
+    // Step 2: Platform
+    // platformBothChosen disambiguates "nil because unset" from "nil because user picked Both"
+    @State private var platformBothChosen = false
+
+    private func platformStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Tell me about you") {
-            VStack(spacing: Space.md) {
-                TextField("Your niche", text: $store.brand.niche).marqueField().accessibilityIdentifier("onboard.niche")
-                TextField("What you do", text: $store.brand.whatYouDo).marqueField().accessibilityIdentifier("onboard.whatYouDo")
-                TextField("Who you serve", text: $store.brand.audience).marqueField().accessibilityIdentifier("onboard.audience")
+        return StepScaffold(question: "Where does your audience live?") {
+            VStack(spacing: Space.sm) {
+                Button {
+                    store.brand.primaryPlatform = .instagram
+                    platformBothChosen = false
+                } label: {
+                    ChoiceCard(text: "Instagram", selected: store.brand.primaryPlatform == .instagram)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.platform.instagram")
+
+                Button {
+                    store.brand.primaryPlatform = .tiktok
+                    platformBothChosen = false
+                } label: {
+                    ChoiceCard(text: "TikTok", selected: store.brand.primaryPlatform == .tiktok)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.platform.tiktok")
+
+                Button {
+                    store.brand.primaryPlatform = nil  // nil = "Both" — no single primary
+                    platformBothChosen = true
+                } label: {
+                    ChoiceCard(text: "Both", selected: platformBothChosen)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.platform.both")
             }
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    // Step 3: Stage
+    private func stageStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "Where's your audience today?") {
+            VStack(spacing: Space.sm) {
+                ForEach(CreatorStage.allCases) { s in
+                    Button { store.brand.stage = s } label: {
+                        ChoiceCard(text: s.rawValue, selected: store.brand.stage == s)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(stageAccessID(s))
+                }
+            }
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    private func stageAccessID(_ s: CreatorStage) -> String {
+        switch s {
+        case .nano:        return "onboard.stage.nano"
+        case .micro:       return "onboard.stage.micro"
+        case .established: return "onboard.stage.established"
+        case .pro:         return "onboard.stage.pro"
+        }
+    }
+
+    // Step 4: Frequency
+    private func frequencyStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "How often do you post right now?") {
+            VStack(spacing: Space.sm) {
+                ForEach(PostingFrequency.allCases) { f in
+                    Button { store.brand.postingFrequency = f } label: {
+                        ChoiceCard(text: f.rawValue, selected: store.brand.postingFrequency == f)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(frequencyAccessID(f))
+                }
+            }
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    private func frequencyAccessID(_ f: PostingFrequency) -> String {
+        switch f {
+        case .rarely:    return "onboard.frequency.rarely"
+        case .sometimes: return "onboard.frequency.sometimes"
+        case .often:     return "onboard.frequency.often"
+        case .daily:     return "onboard.frequency.daily"
+        }
+    }
+
+    // Step 5: Method Interstitial
+    private func methodInterstitialStep() -> some View {
+        OnboardInterstitial(
+            headline: "Consistency beats virality.",
+            message: "Most creators burn out chasing hits. Marque helps you build a posting habit first — then the algorithm rewards you for it.",
+            onContinue: { advance() }
+        )
+        .accessibilityElement(children: .contain)
+    }
+
+    // Step 6: Blocker
+    private func blockerStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "What gets in the way most?") {
+            VStack(spacing: Space.sm) {
+                ForEach(CreatorBlocker.allCases) { b in
+                    Button { store.brand.biggestBlocker = b } label: {
+                        EmojiChoiceCard(
+                            emoji: b.emoji,
+                            text: b.rawValue,
+                            selected: store.brand.biggestBlocker == b
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier(blockerAccessID(b))
+                }
+            }
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    private func blockerAccessID(_ b: CreatorBlocker) -> String {
+        switch b {
+        case .ideas:      return "onboard.blocker.ideas"
+        case .time:       return "onboard.blocker.time"
+        case .editing:    return "onboard.blocker.editing"
+        case .confidence: return "onboard.blocker.confidence"
+        }
+    }
+
+    // Step 7: Niche
+    private func nicheStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "Tell me about your niche") {
+            TextField("Your niche", text: $store.brand.niche)
+                .marqueField()
+                .accessibilityIdentifier("onboard.niche")
             PillButton(title: "Continue", enabled: !store.brand.niche.isEmpty) { advance() }
         }
     }
 
+    // Step 8: What You Do + Audience
+    private func whatYouDoStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "Tell me about you") {
+            VStack(spacing: Space.md) {
+                TextField("What you do", text: $store.brand.whatYouDo)
+                    .marqueField()
+                    .accessibilityIdentifier("onboard.whatYouDo")
+                TextField("Who you serve", text: $store.brand.audience)
+                    .marqueField()
+                    .accessibilityIdentifier("onboard.audience")
+            }
+            PillButton(title: "Continue", enabled: !store.brand.whatYouDo.isEmpty) { advance() }
+        }
+    }
+
+    // Step 9: Known For
     private func knownForStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "What do you want to be known for?",
-                            note: "This is the heart of your brand. Everything we write points back here.") {
-            TextField("In a sentence…", text: $store.brand.knownFor).marqueField().accessibilityIdentifier("onboard.knownFor")
-            PillButton(title: "Continue", enabled: !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty) { advance() }
+        return StepScaffold(
+            question: "What do you want to be known for?",
+            note: "This is the heart of your brand. Everything we write points back here."
+        ) {
+            TextField("In a sentence…", text: $store.brand.knownFor)
+                .marqueField()
+                .accessibilityIdentifier("onboard.knownFor")
+            PillButton(
+                title: "Continue",
+                enabled: !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty
+            ) { advance() }
             Button("Skip — I'll add this later") { advance() }
                 .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 .accessibilityIdentifier("onboard.knownForSkip")
         }
     }
 
+    // Step 10: Mirror Interstitial
+    private func mirrorInterstitialStep() -> some View {
+        let niche     = store.brand.niche.isEmpty    ? "your niche" : store.brand.niche
+        let audience  = store.brand.audience.isEmpty ? "your audience" : store.brand.audience
+        let knownFor  = store.brand.knownFor.isEmpty ? "what you stand for" : store.brand.knownFor
+        let msg = "You\u{2019}re a \(niche) creator for \(audience), known for \(knownFor). Every script Marque writes points back to this."
+        return OnboardInterstitial(
+            headline: "Your brand, in a sentence.",
+            message: msg,
+            onContinue: { advance() }
+        )
+    }
+
+    // Step 11: Voice
     private func voiceStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "What's your voice like?",
-                            note: "Marque writes in your register — tune these to match how you actually talk.") {
+        return StepScaffold(
+            question: "What\u{2019}s your voice like?",
+            note: "Marque writes in your register \u{2014} tune these to match how you actually talk."
+        ) {
             VStack(spacing: Space.lg) {
                 voiceSliderRow("Funny", "Serious", value: $store.brand.voice.funnyToSerious)
                 MarqueHairline()
@@ -129,12 +331,12 @@ struct OnboardingView: View {
     }
 
     private func voicePreviewLine(store: AppStore) -> String {
-        let funny = store.brand.voice.funnyToSerious
+        let funny   = store.brand.voice.funnyToSerious
         let polished = store.brand.voice.polishedToRaw
-        let teacher = store.brand.voice.teacherToPeer
-        let tone = funny < 0.35 ? "witty and light" : funny > 0.65 ? "grounded and serious" : "balanced"
-        let style = polished < 0.35 ? "clean and produced" : polished > 0.65 ? "unfiltered and real" : "conversational"
-        let mode = teacher < 0.35 ? "teaching the room" : teacher > 0.65 ? "talking to peers" : "guiding alongside"
+        let teacher  = store.brand.voice.teacherToPeer
+        let tone  = funny    < 0.35 ? "witty and light"       : funny    > 0.65 ? "grounded and serious" : "balanced"
+        let style = polished < 0.35 ? "clean and produced"    : polished > 0.65 ? "unfiltered and real"  : "conversational"
+        let mode  = teacher  < 0.35 ? "teaching the room"     : teacher  > 0.65 ? "talking to peers"     : "guiding alongside"
         return "\u{201C}\(tone.capitalized), \(style), \(mode).\u{201D} Marque will write every script in this voice."
     }
 
@@ -153,22 +355,114 @@ struct OnboardingView: View {
         }
     }
 
+    // Step 12: Camera Comfort
+    private func cameraComfortStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "How do you feel on camera?") {
+            VStack(spacing: Space.sm) {
+                Button {
+                    store.brand.cameraComfort = .natural
+                    seedStyles(for: .natural, store: store)
+                } label: {
+                    ChoiceCard(text: CameraComfort.natural.rawValue, selected: store.brand.cameraComfort == .natural)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.comfort.natural")
+
+                Button {
+                    store.brand.cameraComfort = .gettingThere
+                    seedStyles(for: .gettingThere, store: store)
+                } label: {
+                    ChoiceCard(text: CameraComfort.gettingThere.rawValue, selected: store.brand.cameraComfort == .gettingThere)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.comfort.getting")
+
+                Button {
+                    store.brand.cameraComfort = .preferOff
+                    seedStyles(for: .preferOff, store: store)
+                } label: {
+                    ChoiceCard(text: CameraComfort.preferOff.rawValue, selected: store.brand.cameraComfort == .preferOff)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.comfort.off")
+            }
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    private func seedStyles(for comfort: CameraComfort, store: AppStore) {
+        switch comfort {
+        case .natural:
+            if !store.brand.preferredStyles.contains(.talkingHead) {
+                store.brand.preferredStyles.append(.talkingHead)
+            }
+        case .preferOff:
+            if !store.brand.preferredStyles.contains(.faceless) {
+                store.brand.preferredStyles.append(.faceless)
+            }
+        case .gettingThere:
+            if !store.brand.preferredStyles.contains(.talkingHead) {
+                store.brand.preferredStyles.append(.talkingHead)
+            }
+            if !store.brand.preferredStyles.contains(.faceless) {
+                store.brand.preferredStyles.append(.faceless)
+            }
+        }
+    }
+
+    // Step 13: Styles
     private func styleStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "What kind of videos?",
-                            note: "Pick the styles you want to make. Each gets its own kind of script.") {
+        return StepScaffold(
+            question: "What kind of videos?",
+            note: "Pick the styles you want to make. Each gets its own kind of script."
+        ) {
             StyleSelectionView(selected: $store.brand.preferredStyles)
             PillButton(title: "Continue", enabled: !store.brand.preferredStyles.isEmpty) { advance() }
         }
     }
 
+    // Step 14: Pace
+    private func paceStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "Pick your weekly pace") {
+            VStack(spacing: Space.sm) {
+                Button { store.brand.weeklyTarget = 3 } label: {
+                    PaceCard(count: 3, sub: "~20 min filming", selected: store.brand.weeklyTarget == 3)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.pace.3")
+
+                Button { store.brand.weeklyTarget = 5 } label: {
+                    PaceCard(count: 5, sub: "~35 min filming", selected: store.brand.weeklyTarget == 5)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.pace.5")
+
+                Button { store.brand.weeklyTarget = 7 } label: {
+                    PaceCard(count: 7, sub: "~50 min filming", selected: store.brand.weeklyTarget == 7)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("onboard.pace.7")
+            }
+            PillButton(title: "Continue") { advance() }
+        }
+    }
+
+    // Step 15: Connect
     private func connectStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Connect your accounts",
-                            note: "Link your Instagram and TikTok so Marque learns from what already works. Add more than one if you like.") {
+        return StepScaffold(
+            question: "Connect your accounts",
+            note: "Link your Instagram and TikTok so Marque learns from what already works. Add more than one if you like."
+        ) {
             ConnectAccountsView()
             VStack(spacing: Space.sm) {
-                PillButton(title: analyzing ? "Reading your page…" : "Continue", enabled: !analyzing) {
+                PillButton(
+                    title: analyzing ? "Reading your page\u{2026}" : "Continue",
+                    enabled: !analyzing
+                ) {
                     analyzing = true
                     Task { await store.analyzePage(); analyzing = false; advance() }
                 }
@@ -186,10 +480,11 @@ struct OnboardingView: View {
         }
     }
 
+    // Step 16: Aha
     private var ahaStep: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if generating {
-                Text("Writing your first scripts…")
+                Text("Writing your first scripts\u{2026}")
                     .font(Typeface.display(30, .semibold)).foregroundStyle(Palette.textPrimary)
                 Text("In your voice. Built to stop the scroll.")
                     .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
@@ -201,7 +496,7 @@ struct OnboardingView: View {
                 Text("Your first 3 scripts are ready.")
                     .font(Typeface.display(30, .semibold)).foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("They're waiting in Studio. Record when you've got a few minutes — we'll do the editing.")
+                Text("They\u{2019}re waiting in Studio. Record when you\u{2019}ve got a few minutes \u{2014} we\u{2019}ll do the editing.")
                     .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                 ForEach(store.scripts.prefix(3)) { s in
                     HStack(alignment: .top, spacing: Space.sm) {
@@ -216,22 +511,30 @@ struct OnboardingView: View {
         }
     }
 
+    // MARK: - Navigation
+
     private func advance() {
-        if step == lastInputStep { generating = true; step += 1 }
-        else { withAnimation(Motion.enter) { step += 1 } }
+        if step == lastInputStep {
+            generating = true
+            step += 1
+        } else {
+            withAnimation(Motion.enter) { step += 1 }
+        }
     }
 }
 
-// MARK: - Onboarding sub-views
+// MARK: - Private Sub-views
 
 private struct HeroWelcome: View {
     let start: () -> Void
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             Image("Hero").resizable().scaledToFill().ignoresSafeArea()
-            LinearGradient(colors: [.clear, .clear, .black.opacity(0.55), .black.opacity(0.92)],
-                           startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
+            LinearGradient(
+                colors: [.clear, .clear, .black.opacity(0.55), .black.opacity(0.92)],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
             VStack(alignment: .leading, spacing: Space.lg) {
                 Text("Film once.\nPost every day.")
                     .font(Typeface.display(46, .semibold)).foregroundStyle(.white)
@@ -265,9 +568,12 @@ private struct StepScaffold<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            Text(question).font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+            Text(question)
+                .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
-            if let note { Text(note).font(AppFont.body).foregroundStyle(Palette.textSecondary) }
+            if let note {
+                Text(note).font(AppFont.body).foregroundStyle(Palette.textSecondary)
+            }
             content
         }
     }
@@ -310,6 +616,69 @@ private struct ChoiceCard: View {
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
         .shadow(color: .black.opacity(selected ? 0 : 0.05), radius: 12, x: 0, y: 4)
+    }
+}
+
+private struct EmojiChoiceCard: View {
+    let emoji: String
+    let text: String
+    let selected: Bool
+    var body: some View {
+        HStack {
+            Text(emoji).font(.system(size: 24))
+            Text(text).font(AppFont.bodyL).foregroundStyle(selected ? Palette.onInk : Palette.textPrimary)
+            Spacer()
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(selected ? Palette.onInk : Palette.textTertiary)
+        }
+        .padding(.horizontal, Space.lg).frame(height: 60)
+        .background(selected ? Palette.ink : Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
+    }
+}
+
+private struct OnboardInterstitial: View {
+    let headline: String
+    let message: String
+    let onContinue: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            Text(headline)
+                .font(Typeface.display(32, .semibold)).tracking(-0.8)
+                .foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(message)
+                .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+                .lineSpacing(5).fixedSize(horizontal: false, vertical: true)
+            PillButton(title: "Continue", action: onContinue)
+                .accessibilityIdentifier("onboard.continue")
+        }
+    }
+}
+
+private struct PaceCard: View {
+    let count: Int
+    let sub: String
+    let selected: Bool
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(count) posts/week").font(AppFont.bodyL)
+                    .foregroundStyle(selected ? Palette.onInk : Palette.textPrimary)
+                Text(sub).font(AppFont.caption)
+                    .foregroundStyle(selected ? Palette.onInk.opacity(0.7) : Palette.textTertiary)
+            }
+            Spacer()
+            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(selected ? Palette.onInk : Palette.textTertiary)
+        }
+        .padding(.horizontal, Space.lg).frame(height: 70)
+        .background(selected ? Palette.ink : Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
     }
 }
 

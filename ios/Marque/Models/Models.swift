@@ -10,6 +10,49 @@ enum Goal: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 }
 
+enum CreatorStage: String, CaseIterable, Codable, Identifiable {
+    case nano = "0–1K followers"
+    case micro = "1K–10K followers"
+    case established = "10K–100K followers"
+    case pro = "100K+ followers"
+    var id: String { rawValue }
+    var label: String { rawValue }
+}
+
+enum PostingFrequency: String, CaseIterable, Codable, Identifiable {
+    case rarely = "0–1x a week"
+    case sometimes = "2–3x a week"
+    case often = "4–5x a week"
+    case daily = "Daily or more"
+    var id: String { rawValue }
+    var label: String { rawValue }
+}
+
+enum CreatorBlocker: String, CaseIterable, Codable, Identifiable {
+    case ideas = "Running out of ideas"
+    case time = "Not enough time"
+    case editing = "Editing takes forever"
+    case confidence = "Camera confidence"
+    var id: String { rawValue }
+    var label: String { rawValue }
+    var emoji: String {
+        switch self {
+        case .ideas: return "💡"
+        case .time: return "📆"
+        case .editing: return "✂️"
+        case .confidence: return "😬"
+        }
+    }
+}
+
+enum CameraComfort: String, CaseIterable, Codable, Identifiable {
+    case natural = "Natural — I'm comfortable on camera"
+    case gettingThere = "Getting there — still working on it"
+    case preferOff = "Prefer off-camera or voiceover"
+    var id: String { rawValue }
+    var label: String { rawValue }
+}
+
 struct VoiceFingerprint: Codable, Hashable {
     var funnyToSerious: Double = 0.5     // 0 funny … 1 serious
     var polishedToRaw: Double = 0.5      // 0 polished … 1 raw
@@ -31,6 +74,12 @@ struct BrandGraph: Codable, Hashable {
     var topThemes: [String] = []
     var preferredStyles: [VideoStyle] = []   // the video styles the creator wants to make
     var connectedAccounts: [ConnectedAccount] = []
+    var primaryPlatform: SocialPlatform? = nil
+    var stage: CreatorStage? = nil
+    var postingFrequency: PostingFrequency? = nil
+    var biggestBlocker: CreatorBlocker? = nil
+    var cameraComfort: CameraComfort? = nil
+    var weeklyTarget: Int? = nil
 }
 
 /// A linked Instagram/TikTok account, verified by fetching the real public profile.

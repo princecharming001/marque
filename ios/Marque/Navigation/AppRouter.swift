@@ -2,14 +2,15 @@ import SwiftUI
 import Observation
 
 enum AppTab: Hashable {
-    case home, plan, library, coach
+    case today, queue, library, you
 }
 
 @MainActor
 @Observable
 final class AppRouter {
-    var selectedTab: AppTab = .home
-    var hideTabBar = false   // hidden while a detail with its own bottom CTA is up
-    var showCreate = false   // raised center FAB → presents StudioView modally
-    var pendingScheduleClipId: UUID? = nil   // Library "Schedule this clip" → open scheduler pre-filled
+    var selectedTab: AppTab = .today
+    var hideTabBar = false
+    var showCreate = false
+    var pendingScheduleClipId: UUID? = nil
+    var pendingQueueDate: Date? = nil
 }

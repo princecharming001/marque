@@ -3,7 +3,22 @@ import SwiftUI
 struct CoachView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
-    @State private var showInsights = false
+
+    // MARK: Computed properties for inline insights
+    private var logged: [ScheduledPost] { store.schedule.filter { ($0.metrics?.views ?? 0) > 0 } }
+    private var totalViews: Int { logged.compactMap { $0.metrics?.views }.reduce(0, +) }
+    private var totalLikes: Int { logged.compactMap { $0.metrics?.likes }.reduce(0, +) }
+    private var avgEngagement: Double {
+        let rates = logged.compactMap { $0.metrics?.engagementRate }
+        return rates.isEmpty ? 0 : rates.reduce(0, +) / Double(rates.count)
+    }
+    private var heroValue: String { totalViews > 0 ? compactNumber(totalViews) : "\(store.clips.count)" }
+    private var heroLabel: String { totalViews > 0 ? "total views" : "clips made" }
+    private var formatCounts: [(String, Int)] {
+        Dictionary(grouping: store.clips, by: { $0.formatName })
+            .map { ($0.key, $0.value.count) }
+            .sorted { $0.1 > $1.1 }
+    }
 
     var body: some View {
         ScrollView {
@@ -14,12 +29,6 @@ struct CoachView: View {
                         ScreenTitle(text: "Coach")
                     }
                     Spacer()
-                    Button { showInsights = true } label: {
-                        Image(systemName: "chart.bar").foregroundStyle(Palette.textSecondary)
-                    }
-                    .padding(.top, 28)
-                    .accessibilityLabel("Insights")
-                    .accessibilityIdentifier("coach.insights")
                 }
 
                 // Teardown cards (performance feedback)
@@ -108,14 +117,52 @@ struct CoachView: View {
                         Task { await store.makeTeardown(for: c) }
                     }
                 }
+
+                // Inline performance summary (formerly InsightsView)
+                MarqueHairline().padding(.vertical, Space.sm)
+                VStack(alignment: .leading, spacing: Space.md) {
+                    SectionLabel(text: "Your stats", accent: Palette.accent)
+                    HStack(alignment: .lastTextBaseline, spacing: Space.sm) {
+                        Text(heroValue)
+                            .font(Typeface.display(36, .semibold)).tracking(Track.hero)
+                            .foregroundStyle(Palette.textPrimary)
+                        Text(heroLabel)
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    }
+                    HStack(spacing: Space.md) {
+                        statMini("\(store.schedule.count)", "Scheduled")
+                        statMini("\(store.streak)", "Sessions")
+                        if totalLikes > 0 { statMini(compactNumber(totalLikes), "Likes") }
+                    }
+                }
+
+                if !formatCounts.isEmpty {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        SectionLabel(text: "Format mix", accent: Palette.accent)
+                        VStack(spacing: 0) {
+                            ForEach(Array(formatCounts.enumerated()), id: \.element.0) { i, item in
+                                if i > 0 { MarqueHairline() }
+                                FormatBarRow(name: item.0, count: item.1, maxCount: formatCounts.first?.1 ?? 1)
+                            }
+                        }
+                        .marqueCard(padding: 0)
+                    }
+                }
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .task { await store.loadTrends() }
-        .refreshable { await store.loadTrends() }
-        .sheet(isPresented: $showInsights) { InsightsView() }
+        .task { await store.loadTrends(); await store.loadRecommendations() }
+        .refreshable { await store.loadTrends(); await store.loadRecommendations() }
+    }
+
+    private func statMini(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(Typeface.display(20, .semibold)).foregroundStyle(Palette.textPrimary)
+            Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
