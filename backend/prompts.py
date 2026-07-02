@@ -731,6 +731,96 @@ def converse_system(mode: str = "chat") -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Mimic — rewrite an influencer reel as THIS creator (skeleton stays, substance swaps)
+# ---------------------------------------------------------------------------
+
+def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None) -> tuple[str, str]:
+    system = (
+        "You are Marque's mimic engine. You take a proven viral reel and rewrite it AS a different creator — "
+        "keeping the STRUCTURAL SKELETON that made it work (hook shape, beat order, pacing, loop structure, "
+        "where the payoff lands) while swapping ALL substance for this creator's niche, facts, and voice.\n\n"
+        f"{VIRALITY_BLOCK}\n\n"
+        "HARD RULES:\n"
+        "- NO plagiarism: never reuse the original's sentences, examples, numbers, or catchphrases. If the "
+        "original said 'I tested 5 diets for 30 days', the mimic might be 'I ran 5 cold-outreach scripts for "
+        "2 weeks' — same skeleton, entirely different substance.\n"
+        "- The creator's voice sliders, catchphrases, and banned words are law.\n"
+        "- Match the original's energy and length, not its topic.\n"
+        "- Set style/formatId appropriate to how THIS creator films.\n\n"
+        "Worked example:\n"
+        "Original (fitness reel): hook 'I ate 200g of protein every day for 30 days — my bloodwork shocked my "
+        "doctor', beats: bold claim → daily proof montage → surprising result → one takeaway.\n"
+        "Mimic for a personal-finance creator: hook 'I tracked every dollar for 30 days — the leak wasn't "
+        "where I thought', beats: bold claim → daily tracking montage → surprising category reveal → one rule "
+        "to copy. Same skeleton; zero shared substance.\n\n"
+        "Reply with ONLY one JSON object, no prose."
+    )
+    mem = memory_block(memory) if memory else ""
+    user = (
+        f"{brand_block(brand)}\n{mem}\n\n"
+        "ORIGINAL REEL TO MIMIC:\n"
+        f"- creator: @{reel.get('creator_handle','unknown')} ({reel.get('platform','tiktok')})\n"
+        f"- title: {reel.get('title','')}\n"
+        f"- hook: \"{reel.get('hook_text','')}\"\n"
+        f"- transcript: {reel.get('transcript','')}\n"
+        f"- why it's working: {reel.get('why_trending','')}\n"
+        f"- stats: {reel.get('views',0)} views, {reel.get('likes',0)} likes\n\n"
+        f"Rewrite this AS the creator above, in their niche and voice. Return ONLY one JSON object. {SCRIPT_SCHEMA}"
+    )
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# Video-link analysis — pasted URL → what makes it work → your version
+# ---------------------------------------------------------------------------
+
+def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | None = None) -> tuple[str, str]:
+    system = (
+        "You are Marque's video analyst. Given a short-form video's transcript, produce a tight teardown of "
+        "why it works and a version rewritten for a specific creator.\n\n"
+        f"{VIRALITY_BLOCK}\n\n"
+        "Reply with ONLY valid JSON matching:\n"
+        '{"hook_analysis": str (1-2 sentences on the hook mechanic and why it stops the scroll), '
+        '"structure_beats": [str] (3-6 beats naming the structural moves in order), '
+        '"why_it_works": str (2-3 sentences: retention mechanics, specificity, emotional driver), '
+        '"suggestions": [str] (2-3 concrete ways this creator could use or improve on the pattern), '
+        f'"your_version": {SCRIPT_SCHEMA.replace("Each item: ", "")}}}\n'
+        "your_version follows the same no-plagiarism rule as a mimic: keep the skeleton, swap ALL substance "
+        "for this creator's niche and voice."
+    )
+    mem = memory_block(memory) if memory else ""
+    user = (
+        f"{brand_block(brand)}\n{mem}\n\n"
+        f"VIDEO: {url}\n"
+        f"TRANSCRIPT:\n{transcript[:4000]}\n\n"
+        "Analyze it and write this creator's version. JSON only."
+    )
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# Brand summary — "what Marque knows about you" (Profile hero card)
+# ---------------------------------------------------------------------------
+
+def brand_summary_prompt(brand: dict, memory: dict | None = None,
+                         arm_stats: list[dict] | None = None) -> tuple[str, str]:
+    system = (
+        "You write the 'What Marque knows about you' card on a creator's profile — a mirror that makes them "
+        "feel SEEN. Editorial, warm, specific; second person ('you'). Never generic, never flattering fluff: "
+        "every sentence should be traceable to something real about them.\n\n"
+        "Reply with ONLY valid JSON:\n"
+        '{"summary": str (one tight paragraph, 3-4 sentences: who they are, who they serve, what makes their '
+        "take different, and where their content is headed), "
+        '"traits": [str] (3-5 short chips, ≤4 words each, e.g. "contrarian teacher", "receipts over hype"), '
+        '"working_on": str (one sentence on their current angle/direction, from memory if present)}'
+    )
+    mem = memory_block(memory) if memory else ""
+    learn = learning_block(arm_stats or [])
+    user = f"{brand_block(brand)}\n{mem}\n{learn}\n\nWrite the profile card. JSON only."
+    return system, user
+
+
 def converse_user(brand: dict, memory: dict | None, messages: list[dict],
                   arm_stats: list[dict] | None = None, trends: list[dict] | None = None) -> str:
     """User content for /v1/converse: brand + memory + performance + recent transcript."""

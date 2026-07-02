@@ -251,6 +251,8 @@ class ClipJobRequest(BaseModel):
     brand: dict = {}
     style: str = "talking_head"
     media_context: str = ""
+    # Per-creator editing preferences (Settings → threaded into every edit)
+    edit_prefs: dict = {}      # {auto_captions: bool, caption_style: clean|bold-word|karaoke, filler_trim: off|standard|aggressive}
 
 
 class MediaAnalyzeRequest(BaseModel):
@@ -379,8 +381,11 @@ def mock_trends(niche: str) -> list[dict]:
     n = niche or "your niche"
     return [
         {"title": f"Myth-busting is spiking in {n}", "why": "Contrarian hooks are over-indexing on shares this week.", "formatId": "myth-buster"},
+        {"title": f"“I did X for 30 days” experiments", "why": f"Receipt-driven {n} experiments are pulling huge saves — proof beats opinion right now.", "formatId": "before-after"},
         {"title": "“Do this, not that” splits", "why": "Side-by-side comparisons are getting high rewatch.", "formatId": "do-this-not-that"},
         {"title": "Faceless explainers", "why": "AI-visual voiceovers are cheap to test and trending.", "formatId": "faceless"},
+        {"title": f"Green-screen reacts to bad {n} advice", "why": "Reacting to viral misinformation is an easy authority play with built-in stakes.", "formatId": "green-screen"},
+        {"title": "Rapid-fire listicles under 25s", "why": "Sub-25-second fast-cut lists are looping — completion rate is the whole game.", "formatId": "listicle"},
     ]
 
 
@@ -620,6 +625,24 @@ async def mint_upload_url(req: UploadMintRequest):
     return {"mode": "live", "upload_url": upload_url, "key": key, "public_url": public_url}
 
 
+def _apply_edit_prefs(edl: dict, prefs: dict) -> dict:
+    """Post-process an EDL per the creator's editing preferences."""
+    if not edl or not prefs:
+        return edl
+    if prefs.get("auto_captions") is False:
+        edl["captions"] = []
+    style = prefs.get("caption_style")
+    if style in ("clean", "bold-word", "karaoke") and edl.get("captions") is not None:
+        edl.setdefault("caption_style", style)
+    trim = prefs.get("filler_trim")
+    if trim == "off":
+        edl["drops"] = []
+    elif trim == "aggressive" and edl.get("drops") is not None:
+        # tighten: mark every drop, and flag the EDL so the renderer trims gaps > 200ms
+        edl.setdefault("trim_aggressiveness", "aggressive")
+    return edl
+
+
 @app.post("/v1/clips")
 async def create_clip_job(req: ClipJobRequest):
     """Create a clip editing job. Returns immediately with job_id; pipeline runs async."""
@@ -631,12 +654,13 @@ async def create_clip_job(req: ClipJobRequest):
         "clips": clips, "script": req.script, "style": req.style,
         "brand": req.brand, "media_context": req.media_context,
         "source_url": req.source_url, "edl": None, "error": None,
+        "edit_prefs": req.edit_prefs or {},
     }
     _clip_jobs[job_id] = job
     if not ASSEMBLY_KEY:
         job["status"] = "mock_ready"
         for c in clips: c["status"] = "ready"
-        job["edl"] = _mock_edl(req.style, req.script)
+        job["edl"] = _apply_edit_prefs(_mock_edl(req.style, req.script), job["edit_prefs"])
         return {"mode": "mock", "job_id": job_id, "clips": clips}
     asyncio.create_task(_run_pipeline(job_id))
     return {"mode": "live", "job_id": job_id, "clips": clips}
@@ -688,6 +712,20 @@ async def _run_pipeline(job_id: str):
         style = job["style"]
         script = job["script"]
         system, user = prompts.edl_prompt(style, words, script, job["brand"], job["media_context"])
+        prefs = job.get("edit_prefs") or {}
+        if prefs:
+            hints = []
+            if prefs.get("auto_captions") is False:
+                hints.append("The creator has captions OFF — output an empty captions array.")
+            if prefs.get("caption_style") in ("clean", "bold-word", "karaoke"):
+                hints.append(f"Caption style: {prefs['caption_style']}.")
+            trim = prefs.get("filler_trim")
+            if trim == "off":
+                hints.append("Filler trimming is OFF — output an empty drops array.")
+            elif trim == "aggressive":
+                hints.append("Filler trimming is AGGRESSIVE — also drop dead-air gaps > 200ms and hesitations.")
+            if hints:
+                user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         edl_text = await anthropic(system, user, model=HAIKU, max_tokens=4000)
         edl_data = extract_json(edl_text, array=False)
 
@@ -705,7 +743,7 @@ async def _run_pipeline(job_id: str):
             edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
             edl_data = edl_obj.model_dump()
 
-        job["edl"] = edl_data
+        job["edl"] = _apply_edit_prefs(edl_data, prefs)
 
         job["status"] = "rendering"
         for c in job["clips"]: c["status"] = "rendering"
@@ -1085,10 +1123,11 @@ async def register_post(req: PostRegisterRequest):
         return {"mode": "mock", "status": "already_registered"}
     _post_registry[req.post_id] = {
         "creator_id": req.creator_id,
+        "platform": req.platform, "scheduled_at": req.scheduled_at,
         "pillar": req.pillar, "style": req.style,
         "format_id": req.format_id, "hook_signal": req.hook_signal,
         "predicted_score": req.predicted_score,
-        "outcome_y": None, "settled": False,
+        "outcome_y": None, "settled": False, "metrics": None,
     }
     return {"mode": "live" if SUPABASE_URL else "mock", "status": "registered", "post_id": req.post_id}
 
@@ -1113,6 +1152,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
 
     entry["outcome_y"] = y
     entry["settled"] = True
+    entry["metrics"] = m
     _post_registry[req.post_id] = entry
 
     return {"mode": "live" if SUPABASE_URL else "mock", "status": "ingested",
@@ -1410,3 +1450,372 @@ async def tts(req: TTSRequest):
     except (httpx.TimeoutException, httpx.ConnectError) as e:
         logging.warning("tts: network error %s", e)
     return JSONResponse({"mode": "mock"})
+
+
+# ---------------------------------------------------------------------------
+# Auth (light) — derive creator_id from an optional bearer token.
+# Real enforcement lands with Supabase RLS; for now the sub claim just scopes state.
+# ---------------------------------------------------------------------------
+
+def _creator_from_bearer(authorization: str | None, fallback: str) -> str:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return fallback
+    token = authorization.split(" ", 1)[1].strip()
+    parts = token.split(".")
+    if len(parts) != 3:
+        return fallback
+    try:
+        import base64
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return claims.get("sub") or fallback
+    except Exception:
+        return fallback
+
+
+# ---------------------------------------------------------------------------
+# Reels feed — influencer reels to mimic (mock corpus now; Apify/BrightData later)
+# ---------------------------------------------------------------------------
+
+class MimicRequest(BaseModel):
+    reel: dict = {}
+    brand: dict = {}
+    memory: dict = {}
+    creator_id: str = "default"
+
+
+class AnalyzeVideoRequest(BaseModel):
+    url: str = ""
+    brand: dict = {}
+    memory: dict = {}
+    creator_id: str = "default"
+
+
+class BrandSummaryRequest(BaseModel):
+    brand: dict = {}
+    memory: dict = {}
+    creator_id: str = "default"
+
+
+_REEL_TEMPLATES = [
+    # (handle_stub, platform, title, hook, transcript_skeleton, why_trending, format_id, style, views, likes)
+    ("daily{slug}", "tiktok", "I did {niche} wrong for 3 years",
+     "I wasted 3 years on {niche} — these 20 seconds save you the trouble.",
+     "Bold confession of the mistake. The moment it clicked. The one change that fixed it. Direct takeaway to copy today.",
+     "Confession hooks + a redemption arc are pulling massive completion rates this week.",
+     "pov-story", "talking_head", 2_400_000, 310_000),
+    ("the{slug}guy", "instagram", "3 {niche} rules I'd tattoo on my arm",
+     "Three {niche} rules — the third one nobody says out loud.",
+     "Rule one, quick and obvious. Rule two, sharper. Rule three, the contrarian one that reframes the first two.",
+     "Numbered rules with a withheld payoff are driving rewatch loops.",
+     "listicle", "fast_cuts", 1_800_000, 220_000),
+    ("honest{slug}", "tiktok", "Stop doing this in {niche}",
+     "If you're doing this in {niche}, stop. It's costing you every week.",
+     "Call out the common practice. Show why it backfires with one specific number. Give the replacement behavior.",
+     "Direct call-out hooks are over-indexing on shares — people tag friends who do the thing.",
+     "do-this-not-that", "talking_head", 3_100_000, 405_000),
+    ("{slug}lab", "instagram", "The {niche} myth that won't die",
+     "This {niche} myth has two million believers. Here's the receipt it's wrong.",
+     "State the myth respectfully. Bring one piece of hard evidence. Land the correct model in one sentence.",
+     "Myth-busting with receipts converts skeptics into followers — saves are spiking.",
+     "myth-buster", "green_screen", 1_500_000, 190_000),
+    ("quiet{slug}", "tiktok", "A day of {niche} in 25 seconds",
+     "Nobody shows you the boring part of {niche}. Watch this.",
+     "Fast montage of the unglamorous process. One honest line about why it matters. Soft CTA to follow the journey.",
+     "Anti-highlight-reel content reads as authentic and is out-performing polished edits.",
+     "broll-hook", "faceless", 950_000, 140_000),
+    ("{slug}decoded", "instagram", "Before/after: 30 days of {niche}",
+     "Day 1 vs day 30 of doing {niche} right — the difference is stupid.",
+     "Show the before state with a number. The exact protocol in three beats. The after state with the same number.",
+     "30-day receipt experiments are the highest-save format in the niche right now.",
+     "before-after", "split_three", 2_700_000, 350_000),
+    ("real{slug}talk", "tiktok", "The uncomfortable {niche} truth",
+     "Nobody in {niche} wants to say this, so I will.",
+     "The uncomfortable claim. Why everyone avoids saying it. The evidence. What to do about it in one line.",
+     "Hot takes with evidence are driving comment wars — the algorithm is eating it up.",
+     "myth-buster", "talking_head", 4_200_000, 520_000),
+]
+
+
+def _mock_reels(niche: str, watched: list[str]) -> list[dict]:
+    n = niche or "your niche"
+    slug = "".join(c for c in n.lower().split()[0] if c.isalpha()) or "creator"
+    reels = []
+    # Watched creators first — 2 reels each, attributed to the actual handle
+    for wi, w in enumerate(watched[:2]):
+        for ti in (0, 2):
+            t = _REEL_TEMPLATES[(wi * 3 + ti) % len(_REEL_TEMPLATES)]
+            reels.append(_reel_from_template(t, n, slug, handle_override=w, idx=len(reels), watched=True))
+    for i, t in enumerate(_REEL_TEMPLATES):
+        reels.append(_reel_from_template(t, n, slug, idx=len(reels)))
+    # Second pass with platform flipped for volume (14+ total)
+    for i, t in enumerate(_REEL_TEMPLATES[:5]):
+        flipped = (t[0] + "s", "instagram" if t[1] == "tiktok" else "tiktok", *t[2:])
+        reels.append(_reel_from_template(flipped, n, slug, idx=len(reels)))
+    return reels
+
+
+def _reel_from_template(t, niche: str, slug: str, handle_override: str | None = None,
+                        idx: int = 0, watched: bool = False) -> dict:
+    handle_stub, platform, title, hook, transcript, why, fmt, style, views, likes = t
+    handle = handle_override or handle_stub.format(slug=slug)
+    return {
+        "id": f"reel-{slug}-{idx}",
+        "creator_handle": handle.lstrip("@"),
+        "platform": platform,
+        "title": title.format(niche=niche),
+        "hook_text": hook.format(niche=niche),
+        "transcript": transcript.format(niche=niche),
+        "thumbnail_url": "",
+        "video_url": "",
+        "views": views + idx * 37_000,
+        "likes": likes + idx * 4_100,
+        "why_trending": why,
+        "format_id": fmt,
+        "style": style,
+        "from_watched": watched,
+    }
+
+
+REELS_PAGE = 6
+
+
+@app.get("/v1/reels")
+async def reels(niche: str = "", creator_id: str = "default", watched: str = "", cursor: int = 0):
+    watched_list = [w.strip().lstrip("@") for w in watched.split(",") if w.strip()]
+    # Real path (key-gated scraper) would land here; mock corpus is niche-parameterized.
+    corpus = _mock_reels(niche, watched_list)
+    page = corpus[cursor * REELS_PAGE:(cursor + 1) * REELS_PAGE]
+    next_cursor = cursor + 1 if (cursor + 1) * REELS_PAGE < len(corpus) else None
+    return {"mode": "live" if (APIFY_KEY or BRIGHTDATA_KEY) else "mock",
+            "reels": page, "next_cursor": next_cursor}
+
+
+# ---------------------------------------------------------------------------
+# Daily feed — server-composed mix of script suggestions + reels + a trend
+# ---------------------------------------------------------------------------
+
+_FEED_MAX_PAGES = 5
+
+
+@app.get("/v1/feed")
+async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
+               known_for: str = "", goal: str = "Grow my audience",
+               styles: str = "", watched: str = "", cursor: int = 0):
+    allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
+    style = allowed[cursor % len(allowed)]
+    topics = [
+        f"the {niche or 'creator'} mistake everyone makes",
+        f"what nobody tells beginners about {niche or 'your field'}",
+        f"a myth in {niche or 'your niche'} that needs to die",
+        f"the fastest win in {niche or 'your field'} this month",
+        f"what I'd do differently starting {niche or 'out'} today",
+    ]
+    sreq = ScriptRequest(
+        niche=niche, audience=audience, known_for=known_for, goal=goal,
+        pillar=topics[cursor % len(topics)],
+        pillar_summary="Daily feed suggestion",
+        style=style, count=3, creator_id=creator_id,
+    )
+    script_result = await scripts(sreq)
+    items = [{"type": "script", "script": s} for s in script_result.get("scripts", [])[:3]]
+
+    reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
+    items += [{"type": "reel", "reel": r} for r in reel_result.get("reels", [])[:4]]
+
+    all_trends = mock_trends(niche)
+    items.append({"type": "trend", "trend": all_trends[cursor % len(all_trends)]})
+
+    reels_more = reel_result.get("next_cursor") is not None
+    next_cursor = cursor + 1 if (cursor + 1 < _FEED_MAX_PAGES or reels_more) else None
+    return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
+
+
+# ---------------------------------------------------------------------------
+# Mimic — turn an influencer reel into a script in the creator's voice
+# ---------------------------------------------------------------------------
+
+def _mock_mimic(reel: dict, brand: dict) -> dict:
+    niche = brand.get("niche") or "your niche"
+    fmt = reel.get("format_id", "myth-buster")
+    style = reel.get("style", "talking_head")
+    # Structure-preserving skeleton swap: keep the shape, replace the substance
+    my_hook = reel.get("hook_text", "")
+    for other in ("fitness", "finance", "cooking", "your niche"):
+        my_hook = my_hook.replace(other, niche)
+    return {
+        "title": f"{niche}: {reel.get('title','their idea')[:40]}",
+        "summary": f"Your take on @{reel.get('creator_handle','them')}'s structure, rebuilt for {niche}.",
+        "hook": my_hook or f"Everyone in {niche} gets this wrong — here's the fix.",
+        "hookSignal": "contrarian",
+        "formatId": fmt,
+        "body": (f"[Same skeleton as the original, your substance] Open on the boldest claim you can defend "
+                 f"about {niche}. Walk the same beats: {reel.get('transcript','claim → proof → takeaway')} "
+                 f"— but every example, number, and story is YOURS."),
+        "cta": "Follow for the next one.",
+        "shotPlan": ["Hook on frame 1, direct eye contact", "One punch-in on the key beat", "CTA to camera"],
+        "targetSeconds": 26, "predictedScore": 82,
+        "altHooks": [], "style": style,
+    }
+
+
+@app.post("/v1/mimic")
+async def mimic(req: MimicRequest):
+    provenance = {"creator_handle": req.reel.get("creator_handle", ""),
+                  "platform": req.reel.get("platform", ""), "reel_id": req.reel.get("id", "")}
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
+    try:
+        sys, usr = prompts.mimic_prompt(req.reel, req.brand, req.memory)
+        out = extract_json(await anthropic(sys, usr, OPUS, 2000), array=False)
+        if not out:
+            return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
+        return {"mode": "live", "script": out, "mimicked_from": provenance}
+    except HTTPException:
+        return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
+
+
+# ---------------------------------------------------------------------------
+# Video-link analysis — pasted TikTok/IG/YT link → teardown + your version
+# ---------------------------------------------------------------------------
+
+def _platform_from_url(url: str) -> str:
+    u = url.lower()
+    if "tiktok" in u: return "tiktok"
+    if "instagram" in u or "instagr.am" in u: return "instagram"
+    if "youtu" in u: return "youtube"
+    return "unknown"
+
+
+_MOCK_VIDEO_TRANSCRIPT = (
+    "Hook: a bold claim delivered in the first second with on-screen text mirroring it. "
+    "Beat 2: the creator stakes credibility with one specific number. "
+    "Beat 3: quick visual proof — the pattern is shown, not described. "
+    "Beat 4: the reframe — why everyone reads this wrong. "
+    "Close: a single takeaway line and a one-word comment prompt."
+)
+
+
+@app.post("/v1/analyze-video")
+async def analyze_video(req: AnalyzeVideoRequest):
+    platform = _platform_from_url(req.url)
+    # Real path: scraper (APIFY_KEY) fetches media → AssemblyAI transcribes. Keyless: canned structure.
+    transcript = _MOCK_VIDEO_TRANSCRIPT
+    niche = req.brand.get("niche") or "your niche"
+    if ANTHROPIC_KEY:
+        try:
+            sys, usr = prompts.analyze_video_prompt(req.url, transcript, req.brand, req.memory)
+            out = extract_json(await anthropic(sys, usr, OPUS, 2600), array=False)
+            if out and out.get("your_version"):
+                return {"mode": "live" if APIFY_KEY else "live_structure", "platform": platform,
+                        "transcript": transcript, **out}
+        except HTTPException:
+            pass
+    mock_reel = {"creator_handle": "the original creator", "platform": platform,
+                 "title": "the linked video", "hook_text": f"A proven hook pattern, rebuilt for {niche}",
+                 "transcript": transcript, "format_id": "myth-buster", "style": "talking_head"}
+    return {
+        "mode": "mock", "platform": platform, "transcript": transcript,
+        "hook_analysis": "The hook lands a bold claim inside the first second and mirrors it in on-screen text — a double pattern-interrupt that stops both sound-on and sound-off scrollers.",
+        "structure_beats": ["Bold claim (0-1.5s)", "Credibility number", "Visual proof", "The reframe", "Single takeaway + comment prompt"],
+        "why_it_works": "Every beat earns the next second: specificity builds trust, the proof is shown rather than told, and the loop opened in the hook only closes on the final line — which is what holds retention to the end.",
+        "suggestions": [f"Steal the claim→number→proof skeleton for your next {niche} post",
+                        "Mirror your hook as on-screen text in the first frame",
+                        "End with a one-word comment prompt to feed the algorithm early signals"],
+        "your_version": _mock_mimic(mock_reel, req.brand),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Brand summary — the Profile "what Marque knows about you" card
+# ---------------------------------------------------------------------------
+
+@app.post("/v1/brand-summary")
+async def brand_summary(req: BrandSummaryRequest):
+    b = req.brand
+    niche = b.get("niche") or "your niche"
+    audience = b.get("audience") or "your audience"
+    known = b.get("known_for") or f"a sharper take on {niche}"
+    angle = (req.memory.get("angle") or "").strip()
+    if ANTHROPIC_KEY:
+        try:
+            stats = list(_arm_stats.get(req.creator_id, {}).values())
+            sys, usr = prompts.brand_summary_prompt(b, req.memory, stats)
+            out = extract_json(await anthropic(sys, usr, HAIKU, 900), array=False)
+            if out and out.get("summary"):
+                return {"mode": "live", **out}
+        except HTTPException:
+            pass
+    working = angle or f"Turning {known.lower()} into a consistent short-form presence."
+    return {"mode": "mock",
+            "summary": (f"You're a {niche} creator making content for {audience}. What sets you apart is "
+                        f"{known.lower()} — you'd rather be specific and right than loud and vague. "
+                        f"Marque's read: your best content happens when you take a clear stance and back it "
+                        f"with something only you could know."),
+            "traits": [niche.split()[0].title() if niche else "Creator", "Specific over vague",
+                       "Receipts over hype", "Consistency-first"],
+            "working_on": working}
+
+
+# ---------------------------------------------------------------------------
+# Performance summary — last-30-days aggregates for the Performance tab
+# ---------------------------------------------------------------------------
+
+@app.get("/v1/performance/summary")
+async def performance_summary(creator_id: str = "default", days: int = 30):
+    days = max(7, min(90, days))
+    settled = [(pid, p) for pid, p in _post_registry.items()
+               if p.get("creator_id") == creator_id and p.get("settled") and p.get("metrics")]
+    if settled:
+        totals = {"views": 0, "likes": 0, "follows_gained": 0, "posts": len(settled)}
+        platforms: dict[str, dict] = {}
+        best = None
+        fmt_mix: dict[str, int] = {}
+        for pid, p in settled:
+            m = p["metrics"]
+            totals["views"] += m.get("views", 0)
+            totals["likes"] += m.get("likes", 0)
+            totals["follows_gained"] += m.get("follows_gained", 0)
+            plat = p.get("platform", "instagram")
+            ps = platforms.setdefault(plat, {"views": 0, "likes": 0, "follows_gained": 0, "posts": 0})
+            ps["views"] += m.get("views", 0); ps["likes"] += m.get("likes", 0)
+            ps["follows_gained"] += m.get("follows_gained", 0); ps["posts"] += 1
+            fmt = p.get("format_id") or "other"
+            fmt_mix[fmt] = fmt_mix.get(fmt, 0) + 1
+            if best is None or m.get("views", 0) > best["views"]:
+                best = {"post_id": pid, "views": m.get("views", 0), "likes": m.get("likes", 0),
+                        "format_id": fmt, "platform": plat}
+        eng = round((totals["likes"] / max(totals["views"], 1)) * 100, 1)
+        return {"mode": "live", "days": days, "totals": {**totals, "engagement_rate": eng},
+                "platforms": platforms, "daily": [],
+                "best_post": best, "format_mix": [{"format": k, "count": v} for k, v in
+                                                  sorted(fmt_mix.items(), key=lambda x: -x[1])]}
+    # Deterministic mock series (seeded by creator_id) so the UI charts something believable
+    rng = random.Random(creator_id)
+    base = rng.randint(300, 900)
+    daily = []
+    tv = tl = 0
+    for i in range(days):
+        growth = 1.0 + (i / days) * rng.uniform(0.5, 1.2)
+        spike = rng.choice([1, 1, 1, 1, 2.6]) if i % 7 in (2, 5) else 1
+        views = int(base * growth * spike * rng.uniform(0.7, 1.3))
+        likes = int(views * rng.uniform(0.06, 0.11))
+        daily.append({"day": i, "views": views, "likes": likes})
+        tv += views; tl += likes
+    ig_share = rng.uniform(0.45, 0.65)
+    follows = int(tv * 0.004)
+    return {"mode": "mock", "days": days,
+            "totals": {"views": tv, "likes": tl, "follows_gained": follows, "posts": days // 3,
+                       "engagement_rate": round(tl / max(tv, 1) * 100, 1)},
+            "platforms": {
+                "instagram": {"views": int(tv * ig_share), "likes": int(tl * ig_share),
+                              "follows_gained": int(follows * ig_share), "posts": days // 6},
+                "tiktok": {"views": int(tv * (1 - ig_share)), "likes": int(tl * (1 - ig_share)),
+                           "follows_gained": int(follows * (1 - ig_share)), "posts": days // 6},
+            },
+            "daily": daily,
+            "best_post": {"post_id": "", "views": max(d["views"] for d in daily) * 3,
+                          "likes": max(d["likes"] for d in daily) * 3,
+                          "format_id": "myth-buster", "platform": "tiktok"},
+            "format_mix": [{"format": "myth-buster", "count": 4}, {"format": "listicle", "count": 3},
+                           {"format": "pov-story", "count": 2}, {"format": "faceless", "count": 1}]}

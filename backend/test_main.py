@@ -262,3 +262,120 @@ def test_tts_mock_when_keyless():
 
 def test_tts_empty_text_rejected():
     assert client.post("/v1/tts", json={"text": "  "}).status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# V3: feed / reels / mimic / analyze-video / summaries / edit prefs
+# ---------------------------------------------------------------------------
+
+def test_reels_niche_and_pagination():
+    b = client.get("/v1/reels", params={"niche": "sourdough baking", "cursor": 0}).json()
+    assert b["reels"] and len(b["reels"]) <= 6
+    assert all({"id", "creator_handle", "hook_text", "transcript", "why_trending", "format_id"} <= set(r)
+               for r in b["reels"])
+    assert "sourdough" in json.dumps(b["reels"]).lower()
+    # paginate to exhaustion
+    cursor, pages = b["next_cursor"], 1
+    while cursor is not None and pages < 10:
+        b = client.get("/v1/reels", params={"niche": "sourdough baking", "cursor": cursor}).json()
+        cursor = b["next_cursor"]
+        pages += 1
+    assert cursor is None
+
+
+def test_reels_watched_creators_first():
+    b = client.get("/v1/reels", params={"niche": "fitness", "watched": "@bigcoach,@lift_lisa"}).json()
+    handles = [r["creator_handle"] for r in b["reels"]]
+    assert "bigcoach" in handles[:4]
+    assert b["reels"][0]["from_watched"] is True
+
+
+def test_feed_mixed_items():
+    b = client.get("/v1/feed", params={"niche": "fitness", "styles": "talking_head,faceless", "cursor": 0}).json()
+    types = [i["type"] for i in b["items"]]
+    assert "script" in types and "reel" in types and "trend" in types
+    # scripts respect the styles filter
+    for i in b["items"]:
+        if i["type"] == "script":
+            assert i["script"]["style"] in ("talking_head", "faceless")
+    assert b["next_cursor"] == 1
+
+
+def test_mimic_returns_script_with_provenance():
+    reel = client.get("/v1/reels", params={"niche": "fitness"}).json()["reels"][0]
+    b = client.post("/v1/mimic", json={"reel": reel, "brand": {"niche": "personal finance"}}).json()
+    s = b["script"]
+    assert {"hook", "body", "cta", "formatId", "style"} <= set(s)
+    assert "finance" in json.dumps(s).lower()
+    assert b["mimicked_from"]["creator_handle"] == reel["creator_handle"]
+
+
+def test_analyze_video_link():
+    b = client.post("/v1/analyze-video", json={
+        "url": "https://www.tiktok.com/@someone/video/123", "brand": {"niche": "fitness"}}).json()
+    assert b["platform"] == "tiktok"
+    assert b["hook_analysis"] and b["why_it_works"]
+    assert len(b["structure_beats"]) >= 3
+    assert {"hook", "body"} <= set(b["your_version"])
+
+
+def test_brand_summary():
+    b = client.post("/v1/brand-summary", json={
+        "brand": {"niche": "fitness coaching", "audience": "busy dads", "known_for": "no-nonsense plans"},
+        "memory": {"angle": "Tough love for busy dads"}}).json()
+    assert b["summary"] and "fitness" in b["summary"].lower()
+    assert len(b["traits"]) >= 3
+    assert "tough love" in b["working_on"].lower()
+
+
+def test_performance_summary_mock_series():
+    b = client.get("/v1/performance/summary", params={"creator_id": "fresh-creator", "days": 30}).json()
+    assert b["days"] == 30
+    assert len(b["daily"]) == 30
+    assert {"instagram", "tiktok"} <= set(b["platforms"])
+    assert b["totals"]["views"] > 0
+    # deterministic: same creator seeds the same series
+    b2 = client.get("/v1/performance/summary", params={"creator_id": "fresh-creator", "days": 30}).json()
+    assert b2["totals"]["views"] == b["totals"]["views"]
+
+
+def test_performance_summary_real_aggregation():
+    client.post("/v1/posts/register", json={"post_id": "perf-1", "creator_id": "perf-tester",
+                                            "platform": "tiktok", "format_id": "listicle"})
+    client.post("/v1/metrics/ingest", json={"post_id": "perf-1", "creator_id": "perf-tester",
+                                            "views": 9000, "likes": 700, "reach": 8000,
+                                            "avg_watch_pct": 0.6, "follows_gained": 45})
+    b = client.get("/v1/performance/summary", params={"creator_id": "perf-tester"}).json()
+    assert b["mode"] == "live"
+    assert b["totals"]["views"] == 9000
+    assert b["platforms"]["tiktok"]["posts"] == 1
+    assert b["best_post"]["views"] == 9000
+
+
+def test_edit_prefs_threading():
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/f.mov", "formats": ["myth-buster"], "style": "talking_head",
+        "script": {"hook": "Stop doing this", "body": "Here is why.", "cta": "Follow.", "formatId": "myth-buster"},
+        "edit_prefs": {"auto_captions": False, "filler_trim": "off", "caption_style": "karaoke"},
+    })
+    job_id = r.json()["job_id"]
+    job = client.get(f"/v1/clips/{job_id}").json()
+    edl = job["edl"]
+    assert edl["captions"] == []          # captions off honored
+    assert edl["drops"] == []             # filler trim off honored
+
+
+def test_edit_prefs_defaults_preserved():
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/f.mov", "formats": ["myth-buster"], "style": "talking_head",
+        "script": {"hook": "Stop doing this now friends", "body": "Here is why.", "cta": "Follow.",
+                   "formatId": "myth-buster"},
+    })
+    edl = client.get(f"/v1/clips/{r.json()['job_id']}").json()["edl"]
+    assert edl["captions"]                # defaults keep captions
+    assert edl["drops"]                   # defaults keep filler trimming
+
+
+def test_trends_richer():
+    t = client.get("/v1/trends", params={"niche": "fitness"}).json()["trends"]
+    assert len(t) >= 5
