@@ -382,7 +382,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         ]
         body["messages"] = messages.suffix(20).map { ["role": $0.role.rawValue, "content": $0.content] }
         guard let data = await post("/v1/converse", body),
-              let r = try? JSONDecoder().decode(ConverseResp.self, from: data) else { return nil }
+              let r = try? JSONDecoder().decode(ConverseResp.self, from: data) else {
+            return await fallback.converse(mode: mode, messages: messages, brand: brand, memory: memory)
+        }
         note(r.mode)
         let updates = (r.memory_updates ?? []).map { MemoryUpdate(op: $0.op, field: $0.field, value: $0.value) }
         var scripts: [Script]? = nil
@@ -513,7 +515,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                      "likes": reelItem.likes, "format_id": reelItem.formatId, "style": reelItem.style],
         ]
         guard let data = await post("/v1/mimic", body),
-              let r = try? JSONDecoder().decode(MimicResp.self, from: data) else { return nil }
+              let r = try? JSONDecoder().decode(MimicResp.self, from: data) else {
+            return await fallback.mimic(reelItem: reelItem, brand: brand, memory: memory)
+        }
         note(r.mode)
         let style = VideoStyle(rawValue: r.script.style ?? "") ?? .talkingHead
         let s = script(r.script, pillar: "Mimic: @\(reelItem.creatorHandle)", style: style)
@@ -533,7 +537,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let body: [String: Any] = ["url": url, "creator_id": creatorId,
                                    "brand": brandBody(brand), "memory": memory.asDictionary]
         guard let data = await post("/v1/analyze-video", body),
-              let r = try? JSONDecoder().decode(AnalyzeVideoResp.self, from: data) else { return nil }
+              let r = try? JSONDecoder().decode(AnalyzeVideoResp.self, from: data) else {
+            return await fallback.analyzeVideo(url: url, brand: brand, memory: memory)
+        }
         note(r.mode)
         var version: Script? = nil
         if let dto = r.your_version {

@@ -236,6 +236,106 @@ struct MockLLMRouter: LLMRouting {
         try? await Task.sleep(nanoseconds: 300_000_000)
         return "Your contrarian hooks are outperforming. Lean into myth-busting this week, and make two more in whichever format spiked."
     }
+
+    // MARK: - V3: Conversation / mimic / video-analysis fallbacks (not part of LLMRouting —
+    // BackendClient calls these directly so Chat/Home never dead-end offline, mirroring the
+    // backend's own mock_converse / _mock_mimic tone.)
+
+    func converse(mode: String, messages: [ChatMessage], brand: BrandGraph,
+                  memory: CreatorMemory) async -> BackendClient.ConverseResult {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        let lastUser = messages.last(where: { $0.role == .user })?.content ?? ""
+        let lower = lastUser.lowercased()
+
+        var updates: [MemoryUpdate] = []
+        var intent = "none"
+        var scripts: [Script]? = nil
+        var plan: DayPlan? = nil
+        var reply: String
+        var chips = ["Write me a script", "Build my day", "What should I post today?"]
+
+        if lower.contains("plan") || lower.contains("day") || lower.contains("schedule") {
+            intent = "day_plan"
+            plan = DayPlan(blocks: [
+                DayPlanBlock(time: "Morning", action: "Film", detail: "Record today's script while your energy's fresh."),
+                DayPlanBlock(time: "Afternoon", action: "Edit", detail: "Submit for AI editing — captions and trim happen automatically."),
+                DayPlanBlock(time: "Evening", action: "Post", detail: "Schedule for your best posting window."),
+            ])
+            reply = mode == "voice"
+                ? "Here's your day: film this morning while you're fresh, submit for editing this afternoon, and schedule tonight."
+                : "Here's a simple shape for today:\n\n1. **Film** this morning while you're fresh.\n2. **Submit for editing** — captions and trim happen automatically.\n3. **Schedule** for your best posting window."
+            chips = ["Show me a script", "Change the plan", "What's my best time to post?"]
+        } else if lower.contains("script") || lower.contains("write") || lower.contains("idea") || lower.contains("post today") {
+            intent = "generate_scripts"
+            let pillar = Pillar(name: "From chat", summary: "", angle: "",
+                                exampleTopics: [], weight: 1, colorHex: Catalog.pillarColors[0])
+            let style = brand.preferredStyles.first ?? .talkingHead
+            scripts = await generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: "", style: style)
+            let top = topic(brand, pillar)
+            reply = mode == "voice"
+                ? "Wrote you one on \(top) — check your queue when you're ready to film."
+                : "Wrote you a script on \(top). It's saved to your Film queue whenever you're ready."
+            chips = ["Give me another", "Make it shorter", "Build my day"]
+        } else {
+            reply = mode == "voice"
+                ? "Got it — noted. Tell me more whenever something's on your mind, and I'll fold it into your scripts."
+                : "Got it — noted. The more you tell me like this, the sharper your scripts get. Anything you want me to turn into a post?"
+            if !lastUser.isEmpty {
+                let trimmed = lastUser.count > 140 ? String(lastUser.prefix(140)) + "…" : lastUser
+                updates.append(MemoryUpdate(op: "add", field: "ideas", value: trimmed))
+            }
+        }
+
+        return BackendClient.ConverseResult(mode: "mock", reply: reply, memoryUpdates: updates,
+                                            intent: intent, scripts: scripts, plan: plan, chips: chips)
+    }
+
+    func mimic(reelItem: ReelItem, brand: BrandGraph, memory: CreatorMemory) async -> (script: Script, from: String) {
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        let niche = brand.niche.isEmpty ? "your niche" : brand.niche
+        let style = VideoStyle(rawValue: reelItem.style) ?? .talkingHead
+        let fmt = Catalog.format(reelItem.formatId)
+        let salt = seed(reelItem.id + "mimic")
+        let hook = Hook(text: "Everyone in \(niche) gets this wrong — here's the fix.",
+                        signal: .contrarian, strength: strength(.contrarian, brand: brand, salt: salt))
+        let body = "Same skeleton as @\(reelItem.creatorHandle)'s take, your substance: open on the boldest claim you can defend about \(niche). Walk the same beats — but every example, number, and story is yours."
+        let s = Script(pillarName: "Mimic: @\(reelItem.creatorHandle)",
+                       title: "Your version of @\(reelItem.creatorHandle)'s hit",
+                       summary: "Same structure, your \(niche) substance.",
+                       style: style.rawValue, formatId: fmt.id,
+                       hook: hook, altHooks: [], body: body, cta: ctaLine(for: brand.goal),
+                       shotPlan: shotPlan(for: fmt), targetSeconds: fmt.targetSeconds,
+                       predictedScore: max(60, min(95, 74 + Int(salt % 12))))
+        return (s, "@\(reelItem.creatorHandle)")
+    }
+
+    func analyzeVideo(url: String, brand: BrandGraph, memory: CreatorMemory) async -> VideoAnalysis {
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        let niche = brand.niche.isEmpty ? "your niche" : brand.niche
+        let platform = url.contains("tiktok") ? "tiktok" : url.contains("instagram") ? "instagram" : "video"
+        let placeholder = ReelItem(id: "link", creatorHandle: "this video", platform: platform,
+                                   title: "", hookText: "", transcript: "",
+                                   formatId: "myth-buster", style: "talking_head")
+        let (version, _) = await mimic(reelItem: placeholder, brand: brand, memory: memory)
+        return VideoAnalysis(
+            url: url, platform: platform,
+            transcript: "Hook: a bold claim delivered in the first second, mirrored in on-screen text. Beat 2: the creator stakes credibility with one specific number. Beat 3: quick visual proof — the pattern is shown, not described. Beat 4: the reframe — why everyone reads this wrong. Close: a single takeaway line and a one-word comment prompt.",
+            hookAnalysis: "The hook lands a bold claim inside the first second and mirrors it in on-screen text — a double pattern-interrupt that stops both sound-on and sound-off scrollers.",
+            structureBeats: [
+                "Bold claim + on-screen text (0–1s)",
+                "One specific number for credibility",
+                "Visual proof, not narration",
+                "The reframe — why everyone reads this wrong",
+                "One-line takeaway + comment prompt",
+            ],
+            whyItWorks: "Every beat earns the next second: specificity builds trust, the proof is shown rather than told, and the loop opened in the hook only closes on the final line — which is what holds retention to the end.",
+            suggestions: [
+                "Reuse this skeleton for your next \(niche) post",
+                "Mirror your hook in on-screen text",
+                "End on a one-word comment prompt to drive replies",
+            ],
+            yourVersion: version)
+    }
 }
 
 // MARK: - Mock clip engine
