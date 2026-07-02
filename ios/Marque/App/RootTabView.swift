@@ -11,23 +11,23 @@ struct RootTabView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if !router.hideTabBar {
                     MarqueTabBar(selected: $router.selectedTab) {
-                        router.showCreate = true
+                        router.showFilm = true
                     }
                 }
             }
             .onChange(of: router.selectedTab) { _, _ in router.hideTabBar = false }
             .background(Palette.surface.ignoresSafeArea())
             .sheet(isPresented: $store.showCelebration) { CelebrationView() }
-            .fullScreenCover(isPresented: $router.showCreate) { NavigationStack { StudioView() } }
+            .fullScreenCover(isPresented: $router.showFilm) { NavigationStack { FilmView() } }
     }
 
     @ViewBuilder
     private func content(for tab: AppTab) -> some View {
         switch tab {
-        case .today: NavigationStack { TodayView() }
-        case .queue: NavigationStack { QueueView() }
+        case .home: NavigationStack { HomeView() }
+        case .chat: NavigationStack { ChatView() }
         case .library: NavigationStack { LibraryView() }
-        case .you: NavigationStack { YouView() }
+        case .performance: NavigationStack { PerformanceView() }
         }
     }
 }

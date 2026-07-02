@@ -3,7 +3,7 @@ import SwiftUI
 // Custom floating tab bar — 4 verb-tabs + a raised center Create FAB.
 // Labels kept as text so Maestro taps by name.
 // Center gap is a FIXED-width slot (not a flexible spacer) so the FAB always lands dead-center
-// regardless of how the flanking labels ("Today"/"Calendar" vs "Library"/"Coach") measure —
+// regardless of how the flanking labels ("Home"/"Chat" vs "Library"/"Performance") measure —
 // two flexible items on each side of a fixed gap keeps it symmetric at any bar width.
 struct MarqueTabBar: View {
     @Binding var selected: AppTab
@@ -11,13 +11,13 @@ struct MarqueTabBar: View {
     @State private var createTaps = 0
 
     private let leftItems: [(tab: AppTab, label: String, icon: String)] = [
-        (.today, "Today", "sun.max"),
-        (.queue, "Queue", "calendar"),
+        (.home, "Home", "sun.max"),
+        (.chat, "Chat", "bubble.left.and.text.bubble.right"),
     ]
 
     private let rightItems: [(tab: AppTab, label: String, icon: String)] = [
         (.library, "Library", "rectangle.stack"),
-        (.you, "You", "person.circle"),
+        (.performance, "Performance", "chart.bar"),
     ]
 
     // NOTE: safeAreaInset's reported size does NOT reserve room for content rendered outside its
@@ -58,7 +58,7 @@ struct MarqueTabBar: View {
             )
             .shadow(color: .black.opacity(0.10), radius: 22, x: 0, y: 10)
 
-            // Center Create FAB — floats clearly above the bar, just kissing its top edge,
+            // Center Film FAB — floats clearly above the bar, just kissing its top edge,
             // liquid-glass tinted so it reads as one family with the frosted bar beneath it.
             Button {
                 createTaps += 1
@@ -72,7 +72,8 @@ struct MarqueTabBar: View {
                     .shadow(color: Palette.accent.opacity(0.42), radius: 16, x: 0, y: 8)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Studio")
+            .accessibilityLabel("Film")
+            .accessibilityIdentifier("film.open")
             .sensoryFeedback(.impact(weight: .medium), trigger: createTaps)
             .offset(y: fabOffset)
         }

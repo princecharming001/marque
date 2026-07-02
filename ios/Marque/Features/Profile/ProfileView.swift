@@ -1,14 +1,14 @@
 import SwiftUI
 
-struct YouView: View {
+// Profile — pushed from Home's top-right avatar (not a tab). Phase 10 completes:
+// AI brand summary card, formats hard-filter, creators-to-watch.
+struct ProfileView: View {
     @Environment(AppStore.self) private var store
     @State private var showSettings = false
     @State private var showBrandEditor = false
     @State private var showVoiceEditor = false
     @State private var showPillarsEditor = false
     @State private var showStyleEditor = false
-    @State private var showPaywall = false
-    @State private var showCoach = false
 
     private var account: ConnectedAccount? { store.brand.connectedAccounts.first }
     private var displayName: String { account?.displayName ?? account?.handle ?? "Creator" }
@@ -32,28 +32,36 @@ struct YouView: View {
                                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         }
                     }
-                    YouStatStrip(store: store)
                 }
                 .padding(.vertical, Space.xl)
                 .padding(.horizontal, Space.screenH)
                 .staggerReveal(0)
+
+                // Brand summary — Phase 10 replaces with the AI-written card
+                if let card = store.brandSummary {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "What Marque knows about you", accent: Palette.accent)
+                        Text(card.summary)
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .marqueCard()
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.bottom, Space.lg)
+                }
 
                 MarqueHairline()
 
                 // Brand group
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader("Brand")
-                    youRow(icon: "pencil", label: "Brand identity") { showBrandEditor = true }
+                    profileRow(icon: "pencil", label: "Brand identity") { showBrandEditor = true }
                     MarqueHairline().padding(.leading, 56)
-                    youRow(icon: "waveform", label: "Voice & tone") { showVoiceEditor = true }
+                    profileRow(icon: "waveform", label: "Voice & tone") { showVoiceEditor = true }
                     MarqueHairline().padding(.leading, 56)
-                    youRow(icon: "square.grid.2x2", label: "Content pillars") { showPillarsEditor = true }
+                    profileRow(icon: "square.grid.2x2", label: "Content pillars") { showPillarsEditor = true }
                     MarqueHairline().padding(.leading, 56)
-                    youRow(icon: "play.rectangle", label: "Video styles") { showStyleEditor = true }
-                    if let target = store.brand.weeklyTarget {
-                        MarqueHairline().padding(.leading, 56)
-                        youRow(icon: "calendar.badge.clock", label: "Weekly pace: \(target) posts/week") { showSettings = true }
-                    }
+                    profileRow(icon: "play.rectangle", label: "Your formats") { showStyleEditor = true }
                 }
                 .padding(.horizontal, Space.screenH)
                 .staggerReveal(1)
@@ -68,30 +76,18 @@ struct YouView: View {
                 }
                 .staggerReveal(2)
 
-                MarqueHairline()
-
-                // Performance + Pro
-                VStack(alignment: .leading, spacing: 0) {
-                    sectionHeader("Analytics")
-                    youRow(icon: "chart.bar", label: "Performance") { showCoach = true }
-                    MarqueHairline().padding(.leading, 56)
-                    youRow(icon: "star.fill", label: "Marque Pro", accent: true) { showPaywall = true }
-                }
-                .padding(.horizontal, Space.screenH)
-                .staggerReveal(3)
-
                 Spacer().frame(height: 120)
             }
         }
         .background(Palette.canvas.ignoresSafeArea())
-        .navigationTitle("You")
+        .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showSettings = true } label: {
                     Image(systemName: "gearshape").foregroundStyle(Palette.textSecondary)
                 }
-                .accessibilityIdentifier("you.settings")
+                .accessibilityIdentifier("profile.settings")
             }
         }
         .sheet(isPresented: $showSettings) { SettingsView() }
@@ -99,8 +95,13 @@ struct YouView: View {
         .sheet(isPresented: $showVoiceEditor) { VoiceEditorSheet(store: store) }
         .sheet(isPresented: $showPillarsEditor) { PillarsEditorSheet(store: store) }
         .sheet(isPresented: $showStyleEditor) { StyleEditorSheet(store: store) }
-        .sheet(isPresented: $showPaywall) { PaywallView() }
-        .sheet(isPresented: $showCoach) { NavigationStack { CoachView() } }
+        .task {
+            if store.brandSummary == nil,
+               let card = await store.backend.fetchBrandSummary(brand: store.brand, memory: store.memory) {
+                store.brandSummary = card
+                store.save()
+            }
+        }
     }
 
     private var avatarHero: some View {
@@ -129,10 +130,11 @@ struct YouView: View {
         Text(title.uppercased())
             .font(AppFont.micro).tracking(Track.label)
             .foregroundStyle(Palette.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, Space.lg).padding(.bottom, Space.sm)
     }
 
-    private func youRow(icon: String, label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
+    private func profileRow(icon: String, label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: Space.md) {
                 Image(systemName: icon)
@@ -153,33 +155,6 @@ struct YouView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-    }
-}
-
-struct YouStatStrip: View {
-    let store: AppStore
-    var body: some View {
-        HStack(spacing: 0) {
-            statCell("\(store.streak)", "Sessions")
-            Divider().frame(height: 28)
-            statCell("\(store.schedule.count)", "Scheduled")
-            Divider().frame(height: 28)
-            statCell("\(store.weekDone)/\(store.weekGoal)", "This week")
-        }
-        .padding(.vertical, Space.sm)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
-    }
-
-    private func statCell(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value).font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-            Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Space.xs)
     }
 }
 
@@ -226,13 +201,16 @@ struct BrandEditorSheet: View {
         VStack(alignment: .leading, spacing: Space.xs) {
             Text(label).font(AppFont.caption).tracking(Track.label).foregroundStyle(Palette.textTertiary)
             TextField(placeholder, text: text).marqueField()
+                .accessibilityIdentifier(label == "Known for" ? "profile.knownFor" : "profile.\(label.lowercased().replacingOccurrences(of: " ", with: ""))")
         }
     }
 
     private func save() {
         var b = store.brand
         b.niche = niche; b.whatYouDo = whatYouDo; b.audience = audience; b.knownFor = knownFor
-        store.brand = b; store.save(); dismiss()
+        store.brand = b
+        store.brandSummary = nil    // stale — Profile refetches on next open
+        store.save(); dismiss()
     }
 }
 
@@ -324,12 +302,15 @@ struct StyleEditorSheet: View {
             @Bindable var store = store
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.md) {
+                    Text("Only these formats are suggested across the app — your feed, your scripts, your mimics.")
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
                     StyleSelectionView(selected: $store.brand.preferredStyles)
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Video styles")
+            .navigationTitle("Your formats")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) {
                 Button("Done") { store.save(); dismiss() }

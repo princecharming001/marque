@@ -40,7 +40,7 @@ struct ClipsSection: View {
                 EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
                                message: "Record a script in Studio and your clips will land here.",
                                graphic: "ClipsIcon")
-                Button { router.showCreate = true } label: {
+                Button { router.showFilm = true } label: {
                     Label("Create your first clip", systemImage: "video.badge.plus")
                         .font(AppFont.headline).foregroundStyle(Palette.onInk)
                         .frame(maxWidth: .infinity).frame(height: 52)
@@ -238,7 +238,7 @@ struct ClipDetailSheet: View {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
                         store.updateClipCaption(clip, caption: caption)
                         router.pendingScheduleClipId = clip.id
-                        dismiss(); router.selectedTab = .queue
+                        dismiss(); router.selectedTab = .performance
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)

@@ -151,6 +151,8 @@ final class AppStore {
 
     func completeOnboarding() {
         if pillars.isEmpty { derivePillars() }
+        // The aha scripts become the first entries in the Film queue.
+        for s in scripts.prefix(3) { readiedScripts.append(SavedScript(script: s, source: .onboarding)) }
         hasOnboarded = true
         save()
     }

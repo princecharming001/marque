@@ -121,18 +121,24 @@ name: Marque — full core loop
 - tapOn:
     id: "paywall.devContinue"
 
-# Into the app
-- assertVisible: "Today"
-- tapOn: "Studio"
-- assertVisible: "Your pillars"
-- assertVisible: "Ready to record"
-- takeScreenshot: /Users/home/Marque/.shots/live-studio
+# Into the app — Home with the voice bubble
+- extendedWaitUntil:
+    visible:
+      id: "home.voiceBubble"
+    timeout: 6000
+- takeScreenshot: /Users/home/Marque/.shots/v3-home
 
-# Script reader → Hook Lab → record
+# Film flow: FAB → readied script (seeded by onboarding) → reader → record
 - tapOn:
-    id: "studio.scriptRow"
+    id: "film.open"
+- extendedWaitUntil:
+    visible:
+      id: "film.readied"
+    timeout: 6000
+- takeScreenshot: /Users/home/Marque/.shots/v3-film-queue
 - tapOn:
-    id: "studio.openScript"
+    id: "film.readied"
+    index: 0
 - assertVisible: "Shot plan"
 - tapOn:
     id: "script.record"
@@ -158,23 +164,21 @@ name: Marque — full core loop
     timeout: 14000
 - tapOn:
     id: "celebration.dismiss"
+- tapOn: "Library"
 - extendedWaitUntil:
-    visible: "Library"
+    visible: "YOUR CREATIVE VAULT"
     timeout: 6000
 - takeScreenshot: /Users/home/Marque/.shots/flow-library
 
-# Schedule a clip onto the week (Queue tab, was Calendar)
-- tapOn: "Queue"
-- takeScreenshot: /Users/home/Marque/.shots/after-queue-tap
-- extendedWaitUntil:
-    visible: "Schedule a clip"
-    timeout: 6000
-
-# Coach via You tab → Performance row
-- tapOn: "You"
-- assertVisible: "Performance"
+# Performance tab: queue + 30-day insights
 - tapOn: "Performance"
 - extendedWaitUntil:
-    visible: "Trending in your niche"
+    visible: "Coming up"
     timeout: 6000
-- takeScreenshot: /Users/home/Marque/.shots/flow-coach
+- takeScreenshot: /Users/home/Marque/.shots/v3-performance
+
+# Chat tab reachable
+- tapOn: "Chat"
+- extendedWaitUntil:
+    visible: "What can I help with?"
+    timeout: 6000
