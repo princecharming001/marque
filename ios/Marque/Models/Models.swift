@@ -80,6 +80,7 @@ struct BrandGraph: Codable, Hashable {
     var biggestBlocker: CreatorBlocker? = nil
     var cameraComfort: CameraComfort? = nil
     var weeklyTarget: Int? = nil
+    var watchedCreators: [WatchedCreator]? = nil   // ≤2 "creators to watch" (Profile)
 }
 
 /// A linked Instagram/TikTok account, verified by fetching the real public profile.
@@ -206,7 +207,7 @@ struct Script: Codable, Hashable, Identifiable {
     var createdAt: Date = Date()
 }
 
-enum ClipStatus: String, Codable { case rendering, ready, scheduled, posted, failed }
+enum ClipStatus: String, Codable { case draft, rendering, ready, scheduled, posted, failed }
 
 struct Clip: Codable, Hashable, Identifiable {
     var id = UUID()
@@ -340,6 +341,201 @@ struct TeardownCard: Codable, Hashable, Identifiable {
     var headline: String
     var detail: String
     var liftPercent: Int
+}
+
+// MARK: - V3: Conversation (voice bubble + chat share one brain)
+
+enum ChatRole: String, Codable { case user, assistant }
+
+/// Rich message kinds: plain text, or a card payload attached by an intent.
+enum ChatMessageKind: String, Codable {
+    case text, scriptCard, videoAnalysis, dayPlan
+}
+
+struct ChatMessage: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var role: ChatRole
+    var content: String
+    var kind: ChatMessageKind = .text
+    var scripts: [Script]? = nil            // kind == .scriptCard
+    var analysis: VideoAnalysis? = nil      // kind == .videoAnalysis
+    var plan: DayPlan? = nil                // kind == .dayPlan
+    var createdAt: Date = Date()
+}
+
+struct Conversation: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var title: String = "New chat"
+    var messages: [ChatMessage] = []
+    var isVoiceNotes: Bool = false          // the pinned "Voice notes" thread from the Home bubble
+    var updatedAt: Date = Date()
+}
+
+/// The client-held creator memory the AI builds from every conversation.
+struct CreatorMemory: Codable, Hashable {
+    var facts: [String] = []
+    var perspective: [String] = []
+    var angle: String = ""
+    var ideas: [String] = []
+    var preferences: [String] = []
+    var updatedAt: Date = Date()
+
+    var isEmpty: Bool {
+        facts.isEmpty && perspective.isEmpty && angle.isEmpty && ideas.isEmpty && preferences.isEmpty
+    }
+
+    /// Apply server-emitted update ops with per-field caps (oldest evicted first).
+    mutating func apply(_ updates: [MemoryUpdate]) {
+        for u in updates {
+            switch (u.op, u.field) {
+            case ("set", "angle"): angle = u.value
+            case ("add", "facts"): append(&facts, u.value, cap: 20)
+            case ("add", "perspective"): append(&perspective, u.value, cap: 15)
+            case ("add", "ideas"): append(&ideas, u.value, cap: 30)
+            case ("add", "preferences"): append(&preferences, u.value, cap: 15)
+            case ("remove", "facts"): facts.removeAll { $0 == u.value }
+            case ("remove", "perspective"): perspective.removeAll { $0 == u.value }
+            case ("remove", "ideas"): ideas.removeAll { $0 == u.value }
+            case ("remove", "preferences"): preferences.removeAll { $0 == u.value }
+            default: break
+            }
+        }
+        if !updates.isEmpty { updatedAt = Date() }
+    }
+
+    private func append(_ list: inout [String], _ value: String, cap: Int) {
+        guard !list.contains(value) else { return }
+        list.append(value)
+        if list.count > cap { list.removeFirst(list.count - cap) }
+    }
+
+    var asDictionary: [String: Any] {
+        ["facts": facts, "perspective": perspective, "angle": angle,
+         "ideas": ideas, "preferences": preferences]
+    }
+}
+
+struct MemoryUpdate: Codable, Hashable {
+    var op: String      // add | remove | set
+    var field: String   // facts | perspective | ideas | preferences | angle
+    var value: String
+}
+
+struct DayPlanBlock: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var time: String
+    var action: String
+    var detail: String
+    private enum CodingKeys: String, CodingKey { case time, action, detail }
+}
+
+struct DayPlan: Codable, Hashable {
+    var blocks: [DayPlanBlock] = []
+}
+
+/// Result of pasting a video link into chat.
+struct VideoAnalysis: Codable, Hashable {
+    var url: String = ""
+    var platform: String = ""
+    var transcript: String = ""
+    var hookAnalysis: String = ""
+    var structureBeats: [String] = []
+    var whyItWorks: String = ""
+    var suggestions: [String] = []
+    var yourVersion: Script? = nil
+}
+
+// MARK: - V3: Home feed (daily scripts + influencer reels to mimic)
+
+struct ReelItem: Codable, Hashable, Identifiable {
+    var id: String
+    var creatorHandle: String
+    var platform: String            // instagram | tiktok
+    var title: String
+    var hookText: String
+    var transcript: String
+    var thumbnailURL: String = ""
+    var videoURL: String = ""
+    var views: Int = 0
+    var likes: Int = 0
+    var whyTrending: String = ""
+    var formatId: String = "myth-buster"
+    var style: String = "talking_head"
+    var fromWatched: Bool = false
+}
+
+enum SavedScriptSource: String, Codable {
+    case daily, mimic, chat, custom, onboarding
+    var label: String {
+        switch self {
+        case .daily: return "Daily pick"
+        case .mimic: return "Mimic"
+        case .chat: return "From chat"
+        case .custom: return "Yours"
+        case .onboarding: return "Starter"
+        }
+    }
+}
+
+/// A script the creator readied for filming (the Film-flow queue).
+struct SavedScript: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var script: Script
+    var source: SavedScriptSource = .daily
+    var mimickedFrom: String = ""   // "@handle" provenance when source == .mimic
+    var addedAt: Date = Date()
+}
+
+// MARK: - V3: Editing preferences (Settings → threaded into every AI edit)
+
+enum CaptionStyle: String, CaseIterable, Codable, Identifiable {
+    case clean, boldWord = "bold-word", karaoke
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .clean: return "Clean"
+        case .boldWord: return "Bold word"
+        case .karaoke: return "Karaoke"
+        }
+    }
+}
+
+enum FillerTrim: String, CaseIterable, Codable, Identifiable {
+    case off, standard, aggressive
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .off: return "Off"
+        case .standard: return "Standard"
+        case .aggressive: return "Aggressive"
+        }
+    }
+}
+
+struct EditPrefs: Codable, Hashable {
+    var autoCaptions: Bool = true
+    var captionStyle: CaptionStyle = .clean
+    var fillerTrim: FillerTrim = .standard
+
+    var asDictionary: [String: Any] {
+        ["auto_captions": autoCaptions, "caption_style": captionStyle.rawValue,
+         "filler_trim": fillerTrim.rawValue]
+    }
+}
+
+/// One of the two "creators to watch" slots on the Profile.
+struct WatchedCreator: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var platform: SocialPlatform = .instagram
+    var handle: String = ""
+}
+
+/// The AI-written Profile hero card ("what Marque knows about you").
+struct BrandSummaryCard: Codable, Hashable {
+    var summary: String = ""
+    var traits: [String] = []
+    var workingOn: String = ""
+    var updatedAt: Date = Date()
 }
 
 // MARK: - Static catalogs

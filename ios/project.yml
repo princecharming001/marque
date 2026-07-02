@@ -37,6 +37,7 @@ targets:
         NSCameraUsageDescription: "Marque records talking-head video so the AI can edit it into clips."
         NSMicrophoneUsageDescription: "Marque records audio with your video so your clips have sound."
         NSPhotoLibraryUsageDescription: "Marque imports existing videos to repurpose into clips."
+        NSSpeechRecognitionUsageDescription: "Marque transcribes what you say to the voice assistant so it can build your content."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UIAppFonts:

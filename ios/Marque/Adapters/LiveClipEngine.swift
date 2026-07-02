@@ -70,6 +70,7 @@ extension BackendClient {
                 "formatId": script.formatId,
                 "shotPlan": script.shotPlan,
             ],
+            "edit_prefs": editPrefs,
         ]
         guard let data = await post("/v1/clips", body) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]

@@ -150,6 +150,7 @@ struct ClipGridCell: View {
     }
     private var statusLabel: String {
         switch clip.status {
+        case .draft:     return "DRAFT"
         case .ready:     return "READY"
         case .scheduled: return "SCHED"
         case .posted:    return "POSTED"
@@ -534,11 +535,12 @@ struct MediaEditSheet: View {
 }
 
 extension ClipStatus {
-    static var allOrder: [ClipStatus] { [.ready, .rendering, .scheduled, .posted, .failed] }
+    static var allOrder: [ClipStatus] { [.draft, .ready, .rendering, .scheduled, .posted, .failed] }
     var title: String {
         switch self {
+        case .draft: return "Drafts"
         case .ready: return "Ready"
-        case .rendering: return "Rendering"
+        case .rendering: return "Editing"
         case .scheduled: return "Scheduled"
         case .posted: return "Posted"
         case .failed: return "Needs attention"
@@ -546,7 +548,8 @@ extension ClipStatus {
     }
     var stageLabel: String {
         switch self {
-        case .rendering: return "Cutting…"
+        case .draft:     return "Draft"
+        case .rendering: return "Editing…"
         case .ready:     return "Ready"
         case .scheduled: return "Scheduled"
         case .posted:    return "Posted"
@@ -555,6 +558,7 @@ extension ClipStatus {
     }
     var railColor: Color {
         switch self {
+        case .draft:     return Palette.warning
         case .ready:     return Palette.accent
         case .rendering: return Palette.textTertiary
         case .scheduled: return Color(hex: 0x9B5CF6)
@@ -564,8 +568,9 @@ extension ClipStatus {
     }
     var whyLine: String {
         switch self {
+        case .draft:     return "Saved mid-take — finish it in Film"
         case .ready:     return "Ready to schedule"
-        case .rendering: return "Rendering your clip…"
+        case .rendering: return "The AI is editing your clip…"
         case .scheduled: return "Scheduled to post"
         case .posted:    return "Posted"
         case .failed:    return "Needs attention"

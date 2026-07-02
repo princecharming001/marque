@@ -8,6 +8,8 @@ import Foundation
 final class BackendClient: LLMRouting, @unchecked Sendable {
     private let fallback = MockLLMRouter()
     var token: String?               // Supabase JWT, attached once auth lands
+    var creatorId = "default"        // set by AuthManager on sign-in (scopes memory + learning)
+    var editPrefs: [String: Any] = [:]   // set by AppStore; threaded into every clip job
     private(set) var lastMode = "Mock"   // "Claude" once a live response comes back
 
     // MARK: HTTP
@@ -125,7 +127,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         body["style"] = style.rawValue
         body["count"] = count
         body["media_context"] = mediaContext
-        body["creator_id"] = "default"
+        body["creator_id"] = creatorId
         guard let data = await post("/v1/scripts", body),
               let r = try? JSONDecoder().decode(ScriptsResp.self, from: data), !r.scripts.isEmpty else {
             return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style)
@@ -340,6 +342,257 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         guard let data = await get("/v1/insights/learned"),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [:] }
         return json
+    }
+
+    // MARK: - V3: Conversation engine (voice bubble + chat)
+
+    struct ConverseResult {
+        let mode: String
+        let reply: String
+        let memoryUpdates: [MemoryUpdate]
+        let intent: String
+        let scripts: [Script]?
+        let plan: DayPlan?
+        let chips: [String]
+    }
+
+    private struct ConverseResp: Decodable {
+        let mode: String?
+        let reply: String
+        let memory_updates: [MemoryUpdateDTO]?
+        let intent: String?
+        let payload: PayloadDTO?
+        let suggested_chips: [String]?
+        struct MemoryUpdateDTO: Decodable { let op: String; let field: String; let value: String }
+        struct PayloadDTO: Decodable {
+            let scripts: [ScriptDTO]?
+            let plan: PlanDTO?
+            struct PlanDTO: Decodable { let blocks: [BlockDTO]? }
+            struct BlockDTO: Decodable { let time: String?; let action: String?; let detail: String? }
+        }
+    }
+
+    func converse(mode: String, messages: [ChatMessage], brand: BrandGraph,
+                  memory: CreatorMemory) async -> ConverseResult? {
+        var body: [String: Any] = [
+            "creator_id": creatorId,
+            "mode": mode,
+            "brand": brandBody(brand),
+            "memory": memory.asDictionary,
+        ]
+        body["messages"] = messages.suffix(20).map { ["role": $0.role.rawValue, "content": $0.content] }
+        guard let data = await post("/v1/converse", body),
+              let r = try? JSONDecoder().decode(ConverseResp.self, from: data) else { return nil }
+        note(r.mode)
+        let updates = (r.memory_updates ?? []).map { MemoryUpdate(op: $0.op, field: $0.field, value: $0.value) }
+        var scripts: [Script]? = nil
+        if let dtos = r.payload?.scripts, !dtos.isEmpty {
+            scripts = dtos.map { script($0, pillar: $0.title ?? "From chat", style: VideoStyle(rawValue: $0.style ?? "") ?? .talkingHead) }
+        }
+        var plan: DayPlan? = nil
+        if let blocks = r.payload?.plan?.blocks, !blocks.isEmpty {
+            plan = DayPlan(blocks: blocks.map { DayPlanBlock(time: $0.time ?? "", action: $0.action ?? "", detail: $0.detail ?? "") })
+        }
+        return ConverseResult(mode: r.mode ?? "mock", reply: r.reply, memoryUpdates: updates,
+                              intent: r.intent ?? "none", scripts: scripts, plan: plan,
+                              chips: r.suggested_chips ?? [])
+    }
+
+    /// ElevenLabs TTS via the backend. Returns mp3 bytes, or nil → caller uses AVSpeechSynthesizer.
+    func tts(text: String) async -> Data? {
+        guard let url = URL(string: AppConfig.backendBaseURL + "/v1/tts") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              http.value(forHTTPHeaderField: "Content-Type")?.contains("audio") == true else { return nil }
+        return data
+    }
+
+    // MARK: - V3: Daily feed + reels + mimic
+
+    enum FeedEntry {
+        case script(Script)
+        case reel(ReelItem)
+        case trend(TrendItem)
+    }
+
+    struct FeedPage {
+        let entries: [FeedEntry]
+        let nextCursor: Int?
+    }
+
+    private struct ReelDTO: Decodable {
+        let id: String; let creator_handle: String; let platform: String
+        let title: String; let hook_text: String; let transcript: String
+        let thumbnail_url: String?; let video_url: String?
+        let views: Int?; let likes: Int?; let why_trending: String?
+        let format_id: String?; let style: String?; let from_watched: Bool?
+    }
+    private struct TrendDTO: Decodable { let title: String; let why: String; let formatId: String? }
+    private struct FeedItemDTO: Decodable {
+        let type: String
+        let script: ScriptDTO?
+        let reel: ReelDTO?
+        let trend: TrendDTO?
+    }
+    private struct FeedResp: Decodable { let mode: String?; let items: [FeedItemDTO]; let next_cursor: Int? }
+    private struct ReelsResp: Decodable { let mode: String?; let reels: [ReelDTO]; let next_cursor: Int? }
+
+    private func reel(_ d: ReelDTO) -> ReelItem {
+        ReelItem(id: d.id, creatorHandle: d.creator_handle, platform: d.platform,
+                 title: d.title, hookText: d.hook_text, transcript: d.transcript,
+                 thumbnailURL: d.thumbnail_url ?? "", videoURL: d.video_url ?? "",
+                 views: d.views ?? 0, likes: d.likes ?? 0, whyTrending: d.why_trending ?? "",
+                 formatId: d.format_id ?? "myth-buster", style: d.style ?? "talking_head",
+                 fromWatched: d.from_watched ?? false)
+    }
+
+    private func watchedParam(_ brand: BrandGraph) -> String {
+        (brand.watchedCreators ?? []).map { $0.handle }.filter { !$0.isEmpty }.joined(separator: ",")
+    }
+
+    private func q(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+    }
+
+    func fetchFeed(brand: BrandGraph, cursor: Int) async -> FeedPage? {
+        let styles = brand.preferredStyles.map { $0.rawValue }.joined(separator: ",")
+        let path = "/v1/feed?creator_id=\(q(creatorId))&niche=\(q(brand.niche))"
+            + "&audience=\(q(brand.audience))&known_for=\(q(brand.knownFor))"
+            + "&goal=\(q(brand.goal.rawValue))&styles=\(q(styles))"
+            + "&watched=\(q(watchedParam(brand)))&cursor=\(cursor)"
+        guard let data = await get(path),
+              let r = try? JSONDecoder().decode(FeedResp.self, from: data) else { return nil }
+        note(r.mode)
+        let entries: [FeedEntry] = r.items.compactMap { item in
+            switch item.type {
+            case "script":
+                guard let dto = item.script else { return nil }
+                let style = VideoStyle(rawValue: dto.style ?? "") ?? .talkingHead
+                return .script(script(dto, pillar: dto.title ?? "Daily pick", style: style))
+            case "reel":
+                guard let dto = item.reel else { return nil }
+                return .reel(reel(dto))
+            case "trend":
+                guard let dto = item.trend else { return nil }
+                return .trend(TrendItem(title: dto.title, why: dto.why, formatId: dto.formatId ?? "myth-buster"))
+            default: return nil
+            }
+        }
+        return FeedPage(entries: entries, nextCursor: r.next_cursor)
+    }
+
+    func fetchReels(brand: BrandGraph, cursor: Int) async -> (reels: [ReelItem], nextCursor: Int?)? {
+        let niche = brand.niche.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let watched = watchedParam(brand).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        guard let data = await get("/v1/reels?niche=\(niche)&creator_id=\(creatorId)&watched=\(watched)&cursor=\(cursor)"),
+              let r = try? JSONDecoder().decode(ReelsResp.self, from: data) else { return nil }
+        return (r.reels.map(reel), r.next_cursor)
+    }
+
+    private struct MimicResp: Decodable {
+        let mode: String?
+        let script: ScriptDTO
+        let mimicked_from: ProvenanceDTO?
+        struct ProvenanceDTO: Decodable { let creator_handle: String?; let platform: String? }
+    }
+
+    func mimic(reelItem: ReelItem, brand: BrandGraph, memory: CreatorMemory) async -> (script: Script, from: String)? {
+        let body: [String: Any] = [
+            "creator_id": creatorId,
+            "brand": brandBody(brand),
+            "memory": memory.asDictionary,
+            "reel": ["id": reelItem.id, "creator_handle": reelItem.creatorHandle,
+                     "platform": reelItem.platform, "title": reelItem.title,
+                     "hook_text": reelItem.hookText, "transcript": reelItem.transcript,
+                     "why_trending": reelItem.whyTrending, "views": reelItem.views,
+                     "likes": reelItem.likes, "format_id": reelItem.formatId, "style": reelItem.style],
+        ]
+        guard let data = await post("/v1/mimic", body),
+              let r = try? JSONDecoder().decode(MimicResp.self, from: data) else { return nil }
+        note(r.mode)
+        let style = VideoStyle(rawValue: r.script.style ?? "") ?? .talkingHead
+        let s = script(r.script, pillar: "Mimic: @\(reelItem.creatorHandle)", style: style)
+        return (s, "@" + (r.mimicked_from?.creator_handle ?? reelItem.creatorHandle))
+    }
+
+    // MARK: - V3: Video-link analysis (chat)
+
+    private struct AnalyzeVideoResp: Decodable {
+        let mode: String?; let platform: String?; let transcript: String?
+        let hook_analysis: String?; let structure_beats: [String]?
+        let why_it_works: String?; let suggestions: [String]?
+        let your_version: ScriptDTO?
+    }
+
+    func analyzeVideo(url: String, brand: BrandGraph, memory: CreatorMemory) async -> VideoAnalysis? {
+        let body: [String: Any] = ["url": url, "creator_id": creatorId,
+                                   "brand": brandBody(brand), "memory": memory.asDictionary]
+        guard let data = await post("/v1/analyze-video", body),
+              let r = try? JSONDecoder().decode(AnalyzeVideoResp.self, from: data) else { return nil }
+        note(r.mode)
+        var version: Script? = nil
+        if let dto = r.your_version {
+            let style = VideoStyle(rawValue: dto.style ?? "") ?? .talkingHead
+            version = script(dto, pillar: "Your version", style: style)
+        }
+        return VideoAnalysis(url: url, platform: r.platform ?? "",
+                             transcript: r.transcript ?? "",
+                             hookAnalysis: r.hook_analysis ?? "",
+                             structureBeats: r.structure_beats ?? [],
+                             whyItWorks: r.why_it_works ?? "",
+                             suggestions: r.suggestions ?? [],
+                             yourVersion: version)
+    }
+
+    // MARK: - V3: Brand summary + performance summary
+
+    private struct BrandSummaryResp: Decodable {
+        let mode: String?; let summary: String; let traits: [String]?; let working_on: String?
+    }
+
+    func fetchBrandSummary(brand: BrandGraph, memory: CreatorMemory) async -> BrandSummaryCard? {
+        let body: [String: Any] = ["creator_id": creatorId,
+                                   "brand": brandBody(brand), "memory": memory.asDictionary]
+        guard let data = await post("/v1/brand-summary", body),
+              let r = try? JSONDecoder().decode(BrandSummaryResp.self, from: data) else { return nil }
+        note(r.mode)
+        return BrandSummaryCard(summary: r.summary, traits: r.traits ?? [],
+                                workingOn: r.working_on ?? "", updatedAt: Date())
+    }
+
+    struct PerformanceSummary: Decodable {
+        struct Totals: Decodable {
+            let views: Int; let likes: Int; let follows_gained: Int
+            let posts: Int; let engagement_rate: Double
+        }
+        struct PlatformStats: Decodable {
+            let views: Int; let likes: Int; let follows_gained: Int; let posts: Int
+        }
+        struct DailyPoint: Decodable { let day: Int; let views: Int; let likes: Int }
+        struct BestPost: Decodable {
+            let post_id: String?; let views: Int; let likes: Int
+            let format_id: String?; let platform: String?
+        }
+        struct FormatMix: Decodable { let format: String; let count: Int }
+        let mode: String?
+        let days: Int
+        let totals: Totals
+        let platforms: [String: PlatformStats]
+        let daily: [DailyPoint]
+        let best_post: BestPost?
+        let format_mix: [FormatMix]
+    }
+
+    func fetchPerformanceSummary(days: Int = 30) async -> PerformanceSummary? {
+        guard let data = await get("/v1/performance/summary?creator_id=\(creatorId)&days=\(days)"),
+              let r = try? JSONDecoder().decode(PerformanceSummary.self, from: data) else { return nil }
+        note(r.mode)
+        return r
     }
 
     func voiceOnboardingFinalize(niche: String, transcript: [[String: String]]) async -> BrandScanResult? {

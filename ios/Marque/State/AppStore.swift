@@ -18,6 +18,16 @@ final class AppStore {
     var hasOnboarded = false
     var streak = 0
 
+    // V3: conversation memory + readied scripts + chat + edit prefs
+    var memory = CreatorMemory()
+    var readiedScripts: [SavedScript] = []       // the Film-flow queue ("save for later")
+    var conversations: [Conversation] = []       // chat threads (incl. the pinned Voice notes)
+    var editPrefs = EditPrefs() { didSet { backend.editPrefs = editPrefs.asDictionary } }
+    var brandSummary: BrandSummaryCard? = nil    // cached Profile hero card
+
+    // V3: account layer (auth wall after onboarding)
+    let auth = AuthManager()
+
     // Transient
     var isGenerating = false
     var showCelebration = false
@@ -31,7 +41,8 @@ final class AppStore {
     var postsLearned: Int = 0
 
     // The AI brain lives in the backend; the app is a thin client (no vendor keys on device).
-    let backend = BackendClient()
+    // Shared instance so AuthManager's creator-id/token wiring reaches every call site.
+    let backend = BackendClient.shared
     var llm: LLMRouting { backend }
     var aiMode: String { backend.lastMode }
     // Live clip engine when the backend URL is configured, mock otherwise.
@@ -53,6 +64,7 @@ final class AppStore {
             UserDefaults.standard.removeObject(forKey: saveKey)
         }
         load()
+        backend.editPrefs = editPrefs.asDictionary
     }
 
     // MARK: Onboarding
@@ -527,12 +539,21 @@ final class AppStore {
         var clips: [Clip]; var footage: [Footage]; var media: [MediaAsset]
         var schedule: [ScheduledPost]; var teardowns: [TeardownCard]
         var hasOnboarded: Bool; var streak: Int
+        // V3 additions — Optional so pre-V3 blobs still decode (synthesized decodeIfPresent)
+        var memory: CreatorMemory? = nil
+        var readiedScripts: [SavedScript]? = nil
+        var conversations: [Conversation]? = nil
+        var editPrefs: EditPrefs? = nil
+        var brandSummary: BrandSummaryCard? = nil
     }
 
     func save() {
         let snap = Snapshot(brand: brand, pillars: pillars, scripts: scripts, clips: clips,
                             footage: footage, media: media, schedule: schedule, teardowns: teardowns,
-                            hasOnboarded: hasOnboarded, streak: streak)
+                            hasOnboarded: hasOnboarded, streak: streak,
+                            memory: memory, readiedScripts: readiedScripts,
+                            conversations: conversations, editPrefs: editPrefs,
+                            brandSummary: brandSummary)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -547,6 +568,11 @@ final class AppStore {
         clips = snap.clips; footage = snap.footage; media = snap.media
         schedule = snap.schedule; teardowns = snap.teardowns
         hasOnboarded = snap.hasOnboarded; streak = snap.streak
+        memory = snap.memory ?? CreatorMemory()
+        readiedScripts = snap.readiedScripts ?? []
+        conversations = snap.conversations ?? []
+        editPrefs = snap.editPrefs ?? EditPrefs()
+        brandSummary = snap.brandSummary
     }
 
     /// For Maestro/dev: wipe everything back to first-run.
@@ -554,5 +580,31 @@ final class AppStore {
         UserDefaults.standard.removeObject(forKey: saveKey)
         brand = BrandGraph(); pillars = []; scripts = []; clips = []; footage = []; media = []
         schedule = []; trends = []; teardowns = []; hasOnboarded = false; streak = 0
+        memory = CreatorMemory(); readiedScripts = []; conversations = []
+        editPrefs = EditPrefs(); brandSummary = nil
+        auth.signOut()
+    }
+
+    // MARK: - V3: Memory + readied scripts
+
+    func applyMemoryUpdates(_ updates: [MemoryUpdate]) {
+        guard !updates.isEmpty else { return }
+        memory.apply(updates)
+        save()
+    }
+
+    /// "Save for later" from the feed / chat / mimic → lands in the Film queue.
+    @discardableResult
+    func readyScript(_ script: Script, source: SavedScriptSource, mimickedFrom: String = "") -> SavedScript {
+        if let existing = readiedScripts.first(where: { $0.script.id == script.id }) { return existing }
+        let saved = SavedScript(script: script, source: source, mimickedFrom: mimickedFrom)
+        readiedScripts.insert(saved, at: 0)
+        save()
+        return saved
+    }
+
+    func removeReadiedScript(_ saved: SavedScript) {
+        readiedScripts.removeAll { $0.id == saved.id }
+        save()
     }
 }

@@ -31,6 +31,8 @@
 	<string>Marque records audio with your video so your clips have sound.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Marque imports existing videos to repurpose into clips.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Marque transcribes what you say to the voice assistant so it can build your content.</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Inter-400.ttf</string>
