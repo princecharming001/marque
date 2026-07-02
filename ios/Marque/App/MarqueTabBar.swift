@@ -1,7 +1,10 @@
 import SwiftUI
 
-// Custom floating frosted tab bar — 4 verb-tabs + raised center Create FAB.
+// Custom floating tab bar — 4 verb-tabs + a raised center Create FAB.
 // Labels kept as text so Maestro taps by name.
+// Center gap is a FIXED-width slot (not a flexible spacer) so the FAB always lands dead-center
+// regardless of how the flanking labels ("Today"/"Calendar" vs "Library"/"Coach") measure —
+// two flexible items on each side of a fixed gap keeps it symmetric at any bar width.
 struct MarqueTabBar: View {
     @Binding var selected: AppTab
     var onCreateTap: () -> Void
@@ -17,17 +20,27 @@ struct MarqueTabBar: View {
         (.coach, "Coach", "sparkles"),
     ]
 
+    // NOTE: safeAreaInset's reported size does NOT reserve room for content rendered outside its
+    // own layout bounds via .offset() — padding tricks on the inset view are provably a no-op
+    // (verified via pixel-diff) for non-scrolling short content, since ScrollView positions
+    // top-anchored content purely by cumulative height from the top, independent of bottom inset
+    // size. So the FAB's raw float distance above the bar is what has to stay small enough to
+    // clear whatever the last card renders (e.g. TodayView's "Record your batch" CTA).
+    private let fabSize: CGFloat = 56
+    private let fabOffset: CGFloat = -8
+    private let fabGap: CGFloat = 76   // fixed center slot, > fabSize so the bar peeks out at the edges
+
     var body: some View {
         ZStack(alignment: .top) {
-            // Tab bar row
+            // Tab bar row — fixed center slot, not a flexible spacer, so the gap is always
+            // exactly centered regardless of label width on either side.
             HStack(spacing: 0) {
                 ForEach(leftItems, id: \.tab) { item in
-                    tabButton(item)
+                    tabButton(item).frame(maxWidth: .infinity)
                 }
-                // Center space for the FAB
-                Spacer().frame(maxWidth: .infinity)
+                Spacer().frame(width: fabGap)
                 ForEach(rightItems, id: \.tab) { item in
-                    tabButton(item)
+                    tabButton(item).frame(maxWidth: .infinity)
                 }
             }
             .padding(.top, 10)
@@ -45,7 +58,8 @@ struct MarqueTabBar: View {
             )
             .shadow(color: .black.opacity(0.10), radius: 22, x: 0, y: 10)
 
-            // Center Create FAB — raised above the tab bar
+            // Center Create FAB — floats clearly above the bar, just kissing its top edge,
+            // liquid-glass tinted so it reads as one family with the frosted bar beneath it.
             Button {
                 createTaps += 1
                 onCreateTap()
@@ -53,15 +67,14 @@ struct MarqueTabBar: View {
                 Image(systemName: "video.badge.plus")
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 56, height: 56)
-                    .background(Palette.accent)
-                    .clipShape(Circle())
-                    .shadow(color: Palette.accent.opacity(0.45), radius: 12, x: 0, y: 6)
+                    .marqueGlassCircle(diameter: fabSize, tint: Palette.accent)
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+                    .shadow(color: Palette.accent.opacity(0.42), radius: 16, x: 0, y: 8)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Studio")
             .sensoryFeedback(.impact(weight: .medium), trigger: createTaps)
-            .offset(y: -24)
+            .offset(y: fabOffset)
         }
         .padding(.horizontal, 16)
     }

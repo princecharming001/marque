@@ -22,7 +22,7 @@ struct TodayView: View {
             }
             .padding(.horizontal, 22)
             .padding(.top, Space.lg)
-            .padding(.bottom, 110)
+            .padding(.bottom, 140)   // clears the tab bar's raised center FAB, not just the bar itself
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationTitle("Today")

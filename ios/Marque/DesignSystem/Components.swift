@@ -78,6 +78,25 @@ struct LiquidGlass<Content: View>: View {
     }
 }
 
+// MARK: - Sized Liquid Glass shortcuts (built on LiquidGlassFill above).
+// Same "over contrasty content only" rule — camera/media surfaces, not flat light cards.
+
+extension View {
+    /// Circular glass surface (pause/play buttons, close buttons, chip-style icon controls).
+    func marqueGlassCircle(diameter: CGFloat, tint: Color? = nil) -> some View {
+        self.frame(width: diameter, height: diameter)
+            .background(LiquidGlassFill(radius: diameter / 2, tint: tint, corners: false))
+            .clipShape(Circle())
+    }
+
+    /// Capsule/pill glass surface (segmented controls, format chips over camera).
+    func marqueGlassCapsule(height: CGFloat, tint: Color? = nil) -> some View {
+        self.frame(height: height)
+            .background(LiquidGlassFill(radius: height / 2, tint: tint, corners: false))
+            .clipShape(Capsule())
+    }
+}
+
 // Frosted secondary action (maxapp glass variant) — for use over media/contrasty surfaces.
 struct GlassButton: View {
     let title: String

@@ -140,7 +140,7 @@ struct RecordView: View {
                     Button { promptRunning.toggle() } label: {
                         Image(systemName: promptRunning ? "pause.fill" : "play.fill")
                             .font(.system(size: 18)).foregroundStyle(.white)
-                            .frame(width: 52, height: 52).background(Color.white.opacity(0.15)).clipShape(Circle())
+                            .marqueGlassCircle(diameter: 52)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("record.pausePrompt")
@@ -175,11 +175,17 @@ struct RecordView: View {
         HStack(spacing: Space.sm) {
             ForEach([("Slow", 0.6), ("Normal", 1.0), ("Fast", 1.5)], id: \.0) { label, val in
                 Button { speed = val } label: {
-                    Text(label).font(AppFont.caption)
-                        .foregroundStyle(speed == val ? Palette.ink : .white)
-                        .padding(.horizontal, Space.md).padding(.vertical, 7)
-                        .background(speed == val ? Palette.onInk : Color.white.opacity(0.12))
-                        .clipShape(Capsule())
+                    Group {
+                        if speed == val {
+                            Text(label).font(AppFont.caption).foregroundStyle(Palette.ink)
+                                .padding(.horizontal, Space.md).padding(.vertical, 7)
+                                .background(Palette.onInk).clipShape(Capsule())
+                        } else {
+                            Text(label).font(AppFont.caption).foregroundStyle(.white)
+                                .padding(.horizontal, Space.md)
+                                .marqueGlassCapsule(height: 30)
+                        }
+                    }
                 }
                 .buttonStyle(.plain)
             }
@@ -248,12 +254,17 @@ struct RecordView: View {
                         if selectedFormats.contains(f.id) { selectedFormats.remove(f.id) }
                         else { selectedFormats.insert(f.id) }
                     } label: {
-                        Text(f.name)
-                            .font(AppFont.callout)
-                            .foregroundStyle(selectedFormats.contains(f.id) ? Palette.ink : .white)
-                            .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-                            .background(selectedFormats.contains(f.id) ? Palette.onInk : Color.white.opacity(0.12))
-                            .clipShape(Capsule())
+                        Group {
+                            if selectedFormats.contains(f.id) {
+                                Text(f.name).font(AppFont.callout).foregroundStyle(Palette.ink)
+                                    .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
+                                    .background(Palette.onInk).clipShape(Capsule())
+                            } else {
+                                Text(f.name).font(AppFont.callout).foregroundStyle(.white)
+                                    .padding(.horizontal, Space.md)
+                                    .marqueGlassCapsule(height: 36)
+                            }
+                        }
                     }.buttonStyle(.plain)
                 }
             }

@@ -44,11 +44,21 @@ name: Marque — extra screens (assumes onboarded)
 - extendedWaitUntil:
     visible: "Shot plan"
     timeout: 6000
-- scrollUntilVisible:
-    element:
-      id: "script.steer"
-    direction: DOWN
-    timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 3000
+# scrollUntilVisible's auto-swipe doesn't reliably reach content past the pinned bottom CTA on
+# this screen — a manual swipe within the card area (staying clear of the pinned button) does.
+- swipe:
+    start: "50%, 60%"
+    end: "50%, 20%"
+    duration: 300
+- swipe:
+    start: "50%, 60%"
+    end: "50%, 20%"
+    duration: 300
+- assertVisible: "Refine"
 - tapOn:
     id: "script.steer"
-- assertVisible: "Refine"
+- extendedWaitUntil:
+    visible: "Refine"
+    timeout: 8000
