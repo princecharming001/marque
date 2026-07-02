@@ -83,6 +83,7 @@ struct ReelCard: View {
         }
         .buttonStyle(PressableStyle())
         .accessibilityLabel("Reel by @\(reel.creatorHandle): \(reel.hookText)")
+        .accessibilityIdentifier("feed.reel")
     }
 
     // Background: subtle Palette-derived vertical gradient; thumbnail (when present)

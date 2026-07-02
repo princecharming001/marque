@@ -1,38 +1,104 @@
 appId: com.marque.app
-name: Marque — extra screens (assumes onboarded)
+name: Marque — extra screens (assumes flow-full already ran — onboarded, authed, subscribed)
 ---
 - launchApp
-# You tab — Brand identity editor
-- tapOn: "You"
+# launchApp (no reset) may relaunch the process fresh (StoreKit entitlement state
+# is process-scoped and not guaranteed to persist) — handle landing on the paywall.
+- tapOn:
+    id: "paywall.devContinue"
+    optional: true
+# flow-full may also have left the router on a different tab (e.g. Chat) from a
+# resumed process — land on Home explicitly either way.
+- tapOn: "Home"
+- assertVisible:
+    id: "home.voiceBubble"
+
+# Profile — pushed from Home's avatar button
+- tapOn:
+    id: "home.profile"
 - assertVisible: "Brand identity"
 - tapOn: "Brand identity"
 - tapOn:
     id: "profile.knownFor"
 - inputText: " — refined"
 - tapOn: "Save"
-- assertVisible: "You"
-# Queue tab is reachable (was Calendar)
-- tapOn: "Queue"
-- assertVisible: "YOUR SCHEDULE"
-- tapOn: "Today"
-# Settings reachable via You → gear
-- tapOn: "You"
+- assertVisible: "Profile"
+
+# Creators to watch — add a slot
+- scrollUntilVisible:
+    element:
+      id: "profile.addCreator0"
+    direction: DOWN
 - tapOn:
-    id: "you.settings"
+    id: "profile.addCreator0"
+- tapOn:
+    id: "profile.watchCreator0"
+- inputText: "bigcoach"
+- tapOn:
+    id: "profile.saveCreator0"
+
+# Settings reachable via the gear
+- tapOn:
+    id: "profile.settings"
 - assertVisible: "Settings"
+- tapOn:
+    id: "settings.autoCaptions"
+- tapOn:
+    id: "settings.captionStyle"
+- tapOn:
+    id: "settings.fillerTrim"
 - tapOn: "Done"
-# Studio pillar regenerate (taps a pillar node -> triggers generation, same path as the AHA)
-- tapOn: "Studio"
+
+# Chat tab — send a message, expect a reply + suggested chips
+- tapOn: "Chat"
+- assertVisible: "What can I help with?"
 - tapOn:
-    id: "studio.pillar.Myth-busting"
+    id: "chat.composer"
+- inputText: "Write me a script about morning routines"
 - tapOn:
-    id: "pick.talking_head"
-- assertVisible: "Your pillars"
-# Hook Lab (pick a hook) + steer
+    id: "chat.send"
+- extendedWaitUntil:
+    visible:
+      id: "chat.save"
+    timeout: 20000
+# Dismiss the keyboard by tapping the message list (onTapGesture there clears
+# composer focus) — avoids Maestro's hideKeyboard command, which is unstable
+# with this XCUITest driver setup.
 - tapOn:
-    id: "studio.scriptRow"
+    point: "50%,30%"
+
+# Home reel → mimic flow
+- tapOn: "Home"
+- extendedWaitUntil:
+    visible:
+      id: "feed.reel"
+    timeout: 10000
 - tapOn:
-    id: "studio.openScript"
+    id: "feed.reel"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "reel.mimic"
+    timeout: 6000
+- tapOn:
+    id: "reel.mimic"
+- extendedWaitUntil:
+    visible:
+      id: "reel.saveMimic"
+    timeout: 20000
+- tapOn:
+    id: "reel.saveMimic"
+
+# Film flow: Hook Lab + steer on a readied script (reuses ScriptReaderView unchanged)
+- tapOn:
+    id: "film.open"
+- extendedWaitUntil:
+    visible:
+      id: "film.readied"
+    timeout: 6000
+- tapOn:
+    id: "film.readied"
+    index: 0
 - assertVisible: "Shot plan"
 - tapOn:
     id: "script.hookButton"

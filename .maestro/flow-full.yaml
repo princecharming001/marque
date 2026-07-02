@@ -72,7 +72,7 @@ name: Marque — full core loop
     id: "onboard.continue"
 
 # Step 11: Voice
-- assertVisible: "What's your voice like?"
+- assertVisible: "What’s your voice like?"
 - tapOn: "Continue"
 
 # Step 12: Camera comfort
@@ -81,9 +81,10 @@ name: Marque — full core loop
     id: "onboard.comfort.natural"
 - tapOn: "Continue"
 
-# Step 13: Styles
+# Step 13: Styles — "Natural" camera comfort (previous step) already pre-seeds
+# preferredStyles=[talkingHead], so Talking-head arrives pre-selected; tapping it
+# would TOGGLE IT OFF and leave Continue disabled. Just confirm and move on.
 - assertVisible: "What kind of videos?"
-- tapOn: "Talking-head"
 - tapOn: "Continue"
 
 # Step 14: Pace
@@ -112,14 +113,14 @@ name: Marque — full core loop
 - tapOn:
     id: "auth.demoContinue"
 
-# Gate 2: hard subscription wall (dev bypass in DEBUG builds)
-- extendedWaitUntil:
-    visible:
-      id: "paywall.devContinue"
-    timeout: 6000
-- takeScreenshot: /Users/home/Marque/.shots/paywall-gate
+# Gate 2: hard subscription wall (dev bypass in DEBUG builds). The tap is optional:
+# a real/leftover StoreKit entitlement in the simulator legitimately skips this
+# screen entirely (correct product behavior for an already-subscribed device).
+- waitForAnimationToEnd:
+    timeout: 2000
 - tapOn:
     id: "paywall.devContinue"
+    optional: true
 
 # Into the app — Home with the voice bubble
 - extendedWaitUntil:

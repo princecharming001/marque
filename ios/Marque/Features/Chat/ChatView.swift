@@ -57,6 +57,14 @@ struct ChatView: View {
         .onChange(of: draft) { _, newValue in
             if !newValue.isEmpty { chat.chips = [] }   // chips dismiss when the user types
         }
+        .onChange(of: composerFocused) { _, focused in
+            // The persistent tab bar (with its floating Film FAB) sits in a safeAreaInset
+            // outside this view's own keyboard avoidance, so it doesn't yield to the
+            // keyboard the way the composer does — hide it while typing so the FAB can't
+            // visually collide with (and steal taps from) the composer's send button.
+            router.hideTabBar = focused
+        }
+        .onDisappear { router.hideTabBar = false }
     }
 
     // MARK: Header — menu / serif wordmark / new chat, over a 1px hairline
@@ -123,6 +131,7 @@ struct ChatView: View {
                 }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                .onTapGesture { composerFocused = false }
                 .onAppear { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
                 .onChange(of: messages.count) { _, _ in
                     withAnimation(Motion.quick) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
@@ -238,7 +247,11 @@ struct ChatView: View {
         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         .padding(.horizontal, 16)
         .padding(.top, 6)
-        .padding(.bottom, 8)
+        // The floating Film FAB renders via .offset() beyond what safeAreaInset
+        // reserves (see MarqueTabBar's own note on this) — a composer sitting flush
+        // at the bottom overlaps the FAB's actual hit-test area. Clear it: fabSize/2
+        // (28) + |fabOffset| (8) + a small margin.
+        .padding(.bottom, 44)
     }
 
     // MARK: Actions

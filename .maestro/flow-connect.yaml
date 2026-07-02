@@ -21,7 +21,8 @@ name: Marque — connect & verify a real account
     point: "50%,12%"
 - tapOn: "Continue"
 - assertVisible: "What kind of videos?"
-- tapOn: "Talking-head"
+- tapOn:
+    id: "style.talking_head"
 - tapOn: "Continue"
 - assertVisible: "Connect your accounts"
 # Link a real TikTok account and verify it comes back with a follower count + avatar
