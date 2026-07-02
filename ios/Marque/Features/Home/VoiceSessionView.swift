@@ -1,8 +1,9 @@
 import SwiftUI
 
 // The voice session — morning thoughts in, strategy + memory out.
-// Phase 6 adds SFSpeechRecognizer capture + TTS playback; the typed path below
-// is permanent (sim STT flakiness + Maestro + noisy environments).
+// Phase 6: SFSpeechRecognizer tap-to-talk capture + spoken replies (backend TTS with
+// AVSpeechSynthesizer fallback). The typed path below is permanent (sim STT
+// flakiness + Maestro + noisy environments).
 struct VoiceSessionView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -12,6 +13,12 @@ struct VoiceSessionView: View {
     @State private var thinking = false
     @State private var lastChips: [String] = []
     @FocusState private var inputFocused: Bool
+
+    // Phase 6: speech in / speech out
+    @State private var speech = SpeechRecognizer()
+    @State private var playback = VoicePlayback()
+    @State private var micTaps = 0
+    @State private var sessionLive = true   // gates late replies from speaking after dismissal
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +42,19 @@ struct VoiceSessionView: View {
                     VStack(spacing: Space.lg) {
                         orb
                             .padding(.top, Space.lg)
+                        if speech.isListening, !speech.transcript.isEmpty {
+                            Text(speech.transcript)
+                                .font(AppFont.body).italic()
+                                .foregroundStyle(Palette.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, Space.xl)
+                        }
+                        micButton
+                        if !speech.isAvailable {
+                            Text("Mic unavailable — type below")
+                                .font(AppFont.caption)
+                                .foregroundStyle(Palette.textTertiary)
+                        }
                         if exchanges.isEmpty {
                             Text("Tell me what's on your mind — an idea, an angle, a question about your content. I remember what matters.")
                                 .font(AppFont.body).foregroundStyle(Palette.textSecondary)
@@ -67,25 +87,77 @@ struct VoiceSessionView: View {
         .background(Palette.canvas.ignoresSafeArea())
         .presentationDetents([.large])
         .presentationDragIndicator(.visible)
+        .onChange(of: speech.isListening) { wasListening, isListening in
+            // Auto-stop (the recognizer finalized on its own — silence timeout or the
+            // 1-minute cap): harvest what was heard and send it through the normal path.
+            // Manual stops clear the transcript before this fires, so no double-send.
+            if wasListening, !isListening {
+                let heard = speech.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                speech.transcript = ""
+                if !heard.isEmpty { send(heard) }
+            }
+        }
+        .onAppear { sessionLive = true }
+        .onDisappear {
+            sessionLive = false
+            playback.stopSpeaking()
+            _ = speech.stop()
+        }
     }
 
-    // MARK: Orb (state: idle / thinking)
+    // MARK: Orb (state: idle / listening / thinking / speaking)
+
+    private enum OrbState { case idle, listening, thinking, speaking }
+
+    private var orbState: OrbState {
+        if speech.isListening { return .listening }
+        if thinking { return .thinking }
+        if playback.isSpeaking { return .speaking }
+        return .idle
+    }
 
     private var orb: some View {
         ZStack {
-            Circle().fill(Palette.accent.opacity(0.10)).frame(width: 120, height: 120)
+            if orbState == .listening { ListeningRings() }
+            Circle()
+                .fill(Palette.accent.opacity(orbState == .speaking ? 0.16 : 0.10))
+                .frame(width: 120, height: 120)
             ZStack {
                 Circle().fill(.ultraThinMaterial)
-                Circle().fill(LinearGradient(colors: [Color.white.opacity(0.9), Palette.accent.opacity(0.12)],
-                                             startPoint: .topLeading, endPoint: .bottomTrailing))
-                Image(systemName: thinking ? "ellipsis" : "waveform")
+                Circle().fill(orbFill)
+                orbSymbol
                     .font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(Palette.accent)
-                    .symbolEffect(.variableColor.iterative, options: .repeating, isActive: thinking)
+                    .foregroundStyle(orbState == .listening ? Color.white : Palette.accent)
             }
             .frame(width: 84, height: 84)
             .overlay(Circle().strokeBorder(Color.white.opacity(0.8), lineWidth: 1))
-            .shadow(color: Palette.accent.opacity(0.22), radius: 18, x: 0, y: 8)
+            .shadow(color: Palette.accent.opacity(orbState == .speaking ? 0.4 : 0.22),
+                    radius: orbState == .speaking ? 24 : 18, x: 0, y: 8)
+        }
+        .animation(Motion.quick, value: orbState)
+    }
+
+    private var orbFill: LinearGradient {
+        orbState == .listening
+            ? LinearGradient(colors: [Palette.accent, Palette.accent.opacity(0.75)],
+                             startPoint: .topLeading, endPoint: .bottomTrailing)
+            : LinearGradient(colors: [Color.white.opacity(0.9), Palette.accent.opacity(0.12)],
+                             startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    @ViewBuilder
+    private var orbSymbol: some View {
+        switch orbState {
+        case .idle:
+            Image(systemName: "waveform")
+        case .listening:
+            Image(systemName: "waveform")
+        case .thinking:
+            Image(systemName: "ellipsis")
+                .symbolEffect(.variableColor.iterative, options: .repeating)
+        case .speaking:
+            Image(systemName: "waveform")
+                .symbolEffect(.variableColor.iterative, options: .repeating)
         }
     }
 
@@ -138,7 +210,44 @@ struct VoiceSessionView: View {
         .padding(.horizontal, -Space.screenH)
     }
 
-    // MARK: Composer (typed path — Phase 6 adds the hold-to-talk mic)
+    // MARK: Mic (tap to talk / tap to stop — the typed composer stays as the fallback)
+
+    private var micButton: some View {
+        Button(action: micTapped) {
+            Image(systemName: speech.isListening ? "stop.fill" : "mic.fill")
+                .font(.system(size: 26, weight: .medium))
+                .foregroundStyle(Palette.onInk)
+                .frame(width: 72, height: 72)
+                .background(speech.isListening ? Palette.critical : Palette.ink)
+                .clipShape(Circle())
+                .shadow(color: Palette.shadowWarm.opacity(0.18), radius: 14, x: 0, y: 6)
+        }
+        .buttonStyle(.plain)
+        .disabled(thinking)
+        .opacity(thinking ? 0.45 : 1)
+        .accessibilityIdentifier("voice.mic")
+        .sensoryFeedback(.impact, trigger: micTaps)
+        .animation(Motion.quick, value: speech.isListening)
+    }
+
+    private func micTapped() {
+        micTaps += 1
+        if speech.isListening {
+            // Tap-to-stop: harvest the take and send it through the normal path.
+            let heard = speech.stop()
+            if !heard.isEmpty { send(heard) }
+            return
+        }
+        guard !thinking else { return }
+        // Barge-in: silence the current reply (and any in-flight TTS fetch) first.
+        playback.stopSpeaking()
+        Task {
+            guard await speech.requestAuthorization() else { return }  // denial → caption via isAvailable
+            speech.start()
+        }
+    }
+
+    // MARK: Composer (typed path — permanent; also the sim-STT fallback)
 
     private var composer: some View {
         HStack(spacing: Space.sm) {
@@ -176,6 +285,8 @@ struct VoiceSessionView: View {
     private func send(_ text: String) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty, !thinking else { return }
+        if speech.isListening { _ = speech.stop() }   // a typed send mid-capture wins; drop the take
+        playback.stopSpeaking()                        // a new exchange silences the current reply
         draft = ""
         let userMsg = ChatMessage(role: .user, content: clean)
         exchanges.append(userMsg)
@@ -186,8 +297,9 @@ struct VoiceSessionView: View {
                                                       brand: store.brand, memory: store.memory)
             thinking = false
             guard let result else {
-                exchanges.append(ChatMessage(role: .assistant,
-                                             content: "I couldn't reach the studio just now — try that again in a moment."))
+                let apology = "I couldn't reach the studio just now — try that again in a moment."
+                exchanges.append(ChatMessage(role: .assistant, content: apology))
+                if sessionLive { Task { await playback.speak(apology) } }
                 return
             }
             var reply = ChatMessage(role: .assistant, content: result.reply)
@@ -200,7 +312,8 @@ struct VoiceSessionView: View {
             lastChips = result.chips
             store.applyMemoryUpdates(result.memoryUpdates)
             logToVoiceNotes(user: userMsg, reply: reply)
-            // Phase 6: TTS playback of result.reply lands here.
+            // Phase 6: speak every assistant reply (speak() stops any current playback first).
+            if sessionLive { Task { await playback.speak(result.reply) } }
         }
     }
 
@@ -215,6 +328,30 @@ struct VoiceSessionView: View {
             store.conversations.insert(convo, at: 0)
         }
         store.save()
+    }
+}
+
+// MARK: - Listening rings (expanding accent pulses behind the orb while the mic is live)
+
+private struct ListeningRings: View {
+    @State private var pulsing = false
+
+    var body: some View {
+        ZStack {
+            ring(delay: 0)
+            ring(delay: 0.7)
+        }
+        .onAppear { pulsing = true }
+    }
+
+    private func ring(delay: Double) -> some View {
+        Circle()
+            .stroke(Palette.accent.opacity(0.5), lineWidth: 2)
+            .frame(width: 104, height: 104)
+            .scaleEffect(pulsing ? 1.55 : 0.92)
+            .opacity(pulsing ? 0 : 0.8)
+            .animation(.easeOut(duration: 1.6).repeatForever(autoreverses: false).delay(delay),
+                       value: pulsing)
     }
 }
 
