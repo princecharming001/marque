@@ -36,6 +36,7 @@ struct YouView: View {
                 }
                 .padding(.vertical, Space.xl)
                 .padding(.horizontal, Space.screenH)
+                .staggerReveal(0)
 
                 MarqueHairline()
 
@@ -55,6 +56,7 @@ struct YouView: View {
                     }
                 }
                 .padding(.horizontal, Space.screenH)
+                .staggerReveal(1)
 
                 MarqueHairline()
 
@@ -64,6 +66,7 @@ struct YouView: View {
                     ConnectAccountsView()
                         .padding(.horizontal, Space.screenH)
                 }
+                .staggerReveal(2)
 
                 MarqueHairline()
 
@@ -75,6 +78,7 @@ struct YouView: View {
                     youRow(icon: "star.fill", label: "Marque Pro", accent: true) { showPaywall = true }
                 }
                 .padding(.horizontal, Space.screenH)
+                .staggerReveal(3)
 
                 Spacer().frame(height: 120)
             }

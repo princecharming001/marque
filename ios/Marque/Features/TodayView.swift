@@ -3,9 +3,6 @@ import SwiftUI
 struct TodayView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
-    @State private var showSettings = false
-    @State private var showProfile = false
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -27,15 +24,13 @@ struct TodayView: View {
             }
             .padding(.horizontal, 22)
             .padding(.top, Space.lg)
-            .padding(.bottom, 140)   // clears the tab bar's raised center FAB, not just the bar itself
+            .padding(.bottom, 140)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationTitle("Today")
         .navigationBarTitleDisplayMode(.inline)
         .task { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
         .refreshable { await store.loadTrends(); await store.loadInsights(); await store.loadRecommendations() }
-        .sheet(isPresented: $showSettings) { SettingsView() }
-        .sheet(isPresented: $showProfile) { BrandProfileView() }
     }
 
     // MARK: Top bar — date kicker + streak + profile/settings
@@ -57,16 +52,7 @@ struct TodayView: View {
                 .font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(Palette.textTertiary)
             Spacer()
-            if store.streak > 0 { StreakGlyph(count: store.streak).padding(.trailing, Space.xs) }
-            Button { showProfile = true } label: {
-                Image(systemName: "person.crop.circle").font(.system(size: 22)).foregroundStyle(Palette.textSecondary)
-            }
-            .accessibilityIdentifier("today.profile")
-            Button { showSettings = true } label: {
-                Image(systemName: "gearshape").font(.system(size: 19)).foregroundStyle(Palette.textSecondary)
-            }
-            .accessibilityIdentifier("today.settings")
-            .padding(.leading, Space.md)
+            if store.streak > 0 { StreakGlyph(count: store.streak) }
         }
     }
 
