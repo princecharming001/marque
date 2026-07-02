@@ -25,8 +25,9 @@ final class AppStore {
     var editPrefs = EditPrefs() { didSet { backend.editPrefs = editPrefs.asDictionary } }
     var brandSummary: BrandSummaryCard? = nil    // cached Profile hero card
 
-    // V3: account layer (auth wall after onboarding)
+    // V3: account + subscription gates (onboarding → auth wall → paywall → app)
     let auth = AuthManager()
+    let subscription = SubscriptionManager()
 
     // Transient
     var isGenerating = false
@@ -54,8 +55,9 @@ final class AppStore {
     var publisher: Publishing { BackendPublisher() }
     let insights: InsightsProviding = LiveInsights()
     let remote: RemotePersistence = SupabaseStore()
-    let billing: Billing = MockBilling()
-    var canPublish: Bool { billing.isPro }   // hard wall at publishing (11-monetization.md)
+    // V3: the app itself sits behind the subscription wall, so publishing is
+    // implied by being inside — kept as a second line of defense.
+    var canPublish: Bool { subscription.isSubscribed }
 
     private let saveKey = "marque.state.v1"
 

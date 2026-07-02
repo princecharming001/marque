@@ -104,6 +104,23 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.finish"
 
+# Gate 1: account wall (demo path in keyless dev)
+- extendedWaitUntil:
+    visible:
+      id: "auth.demoContinue"
+    timeout: 6000
+- tapOn:
+    id: "auth.demoContinue"
+
+# Gate 2: hard subscription wall (dev bypass in DEBUG builds)
+- extendedWaitUntil:
+    visible:
+      id: "paywall.devContinue"
+    timeout: 6000
+- takeScreenshot: /Users/home/Marque/.shots/paywall-gate
+- tapOn:
+    id: "paywall.devContinue"
+
 # Into the app
 - assertVisible: "Today"
 - tapOn: "Studio"

@@ -14,6 +14,15 @@ settings:
     CODE_SIGNING_REQUIRED: "NO"
     CODE_SIGN_IDENTITY: ""
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+schemes:
+  Marque:
+    build:
+      targets:
+        Marque: all
+    run:
+      config: Debug
+      # Local StoreKit testing: real purchase/restore flows in the simulator.
+      storeKitConfiguration: Marque.storekit
 targets:
   Marque:
     type: application
