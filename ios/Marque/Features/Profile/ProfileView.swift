@@ -1,7 +1,8 @@
 import SwiftUI
 
 // Profile — pushed from Home's top-right avatar (not a tab). Phase 10 completes:
-// AI brand summary card, formats hard-filter, creators-to-watch.
+// AI brand summary card (traits + refresh), pillars glance, creators-to-watch,
+// and the quiet "what Marque remembers" memory glance.
 struct ProfileView: View {
     @Environment(AppStore.self) private var store
     @State private var showSettings = false
@@ -9,6 +10,7 @@ struct ProfileView: View {
     @State private var showVoiceEditor = false
     @State private var showPillarsEditor = false
     @State private var showStyleEditor = false
+    @State private var isRefreshingSummary = false
 
     private var account: ConnectedAccount? { store.brand.connectedAccounts.first }
     private var displayName: String { account?.displayName ?? account?.handle ?? "Creator" }
@@ -37,18 +39,11 @@ struct ProfileView: View {
                 .padding(.horizontal, Space.screenH)
                 .staggerReveal(0)
 
-                // Brand summary — Phase 10 replaces with the AI-written card
-                if let card = store.brandSummary {
-                    VStack(alignment: .leading, spacing: Space.sm) {
-                        SectionLabel(text: "What Marque knows about you", accent: Palette.accent)
-                        Text(card.summary)
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                            .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-                    }
-                    .marqueCard()
+                // Brand summary — the AI-written card (skeleton until the first fetch lands)
+                brandSummaryCard
                     .padding(.horizontal, Space.screenH)
                     .padding(.bottom, Space.lg)
-                }
+                    .staggerReveal(1)
 
                 MarqueHairline()
 
@@ -62,9 +57,22 @@ struct ProfileView: View {
                     profileRow(icon: "square.grid.2x2", label: "Content pillars") { showPillarsEditor = true }
                     MarqueHairline().padding(.leading, 56)
                     profileRow(icon: "play.rectangle", label: "Your formats") { showStyleEditor = true }
+                    if !store.pillars.isEmpty {
+                        pillarsStrip
+                            .padding(.top, Space.sm)
+                            .padding(.bottom, Space.md)
+                    }
                 }
                 .padding(.horizontal, Space.screenH)
-                .staggerReveal(1)
+                .staggerReveal(2)
+
+                MarqueHairline()
+
+                // Creators to watch — feeds the mimic engine
+                creatorsSection
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.bottom, Space.lg)
+                    .staggerReveal(3)
 
                 MarqueHairline()
 
@@ -72,9 +80,17 @@ struct ProfileView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader("Accounts")
                     ConnectAccountsView()
-                        .padding(.horizontal, Space.screenH)
                 }
-                .staggerReveal(2)
+                .padding(.horizontal, Space.screenH)
+                .padding(.bottom, Space.lg)
+                .staggerReveal(4)
+
+                MarqueHairline()
+
+                // What Marque remembers — quiet glance, builds trust in the voice bubble
+                memorySection
+                    .padding(.horizontal, Space.screenH)
+                    .staggerReveal(5)
 
                 Spacer().frame(height: 120)
             }
@@ -96,13 +112,164 @@ struct ProfileView: View {
         .sheet(isPresented: $showPillarsEditor) { PillarsEditorSheet(store: store) }
         .sheet(isPresented: $showStyleEditor) { StyleEditorSheet(store: store) }
         .task {
-            if store.brandSummary == nil,
-               let card = await store.backend.fetchBrandSummary(brand: store.brand, memory: store.memory) {
-                store.brandSummary = card
-                store.save()
+            if store.brandSummary == nil { await refreshSummary() }
+        }
+    }
+
+    // MARK: - Brand summary card
+
+    private var brandSummaryCard: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .center, spacing: Space.sm) {
+                SectionLabel(text: "What Marque knows about you", accent: Palette.accent)
+                Spacer(minLength: 0)
+                Button {
+                    Task { await refreshSummary() }
+                } label: {
+                    Group {
+                        if isRefreshingSummary {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(Palette.textTertiary)
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(isRefreshingSummary)
+                .accessibilityIdentifier("profile.refreshSummary")
+                .accessibilityLabel("Refresh brand summary")
+            }
+
+            if let card = store.brandSummary {
+                Text(card.summary)
+                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                if !card.traits.isEmpty {
+                    FlowWrap(spacing: 6) {
+                        ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
+                            Chip(text: trait, tint: Palette.accent)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+                if !card.workingOn.isEmpty {
+                    Text("Working on: \(card.workingOn)")
+                        .font(AppFont.caption).italic()
+                        .foregroundStyle(Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+            } else {
+                // Skeleton paragraph while the first summary is being written
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
+                        .frame(height: 12)
+                        .frame(maxWidth: .infinity)
+                    RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
+                        .frame(height: 12)
+                        .frame(maxWidth: 220)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .marqueCard()
+    }
+
+    @MainActor
+    private func refreshSummary() async {
+        guard !isRefreshingSummary else { return }
+        isRefreshingSummary = true
+        if let card = await store.backend.fetchBrandSummary(brand: store.brand, memory: store.memory) {
+            store.brandSummary = card
+            store.save()
+        }
+        isRefreshingSummary = false
+    }
+
+    // MARK: - Pillars glance (read-only; tap opens the editor)
+
+    private var pillarsStrip: some View {
+        FlowWrap(spacing: Space.sm) {
+            ForEach(store.pillars) { p in
+                Button { showPillarsEditor = true } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(Color(hex: p.colorHex)).frame(width: 8, height: 8)
+                        Text(p.name)
+                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(PressableStyle())
+            }
+        }
+        .accessibilityIdentifier("profile.pillarsStrip")
+    }
+
+    // MARK: - Creators to watch
+
+    private var creatorsSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SectionLabel(text: "Creators to watch")
+                .padding(.top, Space.lg)
+            Text("Two creators you love — Marque studies their reels and feeds you mimicable ones.")
+                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.bottom, Space.xs)
+            WatchedCreatorSlot(store: store, index: 0)
+            WatchedCreatorSlot(store: store, index: 1)
+        }
+    }
+
+    // MARK: - Memory glance
+
+    private var recentMemory: [String] {
+        Array((store.memory.ideas.suffix(2) + store.memory.facts.suffix(2)).suffix(3))
+    }
+
+    private var memoryOverflowCount: Int {
+        let total = store.memory.facts.count + store.memory.ideas.count
+            + store.memory.perspective.count + store.memory.preferences.count
+            + (store.memory.angle.isEmpty ? 0 : 1)
+        return max(0, total - recentMemory.count)
+    }
+
+    private var memorySection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SectionLabel(text: "What Marque remembers")
+                .padding(.top, Space.lg)
+            if store.memory.isEmpty {
+                Text("Talk to Marque on Home and it starts remembering.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(recentMemory.enumerated()), id: \.offset) { _, item in
+                        HStack(alignment: .top, spacing: Space.sm) {
+                            Text("•").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            Text(item)
+                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    if memoryOverflowCount > 0 {
+                        Text("…and \(memoryOverflowCount) more")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .padding(.top, 2)
+                    }
+                }
             }
         }
     }
+
+    // MARK: - Hero + row helpers
 
     private var avatarHero: some View {
         ZStack {
@@ -155,6 +322,177 @@ struct ProfileView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Creators-to-watch slot (saved row / add row / inline editor)
+
+private struct WatchedCreatorSlot: View {
+    let store: AppStore
+    let index: Int
+    @State private var expanded = false
+    @State private var platform: SocialPlatform = .instagram
+    @State private var handle = ""
+
+    private var saved: WatchedCreator? {
+        let list = store.brand.watchedCreators ?? []
+        return index < list.count ? list[index] : nil
+    }
+
+    var body: some View {
+        if let creator = saved {
+            savedRow(creator)
+        } else if expanded {
+            editor
+        } else {
+            addRow
+        }
+    }
+
+    private func savedRow(_ creator: WatchedCreator) -> some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: creator.platform == .instagram ? "camera.circle.fill" : "music.note")
+                .font(.system(size: 15))
+                .foregroundStyle(Palette.accent)
+                .frame(width: 32, height: 32)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Palette.accent.opacity(0.10)))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("@\(creator.handle)")
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(creator.platform.label)
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            }
+            Spacer(minLength: 0)
+            Button { withAnimation(Motion.quick) { clear() } } label: {
+                Image(systemName: "trash")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Palette.textTertiary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("profile.clearCreator\(index)")
+        }
+        .padding(.horizontal, Space.md).padding(.vertical, 10)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
+    private var addRow: some View {
+        Button { withAnimation(Motion.quick) { expanded = true } } label: {
+            HStack(spacing: Space.sm) {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Palette.textSecondary)
+                Text("Add a creator")
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                Spacer()
+            }
+            .padding(.horizontal, Space.md).frame(height: 50)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .accessibilityIdentifier("profile.addCreator\(index)")
+    }
+
+    private var editor: some View {
+        VStack(spacing: Space.sm) {
+            Picker("Platform", selection: $platform) {
+                ForEach(SocialPlatform.allCases) { p in
+                    Text(p.label).tag(p)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            HStack(spacing: 4) {
+                Text("@").foregroundStyle(Palette.textTertiary)
+                TextField("\(platform.label) handle", text: $handle)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("profile.watchCreator\(index)")
+            }
+            .font(AppFont.bodyL)
+            .padding(.horizontal, Space.md).frame(height: 50)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
+
+            HStack {
+                Button("Cancel") { withAnimation(Motion.quick) { expanded = false; handle = "" } }
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                Spacer()
+                Button { save() } label: {
+                    Text("Save")
+                        .font(AppFont.callout).foregroundStyle(Palette.onInk)
+                        .padding(.horizontal, Space.lg).frame(height: 40)
+                        .background(Palette.ink).clipShape(Capsule())
+                }
+                .buttonStyle(PressableStyle())
+                .disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
+                .accessibilityIdentifier("profile.saveCreator\(index)")
+            }
+        }
+        .padding(.vertical, Space.xs)
+    }
+
+    private func save() {
+        let h = handle.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "@", with: "")
+        guard !h.isEmpty else { return }
+        var list = store.brand.watchedCreators ?? []
+        let creator = WatchedCreator(platform: platform, handle: h)
+        if index < list.count { list[index] = creator } else { list.append(creator) }
+        store.brand.watchedCreators = Array(list.prefix(2))
+        store.save()
+        withAnimation(Motion.quick) { expanded = false; handle = "" }
+    }
+
+    private func clear() {
+        var list = store.brand.watchedCreators ?? []
+        if index < list.count { list.remove(at: index) }
+        store.brand.watchedCreators = list
+        store.save()
+    }
+}
+
+// MARK: - Wrapping flow layout (trait chips + pillar chips)
+
+private struct FlowWrap: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0; y += rowHeight + spacing; rowHeight = 0
+            }
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        let width = maxWidth.isFinite ? maxWidth : max(0, x - spacing)
+        return CGSize(width: width, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > bounds.width {
+                x = 0; y += rowHeight + spacing; rowHeight = 0
+            }
+            view.place(at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+                       anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 

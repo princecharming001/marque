@@ -1,11 +1,13 @@
 import SwiftUI
 import StoreKit
 
+// Settings — grouped: Editing (EditPrefs → every AI edit), Notifications, Subscription,
+// Account (email + sign out + delete), Data & Privacy, Support & About.
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var showPaywall = false
     @State private var showDeleteConfirm = false
+    @State private var showSignOutConfirm = false
     @State private var restoring = false
     @State private var notifPublished = UserDefaults.standard.bool(forKey: "notif.published")
     @State private var notifRecap = UserDefaults.standard.bool(forKey: "notif.recap")
@@ -16,52 +18,53 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
 
-                    // MARK: Subscription
-                    settingsGroup("Subscription") {
-                        // Pro hero card
-                        Button { showPaywall = true } label: {
-                            ZStack(alignment: .topTrailing) {
-                                RadialGradient(colors: [Palette.accent.opacity(0.12), .clear],
-                                               center: .topTrailing, startRadius: 0, endRadius: 170)
-                                VStack(alignment: .leading, spacing: Space.sm) {
-                                    SectionLabel(text: "Marque Pro", accent: Palette.accent)
-                                    Text("Publish everything Marque makes for you.")
-                                        .font(AppFont.serifL).foregroundStyle(Palette.textPrimary)
-                                        .multilineTextAlignment(.leading)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    HStack(spacing: 6) {
-                                        Text("Go Pro").font(AppFont.callout).foregroundStyle(Palette.accent)
-                                        Image(systemName: "arrow.right")
-                                            .font(.system(size: 12, weight: .semibold))
-                                            .foregroundStyle(Palette.accent)
-                                    }
-                                    .padding(.top, 2)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(Space.md)
+                    // MARK: Editing — bound to store.editPrefs; didSet threads them into
+                    // every clip job via BackendClient.editPrefs.
+                    settingsGroup("Editing") {
+                        Toggle(isOn: $store.editPrefs.autoCaptions) {
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Auto-captions").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                                Text("Burn word-timed captions into every clip.")
+                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                             }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("settings.upgrade")
+                        .tint(Palette.accent)
+                        .accessibilityIdentifier("settings.autoCaptions")
+                        .padding(.horizontal, Space.md).padding(.vertical, 10)
 
                         Divider().padding(.leading, Space.md)
 
-                        Button {
-                            restoring = true
-                            Task { try? await StoreKit.AppStore.sync(); restoring = false }
-                        } label: {
-                            row(restoring ? "Restoring…" : "Restore purchases", "arrow.clockwise")
-                                .padding(.horizontal, Space.md)
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            Text("Caption style").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            Picker("Caption style", selection: $store.editPrefs.captionStyle) {
+                                ForEach(CaptionStyle.allCases) { style in
+                                    Text(style.label).tag(style)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("settings.captionStyle")
                         }
-                        .buttonStyle(.plain).disabled(restoring)
+                        .padding(.horizontal, Space.md).padding(.vertical, 10)
 
                         Divider().padding(.leading, Space.md)
 
-                        Link(destination: URL(string: "https://apps.apple.com/account/subscriptions")!) {
-                            row("Manage subscription", "creditcard")
-                                .padding(.horizontal, Space.md)
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            Text("Trim filler").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            Picker("Trim filler", selection: $store.editPrefs.fillerTrim) {
+                                ForEach(FillerTrim.allCases) { trim in
+                                    Text(trim.label).tag(trim)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("settings.fillerTrim")
                         }
+                        .padding(.horizontal, Space.md).padding(.vertical, 10)
                     }
+                    .onChange(of: store.editPrefs) { _, _ in store.save() }
+
+                    Text("Every edit follows these. Changes apply to your next submission.")
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .padding(.top, Space.sm)
 
                     // MARK: Notifications
                     settingsGroup("Notifications") {
@@ -106,26 +109,86 @@ struct SettingsView: View {
                         .padding(.horizontal, Space.md).padding(.vertical, 10)
                     }
 
-                    // MARK: Accounts
-                    settingsGroup("Accounts") {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            Text("Link Instagram and TikTok so Marque can publish for you and learn from what works.")
-                                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            ConnectAccountsView()
+                    // MARK: Subscription
+                    settingsGroup("Subscription") {
+                        HStack(spacing: Space.md) {
+                            iconTile("crown", tint: Palette.accent)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Marque Pro — \(monthlyPrice)")
+                                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                Text("Billed monthly. Cancel anytime.")
+                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            }
+                            Spacer()
+                            if store.subscription.isSubscribed {
+                                Chip(text: "Active", tint: Palette.positive)
+                            }
                         }
-                        .padding(Space.md)
+                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        .accessibilityIdentifier("settings.currentPlan")
+
+                        Divider().padding(.leading, Space.md)
+
+                        Button {
+                            restoring = true
+                            Task { await store.subscription.restore(); restoring = false }
+                        } label: {
+                            row(restoring ? "Restoring…" : "Restore purchases", "arrow.clockwise")
+                                .padding(.horizontal, Space.md)
+                        }
+                        .buttonStyle(.plain).disabled(restoring)
+                        .accessibilityIdentifier("settings.restore")
+
+                        Divider().padding(.leading, Space.md)
+
+                        Link(destination: URL(string: "https://apps.apple.com/account/subscriptions")!) {
+                            row("Manage subscription", "creditcard")
+                                .padding(.horizontal, Space.md)
+                        }
                     }
 
-                    // MARK: Content styles
-                    settingsGroup("Content styles") {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            Text("Which kinds of video should Marque write? Each gets its own script style.")
-                                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            StyleSelectionView(selected: $store.brand.preferredStyles)
+                    // MARK: Account
+                    settingsGroup("Account") {
+                        HStack(spacing: Space.md) {
+                            iconTile("person")
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(store.auth.state?.email ?? "Demo account")
+                                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                    .lineLimit(1)
+                                Text("Signed in").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        .accessibilityIdentifier("settings.accountEmail")
+
+                        Divider().padding(.leading, Space.md)
+
+                        Button { showSignOutConfirm = true } label: {
+                            row("Sign out", "rectangle.portrait.and.arrow.right", tint: Palette.critical)
+                                .padding(.horizontal, Space.md)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.signOut")
+
+                        Divider().padding(.leading, Space.md)
+
+                        // Deletion is an App Store requirement (5.1.1(v))
+                        Button(role: .destructive) { showDeleteConfirm = true } label: {
+                            row("Delete account", "trash", tint: Palette.critical)
+                                .padding(.horizontal, Space.md)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.deleteAccount")
+
+                        #if DEBUG
+                        Divider().padding(.leading, Space.md)
+                        GhostButton(title: "Reset app to first run", systemImage: "arrow.counterclockwise") {
+                            store.resetAll(); dismiss()
                         }
                         .padding(Space.md)
+                        #endif
                     }
-                    .onChange(of: store.brand.preferredStyles) { _, _ in store.save() }
 
                     // MARK: Data & Privacy
                     settingsGroup("Data & Privacy") {
@@ -172,24 +235,6 @@ struct SettingsView: View {
                         .padding(.horizontal, Space.md).padding(.vertical, 12)
                     }
 
-                    // MARK: Account — deletion is an App Store requirement (5.1.1(v))
-                    settingsGroup("Account") {
-                        Button(role: .destructive) { showDeleteConfirm = true } label: {
-                            row("Delete account", "trash", tint: Palette.critical)
-                                .padding(.horizontal, Space.md)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("settings.deleteAccount")
-
-                        #if DEBUG
-                        Divider().padding(.leading, Space.md)
-                        GhostButton(title: "Reset app to first run", systemImage: "arrow.counterclockwise") {
-                            store.resetAll(); dismiss()
-                        }
-                        .padding(Space.md)
-                        #endif
-                    }
-
                     Text("Marque \(appVersion)")
                         .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -202,7 +247,15 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
-            .sheet(isPresented: $showPaywall) { PaywallView() }
+            .confirmationDialog("Sign out?", isPresented: $showSignOutConfirm, titleVisibility: .visible) {
+                Button("Sign out", role: .destructive) {
+                    store.auth.signOut()    // gate machine swaps to the auth wall automatically
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Your brand stays on this device.")
+            }
             .alert("Delete account?", isPresented: $showDeleteConfirm) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete", role: .destructive) { store.resetAll(); dismiss() }
@@ -220,13 +273,21 @@ struct SettingsView: View {
         return b.isEmpty ? "v\(v)" : "v\(v) (\(b))"
     }
 
+    private var monthlyPrice: String {
+        store.subscription.monthly.map { "\($0.displayPrice)/mo" } ?? "$14.99/mo"
+    }
+
+    private func iconTile(_ icon: String, tint: Color = Palette.textPrimary) -> some View {
+        Image(systemName: icon).font(.system(size: 16)).foregroundStyle(tint)
+            .frame(width: 34, height: 34)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.10), lineWidth: 1))
+    }
+
     @ViewBuilder
     private func row(_ title: String, _ icon: String, tint: Color = Palette.textPrimary) -> some View {
         HStack(spacing: Space.md) {
-            Image(systemName: icon).font(.system(size: 16)).foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.08)))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.10), lineWidth: 1))
+            iconTile(icon, tint: tint)
             Text(title).font(AppFont.headline)
                 .foregroundStyle(tint == Palette.critical ? Palette.critical : Palette.textPrimary)
             Spacer()
