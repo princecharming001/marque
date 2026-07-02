@@ -193,3 +193,72 @@ def test_learned_insights():
     b = r.json()
     assert "insights" in b
     assert "learning_progress" in b
+
+
+# ---------------------------------------------------------------------------
+# V3: conversation engine + TTS
+# ---------------------------------------------------------------------------
+
+def _converse(messages, mode="chat", memory=None):
+    return client.post("/v1/converse", json={
+        "creator_id": "test-creator", "mode": mode,
+        "messages": messages, "brand": {"niche": "fitness coaching", "audience": "busy dads"},
+        "memory": memory or {},
+    }).json()
+
+
+def test_converse_basic_reply_and_memory():
+    b = _converse([{"role": "user", "content": "I think most fitness advice ignores how little time parents have"}])
+    assert b["mode"] in ("live", "mock")
+    assert b["reply"].strip()
+    assert isinstance(b["memory_updates"], list)
+    # a perspective statement should produce a memory update in mock mode
+    assert any(u["field"] in ("perspective", "facts") for u in b["memory_updates"])
+    assert all({"op", "field", "value"} <= set(u) for u in b["memory_updates"])
+
+
+def test_converse_day_plan_intent():
+    b = _converse([{"role": "user", "content": "Build my day out for me"}])
+    assert b["intent"] == "day_plan"
+    blocks = b["payload"]["plan"]["blocks"]
+    assert len(blocks) >= 4
+    assert all({"time", "action", "detail"} <= set(x) for x in blocks)
+
+
+def test_converse_scripts_intent_chains_scripts():
+    b = _converse([{"role": "user", "content": "Write me a script about protein timing"}])
+    assert b["intent"] == "generate_scripts"
+    scripts = b["payload"]["scripts"]
+    assert scripts and all("hook" in s and "body" in s for s in scripts)
+
+
+def test_converse_voice_mode_short_plain():
+    b = _converse([{"role": "user", "content": "What should I post today?"}], mode="voice")
+    assert b["reply"].strip()
+    assert "\n" not in b["reply"]          # spoken replies are single-block
+    assert "**" not in b["reply"]          # no markdown in voice mode
+
+
+def test_converse_angle_update_sets_memory():
+    b = _converse([{"role": "user", "content": "My brand angle should be tough love for busy dads"}])
+    assert b["intent"] == "update_brand_angle"
+    assert any(u["field"] == "angle" and u["op"] == "set" for u in b["memory_updates"])
+
+
+def test_converse_chips_present():
+    b = _converse([{"role": "user", "content": "hey"}])
+    assert isinstance(b["suggested_chips"], list) and len(b["suggested_chips"]) >= 1
+
+
+def test_tts_mock_when_keyless():
+    r = client.post("/v1/tts", json={"text": "Hello creator"})
+    assert r.status_code == 200
+    # keyless CI: JSON mock contract; with a key this would be audio/mpeg bytes
+    if r.headers["content-type"].startswith("application/json"):
+        assert r.json()["mode"] == "mock"
+    else:
+        assert r.headers["content-type"] == "audio/mpeg"
+
+
+def test_tts_empty_text_rejected():
+    assert client.post("/v1/tts", json={"text": "  "}).status_code == 400

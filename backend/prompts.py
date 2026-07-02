@@ -402,7 +402,8 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
         f"You are Marque's script engine writing {s['label']} short-form videos. "
         "Write in the creator's EXACT voice — match their tone sliders, echo their real phrasing, and NEVER use "
         "a banned phrase. The hook must stop the scroll in the first 3 seconds. "
-        f"\n\nSTYLE RULES ({s['label']}): {s['rubric']}\n\n"
+        f"\n\n{VIRALITY_BLOCK}\n\n"
+        f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
         f"A correctly-structured example for this style (match the STRUCTURE, not the content):\n{s['exemplar']}\n\n"
         "Reply with ONLY valid JSON, no prose, no code fences."
     )
@@ -432,6 +433,7 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
         "You are Marque's hook engine. Generate scroll-stopping first-3-second hooks in the creator's voice "
         "across the 8 signal types. Each hook must be DIFFERENT in structure and signal — no two hooks "
         "should have the same opening pattern. Ranked strongest first.\n\n"
+        f"{VIRALITY_BLOCK}\n\n"
         "Example output for a fitness creator on 'protein intake':\n"
         '[\n'
         '  {"text": "You\'re eating enough protein. You\'re just eating it wrong.", "signal": "contrarian", "strength": 91},\n'
@@ -607,3 +609,144 @@ def learning_block(arm_stats: list[dict]) -> str:
         return ""
     lines.append("Lean into outperforming signals; avoid confirmed underperformers.")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Virality expertise — shared knowledge block injected into converse / scripts /
+# mimic / analyze prompts so every surface reasons like a short-form editor.
+# ---------------------------------------------------------------------------
+
+VIRALITY_BLOCK = (
+    "SHORT-FORM MASTERY (2026 rules — apply these when writing or judging content):\n"
+    "- The first 1.5 seconds decide everything. Open mid-thought on the most surprising claim; never greet, "
+    "never introduce, never set up. The first FRAME should already be interesting (motion, tight framing, or "
+    "an on-screen line that contradicts expectation).\n"
+    "- Watch-time is the master metric on both TikTok and Reels. Retention beats likes: a 70% avg-watch clip "
+    "out-distributes a 10x-liked clip. Cut anything that doesn't earn its second.\n"
+    "- Retention mechanics: change something visually every 2–4 seconds (cut, punch-in, caption card, prop). "
+    "Open a loop in the hook ('the third one changed everything') and close it only at the end. Use pattern "
+    "interrupts at the 30% and 70% marks where drop-off spikes.\n"
+    "- Specificity converts: '42 days', '$3,180', 'the 6am rule' outperform vague claims every time. One "
+    "concrete number in the hook is worth three adjectives.\n"
+    "- Hooks that work: contrarian reversal ('everyone says X — it's backwards'), stakes ('this mistake costs "
+    "you followers daily'), authority-with-receipts ('I posted 90 days straight; here's the data'), curiosity "
+    "gap with a payoff you actually deliver. Question-openers underperform statements.\n"
+    "- CTA norms: one CTA max, spoken in the last 2 seconds, matched to the goal (follows → 'follow for the "
+    "next one', saves → 'save this for your next X', comments → a one-word prompt). Never stack CTAs.\n"
+    "- Platform notes: TikTok rewards raw, native-feeling, trend-aware content with on-screen text from frame "
+    "one; Reels rewards slightly more polished, loopable clips and shares-to-DM. Captions: TikTok = short + "
+    "keyword-loaded (search is real), IG = a hook line then whitespace then substance.\n"
+    "- Cadence compounds: 3–7 posts/week beats bursts. Consistency + iteration on what the data says beats "
+    "chasing every trend. Trend-jack only when the creator can add their OWN take within 48h of the wave."
+)
+
+
+# ---------------------------------------------------------------------------
+# Conversation engine — the creator's daily strategist (voice bubble + chat)
+# ---------------------------------------------------------------------------
+
+MEMORY_FIELDS = ["facts", "perspective", "ideas", "preferences"]  # list fields; "angle" is a single string
+
+
+def memory_block(memory: dict | None) -> str:
+    """Format the client-held creator memory for prompt injection."""
+    if not memory:
+        return "CREATOR MEMORY: (empty — this is a new relationship; start learning who they are)"
+    lines = ["CREATOR MEMORY (what you already know about this creator — treat as ground truth):"]
+    angle = (memory.get("angle") or "").strip()
+    if angle:
+        lines.append(f"- current brand angle: {angle}")
+    labels = {"facts": "facts", "perspective": "their perspective/beliefs",
+              "ideas": "active content ideas", "preferences": "preferences"}
+    for field in MEMORY_FIELDS:
+        items = [x for x in (memory.get(field) or []) if isinstance(x, str) and x.strip()]
+        if items:
+            lines.append(f"- {labels[field]}:")
+            lines.extend(f"    • {x}" for x in items[:30])
+    if len(lines) == 1:
+        return "CREATOR MEMORY: (empty — this is a new relationship; start learning who they are)"
+    return "\n".join(lines)
+
+
+CONVERSE_ENVELOPE_SCHEMA = (
+    '{"reply": str, '
+    '"memory_updates": [{"op": "add"|"remove"|"set", "field": "facts"|"perspective"|"ideas"|"preferences"|"angle", "value": str}], '
+    '"intent": "none"|"generate_scripts"|"day_plan"|"save_idea"|"update_brand_angle", '
+    '"intent_args": object (see intent rules), '
+    '"chips": [str] (2-3 short suggested next messages, ≤6 words each)}'
+)
+
+CONVERSE_ENVELOPE_EXEMPLAR = (
+    'User said: "I\'ve been thinking my content is too soft. I want to take harder stances on training myths. '
+    'Also had an idea about debunking the anabolic window."\n'
+    "Correct envelope:\n"
+    '{"reply": "Love this direction — harder stances is exactly where your authority shows. The anabolic-window '
+    'debunk is a perfect first swing: it\'s a myth half your audience still believes, and you can bring receipts. '
+    'Want me to write it up as a script?", '
+    '"memory_updates": ['
+    '{"op": "set", "field": "angle", "value": "Taking harder, evidence-backed stances against training myths"}, '
+    '{"op": "add", "field": "ideas", "value": "Debunk the anabolic window myth (with receipts)"}], '
+    '"intent": "update_brand_angle", "intent_args": {}, '
+    '"chips": ["Write the anabolic window script", "What else should I debunk?", "Build my day"]}'
+)
+
+
+def converse_system(mode: str = "chat") -> str:
+    """System prompt for /v1/converse. mode: voice | chat."""
+    voice_style = (
+        "This is a SPOKEN conversation (the creator is talking to you out loud; your reply is read aloud by TTS). "
+        "Reply in 2–4 short conversational sentences. NO markdown, NO lists, NO emoji, no stage directions — "
+        "just natural speech, warm and direct, like a sharp friend who happens to be a content strategist."
+    )
+    chat_style = (
+        "This is a TEXT chat. Keep replies tight (under ~120 words unless asked for depth). Markdown is fine "
+        "(bold for emphasis, short lists when genuinely useful). Never pad; never repeat their message back."
+    )
+    style = voice_style if mode == "voice" else chat_style
+    return (
+        "You are Marque — a personal content strategist who KNOWS this creator and talks with them every day. "
+        "You are an elite short-form expert (hooks, retention, platform mechanics) AND their thinking partner: "
+        "they share morning thoughts, perspective shifts, brand-angle changes, and raw ideas; you sharpen them "
+        "and remember everything.\n\n"
+        f"{VIRALITY_BLOCK}\n\n"
+        f"CONVERSATION STYLE: {style}\n\n"
+        "MEMORY RULES: You maintain a persistent memory of this creator. After every exchange, emit memory_updates "
+        "for anything durable they revealed: stable facts about them/their life ('facts'), how they see the world "
+        "or their positioning ('perspective'), content ideas worth keeping ('ideas'), workflow/format preferences "
+        "('preferences'), and 'angle' (op=set) when their brand direction shifts. Write each value as one crisp "
+        "self-contained sentence. Do NOT store small talk, questions, or anything transient. 0–3 updates per turn "
+        "is normal; empty list is fine.\n\n"
+        "INTENT RULES: Set intent when the creator asks for one of these, else \"none\".\n"
+        "- generate_scripts: they want a script/scripts written now. intent_args: {\"topic\": str, "
+        "\"style\": one of [talking_head, faceless, split_three, fast_cuts, green_screen] or \"\", \"count\": 1-3}. "
+        "Your reply should tee up the scripts conversationally (they are generated and attached automatically).\n"
+        "- day_plan: they want their day/content day built out. intent_args: {\"plan\": {\"blocks\": "
+        "[{\"time\": str (e.g. \"9:00\"), \"action\": str (≤6 words), \"detail\": str (one sentence)}]}} — "
+        "build a realistic filming/posting day from their weekly target, blockers, and active ideas (4-6 blocks).\n"
+        "- save_idea: they shared an idea to remember (also add it to memory ideas). intent_args: {}.\n"
+        "- update_brand_angle: their brand direction/angle shifted (also set memory angle). intent_args: {}.\n\n"
+        f"OUTPUT: Reply with ONLY a valid JSON object matching exactly: {CONVERSE_ENVELOPE_SCHEMA}\n"
+        "No prose outside the JSON, no code fences.\n\n"
+        f"Worked example:\n{CONVERSE_ENVELOPE_EXEMPLAR}"
+    )
+
+
+def converse_user(brand: dict, memory: dict | None, messages: list[dict],
+                  arm_stats: list[dict] | None = None, trends: list[dict] | None = None) -> str:
+    """User content for /v1/converse: brand + memory + performance + recent transcript."""
+    parts = [brand_block(brand), "", memory_block(memory)]
+    learn = learning_block(arm_stats or [])
+    if learn:
+        parts += ["", learn]
+    if trends:
+        tl = "; ".join(f"{t.get('title','')}" for t in trends[:3] if t.get("title"))
+        if tl:
+            parts += ["", f"Trending in their niche right now: {tl}"]
+    parts += ["", "CONVERSATION (most recent last):"]
+    for m in messages[-20:]:
+        role = "Creator" if m.get("role") == "user" else "You"
+        content = (m.get("content") or "").strip()
+        if content:
+            parts.append(f"{role}: {content}")
+    parts += ["", "Respond to the creator's last message. Output the JSON envelope only."]
+    return "\n".join(parts)

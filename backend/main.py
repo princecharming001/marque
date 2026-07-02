@@ -297,6 +297,20 @@ class MetricsIngestRequest(BaseModel):
     follows_gained: int = 0
 
 
+class ConverseRequest(BaseModel):
+    creator_id: str = "default"
+    mode: str = "chat"                 # chat | voice
+    messages: list[dict] = []          # [{role: user|assistant, content: str}] recent window
+    brand: dict = {}
+    memory: dict = {}                  # client-held creator memory document
+    attachments: list[dict] = []       # [{type: "video_link", url}] — analyzed in Phase 1
+
+
+class TTSRequest(BaseModel):
+    text: str = ""
+    voice_id: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Deterministic mock fallbacks (keyless dev / offline)
 # ---------------------------------------------------------------------------
@@ -1181,3 +1195,218 @@ async def get_learned_insights(creator_id: str = "default"):
     return {"mode": "live" if SUPABASE_URL else "mock",
             "insights": insights, "posts_learned": total_posts,
             "winning_formula": winning, "learning_progress": min(1.0, total_posts / target)}
+
+
+# ---------------------------------------------------------------------------
+# Conversation engine — the voice bubble + chat brain (client-held memory)
+# ---------------------------------------------------------------------------
+
+_VALID_MEMORY_OPS = {"add", "remove", "set"}
+_VALID_MEMORY_FIELDS = set(prompts.MEMORY_FIELDS) | {"angle"}
+_VALID_INTENTS = {"none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle"}
+
+
+def _sanitize_memory_updates(raw) -> list[dict]:
+    """Keep only well-formed ops so a sloppy envelope can't corrupt client memory."""
+    out = []
+    for u in (raw or [])[:6]:
+        if not isinstance(u, dict):
+            continue
+        op, field = u.get("op"), u.get("field")
+        value = u.get("value")
+        if op not in _VALID_MEMORY_OPS or field not in _VALID_MEMORY_FIELDS:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            continue
+        if field == "angle" and op != "set":
+            op = "set"
+        out.append({"op": op, "field": field, "value": value.strip()[:280]})
+    return out
+
+
+def _mock_day_plan(brand: dict, memory: dict) -> dict:
+    niche = brand.get("niche") or "your niche"
+    ideas = [i for i in (memory.get("ideas") or []) if isinstance(i, str)]
+    idea1 = ideas[0] if ideas else f"the {niche} mistake everyone makes"
+    idea2 = ideas[1] if len(ideas) > 1 else f"a myth-buster on {niche}"
+    return {"blocks": [
+        {"time": "9:00", "action": "Voice check-in", "detail": "Two minutes: tell Marque today's angle so scripts stay sharp."},
+        {"time": "9:30", "action": "Batch-film two scripts", "detail": f"Film \"{idea1}\" and \"{idea2}\" back-to-back while energy is high."},
+        {"time": "12:30", "action": "Submit edits", "detail": "Send both takes for AI editing and review yesterday's finished clip."},
+        {"time": "17:00", "action": "Post + engage", "detail": "Publish at peak hours, then reply to every comment for 15 minutes."},
+        {"time": "20:00", "action": "Log a win", "detail": "Note one thing that worked today — it feeds your learning loop."},
+    ]}
+
+
+def mock_converse(req: ConverseRequest) -> dict:
+    """Deterministic, context-echoing conversation for keyless demo mode."""
+    last = ""
+    for m in reversed(req.messages):
+        if m.get("role") == "user" and (m.get("content") or "").strip():
+            last = m["content"].strip()
+            break
+    low = last.lower()
+    niche = req.brand.get("niche") or "your niche"
+    voice = req.mode == "voice"
+    updates: list[dict] = []
+    intent, intent_args = "none", {}
+    chips = ["Build my day", "Write me a script", "What should I post today?"]
+
+    if any(k in low for k in ("build my day", "build my content", "plan my day", "day plan", "build out my day")):
+        intent = "day_plan"
+        intent_args = {"plan": _mock_day_plan(req.brand, req.memory)}
+        reply = ("Here's your day — front-load the filming while you're fresh, then let the edits run while "
+                 "you live your life. Two takes before noon and today compounds.")
+        chips = ["Adjust the plan", "Write the first script", "What's trending?"]
+    elif "script" in low and any(k in low for k in ("write", "make", "give", "create", "draft", "need")):
+        intent = "generate_scripts"
+        topic = niche
+        for marker in ("about ", "on "):
+            if marker in low:
+                topic = last[low.index(marker) + len(marker):].strip().rstrip("?.!") or niche
+                break
+        intent_args = {"topic": topic, "style": "", "count": 1}
+        reply = (f"On it — one script on {topic}, in your voice, hook-first. "
+                 "It's attached below; save it to your film queue when it feels right.")
+        chips = ["Make it punchier", "Give me two more angles", "Add it to my queue"]
+    elif any(k in low for k in ("my angle", "brand angle", "direction", "positioning", "reposition")):
+        intent = "update_brand_angle"
+        updates.append({"op": "set", "field": "angle", "value": last[:280]})
+        reply = ("Noted — that's a sharper lane and I've locked it into your brand memory. "
+                 "Everything I write from here leans that way. Want a script that plants the flag?")
+        chips = ["Write the flag-planting script", "What does this change?", "Build my day"]
+    elif any(k in low for k in ("idea", "thinking about", "what if i", "i want to make")):
+        intent = "save_idea"
+        updates.append({"op": "add", "field": "ideas", "value": last[:280]})
+        reply = ("That's worth keeping — saved to your idea bank. "
+                 "The specific version of that idea beats the general one; want me to script it?")
+        chips = ["Script this idea", "Poke holes in it", "Save and move on"]
+    elif any(k in low for k in ("i think", "i believe", "my take", "honestly")):
+        updates.append({"op": "add", "field": "perspective", "value": last[:280]})
+        reply = ("That perspective is exactly the kind of thing your audience can't get anywhere else — "
+                 "I've noted it. Say it on camera the way you just said it to me.")
+    elif any(k in low for k in ("what should i post", "post today", "content today")):
+        reply = (f"Lead with your strongest lane: one contrarian take on {niche} — hook in the first sentence, "
+                 "one specific number, one clear takeaway. Check today's picks on your home screen; "
+                 "the top script is ranked for you.")
+        chips = ["Write it for me", "Show me the trend", "Build my day"]
+    elif not last:
+        reply = ("Morning. Tell me what's on your mind — an idea, a frustration, an angle you're chewing on. "
+                 "I'll remember what matters and turn the good stuff into content.")
+    else:
+        updates.append({"op": "add", "field": "facts", "value": last[:280]})
+        reply = ("Got it — noted. The more you tell me like this, the sharper your scripts get. "
+                 "Anything you want me to turn into a post?")
+
+    if voice:
+        reply = reply.split("\n")[0]
+    return {"reply": reply, "memory_updates": updates, "intent": intent,
+            "intent_args": intent_args, "chips": chips}
+
+
+async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
+    """generate_scripts intent → run the real scripts engine and attach the results."""
+    topic = (intent_args.get("topic") or req.brand.get("niche") or "your next post").strip()
+    style = intent_args.get("style") or "talking_head"
+    if style not in STYLES:
+        style = "talking_head"
+    count = max(1, min(3, int(intent_args.get("count") or 1)))
+    angle = (req.memory.get("angle") or "").strip()
+    sreq = ScriptRequest(
+        niche=req.brand.get("niche", ""), audience=req.brand.get("audience", ""),
+        known_for=req.brand.get("known_for", ""), what_you_do=req.brand.get("what_you_do", ""),
+        goal=req.brand.get("goal", "Grow my audience"), voice=req.brand.get("voice", {}) or {},
+        non_negotiables=req.brand.get("non_negotiables", []) or [],
+        pillar=topic, pillar_summary=f"A one-off script request from conversation: {topic}",
+        pillar_angle=angle, style=style, count=count, creator_id=req.creator_id,
+    )
+    result = await scripts(sreq)
+    return result.get("scripts", [])
+
+
+@app.post("/v1/converse")
+async def converse(req: ConverseRequest):
+    if req.mode not in ("chat", "voice"):
+        req.mode = "chat"
+    if not ANTHROPIC_KEY:
+        out = mock_converse(req)
+        if out["intent"] == "generate_scripts":
+            out["payload"] = {"scripts": await _chain_scripts(req, out.get("intent_args", {}))}
+        elif out["intent"] == "day_plan":
+            out["payload"] = {"plan": out.get("intent_args", {}).get("plan", {})}
+        return {"mode": "mock", "reply": out["reply"], "memory_updates": out["memory_updates"],
+                "intent": out["intent"], "payload": out.get("payload"), "suggested_chips": out["chips"]}
+
+    stats = list(_arm_stats.get(req.creator_id, {}).values())
+    system = prompts.converse_system(req.mode)
+    user = prompts.converse_user(req.brand, req.memory, req.messages,
+                                 arm_stats=stats, trends=mock_trends(req.brand.get("niche", "")))
+    envelope = None
+    try:
+        model = SONNET if req.mode == "voice" else OPUS
+        raw = await anthropic(system, user, model, 1600)
+        envelope = extract_json(raw, array=False)
+        if envelope is None:
+            logging.warning("converse: envelope parse failed, retrying once")
+            raw = await anthropic(system, user + "\n\nREMINDER: output ONLY the JSON envelope.", model, 1600)
+            envelope = extract_json(raw, array=False)
+    except HTTPException:
+        envelope = None
+    if not isinstance(envelope, dict) or not (envelope.get("reply") or "").strip():
+        out = mock_converse(req)
+        return {"mode": "mock", "reply": out["reply"], "memory_updates": out["memory_updates"],
+                "intent": out["intent"], "payload": None, "suggested_chips": out["chips"]}
+
+    intent = envelope.get("intent") if envelope.get("intent") in _VALID_INTENTS else "none"
+    intent_args = envelope.get("intent_args") if isinstance(envelope.get("intent_args"), dict) else {}
+    payload = None
+    if intent == "generate_scripts":
+        payload = {"scripts": await _chain_scripts(req, intent_args)}
+    elif intent == "day_plan":
+        plan = intent_args.get("plan")
+        payload = {"plan": plan if isinstance(plan, dict) and plan.get("blocks") else _mock_day_plan(req.brand, req.memory)}
+
+    chips = [c for c in (envelope.get("chips") or []) if isinstance(c, str) and c.strip()][:3]
+    return {"mode": "live", "reply": envelope["reply"],
+            "memory_updates": _sanitize_memory_updates(envelope.get("memory_updates")),
+            "intent": intent, "payload": payload, "suggested_chips": chips}
+
+
+# ---------------------------------------------------------------------------
+# TTS proxy — ElevenLabs when keyed; client falls back to AVSpeechSynthesizer
+# ---------------------------------------------------------------------------
+
+ELEVENLABS_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_DEFAULT_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+_tts_cache: dict[str, bytes] = {}
+
+
+@app.post("/v1/tts")
+async def tts(req: TTSRequest):
+    from fastapi.responses import Response, JSONResponse
+    text = (req.text or "").strip()[:1000]
+    if not text:
+        raise HTTPException(status_code=400, detail="empty text")
+    if not ELEVENLABS_KEY:
+        return JSONResponse({"mode": "mock"})
+    import hashlib
+    voice = req.voice_id or ELEVENLABS_DEFAULT_VOICE
+    key = hashlib.sha256(f"{voice}:{text}".encode()).hexdigest()
+    if key in _tts_cache:
+        return Response(content=_tts_cache[key], media_type="audio/mpeg")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=mp3_44100_128",
+                headers={"xi-api-key": ELEVENLABS_KEY, "content-type": "application/json"},
+                json={"text": text, "model_id": "eleven_turbo_v2_5"},
+            )
+        if r.status_code == 200 and r.content:
+            if len(_tts_cache) > 64:
+                _tts_cache.pop(next(iter(_tts_cache)))
+            _tts_cache[key] = r.content
+            return Response(content=r.content, media_type="audio/mpeg")
+        logging.warning("tts: elevenlabs %d %s", r.status_code, r.text[:200])
+    except (httpx.TimeoutException, httpx.ConnectError) as e:
+        logging.warning("tts: network error %s", e)
+    return JSONResponse({"mode": "mock"})
