@@ -26,7 +26,7 @@ struct CoachView: View {
                 if !store.teardowns.isEmpty {
                     VStack(alignment: .leading, spacing: Space.md) {
                         SectionLabel(text: "What worked", accent: Palette.accent)
-                        ForEach(store.teardowns) { t in
+                        ForEach(Array(store.teardowns.enumerated()), id: \.element.id) { i, t in
                             HStack(spacing: 0) {
                                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                                     .fill(Palette.accent)
@@ -46,6 +46,7 @@ struct CoachView: View {
                             .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                                 .strokeBorder(Palette.hairline, lineWidth: 1))
                             .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 10, x: 0, y: 4)
+                            .staggerReveal(i)
                         }
                     }
                     MarqueHairline().padding(.vertical, Space.sm)
@@ -57,7 +58,7 @@ struct CoachView: View {
                     if store.trends.isEmpty {
                         TrendSkeletonView()
                     } else {
-                        ForEach(store.trends) { t in
+                        ForEach(Array(store.trends.enumerated()), id: \.element.id) { i, t in
                             HStack(spacing: 0) {
                                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                                     .fill(Palette.accent)
@@ -95,6 +96,7 @@ struct CoachView: View {
                             .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                                 .strokeBorder(Palette.hairline, lineWidth: 1))
                             .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 10, x: 0, y: 4)
+                            .staggerReveal(i)
                         }
                     }
                 }

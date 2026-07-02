@@ -53,7 +53,7 @@ struct ClipsSection: View {
                     if !group.isEmpty {
                         VStack(alignment: .leading, spacing: Space.md) {
                             SectionLabel(text: status.title)
-                            ForEach(group) { c in
+                            ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
                                 Button { detail = c } label: { ClipCell(clip: c) }
                                     .buttonStyle(.plain)
                                     .accessibilityIdentifier("library.clip")
@@ -62,6 +62,7 @@ struct ClipsSection: View {
                                             Label("Delete clip", systemImage: "trash")
                                         }
                                     }
+                                    .staggerReveal(i)
                             }
                         }
                     }

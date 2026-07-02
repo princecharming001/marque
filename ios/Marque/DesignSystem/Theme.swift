@@ -153,3 +153,32 @@ extension View {
 
     func screenPadding() -> some View { self.padding(.horizontal, Space.screenH) }
 }
+
+// MARK: - Staggered reveal (the SwiftUI equivalent of a CSS keyframe stagger-on-load).
+// Each element starts faded + shifted down a touch, then eases in with a delay proportional
+// to its index — replays every time the screen appears (tab switch, sheet dismiss, etc.),
+// which is what makes a list of cards feel like it's arriving rather than just snapping in.
+
+private struct StaggerReveal: ViewModifier {
+    let index: Int
+    var distance: CGFloat = 14
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown ? 0 : distance)
+            .onAppear {
+                withAnimation(Motion.enter.delay(Double(index) * 0.055)) {
+                    shown = true
+                }
+            }
+    }
+}
+
+extension View {
+    /// Fade + slide-up entrance, staggered by `index` within its group (0-based).
+    func staggerReveal(_ index: Int, distance: CGFloat = 14) -> some View {
+        modifier(StaggerReveal(index: index, distance: distance))
+    }
+}

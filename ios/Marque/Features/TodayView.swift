@@ -15,10 +15,11 @@ struct TodayView: View {
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, Space.lg)
-                momentum
-                upcomingStrip
-                command
-                quietRows
+                    .staggerReveal(0)
+                momentum.staggerReveal(1)
+                upcomingStrip.staggerReveal(2)
+                command.staggerReveal(3)
+                quietRows.staggerReveal(4)
             }
             .padding(.horizontal, 22)
             .padding(.top, Space.lg)

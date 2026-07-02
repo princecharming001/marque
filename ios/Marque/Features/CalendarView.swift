@@ -43,7 +43,7 @@ struct CalendarView: View {
 
                 if mode == .week {
                     VStack(spacing: 12) {
-                        ForEach(week, id: \.self) { day in
+                        ForEach(Array(week.enumerated()), id: \.element) { i, day in
                             DayRow(day: day,
                                    posts: store.schedule
                                     .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
@@ -53,6 +53,7 @@ struct CalendarView: View {
                                    onAdd: { sheet = .schedule(day: day, clipId: nil) },
                                    onTapPost: { sheet = .edit($0) },
                                    onDuplicate: { store.duplicatePost($0) })
+                                .staggerReveal(i)
                         }
                     }
                 } else {

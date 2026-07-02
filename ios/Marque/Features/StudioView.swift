@@ -24,10 +24,11 @@ struct StudioView: View {
                     } else {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: Space.md) {
-                                ForEach(store.pillars) { p in
+                                ForEach(Array(store.pillars.enumerated()), id: \.element.id) { i, p in
                                     PillarCard(pillar: p, generating: generatingPillar == p.id) {
                                         pickStyleFor = p
                                     }
+                                    .staggerReveal(i)
                                 }
                             }
                             .padding(.horizontal, Space.screenH)
@@ -48,8 +49,9 @@ struct StudioView: View {
                                        title: "No scripts yet",
                                        message: "Tap a pillar above to generate your first batch.")
                     } else {
-                        ForEach(store.scripts) { s in
+                        ForEach(Array(store.scripts.enumerated()), id: \.element.id) { i, s in
                             ScriptCard(script: s)
+                                .staggerReveal(i)
                         }
                     }
                 }
