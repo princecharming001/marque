@@ -68,7 +68,10 @@ struct ReelCard: View {
         return URL(string: reel.thumbnailURL)
     }
     /// Text goes white over a darkened thumbnail; ink over the typographic ground.
-    private var overImage: Bool { thumbURL != nil }
+    /// Keyed off the ACTUAL load, not URL presence — a URL that fails to load must
+    /// fall back to ink-on-light or the text ends up white over the light ground.
+    @State private var imageLoaded = false
+    private var overImage: Bool { imageLoaded }
 
     var body: some View {
         Button(action: onTap) {
@@ -91,14 +94,19 @@ struct ReelCard: View {
     @ViewBuilder private var backdrop: some View {
         if let url = thumbURL {
             ZStack {
-                typographicGround          // visible while the image loads
-                AsyncImage(url: url) { img in
-                    img.resizable().scaledToFill()
-                } placeholder: {
-                    Color.clear
+                typographicGround          // visible while the image loads (and if it never does)
+                AsyncImage(url: url) { phase in
+                    if case .success(let img) = phase {
+                        img.resizable().scaledToFill()
+                            .onAppear { imageLoaded = true }
+                    } else {
+                        Color.clear
+                    }
                 }
-                LinearGradient(colors: [.black.opacity(0.28), .black.opacity(0.62)],
-                               startPoint: .top, endPoint: .bottom)
+                if imageLoaded {
+                    LinearGradient(colors: [.black.opacity(0.28), .black.opacity(0.62)],
+                                   startPoint: .top, endPoint: .bottom)
+                }
             }
         } else {
             typographicGround

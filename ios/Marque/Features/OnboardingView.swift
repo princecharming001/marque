@@ -891,7 +891,18 @@ private struct WelcomeLanding: View {
                 ConstellationLines(nodes: nodes.map { CGPoint(x: $0.x * w, y: $0.y * h) }, links: links)
 
                 FloatingDecor(phase: 0) {
-                    DarkLandingBadge { ScoreBadge(score: 82) }
+                    // ScoreBadge's canvas grays disappear on the dark frosted chip —
+                    // inline a white-on-dark rendering for this one-off dark scene.
+                    DarkLandingBadge {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkle")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Palette.accent)
+                            Text("82").font(AppFont.caption).foregroundStyle(.white)
+                            Text("est.").font(AppFont.micro).foregroundStyle(.white.opacity(0.55))
+                        }
+                        .padding(.horizontal, 6).padding(.vertical, 4)
+                    }
                 }
                 .position(x: w * nodes[0].x, y: h * nodes[0].y)
 

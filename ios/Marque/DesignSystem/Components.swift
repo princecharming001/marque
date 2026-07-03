@@ -170,7 +170,8 @@ struct SectionTitle: View {
     }
 }
 
-/// Big editorial screen title — lowercase Playfair, maxapp's signature move.
+/// Big editorial screen title. Case is left to the caller so it matches the
+/// hand-rolled serif titles on Film/Library ("Film", "Library" — capitalized).
 struct ScreenTitle: View {
     let text: String
     var size: CGFloat = 30
@@ -178,7 +179,6 @@ struct ScreenTitle: View {
         Text(text)
             .font(Typeface.display(size, .semibold))
             .tracking(Track.title)
-            .textCase(.lowercase)
             .foregroundStyle(Palette.textPrimary)
     }
 }

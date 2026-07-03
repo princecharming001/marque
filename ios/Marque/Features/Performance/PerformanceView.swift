@@ -31,18 +31,43 @@ struct PerformanceView: View {
                 .accessibilityIdentifier("calendar.modeToggle")
 
                 if mode == .week {
-                    VStack(spacing: 12) {
-                        ForEach(Array(week.enumerated()), id: \.element) { i, day in
-                            DayRow(day: day,
-                                   posts: store.schedule
-                                    .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
-                                    .sorted { $0.date < $1.date },
-                                   hasReady: store.clips.contains { $0.status == .ready },
-                                   clipFor: { id in store.clips.first { $0.id == id } },
-                                   onAdd: { sheet = .schedule(day: day, clipId: nil) },
-                                   onTapPost: { sheet = .edit($0) },
-                                   onDuplicate: { store.duplicatePost($0) })
-                                .staggerReveal(i)
+                    // Seven identical "Nothing scheduled" cards read as a wall of holes —
+                    // when the whole week is empty, say it once with a way in instead.
+                    if !week.contains(where: { day in
+                        store.schedule.contains { Calendar.current.isDate($0.date, inSameDayAs: day) }
+                    }) {
+                        VStack(spacing: Space.md) {
+                            EmptyStateView(icon: "calendar.badge.plus",
+                                           title: "Nothing scheduled this week",
+                                           message: "Queue a ready clip and it shows up here with its posting time.")
+                            Button {
+                                sheet = .schedule(day: Calendar.current.startOfDay(for: Date()), clipId: nil)
+                            } label: {
+                                Text("Schedule a clip").font(AppFont.headline)
+                                    .foregroundStyle(Palette.textPrimary)
+                                    .frame(maxWidth: .infinity).frame(height: 54)
+                                    .background(Palette.surfaceRaised)
+                                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                            }
+                            .buttonStyle(PressableStyle(dim: 0.7))
+                            .accessibilityIdentifier("performance.addClip")
+                        }
+                    } else {
+                        VStack(spacing: 12) {
+                            ForEach(Array(week.enumerated()), id: \.element) { i, day in
+                                DayRow(day: day,
+                                       posts: store.schedule
+                                        .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
+                                        .sorted { $0.date < $1.date },
+                                       hasReady: store.clips.contains { $0.status == .ready },
+                                       clipFor: { id in store.clips.first { $0.id == id } },
+                                       onAdd: { sheet = .schedule(day: day, clipId: nil) },
+                                       onTapPost: { sheet = .edit($0) },
+                                       onDuplicate: { store.duplicatePost($0) })
+                                    .staggerReveal(i)
+                            }
                         }
                     }
                 } else {

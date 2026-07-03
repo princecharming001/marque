@@ -463,7 +463,7 @@ extension ClipStatus {
         case .draft:     return Palette.warning
         case .ready:     return Palette.accent
         case .rendering: return Palette.textTertiary
-        case .scheduled: return Color(hex: 0x9B5CF6)
+        case .scheduled: return Palette.scheduled
         case .posted:    return Palette.positive
         case .failed:    return Palette.critical
         }

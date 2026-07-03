@@ -41,6 +41,7 @@ enum Palette {
     static let positive = Color(hex: 0x2F9E60)
     static let warning = Color(hex: 0xB5791C)
     static let critical = Color(hex: 0xC0452C)
+    static let scheduled = Color(hex: 0x9B5CF6)         // clip queued for a future slot
 
     // Back-compat aliases (older code paths) — repointed to the new system.
     static let gold = accent

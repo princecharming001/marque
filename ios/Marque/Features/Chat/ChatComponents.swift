@@ -28,7 +28,7 @@ struct ChatUserBubble: View {
                 .foregroundStyle(Palette.textPrimary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 11)
-                .background(Color(hex: 0xF4F4F4))
+                .background(Palette.surfaceSunken)
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 .frame(maxWidth: maxWidth, alignment: .trailing)
         }
@@ -433,34 +433,39 @@ struct ConversationsDrawer: View {
                 .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
                 .padding(.bottom, Space.xs)
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 2) {
-                    if sorted.isEmpty {
-                        Text("No chats yet")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            .padding(.vertical, Space.sm)
-                    }
-                    ForEach(sorted) { convo in
-                        Button {
-                            chat.currentConversationId = convo.id
-                            chat.chips = []
-                            close()
-                        } label: {
-                            row(convo)
-                        }
-                        .buttonStyle(.plain)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            if !convo.isVoiceNotes {
-                                Button(role: .destructive) { remove(convo) } label: {
-                                    Label("Delete", systemImage: "trash")
+            // ScrollView is greedy — it expands to any maxHeight even with one row,
+            // leaving a dead gap in the panel. Collapse entirely when empty and cap
+            // the height to the rows actually present otherwise.
+            if sorted.isEmpty {
+                Text("No chats yet")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .padding(.vertical, Space.sm)
+                    .padding(.bottom, Space.md)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 2) {
+                        ForEach(sorted) { convo in
+                            Button {
+                                chat.currentConversationId = convo.id
+                                chat.chips = []
+                                close()
+                            } label: {
+                                row(convo)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                if !convo.isVoiceNotes {
+                                    Button(role: .destructive) { remove(convo) } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                .frame(maxHeight: min(220, CGFloat(sorted.count) * 52))
+                .padding(.bottom, Space.md)
             }
-            .frame(maxHeight: 220)
-            .padding(.bottom, Space.md)
 
             MarqueHairline().padding(.bottom, Space.md)
 
