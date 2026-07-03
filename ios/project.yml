@@ -5,6 +5,12 @@ options:
     iOS: "17.0"
   developmentLanguage: en
   createIntermediateGroups: true
+packages:
+  # Siri-style animated orb (MIT) — drives the voice visual; wrapped by VoiceOrb.swift.
+  # Pinned to an exact revision (repo only tags 0.x) for reproducible builds.
+  Orb:
+    url: https://github.com/metasidd/Orb
+    revision: a48fc3382ad40905ca4aa9691c6b504004740ad1
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -29,6 +35,8 @@ targets:
     platform: iOS
     sources:
       - path: Marque
+    dependencies:
+      - package: Orb
     settings:
       base:
         TARGETED_DEVICE_FAMILY: "1"
