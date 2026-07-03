@@ -1,13 +1,12 @@
 import SwiftUI
 import UIKit
 
-// Shared animated voice visual — a particle bloom: concentric rings of dots, each ring
-// phase-shifted from the last, which reads as spiral arms winding out of a glowing core
-// (classic spirograph/phyllotaxis construction). Replaces the old glossy-sphere orb
-// everywhere (Home hero, voice session sheet). Driven by TimelineView(.animation) so it's
-// a continuous, GPU-friendly particle draw rather than a handful of animated shape
-// modifiers — genuinely alive at rest, and volume-reactive: `level` (0...1, live mic RMS
-// or TTS metering) widens the spiral's ripple and brightens the core in real time.
+// Shared animated voice visual — a Siri-style "liquid light" orb: a glossy glass bezel
+// around a disc where a few soft, tapered ribbons of light slowly writhe and cross,
+// building a bright highlight where they overlap. Driven by TimelineView(.animation) so
+// it's a continuous Canvas draw rather than a handful of animated shape modifiers — alive
+// at rest, and volume-reactive: `level` (0...1, live mic RMS or TTS metering) widens the
+// ribbons, speeds their drift, and brightens the center highlight in real time.
 struct VoiceOrb: View {
     enum Mode { case idle, listening, thinking, speaking }
     var mode: Mode = .idle
@@ -22,13 +21,22 @@ struct VoiceOrb: View {
 
     private var clampedLevel: Double { min(1, max(0, level)) }
 
-    /// [core glow tint, inner petal color, outer petal color] per mode.
-    private var palette: (core: Color, inner: Color, outer: Color) {
+    /// Fixed rainbow ribbon palette (matches the reference regardless of mode); only the
+    /// disc's base tint shifts per mode, kept light per the brief rather than the
+    /// reference's near-black glass.
+    private static let ribbons: [Color] = [
+        Color(hex: 0xFF3D8F),   // magenta
+        Color(hex: 0x4FD8FF),   // saturated cyan — reads clearly before fading to its white peak
+        Color(hex: 0x2FE0B0),   // teal-green
+        Color(hex: 0x5B7CFF),   // soft blue wash
+    ]
+
+    private var baseTint: (Color, Color) {
         switch mode {
-        case .idle:      return (.white, Color(hex: 0x8FD7FF), Color(hex: 0x4B3FE0))
-        case .listening: return (.white, Color(hex: 0x6FE0FF), Color(hex: 0x7A5CFF))
-        case .thinking:  return (.white, Color(hex: 0xC59CFF), Color(hex: 0x4B3FE0))
-        case .speaking:  return (.white, Color(hex: 0xFF9AD8), Color(hex: 0x7A5CFF))
+        case .idle:      return (Color(hex: 0xF2F0FF), Color(hex: 0xE3ECFF))
+        case .listening: return (Color(hex: 0xEAFBFF), Color(hex: 0xDCF3FF))
+        case .thinking:  return (Color(hex: 0xF3ECFF), Color(hex: 0xE6DCFF))
+        case .speaking:  return (Color(hex: 0xFFEEF7), Color(hex: 0xFFE0F0))
         }
     }
 
@@ -40,77 +48,114 @@ struct VoiceOrb: View {
                 draw(&context, canvasSize: canvasSize, time: now, level: smoothed)
             }
         }
-        .frame(width: size * 1.7, height: size * 1.7)
+        .frame(width: size, height: size)
         .accessibilityHidden(true)
     }
 
     private func draw(_ context: inout GraphicsContext, canvasSize: CGSize, time: Double, level: Double) {
         let center = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-        let tint = palette
-        let maxRadius = size * 0.5 * (1 + CGFloat(level) * 0.14)
+        let outerRadius = size / 2
+        let bezelWidth = size * 0.045
+        let innerRadius = outerRadius - bezelWidth
 
-        // Idle drifts slowly; listening/speaking spin up with volume; thinking holds a
-        // steady, level-independent turn so it reads as "working," not "reacting."
-        let baseSpeed = mode == .thinking ? 0.34 : 0.16
-        let speed = baseSpeed + (mode == .thinking ? 0 : level * 0.55)
-        let rotation = time * speed
+        drawBezel(&context, center: center, outerRadius: outerRadius, bezelWidth: bezelWidth)
 
-        // Ambient seating glow — soft, low-opacity, keeps the particles from floating
-        // on nothing against the app's flat background.
-        context.drawLayer { layer in
-            layer.addFilter(.blur(radius: size * 0.22))
-            let r = size * 0.34 * (1 + CGFloat(level) * 0.2)
-            let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
-            layer.fill(Path(ellipseIn: rect),
-                       with: .radialGradient(Gradient(colors: [tint.outer.opacity(0.5), .clear]),
-                                              center: center, startRadius: 0, endRadius: r))
-        }
+        context.drawLayer { disc in
+            disc.clip(to: Path(ellipseIn: rect(center: center, radius: innerRadius)))
 
-        // The spiral rosette: each concentric ring is sine-modulated in radius and
-        // phase-shifted further than the last — the progressive phase offset is what
-        // braids straight rings into curved arms.
-        let ringCount = 20
-        let dotsPerRing = 26
-        let petalCount = 9.0
-        let spiralTwist = 3.1 * (.pi * 2)
+            let (baseA, baseB) = baseTint
+            disc.fill(Path(ellipseIn: rect(center: center, radius: innerRadius)),
+                      with: .radialGradient(Gradient(colors: [baseA, baseB]),
+                                             center: center, startRadius: 0, endRadius: innerRadius * 1.1))
 
-        for ring in 0..<ringCount {
-            let ringT = Double(ring) / Double(ringCount - 1)
-            let ringRadius = maxRadius * CGFloat(ringT)
-            let phaseShift = ringT * spiralTwist + rotation
-            let waveAmp = maxRadius * 0.1 * (1 - ringT * 0.35) * (1 + CGFloat(level) * 0.7)
-            let color = tint.inner.mix(with: tint.outer, amount: ringT)
+            // Idle drifts slowly; listening/speaking spin up with volume; thinking holds a
+            // steady, level-independent drift so it reads as "working," not "reacting."
+            let baseSpeed = mode == .thinking ? 0.22 : 0.1
+            let speed = baseSpeed + (mode == .thinking ? 0 : level * 0.4)
+            let rotation = time * speed
 
-            for dot in 0..<dotsPerRing {
-                let dotT = Double(dot) / Double(dotsPerRing)
-                let angle = dotT * (.pi * 2) + phaseShift
-                let r = ringRadius + waveAmp * CGFloat(sin(petalCount * angle))
-                guard r > 0 else { continue }
+            // Angle offsets are spread mod π (a ribbon's orientation repeats every 180°),
+            // not mod 2π — evenly spacing them by π/4 is what keeps all four visually
+            // distinct instead of two pairs landing on the same line.
+            let ribbonSpecs: [(angleOffset: Double, spin: Double, lengthMul: CGFloat, widthMul: CGFloat, bow: CGFloat)] = [
+                (0.0, 1.0, 2.3, 0.16, 0.46),
+                (.pi / 4, -0.7, 2.4, 0.12, -0.6),
+                (.pi / 2, 0.55, 2.2, 0.14, 0.34),
+                (3 * .pi / 4, -0.4, 2.35, 0.17, -0.4),
+            ]
 
-                // Deterministic per-dot phase (index-derived, not per-frame random) for a
-                // gentle twinkle that never pops.
-                let twinkleSeed = Double(ring * dotsPerRing + dot) * 2.399963
-                let twinkle = 0.78 + 0.22 * sin(time * 1.4 + twinkleSeed)
+            for (i, spec) in ribbonSpecs.enumerated() {
+                let color = Self.ribbons[i % Self.ribbons.count]
+                let angle = spec.angleOffset + rotation * spec.spin
+                    + 0.15 * sin(time * 0.4 + Double(i) * 1.7)   // slow organic writhe
+                let length = innerRadius * spec.lengthMul
+                let width = innerRadius * spec.widthMul * (1 + CGFloat(level) * 0.5)
+                let bow = length * spec.bow
 
-                let x = center.x + r * CGFloat(cos(Double(angle)))
-                let y = center.y + r * CGFloat(sin(Double(angle)))
-                let dotSize = max(0.9, (3.1 * (1 - ringT) + 0.7)) * (1 + CGFloat(level) * 0.25)
-                let opacity = (0.18 + 0.82 * pow(1 - ringT, 2)) * twinkle
+                disc.drawLayer { layer in
+                    // Plain alpha compositing (not .screen) — screen blending washes
+                    // color out fast against a light base; normal keeps the ribbons vivid.
+                    layer.addFilter(.blur(radius: size * 0.03))
+                    layer.translateBy(x: center.x, y: center.y)
+                    layer.rotate(by: .radians(angle))
 
-                let rect = CGRect(x: x - dotSize / 2, y: y - dotSize / 2, width: dotSize, height: dotSize)
-                context.fill(Path(ellipseIn: rect), with: .color(color.opacity(opacity)))
+                    let half = length / 2
+                    // A curved, tapered "brush stroke": both edges share the same tip
+                    // points (so width -> 0 at the ends) but the second edge is the first
+                    // shifted by `width` in y, so the ribbon bows as a single unit along
+                    // its curved spine instead of reading as a symmetric flat eye shape.
+                    var path = Path()
+                    path.move(to: CGPoint(x: -half, y: 0))
+                    path.addCurve(to: CGPoint(x: half, y: 0),
+                                  control1: CGPoint(x: -half * 0.4, y: -bow),
+                                  control2: CGPoint(x: half * 0.4, y: -bow * 0.4))
+                    path.addCurve(to: CGPoint(x: -half, y: 0),
+                                  control1: CGPoint(x: half * 0.4, y: -bow * 0.4 + width),
+                                  control2: CGPoint(x: -half * 0.4, y: -bow + width))
+                    path.closeSubpath()
+
+                    layer.fill(path, with: .linearGradient(
+                        Gradient(stops: [
+                            .init(color: color.opacity(0), location: 0),
+                            .init(color: color.opacity(0.95), location: 0.3),
+                            .init(color: .white.opacity(0.95), location: 0.5),
+                            .init(color: color.opacity(0.95), location: 0.7),
+                            .init(color: color.opacity(0), location: 1),
+                        ]),
+                        startPoint: CGPoint(x: -half, y: 0), endPoint: CGPoint(x: half, y: 0)))
+                }
+            }
+
+            // Bright crossing highlight — guarantees the crisp hot-spot the reference
+            // shows at the disc's center, rather than leaving it to blend-mode chance.
+            // Plain alpha (not .screen, which flattens straight to white on a light base).
+            disc.drawLayer { glow in
+                glow.addFilter(.blur(radius: size * 0.03))
+                let r = innerRadius * (0.22 + CGFloat(level) * 0.1)
+                glow.fill(Path(ellipseIn: rect(center: center, radius: r)),
+                          with: .radialGradient(Gradient(colors: [.white, .white.opacity(0.7), .clear]),
+                                                 center: center, startRadius: 0, endRadius: r))
             }
         }
+    }
 
-        // Bright core — the "light source" the arms spiral out of.
-        context.drawLayer { layer in
-            layer.addFilter(.blur(radius: size * 0.05))
-            let r = size * (0.1 + CGFloat(level) * 0.03)
-            let rect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
-            layer.fill(Path(ellipseIn: rect),
-                       with: .radialGradient(Gradient(colors: [tint.core, tint.core.opacity(0.6), .clear]),
-                                              center: center, startRadius: 0, endRadius: r))
+    private func rect(center: CGPoint, radius: CGFloat) -> CGRect {
+        CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+    }
+
+    /// Glossy glass rim: a light ring with a top-left highlight and bottom-right shade,
+    /// plus a soft drop shadow, matching the reference's lens-like bevel.
+    private func drawBezel(_ context: inout GraphicsContext, center: CGPoint, outerRadius: CGFloat, bezelWidth: CGFloat) {
+        context.drawLayer { shadow in
+            shadow.addFilter(.shadow(color: .black.opacity(0.18), radius: size * 0.06, x: 0, y: size * 0.025))
+            shadow.fill(Path(ellipseIn: rect(center: center, radius: outerRadius)), with: .color(.white))
         }
+        let ring = Path(ellipseIn: rect(center: center, radius: outerRadius))
+            .subtracting(Path(ellipseIn: rect(center: center, radius: outerRadius - bezelWidth)))
+        context.fill(ring, with: .linearGradient(
+            Gradient(colors: [.white, Color(hex: 0xD8DCE6), .white]),
+            startPoint: CGPoint(x: center.x - outerRadius, y: center.y - outerRadius),
+            endPoint: CGPoint(x: center.x + outerRadius, y: center.y + outerRadius)))
     }
 }
 
@@ -124,24 +169,5 @@ private final class LevelSmoother {
         let rate = 8.0
         value += (target - value) * min(1, rate * dt)
         return value
-    }
-}
-
-private extension Color {
-    /// Manual RGB lerp — Canvas draws from raw Color values every frame, so this needs
-    /// to be cheap and not depend on SwiftUI's view-level animation system.
-    func mix(with other: Color, amount: Double) -> Color {
-        let t = min(1, max(0, amount))
-        let a = UIColor(self).cgColor.components ?? [0, 0, 0, 1]
-        let b = UIColor(other).cgColor.components ?? [0, 0, 0, 1]
-        func lerp(_ i: Int) -> Double {
-            let av = a.count > i ? a[i] : a[0]
-            let bv = b.count > i ? b[i] : b[0]
-            return av + (bv - av) * t
-        }
-        if a.count >= 4 && b.count >= 4 {
-            return Color(red: lerp(0), green: lerp(1), blue: lerp(2), opacity: lerp(3))
-        }
-        return Color(red: lerp(0), green: lerp(0), blue: lerp(0))
     }
 }
