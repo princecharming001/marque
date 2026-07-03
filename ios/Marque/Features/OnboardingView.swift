@@ -1,31 +1,34 @@
 import SwiftUI
 import UIKit
 
-// Stoic onboarding, modeled on maxapp: warm off-white canvas, 2px ink progress bar,
-// white pill choice cards (ink when selected), boxed hairline fields, ink pill buttons,
-// one idea per screen. Accessibility ids + button text preserved for the Maestro flow.
+// BitePal-style onboarding (Mobbin reference): centered bold titles, tall white choice
+// cards with leading icon badges (SF Symbols ONLY — never Apple emojis), soft-green ring
+// selection, compact centered dark pill CTAs ("Skip ›" flips to "Next ›" once something's
+// picked), mascot interstitials with floating decorations, and a landing page with a giant
+// centered headline surrounded by floating feature badges.
 //
-// Steps 0–20: opens with a mascot-led intro (self-intro → collect name → "let me explain
-// what I can do" → one feature preview) before the quiz, mirroring Gentler Streak's
-// Yorhart pattern. The mascot is a code-only placeholder (PlaceholderMascot) — swap for
-// custom art later without touching flow/copy. Progress bar only covers the quiz portion
-// (steps 5–19); the intro screens are un-numbered, like the reference.
+// Freeform text steps (name/niche/about/knownFor) keep the Gentler Streak pattern instead:
+// big display type directly on the canvas, X-clear, circular arrow submit — left-aligned,
+// while everything choice-based is centered.
 //
-//  0: hero              — HeroWelcome
+// The mascot is a code-only placeholder (PlaceholderMascot) — swap for custom art later.
+// Progress bar covers only the quiz portion (steps 5–19); intro screens are un-numbered.
+//
+//  0: landing           — WelcomeLanding ("Film once. Post every day." + floating badges)
 //  1: mascotIntro       — "Hi, I'm Marque" + tagline
-//  2: name              — "…and who are you?" — collects creatorName
+//  2: name              — "…and who are you?" — collects creatorName (freeform)
 //  3: mascotReady       — "Let's get to know each other, {name}!"
 //  4: featureExplainer  — one feature preview ("I learn what works for you")
 //  5: goal              — "What are you here to do?"
 //  6: platform          — "Where does your audience live?"
 //  7: stage             — "Where's your audience today?"
 //  8: frequency         — "How often do you post right now?"
-//  9: methodInterstitial — "Consistency beats virality"
+//  9: methodInterstitial — "Consistency beats virality" (mascot scene)
 // 10: blocker           — "What gets in the way most?"
-// 11: niche             — niche field only
-// 12: whatYouDo         — whatYouDo + audience fields
-// 13: knownFor          — knownFor field
-// 14: mirrorInterstitial — brand mirror sentence
+// 11: niche             — freeform
+// 12: whatYouDo         — freeform ×2
+// 13: knownFor          — freeform
+// 14: mirrorInterstitial — brand mirror sentence (mascot scene)
 // 15: voice             — sliders
 // 16: cameraComfort     — "How do you feel on camera?"
 // 17: styles            — StyleSelectionView
@@ -44,7 +47,15 @@ struct OnboardingView: View {
 
     var body: some View {
         if step == 0 {
-            HeroWelcome { advance() }
+            WelcomeLanding(
+                start: { advance() },
+                haveAccount: {
+                    // Existing users skip the quiz entirely — straight to the account gate;
+                    // their brand data restores after sign-in.
+                    store.hasOnboarded = true
+                    store.save()
+                }
+            )
         } else {
             inputFlow
         }
@@ -53,7 +64,7 @@ struct OnboardingView: View {
     private var inputFlow: some View {
         ZStack {
             Palette.canvas.ignoresSafeArea()
-            VStack(spacing: Space.xl) {
+            VStack(spacing: Space.lg) {
                 if step >= 1 && step <= lastInputStep {
                     VStack(spacing: Space.sm) {
                         HStack {
@@ -62,23 +73,24 @@ struct OnboardingView: View {
                                     withAnimation(Motion.enter) { step -= 1 }
                                 } label: {
                                     Image(systemName: "chevron.left")
-                                        .font(.system(size: 16, weight: .semibold))
-                                        .foregroundStyle(Palette.textSecondary)
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(Palette.textPrimary)
+                                        .frame(width: 40, height: 40, alignment: .leading)
+                                        .contentShape(Rectangle())
                                 }
                                 .accessibilityIdentifier("onboard.back")
                             }
                             Spacer()
                         }
-                        // The mascot-intro screens (1–4) are un-numbered, like the reference —
+                        // Intro screens (1–4) are un-numbered, like the reference —
                         // the bar only appears once the actual quiz starts.
                         if step >= quizStartStep {
                             OnboardProgress(total: lastInputStep - quizStartStep + 1,
                                            index: step - quizStartStep + 1)
                         }
                     }
-                    .padding(.top, Space.md)
+                    .padding(.top, Space.sm)
                 }
-                Spacer(minLength: 0)
                 Group {
                     switch step {
                     case 1:  mascotIntroStep()
@@ -103,7 +115,7 @@ struct OnboardingView: View {
                     default: ahaStep
                     }
                 }
-                Spacer(minLength: 0)
+                .frame(maxHeight: .infinity)
             }
             .screenPadding()
         }
@@ -119,34 +131,35 @@ struct OnboardingView: View {
 
     // Step 1: Mascot self-intro
     private func mascotIntroStep() -> some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(spacing: Space.sm) {
             Text("Hi, I\u{2019}m Marque")
                 .font(AppFont.headline).foregroundStyle(Palette.textTertiary)
                 .staggerReveal(0)
             Text("Your dedicated partner in building a content habit that actually sticks.")
-                .font(Typeface.display(30, .semibold)).tracking(-0.6)
+                .font(AppFont.question).tracking(-0.6)
                 .foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .staggerReveal(1)
-            Spacer(minLength: Space.xl)
-            PlaceholderMascot()
-                .frame(maxWidth: .infinity)
-            Spacer(minLength: Space.xl)
-            PillButton(title: "Hi, Marque") { advance() }
+            Spacer(minLength: Space.lg)
+            MascotScene(decorations: .greeting)
+            Spacer(minLength: Space.lg)
+            CompactPill(title: "Hi, Marque") { advance() }
                 .accessibilityIdentifier("onboard.mascotIntro.continue")
                 .staggerReveal(2)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, Space.lg)
     }
 
-    // Step 2: Collect the creator's name — freeform, un-boxed entry (name typed directly
-    // against the canvas at display size, not in a hairline field) with an inline X-clear
-    // and a circular arrow-submit that springs in once there's text, mirroring the reference.
+    // Step 2: Collect the creator's name — freeform (Gentler Streak), left-aligned
     @FocusState private var nameFieldFocused: Bool
 
     private func nameStep() -> some View {
         @Bindable var store = store
         let hasText = !(store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces).isEmpty
         return VStack(alignment: .leading, spacing: Space.lg) {
+            Spacer()
             Text("\u{2026}and who are you?")
                 .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -168,119 +181,115 @@ struct OnboardingView: View {
                 .accessibilityIdentifier("onboard.creatorName")
 
                 if hasText {
-                    Button {
-                        withAnimation(Motion.quick) { store.brand.creatorName = "" }
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Palette.textSecondary)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(Palette.surfaceSunken))
-                    }
-                    .buttonStyle(PressableStyle())
-                    .transition(.scale.combined(with: .opacity))
+                    ClearFieldButton { withAnimation(Motion.quick) { store.brand.creatorName = "" } }
                 }
             }
             .padding(.top, Space.md)
             .staggerReveal(2)
 
-            Spacer(minLength: Space.xl)
+            Spacer()
 
             HStack {
                 Spacer()
-                Button {
+                FreeformArrow(enabled: hasText) {
                     nameFieldFocused = false
                     advance()
-                } label: {
-                    Image(systemName: "arrow.right")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(hasText ? Palette.onInk : Color(hex: 0xA4A29D))
-                        .frame(width: 56, height: 56)
-                        .background(Circle().fill(hasText ? Palette.ink : Color(hex: 0xDAD9D6)))
                 }
-                .buttonStyle(PressableStyle())
-                .disabled(!hasText)
-                .scaleEffect(hasText ? 1 : 0.85)
-                .animation(Motion.spring, value: hasText)
                 .accessibilityIdentifier("onboard.nameContinue")
             }
         }
         .animation(Motion.quick, value: hasText)
+        .padding(.bottom, Space.lg)
         .onAppear { nameFieldFocused = true }
     }
 
-    // Step 3: Mascot greets the creator by name, sets expectation for what's next
+    // Step 3: Mascot greets the creator by name
     private func mascotReadyStep() -> some View {
         let name = (store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces)
         let greeting = name.isEmpty ? "Let\u{2019}s get to know each other." : "Let\u{2019}s get to know each other, \(name)!"
-        return VStack(alignment: .leading, spacing: Space.sm) {
+        return VStack(spacing: Space.sm) {
             Text(greeting)
-                .font(Typeface.display(30, .semibold)).tracking(-0.6)
+                .font(AppFont.question).tracking(-0.6)
                 .foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .staggerReveal(0)
             Text("I\u{2019}ll start by explaining what I can do for you.")
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
                 .staggerReveal(1)
-            Spacer(minLength: Space.xl)
-            PlaceholderMascot()
-                .frame(maxWidth: .infinity)
-            Spacer(minLength: Space.xl)
-            PillButton(title: "Go for it") { advance() }
+            Spacer(minLength: Space.lg)
+            MascotScene(decorations: .thinking)
+            Spacer(minLength: Space.lg)
+            CompactPill(title: "Go for it") { advance() }
                 .accessibilityIdentifier("onboard.mascotReady.continue")
                 .staggerReveal(2)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, Space.lg)
     }
 
     // Step 4: One feature preview before the quiz starts
     private func featureExplainerStep() -> some View {
-        VStack(alignment: .leading, spacing: Space.xl) {
+        VStack(spacing: Space.xl) {
             ZStack {
-                RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
                     .fill(Palette.surfaceRaised)
-                    .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                    .shadow(color: .black.opacity(0.05), radius: 16, x: 0, y: 6)
                 VStack(spacing: Space.md) {
                     PulsingWaveformBadge()
                     Text("\u{201C}Talk to me every morning.\u{201D}")
                         .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 }
             }
-            .frame(height: 220)
+            .frame(height: 200)
             .staggerReveal(0)
 
-            Text("I learn what works for you.")
-                .font(Typeface.display(28, .semibold)).tracking(-0.6)
-                .foregroundStyle(Palette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .staggerReveal(1)
-            Text("Tell me your ideas, your angle, what\u{2019}s on your mind \u{2014} I remember it all and use it to write sharper scripts every day.")
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                .lineSpacing(4)
-                .staggerReveal(2)
+            VStack(spacing: Space.sm) {
+                Text("I learn what works for you.")
+                    .font(AppFont.question).tracking(-0.6)
+                    .foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .staggerReveal(1)
+                Text("Tell me your ideas, your angle, what\u{2019}s on your mind \u{2014} I remember it all and use it to write sharper scripts every day.")
+                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .staggerReveal(2)
+            }
 
             Spacer(minLength: Space.md)
-            PillButton(title: "Continue") { advance() }
+            CompactPill(title: "Continue") { advance() }
                 .accessibilityIdentifier("onboard.featureExplainer.continue")
                 .staggerReveal(3)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, Space.lg)
     }
 
-    // MARK: - Steps
+    // MARK: - Quiz steps (BitePal card style)
 
-    // Step 5: Goal
+    // Step 5: Goal (has a default → always "Next")
     private func goalStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "What are you here to do?") {
-            VStack(spacing: Space.sm) {
-                ForEach(Goal.allCases) { g in
-                    Button { store.brand.goal = g } label: {
-                        ChoiceCard(text: g.rawValue, selected: store.brand.goal == g)
-                    }.buttonStyle(.plain)
-                }
+        return QuizScaffold(question: "What are you here to do?") {
+            VStack(spacing: Space.md) {
+                iconCard(for: .audience, icon: "person.2.fill", tint: Palette.accent, store: store)
+                iconCard(for: .clients, icon: "briefcase.fill", tint: Palette.ink, store: store)
+                iconCard(for: .authority, icon: "crown.fill", tint: Palette.warning, store: store)
+                iconCard(for: .monetize, icon: "dollarsign.circle.fill", tint: Palette.positive, store: store)
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            CompactPill(title: "Next", chevron: true) { advance() }
         }
+    }
+
+    private func iconCard(for goal: Goal, icon: String, tint: Color, store: AppStore) -> some View {
+        Button { store.brand.goal = goal } label: {
+            IconChoiceCard(icon: icon, tint: tint, text: goal.rawValue, selected: store.brand.goal == goal)
+        }
+        .buttonStyle(.plain)
     }
 
     // Step 6: Platform
@@ -289,13 +298,14 @@ struct OnboardingView: View {
 
     private func platformStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Where does your audience live?") {
-            VStack(spacing: Space.sm) {
+        return QuizScaffold(question: "Where does your audience live?") {
+            VStack(spacing: Space.md) {
                 Button {
                     store.brand.primaryPlatform = .instagram
                     platformBothChosen = false
                 } label: {
-                    ChoiceCard(text: "Instagram", selected: store.brand.primaryPlatform == .instagram)
+                    IconChoiceCard(icon: "camera.fill", tint: Color(hex: 0xE1306C),
+                                   text: "Instagram", selected: store.brand.primaryPlatform == .instagram)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.platform.instagram")
@@ -304,7 +314,8 @@ struct OnboardingView: View {
                     store.brand.primaryPlatform = .tiktok
                     platformBothChosen = false
                 } label: {
-                    ChoiceCard(text: "TikTok", selected: store.brand.primaryPlatform == .tiktok)
+                    IconChoiceCard(icon: "music.note", tint: Palette.ink,
+                                   text: "TikTok", selected: store.brand.primaryPlatform == .tiktok)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.platform.tiktok")
@@ -313,29 +324,39 @@ struct OnboardingView: View {
                     store.brand.primaryPlatform = nil  // nil = "Both" — no single primary
                     platformBothChosen = true
                 } label: {
-                    ChoiceCard(text: "Both", selected: platformBothChosen)
+                    IconChoiceCard(icon: "square.filled.on.square", tint: Palette.accent,
+                                   text: "Both", selected: platformBothChosen)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.platform.both")
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            SkipNextPill(hasSelection: store.brand.primaryPlatform != nil || platformBothChosen) { advance() }
         }
     }
 
     // Step 7: Stage
     private func stageStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Where's your audience today?") {
-            VStack(spacing: Space.sm) {
+        let icons: [CreatorStage: (String, Color)] = [
+            .nano: ("leaf.fill", Palette.positive),
+            .micro: ("chart.bar.fill", Palette.accent),
+            .established: ("chart.line.uptrend.xyaxis", Palette.warning),
+            .pro: ("crown.fill", Palette.ink),
+        ]
+        return QuizScaffold(question: "Where\u{2019}s your audience today?") {
+            VStack(spacing: Space.md) {
                 ForEach(CreatorStage.allCases) { s in
                     Button { store.brand.stage = s } label: {
-                        ChoiceCard(text: s.rawValue, selected: store.brand.stage == s)
+                        IconChoiceCard(icon: icons[s]?.0 ?? "circle", tint: icons[s]?.1 ?? Palette.accent,
+                                       text: s.rawValue, selected: store.brand.stage == s)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier(stageAccessID(s))
                 }
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            SkipNextPill(hasSelection: store.brand.stage != nil) { advance() }
         }
     }
 
@@ -351,17 +372,25 @@ struct OnboardingView: View {
     // Step 8: Frequency
     private func frequencyStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "How often do you post right now?") {
-            VStack(spacing: Space.sm) {
+        let icons: [PostingFrequency: (String, Color)] = [
+            .rarely: ("tortoise.fill", Palette.textSecondary),
+            .sometimes: ("figure.walk", Palette.accent),
+            .often: ("hare.fill", Palette.warning),
+            .daily: ("flame.fill", Palette.critical),
+        ]
+        return QuizScaffold(question: "How often do you post right now?") {
+            VStack(spacing: Space.md) {
                 ForEach(PostingFrequency.allCases) { f in
                     Button { store.brand.postingFrequency = f } label: {
-                        ChoiceCard(text: f.rawValue, selected: store.brand.postingFrequency == f)
+                        IconChoiceCard(icon: icons[f]?.0 ?? "circle", tint: icons[f]?.1 ?? Palette.accent,
+                                       text: f.rawValue, selected: store.brand.postingFrequency == f)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier(frequencyAccessID(f))
                 }
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            SkipNextPill(hasSelection: store.brand.postingFrequency != nil) { advance() }
         }
     }
 
@@ -374,34 +403,39 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 9: Method Interstitial
+    // Step 9: Method interstitial — mascot scene
     private func methodInterstitialStep() -> some View {
-        OnboardInterstitial(
-            headline: "Consistency beats virality.",
-            message: "Most creators burn out chasing hits. Marque helps you build a posting habit first — then the algorithm rewards you for it.",
+        MascotInterstitial(
+            title: "Consistency beats virality",
+            message: "Most creators burn out chasing hits. Marque helps you build a posting habit first \u{2014} then the algorithm rewards you for it.",
+            decorations: .habit,
+            ctaTitle: "Let\u{2019}s go",
             onContinue: { advance() }
         )
-        .accessibilityElement(children: .contain)
     }
 
-    // Step 10: Blocker
+    // Step 10: Blocker — SF-symbol badges, never emojis
     private func blockerStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "What gets in the way most?") {
-            VStack(spacing: Space.sm) {
+        let icons: [CreatorBlocker: (String, Color)] = [
+            .ideas: ("lightbulb.fill", Palette.warning),
+            .time: ("clock.fill", Palette.accent),
+            .editing: ("scissors", Palette.critical),
+            .confidence: ("face.dashed", Palette.positive),
+        ]
+        return QuizScaffold(question: "What gets in the way most?") {
+            VStack(spacing: Space.md) {
                 ForEach(CreatorBlocker.allCases) { b in
                     Button { store.brand.biggestBlocker = b } label: {
-                        EmojiChoiceCard(
-                            emoji: b.emoji,
-                            text: b.rawValue,
-                            selected: store.brand.biggestBlocker == b
-                        )
+                        IconChoiceCard(icon: icons[b]?.0 ?? "circle", tint: icons[b]?.1 ?? Palette.accent,
+                                       text: b.rawValue, selected: store.brand.biggestBlocker == b)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier(blockerAccessID(b))
                 }
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            SkipNextPill(hasSelection: store.brand.biggestBlocker != nil) { advance() }
         }
     }
 
@@ -414,62 +448,163 @@ struct OnboardingView: View {
         }
     }
 
+    // MARK: - Freeform text steps (Gentler Streak style)
+
     // Step 11: Niche
+    @FocusState private var nicheFocused: Bool
+
     private func nicheStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Tell me about your niche") {
-            TextField("Your niche", text: $store.brand.niche)
-                .marqueField()
-                .accessibilityIdentifier("onboard.niche")
-            PillButton(title: "Continue", enabled: !store.brand.niche.isEmpty) { advance() }
+        let hasText = !store.brand.niche.trimmingCharacters(in: .whitespaces).isEmpty
+        return VStack(alignment: .leading, spacing: Space.lg) {
+            Spacer()
+            Text("What\u{2019}s your niche?")
+                .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(0)
+            Text("Fitness, personal finance, cooking\u{2026} whatever you make content about.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .staggerReveal(1)
+
+            HStack(alignment: .center, spacing: Space.sm) {
+                TextField("Your niche", text: $store.brand.niche)
+                    .font(Typeface.display(34, .semibold)).tracking(-0.6)
+                    .foregroundStyle(Palette.textPrimary)
+                    .tint(Palette.accent)
+                    .focused($nicheFocused)
+                    .accessibilityIdentifier("onboard.niche")
+                if hasText {
+                    ClearFieldButton { withAnimation(Motion.quick) { store.brand.niche = "" } }
+                }
+            }
+            .padding(.top, Space.md)
+            .staggerReveal(2)
+
+            Spacer()
+
+            HStack {
+                Spacer()
+                FreeformArrow(enabled: hasText) {
+                    nicheFocused = false
+                    advance()
+                }
+                .accessibilityIdentifier("onboard.nicheContinue")
+            }
         }
+        .animation(Motion.quick, value: hasText)
+        .padding(.bottom, Space.lg)
+        .onAppear { nicheFocused = true }
     }
 
-    // Step 12: What You Do + Audience
+    // Step 12: What you do + audience
+    @FocusState private var aboutFocused: Bool
+
     private func whatYouDoStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Tell me about you") {
-            VStack(spacing: Space.md) {
+        let hasText = !store.brand.whatYouDo.trimmingCharacters(in: .whitespaces).isEmpty
+        return VStack(alignment: .leading, spacing: Space.lg) {
+            Spacer()
+            Text("Tell me about you")
+                .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+                .staggerReveal(0)
+
+            VStack(alignment: .leading, spacing: Space.xl) {
                 TextField("What you do", text: $store.brand.whatYouDo)
-                    .marqueField()
+                    .font(Typeface.display(26, .semibold)).tracking(-0.4)
+                    .foregroundStyle(Palette.textPrimary)
+                    .tint(Palette.accent)
+                    .focused($aboutFocused)
                     .accessibilityIdentifier("onboard.whatYouDo")
+                MarqueHairline()
                 TextField("Who you serve", text: $store.brand.audience)
-                    .marqueField()
+                    .font(Typeface.display(26, .semibold)).tracking(-0.4)
+                    .foregroundStyle(Palette.textPrimary)
+                    .tint(Palette.accent)
                     .accessibilityIdentifier("onboard.audience")
             }
-            PillButton(title: "Continue", enabled: !store.brand.whatYouDo.isEmpty) { advance() }
+            .padding(.top, Space.md)
+            .staggerReveal(1)
+
+            Spacer()
+
+            HStack {
+                Spacer()
+                FreeformArrow(enabled: hasText) {
+                    aboutFocused = false
+                    advance()
+                }
+                .accessibilityIdentifier("onboard.aboutContinue")
+            }
         }
+        .animation(Motion.quick, value: hasText)
+        .padding(.bottom, Space.lg)
+        .onAppear { aboutFocused = true }
     }
 
-    // Step 13: Known For
+    // Step 13: Known for
+    @FocusState private var knownForFocused: Bool
+
     private func knownForStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(
-            question: "What do you want to be known for?",
-            note: "This is the heart of your brand. Everything we write points back here."
-        ) {
-            TextField("In a sentence…", text: $store.brand.knownFor)
-                .marqueField()
-                .accessibilityIdentifier("onboard.knownFor")
-            PillButton(
-                title: "Continue",
-                enabled: !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty
-            ) { advance() }
-            Button("Skip — I'll add this later") { advance() }
+        let hasText = !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty
+        return VStack(alignment: .leading, spacing: Space.lg) {
+            Spacer()
+            Text("What do you want to be known for?")
+                .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(0)
+            Text("This is the heart of your brand. Everything we write points back here.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .staggerReveal(1)
+
+            HStack(alignment: .center, spacing: Space.sm) {
+                TextField("In a sentence\u{2026}", text: $store.brand.knownFor, axis: .vertical)
+                    .font(Typeface.display(28, .semibold)).tracking(-0.4)
+                    .foregroundStyle(Palette.textPrimary)
+                    .tint(Palette.accent)
+                    .lineLimit(1...3)
+                    .focused($knownForFocused)
+                    .accessibilityIdentifier("onboard.knownFor")
+                if hasText {
+                    ClearFieldButton { withAnimation(Motion.quick) { store.brand.knownFor = "" } }
+                }
+            }
+            .padding(.top, Space.md)
+            .staggerReveal(2)
+
+            Spacer()
+
+            HStack {
+                Button("Skip \u{2014} I\u{2019}ll add this later") {
+                    knownForFocused = false
+                    advance()
+                }
                 .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 .accessibilityIdentifier("onboard.knownForSkip")
+                Spacer()
+                FreeformArrow(enabled: hasText) {
+                    knownForFocused = false
+                    advance()
+                }
+                .accessibilityIdentifier("onboard.knownForContinue")
+            }
         }
+        .animation(Motion.quick, value: hasText)
+        .padding(.bottom, Space.lg)
+        .onAppear { knownForFocused = true }
     }
 
-    // Step 14: Mirror Interstitial
+    // Step 14: Mirror interstitial — mascot scene with the brand sentence
     private func mirrorInterstitialStep() -> some View {
         let niche     = store.brand.niche.isEmpty    ? "your niche" : store.brand.niche
         let audience  = store.brand.audience.isEmpty ? "your audience" : store.brand.audience
         let knownFor  = store.brand.knownFor.isEmpty ? "what you stand for" : store.brand.knownFor
-        let msg = "You\u{2019}re a \(niche) creator for \(audience), known for \(knownFor). Every script Marque writes points back to this."
-        return OnboardInterstitial(
-            headline: "Your brand, in a sentence.",
+        let msg = "You\u{2019}re a \(niche) creator for \(audience), known for \(knownFor). Every script I write points back to this."
+        return MascotInterstitial(
+            title: "Your brand, in a sentence",
             message: msg,
+            decorations: .proud,
+            ctaTitle: "That\u{2019}s me",
             onContinue: { advance() }
         )
     }
@@ -477,7 +612,7 @@ struct OnboardingView: View {
     // Step 15: Voice
     private func voiceStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(
+        return QuizScaffold(
             question: "What\u{2019}s your voice like?",
             note: "Marque writes in your register \u{2014} tune these to match how you actually talk."
         ) {
@@ -495,8 +630,9 @@ struct OnboardingView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, Space.sm)
-
-            PillButton(title: "Continue") { advance() }
+                .padding(.top, Space.md)
+        } cta: {
+            CompactPill(title: "Next", chevron: true) { advance() }
         }
     }
 
@@ -525,16 +661,18 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 16: Camera Comfort
+    // Step 16: Camera comfort
     private func cameraComfortStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "How do you feel on camera?") {
-            VStack(spacing: Space.sm) {
+        return QuizScaffold(question: "How do you feel on camera?") {
+            VStack(spacing: Space.md) {
                 Button {
                     store.brand.cameraComfort = .natural
                     seedStyles(for: .natural, store: store)
                 } label: {
-                    ChoiceCard(text: CameraComfort.natural.rawValue, selected: store.brand.cameraComfort == .natural)
+                    IconChoiceCard(icon: "video.fill", tint: Palette.positive,
+                                   text: CameraComfort.natural.rawValue,
+                                   selected: store.brand.cameraComfort == .natural)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.comfort.natural")
@@ -543,7 +681,9 @@ struct OnboardingView: View {
                     store.brand.cameraComfort = .gettingThere
                     seedStyles(for: .gettingThere, store: store)
                 } label: {
-                    ChoiceCard(text: CameraComfort.gettingThere.rawValue, selected: store.brand.cameraComfort == .gettingThere)
+                    IconChoiceCard(icon: "video", tint: Palette.accent,
+                                   text: CameraComfort.gettingThere.rawValue,
+                                   selected: store.brand.cameraComfort == .gettingThere)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.comfort.getting")
@@ -552,12 +692,15 @@ struct OnboardingView: View {
                     store.brand.cameraComfort = .preferOff
                     seedStyles(for: .preferOff, store: store)
                 } label: {
-                    ChoiceCard(text: CameraComfort.preferOff.rawValue, selected: store.brand.cameraComfort == .preferOff)
+                    IconChoiceCard(icon: "video.slash.fill", tint: Palette.textSecondary,
+                                   text: CameraComfort.preferOff.rawValue,
+                                   selected: store.brand.cameraComfort == .preferOff)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.comfort.off")
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            SkipNextPill(hasSelection: store.brand.cameraComfort != nil) { advance() }
         }
     }
 
@@ -584,58 +727,59 @@ struct OnboardingView: View {
     // Step 17: Styles
     private func styleStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(
+        return QuizScaffold(
             question: "What kind of videos?",
             note: "Pick the styles you want to make. Each gets its own kind of script."
         ) {
             StyleSelectionView(selected: $store.brand.preferredStyles)
-            PillButton(title: "Continue", enabled: !store.brand.preferredStyles.isEmpty) { advance() }
+        } cta: {
+            CompactPill(title: "Next", chevron: true, enabled: !store.brand.preferredStyles.isEmpty) { advance() }
         }
     }
 
     // Step 18: Pace
     private func paceStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "Pick your weekly pace") {
-            VStack(spacing: Space.sm) {
+        return QuizScaffold(question: "Pick your weekly pace") {
+            VStack(spacing: Space.md) {
                 Button { store.brand.weeklyTarget = 3 } label: {
-                    PaceCard(count: 3, sub: "~20 min filming", selected: store.brand.weeklyTarget == 3)
+                    IconChoiceCard(icon: "3.circle.fill", tint: Palette.accent,
+                                   text: "3 posts/week", sub: "~20 min filming",
+                                   selected: store.brand.weeklyTarget == 3)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.pace.3")
 
                 Button { store.brand.weeklyTarget = 5 } label: {
-                    PaceCard(count: 5, sub: "~35 min filming", selected: store.brand.weeklyTarget == 5)
+                    IconChoiceCard(icon: "5.circle.fill", tint: Palette.warning,
+                                   text: "5 posts/week", sub: "~35 min filming",
+                                   selected: store.brand.weeklyTarget == 5)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.pace.5")
 
                 Button { store.brand.weeklyTarget = 7 } label: {
-                    PaceCard(count: 7, sub: "~50 min filming", selected: store.brand.weeklyTarget == 7)
+                    IconChoiceCard(icon: "7.circle.fill", tint: Palette.critical,
+                                   text: "7 posts/week", sub: "~50 min filming",
+                                   selected: store.brand.weeklyTarget == 7)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("onboard.pace.7")
             }
-            PillButton(title: "Continue") { advance() }
+        } cta: {
+            SkipNextPill(hasSelection: store.brand.weeklyTarget != nil) { advance() }
         }
     }
 
     // Step 19: Connect
     private func connectStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(
+        return QuizScaffold(
             question: "Connect your accounts",
-            note: "Link your Instagram and TikTok so Marque learns from what already works. Add more than one if you like."
+            note: "Link your Instagram and TikTok so Marque learns from what already works."
         ) {
             ConnectAccountsView()
-            VStack(spacing: Space.sm) {
-                PillButton(
-                    title: analyzing ? "Reading your page\u{2026}" : "Continue",
-                    enabled: !analyzing
-                ) {
-                    analyzing = true
-                    Task { await store.analyzePage(); analyzing = false; advance() }
-                }
+            VStack(spacing: Space.md) {
                 Button("Teach Marque your voice instead") {
                     store.showVoiceOnboarding = true
                 }
@@ -643,6 +787,13 @@ struct OnboardingView: View {
                 .accessibilityIdentifier("onboard.voiceInstead")
                 Button("Skip for now") { store.derivePillars(); advance() }
                     .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+            }
+            .padding(.top, Space.md)
+        } cta: {
+            CompactPill(title: analyzing ? "Reading your page\u{2026}" : "Next",
+                        chevron: !analyzing, enabled: !analyzing) {
+                analyzing = true
+                Task { await store.analyzePage(); analyzing = false; advance() }
             }
         }
         .sheet(isPresented: $store.showVoiceOnboarding) {
@@ -652,33 +803,45 @@ struct OnboardingView: View {
 
     // Step 20: Aha
     private var ahaStep: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
+        VStack(spacing: Space.lg) {
             if generating {
+                Spacer()
+                MascotScene(decorations: .thinking, mascotSize: 140)
                 Text("Writing your first scripts\u{2026}")
-                    .font(Typeface.display(30, .semibold)).foregroundStyle(Palette.textPrimary)
+                    .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
                 Text("In your voice. Built to stop the scroll.")
                     .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                 ProgressView().tint(Palette.ink).padding(.top, Space.sm)
+                Spacer()
                 Color.clear.frame(height: 1).onAppear {
                     Task { await store.generateStarterScripts(); generating = false }
                 }
             } else {
-                Text("Your first 3 scripts are ready.")
-                    .font(Typeface.display(30, .semibold)).foregroundStyle(Palette.textPrimary)
+                Spacer()
+                Text("Your first 3 scripts are ready")
+                    .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("They\u{2019}re waiting in Studio. Record when you\u{2019}ve got a few minutes \u{2014} we\u{2019}ll do the editing.")
+                Text("Record when you\u{2019}ve got a few minutes \u{2014} I\u{2019}ll do the editing.")
                     .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
-                ForEach(store.scripts.prefix(3)) { s in
-                    HStack(alignment: .top, spacing: Space.sm) {
-                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.accent)
-                        Text(s.hook.text).font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                    .multilineTextAlignment(.center)
+                VStack(alignment: .leading, spacing: Space.md) {
+                    ForEach(store.scripts.prefix(3)) { s in
+                        HStack(alignment: .top, spacing: Space.sm) {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
+                            Text(s.hook.text).font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                        }
                     }
                 }
-                Spacer().frame(height: Space.sm)
-                PillButton(title: "Enter Marque") { store.completeOnboarding() }
+                .marqueCard()
+                Spacer()
+                CompactPill(title: "Enter Marque") { store.completeOnboarding() }
                     .accessibilityIdentifier("onboard.finish")
             }
         }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, Space.lg)
     }
 
     // MARK: - Navigation
@@ -693,12 +856,450 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Private Sub-views
+// MARK: - Landing (BitePal style: giant centered headline + floating badges)
 
-// Code-only filler mascot for the intro screens — no image assets, so it's not blocked on
-// generated art. Swap the body for a real character illustration later; call sites (frame
-// size + placement) stay the same. Bounces in on appear, breathes gently while idle, and
-// blinks on a randomized loop for a touch of life.
+private struct WelcomeLanding: View {
+    let start: () -> Void
+    let haveAccount: () -> Void
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Palette.accent.opacity(0.14), Palette.accent.opacity(0.05), Palette.canvas],
+                startPoint: .top, endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            // Floating decoration badges around the headline
+            GeometryReader { geo in
+                let w = geo.size.width
+                let h = geo.size.height
+
+                FloatingDecor(phase: 0) {
+                    LandingBadge { ScoreBadge(score: 82) }
+                }
+                .position(x: w * 0.22, y: h * 0.13)
+
+                FloatingDecor(phase: 0.6) {
+                    ZStack(alignment: .topTrailing) {
+                        LandingBadge { PlaceholderMascot(size: 64) }
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(Color(hex: 0xF08080))
+                            .offset(x: 10, y: -12)
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Color(hex: 0xF08080).opacity(0.7))
+                            .offset(x: 24, y: 2)
+                    }
+                }
+                .position(x: w * 0.8, y: h * 0.16)
+
+                FloatingDecor(phase: 1.1) {
+                    LandingBadge {
+                        Image(systemName: "video.fill")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(Palette.accent)
+                            .frame(width: 56, height: 56)
+                            .background(Circle().fill(Palette.accent.opacity(0.12)))
+                    }
+                }
+                .position(x: w * 0.12, y: h * 0.42)
+
+                FloatingDecor(phase: 1.7) {
+                    LandingBadge {
+                        ZStack {
+                            Circle()
+                                .stroke(Palette.positive.opacity(0.2), lineWidth: 5)
+                            Circle()
+                                .trim(from: 0, to: 0.7)
+                                .stroke(Palette.positive, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                            Text("5/7")
+                                .font(AppFont.micro).foregroundStyle(Palette.textSecondary)
+                        }
+                        .frame(width: 52, height: 52)
+                        .padding(6)
+                    }
+                }
+                .position(x: w * 0.87, y: h * 0.45)
+            }
+            .allowsHitTesting(false)
+
+            VStack(spacing: 0) {
+                Spacer()
+                Text("Film once.\nPost every\nday.")
+                    .font(Typeface.sans(58, .bold)).tracking(-1.5)
+                    .foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(0)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .staggerReveal(0, distance: 20)
+                Spacer()
+                VStack(spacing: Space.lg) {
+                    Button(action: start) {
+                        Text("Get started").font(AppFont.headline)
+                            .foregroundStyle(Palette.onInk)
+                            .frame(height: 56).padding(.horizontal, 64)
+                            .background(Palette.ink)
+                            .clipShape(Capsule())
+                            .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+                    }
+                    .buttonStyle(PressableStyle())
+                    .accessibilityIdentifier("onboard.start")
+
+                    Button(action: haveAccount) {
+                        Text("I already have an account")
+                            .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    }
+                    .accessibilityIdentifier("onboard.haveAccount")
+
+                    HStack(spacing: 4) {
+                        Text("By continuing you\u{2019}re accepting our")
+                            .foregroundStyle(Palette.textTertiary)
+                        Link("Terms", destination: LegalURLs.terms)
+                            .foregroundStyle(Palette.textSecondary)
+                        Text("and").foregroundStyle(Palette.textTertiary)
+                        Link("Privacy Notice", destination: LegalURLs.privacy)
+                            .foregroundStyle(Palette.textSecondary)
+                    }
+                    .font(AppFont.caption)
+                }
+                .staggerReveal(1, distance: 20)
+                .padding(.bottom, Space.xl)
+            }
+            .screenPadding()
+        }
+    }
+}
+
+// A white circular/rounded holder that makes any decoration read as a floating badge.
+private struct LandingBadge<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        content
+            .padding(8)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
+            .shadow(color: Palette.shadowWarm.opacity(0.14), radius: 16, x: 0, y: 8)
+    }
+}
+
+// Gentle vertical bobbing for decorative elements; phase staggers instances apart.
+private struct FloatingDecor<Content: View>: View {
+    let phase: Double
+    @ViewBuilder let content: Content
+    @State private var up = false
+    var body: some View {
+        content
+            .offset(y: up ? -7 : 7)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true).delay(phase)) {
+                    up = true
+                }
+            }
+    }
+}
+
+// MARK: - Mascot scenes (BitePal raccoon-style interstitials)
+
+// What floats around the mascot — all SF Symbols and drawn shapes, never emojis.
+private enum MascotDecorations {
+    case greeting   // sparkles + hearts
+    case thinking   // thought clouds with idea symbols + question glyphs
+    case habit      // calendar + upward trend in thought clouds
+    case proud      // quote bubble + sparkles
+}
+
+private struct MascotScene: View {
+    let decorations: MascotDecorations
+    var mascotSize: CGFloat = 170
+
+    var body: some View {
+        ZStack {
+            switch decorations {
+            case .greeting:
+                FloatingDecor(phase: 0) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 26)).foregroundStyle(Palette.warning)
+                }
+                .offset(x: -mascotSize * 0.72, y: -mascotSize * 0.38)
+                FloatingDecor(phase: 0.8) {
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 20)).foregroundStyle(Color(hex: 0xF08080))
+                }
+                .offset(x: mascotSize * 0.72, y: -mascotSize * 0.46)
+                FloatingDecor(phase: 1.4) {
+                    Image(systemName: "sparkle")
+                        .font(.system(size: 16)).foregroundStyle(Palette.accent)
+                }
+                .offset(x: mascotSize * 0.62, y: mascotSize * 0.3)
+
+            case .thinking:
+                FloatingDecor(phase: 0.2) {
+                    ThoughtCloud { Image(systemName: "lightbulb.fill")
+                        .font(.system(size: 20)).foregroundStyle(Palette.warning) }
+                }
+                .offset(x: -mascotSize * 0.6, y: -mascotSize * 0.52)
+                FloatingDecor(phase: 0.9) {
+                    ThoughtCloud { Image(systemName: "video.fill")
+                        .font(.system(size: 20)).foregroundStyle(Palette.accent) }
+                }
+                .offset(x: mascotSize * 0.55, y: -mascotSize * 0.62)
+                questionGlyph(size: 30, color: Palette.accent)
+                    .offset(x: -mascotSize * 0.78, y: mascotSize * 0.1)
+                questionGlyph(size: 22, color: Color(hex: 0x5AC8B0))
+                    .offset(x: mascotSize * 0.8, y: -mascotSize * 0.05)
+
+            case .habit:
+                FloatingDecor(phase: 0.2) {
+                    ThoughtCloud { Image(systemName: "calendar")
+                        .font(.system(size: 20)).foregroundStyle(Palette.accent) }
+                }
+                .offset(x: -mascotSize * 0.6, y: -mascotSize * 0.55)
+                FloatingDecor(phase: 0.9) {
+                    ThoughtCloud { Image(systemName: "chart.line.uptrend.xyaxis")
+                        .font(.system(size: 20)).foregroundStyle(Palette.positive) }
+                }
+                .offset(x: mascotSize * 0.58, y: -mascotSize * 0.6)
+                FloatingDecor(phase: 1.5) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 22)).foregroundStyle(Palette.critical)
+                }
+                .offset(x: mascotSize * 0.75, y: mascotSize * 0.25)
+
+            case .proud:
+                FloatingDecor(phase: 0.2) {
+                    ThoughtCloud { Image(systemName: "quote.opening")
+                        .font(.system(size: 18)).foregroundStyle(Palette.ink) }
+                }
+                .offset(x: -mascotSize * 0.58, y: -mascotSize * 0.56)
+                FloatingDecor(phase: 0.9) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 26)).foregroundStyle(Palette.warning)
+                }
+                .offset(x: mascotSize * 0.7, y: -mascotSize * 0.35)
+                FloatingDecor(phase: 1.5) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 22)).foregroundStyle(Palette.positive)
+                }
+                .offset(x: mascotSize * 0.72, y: mascotSize * 0.28)
+            }
+
+            PlaceholderMascot(size: mascotSize)
+        }
+        .frame(height: mascotSize * 1.7)
+        .accessibilityHidden(true)
+    }
+
+    private func questionGlyph(size: CGFloat, color: Color) -> some View {
+        FloatingDecor(phase: Double(size) * 0.05) {
+            Text("?")
+                .font(Typeface.sans(size, .bold))
+                .foregroundStyle(color)
+                .rotationEffect(.degrees(size.truncatingRemainder(dividingBy: 2) == 0 ? 12 : -10))
+        }
+    }
+}
+
+// A drawn thought-bubble cloud (overlapping white circles) holding one symbol.
+private struct ThoughtCloud<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        ZStack {
+            Circle().fill(Palette.surfaceRaised).frame(width: 34, height: 34).offset(x: -20, y: 8)
+            Circle().fill(Palette.surfaceRaised).frame(width: 40, height: 40).offset(x: 18, y: 6)
+            Circle().fill(Palette.surfaceRaised).frame(width: 52, height: 52)
+            content
+        }
+        .compositingGroup()
+        .shadow(color: Palette.shadowWarm.opacity(0.12), radius: 10, x: 0, y: 5)
+    }
+}
+
+// Full interstitial screen: centered title, message, mascot scene, compact CTA.
+private struct MascotInterstitial: View {
+    let title: String
+    let message: String
+    let decorations: MascotDecorations
+    let ctaTitle: String
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(spacing: Space.sm) {
+            Text(title)
+                .font(AppFont.question).tracking(-0.6)
+                .foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(0)
+            Text(message)
+                .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(1)
+            Spacer(minLength: Space.lg)
+            MascotScene(decorations: decorations)
+            Spacer(minLength: Space.lg)
+            CompactPill(title: ctaTitle, action: onContinue)
+                .accessibilityIdentifier("onboard.continue")
+                .staggerReveal(2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, Space.lg)
+    }
+}
+
+// MARK: - Quiz scaffold (centered title, content, pinned compact CTA)
+
+private struct QuizScaffold<Content: View, CTA: View>: View {
+    let question: String
+    var note: String? = nil
+    @ViewBuilder let content: Content
+    @ViewBuilder let cta: CTA
+
+    var body: some View {
+        VStack(spacing: Space.lg) {
+            VStack(spacing: Space.sm) {
+                Text(question)
+                    .font(AppFont.question).tracking(-0.6)
+                    .foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let note {
+                    Text(note)
+                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(.top, Space.md)
+            .staggerReveal(0)
+
+            content
+                .staggerReveal(1)
+
+            Spacer(minLength: Space.md)
+
+            cta
+                .staggerReveal(2)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, Space.lg)
+    }
+}
+
+// MARK: - BitePal choice card: leading icon badge, tall white card, green-ring selection
+
+private struct IconChoiceCard: View {
+    let icon: String
+    let tint: Color
+    let text: String
+    var sub: String? = nil
+    let selected: Bool
+
+    var body: some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(tint)
+                .frame(width: 42, height: 42)
+                .background(Circle().fill(tint.opacity(0.12)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(text).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                if let sub {
+                    Text(sub).font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Space.lg)
+        .frame(height: 72)
+        .background(selected ? Palette.positive.opacity(0.10) : Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+            .strokeBorder(selected ? Palette.positive : Color.clear, lineWidth: 2))
+        .shadow(color: .black.opacity(selected ? 0.02 : 0.06), radius: 14, x: 0, y: 5)
+        .scaleEffect(selected ? 1.015 : 1.0)
+        .animation(Motion.spring, value: selected)
+    }
+}
+
+// MARK: - CTAs
+
+// Compact centered dark pill (BitePal), hugging its label.
+private struct CompactPill: View {
+    let title: String
+    var chevron: Bool = false
+    var enabled: Bool = true
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: Space.sm) {
+                Text(title).font(AppFont.headline)
+                if chevron {
+                    Image(systemName: "chevron.right").font(.system(size: 13, weight: .bold))
+                }
+            }
+            .foregroundStyle(enabled ? Palette.onInk : Color(hex: 0xA4A29D))
+            .frame(height: 56).padding(.horizontal, 44)
+            .background(enabled ? Palette.ink : Color(hex: 0xDAD9D6))
+            .clipShape(Capsule())
+            .shadow(color: .black.opacity(enabled ? 0.15 : 0), radius: 14, y: 6)
+        }
+        .buttonStyle(PressableStyle())
+        .disabled(!enabled)
+    }
+}
+
+// The optional-step CTA: label flips "Skip ›" → "Next ›" once something's picked.
+// Always tappable — these questions are skippable; the label just signals intent.
+private struct SkipNextPill: View {
+    let hasSelection: Bool
+    let action: () -> Void
+    var body: some View {
+        CompactPill(title: hasSelection ? "Next" : "Skip", chevron: true, action: action)
+            .animation(Motion.quick, value: hasSelection)
+    }
+}
+
+// Circular arrow submit for freeform text steps (Gentler Streak).
+private struct FreeformArrow: View {
+    let enabled: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "arrow.right")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(enabled ? Palette.onInk : Color(hex: 0xA4A29D))
+                .frame(width: 56, height: 56)
+                .background(Circle().fill(enabled ? Palette.ink : Color(hex: 0xDAD9D6)))
+        }
+        .buttonStyle(PressableStyle())
+        .disabled(!enabled)
+        .scaleEffect(enabled ? 1 : 0.85)
+        .animation(Motion.spring, value: enabled)
+    }
+}
+
+// Inline X-clear for freeform fields.
+private struct ClearFieldButton: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Palette.textSecondary)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Palette.surfaceSunken))
+        }
+        .buttonStyle(PressableStyle())
+        .transition(.scale.combined(with: .opacity))
+    }
+}
+
+// MARK: - Mascot + badges
+
 // A gently pulsing "listening" ring behind the waveform icon on the feature-explainer
 // screen — cheap, apt personality for the "talk to me" moment.
 private struct PulsingWaveformBadge: View {
@@ -727,6 +1328,10 @@ private struct PulsingWaveformBadge: View {
     }
 }
 
+// Code-only filler mascot — no image assets, so it's not blocked on generated art. Swap
+// the body for a real character illustration later; call sites (frame size + placement)
+// stay the same. Bounces in on appear, breathes gently while idle, and blinks on a
+// randomized loop for a touch of life.
 private struct PlaceholderMascot: View {
     var size: CGFloat = 180
     @State private var appeared = false
@@ -773,162 +1378,7 @@ private struct PlaceholderMascot: View {
     }
 }
 
-private struct HeroWelcome: View {
-    let start: () -> Void
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            Image("Hero").resizable().scaledToFill().ignoresSafeArea()
-            LinearGradient(
-                colors: [.clear, .clear, .black.opacity(0.55), .black.opacity(0.92)],
-                startPoint: .top, endPoint: .bottom
-            )
-            .ignoresSafeArea()
-            VStack(alignment: .leading, spacing: Space.lg) {
-                Text("Film once.\nPost every day.")
-                    .font(Typeface.display(46, .semibold)).foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .shadow(color: .black.opacity(0.3), radius: 14, y: 1)
-                Text("Marque learns your voice, writes scripts that sound like you, and turns one recording into a week of clips.")
-                    .font(AppFont.bodyL).foregroundStyle(.white.opacity(0.82))
-                Button(action: start) {
-                    HStack(spacing: Space.sm) {
-                        Text("Get started").font(AppFont.headline)
-                        Image(systemName: "arrow.right").font(.system(size: 15, weight: .semibold))
-                    }
-                    .foregroundStyle(Palette.ink)
-                    .frame(maxWidth: .infinity).frame(height: 56)
-                    .background(.white)
-                    .clipShape(Capsule())
-                    .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
-                }
-                .buttonStyle(PressableStyle())
-                .accessibilityIdentifier("onboard.start")
-            }
-            .padding(.horizontal, Space.xl)
-            .padding(.bottom, Space.huge)
-        }
-    }
-}
-
-private struct StepScaffold<Content: View>: View {
-    let question: String
-    var note: String? = nil
-    @ViewBuilder let content: Content
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            Text(question)
-                .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            if let note {
-                Text(note).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-            }
-            content
-        }
-    }
-}
-
-private struct PillButton: View {
-    let title: String
-    var enabled: Bool = true
-    var shine: Bool = false
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            Text(title).font(AppFont.headline)
-                .foregroundStyle(enabled ? Palette.onInk : Color(hex: 0xA4A29D))
-                .frame(maxWidth: .infinity).frame(height: 56)
-                .background(ZStack {
-                    (enabled ? Palette.ink : Color(hex: 0xDAD9D6))
-                    if shine && enabled { ShineSweep() }
-                })
-                .clipShape(Capsule())
-        }
-        .buttonStyle(PressableStyle())
-        .disabled(!enabled)
-    }
-}
-
-private struct ChoiceCard: View {
-    let text: String
-    let selected: Bool
-    var body: some View {
-        HStack {
-            Text(text).font(AppFont.bodyL).foregroundStyle(selected ? Palette.onInk : Palette.textPrimary)
-            Spacer()
-            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(selected ? Palette.onInk : Palette.textTertiary)
-        }
-        .padding(.horizontal, Space.lg).frame(height: 58)
-        .background(selected ? Palette.ink : Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
-        .shadow(color: .black.opacity(selected ? 0 : 0.05), radius: 12, x: 0, y: 4)
-    }
-}
-
-private struct EmojiChoiceCard: View {
-    let emoji: String
-    let text: String
-    let selected: Bool
-    var body: some View {
-        HStack {
-            Text(emoji).font(.system(size: 24))
-            Text(text).font(AppFont.bodyL).foregroundStyle(selected ? Palette.onInk : Palette.textPrimary)
-            Spacer()
-            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(selected ? Palette.onInk : Palette.textTertiary)
-        }
-        .padding(.horizontal, Space.lg).frame(height: 60)
-        .background(selected ? Palette.ink : Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
-    }
-}
-
-private struct OnboardInterstitial: View {
-    let headline: String
-    let message: String
-    let onContinue: () -> Void
-    var body: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            Text(headline)
-                .font(Typeface.display(32, .semibold)).tracking(-0.8)
-                .foregroundStyle(Palette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            Text(message)
-                .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
-                .lineSpacing(5).fixedSize(horizontal: false, vertical: true)
-            PillButton(title: "Continue", action: onContinue)
-                .accessibilityIdentifier("onboard.continue")
-        }
-    }
-}
-
-private struct PaceCard: View {
-    let count: Int
-    let sub: String
-    let selected: Bool
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(count) posts/week").font(AppFont.bodyL)
-                    .foregroundStyle(selected ? Palette.onInk : Palette.textPrimary)
-                Text(sub).font(AppFont.caption)
-                    .foregroundStyle(selected ? Palette.onInk.opacity(0.7) : Palette.textTertiary)
-            }
-            Spacer()
-            Image(systemName: selected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(selected ? Palette.onInk : Palette.textTertiary)
-        }
-        .padding(.horizontal, Space.lg).frame(height: 70)
-        .background(selected ? Palette.ink : Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(selected ? Color.clear : Palette.hairline, lineWidth: 1))
-    }
-}
+// MARK: - Progress
 
 private struct OnboardProgress: View {
     let total: Int

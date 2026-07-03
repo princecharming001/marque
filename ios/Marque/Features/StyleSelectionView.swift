@@ -90,7 +90,7 @@ private struct StyleTile: View {
                 StylePreview(style: style).frame(height: 92)
                 if on {
                     Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Palette.accent).background(Circle().fill(.white)).padding(4)
+                        .foregroundStyle(Palette.positive).background(Circle().fill(.white)).padding(4)
                 }
             }
             Text(style.label).font(AppFont.caption)
@@ -98,9 +98,9 @@ private struct StyleTile: View {
         }
         .padding(Space.sm)
         .frame(maxWidth: .infinity)
-        .background(on ? Palette.accentMuted : Palette.surfaceRaised)
+        .background(on ? Palette.positive.opacity(0.10) : Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(on ? Palette.accent : Palette.hairline, lineWidth: on ? 1.5 : 1))
+            .strokeBorder(on ? Palette.positive : Palette.hairline, lineWidth: on ? 2 : 1))
     }
 }

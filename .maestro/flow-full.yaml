@@ -4,9 +4,9 @@ name: Marque — full core loop
 - launchApp:
     arguments:
       reset: "true"
-- assertVisible: "Marque"
+- assertVisible: "Get started"
 
-# Onboarding — step 0: hero
+# Onboarding — step 0: landing
 - tapOn:
     id: "onboard.start"
 
@@ -36,25 +36,25 @@ name: Marque — full core loop
 # Step 5: Goal
 - assertVisible: "What are you here to do?"
 - tapOn: "Grow my audience"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 6: Platform
 - assertVisible: "Where does your audience live?"
 - tapOn:
     id: "onboard.platform.instagram"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 7: Stage
-- assertVisible: "Where's your audience today?"
+- assertVisible: "Where’s your audience today?"
 - tapOn:
     id: "onboard.stage.nano"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 8: Frequency
 - assertVisible: "How often do you post right now?"
 - tapOn:
     id: "onboard.frequency.sometimes"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 9: Interstitial
 - tapOn:
@@ -64,14 +64,15 @@ name: Marque — full core loop
 - assertVisible: "What gets in the way most?"
 - tapOn:
     id: "onboard.blocker.time"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 11: Niche
-- assertVisible: "Tell me about your niche"
+- assertVisible: "What’s your niche?"
 - tapOn:
     id: "onboard.niche"
 - inputText: "Fitness coaching"
-- tapOn: "Continue"
+- tapOn:
+    id: "onboard.nicheContinue"
 
 # Step 12: What You Do + Audience
 - assertVisible: "Tell me about you"
@@ -81,14 +82,16 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.audience"
 - inputText: "busy professionals"
-- tapOn: "Continue"
+- tapOn:
+    id: "onboard.aboutContinue"
 
 # Step 13: Known For
 - assertVisible: "What do you want to be known for?"
 - tapOn:
     id: "onboard.knownFor"
 - inputText: "no-nonsense fitness for busy people"
-- tapOn: "Continue"
+- tapOn:
+    id: "onboard.knownForContinue"
 
 # Step 14: Mirror interstitial
 - tapOn:
@@ -96,25 +99,25 @@ name: Marque — full core loop
 
 # Step 15: Voice
 - assertVisible: "What’s your voice like?"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 16: Camera comfort
 - assertVisible: "How do you feel on camera?"
 - tapOn:
     id: "onboard.comfort.natural"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 17: Styles — "Natural" camera comfort (previous step) already pre-seeds
 # preferredStyles=[talkingHead], so Talking-head arrives pre-selected; tapping it
 # would TOGGLE IT OFF and leave Continue disabled. Just confirm and move on.
 - assertVisible: "What kind of videos?"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 18: Pace
 - assertVisible: "Pick your weekly pace"
 - tapOn:
     id: "onboard.pace.5"
-- tapOn: "Continue"
+- tapOn: "Next"
 
 # Step 19: Connect
 - assertVisible: "Connect your accounts"
