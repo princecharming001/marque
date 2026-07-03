@@ -20,7 +20,8 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.creatorName"
 - inputText: "Alex"
-- tapOn: "Continue"
+- tapOn:
+    id: "onboard.nameContinue"
 
 # Step 3: Mascot greets by name
 - assertVisible: "Let’s get to know each other, Alex!"

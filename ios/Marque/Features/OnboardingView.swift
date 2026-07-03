@@ -122,34 +122,91 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             Text("Hi, I\u{2019}m Marque")
                 .font(AppFont.headline).foregroundStyle(Palette.textTertiary)
+                .staggerReveal(0)
             Text("Your dedicated partner in building a content habit that actually sticks.")
                 .font(Typeface.display(30, .semibold)).tracking(-0.6)
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(1)
             Spacer(minLength: Space.xl)
             PlaceholderMascot()
                 .frame(maxWidth: .infinity)
             Spacer(minLength: Space.xl)
             PillButton(title: "Hi, Marque") { advance() }
                 .accessibilityIdentifier("onboard.mascotIntro.continue")
+                .staggerReveal(2)
         }
     }
 
-    // Step 2: Collect the creator's name
+    // Step 2: Collect the creator's name — freeform, un-boxed entry (name typed directly
+    // against the canvas at display size, not in a hairline field) with an inline X-clear
+    // and a circular arrow-submit that springs in once there's text, mirroring the reference.
+    @FocusState private var nameFieldFocused: Bool
+
     private func nameStep() -> some View {
         @Bindable var store = store
-        return StepScaffold(question: "\u{2026}and who are you?", note: "Enter the name you\u{2019}d like to go by.") {
-            TextField("Name", text: Binding(
-                get: { store.brand.creatorName ?? "" },
-                set: { store.brand.creatorName = $0 }
-            ))
-            .marqueField()
-            .accessibilityIdentifier("onboard.creatorName")
-            PillButton(
-                title: "Continue",
-                enabled: !(store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces).isEmpty
-            ) { advance() }
+        let hasText = !(store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+        return VStack(alignment: .leading, spacing: Space.lg) {
+            Text("\u{2026}and who are you?")
+                .font(AppFont.question).tracking(-0.6).foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(0)
+            Text("Enter the name you\u{2019}d like to go by.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .staggerReveal(1)
+
+            HStack(alignment: .center, spacing: Space.sm) {
+                TextField("Name", text: Binding(
+                    get: { store.brand.creatorName ?? "" },
+                    set: { store.brand.creatorName = $0 }
+                ))
+                .font(Typeface.display(40, .semibold)).tracking(-0.6)
+                .foregroundStyle(Palette.textPrimary)
+                .tint(Palette.accent)
+                .textInputAutocapitalization(.words)
+                .focused($nameFieldFocused)
+                .accessibilityIdentifier("onboard.creatorName")
+
+                if hasText {
+                    Button {
+                        withAnimation(Motion.quick) { store.brand.creatorName = "" }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Palette.textSecondary)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(Palette.surfaceSunken))
+                    }
+                    .buttonStyle(PressableStyle())
+                    .transition(.scale.combined(with: .opacity))
+                }
+            }
+            .padding(.top, Space.md)
+            .staggerReveal(2)
+
+            Spacer(minLength: Space.xl)
+
+            HStack {
+                Spacer()
+                Button {
+                    nameFieldFocused = false
+                    advance()
+                } label: {
+                    Image(systemName: "arrow.right")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(hasText ? Palette.onInk : Color(hex: 0xA4A29D))
+                        .frame(width: 56, height: 56)
+                        .background(Circle().fill(hasText ? Palette.ink : Color(hex: 0xDAD9D6)))
+                }
+                .buttonStyle(PressableStyle())
+                .disabled(!hasText)
+                .scaleEffect(hasText ? 1 : 0.85)
+                .animation(Motion.spring, value: hasText)
+                .accessibilityIdentifier("onboard.nameContinue")
+            }
         }
+        .animation(Motion.quick, value: hasText)
+        .onAppear { nameFieldFocused = true }
     }
 
     // Step 3: Mascot greets the creator by name, sets expectation for what's next
@@ -161,14 +218,17 @@ struct OnboardingView: View {
                 .font(Typeface.display(30, .semibold)).tracking(-0.6)
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(0)
             Text("I\u{2019}ll start by explaining what I can do for you.")
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+                .staggerReveal(1)
             Spacer(minLength: Space.xl)
             PlaceholderMascot()
                 .frame(maxWidth: .infinity)
             Spacer(minLength: Space.xl)
             PillButton(title: "Go for it") { advance() }
                 .accessibilityIdentifier("onboard.mascotReady.continue")
+                .staggerReveal(2)
         }
     }
 
@@ -181,31 +241,28 @@ struct OnboardingView: View {
                     .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                         .strokeBorder(Palette.hairline, lineWidth: 1))
                 VStack(spacing: Space.md) {
-                    Circle()
-                        .fill(Palette.accent.opacity(0.15))
-                        .frame(width: 88, height: 88)
-                        .overlay(
-                            Image(systemName: "waveform")
-                                .font(.system(size: 28, weight: .medium))
-                                .foregroundStyle(Palette.accent)
-                        )
+                    PulsingWaveformBadge()
                     Text("\u{201C}Talk to me every morning.\u{201D}")
                         .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 }
             }
             .frame(height: 220)
+            .staggerReveal(0)
 
             Text("I learn what works for you.")
                 .font(Typeface.display(28, .semibold)).tracking(-0.6)
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
+                .staggerReveal(1)
             Text("Tell me your ideas, your angle, what\u{2019}s on your mind \u{2014} I remember it all and use it to write sharper scripts every day.")
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                 .lineSpacing(4)
+                .staggerReveal(2)
 
             Spacer(minLength: Space.md)
             PillButton(title: "Continue") { advance() }
                 .accessibilityIdentifier("onboard.featureExplainer.continue")
+                .staggerReveal(3)
         }
     }
 
@@ -640,9 +697,42 @@ struct OnboardingView: View {
 
 // Code-only filler mascot for the intro screens — no image assets, so it's not blocked on
 // generated art. Swap the body for a real character illustration later; call sites (frame
-// size + placement) stay the same.
+// size + placement) stay the same. Bounces in on appear, breathes gently while idle, and
+// blinks on a randomized loop for a touch of life.
+// A gently pulsing "listening" ring behind the waveform icon on the feature-explainer
+// screen — cheap, apt personality for the "talk to me" moment.
+private struct PulsingWaveformBadge: View {
+    @State private var pulsing = false
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Palette.accent.opacity(0.10))
+                .frame(width: 88, height: 88)
+                .scaleEffect(pulsing ? 1.25 : 1.0)
+                .opacity(pulsing ? 0 : 1)
+            Circle()
+                .fill(Palette.accent.opacity(0.15))
+                .frame(width: 88, height: 88)
+                .overlay(
+                    Image(systemName: "waveform")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundStyle(Palette.accent)
+                )
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.6).repeatForever(autoreverses: false)) {
+                pulsing = true
+            }
+        }
+    }
+}
+
 private struct PlaceholderMascot: View {
     var size: CGFloat = 180
+    @State private var appeared = false
+    @State private var breathing = false
+    @State private var blinking = false
+
     var body: some View {
         ZStack {
             Circle()
@@ -650,8 +740,8 @@ private struct PlaceholderMascot: View {
                                      startPoint: .topLeading, endPoint: .bottomTrailing))
             VStack(spacing: size * 0.07) {
                 HStack(spacing: size * 0.16) {
-                    Circle().fill(Palette.onInk).frame(width: size * 0.09, height: size * 0.09)
-                    Circle().fill(Palette.onInk).frame(width: size * 0.09, height: size * 0.09)
+                    eye
+                    eye
                 }
                 Capsule().fill(Palette.onInk).frame(width: size * 0.3, height: size * 0.05)
             }
@@ -660,7 +750,26 @@ private struct PlaceholderMascot: View {
         .clipShape(Circle())
         .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1))
         .shadow(color: Palette.shadowWarm.opacity(0.18), radius: 24, x: 0, y: 12)
+        .scaleEffect(appeared ? (breathing ? 1.03 : 1.0) : 0.7)
+        .opacity(appeared ? 1 : 0)
         .accessibilityHidden(true)
+        .task {
+            withAnimation(Motion.spring) { appeared = true }
+            withAnimation(Motion.breath.delay(0.35)) { breathing = true }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64.random(in: 2_400_000_000...4_600_000_000))
+                guard !Task.isCancelled else { break }
+                withAnimation(.easeInOut(duration: 0.08)) { blinking = true }
+                try? await Task.sleep(nanoseconds: 110_000_000)
+                withAnimation(.easeInOut(duration: 0.12)) { blinking = false }
+            }
+        }
+    }
+
+    private var eye: some View {
+        Capsule()
+            .fill(Palette.onInk)
+            .frame(width: size * 0.09, height: blinking ? size * 0.012 : size * 0.09)
     }
 }
 
