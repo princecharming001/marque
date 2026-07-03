@@ -2,6 +2,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+import main
 from main import app
 
 client = TestClient(app)
@@ -262,6 +263,21 @@ def test_tts_mock_when_keyless():
 
 def test_tts_empty_text_rejected():
     assert client.post("/v1/tts", json={"text": "  "}).status_code == 400
+
+
+def test_tts_provider_selection(monkeypatch):
+    # Keyless → mock; Cartesia wins on cost when both keys present; explicit
+    # TTS_PROVIDER always overrides the auto-pick.
+    monkeypatch.setattr(main, "TTS_PROVIDER", "")
+    monkeypatch.setattr(main, "CARTESIA_KEY", "")
+    monkeypatch.setattr(main, "ELEVENLABS_KEY", "")
+    assert main._tts_provider() == "mock"
+    monkeypatch.setattr(main, "ELEVENLABS_KEY", "el-key")
+    assert main._tts_provider() == "elevenlabs"
+    monkeypatch.setattr(main, "CARTESIA_KEY", "ca-key")
+    assert main._tts_provider() == "cartesia"
+    monkeypatch.setattr(main, "TTS_PROVIDER", "elevenlabs")
+    assert main._tts_provider() == "elevenlabs"
 
 
 # ---------------------------------------------------------------------------

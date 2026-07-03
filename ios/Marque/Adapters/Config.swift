@@ -17,14 +17,10 @@ enum AppConfig {
     }
 
     // The only Supabase values the untrusted client holds (the anon key is RLS-safe).
+    // Every vendor key (Ayrshare, AssemblyAI, ElevenLabs/Cartesia, Remotion, R2, Apify)
+    // lives exclusively on the backend — the app never sees or transmits one.
     static var supabaseURL: String { value(env: "SUPABASE_URL", defaults: "supabase.url", plist: "SUPABASE_URL") }
     static var supabaseAnonKey: String { value(env: "SUPABASE_ANON_KEY", defaults: "supabase.anonKey", plist: "SUPABASE_ANON_KEY") }
-
-    // Phase-2 publish/clip adapters still read these from env/Info.plist only (no in-app entry);
-    // they move fully server-side when those pipelines land.
-    static var ayrshareKey: String { value(env: "AYRSHARE_KEY", defaults: "ayrshare.key") }
-    static var assemblyAIKey: String { value(env: "ASSEMBLYAI_KEY", defaults: "assemblyai.key") }
-    static var shotstackKey: String { value(env: "SHOTSTACK_KEY", defaults: "shotstack.key") }
 }
 
 // Hosted legal + support pages. These URLs MUST resolve to real pages before App Store

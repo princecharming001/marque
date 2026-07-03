@@ -27,9 +27,7 @@ app = FastAPI(title="Marque API", version="0.3.0")
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages"
 AYRSHARE_KEY = os.environ.get("AYRSHARE_KEY", "")
-BRIGHTDATA_KEY = os.environ.get("BRIGHTDATA_KEY", "")
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
-VOYAGE_KEY = os.environ.get("VOYAGE_API_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -463,8 +461,9 @@ def healthz():
 def readyz():
     return {"status": "ready", "version": app.version,
             "ai": "live" if ANTHROPIC_KEY else "mock",
-            "scrape": "live" if (BRIGHTDATA_KEY or APIFY_KEY) else "mock",
-            "publish": "live" if AYRSHARE_KEY else "mock"}
+            "scrape": "live" if APIFY_KEY else "mock",
+            "publish": "live" if AYRSHARE_KEY else "mock",
+            "tts": _tts_provider()}
 
 
 @app.post("/v1/pillars")
@@ -844,10 +843,10 @@ async def _poll_remotion_render(render_id: str, max_wait_s: int = 600) -> str | 
 # ----- brand-scan + voice onboarding -----
 
 async def scrape_posts(handle: str, platform: str) -> list[dict]:
-    """Real scrape when keyed (Bright Data / Apify); else empty (caller supplies posts for testing)."""
-    if not (BRIGHTDATA_KEY or APIFY_KEY) or not handle:
+    """Real scrape when keyed (Apify); else empty (caller supplies posts for testing)."""
+    if not APIFY_KEY or not handle:
         return []
-    # Structural Bright Data call — wired to the dataset trigger when the key is present.
+    # Structural Apify actor call — wired to the actor run when the key is present.
     # (Left as the single integration point; returns [] until provisioned.)
     return []
 
@@ -1445,12 +1444,63 @@ async def converse(req: ConverseRequest):
 
 
 # ---------------------------------------------------------------------------
-# TTS proxy — ElevenLabs when keyed; client falls back to AVSpeechSynthesizer
+# TTS proxy — provider-switchable; client falls back to AVSpeechSynthesizer
+# when keyless. TTS_PROVIDER=cartesia|elevenlabs forces one; otherwise whichever
+# key is present wins, Cartesia first (~3-4x cheaper per character and lower
+# time-to-first-audio; ElevenLabs kept for maximum voice realism).
 # ---------------------------------------------------------------------------
 
 ELEVENLABS_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_DEFAULT_VOICE = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+CARTESIA_KEY = os.environ.get("CARTESIA_API_KEY", "")
+CARTESIA_DEFAULT_VOICE = os.environ.get("CARTESIA_VOICE_ID", "")
+TTS_PROVIDER = os.environ.get("TTS_PROVIDER", "").lower()
 _tts_cache: dict[str, bytes] = {}
+
+
+def _tts_provider() -> str:
+    if TTS_PROVIDER in ("cartesia", "elevenlabs"):
+        return TTS_PROVIDER
+    if CARTESIA_KEY:
+        return "cartesia"
+    if ELEVENLABS_KEY:
+        return "elevenlabs"
+    return "mock"
+
+
+async def _tts_elevenlabs(text: str, voice_id: str) -> bytes | None:
+    voice = voice_id or ELEVENLABS_DEFAULT_VOICE
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=mp3_44100_128",
+            headers={"xi-api-key": ELEVENLABS_KEY, "content-type": "application/json"},
+            json={"text": text, "model_id": "eleven_turbo_v2_5"},
+        )
+    if r.status_code == 200 and r.content:
+        return r.content
+    logging.warning("tts: elevenlabs %d %s", r.status_code, r.text[:200])
+    return None
+
+
+async def _tts_cartesia(text: str, voice_id: str) -> bytes | None:
+    voice = voice_id or CARTESIA_DEFAULT_VOICE
+    if not voice:
+        logging.warning("tts: cartesia keyed but CARTESIA_VOICE_ID unset")
+        return None
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.post(
+            "https://api.cartesia.ai/tts/bytes",
+            headers={"X-API-Key": CARTESIA_KEY, "Cartesia-Version": "2024-11-13",
+                     "Content-Type": "application/json"},
+            json={"model_id": "sonic-2", "transcript": text,
+                  "voice": {"mode": "id", "id": voice},
+                  "output_format": {"container": "mp3", "sample_rate": 44100,
+                                    "bit_rate": 128000}},
+        )
+    if r.status_code == 200 and r.content:
+        return r.content
+    logging.warning("tts: cartesia %d %s", r.status_code, r.text[:200])
+    return None
 
 
 @app.post("/v1/tts")
@@ -1459,26 +1509,21 @@ async def tts(req: TTSRequest):
     text = (req.text or "").strip()[:1000]
     if not text:
         raise HTTPException(status_code=400, detail="empty text")
-    if not ELEVENLABS_KEY:
+    provider = _tts_provider()
+    if provider == "mock":
         return JSONResponse({"mode": "mock"})
     import hashlib
-    voice = req.voice_id or ELEVENLABS_DEFAULT_VOICE
-    key = hashlib.sha256(f"{voice}:{text}".encode()).hexdigest()
+    key = hashlib.sha256(f"{provider}:{req.voice_id}:{text}".encode()).hexdigest()
     if key in _tts_cache:
         return Response(content=_tts_cache[key], media_type="audio/mpeg")
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=mp3_44100_128",
-                headers={"xi-api-key": ELEVENLABS_KEY, "content-type": "application/json"},
-                json={"text": text, "model_id": "eleven_turbo_v2_5"},
-            )
-        if r.status_code == 200 and r.content:
+        synth = _tts_cartesia if provider == "cartesia" else _tts_elevenlabs
+        audio = await synth(text, req.voice_id)
+        if audio:
             if len(_tts_cache) > 64:
                 _tts_cache.pop(next(iter(_tts_cache)))
-            _tts_cache[key] = r.content
-            return Response(content=r.content, media_type="audio/mpeg")
-        logging.warning("tts: elevenlabs %d %s", r.status_code, r.text[:200])
+            _tts_cache[key] = audio
+            return Response(content=audio, media_type="audio/mpeg")
     except (httpx.TimeoutException, httpx.ConnectError) as e:
         logging.warning("tts: network error %s", e)
     return JSONResponse({"mode": "mock"})
@@ -1619,7 +1664,7 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
     corpus = _mock_reels(niche, watched_list)
     page = corpus[cursor * REELS_PAGE:(cursor + 1) * REELS_PAGE]
     next_cursor = cursor + 1 if (cursor + 1) * REELS_PAGE < len(corpus) else None
-    return {"mode": "live" if (APIFY_KEY or BRIGHTDATA_KEY) else "mock",
+    return {"mode": "live" if APIFY_KEY else "mock",
             "reels": page, "next_cursor": next_cursor}
 
 
