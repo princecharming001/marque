@@ -15,14 +15,13 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: Space.xl) {
                 topBar
                 greetingBlock.staggerReveal(0)
-                VoiceBubble(memoryLine: memoryLine) { showVoice = true }
+                VoiceBubble { showVoice = true }
                     .staggerReveal(1)
                 picksSection.staggerReveal(2)
                 if let trend = feed.trend {
                     TrendTicker(trend: trend).staggerReveal(3)
                 }
                 stealSection.staggerReveal(4)
-                quietRows.staggerReveal(5)
             }
             .screenPadding()
             .padding(.top, Space.lg)
@@ -93,12 +92,6 @@ struct HomeView: View {
             .font(Typeface.display(34)).tracking(-0.8)
             .foregroundStyle(Palette.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var memoryLine: String {
-        if !store.memory.angle.isEmpty { return "Working on: \(store.memory.angle)" }
-        if let idea = store.memory.ideas.last { return "Last idea: \(idea)" }
-        return "Tell me what's on your mind this morning."
     }
 
     // MARK: Today's picks — snap carousel of daily scripts (FeedStore page 0+)
@@ -246,36 +239,4 @@ struct HomeView: View {
         .accessibilityIdentifier("feed.moreReels")
     }
 
-    // MARK: Quiet rows
-
-    private var quietRows: some View {
-        VStack(spacing: 0) {
-            quietRow(icon: "chart.bar", title: "Performance", subtitle: "Queue + last 30 days") {
-                router.selectedTab = .performance
-            }
-            MarqueHairline()
-            quietRow(icon: "rectangle.stack", title: "Library", subtitle: "Clips + media") {
-                router.selectedTab = .library
-            }
-        }
-        .marqueCard(padding: 0)
-    }
-
-    private func quietRow(icon: String, title: String, subtitle: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: Space.md) {
-                Image(systemName: icon).font(.system(size: 16)).foregroundStyle(Palette.accent)
-                    .frame(width: 28)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                    Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                }
-                Spacer()
-                Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
-            }
-            .padding(Space.lg)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
 }

@@ -85,13 +85,6 @@ struct ProfileView: View {
                 .padding(.bottom, Space.lg)
                 .staggerReveal(4)
 
-                MarqueHairline()
-
-                // What Marque remembers — quiet glance, builds trust in the voice bubble
-                memorySection
-                    .padding(.horizontal, Space.screenH)
-                    .staggerReveal(5)
-
                 Spacer().frame(height: 120)
             }
         }
@@ -229,45 +222,6 @@ struct ProfileView: View {
         }
     }
 
-    // MARK: - Memory glance
-
-    private var recentMemory: [String] {
-        Array((store.memory.ideas.suffix(2) + store.memory.facts.suffix(2)).suffix(3))
-    }
-
-    private var memoryOverflowCount: Int {
-        let total = store.memory.facts.count + store.memory.ideas.count
-            + store.memory.perspective.count + store.memory.preferences.count
-            + (store.memory.angle.isEmpty ? 0 : 1)
-        return max(0, total - recentMemory.count)
-    }
-
-    private var memorySection: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            SectionLabel(text: "What Marque remembers")
-                .padding(.top, Space.lg)
-            if store.memory.isEmpty {
-                Text("Talk to Marque on Home and it starts remembering.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-            } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(recentMemory.enumerated()), id: \.offset) { _, item in
-                        HStack(alignment: .top, spacing: Space.sm) {
-                            Text("•").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            Text(item)
-                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    if memoryOverflowCount > 0 {
-                        Text("…and \(memoryOverflowCount) more")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            .padding(.top, 2)
-                    }
-                }
-            }
-        }
-    }
 
     // MARK: - Hero + row helpers
 
