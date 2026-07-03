@@ -47,5 +47,54 @@ struct RootView: View {
         .safeAreaInset(edge: .top) {
             if !net.isOnline { OfflineBanner() }
         }
+        #if DEBUG
+        .overlay(alignment: .trailing) { DevJumpMenu() }
+        #endif
     }
 }
+
+#if DEBUG
+// Floating dev-only jump menu — lives above the gate machine so it's reachable from any
+// app state. Mid-right edge is the emptiest spot across onboarding, gates, and tabs.
+// DEBUG builds only; never ships.
+private struct DevJumpMenu: View {
+    @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
+    @State private var showMenu = false
+
+    var body: some View {
+        Button { showMenu = true } label: {
+            Image(systemName: "hammer.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Palette.onInk)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(Palette.ink.opacity(0.55)))
+        }
+        .padding(.trailing, 6)
+        .offset(y: -120)
+        .accessibilityIdentifier("dev.jump")
+        .confirmationDialog("Dev: jump to", isPresented: $showMenu, titleVisibility: .visible) {
+            Button("Onboarding") { jumpToOnboarding() }
+            Button("Home") { jumpToHome() }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    /// Replays the onboarding flow. Auth + subscription are left intact, so finishing
+    /// the quiz drops straight back into the app without re-hitting the gates.
+    private func jumpToOnboarding() {
+        store.hasOnboarded = false
+        store.save()
+    }
+
+    /// Forces every gate open and lands on the Home tab.
+    private func jumpToHome() {
+        store.hasOnboarded = true
+        if !store.auth.isAuthed { store.auth.continueAsDemo() }
+        if !store.subscription.isSubscribed { store.subscription.devContinue() }
+        router.showFilm = false
+        router.selectedTab = .home
+        store.save()
+    }
+}
+#endif
