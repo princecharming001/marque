@@ -10,47 +10,69 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.start"
 
-# Step 1: Goal
+# Step 1: Mascot self-intro
+- assertVisible: "Hi, I’m Marque"
+- tapOn:
+    id: "onboard.mascotIntro.continue"
+
+# Step 2: Collect creator name
+- assertVisible: "…and who are you?"
+- tapOn:
+    id: "onboard.creatorName"
+- inputText: "Alex"
+- tapOn: "Continue"
+
+# Step 3: Mascot greets by name
+- assertVisible: "Let’s get to know each other, Alex!"
+- tapOn:
+    id: "onboard.mascotReady.continue"
+
+# Step 4: Feature explainer
+- assertVisible: "I learn what works for you."
+- tapOn:
+    id: "onboard.featureExplainer.continue"
+
+# Step 5: Goal
 - assertVisible: "What are you here to do?"
 - tapOn: "Grow my audience"
 - tapOn: "Continue"
 
-# Step 2: Platform
+# Step 6: Platform
 - assertVisible: "Where does your audience live?"
 - tapOn:
     id: "onboard.platform.instagram"
 - tapOn: "Continue"
 
-# Step 3: Stage
+# Step 7: Stage
 - assertVisible: "Where's your audience today?"
 - tapOn:
     id: "onboard.stage.nano"
 - tapOn: "Continue"
 
-# Step 4: Frequency
+# Step 8: Frequency
 - assertVisible: "How often do you post right now?"
 - tapOn:
     id: "onboard.frequency.sometimes"
 - tapOn: "Continue"
 
-# Step 5: Interstitial
+# Step 9: Interstitial
 - tapOn:
     id: "onboard.continue"
 
-# Step 6: Blocker
+# Step 10: Blocker
 - assertVisible: "What gets in the way most?"
 - tapOn:
     id: "onboard.blocker.time"
 - tapOn: "Continue"
 
-# Step 7: Niche
+# Step 11: Niche
 - assertVisible: "Tell me about your niche"
 - tapOn:
     id: "onboard.niche"
 - inputText: "Fitness coaching"
 - tapOn: "Continue"
 
-# Step 8: What You Do + Audience
+# Step 12: What You Do + Audience
 - assertVisible: "Tell me about you"
 - tapOn:
     id: "onboard.whatYouDo"
@@ -60,40 +82,40 @@ name: Marque — full core loop
 - inputText: "busy professionals"
 - tapOn: "Continue"
 
-# Step 9: Known For
+# Step 13: Known For
 - assertVisible: "What do you want to be known for?"
 - tapOn:
     id: "onboard.knownFor"
 - inputText: "no-nonsense fitness for busy people"
 - tapOn: "Continue"
 
-# Step 10: Mirror interstitial
+# Step 14: Mirror interstitial
 - tapOn:
     id: "onboard.continue"
 
-# Step 11: Voice
+# Step 15: Voice
 - assertVisible: "What’s your voice like?"
 - tapOn: "Continue"
 
-# Step 12: Camera comfort
+# Step 16: Camera comfort
 - assertVisible: "How do you feel on camera?"
 - tapOn:
     id: "onboard.comfort.natural"
 - tapOn: "Continue"
 
-# Step 13: Styles — "Natural" camera comfort (previous step) already pre-seeds
+# Step 17: Styles — "Natural" camera comfort (previous step) already pre-seeds
 # preferredStyles=[talkingHead], so Talking-head arrives pre-selected; tapping it
 # would TOGGLE IT OFF and leave Continue disabled. Just confirm and move on.
 - assertVisible: "What kind of videos?"
 - tapOn: "Continue"
 
-# Step 14: Pace
+# Step 18: Pace
 - assertVisible: "Pick your weekly pace"
 - tapOn:
     id: "onboard.pace.5"
 - tapOn: "Continue"
 
-# Step 15: Connect
+# Step 19: Connect
 - assertVisible: "Connect your accounts"
 - tapOn: "Skip for now"
 

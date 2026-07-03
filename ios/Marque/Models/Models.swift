@@ -81,6 +81,7 @@ struct BrandGraph: Codable, Hashable {
     var cameraComfort: CameraComfort? = nil
     var weeklyTarget: Int? = nil
     var watchedCreators: [WatchedCreator]? = nil   // ≤2 "creators to watch" (Profile)
+    var creatorName: String? = nil                 // collected in the mascot-intro onboarding step
 }
 
 /// A linked Instagram/TikTok account, verified by fetching the real public profile.

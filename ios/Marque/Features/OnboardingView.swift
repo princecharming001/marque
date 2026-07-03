@@ -5,24 +5,33 @@ import UIKit
 // white pill choice cards (ink when selected), boxed hairline fields, ink pill buttons,
 // one idea per screen. Accessibility ids + button text preserved for the Maestro flow.
 //
-// Steps 0–16:
-//  0: hero           — HeroWelcome
-//  1: goal           — "What are you here to do?"
-//  2: platform       — "Where does your audience live?"
-//  3: stage          — "Where's your audience today?"
-//  4: frequency      — "How often do you post right now?"
-//  5: methodInterstitial — "Consistency beats virality"
-//  6: blocker        — "What gets in the way most?"
-//  7: niche          — niche field only
-//  8: whatYouDo      — whatYouDo + audience fields
-//  9: knownFor       — knownFor field
-// 10: mirrorInterstitial — brand mirror sentence
-// 11: voice          — sliders
-// 12: cameraComfort  — "How do you feel on camera?"
-// 13: styles         — StyleSelectionView
-// 14: pace           — "Pick your weekly pace"
-// 15: connect        — ConnectAccountsView
-// 16: aha            — scripts ready / finish
+// Steps 0–20: opens with a mascot-led intro (self-intro → collect name → "let me explain
+// what I can do" → one feature preview) before the quiz, mirroring Gentler Streak's
+// Yorhart pattern. The mascot is a code-only placeholder (PlaceholderMascot) — swap for
+// custom art later without touching flow/copy. Progress bar only covers the quiz portion
+// (steps 5–19); the intro screens are un-numbered, like the reference.
+//
+//  0: hero              — HeroWelcome
+//  1: mascotIntro       — "Hi, I'm Marque" + tagline
+//  2: name              — "…and who are you?" — collects creatorName
+//  3: mascotReady       — "Let's get to know each other, {name}!"
+//  4: featureExplainer  — one feature preview ("I learn what works for you")
+//  5: goal              — "What are you here to do?"
+//  6: platform          — "Where does your audience live?"
+//  7: stage             — "Where's your audience today?"
+//  8: frequency         — "How often do you post right now?"
+//  9: methodInterstitial — "Consistency beats virality"
+// 10: blocker           — "What gets in the way most?"
+// 11: niche             — niche field only
+// 12: whatYouDo         — whatYouDo + audience fields
+// 13: knownFor          — knownFor field
+// 14: mirrorInterstitial — brand mirror sentence
+// 15: voice             — sliders
+// 16: cameraComfort     — "How do you feel on camera?"
+// 17: styles            — StyleSelectionView
+// 18: pace              — "Pick your weekly pace"
+// 19: connect           — ConnectAccountsView
+// 20: aha                — scripts ready / finish
 
 struct OnboardingView: View {
     @Environment(AppStore.self) private var store
@@ -30,7 +39,8 @@ struct OnboardingView: View {
     @State private var analyzing = false
     @State private var generating = false
 
-    private let lastInputStep = 15
+    private let lastInputStep = 19
+    private let quizStartStep = 5   // progress bar covers only the quiz portion, not the mascot intro
 
     var body: some View {
         if step == 0 {
@@ -59,28 +69,37 @@ struct OnboardingView: View {
                             }
                             Spacer()
                         }
-                        OnboardProgress(total: lastInputStep, index: step)
+                        // The mascot-intro screens (1–4) are un-numbered, like the reference —
+                        // the bar only appears once the actual quiz starts.
+                        if step >= quizStartStep {
+                            OnboardProgress(total: lastInputStep - quizStartStep + 1,
+                                           index: step - quizStartStep + 1)
+                        }
                     }
                     .padding(.top, Space.md)
                 }
                 Spacer(minLength: 0)
                 Group {
                     switch step {
-                    case 1:  goalStep()
-                    case 2:  platformStep()
-                    case 3:  stageStep()
-                    case 4:  frequencyStep()
-                    case 5:  methodInterstitialStep()
-                    case 6:  blockerStep()
-                    case 7:  nicheStep()
-                    case 8:  whatYouDoStep()
-                    case 9:  knownForStep()
-                    case 10: mirrorInterstitialStep()
-                    case 11: voiceStep()
-                    case 12: cameraComfortStep()
-                    case 13: styleStep()
-                    case 14: paceStep()
-                    case 15: connectStep()
+                    case 1:  mascotIntroStep()
+                    case 2:  nameStep()
+                    case 3:  mascotReadyStep()
+                    case 4:  featureExplainerStep()
+                    case 5:  goalStep()
+                    case 6:  platformStep()
+                    case 7:  stageStep()
+                    case 8:  frequencyStep()
+                    case 9:  methodInterstitialStep()
+                    case 10: blockerStep()
+                    case 11: nicheStep()
+                    case 12: whatYouDoStep()
+                    case 13: knownForStep()
+                    case 14: mirrorInterstitialStep()
+                    case 15: voiceStep()
+                    case 16: cameraComfortStep()
+                    case 17: styleStep()
+                    case 18: paceStep()
+                    case 19: connectStep()
                     default: ahaStep
                     }
                 }
@@ -96,9 +115,103 @@ struct OnboardingView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
+    // MARK: - Mascot intro (steps 1–4, un-numbered — precedes the quiz)
+
+    // Step 1: Mascot self-intro
+    private func mascotIntroStep() -> some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text("Hi, I\u{2019}m Marque")
+                .font(AppFont.headline).foregroundStyle(Palette.textTertiary)
+            Text("Your dedicated partner in building a content habit that actually sticks.")
+                .font(Typeface.display(30, .semibold)).tracking(-0.6)
+                .foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: Space.xl)
+            PlaceholderMascot()
+                .frame(maxWidth: .infinity)
+            Spacer(minLength: Space.xl)
+            PillButton(title: "Hi, Marque") { advance() }
+                .accessibilityIdentifier("onboard.mascotIntro.continue")
+        }
+    }
+
+    // Step 2: Collect the creator's name
+    private func nameStep() -> some View {
+        @Bindable var store = store
+        return StepScaffold(question: "\u{2026}and who are you?", note: "Enter the name you\u{2019}d like to go by.") {
+            TextField("Name", text: Binding(
+                get: { store.brand.creatorName ?? "" },
+                set: { store.brand.creatorName = $0 }
+            ))
+            .marqueField()
+            .accessibilityIdentifier("onboard.creatorName")
+            PillButton(
+                title: "Continue",
+                enabled: !(store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces).isEmpty
+            ) { advance() }
+        }
+    }
+
+    // Step 3: Mascot greets the creator by name, sets expectation for what's next
+    private func mascotReadyStep() -> some View {
+        let name = (store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces)
+        let greeting = name.isEmpty ? "Let\u{2019}s get to know each other." : "Let\u{2019}s get to know each other, \(name)!"
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            Text(greeting)
+                .font(Typeface.display(30, .semibold)).tracking(-0.6)
+                .foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("I\u{2019}ll start by explaining what I can do for you.")
+                .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+            Spacer(minLength: Space.xl)
+            PlaceholderMascot()
+                .frame(maxWidth: .infinity)
+            Spacer(minLength: Space.xl)
+            PillButton(title: "Go for it") { advance() }
+                .accessibilityIdentifier("onboard.mascotReady.continue")
+        }
+    }
+
+    // Step 4: One feature preview before the quiz starts
+    private func featureExplainerStep() -> some View {
+        VStack(alignment: .leading, spacing: Space.xl) {
+            ZStack {
+                RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                    .fill(Palette.surfaceRaised)
+                    .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                VStack(spacing: Space.md) {
+                    Circle()
+                        .fill(Palette.accent.opacity(0.15))
+                        .frame(width: 88, height: 88)
+                        .overlay(
+                            Image(systemName: "waveform")
+                                .font(.system(size: 28, weight: .medium))
+                                .foregroundStyle(Palette.accent)
+                        )
+                    Text("\u{201C}Talk to me every morning.\u{201D}")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                }
+            }
+            .frame(height: 220)
+
+            Text("I learn what works for you.")
+                .font(Typeface.display(28, .semibold)).tracking(-0.6)
+                .foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Tell me your ideas, your angle, what\u{2019}s on your mind \u{2014} I remember it all and use it to write sharper scripts every day.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .lineSpacing(4)
+
+            Spacer(minLength: Space.md)
+            PillButton(title: "Continue") { advance() }
+                .accessibilityIdentifier("onboard.featureExplainer.continue")
+        }
+    }
+
     // MARK: - Steps
 
-    // Step 1: Goal
+    // Step 5: Goal
     private func goalStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "What are you here to do?") {
@@ -113,7 +226,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 2: Platform
+    // Step 6: Platform
     // platformBothChosen disambiguates "nil because unset" from "nil because user picked Both"
     @State private var platformBothChosen = false
 
@@ -152,7 +265,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 3: Stage
+    // Step 7: Stage
     private func stageStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "Where's your audience today?") {
@@ -178,7 +291,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 4: Frequency
+    // Step 8: Frequency
     private func frequencyStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "How often do you post right now?") {
@@ -204,7 +317,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 5: Method Interstitial
+    // Step 9: Method Interstitial
     private func methodInterstitialStep() -> some View {
         OnboardInterstitial(
             headline: "Consistency beats virality.",
@@ -214,7 +327,7 @@ struct OnboardingView: View {
         .accessibilityElement(children: .contain)
     }
 
-    // Step 6: Blocker
+    // Step 10: Blocker
     private func blockerStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "What gets in the way most?") {
@@ -244,7 +357,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 7: Niche
+    // Step 11: Niche
     private func nicheStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "Tell me about your niche") {
@@ -255,7 +368,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 8: What You Do + Audience
+    // Step 12: What You Do + Audience
     private func whatYouDoStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "Tell me about you") {
@@ -271,7 +384,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 9: Known For
+    // Step 13: Known For
     private func knownForStep() -> some View {
         @Bindable var store = store
         return StepScaffold(
@@ -291,7 +404,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 10: Mirror Interstitial
+    // Step 14: Mirror Interstitial
     private func mirrorInterstitialStep() -> some View {
         let niche     = store.brand.niche.isEmpty    ? "your niche" : store.brand.niche
         let audience  = store.brand.audience.isEmpty ? "your audience" : store.brand.audience
@@ -304,7 +417,7 @@ struct OnboardingView: View {
         )
     }
 
-    // Step 11: Voice
+    // Step 15: Voice
     private func voiceStep() -> some View {
         @Bindable var store = store
         return StepScaffold(
@@ -355,7 +468,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 12: Camera Comfort
+    // Step 16: Camera Comfort
     private func cameraComfortStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "How do you feel on camera?") {
@@ -411,7 +524,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 13: Styles
+    // Step 17: Styles
     private func styleStep() -> some View {
         @Bindable var store = store
         return StepScaffold(
@@ -423,7 +536,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 14: Pace
+    // Step 18: Pace
     private func paceStep() -> some View {
         @Bindable var store = store
         return StepScaffold(question: "Pick your weekly pace") {
@@ -450,7 +563,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 15: Connect
+    // Step 19: Connect
     private func connectStep() -> some View {
         @Bindable var store = store
         return StepScaffold(
@@ -480,7 +593,7 @@ struct OnboardingView: View {
         }
     }
 
-    // Step 16: Aha
+    // Step 20: Aha
     private var ahaStep: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if generating {
@@ -524,6 +637,32 @@ struct OnboardingView: View {
 }
 
 // MARK: - Private Sub-views
+
+// Code-only filler mascot for the intro screens — no image assets, so it's not blocked on
+// generated art. Swap the body for a real character illustration later; call sites (frame
+// size + placement) stay the same.
+private struct PlaceholderMascot: View {
+    var size: CGFloat = 180
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(LinearGradient(colors: [Palette.accent, Palette.accent.opacity(0.75)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+            VStack(spacing: size * 0.07) {
+                HStack(spacing: size * 0.16) {
+                    Circle().fill(Palette.onInk).frame(width: size * 0.09, height: size * 0.09)
+                    Circle().fill(Palette.onInk).frame(width: size * 0.09, height: size * 0.09)
+                }
+                Capsule().fill(Palette.onInk).frame(width: size * 0.3, height: size * 0.05)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 1))
+        .shadow(color: Palette.shadowWarm.opacity(0.18), radius: 24, x: 0, y: 12)
+        .accessibilityHidden(true)
+    }
+}
 
 private struct HeroWelcome: View {
     let start: () -> Void
