@@ -16,11 +16,20 @@ struct MarqueApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
-                .environment(store)
-                .environment(router)
-                .tint(Palette.accent)
-                .preferredColorScheme(.light)
+            ZStack {
+                RootView()
+                #if DEBUG
+                // Sibling of RootView, NOT an overlay on its gate Group — attaching it
+                // there reset OnboardingView's @State (step → 0) whenever the keyboard
+                // relaid out the overlay. As a ZStack sibling it can't touch the gate
+                // machine's view identity.
+                DevJumpMenu()
+                #endif
+            }
+            .environment(store)
+            .environment(router)
+            .tint(Palette.accent)
+            .preferredColorScheme(.light)
         }
     }
 }
@@ -47,16 +56,13 @@ struct RootView: View {
         .safeAreaInset(edge: .top) {
             if !net.isOnline { OfflineBanner() }
         }
-        #if DEBUG
-        .overlay(alignment: .trailing) { DevJumpMenu() }
-        #endif
     }
 }
 
 #if DEBUG
-// Floating dev-only jump menu — lives above the gate machine so it's reachable from any
-// app state. Mid-right edge is the emptiest spot across onboarding, gates, and tabs.
-// DEBUG builds only; never ships.
+// Floating dev-only jump menu — a ZStack sibling of RootView so it's reachable from any
+// app state without touching the gate machine's view identity. Pinned bottom-trailing,
+// keyboard-ignoring so it never relocates. DEBUG builds only; never ships.
 private struct DevJumpMenu: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
@@ -70,8 +76,10 @@ private struct DevJumpMenu: View {
                 .frame(width: 34, height: 34)
                 .background(Circle().fill(Palette.ink.opacity(0.55)))
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .padding(.trailing, 6)
-        .offset(y: -120)
+        .padding(.bottom, 150)
+        .ignoresSafeArea(.keyboard)
         .accessibilityIdentifier("dev.jump")
         .confirmationDialog("Dev: jump to", isPresented: $showMenu, titleVisibility: .visible) {
             Button("Onboarding") { jumpToOnboarding() }

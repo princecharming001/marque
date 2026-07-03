@@ -247,11 +247,11 @@ struct ChatView: View {
         .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
         .padding(.horizontal, 16)
         .padding(.top, 6)
-        // The floating Film FAB renders via .offset() beyond what safeAreaInset
-        // reserves (see MarqueTabBar's own note on this) — a composer sitting flush
-        // at the bottom overlaps the FAB's actual hit-test area. Clear it: fabSize/2
-        // (28) + |fabOffset| (8) + a small margin.
-        .padding(.bottom, 44)
+        // The tab bar is a plain bottom overlay (never a safeAreaInset) — the composer
+        // owns its clearance. When the keyboard is up the bar hides (composerFocused →
+        // hideTabBar) so only a small margin is needed.
+        .padding(.bottom, router.hideTabBar ? Space.sm : MarqueTabBar.clearance)
+        .animation(Motion.quick, value: router.hideTabBar)
     }
 
     // MARK: Actions
