@@ -105,7 +105,7 @@ struct VoiceSessionView: View {
         }
     }
 
-    // MARK: Orb (mode: idle / listening / thinking / speaking) — shared 3D-gradient-ball,
+    // MARK: Orb (mode: idle / listening / thinking / speaking) — shared Siri-style orb,
     // volume-reactive off live mic input (listening) or TTS output (speaking) levels.
 
     private var orbMode: VoiceOrb.Mode {
@@ -122,7 +122,7 @@ struct VoiceSessionView: View {
     }
 
     private var orb: some View {
-        VoiceOrb(mode: orbMode, level: orbLevel, size: 120)
+        VoiceOrb(mode: orbMode, level: orbLevel, size: 148)
     }
 
     // MARK: Transcript rows

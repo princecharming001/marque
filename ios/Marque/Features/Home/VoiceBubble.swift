@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The Home centerpiece — a 3D gradient ball you tap to talk to Marque.
+// The Home centerpiece — the Siri-style orb you tap to talk to Marque.
 struct VoiceBubble: View {
     let onTap: () -> Void
     @State private var taps = 0
@@ -10,7 +10,7 @@ struct VoiceBubble: View {
             taps += 1
             onTap()
         } label: {
-            VoiceOrb(mode: .idle, size: 108)
+            VoiceOrb(mode: .idle, size: 124)
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
         }
