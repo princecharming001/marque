@@ -306,6 +306,8 @@ class ConverseRequest(BaseModel):
     brand: dict = {}
     memory: dict = {}                  # client-held creator memory document
     attachments: list[dict] = []       # [{type: "video_link", url}] — analyzed in Phase 1
+    persona: str = "closer"            # closer | machine | sergeant — coaching voice
+    response_length: str = "medium"    # concise | medium | detailed
 
 
 class TTSRequest(BaseModel):
@@ -1340,8 +1342,38 @@ def mock_converse(req: ConverseRequest) -> dict:
 
     if voice:
         reply = reply.split("\n")[0]
+    reply = _apply_persona_voice(reply, req.persona, req.response_length)
     return {"reply": reply, "memory_updates": updates, "intent": intent,
             "intent_args": intent_args, "chips": chips}
+
+
+# Persona voice + response-length shaping for the MOCK path only (the live-Claude path
+# gets this from converse_system's persona/length instructions instead). Keeps the
+# deterministic reply logic above untouched — this just re-flavors the final string so
+# the coach picker is visibly real even fully offline.
+_PERSONA_OPENERS = {
+    "machine": [
+        "Let's GO. ", "Big number energy: ", "Here's the play — ", "No cap, ",
+    ],
+    "closer": [
+        "Here's the move: ", "Straight talk — ", "ROI first: ", "Cut to it: ",
+    ],
+    "sergeant": [
+        "Listen up. ", "No excuses. ", "Here's your order: ", "Discipline first: ",
+    ],
+}
+
+
+def _apply_persona_voice(reply: str, persona: str, length: str) -> str:
+    import random
+    openers = _PERSONA_OPENERS.get(persona)
+    if openers:
+        reply = random.choice(openers) + reply[0].lower() + reply[1:]
+    if length == "concise":
+        reply = reply.split(". ")[0].rstrip(".") + "."
+    elif length == "detailed" and not reply.endswith(("chips", "?")):
+        reply = reply + " Want me to go deeper on any part of that?"
+    return reply
 
 
 async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
@@ -1378,7 +1410,7 @@ async def converse(req: ConverseRequest):
                 "intent": out["intent"], "payload": out.get("payload"), "suggested_chips": out["chips"]}
 
     stats = list(_arm_stats.get(req.creator_id, {}).values())
-    system = prompts.converse_system(req.mode)
+    system = prompts.converse_system(req.mode, persona=req.persona, response_length=req.response_length)
     user = prompts.converse_user(req.brand, req.memory, req.messages,
                                  arm_stats=stats, trends=mock_trends(req.brand.get("niche", "")))
     envelope = None

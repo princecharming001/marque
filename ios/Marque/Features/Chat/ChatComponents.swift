@@ -355,12 +355,16 @@ struct MorphSendButton: View {
     }
 }
 
-// MARK: - Conversations drawer
+// MARK: - Conversations drawer (maxapp pattern: floats from the LEFT, hugs its content
+// height — not a full-screen sheet — with the Coach persona + response-length picker
+// stacked at the bottom, exactly like maxapp's ChatConversationsDrawer.)
 
 struct ConversationsDrawer: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
+    @Binding var isPresented: Bool
     let chat: ChatStore
+
+    private static let panelWidth: CGFloat = 312
 
     private var sorted: [Conversation] {
         let pinned = store.conversations.filter { $0.isVoiceNotes }
@@ -370,109 +374,234 @@ struct ConversationsDrawer: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("chats")
-                .font(Typeface.display(20, .semibold))
-                .tracking(Track.title)
-                .foregroundStyle(Palette.textPrimary)
-                .padding(.horizontal, Space.lg)
-                .padding(.top, Space.xl)
-                .padding(.bottom, Space.sm)
+        ZStack(alignment: .topLeading) {
+            // Fully transparent tap-to-close layer — opening the drawer must NOT dim
+            // or blur the rest of the screen (maxapp's own spec).
+            Color.clear
+                .contentShape(Rectangle())
+                .onTapGesture { close() }
+                .accessibilityIdentifier("chat.drawerBackdrop")
 
-            List {
-                Button {
-                    chat.newConversation(in: store)
-                    dismiss()
-                } label: {
-                    HStack(spacing: Space.md) {
-                        Image(systemName: "square.and.pencil")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(Palette.textPrimary)
-                            .frame(width: 30, height: 30)
-                            .background(Palette.surfaceSunken)
-                            .clipShape(Circle())
-                        Text("New chat")
-                            .font(AppFont.headline)
-                            .foregroundStyle(Palette.textPrimary)
-                        Spacer()
-                    }
-                    .padding(.vertical, 4)
+            panel
+                .padding(.top, 54)
+                .padding(.leading, 10)
+        }
+        .opacity(isPresented ? 1 : 0)
+        .offset(x: isPresented ? 0 : -(Self.panelWidth + 28))
+        .allowsHitTesting(isPresented)
+        .animation(Motion.spring, value: isPresented)
+        .ignoresSafeArea()
+    }
+
+    private var panel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Marque")
+                    .font(Typeface.display(20, .semibold)).tracking(-0.3)
+                    .foregroundStyle(Palette.textPrimary)
+                Spacer()
+                Button { close() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Palette.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background(Circle().fill(Palette.surfaceSunken))
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("chat.newChatRow")
-                .listRowBackground(Palette.surface)
-                .listRowSeparatorTint(Palette.hairline)
+                .accessibilityIdentifier("chat.drawerClose")
+            }
+            .padding(.bottom, Space.md)
 
-                ForEach(sorted) { convo in
-                    Button {
-                        chat.currentConversationId = convo.id
-                        chat.chips = []
-                        dismiss()
-                    } label: {
-                        row(convo)
+            Button {
+                chat.newConversation(in: store)
+                close()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
+                    Text("New chat").font(AppFont.callout).fontWeight(.semibold)
+                }
+                .foregroundStyle(Palette.textPrimary)
+                .frame(maxWidth: .infinity).frame(height: 38)
+                .background(Palette.surfaceSunken)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("chat.newChatRow")
+            .padding(.bottom, Space.md)
+
+            Text("RECENT")
+                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                .padding(.bottom, Space.xs)
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 2) {
+                    if sorted.isEmpty {
+                        Text("No chats yet")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .padding(.vertical, Space.sm)
                     }
-                    .buttonStyle(.plain)
-                    .listRowBackground(Palette.surface)
-                    .listRowSeparatorTint(Palette.hairline)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        if !convo.isVoiceNotes {
-                            Button(role: .destructive) {
-                                remove(convo)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                    ForEach(sorted) { convo in
+                        Button {
+                            chat.currentConversationId = convo.id
+                            chat.chips = []
+                            close()
+                        } label: {
+                            row(convo)
+                        }
+                        .buttonStyle(.plain)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if !convo.isVoiceNotes {
+                                Button(role: .destructive) { remove(convo) } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
                         }
                     }
                 }
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
+            .frame(maxHeight: 220)
+            .padding(.bottom, Space.md)
+
+            MarqueHairline().padding(.bottom, Space.md)
+
+            CoachPersonaPicker()
+            LengthPicker()
         }
-        .background(Palette.surface.ignoresSafeArea())
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+        .padding(Space.md)
+        .frame(width: Self.panelWidth)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.18), radius: 26, x: 4, y: 10)
     }
 
+    private func close() { isPresented = false }
+
     private func row(_ convo: Conversation) -> some View {
-        HStack(spacing: Space.md) {
+        HStack(spacing: Space.sm) {
             if convo.isVoiceNotes {
                 Image(systemName: "waveform")
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.accent)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 26, height: 26)
                     .background(Palette.accentMuted)
                     .clipShape(Circle())
             }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                    Text(convo.title)
-                        .font(AppFont.headline)
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1)
-                    Spacer(minLength: Space.sm)
-                    Text(convo.updatedAt.formatted(.relative(presentation: .named)))
-                        .font(Typeface.sans(12))
-                        .foregroundStyle(Palette.textTertiary)
-                        .lineLimit(1)
-                }
-                Text(preview(convo))
-                    .font(AppFont.caption)
-                    .foregroundStyle(Palette.textTertiary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(convo.title)
+                    .font(AppFont.callout).fontWeight(.medium)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1)
+                Text(convo.updatedAt.formatted(.relative(presentation: .named)))
+                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
                     .lineLimit(1)
             }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 9).padding(.horizontal, 10)
+        .background(convo.id == chat.currentConversationId ? Palette.surfaceSunken : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .contentShape(Rectangle())
-    }
-
-    private func preview(_ convo: Conversation) -> String {
-        guard let last = convo.messages.last, !last.content.isEmpty else { return "No messages yet" }
-        return last.content
     }
 
     private func remove(_ convo: Conversation) {
         store.conversations.removeAll { $0.id == convo.id }
         if chat.currentConversationId == convo.id { chat.currentConversationId = nil }
         store.save()
+    }
+}
+
+// MARK: - Coach persona picker (3 original archetypes — same energy as the reference,
+// generated fresh rather than using real people's names/likeness)
+
+private struct CoachPersonaPicker: View {
+    @Environment(AppStore.self) private var store
+    @State private var applied: ChatPersona?
+
+    private var current: ChatPersona { store.chatPersona ?? .closer }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text("COACH")
+                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+            HStack(spacing: Space.sm) {
+                ForEach(ChatPersona.allCases) { persona in
+                    personaColumn(persona)
+                }
+            }
+            Text(current.tagline)
+                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 2)
+        }
+        .padding(.bottom, Space.md)
+    }
+
+    private func personaColumn(_ persona: ChatPersona) -> some View {
+        let active = persona == current
+        let glow = Color(hex: persona.glow)
+        return Button {
+            withAnimation(Motion.quick) { store.chatPersona = persona }
+            store.save()
+        } label: {
+            VStack(spacing: 6) {
+                ZStack {
+                    if active {
+                        Circle().fill(glow.opacity(0.22)).frame(width: 54, height: 54).blur(radius: 6)
+                    }
+                    Circle()
+                        .fill(Palette.surfaceRaised)
+                        .overlay(Circle().strokeBorder(active ? glow : Palette.hairline, lineWidth: active ? 2 : 1))
+                    Image(systemName: persona.icon)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(active ? glow : Palette.textTertiary)
+                }
+                .frame(width: 46, height: 46)
+                Text(persona.label)
+                    .font(.system(size: 10.5, weight: active ? .semibold : .medium))
+                    .foregroundStyle(active ? Palette.textPrimary : Palette.textTertiary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("chat.persona.\(persona.rawValue)")
+    }
+}
+
+private struct LengthPicker: View {
+    @Environment(AppStore.self) private var store
+    private var current: ChatResponseLength { store.chatResponseLength ?? .medium }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Text("LENGTH")
+                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+            HStack(spacing: 6) {
+                ForEach(ChatResponseLength.allCases) { opt in
+                    let active = opt == current
+                    Button {
+                        store.chatResponseLength = opt
+                        store.save()
+                    } label: {
+                        Text(opt.label)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
+                            .frame(maxWidth: .infinity).frame(height: 34)
+                            .background(active ? Palette.ink : Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(active ? Color.clear : Palette.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("chat.length.\(opt.rawValue)")
+                }
+            }
+            Text(current.hint)
+                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
     }
 }

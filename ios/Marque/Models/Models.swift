@@ -524,6 +524,62 @@ struct EditPrefs: Codable, Hashable {
     }
 }
 
+// MARK: - Chat coach persona + response length
+
+/// Coach voice for the conversation engine — original archetypes (not real people),
+/// in the same high-energy/blunt-hustle/tough-discipline vein the user asked for.
+enum ChatPersona: String, CaseIterable, Codable, Identifiable {
+    case machine, closer, sergeant
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .machine: return "The Machine"
+        case .closer: return "The Closer"
+        case .sergeant: return "The Sergeant"
+        }
+    }
+    var tagline: String {
+        switch self {
+        case .machine: return "big energy, bigger numbers"
+        case .closer: return "blunt, ROI-first hustle"
+        case .sergeant: return "no-excuses discipline"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .machine: return "bolt.fill"
+        case .closer: return "chart.line.uptrend.xyaxis"
+        case .sergeant: return "shield.fill"
+        }
+    }
+    var glow: UInt {
+        switch self {
+        case .machine: return 0xFF6B35
+        case .closer: return 0x3B82F6
+        case .sergeant: return 0xB08D57
+        }
+    }
+}
+
+enum ChatResponseLength: String, CaseIterable, Codable, Identifiable {
+    case concise, medium, detailed
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .concise: return "Concise"
+        case .medium: return "Medium"
+        case .detailed: return "Detailed"
+        }
+    }
+    var hint: String {
+        switch self {
+        case .concise: return "one short sentence"
+        case .medium: return "two or three sentences"
+        case .detailed: return "long, specific, numbered"
+        }
+    }
+}
+
 /// One of the two "creators to watch" slots on the Profile.
 struct WatchedCreator: Codable, Hashable, Identifiable {
     var id = UUID()

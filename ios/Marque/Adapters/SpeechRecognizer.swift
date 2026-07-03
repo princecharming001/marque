@@ -27,6 +27,9 @@ final class SpeechRecognizer {
     var isAvailable = true
     /// Human-readable reason for the last failure ("" when fine).
     var lastError = ""
+    /// Live mic input level, 0...1 (smoothed RMS) — drives the voice orb's reactivity
+    /// while listening. Reset to 0 whenever capture stops.
+    var inputLevel: Double = 0
 
     // MARK: Internals
 
@@ -108,9 +111,11 @@ final class SpeechRecognizer {
         }
 
         if tapInstalled { inputNode.removeTap(onBus: 0) }
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            // Audio-render thread: append only; no state access here.
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            // Audio-render thread: append + compute RMS only; hop for state writes.
             request.append(buffer)
+            let level = Self.rms(of: buffer)
+            Task { @MainActor [weak self] in self?.inputLevel = level }
         }
         tapInstalled = true
 
@@ -171,7 +176,22 @@ final class SpeechRecognizer {
         recognitionTask = nil
         recognitionRequest = nil
         isListening = false
+        inputLevel = 0
         deactivateSession()
+    }
+
+    /// Root-mean-square of the buffer's first channel, mapped to a perceptually-useful
+    /// 0...1 range. Runs on the audio-render thread — pure math, no shared state.
+    nonisolated private static func rms(of buffer: AVAudioPCMBuffer) -> Double {
+        guard let data = buffer.floatChannelData?[0] else { return 0 }
+        let count = Int(buffer.frameLength)
+        guard count > 0 else { return 0 }
+        var sum: Float = 0
+        for i in 0..<count { sum += data[i] * data[i] }
+        let rms = sqrt(sum / Float(count))
+        // Typical speech RMS sits well under 1.0 — scale + clamp so normal talking
+        // reads as a lively 0.3–0.9 rather than a barely-visible 0.01–0.05.
+        return Double(min(1, max(0, rms * 12)))
     }
 
     private func deactivateSession() {

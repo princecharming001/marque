@@ -105,60 +105,24 @@ struct VoiceSessionView: View {
         }
     }
 
-    // MARK: Orb (state: idle / listening / thinking / speaking)
+    // MARK: Orb (mode: idle / listening / thinking / speaking) — shared 3D-gradient-ball,
+    // volume-reactive off live mic input (listening) or TTS output (speaking) levels.
 
-    private enum OrbState { case idle, listening, thinking, speaking }
-
-    private var orbState: OrbState {
+    private var orbMode: VoiceOrb.Mode {
         if speech.isListening { return .listening }
         if thinking { return .thinking }
         if playback.isSpeaking { return .speaking }
         return .idle
     }
 
+    private var orbLevel: Double {
+        if speech.isListening { return speech.inputLevel }
+        if playback.isSpeaking { return playback.outputLevel }
+        return 0
+    }
+
     private var orb: some View {
-        ZStack {
-            if orbState == .listening { ListeningRings() }
-            Circle()
-                .fill(Palette.accent.opacity(orbState == .speaking ? 0.16 : 0.10))
-                .frame(width: 120, height: 120)
-            ZStack {
-                Circle().fill(.ultraThinMaterial)
-                Circle().fill(orbFill)
-                orbSymbol
-                    .font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(orbState == .listening ? Color.white : Palette.accent)
-            }
-            .frame(width: 84, height: 84)
-            .overlay(Circle().strokeBorder(Color.white.opacity(0.8), lineWidth: 1))
-            .shadow(color: Palette.accent.opacity(orbState == .speaking ? 0.4 : 0.22),
-                    radius: orbState == .speaking ? 24 : 18, x: 0, y: 8)
-        }
-        .animation(Motion.quick, value: orbState)
-    }
-
-    private var orbFill: LinearGradient {
-        orbState == .listening
-            ? LinearGradient(colors: [Palette.accent, Palette.accent.opacity(0.75)],
-                             startPoint: .topLeading, endPoint: .bottomTrailing)
-            : LinearGradient(colors: [Color.white.opacity(0.9), Palette.accent.opacity(0.12)],
-                             startPoint: .topLeading, endPoint: .bottomTrailing)
-    }
-
-    @ViewBuilder
-    private var orbSymbol: some View {
-        switch orbState {
-        case .idle:
-            Image(systemName: "waveform")
-        case .listening:
-            Image(systemName: "waveform")
-        case .thinking:
-            Image(systemName: "ellipsis")
-                .symbolEffect(.variableColor.iterative, options: .repeating)
-        case .speaking:
-            Image(systemName: "waveform")
-                .symbolEffect(.variableColor.iterative, options: .repeating)
-        }
+        VoiceOrb(mode: orbMode, level: orbLevel, size: 120)
     }
 
     // MARK: Transcript rows
@@ -294,7 +258,9 @@ struct VoiceSessionView: View {
         lastChips = []
         Task {
             let result = await store.backend.converse(mode: "voice", messages: exchanges,
-                                                      brand: store.brand, memory: store.memory)
+                                                      brand: store.brand, memory: store.memory,
+                                                      persona: store.chatPersona ?? .closer,
+                                                      responseLength: store.chatResponseLength ?? .medium)
             thinking = false
             guard let result else {
                 let apology = "I couldn't reach the studio just now — try that again in a moment."
@@ -332,28 +298,6 @@ struct VoiceSessionView: View {
 }
 
 // MARK: - Listening rings (expanding accent pulses behind the orb while the mic is live)
-
-private struct ListeningRings: View {
-    @State private var pulsing = false
-
-    var body: some View {
-        ZStack {
-            ring(delay: 0)
-            ring(delay: 0.7)
-        }
-        .onAppear { pulsing = true }
-    }
-
-    private func ring(delay: Double) -> some View {
-        Circle()
-            .stroke(Palette.accent.opacity(0.5), lineWidth: 2)
-            .frame(width: 104, height: 104)
-            .scaleEffect(pulsing ? 1.55 : 0.92)
-            .opacity(pulsing ? 0 : 0.8)
-            .animation(.easeOut(duration: 1.6).repeatForever(autoreverses: false).delay(delay),
-                       value: pulsing)
-    }
-}
 
 // MARK: - Small cards used in the session transcript
 

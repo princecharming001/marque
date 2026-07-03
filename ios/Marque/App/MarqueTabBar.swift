@@ -60,15 +60,9 @@ struct MarqueTabBar: View {
         }
         .padding(.vertical, 8)
         .padding(.horizontal, 10)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 32, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 32, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 0.5)
-        )
+        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
+        .overlay(Capsule(style: .continuous).strokeBorder(Palette.hairline, lineWidth: 0.5))
         .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
         .padding(.horizontal, 16)
         .padding(.bottom, 4)

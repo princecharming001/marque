@@ -61,11 +61,12 @@ name: Marque — extra screens (assumes flow-full already ran — onboarded, aut
     visible:
       id: "chat.save"
     timeout: 20000
-# Dismiss the keyboard by tapping the message list (onTapGesture there clears
-# composer focus) — avoids Maestro's hideKeyboard command, which is unstable
-# with this XCUITest driver setup.
-- tapOn:
-    point: "50%,30%"
+# Dismiss the keyboard by tapping the header wordmark — a fixed, always-blank
+# spot regardless of reply content height (a fixed-point/message tap is
+# fragile: script cards and chips vary in height and a tap can land on a
+# button underneath instead of clearing focus). Also avoids Maestro's
+# hideKeyboard command, which is unstable with this XCUITest driver setup.
+- tapOn: "Marque"
 
 # Home reel → mimic flow
 - tapOn: "Home"

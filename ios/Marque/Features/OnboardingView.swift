@@ -858,31 +858,46 @@ struct OnboardingView: View {
 
 // MARK: - Landing (BitePal style: giant centered headline + floating badges)
 
+// Landing background studied from palo.ai (Playwright): near-black base, a subtle
+// scattered star/particle field, faint constellation lines connecting floating nodes.
+// Ported into Marque's warm palette (charcoal instead of cold black) rather than a
+// literal copy — a deliberate dramatic dark "cold open" before the light quiz, echoing
+// the app's original photographic hero.
 private struct WelcomeLanding: View {
     let start: () -> Void
     let haveAccount: () -> Void
 
+    // Relative node positions (unit space) shared by the connector lines and the badges
+    // so the constellation lines always terminate exactly at each badge's center.
+    private let nodes: [(x: CGFloat, y: CGFloat)] = [
+        (0.22, 0.13), (0.8, 0.16), (0.12, 0.42), (0.87, 0.45),
+    ]
+    private let links: [(Int, Int)] = [(0, 2), (1, 3), (0, 1)]
+
     var body: some View {
         ZStack {
+            Color(hex: 0x14120F).ignoresSafeArea()
             LinearGradient(
-                colors: [Palette.accent.opacity(0.14), Palette.accent.opacity(0.05), Palette.canvas],
+                colors: [Palette.accent.opacity(0.22), .clear, .clear],
                 startPoint: .top, endPoint: .bottom
             )
             .ignoresSafeArea()
+            StarField(count: 90).ignoresSafeArea().opacity(0.8)
 
-            // Floating decoration badges around the headline
             GeometryReader { geo in
                 let w = geo.size.width
                 let h = geo.size.height
 
+                ConstellationLines(nodes: nodes.map { CGPoint(x: $0.x * w, y: $0.y * h) }, links: links)
+
                 FloatingDecor(phase: 0) {
-                    LandingBadge { ScoreBadge(score: 82) }
+                    DarkLandingBadge { ScoreBadge(score: 82) }
                 }
-                .position(x: w * 0.22, y: h * 0.13)
+                .position(x: w * nodes[0].x, y: h * nodes[0].y)
 
                 FloatingDecor(phase: 0.6) {
                     ZStack(alignment: .topTrailing) {
-                        LandingBadge { PlaceholderMascot(size: 64) }
+                        DarkLandingBadge { PlaceholderMascot(size: 64) }
                         Image(systemName: "heart.fill")
                             .font(.system(size: 16))
                             .foregroundStyle(Color(hex: 0xF08080))
@@ -893,36 +908,36 @@ private struct WelcomeLanding: View {
                             .offset(x: 24, y: 2)
                     }
                 }
-                .position(x: w * 0.8, y: h * 0.16)
+                .position(x: w * nodes[1].x, y: h * nodes[1].y)
 
                 FloatingDecor(phase: 1.1) {
-                    LandingBadge {
+                    DarkLandingBadge {
                         Image(systemName: "video.fill")
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundStyle(Palette.accent)
                             .frame(width: 56, height: 56)
-                            .background(Circle().fill(Palette.accent.opacity(0.12)))
+                            .background(Circle().fill(Palette.accent.opacity(0.18)))
                     }
                 }
-                .position(x: w * 0.12, y: h * 0.42)
+                .position(x: w * nodes[2].x, y: h * nodes[2].y)
 
                 FloatingDecor(phase: 1.7) {
-                    LandingBadge {
+                    DarkLandingBadge {
                         ZStack {
                             Circle()
-                                .stroke(Palette.positive.opacity(0.2), lineWidth: 5)
+                                .stroke(Palette.positive.opacity(0.25), lineWidth: 5)
                             Circle()
                                 .trim(from: 0, to: 0.7)
                                 .stroke(Palette.positive, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                                 .rotationEffect(.degrees(-90))
                             Text("5/7")
-                                .font(AppFont.micro).foregroundStyle(Palette.textSecondary)
+                                .font(AppFont.micro).foregroundStyle(.white.opacity(0.85))
                         }
                         .frame(width: 52, height: 52)
                         .padding(6)
                     }
                 }
-                .position(x: w * 0.87, y: h * 0.45)
+                .position(x: w * nodes[3].x, y: h * nodes[3].y)
             }
             .allowsHitTesting(false)
 
@@ -930,7 +945,7 @@ private struct WelcomeLanding: View {
                 Spacer()
                 Text("Film once.\nPost every\nday.")
                     .font(Typeface.sans(58, .bold)).tracking(-1.5)
-                    .foregroundStyle(Palette.textPrimary)
+                    .foregroundStyle(.white)
                     .multilineTextAlignment(.center)
                     .lineSpacing(0)
                     .fixedSize(horizontal: false, vertical: true)
@@ -939,29 +954,29 @@ private struct WelcomeLanding: View {
                 VStack(spacing: Space.lg) {
                     Button(action: start) {
                         Text("Get started").font(AppFont.headline)
-                            .foregroundStyle(Palette.onInk)
+                            .foregroundStyle(.white)
                             .frame(height: 56).padding(.horizontal, 64)
-                            .background(Palette.ink)
+                            .background(Palette.accent)
                             .clipShape(Capsule())
-                            .shadow(color: .black.opacity(0.18), radius: 16, y: 8)
+                            .shadow(color: Palette.accent.opacity(0.4), radius: 20, y: 8)
                     }
                     .buttonStyle(PressableStyle())
                     .accessibilityIdentifier("onboard.start")
 
                     Button(action: haveAccount) {
                         Text("I already have an account")
-                            .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                            .font(AppFont.headline).foregroundStyle(.white.opacity(0.85))
                     }
                     .accessibilityIdentifier("onboard.haveAccount")
 
                     HStack(spacing: 4) {
                         Text("By continuing you\u{2019}re accepting our")
-                            .foregroundStyle(Palette.textTertiary)
+                            .foregroundStyle(.white.opacity(0.4))
                         Link("Terms", destination: LegalURLs.terms)
-                            .foregroundStyle(Palette.textSecondary)
-                        Text("and").foregroundStyle(Palette.textTertiary)
+                            .foregroundStyle(.white.opacity(0.65))
+                        Text("and").foregroundStyle(.white.opacity(0.4))
                         Link("Privacy Notice", destination: LegalURLs.privacy)
-                            .foregroundStyle(Palette.textSecondary)
+                            .foregroundStyle(.white.opacity(0.65))
                     }
                     .font(AppFont.caption)
                 }
@@ -970,18 +985,60 @@ private struct WelcomeLanding: View {
             }
             .screenPadding()
         }
+        .preferredColorScheme(.dark)
     }
 }
 
-// A white circular/rounded holder that makes any decoration read as a floating badge.
-private struct LandingBadge<Content: View>: View {
+// A frosted dark holder — the palo-style node badges, reskinned for Marque's palette.
+private struct DarkLandingBadge<Content: View>: View {
     @ViewBuilder let content: Content
     var body: some View {
         content
             .padding(8)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
-            .shadow(color: Palette.shadowWarm.opacity(0.14), radius: 16, x: 0, y: 8)
+            .background(.ultraThinMaterial.opacity(0.9), in: RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous)
+                .strokeBorder(.white.opacity(0.12), lineWidth: 1))
+            .shadow(color: .black.opacity(0.35), radius: 16, x: 0, y: 8)
+    }
+}
+
+// Faint scattered dot/particle texture — positions randomized once on appear (not
+// per-redraw, so the field doesn't flicker) and drawn via Canvas for cheap rendering
+// of ~100 dots.
+private struct StarField: View {
+    let count: Int
+    @State private var dots: [(x: CGFloat, y: CGFloat, r: CGFloat, o: Double)] = []
+
+    var body: some View {
+        Canvas { context, size in
+            for d in dots {
+                let rect = CGRect(x: d.x * size.width, y: d.y * size.height, width: d.r, height: d.r)
+                context.fill(Path(ellipseIn: rect), with: .color(.white.opacity(d.o)))
+            }
+        }
+        .onAppear {
+            guard dots.isEmpty else { return }
+            dots = (0..<count).map { _ in
+                (CGFloat.random(in: 0...1), CGFloat.random(in: 0...1),
+                 CGFloat.random(in: 1...2.4), Double.random(in: 0.1...0.5))
+            }
+        }
+    }
+}
+
+// Faint straight lines connecting a few badge nodes — the palo "constellation" motif.
+private struct ConstellationLines: View {
+    let nodes: [CGPoint]
+    let links: [(Int, Int)]
+    var body: some View {
+        Canvas { context, _ in
+            for (a, b) in links where a < nodes.count && b < nodes.count {
+                var path = Path()
+                path.move(to: nodes[a])
+                path.addLine(to: nodes[b])
+                context.stroke(path, with: .color(.white.opacity(0.08)), lineWidth: 1)
+            }
+        }
     }
 }
 

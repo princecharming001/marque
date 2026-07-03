@@ -23,11 +23,16 @@ final class VoicePlayback: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerD
 
     /// True while a reply is audibly playing (either tier).
     var isSpeaking = false
+    /// Live playback level, 0...1 — real metering for the mp3 tier, a smooth synthetic
+    /// pulse for on-device synthesis (AVSpeechSynthesizer exposes no meter). Drives the
+    /// voice orb's reactivity while speaking.
+    var outputLevel: Double = 0
 
     private var player: AVAudioPlayer?      // strong ref — the player stops if released
     private let synthesizer = AVSpeechSynthesizer()
     private var usingSynth = false          // which tier owns the current utterance
     private var generation = 0              // invalidates in-flight TTS fetches on stop
+    private var meterTimer: Timer?
 
     override init() {
         super.init()
@@ -60,6 +65,9 @@ final class VoicePlayback: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerD
         generation += 1
         usingSynth = false
         isSpeaking = false
+        outputLevel = 0
+        meterTimer?.invalidate()
+        meterTimer = nil
         if let player {
             player.stop()                  // manual stop fires no delegate callback
             self.player = nil
@@ -75,10 +83,16 @@ final class VoicePlayback: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerD
         do {
             let p = try AVAudioPlayer(data: data)
             p.delegate = self
+            p.isMeteringEnabled = true
             guard p.play() else { return false }
             player = p
             usingSynth = false
             isSpeaking = true
+            startMetering(reading: { [weak p] in
+                guard let p, p.isPlaying else { return nil }
+                p.updateMeters()
+                return p.averagePower(forChannel: 0)
+            })
             return true
         } catch {
             return false                   // undecodable bytes → local fallback
@@ -93,7 +107,36 @@ final class VoicePlayback: NSObject, AVAudioPlayerDelegate, AVSpeechSynthesizerD
         utterance.rate = 0.5
         usingSynth = true
         isSpeaking = true
+        // AVSpeechSynthesizer exposes no meter — drive a smooth synthetic "talking"
+        // pulse instead of a flat level, so the orb still reads as alive.
+        startMetering(reading: { [weak self] in
+            guard let self, self.usingSynth, self.synthesizer.isSpeaking else { return nil }
+            let t = Date().timeIntervalSinceReferenceDate
+            return Float(0.45 + 0.35 * sin(t * 6.5))
+        })
         synthesizer.speak(utterance)
+    }
+
+    /// Polls `reading` ~20x/sec, converts dB-ish values to a 0...1 level, and smooths
+    /// it so the orb doesn't jitter. `reading` returns nil once its source has stopped;
+    /// the timer self-invalidates the next tick after that.
+    private func startMetering(reading: @escaping () -> Float?) {
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            guard let raw = reading() else {
+                timer.invalidate()
+                Task { @MainActor in self.outputLevel = 0 }
+                return
+            }
+            // averagePower is in dB (-160...0); the synthetic pulse is already 0...1.
+            let normalized = raw <= 0 && raw > -160
+                ? Double(min(1, max(0, (raw + 50) / 50)))   // -50dB...0dB → 0...1
+                : Double(min(1, max(0, raw)))
+            Task { @MainActor in
+                self.outputLevel = self.outputLevel * 0.6 + normalized * 0.4   // light smoothing
+            }
+        }
     }
 
     /// Best local en-US voice: premium > enhanced > default (novelty voices rank last).

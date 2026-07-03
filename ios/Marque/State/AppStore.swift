@@ -24,6 +24,8 @@ final class AppStore {
     var conversations: [Conversation] = []       // chat threads (incl. the pinned Voice notes)
     var editPrefs = EditPrefs() { didSet { backend.editPrefs = editPrefs.asDictionary } }
     var brandSummary: BrandSummaryCard? = nil    // cached Profile hero card
+    var chatPersona: ChatPersona? = nil           // nil → .closer default (drawer picker)
+    var chatResponseLength: ChatResponseLength? = nil   // nil → .medium default
 
     // V3: account + subscription gates (onboarding → auth wall → paywall → app)
     let auth = AuthManager()
@@ -614,6 +616,8 @@ final class AppStore {
         var conversations: [Conversation]? = nil
         var editPrefs: EditPrefs? = nil
         var brandSummary: BrandSummaryCard? = nil
+        var chatPersona: ChatPersona? = nil
+        var chatResponseLength: ChatResponseLength? = nil
     }
 
     func save() {
@@ -622,7 +626,8 @@ final class AppStore {
                             hasOnboarded: hasOnboarded, streak: streak,
                             memory: memory, readiedScripts: readiedScripts,
                             conversations: conversations, editPrefs: editPrefs,
-                            brandSummary: brandSummary)
+                            brandSummary: brandSummary, chatPersona: chatPersona,
+                            chatResponseLength: chatResponseLength)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -642,6 +647,8 @@ final class AppStore {
         conversations = snap.conversations ?? []
         editPrefs = snap.editPrefs ?? EditPrefs()
         brandSummary = snap.brandSummary
+        chatPersona = snap.chatPersona
+        chatResponseLength = snap.chatResponseLength
         migrateFootageIntoMedia()
     }
 

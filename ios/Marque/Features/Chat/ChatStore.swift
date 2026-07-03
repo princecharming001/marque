@@ -70,7 +70,9 @@ final class ChatStore {
         let history = store.conversations.first(where: { $0.id == convoId })?.messages ?? []
         let result = await store.backend.converse(mode: "chat",
                                                   messages: Array(history.suffix(20)),
-                                                  brand: store.brand, memory: store.memory)
+                                                  brand: store.brand, memory: store.memory,
+                                                  persona: store.chatPersona ?? .closer,
+                                                  responseLength: store.chatResponseLength ?? .medium)
         guard !Task.isCancelled else { return }
         defer { isStreaming = false; streamingConversationId = nil }
 

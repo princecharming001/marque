@@ -30,26 +30,30 @@ struct ChatView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            if messages.isEmpty && !showTyping {
-                emptyState
-            } else {
-                messageArea
+        ZStack(alignment: .topLeading) {
+            VStack(spacing: 0) {
+                header
+                if messages.isEmpty && !showTyping {
+                    emptyState
+                } else {
+                    messageArea
+                }
+                if showChips {
+                    ChatSuggestedChips(chips: chat.chips) { chat.send($0, store: store) }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 4)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+                composer
             }
-            if showChips {
-                ChatSuggestedChips(chips: chat.chips) { chat.send($0, store: store) }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 4)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-            composer
+            .animation(Motion.quick, value: showChips)
+
+            // Floats from the left over the chat content (maxapp pattern) — not a sheet.
+            ConversationsDrawer(isPresented: $showDrawer, chat: chat)
         }
-        .animation(Motion.quick, value: showChips)
         .background(Palette.surface.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
-        .sheet(isPresented: $showDrawer) { ConversationsDrawer(chat: chat) }
         .confirmationDialog("Add to chat", isPresented: $showAttach, titleVisibility: .hidden) {
             Button("Paste video link") { pasteVideoLink() }
             Button("Cancel", role: .cancel) {}
@@ -109,6 +113,8 @@ struct ChatView: View {
             Rectangle().fill(Palette.hairline).frame(height: 1)
         }
         .background(Palette.surface)
+        .contentShape(Rectangle())
+        .onTapGesture { composerFocused = false }
     }
 
     // MARK: Message list

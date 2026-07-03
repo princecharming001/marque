@@ -372,13 +372,15 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
     }
 
-    func converse(mode: String, messages: [ChatMessage], brand: BrandGraph,
-                  memory: CreatorMemory) async -> ConverseResult? {
+    func converse(mode: String, messages: [ChatMessage], brand: BrandGraph, memory: CreatorMemory,
+                  persona: ChatPersona = .closer, responseLength: ChatResponseLength = .medium) async -> ConverseResult? {
         var body: [String: Any] = [
             "creator_id": creatorId,
             "mode": mode,
             "brand": brandBody(brand),
             "memory": memory.asDictionary,
+            "persona": persona.rawValue,
+            "response_length": responseLength.rawValue,
         ]
         body["messages"] = messages.suffix(20).map { ["role": $0.role.rawValue, "content": $0.content] }
         guard let data = await post("/v1/converse", body),
