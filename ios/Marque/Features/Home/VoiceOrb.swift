@@ -120,20 +120,26 @@ struct VoiceOrb: View {
             .frame(width: Self.assetSize, height: Self.assetSize)
             .clipShape(DiscClip())
         }
+        // The disc sits 19pt above the asset-canvas center — nudge everything down so
+        // the visible sphere is optically centered in the layout frame.
+        .offset(y: (251.79 - DiscClip.discCenter.y) * (size / Self.assetSize))
         .scaleEffect(size / Self.assetSize)
         .frame(width: size, height: size)
     }
 }
 
-/// Clips to the icon-bg asset's ACTUAL dark disc — which is smaller than its canvas
-/// and off-center (shifted up-left, glow margin baked bottom-right). Measured from the
-/// rendered asset: center (215.5, 209.2), radius ~202 in the 503.58pt canvas. A centered
-/// full-canvas Circle() floats outside the visible rim and lets wisps appear to spill.
+/// Clips to the icon-bg asset's ACTUAL dark disc — smaller than its canvas and shifted
+/// 19pt above its center (glow margin baked below). Pixel-measured from the rendered
+/// asset: a perfect circle, center (250.8, 232.8), radius 195.8 in the 503.58pt canvas.
+/// A centered full-canvas Circle() floats outside the visible rim (wisp spill); a
+/// mis-measured one shaves the disc into a non-circle.
 private struct DiscClip: Shape {
+    static let discCenter = CGPoint(x: 250.8, y: 232.8)
+    static let discRadius: CGFloat = 195.8
     func path(in rect: CGRect) -> Path {
         let k = rect.width / 503.58
-        let center = CGPoint(x: 215.5 * k, y: 209.2 * k)
-        let r = 198.0 * k
+        let center = CGPoint(x: Self.discCenter.x * k, y: Self.discCenter.y * k)
+        let r = (Self.discRadius - 1.5) * k
         return Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r,
                                       width: r * 2, height: r * 2))
     }
