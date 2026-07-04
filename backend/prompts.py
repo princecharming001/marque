@@ -530,7 +530,9 @@ def pillar_judge_prompt(niche: str, pillars: list[dict]) -> tuple[str, str]:
 
 def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
                    media_context: str = "", posts: list[dict] | None = None,
-                   arm_stats: list[dict] | None = None) -> tuple[str, str]:
+                   arm_stats: list[dict] | None = None,
+                   memory: dict | None = None,
+                   mandated_hooks: list[dict] | None = None) -> tuple[str, str]:
     s = STYLES.get(style, STYLES["talking_head"])
     voice_ex = _voice_exemplars(posts)
     voice_section = f"\n\n{voice_ex}" if voice_ex else ""
@@ -547,13 +549,30 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
     media = f"\nReference footage the creator already has (reuse where natural): {media_context}" if media_context else ""
     learn = learning_block(arm_stats or [])
     learn_section = f"\n{learn}\n" if learn else ""
+    mem = memory_block(memory) if memory else ""
+    mem_section = f"\n{mem}\n" if mem else ""
+    mandate = ""
+    if mandated_hooks:
+        picks = "\n".join(
+            f'  • Script {i + 1} MUST open with: "{h.get("text", "")}"'
+            + (f' (signal: {h.get("signal", "")})' if h.get("signal") else "")
+            for i, h in enumerate(mandated_hooks[:count])
+        )
+        mandate = (
+            "\nPRE-SELECTED HOOKS: a separate hook engine generated and ranked these as the strongest "
+            "openers for this creator. Use each VERBATIM as that script's \"hook\" field (fix only obvious "
+            "grammar), set \"hookSignal\" to match, and write the body + CTA to deliver on it:\n"
+            f"{picks}\n"
+        )
     user = (
         f"{learn_section}"
+        f"{mem_section}"
         f"{brand_block(brand, posts)}\n"
         f"Content pillar: {pillar.get('name','')} — {pillar.get('summary','')}\n"
         f"Their angle on it: {pillar.get('angle','')}\n"
         f"Example directions: {'; '.join(pillar.get('exampleTopics', []) or [])}{media}\n"
-        f"Allowed formatIds for this style: {', '.join(s['formats'])}\n\n"
+        f"Allowed formatIds for this style: {', '.join(s['formats'])}\n"
+        f"{mandate}\n"
         f"Write {count} {s['label']} scripts on this pillar, each a distinct angle. Set \"style\":\"{style}\" on "
         f"each. Return ONLY a JSON array. {SCRIPT_SCHEMA}"
     )
@@ -651,7 +670,8 @@ def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
 # ---------------------------------------------------------------------------
 
 def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
-                 arm_stats: list[dict] | None = None) -> tuple[str, str]:
+                 arm_stats: list[dict] | None = None,
+                 memory: dict | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's hook engine. Generate scroll-stopping first-3-second hooks in the creator's voice "
         "across the 8 signal types. Each hook must be DIFFERENT in structure and signal — no two hooks "
@@ -666,8 +686,11 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
     )
     learn = learning_block(arm_stats or [])
     extra = f"\n{learn}" if learn else ""
+    mem = memory_block(memory) if memory else ""
+    mem_section = f"\n{mem}\n" if mem else ""
     user = (
-        f"{brand_block(brand)}\nTopic: {topic}\nStyle: {STYLES.get(style, STYLES['talking_head'])['label']}\n{extra}"
+        f"{brand_block(brand)}\n{mem_section}Topic: {topic}\n"
+        f"Style: {STYLES.get(style, STYLES['talking_head'])['label']}\n{extra}"
         f"Return ONLY a JSON array of 6 hooks with diverse signals and structures. Each: "
         f'{{\"text\": str, \"signal\": one of {SIGNALS}, \"strength\": int 0-100}}'
     )

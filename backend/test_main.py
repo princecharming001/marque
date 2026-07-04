@@ -677,6 +677,60 @@ def test_quality_scripts_disabled_is_passthrough(monkeypatch):
     assert not called                                   # gate off → no LLM call
 
 
+def test_best_hooks_generates_pool_and_returns_top(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    monkeypatch.setattr(main, "BEST_OF_N_HOOKS", True)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+        if "hook engine" in system:                 # generation pass (temp 1.0)
+            assert temperature == 1.0                # best-of-N must diversify
+            return json.dumps([
+                {"text": "In this video, three tips.", "signal": "curiosity", "strength": 70},  # slop
+                {"text": "You're training abs wrong. Here's the fix.", "signal": "contrarian", "strength": 80},
+                {"text": "$0 gym, 15 minutes, real results.", "signal": "specificity", "strength": 75},
+            ])
+        if "ruthless short-form hook critic" in system:   # judge pass
+            return json.dumps([
+                {"index": 0, "strength": 15, "slop": True},
+                {"index": 1, "strength": 88, "slop": False},
+                {"index": 2, "strength": 91, "slop": False},
+            ])
+        return "[]"
+    monkeypatch.setattr(main, "anthropic", fake)
+    out = asyncio.run(main.best_hooks({}, "abs training", "talking_head", "c1", n=2))
+    assert [h["text"] for h in out] == [
+        "$0 gym, 15 minutes, real results.",         # 91, ranked first
+        "You're training abs wrong. Here's the fix.",  # 88
+    ]                                                # slop hook dropped, top-2 returned
+
+
+def test_best_hooks_disabled_returns_empty(monkeypatch):
+    monkeypatch.setattr(main, "BEST_OF_N_HOOKS", False)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    out = asyncio.run(main.best_hooks({}, "t", "talking_head", "c1"))
+    assert out == []
+
+
+def test_scripts_prompt_injects_mandated_hooks_and_memory():
+    import prompts
+    _, user = prompts.scripts_prompt(
+        {"niche": "fitness"}, {"name": "Myth-busting"}, "talking_head", 2,
+        memory={"angle": "harder stances on training myths", "facts": ["posts at 6am"]},
+        mandated_hooks=[{"text": "Your warmup is the workout.", "signal": "contrarian"}])
+    assert "Your warmup is the workout." in user
+    assert "MUST open" in user
+    assert "harder stances on training myths" in user     # memory angle injected
+    assert "posts at 6am" in user                          # memory fact injected
+
+
+def test_hooks_prompt_injects_memory():
+    import prompts
+    _, user = prompts.hooks_prompt({"niche": "finance"}, "index funds", "faceless",
+                                   memory={"facts": ["audience is beginners"]})
+    assert "audience is beginners" in user
+
+
 def test_arms_for_prompt_shapes_arms_so_learning_block_fires():
     import prompts
     main._arm_stats["learner"] = {

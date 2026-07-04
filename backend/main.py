@@ -34,6 +34,10 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # Inference-time quality gate (generate -> judge -> targeted self-repair). On by
 # default; set AI_QUALITY=0 to fall back to raw single-shot generation.
 AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
+# Best-of-N hooks: generate a diverse hook pool at temp 1.0, judge, and mandate the
+# winners as the script openers. The strongest single quality lever, at +2 LLM calls
+# of latency. Set BEST_OF_N_HOOKS=0 to skip and rely on inline alt-hook selection.
+BEST_OF_N_HOOKS = os.environ.get("BEST_OF_N_HOOKS", "1") != "0"
 
 # ---------------------------------------------------------------------------
 # Learning loop — in-memory bandit (Supabase arm_stats in production)
@@ -124,9 +128,14 @@ def _thompson_sample(creator_id: str, candidates: list) -> list:
 # Anthropic + JSON helpers
 # ---------------------------------------------------------------------------
 
-async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000) -> str:
+async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000,
+                    temperature: float | None = None) -> str:
     delays = [0.5, 2.0, 8.0]
     last_err = None
+    body = {"model": model, "max_tokens": max_tokens, "system": system,
+            "messages": [{"role": "user", "content": user}]}
+    if temperature is not None:
+        body["temperature"] = temperature
     for attempt, delay in enumerate(delays + [None]):
         try:
             async with httpx.AsyncClient(timeout=90) as client:
@@ -134,8 +143,7 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                     ANTHROPIC_URL,
                     headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                              "content-type": "application/json"},
-                    json={"model": model, "max_tokens": max_tokens, "system": system,
-                          "messages": [{"role": "user", "content": user}]},
+                    json=body,
                 )
             if r.status_code == 200:
                 return "".join(b.get("text", "") for b in r.json().get("content", []))
@@ -222,12 +230,14 @@ class ScriptRequest(Brand):
     count: int = 3
     posts: list[dict] = []
     creator_id: str = "default"
+    memory: dict = {}                  # client-held creator memory (facts/angle/ideas/...)
 
 
 class HooksRequest(Brand):
     topic: str = ""
     style: str = "talking_head"
     creator_id: str = "default"
+    memory: dict = {}                  # client-held creator memory
 
 
 class SteerRequest(Brand):
@@ -610,6 +620,24 @@ async def quality_hooks(topic: str, hooks: list[dict]) -> list[dict]:
     return [h for _, h in scored]
 
 
+async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
+                     n: int = 2, memory: dict | None = None) -> list[dict]:
+    """Best-of-N hooks: generate a diverse pool at temp 1.0, judge + drop slop via
+    quality_hooks, and return the top n. These become MANDATED script openers — the
+    body is written around a vetted hook instead of the model's first-draft guess.
+    Returns [] keyless or on failure (caller then generates without a mandate)."""
+    if not (BEST_OF_N_HOOKS and AI_QUALITY and ANTHROPIC_KEY):
+        return []
+    try:
+        stats = _arms_for_prompt(creator_id)
+        hsys, husr = prompts.hooks_prompt(brand, topic, style, arm_stats=stats, memory=memory)
+        pool = extract_json(await anthropic(hsys, husr, OPUS, 1200, temperature=1.0), array=True) or []
+    except HTTPException:
+        return []
+    ranked = await quality_hooks(topic, pool)
+    return ranked[:max(1, n)]
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -642,9 +670,13 @@ async def scripts(req: ScriptRequest):
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
         stats = _arms_for_prompt(req.creator_id)
+        # Best-of-N: pre-select the strongest openers, then write bodies around them.
+        topic = req.pillar or req.niche or "your next post"
+        mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count))
         sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
                                           req.media_context, req.posts or None,
-                                          arm_stats=stats)
+                                          arm_stats=stats, memory=req.memory or None,
+                                          mandated_hooks=mandated or None)
         out = extract_json(await anthropic(sys, usr, OPUS, 3800), array=True)
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
