@@ -413,6 +413,25 @@ def _post_lines(posts: list[dict] | None) -> str:
     return "\n".join(out)
 
 
+def _voice_exemplars(posts: list[dict] | None, k: int = 4) -> str:
+    """Quote the literal opening line of the creator's best-performing posts so
+    the generator matches their REAL phrasing/rhythm instead of a described,
+    regress-to-generic-AI version. Voice fidelity is example-bound, not float-bound."""
+    if not posts:
+        return ""
+    ranked = sorted(posts, key=lambda p: (p.get("likes", 0) + p.get("comments", 0)), reverse=True)
+    openers = []
+    for p in ranked[:k]:
+        text = (p.get("caption") or p.get("transcript") or "").strip().replace("\n", " ")
+        first = text.split(". ")[0][:120].strip()
+        if len(first) >= 8:
+            openers.append(f'  "{first}"')
+    if not openers:
+        return ""
+    return ("HOW THIS CREATOR REALLY OPENS (their highest-engagement posts — match this exact voice, "
+            "diction, and rhythm; do NOT sanitize into generic copy):\n" + "\n".join(openers))
+
+
 def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
     v = brand.get("voice", {}) or {}
     lines = [
@@ -426,6 +445,11 @@ def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
         f"polished→raw {v.get('polishedToRaw',0.5)}, teacher→peer {v.get('teacherToPeer',0.5)}",
         f"- never say: {', '.join(brand.get('non_negotiables', []) or [])}",
     ]
+    if brand.get('catchphrases'):
+        lines.append(
+            f"- signature phrases (work these in verbatim where natural): "
+            f"{', '.join(f'“{c}”' for c in brand['catchphrases'][:8])}"
+        )
     if brand.get('primary_platform'):
         lines.append(f"- primary platform: {brand['primary_platform']}")
     if brand.get('stage'):
@@ -508,13 +532,16 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
                    media_context: str = "", posts: list[dict] | None = None,
                    arm_stats: list[dict] | None = None) -> tuple[str, str]:
     s = STYLES.get(style, STYLES["talking_head"])
+    voice_ex = _voice_exemplars(posts)
+    voice_section = f"\n\n{voice_ex}" if voice_ex else ""
     system = (
         f"You are Marque's script engine writing {s['label']} short-form videos. "
         "Write in the creator's EXACT voice — match their tone sliders, echo their real phrasing, and NEVER use "
         "a banned phrase. The hook must stop the scroll in the first 3 seconds. "
         f"\n\n{VIRALITY_BLOCK}\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
-        f"A correctly-structured example for this style (match the STRUCTURE, not the content):\n{s['exemplar']}\n\n"
+        f"A correctly-structured example for this style (match the STRUCTURE, not the content):\n{s['exemplar']}"
+        f"{voice_section}\n\n"
         "Reply with ONLY valid JSON, no prose, no code fences."
     )
     media = f"\nReference footage the creator already has (reuse where natural): {media_context}" if media_context else ""

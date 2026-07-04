@@ -609,14 +609,36 @@ def test_blend_score_weights_and_slop_penalty():
 
 def test_quality_scripts_swaps_best_hook_and_grounds_score(monkeypatch):
     monkeypatch.setattr(main, "AI_QUALITY", True)
+    main._arm_stats.pop("fresh_creator", None)          # no learning data → pure critic score
     verdicts = [{"index": 0, "hook_strength": 90, "specificity": 80, "format_fit": 80,
                  "voice_match": 80, "slop": False, "best_hook": 1, "verdict": "keep"}]
     monkeypatch.setattr(main, "anthropic", _judge_fake(verdicts))
     scr = [_script(alts=[{"text": "Stronger alt hook", "signal": "contrarian", "strength": 95}])]
-    out = asyncio.run(main.quality_scripts({}, "talking_head", scr))
+    out = asyncio.run(main.quality_scripts({}, "talking_head", scr, creator_id="fresh_creator"))
     assert out[0]["hook"] == "Stronger alt hook"        # best_hook=1 swapped in
     assert out[0]["hookSignal"] == "contrarian"
     assert out[0]["predictedScore"] == 85               # grounded on critic, not the 99 guess
+
+
+def test_calibration_signal_none_without_evidence():
+    main._arm_stats.pop("nodata", None)
+    cal, w = main._calibration_signal("nodata", {"style": "talking_head", "formatId": "x"})
+    assert cal is None and w == 0.0
+
+
+def test_final_score_pulls_toward_real_outcomes(monkeypatch):
+    # Critic likes it (blend=85) but the creator's real posts in this style flop
+    # (effect 0.2 → cal 20). With enough evidence the score is pulled down.
+    main._arm_stats["proven"] = {
+        "style:talking_head": {"n": 10, "effect": 0.2, "alpha": 3, "beta": 9},
+    }
+    v = {"hook_strength": 90, "specificity": 80, "format_fit": 80, "voice_match": 80}
+    critic = main._blend_score(v)                       # 85
+    final = main._final_score("proven", {"style": "talking_head"}, v)
+    assert final < critic                               # calibration dragged it down
+    cal, w = main._calibration_signal("proven", {"style": "talking_head"})
+    assert cal == 20 and w == 0.4                       # 0.04 * 10, capped under 0.5
+    main._arm_stats.pop("proven", None)
 
 
 def test_quality_scripts_revises_flagged(monkeypatch):
@@ -653,6 +675,53 @@ def test_quality_scripts_disabled_is_passthrough(monkeypatch):
     out = asyncio.run(main.quality_scripts({}, "talking_head", scr))
     assert out[0]["hook"] == "raw"
     assert not called                                   # gate off → no LLM call
+
+
+def test_arms_for_prompt_shapes_arms_so_learning_block_fires():
+    import prompts
+    main._arm_stats["learner"] = {
+        "style:talking_head": {"n": 10, "effect": 0.80, "confidence": "confirmed"},   # +60%
+        "hook_signal:contrarian": {"n": 5, "effect": 0.35, "confidence": "early_read"},  # -30%
+        "format_id:myth-buster": {"n": 2, "effect": 0.9},   # too few samples → dropped
+    }
+    arms = main._arms_for_prompt("learner")
+    labels = [a["label"] for a in arms]
+    assert len(arms) == 2                                      # n<4 arm excluded
+    assert arms[0]["lift_pct"] == 60                           # strongest signal first
+    assert "talking head style: +60% vs your average" in arms[0]["label"]
+    assert any("contrarian hook: -30%" in l for l in labels)
+    # The whole point: learning_block now produces a non-empty block from real data.
+    block = prompts.learning_block(arms)
+    assert "talking head style: +60%" in block and block.strip() != ""
+    main._arm_stats.pop("learner", None)
+
+
+def test_learning_block_empty_on_raw_unshaped_arms():
+    import prompts
+    # Raw arm dicts (pre-fix) lack lift_pct/label → block must be empty (the old bug).
+    raw = [{"n": 10, "effect": 0.8, "confidence": "confirmed"}]
+    assert prompts.learning_block(raw) == ""
+
+
+def test_voice_exemplars_quotes_best_openers():
+    import prompts
+    posts = [
+        {"caption": "Boring low-engagement post. Second sentence.", "likes": 1, "comments": 0},
+        {"caption": "Everyone gets protein timing wrong. Here's the fix.", "likes": 500, "comments": 40},
+        {"transcript": "I tracked 90 days of data and one thing shocked me.", "likes": 300, "comments": 10},
+    ]
+    ex = prompts._voice_exemplars(posts, k=2)
+    assert "Everyone gets protein timing wrong" in ex        # top by engagement, first sentence
+    assert "I tracked 90 days of data" in ex
+    assert "Boring low-engagement" not in ex                 # ranked out at k=2
+    assert prompts._voice_exemplars([]) == ""
+
+
+def test_brand_block_emits_catchphrases():
+    import prompts
+    block = prompts.brand_block({"niche": "fitness", "catchphrases": ["let's get after it", "no excuses"]})
+    assert "signature phrases" in block
+    assert "let's get after it" in block
 
 
 def test_quality_hooks_drops_slop_and_reranks(monkeypatch):

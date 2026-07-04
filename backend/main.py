@@ -83,6 +83,28 @@ def _update_arm(creator_id: str, dim_value: str, y: float):
     s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
 
 
+def _arms_for_prompt(creator_id: str) -> list[dict]:
+    """Shape raw bandit arms into the {lift_pct, label, confidence} form that
+    prompts.learning_block() actually reads. Without this the raw arm dicts lack
+    lift_pct/label, so learning_block always returns "" and post-performance
+    never reaches script/hook/converse generation — the loop is cosmetic. Emit
+    only arms with an early read (n>=4), strongest signals first."""
+    _dim_word = {"style": "style", "format_id": "format",
+                 "hook_signal": "hook", "pillar": "pillar"}
+    out = []
+    for key, s in _arm_stats.get(creator_id, {}).items():
+        if s.get("n", 0) < 4 or ":" not in key:
+            continue
+        dim, val = key.split(":", 1)
+        lift = round((s.get("effect", 0.5) - 0.5) * 200)
+        sign = "+" if lift >= 0 else ""
+        label = f"{val.replace('_', ' ')} {_dim_word.get(dim, dim)}: {sign}{lift}% vs your average"
+        out.append({**s, "lift_pct": lift, "label": label,
+                    "confidence": s.get("confidence", "early_read")})
+    out.sort(key=lambda a: abs(a["lift_pct"]), reverse=True)
+    return out
+
+
 def _thompson_sample(creator_id: str, candidates: list) -> list:
     import random
     stats = _arm_stats.get(creator_id, {})
@@ -179,6 +201,7 @@ class Brand(BaseModel):
     goal: str = "Grow my audience"
     voice: dict = {}
     non_negotiables: list[str] = []
+    catchphrases: list[str] = []      # verbatim signature phrases (from brand-scan)
 
     def d(self) -> dict:
         return self.model_dump()
@@ -470,12 +493,49 @@ def _blend_score(v: dict) -> int:
         return 0
 
 
+def _calibration_signal(creator_id: str, script: dict) -> tuple[int | None, float]:
+    """Outcome calibration from the learning loop: what the creator's REAL posts
+    in this script's style / format / hook-signal actually earned. Returns
+    (score_0_100, weight_0_1); weight scales with accumulated evidence and is 0
+    until at least one arm has an early read (n>=4). No data → (None, 0)."""
+    stats = _arm_stats.get(creator_id, {})
+    keys = []
+    if script.get("style"):
+        keys.append(f"style:{script['style']}")
+    if script.get("formatId"):
+        keys.append(f"format_id:{script['formatId']}")
+    if script.get("hookSignal"):
+        keys.append(f"hook_signal:{script['hookSignal']}")
+    effects, evidence = [], 0
+    for k in keys:
+        s = stats.get(k)
+        if s and s.get("n", 0) >= 4:                     # early_read or better
+            effects.append(float(s.get("effect", 0.5)))
+            evidence += s["n"]
+    if not effects:
+        return None, 0.0
+    cal = round(sum(effects) / len(effects) * 100)       # mean arm effect → 0-100
+    weight = min(0.5, 0.04 * evidence)                   # trust grows with data, capped at 0.5
+    return cal, weight
+
+
+def _final_score(creator_id: str, script: dict, verdict: dict) -> int:
+    """Critic score, pulled toward the creator's real outcomes as evidence accrues."""
+    critic = _blend_score(verdict)
+    cal, w = _calibration_signal(creator_id, script)
+    if cal is None:
+        return critic
+    return max(0, min(100, round((1 - w) * critic + w * cal)))
+
+
 async def quality_scripts(brand: dict, style: str, scripts: list[dict],
-                          posts: list[dict] | None = None) -> list[dict]:
+                          posts: list[dict] | None = None,
+                          creator_id: str = "default") -> list[dict]:
     """Generate -> judge -> targeted self-repair for scripts. A strict HAIKU critic
     scores each draft; we swap in the strongest alt-hook, rewrite only the weak
-    ones with OPUS, and re-ground predictedScore on the critic's axes. Any failure
-    falls back to the untouched drafts — this never strands generation."""
+    ones with OPUS, and re-ground predictedScore on the critic's axes calibrated
+    against the creator's real learning-loop outcomes. Any failure falls back to
+    the untouched drafts — this never strands generation."""
     if not (AI_QUALITY and scripts):
         return scripts
     try:
@@ -502,8 +562,8 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
                 sc["hook"] = alt["text"]
                 if alt.get("signal"):
                     sc["hookSignal"] = alt["signal"]
-        # Re-ground the virality score on the independent critic.
-        sc["predictedScore"] = _blend_score(v)
+        # Re-ground the virality score on the critic, calibrated by real outcomes.
+        sc["predictedScore"] = _final_score(creator_id, sc, v)
         if v.get("verdict") == "revise":
             flagged.append({"pos": i, "script": sc, "verdict": v})
 
@@ -517,8 +577,9 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
     for f, new in zip(flagged, revised):
         if isinstance(new, dict) and new.get("hook") and new.get("body"):
             new.setdefault("style", style)
-            # Keep the critic-grounded score unless the rewrite lifted the ceiling.
-            new["predictedScore"] = max(_blend_score(f["verdict"]), int(new.get("predictedScore", 0) or 0))
+            # Keep the critic+calibration-grounded score unless the rewrite lifted it.
+            new["predictedScore"] = max(_final_score(creator_id, new, f["verdict"]),
+                                        int(new.get("predictedScore", 0) or 0))
             scripts[f["pos"]] = new
     return scripts
 
@@ -580,14 +641,15 @@ async def scripts(req: ScriptRequest):
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
-        stats = list(_arm_stats.get(req.creator_id, {}).values())
+        stats = _arms_for_prompt(req.creator_id)
         sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
                                           req.media_context, req.posts or None,
                                           arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 3800), array=True)
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
-        out = await quality_scripts(req.d(), req.style, out, req.posts or None)
+        out = await quality_scripts(req.d(), req.style, out, req.posts or None,
+                                    creator_id=req.creator_id)
         return {"mode": "live", "scripts": out}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}
@@ -598,7 +660,7 @@ async def hooks(req: HooksRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
     try:
-        stats = list(_arm_stats.get(req.creator_id, {}).values())
+        stats = _arms_for_prompt(req.creator_id)
         sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True) or []
         out = await quality_hooks(req.topic, out)
@@ -1988,7 +2050,7 @@ async def brand_summary(req: BrandSummaryRequest):
     angle = (req.memory.get("angle") or "").strip()
     if ANTHROPIC_KEY:
         try:
-            stats = list(_arm_stats.get(req.creator_id, {}).values())
+            stats = _arms_for_prompt(req.creator_id)
             sys, usr = prompts.brand_summary_prompt(b, req.memory, stats)
             out = extract_json(await anthropic(sys, usr, HAIKU, 900), array=False)
             if out and out.get("summary"):
