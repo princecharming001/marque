@@ -572,3 +572,107 @@ def test_render_plan_drops_react_window_straddling_a_cut():
     p = build_render_plan(edl)
     assert len(p["react_schedule"]) == 1
     assert p["react_schedule"][0]["state"] == "play"
+
+
+# ---------------------------------------------------------------------------
+# Inference-time quality gate: generate -> judge -> targeted self-repair
+# ---------------------------------------------------------------------------
+
+def _script(hook="Old weak hook", alts=None, fmt="talking-point"):
+    return {"title": "T", "summary": "s", "hook": hook, "hookSignal": "curiosity",
+            "formatId": fmt, "body": "b", "cta": "Follow.", "shotPlan": [],
+            "targetSeconds": 30, "predictedScore": 99,
+            "altHooks": alts or [], "style": "talking_head"}
+
+
+def _judge_fake(verdicts):
+    """Return a fake `anthropic` that answers the script judge with `verdicts`
+    and any revise call with a canned rewritten array."""
+    async def fake(system, user, model=main.OPUS, max_tokens=3000):
+        if "harshest short-form editor" in system:
+            return json.dumps(verdicts)
+        if "senior script editor rewriting" in system:
+            return json.dumps([_script(hook="Rewritten sharp hook: $3,180 in 42 days")])
+        return "[]"
+    return fake
+
+
+def test_blend_score_weights_and_slop_penalty():
+    hi = main._blend_score({"hook_strength": 100, "specificity": 100,
+                            "format_fit": 100, "voice_match": 100})
+    assert hi == 100
+    penalized = main._blend_score({"hook_strength": 80, "specificity": 80,
+                                   "format_fit": 80, "voice_match": 80, "slop": True})
+    assert penalized == 68   # 80 - 12
+    assert main._blend_score({}) == 0
+
+
+def test_quality_scripts_swaps_best_hook_and_grounds_score(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    verdicts = [{"index": 0, "hook_strength": 90, "specificity": 80, "format_fit": 80,
+                 "voice_match": 80, "slop": False, "best_hook": 1, "verdict": "keep"}]
+    monkeypatch.setattr(main, "anthropic", _judge_fake(verdicts))
+    scr = [_script(alts=[{"text": "Stronger alt hook", "signal": "contrarian", "strength": 95}])]
+    out = asyncio.run(main.quality_scripts({}, "talking_head", scr))
+    assert out[0]["hook"] == "Stronger alt hook"        # best_hook=1 swapped in
+    assert out[0]["hookSignal"] == "contrarian"
+    assert out[0]["predictedScore"] == 85               # grounded on critic, not the 99 guess
+
+
+def test_quality_scripts_revises_flagged(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    verdicts = [{"index": 0, "hook_strength": 40, "specificity": 30, "format_fit": 50,
+                 "voice_match": 60, "slop": True, "best_hook": 0, "verdict": "revise",
+                 "weakest": "specificity", "note": "add a number"}]
+    monkeypatch.setattr(main, "anthropic", _judge_fake(verdicts))
+    out = asyncio.run(main.quality_scripts({}, "talking_head", [_script()]))
+    assert "Rewritten sharp hook" in out[0]["hook"]     # flagged script was rewritten
+    assert out[0]["style"] == "talking_head"
+
+
+def test_quality_scripts_fallback_on_empty_judge(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+
+    async def empty(system, user, model=main.OPUS, max_tokens=3000):
+        return "[]"
+    monkeypatch.setattr(main, "anthropic", empty)
+    scr = [_script(hook="unchanged")]
+    out = asyncio.run(main.quality_scripts({}, "talking_head", scr))
+    assert out[0]["hook"] == "unchanged"                # no verdicts → untouched
+
+
+def test_quality_scripts_disabled_is_passthrough(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", False)
+    called = []
+
+    async def boom(*a, **k):
+        called.append(1)
+        return "[]"
+    monkeypatch.setattr(main, "anthropic", boom)
+    scr = [_script(hook="raw")]
+    out = asyncio.run(main.quality_scripts({}, "talking_head", scr))
+    assert out[0]["hook"] == "raw"
+    assert not called                                   # gate off → no LLM call
+
+
+def test_quality_hooks_drops_slop_and_reranks(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    hooks = [
+        {"text": "In this video I'll show you", "signal": "curiosity", "strength": 70},  # slop
+        {"text": "Everyone does this backwards", "signal": "contrarian", "strength": 60},
+        {"text": "$3,180 in 42 days — here's how", "signal": "authority", "strength": 55},
+    ]
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000):
+        assert "ruthless short-form hook critic" in system
+        return json.dumps([
+            {"index": 0, "strength": 20, "slop": True},
+            {"index": 1, "strength": 78, "slop": False},
+            {"index": 2, "strength": 92, "slop": False},
+        ])
+    monkeypatch.setattr(main, "anthropic", fake)
+    out = asyncio.run(main.quality_hooks("money", hooks))
+    assert [h["text"] for h in out] == [
+        "$3,180 in 42 days — here's how",               # 92, ranked first
+        "Everyone does this backwards",                 # 78
+    ]                                                   # slop hook dropped

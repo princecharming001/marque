@@ -534,6 +534,92 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
 
 
 # ---------------------------------------------------------------------------
+# Script quality gate: generate -> judge -> targeted self-repair
+# ---------------------------------------------------------------------------
+
+# What the judge returns per script. `best_hook` indexes the pooled hook list:
+# 0 = the main hook, 1..n = altHooks[0..n-1]. `verdict` is keep|revise.
+SCRIPT_JUDGE_SCHEMA = (
+    'Reply with ONLY a JSON array, one object per script in order: '
+    '{"index": int, "hook_strength": int 0-100, "specificity": int 0-100, '
+    '"format_fit": int 0-100, "voice_match": int 0-100, "slop": bool, '
+    '"best_hook": int (0 = keep main hook, or the 1-based altHook that would out-hook it), '
+    '"verdict": "keep" | "revise", "weakest": str (the axis to fix), "note": str (one concrete fix)}'
+)
+
+
+def script_judge_prompt(scripts: list[dict], style: str) -> tuple[str, str]:
+    """A strict independent critic that scores each draft on the axes that
+    actually drive short-form performance and flags the ones worth rewriting."""
+    s = STYLES.get(style, STYLES["talking_head"])
+    system = (
+        "You are Marque's harshest short-form editor, grading draft scripts a JUNIOR wrote. "
+        "You did not write these — be adversarial, not generous. Score each on four axes 0-100:\n"
+        "- hook_strength: does the first line stop the scroll in 1.5s? A concrete claim/number mid-thought "
+        "scores high; a greeting, a set-up, a question-opener, or a vague promise scores low.\n"
+        "- specificity: is there at least ONE ownable, concrete detail (a number, a name, a dollar figure, a "
+        "timeframe)? Generic advice that fits any creator scores low.\n"
+        "- format_fit: does it obey this style's structure? "
+        f"STYLE = {s['label']}: {s['rubric']}\n"
+        "- voice_match: does it sound like THIS creator (their sliders, phrasing, no banned words) and not like "
+        "generic AI copy?\n"
+        "Set slop=true if the hook uses an AI-tell opener ('In today's video', 'Let me tell you', 'Here's the "
+        "thing', 'Ever wondered', 'Picture this', 'Buckle up') or reads like filler. "
+        "Then compare the main hook against the altHooks and set best_hook to the index of the strongest "
+        "(0 = main hook is already best; otherwise the 1-based position in altHooks). "
+        "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR slop is true; else 'keep'. "
+        "Be decisive and consistent.\n\n"
+        f"{VIRALITY_BLOCK}\n\n" + SCRIPT_JUDGE_SCHEMA
+    )
+    items = []
+    for i, sc in enumerate(scripts):
+        alts = "; ".join(
+            f"[{j+1}] {a.get('text','')}" for j, a in enumerate(sc.get("altHooks", []) or [])
+        ) or "(none)"
+        items.append(
+            f"SCRIPT {i}\n"
+            f"  hook (index 0): {sc.get('hook','')}\n"
+            f"  altHooks: {alts}\n"
+            f"  formatId: {sc.get('formatId','')}\n"
+            f"  body: {sc.get('body','')}\n"
+            f"  cta: {sc.get('cta','')}"
+        )
+    user = "Judge each draft. Return the array in the same order.\n\n" + "\n\n".join(items)
+    return system, user
+
+
+def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
+                         posts: list[dict] | None = None) -> tuple[str, str]:
+    """Rewrite ONLY the scripts the judge flagged, guided by its critique.
+    Keeps everything that already works; fixes the named weak axis."""
+    s = STYLES.get(style, STYLES["talking_head"])
+    system = (
+        f"You are Marque's senior script editor rewriting weak {s['label']} drafts. A strict critic flagged "
+        "each script below with its weakest axis and a fix. Rewrite each to fix EXACTLY that problem while "
+        "preserving the creator's voice, the pillar, and anything already strong. Do not blandify — make it "
+        "sharper and more specific, not safer. The hook must land in the first 1.5 seconds with a concrete "
+        "claim; never open with a greeting, set-up, question, or AI-tell phrase.\n\n"
+        f"{VIRALITY_BLOCK}\n\n"
+        f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
+        f"Keep \"style\":\"{style}\" and a valid formatId on each. "
+        "Return ONLY a JSON array, same length and order as the input. " + SCRIPT_SCHEMA
+    )
+    blocks = []
+    for f in flagged:
+        sc = f["script"]
+        v = f["verdict"]
+        blocks.append(
+            f"— Fix this (weakest: {v.get('weakest','hook')}; critic note: {v.get('note','')}):\n"
+            f"{json.dumps(sc, ensure_ascii=False)}"
+        )
+    user = (
+        f"{brand_block(brand, posts)}\n\n"
+        "Rewrite each of these drafts:\n\n" + "\n\n".join(blocks)
+    )
+    return system, user
+
+
+# ---------------------------------------------------------------------------
 # Hooks / steer / captions / teardown / insights
 # ---------------------------------------------------------------------------
 
@@ -558,6 +644,24 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
         f"Return ONLY a JSON array of 6 hooks with diverse signals and structures. Each: "
         f'{{\"text\": str, \"signal\": one of {SIGNALS}, \"strength\": int 0-100}}'
     )
+    return system, user
+
+
+def hook_judge_prompt(topic: str, hooks: list[dict]) -> tuple[str, str]:
+    """Re-score a batch of generated hooks with an independent critic, drop the
+    AI-slop / duplicate ones, and re-rank by honest strength."""
+    system = (
+        "You are a ruthless short-form hook critic. You did NOT write these hooks — grade them honestly, harder "
+        "than the writer did. For each, re-score strength 0-100 on ONE question: would a scrolling stranger stop "
+        "in the first 1.5 seconds? Reward a concrete claim/number/contrarian reversal opened mid-thought; punish "
+        "greetings, set-ups, question-openers, and vague promises. Set slop=true for AI-tell openers ('In this "
+        "video', 'Let me tell you', 'Here's the thing', 'Ever wondered', 'Buckle up') or near-duplicates of a "
+        "stronger hook in the set. "
+        "Reply with ONLY a JSON array (same order as input): "
+        '{"index": int, "strength": int 0-100, "slop": bool}.\n\n' + VIRALITY_BLOCK
+    )
+    items = "\n".join(f'{i}. [{h.get("signal","")}] {h.get("text","")}' for i, h in enumerate(hooks))
+    user = f"Topic: {topic}\nHooks:\n{items}\n\nJudge each."
     return system, user
 
 

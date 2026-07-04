@@ -31,6 +31,9 @@ APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+# Inference-time quality gate (generate -> judge -> targeted self-repair). On by
+# default; set AI_QUALITY=0 to fall back to raw single-shot generation.
+AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
 
 # ---------------------------------------------------------------------------
 # Learning loop — in-memory bandit (Supabase arm_stats in production)
@@ -452,6 +455,100 @@ async def generate_pillars(brand: dict, posts: list[dict] | None) -> tuple[str, 
         return "mock", mock_pillars(brand)
 
 
+def _blend_score(v: dict) -> int:
+    """Ground predictedScore in the independent critic's axes instead of the
+    generator's self-flattery. Hook dominates because it dominates retention."""
+    try:
+        s = (0.50 * float(v.get("hook_strength", 0))
+             + 0.25 * float(v.get("specificity", 0))
+             + 0.15 * float(v.get("format_fit", 0))
+             + 0.10 * float(v.get("voice_match", 0)))
+        if v.get("slop"):
+            s -= 12
+        return max(0, min(100, round(s)))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def quality_scripts(brand: dict, style: str, scripts: list[dict],
+                          posts: list[dict] | None = None) -> list[dict]:
+    """Generate -> judge -> targeted self-repair for scripts. A strict HAIKU critic
+    scores each draft; we swap in the strongest alt-hook, rewrite only the weak
+    ones with OPUS, and re-ground predictedScore on the critic's axes. Any failure
+    falls back to the untouched drafts — this never strands generation."""
+    if not (AI_QUALITY and scripts):
+        return scripts
+    try:
+        jsys, jusr = prompts.script_judge_prompt(scripts, style)
+        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 1400), array=True) or []
+    except HTTPException:
+        return scripts
+    by_index: dict[int, dict] = {}
+    for v in verdicts:
+        if isinstance(v, dict) and isinstance(v.get("index"), int) and 0 <= v["index"] < len(scripts):
+            by_index[v["index"]] = v
+
+    flagged: list[dict] = []
+    for i, sc in enumerate(scripts):
+        v = by_index.get(i)
+        if not v:
+            continue
+        # Swap in the critic's preferred hook (0 = keep main; 1..n = altHooks[n-1]).
+        bh = v.get("best_hook", 0)
+        alts = sc.get("altHooks", []) or []
+        if isinstance(bh, int) and 1 <= bh <= len(alts):
+            alt = alts[bh - 1]
+            if alt.get("text"):
+                sc["hook"] = alt["text"]
+                if alt.get("signal"):
+                    sc["hookSignal"] = alt["signal"]
+        # Re-ground the virality score on the independent critic.
+        sc["predictedScore"] = _blend_score(v)
+        if v.get("verdict") == "revise":
+            flagged.append({"pos": i, "script": sc, "verdict": v})
+
+    if not flagged:
+        return scripts
+    try:
+        rsys, rusr = prompts.script_revise_prompt(brand, style, flagged, posts)
+        revised = extract_json(await anthropic(rsys, rusr, OPUS, 3800), array=True) or []
+    except HTTPException:
+        return scripts
+    for f, new in zip(flagged, revised):
+        if isinstance(new, dict) and new.get("hook") and new.get("body"):
+            new.setdefault("style", style)
+            # Keep the critic-grounded score unless the rewrite lifted the ceiling.
+            new["predictedScore"] = max(_blend_score(f["verdict"]), int(new.get("predictedScore", 0) or 0))
+            scripts[f["pos"]] = new
+    return scripts
+
+
+async def quality_hooks(topic: str, hooks: list[dict]) -> list[dict]:
+    """Re-score generated hooks with an independent critic, drop AI-slop/dupes,
+    and re-rank by honest strength. Falls back to the raw hooks on any failure."""
+    if not (AI_QUALITY and hooks):
+        return hooks
+    try:
+        jsys, jusr = prompts.hook_judge_prompt(topic, hooks)
+        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 700), array=True) or []
+    except HTTPException:
+        return hooks
+    scored: list[tuple[int, dict]] = []
+    for v in verdicts:
+        if not (isinstance(v, dict) and isinstance(v.get("index"), int)):
+            continue
+        i = v["index"]
+        if not (0 <= i < len(hooks)) or v.get("slop"):
+            continue
+        h = dict(hooks[i])
+        h["strength"] = max(0, min(100, int(v.get("strength", h.get("strength", 0)) or 0)))
+        scored.append((h["strength"], h))
+    if not scored:
+        return hooks
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [h for _, h in scored]
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -488,7 +585,10 @@ async def scripts(req: ScriptRequest):
                                           req.media_context, req.posts or None,
                                           arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 3800), array=True)
-        return {"mode": "live", "scripts": out or mock_scripts(req)}
+        if not out:
+            return {"mode": "mock", "scripts": mock_scripts(req)}
+        out = await quality_scripts(req.d(), req.style, out, req.posts or None)
+        return {"mode": "live", "scripts": out}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}
 
@@ -500,8 +600,9 @@ async def hooks(req: HooksRequest):
     try:
         stats = list(_arm_stats.get(req.creator_id, {}).values())
         sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats)
-        out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True)
-        return {"mode": "live", "hooks": out or []}
+        out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True) or []
+        out = await quality_hooks(req.topic, out)
+        return {"mode": "live", "hooks": out}
     except HTTPException:
         return {"mode": "mock", "hooks": []}
 
