@@ -831,7 +831,10 @@ async def _run_render_bridge(*args: str) -> dict:
 async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str) -> dict | None:
     if not (REMOTION_SERVE_URL and REMOTION_FUNCTION_NAME):
         return None
-    composition_id = f"Marque_{style.title().replace('_', '')}"
+    # Remotion Lambda composition IDs may only contain a-z, A-Z, 0-9, CJK, and "-" —
+    # underscores are rejected at render time (discovered live: "Composition id can
+    # only contain ... You passed Marque_TalkingHead"). Must match Root.tsx exactly.
+    composition_id = f"Marque-{style.title().replace('_', '')}"
     input_props = json.dumps({"sourceUrl": source_url, "edl": edl, "formatId": format_id})
     result = await _run_render_bridge("submit", composition_id, input_props)
     if not result.get("renderId"):
