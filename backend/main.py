@@ -20,9 +20,19 @@ from pydantic import BaseModel
 
 import prompts
 from prompts import OPUS, HAIKU, SONNET, STYLES, FORMAT_IDS
-from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame, build_render_plan
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="Marque API", version="0.3.0")
+from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame, build_render_plan
+from supabase_persistence import SupabaseClient
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    await _load_learning_state()
+    yield
+
+
+app = FastAPI(title="Marque API", version="0.3.0", lifespan=_lifespan)
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages"
@@ -45,6 +55,30 @@ BEST_OF_N_HOOKS = os.environ.get("BEST_OF_N_HOOKS", "1") != "0"
 
 _arm_stats: dict[str, dict] = {}
 _post_registry: dict[str, dict] = {}
+# Durable backing store for the two dicts above. None keyless → pure in-memory (unchanged).
+_supabase_client: SupabaseClient | None = (
+    SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if (SUPABASE_URL and SUPABASE_KEY) else None
+)
+
+
+async def _load_learning_state():
+    """Rehydrate the bandit + post registry from Supabase so a restart / new Render
+    instance doesn't start cold. No-op keyless. Never blocks startup on failure."""
+    if not _supabase_client:
+        return
+    try:
+        posts = await _supabase_client.load_all_posts()
+        for p in posts:
+            pid = p.get("post_id")
+            if pid:
+                _post_registry[pid] = p
+        for cid in {p.get("creator_id") for p in posts if p.get("creator_id")}:
+            arms = await _supabase_client.load_arm_stats(cid)
+            if arms:
+                _arm_stats[cid] = arms
+        logging.info("learning state loaded: %d posts, %d creators", len(_post_registry), len(_arm_stats))
+    except Exception as e:
+        logging.warning("startup learning-state load failed: %s", e)
 
 DIMENSIONS = ["pillar", "style", "format_id", "hook_signal"]
 KAPPA = 5.0
@@ -72,7 +106,7 @@ def _compute_y(m: dict, goal: str = "grow") -> float:
     return 1 / (1 + math.exp(-0.5 * (raw - 2.0)))
 
 
-def _update_arm(creator_id: str, dim_value: str, y: float):
+async def _update_arm(creator_id: str, dim_value: str, y: float):
     if creator_id not in _arm_stats:
         _arm_stats[creator_id] = {}
     stats = _arm_stats[creator_id]
@@ -85,14 +119,33 @@ def _update_arm(creator_id: str, dim_value: str, y: float):
     s["alpha"] = 1.0 + s["sum_y"]
     s["beta"] = 1.0 + (s["n"] - s["sum_y"])
     s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
+    if _supabase_client:                                  # write-through (best-effort)
+        try:
+            await _supabase_client.upsert_arm_stat(creator_id, dim_value, s)
+        except Exception as e:
+            logging.warning("supabase upsert_arm_stat failed: %s", e)
 
 
-def _arms_for_prompt(creator_id: str) -> list[dict]:
+async def _ensure_arms_loaded(creator_id: str):
+    """Lazy-load a creator's arms from Supabase on cache miss (e.g. this Render
+    instance never saw them). No-op keyless or when already cached."""
+    if creator_id in _arm_stats or not _supabase_client:
+        return
+    try:
+        arms = await _supabase_client.load_arm_stats(creator_id)
+        if arms:
+            _arm_stats[creator_id] = arms
+    except Exception as e:
+        logging.warning("lazy load_arm_stats failed: %s", e)
+
+
+async def _arms_for_prompt(creator_id: str) -> list[dict]:
     """Shape raw bandit arms into the {lift_pct, label, confidence} form that
     prompts.learning_block() actually reads. Without this the raw arm dicts lack
     lift_pct/label, so learning_block always returns "" and post-performance
     never reaches script/hook/converse generation — the loop is cosmetic. Emit
     only arms with an early read (n>=4), strongest signals first."""
+    await _ensure_arms_loaded(creator_id)
     _dim_word = {"style": "style", "format_id": "format",
                  "hook_signal": "hook", "pillar": "pillar"}
     out = []
@@ -629,7 +682,7 @@ async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
     if not (BEST_OF_N_HOOKS and AI_QUALITY and ANTHROPIC_KEY):
         return []
     try:
-        stats = _arms_for_prompt(creator_id)
+        stats = await _arms_for_prompt(creator_id)
         hsys, husr = prompts.hooks_prompt(brand, topic, style, arm_stats=stats, memory=memory)
         pool = extract_json(await anthropic(hsys, husr, OPUS, 1200, temperature=1.0), array=True) or []
     except HTTPException:
@@ -669,7 +722,7 @@ async def scripts(req: ScriptRequest):
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
-        stats = _arms_for_prompt(req.creator_id)
+        stats = await _arms_for_prompt(req.creator_id)
         # Best-of-N: pre-select the strongest openers, then write bodies around them.
         topic = req.pillar or req.niche or "your next post"
         mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count))
@@ -692,7 +745,7 @@ async def hooks(req: HooksRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
     try:
-        stats = _arms_for_prompt(req.creator_id)
+        stats = await _arms_for_prompt(req.creator_id)
         sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True) or []
         out = await quality_hooks(req.topic, out)
@@ -1388,7 +1441,7 @@ async def register_post(req: PostRegisterRequest):
     """Register a scheduled post as a learning experiment."""
     if req.post_id in _post_registry:
         return {"mode": "mock", "status": "already_registered"}
-    _post_registry[req.post_id] = {
+    post_data = {
         "creator_id": req.creator_id,
         "platform": req.platform, "scheduled_at": req.scheduled_at,
         "pillar": req.pillar, "style": req.style,
@@ -1396,13 +1449,27 @@ async def register_post(req: PostRegisterRequest):
         "predicted_score": req.predicted_score,
         "outcome_y": None, "settled": False, "metrics": None,
     }
+    _post_registry[req.post_id] = post_data
+    if _supabase_client:
+        try:
+            await _supabase_client.upsert_post(req.post_id, post_data)
+        except Exception as e:
+            logging.warning("supabase upsert_post failed: %s", e)
     return {"mode": "live" if SUPABASE_URL else "mock", "status": "registered", "post_id": req.post_id}
 
 
 @app.post("/v1/metrics/ingest")
 async def ingest_metrics(req: MetricsIngestRequest):
     """Ingest post metrics and update the learning bandit (idempotent on post_id)."""
-    entry = _post_registry.get(req.post_id, {})
+    entry = _post_registry.get(req.post_id)
+    if entry is None and _supabase_client:                # registered on another instance?
+        try:
+            entry = await _supabase_client.load_post(req.post_id)
+            if entry:
+                _post_registry[req.post_id] = entry
+        except Exception as e:
+            logging.warning("supabase load_post failed: %s", e)
+    entry = entry or {}
     if entry.get("settled"):
         return {"mode": "mock", "status": "already_settled"}
     if req.reach < 20:
@@ -1415,12 +1482,17 @@ async def ingest_metrics(req: MetricsIngestRequest):
     for dim in DIMENSIONS:
         val = entry.get(dim, "")
         if val:
-            _update_arm(creator_id, f"{dim}:{val}", y)
+            await _update_arm(creator_id, f"{dim}:{val}", y)
 
     entry["outcome_y"] = y
     entry["settled"] = True
     entry["metrics"] = m
     _post_registry[req.post_id] = entry
+    if _supabase_client:
+        try:
+            await _supabase_client.upsert_post(req.post_id, entry)
+        except Exception as e:
+            logging.warning("supabase upsert_post (settled) failed: %s", e)
 
     return {"mode": "live" if SUPABASE_URL else "mock", "status": "ingested",
             "outcome_y": round(y, 3), "post_id": req.post_id}
@@ -1429,6 +1501,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
 @app.get("/v1/recommendations")
 async def get_recommendations(niche: str = "", creator_id: str = "default"):
     """Return top 3 Thompson-sampled arms for the creator's home feed."""
+    await _ensure_arms_loaded(creator_id)
     stats = _arm_stats.get(creator_id, {})
 
     if not stats:
@@ -1466,6 +1539,7 @@ async def get_recommendations(niche: str = "", creator_id: str = "default"):
 @app.get("/v1/insights/learned")
 async def get_learned_insights(creator_id: str = "default"):
     """Return the creator's winning formula derived from arm_stats."""
+    await _ensure_arms_loaded(creator_id)
     stats = _arm_stats.get(creator_id, {})
     if not stats:
         return {"mode": "mock", "insights": [], "posts_learned": 0,
@@ -2082,7 +2156,7 @@ async def brand_summary(req: BrandSummaryRequest):
     angle = (req.memory.get("angle") or "").strip()
     if ANTHROPIC_KEY:
         try:
-            stats = _arms_for_prompt(req.creator_id)
+            stats = await _arms_for_prompt(req.creator_id)
             sys, usr = prompts.brand_summary_prompt(b, req.memory, stats)
             out = extract_json(await anthropic(sys, usr, HAIKU, 900), array=False)
             if out and out.get("summary"):

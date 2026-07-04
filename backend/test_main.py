@@ -8,6 +8,15 @@ from main import app
 client = TestClient(app)
 
 
+class SupabaseClientStub:
+    """Truthy stand-in for the Supabase client; tests attach AsyncMocks per method."""
+    async def upsert_arm_stat(self, *a, **k): return True
+    async def load_arm_stats(self, *a, **k): return {}
+    async def upsert_post(self, *a, **k): return True
+    async def load_post(self, *a, **k): return None
+    async def load_all_posts(self, *a, **k): return []
+
+
 def test_healthz():
     assert client.get("/healthz").json()["status"] == "ok"
 
@@ -677,6 +686,78 @@ def test_quality_scripts_disabled_is_passthrough(monkeypatch):
     assert not called                                   # gate off → no LLM call
 
 
+def test_learning_loop_keyless_green(monkeypatch):
+    """No SUPABASE client → learning loop is pure in-memory, exactly as before."""
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._post_registry.pop("p_keyless", None)
+    main._arm_stats.pop("c_keyless", None)
+    r = client.post("/v1/posts/register", json={
+        "post_id": "p_keyless", "creator_id": "c_keyless", "platform": "instagram",
+        "style": "talking_head", "format_id": "myth-buster", "hook_signal": "contrarian",
+        "predicted_score": 75})
+    assert r.json()["mode"] == "mock"
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_keyless", "creator_id": "c_keyless", "reach": 100, "likes": 10,
+        "comments": 2, "saves": 5, "shares": 1, "avg_watch_pct": 0.68, "follows_gained": 3})
+    body = r.json()
+    assert body["status"] == "ingested" and "outcome_y" in body
+    assert main._arm_stats["c_keyless"]["style:talking_head"]["n"] >= 1
+
+
+def test_update_arm_write_through(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.upsert_arm_stat = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._arm_stats.pop("c_wt", None)
+    asyncio.run(main._update_arm("c_wt", "style:talking_head", 0.72))
+    fake.upsert_arm_stat.assert_awaited_once()
+    cid, arm, stat = fake.upsert_arm_stat.await_args[0]
+    assert cid == "c_wt" and arm == "style:talking_head" and stat["n"] == 1
+
+
+def test_arms_lazy_load_from_supabase(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_arm_stats = AsyncMock(return_value={
+        "style:faceless": {"n": 12, "effect": 0.75, "confidence": "confirmed"}})
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._arm_stats.pop("c_lazy", None)                   # cache miss → must load
+    arms = asyncio.run(main._arms_for_prompt("c_lazy"))
+    fake.load_arm_stats.assert_awaited_once_with("c_lazy")
+    assert main._arm_stats["c_lazy"]["style:faceless"]["n"] == 12
+    assert arms and arms[0]["lift_pct"] == 50             # (0.75-0.5)*200
+
+
+def test_supabase_client_disabled_when_no_key():
+    from supabase_persistence import SupabaseClient
+    assert SupabaseClient("", "").enabled is False
+    assert SupabaseClient("https://x.supabase.co", "").enabled is False
+    assert SupabaseClient("https://x.supabase.co", "k").enabled is True
+
+
+def test_supabase_upsert_filters_unknown_columns(monkeypatch):
+    """upsert_arm_stat must drop stray in-memory keys (lift_pct/label) before POST."""
+    from unittest.mock import AsyncMock
+    from supabase_persistence import SupabaseClient
+    c = SupabaseClient("https://x.supabase.co", "k")
+    captured = {}
+
+    async def fake_request(method, path, *, params=None, json=None, headers=None):
+        captured.update({"method": method, "path": path, "params": params, "json": json})
+        class R: status_code = 201
+        return R()
+    c._request = fake_request
+    ok = asyncio.run(c.upsert_arm_stat("c1", "style:x", {
+        "n": 3, "sum_y": 1.2, "alpha": 2.2, "beta": 1.8, "effect": 0.6,
+        "confidence": "insufficient", "lift_pct": 20, "label": "junk"}))
+    assert ok
+    assert captured["path"] == "/arm_stats"
+    assert captured["params"] == {"on_conflict": "creator_id,arm_key"}
+    assert "lift_pct" not in captured["json"] and "label" not in captured["json"]
+    assert captured["json"]["creator_id"] == "c1" and captured["json"]["arm_key"] == "style:x"
+
+
 def test_best_hooks_generates_pool_and_returns_top(monkeypatch):
     monkeypatch.setattr(main, "AI_QUALITY", True)
     monkeypatch.setattr(main, "BEST_OF_N_HOOKS", True)
@@ -738,7 +819,7 @@ def test_arms_for_prompt_shapes_arms_so_learning_block_fires():
         "hook_signal:contrarian": {"n": 5, "effect": 0.35, "confidence": "early_read"},  # -30%
         "format_id:myth-buster": {"n": 2, "effect": 0.9},   # too few samples → dropped
     }
-    arms = main._arms_for_prompt("learner")
+    arms = asyncio.run(main._arms_for_prompt("learner"))
     labels = [a["label"] for a in arms]
     assert len(arms) == 2                                      # n<4 arm excluded
     assert arms[0]["lift_pct"] == 60                           # strongest signal first
