@@ -281,8 +281,9 @@ final class AppStore {
         save()
     }
 
-    func makeClips(from script: Script, formats: [String], footagePath: String? = nil) async {
-        let made = await clipEngine.makeClips(from: script, formats: formats)
+    func makeClips(from script: Script, formats: [String], footagePath: String? = nil,
+                   reactSourceURL: String = "") async {
+        let made = await clipEngine.makeClips(from: script, formats: formats, reactSourceURL: reactSourceURL)
         let tagged = made.map { c -> Clip in
             var c = c
             c.title = script.title.isEmpty ? script.hook.text : script.title

@@ -20,6 +20,8 @@ struct RecordView: View {
     @State private var footagePath: String?
     @State private var pickedItem: PhotosPickerItem?
     @State private var selectedFormats: Set<String>
+    // duet_split only: the clip the creator is reacting to (pasted URL).
+    @State private var reactSourceURL: String = ""
     // Mutable copy so inline teleprompter edits flow through without modifying the store mid-take.
     @State private var liveScript: Script
 
@@ -154,6 +156,9 @@ struct RecordView: View {
                 }
                 .accessibilityIdentifier("record.reRecord")
                 formatPicker
+                if liveScript.style == VideoStyle.duetSplit.rawValue {
+                    reactSourceField
+                }
                 Button { makeClips() } label: {
                     Text("Submit for editing")
                         .font(AppFont.headline).foregroundStyle(Palette.ink)
@@ -250,11 +255,29 @@ struct RecordView: View {
         }
         Task {
             // Use liveScript so any inline teleprompter edits are reflected in the generated clips.
-            await store.makeClips(from: liveScript, formats: Array(selectedFormats), footagePath: footagePath)
+            await store.makeClips(from: liveScript, formats: Array(selectedFormats),
+                                  footagePath: footagePath,
+                                  reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines))
             dismiss()
             router.selectedTab = .library
             router.showFilm = false
         }
+    }
+
+    // Paste the reacted-to clip for a duet/react split (top panel of the render).
+    private var reactSourceField: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text("What are you reacting to?")
+                .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+            TextField("Paste a video link", text: $reactSourceURL)
+                .font(AppFont.callout).foregroundStyle(.white)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(.horizontal, Space.md).frame(height: 44)
+                .marqueGlassCapsule(height: 44)
+                .accessibilityIdentifier("record.reactSource")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var formatPicker: some View {

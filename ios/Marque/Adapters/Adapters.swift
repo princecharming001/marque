@@ -15,8 +15,15 @@ protocol LLMRouting {
 }
 
 protocol ClipEngineProtocol {
-    func makeClips(from script: Script, formats: [String]) async -> [Clip]
+    // reactSourceURL is the reacted-to clip for a duet_split render (empty otherwise).
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String) async -> [Clip]
     func render(clipId: UUID) async -> ClipStatus
+}
+
+extension ClipEngineProtocol {
+    func makeClips(from script: Script, formats: [String]) async -> [Clip] {
+        await makeClips(from: script, formats: formats, reactSourceURL: "")
+    }
 }
 
 protocol Publishing {
@@ -341,7 +348,7 @@ struct MockLLMRouter: LLMRouting {
 // MARK: - Mock clip engine
 
 struct MockClipEngine: ClipEngineProtocol {
-    func makeClips(from script: Script, formats: [String]) async -> [Clip] {
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String = "") async -> [Clip] {
         try? await Task.sleep(nanoseconds: 700_000_000)
         return formats.map { fid in
             let f = Catalog.format(fid)

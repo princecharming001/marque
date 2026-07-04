@@ -305,13 +305,15 @@ Output EDL:
 "broll":[],"layout":{"style":"green_screen","panels":1},"audio":{"lufs_target":-14.0}}
 ''',
     "broll_cutaway": '''
-Body: "It's your grip [broll: hands gripping a barbell]. Your lower back rounds [broll: rounded-back deadlift]."
-(hook occupies frames 0-60; first cue word 'grip' lands ~frame 90, 'rounds' ~frame 210)
+Body: "It's your grip [broll: hands gripping a barbell]. Your lower back rounds [broll: rounded-back deadlift]. Add five pounds every session."
+(hook occupies frames 0-60; 'grip' lands ~frame 90, 'rounds' ~frame 222; the final CTA
+sentence keeps the last 90 frames [330,420] cutaway-free so the video ends on the face)
 Output EDL:
-{"style":"broll_cutaway","format_id":"myth-buster","segments":[{"src_in":0,"src_out":300}],
+{"style":"broll_cutaway","format_id":"myth-buster","segments":[{"src_in":0,"src_out":420}],
 "drops":[],
 "captions":[{"word":"It's","frame":66},{"word":"your","frame":78},{"word":"grip","frame":90},
-{"word":"Your","frame":198},{"word":"lower","frame":204},{"word":"back","frame":210},{"word":"rounds","frame":222}],
+{"word":"Your","frame":198},{"word":"lower","frame":204},{"word":"back","frame":210},{"word":"rounds","frame":222},
+{"word":"Add","frame":336},{"word":"five","frame":348},{"word":"pounds","frame":360}],
 "overlays":[],
 "broll":[{"src_in":78,"src_out":153,"cue_text":"hands gripping a barbell","broll_query":"hands gripping a barbell close up","source":"stock"},
 {"src_in":210,"src_out":285,"cue_text":"rounded-back deadlift","broll_query":"rounded back deadlift silhouette","source":"stock"}],
@@ -328,8 +330,8 @@ Output EDL:
 "broll":[],"react_source":null,
 "react_schedule":[{"state":"play","src_in":0,"src_out":55,"clip_from":0,"audio_gain":1.0},
 {"state":"freeze","src_in":55,"src_out":150,"clip_from":55,"audio_gain":0.15},
-{"state":"play","src_in":150,"src_out":190,"clip_from":55,"audio_gain":1.0},
-{"state":"freeze","src_in":190,"src_out":300,"clip_from":95,"audio_gain":0.15}],
+{"state":"play","src_in":150,"src_out":215,"clip_from":55,"audio_gain":1.0},
+{"state":"freeze","src_in":215,"src_out":300,"clip_from":120,"audio_gain":0.15}],
 "layout":{"style":"duet_split","panels":2,"split_fraction":0.58},"audio":{"lufs_target":-14.0}}
 ''',
 }

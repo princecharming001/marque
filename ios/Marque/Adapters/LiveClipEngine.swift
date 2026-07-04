@@ -6,14 +6,15 @@ import Foundation
 struct LiveClipEngine: ClipEngineProtocol {
     private let fallback = MockClipEngine()
 
-    func makeClips(from script: Script, formats: [String]) async -> [Clip] {
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String = "") async -> [Clip] {
         // 1. Mint a presigned R2 upload URL.
         guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov"),
               let sourceURL = mintData["public_url"] as? String,
               let jobData = await BackendClient.shared.createClipJob(
                 sourceURL: sourceURL,
                 script: script,
-                formats: formats
+                formats: formats,
+                reactSourceURL: reactSourceURL
               ) else {
             return await fallback.makeClips(from: script, formats: formats)
         }
@@ -57,8 +58,9 @@ extension BackendClient {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    func createClipJob(sourceURL: String, script: Script, formats: [String]) async -> [String: Any]? {
-        let body: [String: Any] = [
+    func createClipJob(sourceURL: String, script: Script, formats: [String],
+                       reactSourceURL: String = "") async -> [String: Any]? {
+        var body: [String: Any] = [
             "source_url": sourceURL,
             "source_id": script.id.uuidString,
             "formats": formats,
@@ -72,6 +74,7 @@ extension BackendClient {
             ],
             "edit_prefs": editPrefs,
         ]
+        if !reactSourceURL.isEmpty { body["react_source_url"] = reactSourceURL }
         guard let data = await post("/v1/clips", body) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }

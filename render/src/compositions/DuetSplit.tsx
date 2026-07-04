@@ -29,7 +29,12 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const punch = (edl?.overlays ?? []).find(
     (o) => o.type === "punch_in" && frame >= o.frame_in && frame < o.frame_out
   );
-  const bottomScale = punch ? punch.scale : 1.0;
+  // Ramp the punch-in over ~8 frames with interpolate — a CSS `transition` does nothing
+  // in Remotion's frame-by-frame render (each frame is a fresh paint), so it would snap.
+  const bottomScale = punch
+    ? interpolate(frame, [punch.frame_in, punch.frame_in + 8], [1, punch.scale],
+        { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 1.0;
   const activeCard = quoteCards.find((o) => frame >= o.frame_in && frame < o.frame_out);
   const frozenNow = schedule.some(
     (w) => w.state === "freeze" && frame >= w.frame_in && frame < w.frame_out
@@ -41,7 +46,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       <div style={{ position: "absolute", top: 0, left: 0, width: "100%",
         height: `${topFrac * 100}%`, overflow: "hidden", background: "#000" }}>
         {react.kind === "image"
-          ? <ReactImage url={react.resolved_url} />
+          ? <ReactImage url={react.resolved_url} durationInFrames={edl?.total_frames ?? 300} />
           : <ReactVideo url={react.resolved_url} schedule={schedule} />}
         {/* frozen-state scrim so a paused source reads as intentional */}
         {frozenNow && <div style={{ position: "absolute", inset: 0,
@@ -68,8 +73,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       {/* BOTTOM panel — the creator */}
       <div style={{ position: "absolute", bottom: 0, left: 0, width: "100%",
         height: `${(1 - topFrac) * 100}%`, overflow: "hidden", background: "#000" }}>
-        <div style={{ position: "absolute", inset: 0, transform: `scale(${bottomScale})`,
-          transition: "transform 0.1s" }}>
+        <div style={{ position: "absolute", inset: 0, transform: `scale(${bottomScale})` }}>
           <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} />
         </div>
       </div>
@@ -79,10 +83,11 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   );
 };
 
-// A still image source (screenshot of a tweet/post) with a slow Ken-Burns push.
-const ReactImage: React.FC<{ url: string }> = ({ url }) => {
+// A still image source (screenshot of a tweet/post) with a slow Ken-Burns push over the
+// clip's actual length.
+const ReactImage: React.FC<{ url: string; durationInFrames: number }> = ({ url, durationInFrames }) => {
   const frame = useCurrentFrame();
-  const scale = interpolate(frame, [0, 300], [1.0, 1.08], { extrapolateRight: "clamp" });
+  const scale = interpolate(frame, [0, durationInFrames], [1.0, 1.08], { extrapolateRight: "clamp" });
   return <Img src={url} style={{ position: "absolute", inset: 0, width: "100%",
     height: "100%", objectFit: "cover", transform: `scale(${scale})` }} />;
 };

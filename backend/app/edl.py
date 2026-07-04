@@ -287,17 +287,23 @@ def build_render_plan(edl: dict) -> dict:
             })
 
     # duet_split: remap the top-panel play/freeze schedule to output coords, carry the
-    # source. Windows landing entirely inside a cut are dropped.
+    # source. Windows landing entirely inside a cut are dropped. A window that a drop
+    # only PARTIALLY compresses is also dropped: its output length would shrink while
+    # clip_from (the source cursor) stays fixed, so the source would jump/desync at the
+    # next window. Requiring length preservation keeps the source cursor continuous.
     react_schedule = []
     for w in edl.get("react_schedule") or []:
         mapped = map_range(w["src_in"], w["src_out"])
-        if mapped is not None:
-            react_schedule.append({
-                "state": w.get("state", "play"),
-                "frame_in": mapped[0], "frame_out": mapped[1],
-                "clip_from": w.get("clip_from", 0),
-                "audio_gain": w.get("audio_gain", 1.0),
-            })
+        if mapped is None:
+            continue
+        if (mapped[1] - mapped[0]) != (w["src_out"] - w["src_in"]):
+            continue  # a cut straddles this window — skip rather than desync the source
+        react_schedule.append({
+            "state": w.get("state", "play"),
+            "frame_in": mapped[0], "frame_out": mapped[1],
+            "clip_from": w.get("clip_from", 0),
+            "audio_gain": w.get("audio_gain", 1.0),
+        })
 
     return {
         "style": edl.get("style", "talking_head"),

@@ -480,3 +480,95 @@ def test_render_plan_all_cut_stays_valid():
     assert p["clips"] == []
     assert p["total_frames"] == 1
     assert p["captions"] == []
+
+
+# ---------------------------------------------------------------------------
+# New format pipeline steps: b-roll resolve, react-source attach, plan fields
+# ---------------------------------------------------------------------------
+import asyncio
+
+
+def test_resolve_broll_noop_without_key(monkeypatch):
+    monkeypatch.setattr(main, "PEXELS_KEY", "")
+    edl = {"broll": [{"src_in": 0, "src_out": 60, "broll_query": "gym", "source": "stock"}]}
+    out = asyncio.run(main._resolve_broll(edl))
+    assert out["broll"][0].get("resolved_url") is None
+
+
+def test_resolve_broll_caches_and_skips(monkeypatch):
+    calls = []
+
+    async def fake_fetch(q):
+        calls.append(q)
+        return f"https://cdn/{q}.mp4"
+
+    monkeypatch.setattr(main, "PEXELS_KEY", "k")
+    monkeypatch.setattr(main, "_fetch_pexels", fake_fetch)
+    main._broll_url_cache.clear()
+    edl = {"broll": [
+        {"src_in": 0, "src_out": 60, "broll_query": "barbell", "source": "stock"},
+        {"src_in": 60, "src_out": 120, "broll_query": "barbell", "source": "stock"},   # same query → cache hit
+        {"src_in": 120, "src_out": 180, "broll_query": "mine", "source": "own_media"},  # skipped
+        {"src_in": 180, "src_out": 240, "resolved_url": "https://x.mp4", "source": "stock"},  # already resolved → skipped
+    ]}
+    out = asyncio.run(main._resolve_broll(edl))
+    assert calls == ["barbell"]   # fetched once, second was cached
+    assert out["broll"][0]["resolved_url"] == "https://cdn/barbell.mp4"
+    assert out["broll"][1]["resolved_url"] == "https://cdn/barbell.mp4"
+    assert out["broll"][2].get("resolved_url") is None   # own_media untouched
+    assert out["broll"][3]["resolved_url"] == "https://x.mp4"   # preserved
+
+
+def test_attach_react_source_only_for_duet():
+    # Non-duet style → no react_source attached.
+    edl = main._attach_react_source({}, {"style": "talking_head", "react_source_url": "https://v.mp4"})
+    assert edl.get("react_source") is None
+    # Empty url → no-op even for duet.
+    edl = main._attach_react_source({}, {"style": "duet_split", "react_source_url": ""})
+    assert edl.get("react_source") is None
+    # Video url.
+    edl = main._attach_react_source({}, {"style": "duet_split", "react_source_url": "https://v.mp4", "react_credit_label": "@x"})
+    assert edl["react_source"]["kind"] == "video"
+    assert edl["react_source"]["credit_label"] == "@x"
+    # Image url (even with a query string) → kind image.
+    edl = main._attach_react_source({}, {"style": "duet_split", "react_source_url": "https://s.png?token=abc"})
+    assert edl["react_source"]["kind"] == "image"
+
+
+def test_render_plan_carries_broll_and_react_fields():
+    edl = {
+        "style": "duet_split", "format_id": "green-screen",
+        "segments": [{"src_in": 0, "src_out": 300}], "drops": [],
+        "captions": [], "overlays": [],
+        "broll": [{"src_in": 60, "src_out": 120, "cue_text": "x", "broll_query": "x",
+                   "source": "stock", "resolved_url": "https://b.mp4"}],
+        "react_schedule": [{"state": "play", "src_in": 0, "src_out": 55, "clip_from": 0, "audio_gain": 1.0}],
+        "react_source": {"resolved_url": "https://r.mp4", "kind": "video", "credit_label": "@s"},
+        "layout": {"style": "duet_split", "panels": 2, "split_fraction": 0.58},
+    }
+    p = build_render_plan(edl)
+    assert p["broll"][0]["resolved_url"] == "https://b.mp4"
+    assert p["broll"][0]["source"] == "stock"
+    assert p["broll"][0]["frame_in"] == 60 and p["broll"][0]["frame_out"] == 120
+    assert p["react_source"]["resolved_url"] == "https://r.mp4"
+    assert p["react_schedule"][0]["frame_in"] == 0 and p["react_schedule"][0]["frame_out"] == 55
+    assert p["layout"]["split_fraction"] == 0.58
+
+
+def test_render_plan_drops_react_window_straddling_a_cut():
+    # A drop inside a play window would shrink its output length while clip_from stays
+    # fixed → the window is dropped rather than desyncing the source.
+    edl = {
+        "style": "duet_split", "format_id": "green-screen",
+        "segments": [{"src_in": 0, "src_out": 300}],
+        "drops": [{"src_in": 80, "src_out": 100, "reason": "filler"}],
+        "captions": [], "overlays": [], "broll": [],
+        "react_schedule": [
+            {"state": "play", "src_in": 0, "src_out": 55, "clip_from": 0, "audio_gain": 1.0},   # clean, kept
+            {"state": "freeze", "src_in": 70, "src_out": 130, "clip_from": 55, "audio_gain": 0.15},  # straddles the 80-100 drop → dropped
+        ],
+        "layout": {"style": "duet_split", "panels": 2},
+    }
+    p = build_render_plan(edl)
+    assert len(p["react_schedule"]) == 1
+    assert p["react_schedule"][0]["state"] == "play"
