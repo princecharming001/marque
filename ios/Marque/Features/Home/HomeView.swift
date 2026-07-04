@@ -64,7 +64,7 @@ struct HomeView: View {
 
     private var avatarButton: some View {
         ZStack {
-            Circle().fill(Palette.accent.opacity(0.12)).frame(width: 34, height: 34)
+            Circle().fill(Palette.accent.opacity(0.16)).frame(width: 34, height: 34)
             if let url = store.brand.connectedAccounts.first?.avatarUrl, !url.isEmpty, let u = URL(string: url) {
                 AsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { initial }
                     .frame(width: 34, height: 34).clipShape(Circle())
@@ -72,7 +72,10 @@ struct HomeView: View {
                 initial
             }
         }
-        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+        // A brand-tinted ring (vs. a bare neutral hairline) reads as a deliberate
+        // identity mark instead of a placeholder — same restraint, more presence.
+        .overlay(Circle().strokeBorder(Palette.accent.opacity(0.35), lineWidth: 1.5))
+        .shadow(color: Palette.shadowWarm.opacity(0.10), radius: 4, x: 0, y: 2)
     }
 
     private var initial: some View {

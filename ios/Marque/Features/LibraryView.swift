@@ -33,6 +33,9 @@ struct ClipsSection: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @State private var detail: Clip?
+    private var hasFinishedClips: Bool {
+        store.clips.contains { [.ready, .scheduled, .posted].contains($0.status) }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if store.clips.isEmpty {
@@ -70,6 +73,21 @@ struct ClipsSection: View {
                             }
                         }
                     }
+                }
+                // Only drafts/editing so far, nothing finished — the rest of the screen
+                // would otherwise be an unexplained void. Say what's coming + offer the way in.
+                if !hasFinishedClips {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        Text("Finished clips land here, ready to schedule.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Button { router.showFilm = true } label: {
+                            Label("Film another clip", systemImage: "video.badge.plus")
+                                .font(AppFont.caption).foregroundStyle(Palette.accent)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("library.filmAnother")
+                    }
+                    .padding(.top, Space.sm)
                 }
             }
         }

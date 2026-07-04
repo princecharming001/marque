@@ -104,43 +104,85 @@ struct PerformanceView: View {
 
 struct InsightsSection: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
     @State private var summary: BackendClient.PerformanceSummary?
     @State private var platform = 0   // 0 all · 1 instagram · 2 tiktok
+    @State private var loaded = false
+
+    /// The learning loop needs real posted metrics before it has anything to say —
+    /// gate on posts_learned (populated once /v1/metrics/ingest has fired at least
+    /// once), the same signal the backend uses for learning_progress.
+    private var hasLearningData: Bool { store.postsLearned > 0 }
+    private let learningTarget = 15   // mirrors backend main.py get_learned_insights target
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             SectionLabel(text: "Last 30 days", accent: Palette.accent)
-            Picker("Platform", selection: $platform) {
-                Text("All").tag(0); Text("Instagram").tag(1); Text("TikTok").tag(2)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("performance.platformToggle")
 
-            if let s = summary {
-                HStack(spacing: Space.md) {
-                    statTile(compactNumber(views(s)), "Views")
-                    statTile(compactNumber(likes(s)), "Likes")
-                    statTile("+\(follows(s))", "Follows")
-                }
-                if platform == 0, !s.daily.isEmpty {
-                    Sparkline(values: normalized(s.daily.map { Double($0.views) }))
-                        .frame(height: 44)
-                        .padding(.vertical, Space.xs)
-                }
-                if !store.coaching.isEmpty {
-                    Text(store.coaching)
-                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                        .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-                }
+            if loaded, !hasLearningData {
+                learningTeaser
             } else {
-                HStack { Spacer(); ProgressView().tint(Palette.accent); Spacer() }
-                    .padding(.vertical, Space.lg)
+                Picker("Platform", selection: $platform) {
+                    Text("All").tag(0); Text("Instagram").tag(1); Text("TikTok").tag(2)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("performance.platformToggle")
+
+                if let s = summary {
+                    HStack(spacing: Space.md) {
+                        statTile(compactNumber(views(s)), "Views")
+                        statTile(compactNumber(likes(s)), "Likes")
+                        statTile("+\(follows(s))", "Follows")
+                    }
+                    if platform == 0, !s.daily.isEmpty {
+                        Sparkline(values: normalized(s.daily.map { Double($0.views) }))
+                            .frame(height: 44)
+                            .padding(.vertical, Space.xs)
+                    }
+                    if !store.coaching.isEmpty {
+                        Text(store.coaching)
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    HStack { Spacer(); ProgressView().tint(Palette.accent); Spacer() }
+                        .padding(.vertical, Space.lg)
+                }
             }
         }
         .task {
             summary = await store.backend.fetchPerformanceSummary(days: 30)
             await store.loadInsights()
+            loaded = true
         }
+    }
+
+    /// Pre-data locked state: markets what's coming (a real, personalized winning
+    /// formula) instead of showing empty tiles, and gives the tab a reason to pull
+    /// creators back before they've posted anything.
+    private var learningTeaser: some View {
+        VStack(spacing: Space.md) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 26)).foregroundStyle(Palette.accent)
+            Text("Unlock your winning formula").font(AppFont.title).foregroundStyle(Palette.textPrimary)
+            Text("Post \(learningTarget) clips and Marque learns what actually works for you — the hooks, formats, and topics ranked by real results.")
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(spacing: Space.xs) {
+                ProgressView(value: Double(store.postsLearned), total: Double(learningTarget))
+                    .tint(Palette.accent)
+                Text("\(store.postsLearned) of \(learningTarget) posts")
+                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+            }
+            .padding(.horizontal, Space.xl)
+
+            PrimaryButton(title: "Film your next clip") { router.showFilm = true }
+                .accessibilityIdentifier("performance.learningTeaserFilm")
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Space.lg)
     }
 
     private func views(_ s: BackendClient.PerformanceSummary) -> Int {

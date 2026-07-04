@@ -9,6 +9,7 @@ struct FilmView: View {
     @Environment(AppRouter.self) private var router
     @State private var customScript = ""
     @State private var showCustomEditor = false
+    @State private var showSettings = false
 
     private var drafts: [Clip] { store.clips.filter { $0.status == .draft } }
 
@@ -83,10 +84,14 @@ struct FilmView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("film.customScript")
-                    Text("Edits follow your style — captions \(store.editPrefs.autoCaptions ? "on" : "off"), \(store.editPrefs.captionStyle.label) captions, \(store.editPrefs.fillerTrim.label.lowercased()) filler trim. Change in Settings.")
-                        .font(AppFont.caption)
-                        .foregroundStyle(Palette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Button { showSettings = true } label: {
+                        Text(editPrefsCaption)
+                            .font(AppFont.caption)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("film.changeEditPrefs")
                 }
             }
             .screenPadding()
@@ -96,7 +101,9 @@ struct FilmView: View {
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
+            // Top-right: matches iOS modal-dismiss convention (fullScreenCover has no
+            // swipe-to-dismiss, so this button is the only way out — keep it discoverable).
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { router.showFilm = false } label: {
                     Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(Palette.textSecondary)
                 }
@@ -106,8 +113,23 @@ struct FilmView: View {
         }
         .navigationDestination(for: Script.self) { ScriptReaderView(script: $0) }
         .sheet(isPresented: $showCustomEditor) { CustomScriptSheet() }
+        .sheet(isPresented: $showSettings) { SettingsView() }
         .onAppear { consumePendingFilmScript() }
         .onChange(of: router.pendingFilmScriptId) { _, _ in consumePendingFilmScript() }
+    }
+
+    /// The edit-prefs summary with "Settings" styled as a tappable link — the whole
+    /// line is one Button, this just makes the destination visually obvious.
+    private var editPrefsCaption: AttributedString {
+        let prefix = "Edits follow your style — captions \(store.editPrefs.autoCaptions ? "on" : "off"), " +
+            "\(store.editPrefs.captionStyle.label) captions, \(store.editPrefs.fillerTrim.label.lowercased()) filler trim. Change in "
+        var result = AttributedString(prefix)
+        result.foregroundColor = Palette.textTertiary
+        var link = AttributedString("Settings.")
+        link.foregroundColor = Palette.accent
+        link.underlineStyle = .single
+        result.append(link)
+        return result
     }
 
     /// "Film this" deep-links land here with a preselected script — jump straight to the reader.

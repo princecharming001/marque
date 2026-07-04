@@ -485,8 +485,10 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
         fmt = s["formats"][i % len(s["formats"])]
         topic = (req.example_topics[i % len(req.example_topics)] if req.example_topics
                  else f"the {niche} mistake #{i + 1}")
+        title = topic[:48]
+        title = title[:1].upper() + title[1:] if title else title  # sentence-case for display
         out.append({
-            "title": topic[:48],
+            "title": title,
             "summary": f"A {s['label'].lower()} on {niche}.",
             "hook": f"Stop overthinking {niche}. Here's what actually works.",
             "hookSignal": "contrarian", "formatId": fmt,

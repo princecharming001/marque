@@ -51,6 +51,17 @@ def test_scripts_are_style_aware():
         assert all(x["formatId"] in allowed for x in s)
 
 
+def test_mock_script_titles_are_sentence_cased():
+    """Regression: mock_scripts built title from f'the {niche} mistake #N', leaking a
+    lowercase 'the' into a title-display context (e.g. Film queue cards)."""
+    r = client.post("/v1/scripts", json={"niche": "fitness", "style": "talking_head",
+                                         "count": 2, "pillar": "Myth-busting"})
+    titles = [s["title"] for s in r.json()["scripts"]]
+    assert titles, "expected mock scripts"
+    for t in titles:
+        assert t[0] == t[0].upper(), f"title not sentence-cased: {t!r}"
+
+
 def test_scripts_and_hooks_accept_memory_field():
     """Endpoints accept the client-held memory dict without breaking (backward-compat
     for old clients that omit it, forward path for new ones that send it)."""
