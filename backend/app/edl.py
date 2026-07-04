@@ -170,3 +170,108 @@ def strip_fillers(words: list[dict], gap_ms: int = 300) -> tuple[list[dict], lis
             kept.append(w)
             prev_end = end
     return kept, drops
+
+
+# ---------------------------------------------------------------------------
+# Render plan — the editorial EDL is authored in SOURCE-video frame coordinates
+# (AssemblyAI word timestamps). Once we actually CUT the footage (keep `segments`,
+# remove `drops`), the output timeline is shorter, so a caption at source-frame 300
+# might land at output-frame 150 if 150 frames were cut before it. This builds a
+# render-ready plan the Remotion compositions consume directly:
+#   - clips[]   : the kept intervals in SOURCE coords → OffthreadVideo trimBefore/trimAfter
+#   - captions[]: remapped to OUTPUT coords (dropped if they fall inside a cut)
+#   - overlays[]: remapped to OUTPUT coords (dropped if fully cut, clamped if straddling)
+#   - total_frames: the output duration → the composition's durationInFrames
+# Owning the remap here (one tested function) rather than in each of the 5 React
+# compositions keeps them dumb renderers and the editorial EDL untouched for the API.
+# ---------------------------------------------------------------------------
+
+def _kept_intervals(segments: list[dict], drops: list[dict]) -> list[tuple[int, int]]:
+    """Effective footage to keep = segments with drop ranges subtracted (source frames)."""
+    drop_ranges = sorted((d["src_in"], d["src_out"]) for d in drops if d["src_out"] > d["src_in"])
+    kept: list[tuple[int, int]] = []
+    for seg in sorted(segments, key=lambda s: s["src_in"]):
+        cur, end = seg["src_in"], seg["src_out"]
+        for d_in, d_out in drop_ranges:
+            if d_out <= cur or d_in >= end:
+                continue
+            if d_in > cur:
+                kept.append((cur, min(d_in, end)))
+            cur = max(cur, d_out)
+            if cur >= end:
+                break
+        if cur < end:
+            kept.append((cur, end))
+    return [(a, b) for a, b in kept if b > a]
+
+
+def build_render_plan(edl: dict) -> dict:
+    """Transform an editorial EDL (source coords) into a render-ready plan (see above)."""
+    clips_src = _kept_intervals(edl.get("segments") or [], edl.get("drops") or [])
+
+    # cumulative output offset per kept interval
+    clips: list[dict] = []
+    index: list[tuple[int, int, int]] = []   # (src_in, src_out, out_start)
+    out_cursor = 0
+    for s_in, s_out in clips_src:
+        clips.append({"src_in": s_in, "src_out": s_out})
+        index.append((s_in, s_out, out_cursor))
+        out_cursor += s_out - s_in
+    total_frames = out_cursor
+
+    def map_point(f: int) -> int | None:
+        """Source frame → output frame, or None if f lands in a cut region."""
+        for s_in, s_out, out_start in index:
+            if s_in <= f < s_out:
+                return out_start + (f - s_in)
+        return None
+
+    def map_range(a: int, b: int) -> tuple[int, int] | None:
+        """Source [a,b) → output [in,out); None if no kept footage overlaps it."""
+        spans = []
+        for s_in, s_out, out_start in index:
+            lo, hi = max(a, s_in), min(b, s_out)
+            if lo < hi:
+                spans.append((out_start + (lo - s_in), out_start + (hi - s_in)))
+        if not spans:
+            return None
+        return min(s[0] for s in spans), max(s[1] for s in spans)
+
+    captions = []
+    for c in edl.get("captions") or []:
+        of = map_point(c["frame"])
+        if of is not None:
+            captions.append({"word": c["word"], "frame": of})
+
+    overlays = []
+    for o in edl.get("overlays") or []:
+        mapped = map_range(o["src_in"], o["src_out"])
+        if mapped is not None:
+            overlays.append({
+                "type": o.get("type", "punch_in"),
+                "frame_in": mapped[0], "frame_out": mapped[1],
+                "scale": o.get("scale", 1.08), "text": o.get("text", ""),
+            })
+
+    broll = []
+    for b in edl.get("broll") or []:
+        mapped = map_range(b["src_in"], b["src_out"])
+        if mapped is not None:
+            broll.append({
+                "frame_in": mapped[0], "frame_out": mapped[1],
+                "cue_text": b.get("cue_text", ""),
+                "asset_id": b.get("asset_id"), "broll_query": b.get("broll_query"),
+            })
+
+    return {
+        "style": edl.get("style", "talking_head"),
+        "format_id": edl.get("format_id", ""),
+        "clips": clips,
+        "captions": captions,
+        "overlays": overlays,
+        "broll": broll,
+        "layout": edl.get("layout") or {"style": edl.get("style", "talking_head"), "panels": 1, "panel_boundaries": []},
+        "caption_style": edl.get("caption_style", "clean"),
+        # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
+        "total_frames": max(1, total_frames),
+    }

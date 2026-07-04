@@ -1,24 +1,31 @@
 import React from "react";
-import { AbsoluteFill, Video, useCurrentFrame } from "remotion";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+import { CutVideo } from "../components/CutVideo";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
+// Punchy cut track with a 2-frame white flash at every real cut boundary. The boundaries
+// are the OUTPUT-timeline starts of each clip (cumulative clip durations), so the flash
+// lands exactly where the footage jumps.
 export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const frame = useCurrentFrame();
-  const activeSegment = edl?.segments.findIndex(
-    (s) => frame >= s.src_in && frame < s.src_out
-  ) ?? 0;
+  const clips = edl?.clips ?? [];
+
+  let acc = 0;
+  const cutStarts: number[] = [];
+  for (const c of clips) {
+    if (acc > 0) cutStarts.push(acc);   // skip the very first (frame 0)
+    acc += Math.max(1, c.src_out - c.src_in);
+  }
+  const flashing = cutStarts.some((s) => frame >= s && frame < s + 2);
 
   return (
     <AbsoluteFill style={{ background: "#000" }}>
-      {sourceUrl && (
-        <Video key={activeSegment} src={sourceUrl}
-          style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      <CutVideo sourceUrl={sourceUrl} clips={clips} />
+      {flashing && (
+        <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.18 }} />
       )}
-      {edl?.segments.some((s) => s.src_in === frame) && (
-        <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.15 }} />
-      )}
-      {edl && <Captions captions={edl.captions} totalFrames={720} />}
+      {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
     </AbsoluteFill>
   );
 };

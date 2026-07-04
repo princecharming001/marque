@@ -1,31 +1,93 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
-import { CaptionWord } from "../types";
+import { CaptionWord, CaptionStyle } from "../types";
 
-interface Props { captions: CaptionWord[]; totalFrames: number; }
+interface Props { captions: CaptionWord[]; style?: CaptionStyle; }
 
-export const Captions: React.FC<Props> = ({ captions, totalFrames }) => {
+const ACCENT = "#FFD60A";
+const FONT = "system-ui, -apple-system, sans-serif";
+
+// Captions carry OUTPUT-frame coords (remapped by the backend after cutting), so they
+// render straight against the composition's global useCurrentFrame(). Three looks driven
+// by the creator's Settings → caption_style:
+//   clean     — a quiet running line, only the active word brightened
+//   bold-word — one giant word at a time, karaoke-punch style (Submagic-like)
+//   karaoke   — a line where spoken words fill with accent, upcoming stay white
+export const Captions: React.FC<Props> = ({ captions, style = "clean" }) => {
   const frame = useCurrentFrame();
-  const activeIdx = captions.findLastIndex((c) => c.frame <= frame);
-  const windowStart = Math.max(0, activeIdx - 2);
-  const windowEnd = Math.min(captions.length - 1, activeIdx + 4);
-  const visible = captions.slice(windowStart, windowEnd + 1);
+  if (captions.length === 0) return null;
 
+  // Active word = last caption whose start frame has passed (manual scan; avoids the
+  // ES2023 findLastIndex lib requirement in the render bundle).
+  let activeIdx = -1;
+  for (let i = 0; i < captions.length; i++) {
+    if (captions[i].frame <= frame) activeIdx = i;
+    else break;
+  }
+  if (activeIdx < 0) return null;
+
+  if (style === "bold-word") return <BoldWord word={captions[activeIdx].word} />;
+  if (style === "karaoke") return <Karaoke captions={captions} activeIdx={activeIdx} />;
+  return <Clean captions={captions} activeIdx={activeIdx} />;
+};
+
+const wrap: React.CSSProperties = {
+  position: "absolute", bottom: 180, left: 0, right: 0,
+  display: "flex", flexWrap: "wrap", justifyContent: "center",
+  padding: "0 40px", gap: 8,
+};
+
+const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number }> = ({ captions, activeIdx }) => {
+  const start = Math.max(0, activeIdx - 2);
+  const end = Math.min(captions.length - 1, activeIdx + 4);
   return (
-    <div style={{
-      position: "absolute", bottom: 180, left: 0, right: 0,
-      display: "flex", flexWrap: "wrap", justifyContent: "center",
-      padding: "0 40px", gap: 6,
-    }}>
-      {visible.map((c, i) => (
-        <span key={windowStart + i} style={{
-          fontFamily: "system-ui, -apple-system, sans-serif",
-          fontSize: 52, fontWeight: 700,
-          color: windowStart + i === activeIdx ? "#FFD60A" : "white",
-          textShadow: "0 2px 8px rgba(0,0,0,0.8)",
-          transition: "color 0.05s",
-        }}>{c.word} </span>
-      ))}
+    <div style={wrap}>
+      {captions.slice(start, end + 1).map((c, i) => {
+        const isActive = start + i === activeIdx;
+        return (
+          <span key={start + i} style={{
+            fontFamily: FONT, fontSize: 50, fontWeight: 600,
+            color: "white", opacity: isActive ? 1 : 0.55,
+            textShadow: "0 2px 8px rgba(0,0,0,0.8)",
+          }}>{c.word}</span>
+        );
+      })}
+    </div>
+  );
+};
+
+const BoldWord: React.FC<{ word: string }> = ({ word }) => (
+  <div style={{
+    position: "absolute", inset: 0, display: "flex",
+    alignItems: "center", justifyContent: "center", padding: "0 60px",
+  }}>
+    <span style={{
+      fontFamily: FONT, fontSize: 128, fontWeight: 800, lineHeight: 1.05,
+      color: "white", textAlign: "center", textTransform: "uppercase",
+      letterSpacing: -2, textShadow: "0 4px 20px rgba(0,0,0,0.9)",
+      WebkitTextStroke: "3px rgba(0,0,0,0.55)",
+    }}>{word}</span>
+  </div>
+);
+
+const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number }> = ({ captions, activeIdx }) => {
+  const start = Math.max(0, activeIdx - 3);
+  const end = Math.min(captions.length - 1, activeIdx + 3);
+  return (
+    <div style={wrap}>
+      {captions.slice(start, end + 1).map((c, i) => {
+        const idx = start + i;
+        const spoken = idx <= activeIdx;
+        return (
+          <span key={idx} style={{
+            fontFamily: FONT, fontSize: 54, fontWeight: 700,
+            color: spoken ? ACCENT : "white",
+            textShadow: "0 2px 8px rgba(0,0,0,0.85)",
+            transform: idx === activeIdx ? "scale(1.08)" : "scale(1)",
+            transition: "transform 0.05s, color 0.05s",
+          }}>{c.word}</span>
+        );
+      })}
     </div>
   );
 };

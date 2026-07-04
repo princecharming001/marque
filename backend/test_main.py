@@ -395,3 +395,88 @@ def test_edit_prefs_defaults_preserved():
 def test_trends_richer():
     t = client.get("/v1/trends", params={"niche": "fitness"}).json()["trends"]
     assert len(t) >= 5
+
+
+# ---------------------------------------------------------------------------
+# Render plan — source→output coordinate remap after cutting (app.edl)
+# ---------------------------------------------------------------------------
+from app.edl import build_render_plan
+
+
+def test_render_plan_no_cuts_is_identity():
+    # One full segment, no drops → clips unchanged, captions keep their frames.
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 300}], "drops": [],
+        "captions": [{"word": "a", "frame": 0}, {"word": "b", "frame": 150}],
+        "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    assert p["clips"] == [{"src_in": 0, "src_out": 300}]
+    assert p["total_frames"] == 300
+    assert [c["frame"] for c in p["captions"]] == [0, 150]
+
+
+def test_render_plan_drop_shifts_later_captions():
+    # Drop source frames [100,150) (50 frames). Captions after the drop shift back 50;
+    # a caption INSIDE the drop is removed entirely.
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 300}],
+        "drops": [{"src_in": 100, "src_out": 150, "reason": "filler"}],
+        "captions": [
+            {"word": "before", "frame": 50},   # kept, stays at 50
+            {"word": "inside", "frame": 120},   # dropped (falls in cut)
+            {"word": "after", "frame": 200},    # kept, shifts to 200-50=150
+        ],
+        "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    assert p["total_frames"] == 250   # 300 - 50
+    words = {c["word"]: c["frame"] for c in p["captions"]}
+    assert words == {"before": 50, "after": 150}
+    # clips reflect the two kept intervals around the drop
+    assert p["clips"] == [{"src_in": 0, "src_out": 100}, {"src_in": 150, "src_out": 300}]
+
+
+def test_render_plan_overlay_remapped_and_clamped():
+    # Punch-in overlay [60,120) straddles a drop [80,100); output span covers the
+    # surviving pieces mapped into output coords.
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 200}],
+        "drops": [{"src_in": 80, "src_out": 100, "reason": "dead_air"}],
+        "captions": [],
+        "overlays": [{"type": "punch_in", "src_in": 60, "src_out": 120, "scale": 1.1, "text": ""}],
+        "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    o = p["overlays"][0]
+    # 60 maps to 60 (before drop); 120 maps to 120-20=100 (after 20-frame drop)
+    assert o["frame_in"] == 60 and o["frame_out"] == 100
+    assert o["scale"] == 1.1
+
+
+def test_render_plan_caption_style_flows_through():
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 100}], "drops": [],
+        "captions": [], "overlays": [], "broll": [],
+        "layout": {"style": "talking_head"}, "caption_style": "karaoke",
+    }
+    assert build_render_plan(edl)["caption_style"] == "karaoke"
+
+
+def test_render_plan_all_cut_stays_valid():
+    # Degenerate: everything dropped. total_frames clamps to >=1 so Remotion accepts it.
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 50}],
+        "drops": [{"src_in": 0, "src_out": 50, "reason": "filler"}],
+        "captions": [{"word": "gone", "frame": 10}],
+        "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    assert p["clips"] == []
+    assert p["total_frames"] == 1
+    assert p["captions"] == []

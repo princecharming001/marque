@@ -1,12 +1,17 @@
 import React from "react";
-import { AbsoluteFill, Video, useCurrentFrame } from "remotion";
+import { AbsoluteFill, useCurrentFrame } from "remotion";
+import { CutVideo } from "../components/CutVideo";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
+// Three stacked panels of the same cut track; the active third lights up in sequence.
+// Panel timing is derived from the OUTPUT duration (total_frames / 3) rather than the
+// editorial layout.panel_boundaries, which were authored in pre-cut source coords.
 export const SplitThree: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const frame = useCurrentFrame();
-  const boundaries = edl?.layout.panel_boundaries ?? [240, 480];
-  const panel = frame < boundaries[0] ? 0 : frame < boundaries[1] ? 1 : 2;
+  const total = edl?.total_frames ?? 720;
+  const third = Math.max(1, Math.floor(total / 3));
+  const active = Math.min(2, Math.floor(frame / third));
   const labels = ["Solution 1", "Solution 2", "Solution 3 ✓"];
 
   return (
@@ -14,16 +19,15 @@ export const SplitThree: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       {[0, 1, 2].map((i) => (
         <div key={i} style={{
           flex: 1, position: "relative", borderBottom: i < 2 ? "2px solid #333" : "none",
-          opacity: panel === i ? 1 : 0.4, transition: "opacity 0.3s",
+          opacity: active === i ? 1 : 0.4, transition: "opacity 0.3s", overflow: "hidden",
         }}>
-          {sourceUrl && <Video src={sourceUrl}
-            style={{ width: "100%", height: "100%", objectFit: "cover" }} />}
+          <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} />
           <div style={{ position: "absolute", top: 8, left: 12, color: "white",
             fontFamily: "system-ui", fontSize: 22, fontWeight: 700,
             textShadow: "0 1px 4px rgba(0,0,0,0.8)" }}>{labels[i]}</div>
         </div>
       ))}
-      {edl && <Captions captions={edl.captions} totalFrames={720} />}
+      {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
     </AbsoluteFill>
   );
 };

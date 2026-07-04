@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 import prompts
 from prompts import OPUS, HAIKU, SONNET, STYLES, FORMAT_IDS
-from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame
+from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame, build_render_plan
 
 app = FastAPI(title="Marque API", version="0.3.0")
 
@@ -835,7 +835,11 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     # underscores are rejected at render time (discovered live: "Composition id can
     # only contain ... You passed Marque_TalkingHead"). Must match Root.tsx exactly.
     composition_id = f"Marque-{style.title().replace('_', '')}"
-    input_props = json.dumps({"sourceUrl": source_url, "edl": edl, "formatId": format_id})
+    # Transform the editorial EDL (source coords) into a render-ready plan: the actual
+    # cut list + captions/overlays remapped to the post-cut output timeline. The
+    # compositions consume this plan directly (they no longer trim it themselves).
+    plan = build_render_plan(edl)
+    input_props = json.dumps({"sourceUrl": source_url, "edl": plan, "formatId": format_id})
     result = await _run_render_bridge("submit", composition_id, input_props)
     if not result.get("renderId"):
         return None
