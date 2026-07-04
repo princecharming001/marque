@@ -619,6 +619,26 @@ def test_strip_fillers_prefers_disfluency_type():
     assert any(d.reason == "filler" for d in drops)                          # "So" dropped via type
 
 
+def test_strip_fillers_no_overlap_with_fillers_before_gap():
+    """Regression: a run of fillers before a dead-air gap must not produce a dead_air
+    drop that overlaps the filler drops (prev_end must advance past fillers too)."""
+    from app.edl import strip_fillers
+    words = [
+        {"word": "hello", "start_ms": 0, "end_ms": 500},
+        {"word": "um", "start_ms": 500, "end_ms": 550, "type": "filler"},
+        {"word": "uh", "start_ms": 550, "end_ms": 600, "type": "filler"},
+        {"word": "world", "start_ms": 1000, "end_ms": 1200},
+    ]
+    _, drops = strip_fillers(words, gap_ms=300)
+    spans = sorted((d.src_in, d.src_out) for d in drops)
+    # No two drops may overlap.
+    for (a1, b1), (a2, b2) in zip(spans, spans[1:]):
+        assert b1 <= a2, f"overlapping drops: {(a1, b1)} and {(a2, b2)}"
+    # The dead-air drop must start at the last filler's end (frame 18), not frame 15.
+    dead = [(d.src_in, d.src_out) for d in drops if d.reason == "dead_air"]
+    assert dead == [(18, 30)]
+
+
 def test_strip_fillers_text_fallback_without_type():
     from app.edl import strip_fillers
     words = [{"word": "um", "start_ms": 0, "end_ms": 100},                    # lexicon fallback
@@ -769,6 +789,21 @@ def test_final_score_pulls_toward_real_outcomes(monkeypatch):
     cal, w = main._calibration_signal("proven", {"style": "talking_head"})
     assert cal == 20 and w == 0.4                       # 0.04 * 10, capped under 0.5
     main._arm_stats.pop("proven", None)
+
+
+def test_quality_scripts_keeps_mandated_hook(monkeypatch):
+    """Regression: the script-judge must NOT swap away a hook that best_hooks already
+    vetted + mandated, even when it recommends an altHook (best_hook=1)."""
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    main._arm_stats.pop("c_mand", None)
+    verdicts = [{"index": 0, "hook_strength": 88, "specificity": 80, "format_fit": 80,
+                 "voice_match": 80, "slop": False, "best_hook": 1, "verdict": "keep"}]
+    monkeypatch.setattr(main, "anthropic", _judge_fake(verdicts))
+    scr = [_script(hook="Gold vetted hook",
+                   alts=[{"text": "Silver unvetted hook", "signal": "curiosity", "strength": 99}])]
+    out = asyncio.run(main.quality_scripts({}, "talking_head", scr, creator_id="c_mand",
+                                           mandated_hooks=[{"text": "Gold vetted hook"}]))
+    assert out[0]["hook"] == "Gold vetted hook"          # mandated hook preserved despite best_hook=1
 
 
 def test_quality_scripts_revises_flagged(monkeypatch):

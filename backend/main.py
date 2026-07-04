@@ -629,7 +629,8 @@ def _final_score(creator_id: str, script: dict, verdict: dict) -> int:
 
 async def quality_scripts(brand: dict, style: str, scripts: list[dict],
                           posts: list[dict] | None = None,
-                          creator_id: str = "default") -> list[dict]:
+                          creator_id: str = "default",
+                          mandated_hooks: list[dict] | None = None) -> list[dict]:
     """Generate -> judge -> targeted self-repair for scripts. A strict HAIKU critic
     scores each draft; we swap in the strongest alt-hook, rewrite only the weak
     ones with OPUS, and re-ground predictedScore on the critic's axes calibrated
@@ -649,15 +650,21 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
         if isinstance(v, dict) and isinstance(v.get("index"), int) and 0 <= v["index"] < len(scripts):
             by_index[v["index"]] = v
 
+    # Hooks that best_hooks() already generated + judged + mandated: the script-judge
+    # must NOT swap these for an un-vetted altHook (its rubric differs from the hook
+    # judge that already crowned them the strongest opener).
+    mandated_texts = {(h.get("text") or "").strip() for h in (mandated_hooks or []) if h.get("text")}
+
     flagged: list[dict] = []
     for i, sc in enumerate(scripts):
         v = by_index.get(i)
         if not v:
             continue
-        # Swap in the critic's preferred hook (0 = keep main; 1..n = altHooks[n-1]).
+        # Swap in the critic's preferred hook (0 = keep main; 1..n = altHooks[n-1]),
+        # unless the current hook was mandated by best_hooks (keep the vetted winner).
         bh = v.get("best_hook", 0)
         alts = sc.get("altHooks", []) or []
-        if isinstance(bh, int) and 1 <= bh <= len(alts):
+        if (sc.get("hook", "").strip() not in mandated_texts) and isinstance(bh, int) and 1 <= bh <= len(alts):
             alt = alts[bh - 1]
             if alt.get("text"):
                 sc["hook"] = alt["text"]
@@ -778,7 +785,7 @@ async def scripts(req: ScriptRequest):
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
         out = await quality_scripts(req.d(), req.style, out, req.posts or None,
-                                    creator_id=req.creator_id)
+                                    creator_id=req.creator_id, mandated_hooks=mandated or None)
         return {"mode": "live", "scripts": out}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}
@@ -1890,8 +1897,10 @@ async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
         known_for=req.brand.get("known_for", ""), what_you_do=req.brand.get("what_you_do", ""),
         goal=req.brand.get("goal", "Grow my audience"), voice=req.brand.get("voice", {}) or {},
         non_negotiables=req.brand.get("non_negotiables", []) or [],
+        catchphrases=req.brand.get("catchphrases", []) or [],
         pillar=topic, pillar_summary=f"A one-off script request from conversation: {topic}",
         pillar_angle=angle, style=style, count=count, creator_id=req.creator_id,
+        memory=req.memory or {},          # carry chat-learned memory into generation
     )
     result = await scripts(sreq)
     return result.get("scripts", [])

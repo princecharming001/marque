@@ -190,14 +190,17 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
         start = w.get("start_ms", 0)
         end = w.get("end_ms", start + 100)
         is_filler = (use_disfluency_type and w.get("type") == "filler") or text in FILLER_WORDS
-        # Dead air before this word
+        # Dead air before this word (measured from the previous word's end, filler or not).
         if prev_end > 0 and start - prev_end > gap_ms:
             drops.append(Drop(src_in=ms_to_frame(prev_end), src_out=ms_to_frame(start), reason="dead_air"))
         if is_filler:
             drops.append(Drop(src_in=ms_to_frame(start), src_out=ms_to_frame(end), reason="filler"))
         else:
             kept.append(w)
-            prev_end = end
+        # Advance past THIS word regardless of filler status — otherwise a run of
+        # fillers before a gap makes the dead-air drop start at a stale prev_end and
+        # overlap the filler drops (violates the non-overlapping-drops invariant).
+        prev_end = end
     return kept, drops
 
 
