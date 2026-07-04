@@ -177,7 +177,7 @@ final class AppStore {
     // Style is chosen BEFORE generation — it determines the script structure.
     func generateScripts(for pillar: Pillar, style: VideoStyle, count: Int = 3) async {
         isGenerating = true
-        let new = await llm.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style)
+        let new = await llm.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style, memory: memory)
         scripts.insert(contentsOf: new, at: 0)
         isGenerating = false
         save()
@@ -419,7 +419,7 @@ final class AppStore {
                       weight: 0.2, colorHex: Catalog.pillarColors[0])
         isGenerating = true
         let f = Catalog.format(formatId)
-        var made = await llm.generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: mediaContext, style: style)
+        var made = await llm.generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: mediaContext, style: style, memory: memory)
         made = made.map { var s = $0; s.formatId = formatId; s.targetSeconds = f.targetSeconds; return s }
         scripts.insert(contentsOf: made, at: 0)
         isGenerating = false

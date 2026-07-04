@@ -51,6 +51,26 @@ def test_scripts_are_style_aware():
         assert all(x["formatId"] in allowed for x in s)
 
 
+def test_scripts_and_hooks_accept_memory_field():
+    """Endpoints accept the client-held memory dict without breaking (backward-compat
+    for old clients that omit it, forward path for new ones that send it)."""
+    memory = {"angle": "Accessible fitness for busy parents",
+              "facts": ["ex-personal-trainer"], "ideas": ["time-efficient home workouts"]}
+    r = client.post("/v1/scripts", json={"niche": "fitness", "style": "talking_head",
+                                         "count": 2, "pillar": "Myth-busting", "memory": memory})
+    assert r.status_code == 200 and len(r.json()["scripts"]) == 2
+    r = client.post("/v1/hooks", json={"niche": "fitness", "topic": "squats", "memory": memory})
+    assert r.status_code == 200
+
+
+def test_scripts_and_hooks_send_catchphrases():
+    """Catchphrases on the brand flow through to generation without error (item 6)."""
+    r = client.post("/v1/scripts", json={"niche": "fitness", "style": "talking_head",
+                                         "count": 1, "pillar": "Hot takes",
+                                         "catchphrases": ["let's get after it"]})
+    assert r.status_code == 200
+
+
 def test_hooks_steer_captions_teardown_insights():
     assert client.post("/v1/hooks", json={"niche": "fitness", "topic": "squats"}).status_code == 200
     assert client.post("/v1/steer", json={"script": {"hook": "x", "body": "y", "cta": "z"}, "instruction": "shorter"}).status_code == 200

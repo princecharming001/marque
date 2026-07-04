@@ -48,6 +48,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                       "polishedToRaw": b.voice.polishedToRaw,
                       "teacherToPeer": b.voice.teacherToPeer],
             "non_negotiables": b.nonNegotiables,
+            "catchphrases": b.voice.catchphrases,   // verbatim signature phrases → prompt voice
         ]
         if let p = b.primaryPlatform { body["primary_platform"] = p.rawValue }
         if let s = b.stage { body["stage"] = s.rawValue }
@@ -118,7 +119,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
     }
 
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script] {
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle, memory: CreatorMemory = CreatorMemory()) async -> [Script] {
         var body = brandBody(brand)
         body["pillar"] = pillar.name
         body["pillar_summary"] = pillar.summary
@@ -128,22 +129,36 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         body["count"] = count
         body["media_context"] = mediaContext
         body["creator_id"] = creatorId
+        if !memory.isEmpty { body["memory"] = memoryDict(memory) }
         guard let data = await post("/v1/scripts", body),
               let r = try? JSONDecoder().decode(ScriptsResp.self, from: data), !r.scripts.isEmpty else {
-            return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style)
+            return await fallback.generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style, memory: memory)
         }
         note(r.mode)
         return r.scripts.map { script($0, pillar: pillar.name, style: style) }
     }
 
-    func hookLab(brand: BrandGraph, topic: String) async -> [Hook] {
+    func hookLab(brand: BrandGraph, topic: String, memory: CreatorMemory = CreatorMemory()) async -> [Hook] {
         var body = brandBody(brand); body["topic"] = topic
+        if !memory.isEmpty { body["memory"] = memoryDict(memory) }
         guard let data = await post("/v1/hooks", body),
               let r = try? JSONDecoder().decode(HooksResp.self, from: data), !r.hooks.isEmpty else {
-            return await fallback.hookLab(brand: brand, topic: topic)
+            return await fallback.hookLab(brand: brand, topic: topic, memory: memory)
         }
         note(r.mode)
         return r.hooks.map(hook).sorted { $0.strength > $1.strength }
+    }
+
+    /// Serialize creator memory into the wire shape the backend's memory_block expects
+    /// (only non-empty fields, mirroring how /v1/converse sends it).
+    private func memoryDict(_ m: CreatorMemory) -> [String: Any] {
+        var dict: [String: Any] = [:]
+        if !m.angle.isEmpty { dict["angle"] = m.angle }
+        if !m.facts.isEmpty { dict["facts"] = m.facts }
+        if !m.perspective.isEmpty { dict["perspective"] = m.perspective }
+        if !m.ideas.isEmpty { dict["ideas"] = m.ideas }
+        if !m.preferences.isEmpty { dict["preferences"] = m.preferences }
+        return dict
     }
 
     func steer(script s: Script, brand: BrandGraph, instruction: String) async -> Script {
@@ -230,6 +245,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                 let funnyToSerious: Double?
                 let polishedToRaw: Double?
                 let teacherToPeer: Double?
+                let catchphrases: [String]?
             }
         }
     }
@@ -250,7 +266,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         if let v = scan.voice {
             voice = VoiceFingerprint(funnyToSerious: v.funnyToSerious ?? 0.5,
                                      polishedToRaw: v.polishedToRaw ?? 0.5,
-                                     teacherToPeer: v.teacherToPeer ?? 0.5)
+                                     teacherToPeer: v.teacherToPeer ?? 0.5,
+                                     catchphrases: v.catchphrases ?? [])
         }
         return BrandScanResult(pillars: pillars, voiceUpdate: voice,
                                topThemes: scan.top_themes ?? pillars.map { $0.name })
@@ -619,7 +636,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         if let v = scan.voice {
             voice = VoiceFingerprint(funnyToSerious: v.funnyToSerious ?? 0.5,
                                      polishedToRaw: v.polishedToRaw ?? 0.5,
-                                     teacherToPeer: v.teacherToPeer ?? 0.5)
+                                     teacherToPeer: v.teacherToPeer ?? 0.5,
+                                     catchphrases: v.catchphrases ?? [])
         }
         return BrandScanResult(pillars: pillars, voiceUpdate: voice,
                                topThemes: scan.top_themes ?? pillars.map { $0.name })

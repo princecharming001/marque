@@ -239,7 +239,7 @@ struct HookLabSheet: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
         }
         .task {
-            hooks = await store.llm.hookLab(brand: store.brand, topic: script.pillarName)
+            hooks = await store.llm.hookLab(brand: store.brand, topic: script.pillarName, memory: store.memory)
             loading = false
         }
     }

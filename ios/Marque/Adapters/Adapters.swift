@@ -6,12 +6,22 @@ import Foundation
 
 protocol LLMRouting {
     func generatePillars(brand: BrandGraph) async -> [Pillar]
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script]
-    func hookLab(brand: BrandGraph, topic: String) async -> [Hook]
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle, memory: CreatorMemory) async -> [Script]
+    func hookLab(brand: BrandGraph, topic: String, memory: CreatorMemory) async -> [Hook]
     func steer(script: Script, brand: BrandGraph, instruction: String) async -> Script
     func captions(for script: Script) async -> [String]
     func teardown(for clip: Clip) async -> TeardownCard
     func interpretInsights(brand: BrandGraph, summary: String) async -> String
+}
+
+extension LLMRouting {
+    // Back-compat convenience overloads — callers without creator memory still compile.
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script] {
+        await generateScripts(brand: brand, pillar: pillar, count: count, mediaContext: mediaContext, style: style, memory: CreatorMemory())
+    }
+    func hookLab(brand: BrandGraph, topic: String) async -> [Hook] {
+        await hookLab(brand: brand, topic: topic, memory: CreatorMemory())
+    }
 }
 
 protocol ClipEngineProtocol {
@@ -79,7 +89,7 @@ struct MockLLMRouter: LLMRouting {
         return max(40, min(98, base + jitter))
     }
 
-    func hookLab(brand: BrandGraph, topic: String) async -> [Hook] {
+    func hookLab(brand: BrandGraph, topic: String, memory: CreatorMemory = CreatorMemory()) async -> [Hook] {
         try? await Task.sleep(nanoseconds: 500_000_000)
         let signals: [HookSignal] = [.contrarian, .curiosity, .specificity, .authority, .stakes, .narrative]
         return signals.map { sig in
@@ -91,7 +101,7 @@ struct MockLLMRouter: LLMRouting {
         .sorted { $0.strength > $1.strength }
     }
 
-    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle) async -> [Script] {
+    func generateScripts(brand: BrandGraph, pillar: Pillar, count: Int, mediaContext: String, style: VideoStyle, memory: CreatorMemory = CreatorMemory()) async -> [Script] {
         try? await Task.sleep(nanoseconds: 900_000_000)
         let top = topic(brand, pillar)
         let formats = style.formats.map { Catalog.format($0) }
