@@ -49,64 +49,93 @@ struct VoiceOrb: View {
     private func orbBody(_ s: OrbPhysics.State) -> some View {
         let t = s.time
         return ZStack {
+            // The sphere itself never changes size in real Siri — no pulse on the
+            // shadow or disc; only the CONTENTS bounce, squashing against the rim.
             Image("shadow")
-                .scaleEffect(1 + 0.05 * s.global)
-            Image("icon-bg")
 
-            Group {
-                Image("pink-top")
-                    .scaleEffect(1 + 0.16 * s.petals[0])
-                    .rotationEffect(.degrees(t * 56.7))
-                    .hueRotation(.degrees(t * -27.5))
-                Image("pink-left")
-                    .scaleEffect(1 + 0.13 * s.petals[0])
-                    .rotationEffect(.degrees(t * -45.0))
-                    .hueRotation(.degrees(t * -43.3))
-                Image("blue-middle")
-                    .scaleEffect(1 + 0.15 * s.petals[1])
-                    .rotationEffect(.degrees(t * -65.0))
-                    .hueRotation(.degrees(t * -12.5))
-                    .rotation3DEffect(.degrees(75), axis: (x: 3 + 2 * sin(t * 0.26), y: 0, z: 0))
-                Image("blue-right")
-                    .scaleEffect(1 + 0.12 * s.petals[1])
-                    .rotationEffect(.degrees(t * -65.0))
-                    .hueRotation(.degrees(t * 64.2))
-                    .rotation3DEffect(.degrees(75), axis: (x: 1, y: 0, z: 5 + 10 * sin(t * 0.21)))
-                Image("Intersect")
-                    .scaleEffect(1 + 0.11 * s.petals[3])
-                    .rotationEffect(.degrees(t * 37.5))
-                    .hueRotation(.degrees(t * -60.0))
-                    .rotation3DEffect(.degrees(15), axis: (x: 1, y: 1, z: 1),
-                                      perspective: 5 * sin(t * 0.24))
-                Image("green-right")
-                    .scaleEffect(1 + 0.14 * s.petals[2])
-                    .rotationEffect(.degrees(t * -55.0))
-                    .hueRotation(.degrees(t * 26.3))
-                    .rotation3DEffect(.degrees(15), axis: (x: 1, y: sin(t * 0.3), z: 0),
-                                      perspective: -sin(t * 0.3))
-                Image("green-left")
-                    .scaleEffect(1 + 0.12 * s.petals[2])
-                    .rotationEffect(.degrees(t * 60.0))
-                    .hueRotation(.degrees(t * 10.8))
-                    .rotation3DEffect(.degrees(75), axis: (x: 1, y: 5 + 10 * sin(t * 0.19), z: 0))
-                Image("bottom-pink")
-                    .scaleEffect(1 + 0.10 * s.petals[0])
-                    .rotationEffect(.degrees(t * 63.3))
+            ZStack {
+                // The disc lives INSIDE the clipped group so the petals' hardLight
+                // blend resolves against it here rather than escaping to the root.
+                Image("icon-bg")
+
+                Group {
+                    Image("pink-top")
+                        .scaleEffect(1 + 0.16 * s.petals[0])
+                        .rotationEffect(.degrees(t * 56.7))
+                        .hueRotation(.degrees(t * -27.5))
+                    Image("pink-left")
+                        .scaleEffect(1 + 0.13 * s.petals[0])
+                        .rotationEffect(.degrees(t * -45.0))
+                        .hueRotation(.degrees(t * -43.3))
+                    Image("blue-middle")
+                        .scaleEffect(1 + 0.15 * s.petals[1])
+                        .rotationEffect(.degrees(t * -65.0))
+                        .hueRotation(.degrees(t * -12.5))
+                        .rotation3DEffect(.degrees(75), axis: (x: 3 + 2 * sin(t * 0.26), y: 0, z: 0))
+                    Image("blue-right")
+                        .scaleEffect(1 + 0.12 * s.petals[1])
+                        .rotationEffect(.degrees(t * -65.0))
+                        .hueRotation(.degrees(t * 64.2))
+                        .rotation3DEffect(.degrees(75), axis: (x: 1, y: 0, z: 5 + 10 * sin(t * 0.21)))
+                    Image("Intersect")
+                        .scaleEffect(1 + 0.11 * s.petals[3])
+                        .rotationEffect(.degrees(t * 37.5))
+                        .hueRotation(.degrees(t * -60.0))
+                        .rotation3DEffect(.degrees(15), axis: (x: 1, y: 1, z: 1),
+                                          perspective: 5 * sin(t * 0.24))
+                    Image("green-right")
+                        .scaleEffect(1 + 0.14 * s.petals[2])
+                        .rotationEffect(.degrees(t * -55.0))
+                        .hueRotation(.degrees(t * 26.3))
+                        .rotation3DEffect(.degrees(15), axis: (x: 1, y: sin(t * 0.3), z: 0),
+                                          perspective: -sin(t * 0.3))
+                    Image("green-left")
+                        .scaleEffect(1 + 0.12 * s.petals[2])
+                        .rotationEffect(.degrees(t * 60.0))
+                        .hueRotation(.degrees(t * 10.8))
+                        .rotation3DEffect(.degrees(75), axis: (x: 1, y: 5 + 10 * sin(t * 0.19), z: 0))
+                    Image("bottom-pink")
+                        .scaleEffect(1 + 0.10 * s.petals[0])
+                        .rotationEffect(.degrees(t * 63.3))
+                        .hueRotation(.degrees(t * -19.2))
+                        .opacity(0.25)
+                        .blendMode(.multiply)
+                        .rotation3DEffect(.degrees(75), axis: (x: 5, y: -22 + 23 * sin(t * 0.17), z: 0))
+                }
+                .blendMode(.hardLight)
+
+                Image("highlight")
+                    .rotationEffect(.degrees(t * 9.2))
                     .hueRotation(.degrees(t * -19.2))
-                    .opacity(0.25)
-                    .blendMode(.multiply)
-                    .rotation3DEffect(.degrees(75), axis: (x: 5, y: -22 + 23 * sin(t * 0.17), z: 0))
+                    .opacity(0.62 + 0.38 * min(1, s.global))
+                    .scaleEffect(1 + 0.18 * s.global)
             }
-            .blendMode(.hardLight)
-
-            Image("highlight")
-                .rotationEffect(.degrees(t * 9.2))
-                .hueRotation(.degrees(t * -19.2))
-                .opacity(0.62 + 0.38 * min(1, s.global))
-                .scaleEffect(1 + 0.18 * s.global)
+            // Hard glass boundary: wisps compress against the sphere's edge, never
+            // spill past it. drawingGroup() rasterizes the whole subtree (blend modes,
+            // hue rotations, 3D projections included) into ONE Metal texture — without
+            // it, SwiftUI promotes .blendMode/.rotation3DEffect children to separate
+            // render layers that bypass the clip mask entirely (verified: an inset-60
+            // probe shrank the disc but the petals sailed right past it).
+            .drawingGroup()
+            .frame(width: Self.assetSize, height: Self.assetSize)
+            .clipShape(DiscClip())
         }
-        .scaleEffect((size / Self.assetSize) * (1 + 0.06 * s.global))
+        .scaleEffect(size / Self.assetSize)
         .frame(width: size, height: size)
+    }
+}
+
+/// Clips to the icon-bg asset's ACTUAL dark disc — which is smaller than its canvas
+/// and off-center (shifted up-left, glow margin baked bottom-right). Measured from the
+/// rendered asset: center (215.5, 209.2), radius ~202 in the 503.58pt canvas. A centered
+/// full-canvas Circle() floats outside the visible rim and lets wisps appear to spill.
+private struct DiscClip: Shape {
+    func path(in rect: CGRect) -> Path {
+        let k = rect.width / 503.58
+        let center = CGPoint(x: 215.5 * k, y: 209.2 * k)
+        let r = 198.0 * k
+        return Path(ellipseIn: CGRect(x: center.x - r, y: center.y - r,
+                                      width: r * 2, height: r * 2))
     }
 }
 
