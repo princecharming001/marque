@@ -19,6 +19,13 @@ FORMAT_IDS = [
     "green-screen", "faceless", "pov-story", "broll-hook",
 ]
 
+# The render/edit styles offered in-app right now. `fast_cuts` stays defined in STYLES
+# (and its Remotion composition stays registered) but is held back from the active set
+# until later — mirror this list in the iOS VideoStyle "offered" list.
+ACTIVE_STYLES = [
+    "talking_head", "green_screen", "broll_cutaway", "split_three", "duet_split", "faceless",
+]
+
 # ---------------------------------------------------------------------------
 # Video styles — the coarse lane the creator chooses; each shapes the script.
 # `formats` are the fine-grained recipes allowed within the style.
@@ -133,6 +140,56 @@ STYLES = {
             '"targetSeconds":24,"predictedScore":84}'
         ),
     },
+    "broll_cutaway": {
+        "label": "B-roll cutaway",
+        "formats": ["myth-buster", "listicle", "do-this-not-that"],
+        "rubric": (
+            "You speak to camera and the editor cuts away to short illustrative b-roll on your key words. Write "
+            "`body` around CONCRETE VISUAL NOUNS/ACTIONS, ONE showable thing per sentence, and emit a bracketed "
+            "cue right after the clause it illustrates: '… your lower back rounds [broll: rounded-back deadlift] "
+            "and the force leaks out.' The bracket text is BOTH a searchable stock query AND the on-screen anchor "
+            "— make it specific and filmable ('hands gripping a barbell close up', not 'gym'). Aim for 3–5 cues in "
+            "a 30s script (one roughly every 4–6s). The HOOK line and the CTA line carry NO bracket cues — those "
+            "beats stay on your face. Never write abstract lines with nothing to show. `shotPlan` lists the "
+            "cutaways in order. 22–34 seconds."
+        ),
+        "exemplar": (
+            '{"title":"why your deadlift stalls","summary":"A talking-head with b-roll cutaways on 3 deadlift '
+            'mistakes.","hook":"Your deadlift stopped going up — and it\'s not because you\'re weak.",'
+            '"hookSignal":"contrarian","formatId":"myth-buster","body":"It\'s three mistakes, starting with your '
+            'grip [broll: hands gripping a loaded barbell close up]. Mixed grip stops the bar rolling out of your '
+            'fingers [broll: barbell knurling rotating detail] and that alone adds reps. Mistake two: your lower '
+            'back rounds under the weight [broll: rounded-back deadlift silhouette] and the force leaks out. Fix '
+            'it by bracing like you\'re about to get punched, then add five pounds every session [broll: hand '
+            'sliding a small plate onto a barbell].","cta":"Follow for the full program.","shotPlan":["Hook on '
+            'face, no b-roll","Cutaway: grip close-up","Cutaway: bar knurling","Cutaway: rounded back",'
+            '"Cutaway: adding a plate","Return to face for CTA"],"targetSeconds":30,"predictedScore":86}'
+        ),
+    },
+    "duet_split": {
+        "label": "Duet / react split",
+        "formats": ["green-screen", "do-this-not-that"],
+        "rubric": (
+            "A stacked split: the clip you're reacting to plays on TOP, you react on the BOTTOM. Write `body` as a "
+            "talk-back to that clip: (1) your hook POINTS AT the other clip and states your stance in one breath "
+            "('this guy says X — he\'s half right, and it\'s the dangerous half'); (2) QUOTE or paraphrase the "
+            "exact claim out loud so a muted viewer follows; (3) rebut ONE point per beat; (4) end on a concrete "
+            "'do this instead' PAYOFF (react formats that only mock underperform). Reference the source verbally "
+            "('when he says…', 'notice she skips…'). `shotPlan`: the play/freeze rhythm — ['Let it play 2s', "
+            "'Freeze, state stance', 'Release the claim then rebut', 'Payoff + punch-in', 'CTA']. 22–35 seconds."
+        ),
+        "exemplar": (
+            '{"title":"reacting to failure advice","summary":"A duet react to a viral train-to-failure claim.",'
+            '"hook":"This guy says train every single set to failure — he\'s half right, and it\'s the dangerous '
+            'half.","hookSignal":"contrarian","formatId":"green-screen","body":"Okay, pause. Training to failure '
+            'every set spikes fatigue so hard your next sets get weaker — so your total volume, the thing that '
+            'actually builds muscle, goes down. Here\'s the rule that works: leave one to two reps in the tank on '
+            'your early sets, and only take your LAST set to failure. Same growth, half the wreckage.",'
+            '"cta":"Follow for training that keeps you out of the physio.","shotPlan":["Let the clip play 2s on '
+            'its own audio","Freeze it, state the stance","Release the claim, then rebut","Payoff: the real rule, '
+            'punch-in on your face","CTA to camera"],"targetSeconds":29,"predictedScore":85}'
+        ),
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -172,6 +229,26 @@ EDIT_RUBRICS = {
         "(2) Add a text_card overlay with the reference post/screenshot description at src_in=0. "
         "(3) The creator's speech drives cuts — don't cut mid-sentence. "
         "(4) Duration 18–30s. Output valid EDL JSON only."
+    ),
+    "broll_cutaway": (
+        "You are an expert b-roll-cutaway editor. Rules: (1) The talking head is the spine — keep the whole take, "
+        "cut filler words and gaps. (2) Parse every [broll: ...] cue from the body; each becomes ONE broll entry "
+        "with cue_text = the bracket text, broll_query = the same concrete search, source='stock'. (3) Set each "
+        "broll src_in/src_out as a TIMELINE window (when the cutaway appears): src_in ≈ the cue word's caption "
+        "frame minus 12 (a ~0.4s J-cut lead), hold ~75 frames (2.5s). (4) Cutaways must never overlap and stay "
+        "≥90 frames (3s) apart; if two cues are closer, keep the stronger and drop the weaker. (5) NEVER place a "
+        "cutaway with src_in < 60 (protect the hook) or whose window enters the last 90 frames (protect the CTA — "
+        "end on the face). (6) No punch_in, no text_card, no panels. Captions word-by-word. Output valid EDL JSON only."
+    ),
+    "duet_split": (
+        "You are an expert duet/react-split editor. Rules: (1) The creator's recording is the BOTTOM panel talking "
+        "head — keep the whole take, cut filler. (2) Build react_schedule for the TOP panel (the reacted-to clip): "
+        "open with a 'play' window [0, ~55] (audio_gain 1.0) so the source speaks first, then alternate 'freeze' "
+        "windows during the creator's rebuts (audio_gain 0.15, clip_from = where the source paused) and short "
+        "'play' windows (audio_gain 1.0, 60–120 frames) that release the next source point. No play window > ~120 "
+        "frames. Windows must tile the whole timeline with no gaps. (3) Add text_card overlays for the exact claim "
+        "being rebutted (pull-quotes), timed to the freeze that follows the quoted line. (4) ONE punch_in on the "
+        "payoff line (scale ~1.12). (5) layout.panels=2, split_fraction=0.58. Output valid EDL JSON only."
     ),
 }
 
@@ -227,6 +304,34 @@ Output EDL:
 "drops":[],"captions":[],"overlays":[{"type":"text_card","src_in":0,"src_out":30,"scale":1.0,"text":"Viral post: train 6x/week"}],
 "broll":[],"layout":{"style":"green_screen","panels":1},"audio":{"lufs_target":-14.0}}
 ''',
+    "broll_cutaway": '''
+Body: "It's your grip [broll: hands gripping a barbell]. Your lower back rounds [broll: rounded-back deadlift]."
+(hook occupies frames 0-60; first cue word 'grip' lands ~frame 90, 'rounds' ~frame 210)
+Output EDL:
+{"style":"broll_cutaway","format_id":"myth-buster","segments":[{"src_in":0,"src_out":300}],
+"drops":[],
+"captions":[{"word":"It's","frame":66},{"word":"your","frame":78},{"word":"grip","frame":90},
+{"word":"Your","frame":198},{"word":"lower","frame":204},{"word":"back","frame":210},{"word":"rounds","frame":222}],
+"overlays":[],
+"broll":[{"src_in":78,"src_out":153,"cue_text":"hands gripping a barbell","broll_query":"hands gripping a barbell close up","source":"stock"},
+{"src_in":210,"src_out":285,"cue_text":"rounded-back deadlift","broll_query":"rounded back deadlift silhouette","source":"stock"}],
+"layout":{"style":"broll_cutaway","panels":1},"audio":{"lufs_target":-14.0}}
+''',
+    "duet_split": '''
+Body: "He says train to failure every set. That kills your volume. Do this instead: last set only."
+Output EDL:
+{"style":"duet_split","format_id":"green-screen","segments":[{"src_in":0,"src_out":300}],
+"drops":[],
+"captions":[{"word":"He","frame":60},{"word":"says","frame":66},{"word":"train","frame":72}],
+"overlays":[{"type":"text_card","src_in":72,"src_out":150,"scale":1.0,"text":"train to failure EVERY set"},
+{"type":"punch_in","src_in":240,"src_out":300,"scale":1.12,"text":""}],
+"broll":[],"react_source":null,
+"react_schedule":[{"state":"play","src_in":0,"src_out":55,"clip_from":0,"audio_gain":1.0},
+{"state":"freeze","src_in":55,"src_out":150,"clip_from":55,"audio_gain":0.15},
+{"state":"play","src_in":150,"src_out":190,"clip_from":55,"audio_gain":1.0},
+{"state":"freeze","src_in":190,"src_out":300,"clip_from":95,"audio_gain":0.15}],
+"layout":{"style":"duet_split","panels":2,"split_fraction":0.58},"audio":{"lufs_target":-14.0}}
+''',
 }
 
 
@@ -251,10 +356,13 @@ EDL JSON schema (output ONLY valid JSON matching this schema, no prose):
   "drops": [{{"src_in": int, "src_out": int, "reason": "filler|dead_air|false_start"}}, ...],
   "captions": [{{"word": str, "frame": int}}, ...],
   "overlays": [{{"type": "punch_in|text_card", "src_in": int, "src_out": int, "scale": float, "text": str}}, ...],
-  "broll": [{{"src_in": int, "src_out": int, "cue_text": str, "asset_id": null, "broll_query": str}}, ...],
-  "layout": {{"style": "{style}", "panels": int, "panel_boundaries": [int, ...]}},
+  "broll": [{{"src_in": int, "src_out": int, "cue_text": str, "asset_id": null, "broll_query": str, "source": "stock|own_media"}}, ...],
+  "react_source": null,
+  "react_schedule": [{{"state": "play|freeze", "src_in": int, "src_out": int, "clip_from": int, "audio_gain": float}}, ...],
+  "layout": {{"style": "{style}", "panels": int, "panel_boundaries": [int, ...], "split_fraction": float}},
   "audio": {{"lufs_target": -14.0}}
 }}
+Note: `broll` is used only by broll_cutaway/faceless; `react_source`/`react_schedule` only by duet_split; `panel_boundaries` only by split_three; `split_fraction` only by duet_split. Leave unused fields as [] or null.
 
 Worked example for {style}:
 {exemplar}"""
@@ -747,7 +855,7 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "is normal; empty list is fine.\n\n"
         "INTENT RULES: Set intent when the creator asks for one of these, else \"none\".\n"
         "- generate_scripts: they want a script/scripts written now. intent_args: {\"topic\": str, "
-        "\"style\": one of [talking_head, faceless, split_three, fast_cuts, green_screen] or \"\", \"count\": 1-3}. "
+        "\"style\": one of [talking_head, green_screen, broll_cutaway, split_three, duet_split, faceless] or \"\", \"count\": 1-3}. "
         "Your reply should tee up the scripts conversationally (they are generated and attached automatically).\n"
         "- day_plan: they want their day/content day built out. intent_args: {\"plan\": {\"blocks\": "
         "[{\"time\": str (e.g. \"9:00\"), \"action\": str (≤6 words), \"detail\": str (one sentence)}]}} — "

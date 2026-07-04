@@ -6,8 +6,13 @@
 export interface Clip { src_in: number; src_out: number; }
 export interface CaptionWord { word: string; frame: number; }
 export interface Overlay { type: string; frame_in: number; frame_out: number; scale: number; text: string; }
-export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; }
-export interface Layout { style: string; panels: number; panel_boundaries: number[]; }
+// resolved_url is filled by the backend Pexels-resolve step; frame_in/out are output coords.
+export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; source?: string; resolved_url?: string; }
+export interface Layout { style: string; panels: number; panel_boundaries: number[]; split_fraction?: number; }
+
+// duet_split — the reacted-to clip and its top-panel play/freeze/duck schedule (output coords).
+export interface ReactSource { resolved_url?: string; kind?: string; credit_label?: string; }
+export interface ReactWindow { state: string; frame_in: number; frame_out: number; clip_from: number; audio_gain: number; }
 
 export type CaptionStyle = "clean" | "bold-word" | "karaoke";
 
@@ -18,6 +23,8 @@ export interface RenderPlan {
   captions: CaptionWord[];
   overlays: Overlay[];
   broll: BRoll[];
+  react_source?: ReactSource | null;
+  react_schedule?: ReactWindow[];
   layout: Layout;
   caption_style: CaptionStyle;
   total_frames: number;

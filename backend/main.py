@@ -249,6 +249,10 @@ class ClipJobRequest(BaseModel):
     brand: dict = {}
     style: str = "talking_head"
     media_context: str = ""
+    # duet_split: the reacted-to clip the creator responds to (a direct, renderable
+    # video/image URL — the app supplies it via paste-URL/upload/screenshot).
+    react_source_url: str = ""
+    react_credit_label: str = ""
     # Per-creator editing preferences (Settings → threaded into every edit)
     edit_prefs: dict = {}      # {auto_captions: bool, caption_style: clean|bold-word|karaoke, filler_trim: off|standard|aggressive}
 
@@ -658,6 +662,8 @@ async def create_clip_job(req: ClipJobRequest):
         "brand": req.brand, "media_context": req.media_context,
         "source_url": req.source_url, "edl": None, "error": None,
         "edit_prefs": req.edit_prefs or {},
+        "react_source_url": req.react_source_url,
+        "react_credit_label": req.react_credit_label,
     }
     _clip_jobs[job_id] = job
     if not ASSEMBLY_KEY:
@@ -746,7 +752,12 @@ async def _run_pipeline(job_id: str):
             edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
             edl_data = edl_obj.model_dump()
 
-        job["edl"] = _apply_edit_prefs(edl_data, prefs)
+        edl_data = _apply_edit_prefs(edl_data, prefs)
+        # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
+        # source — both must happen before the render plan is built.
+        edl_data = await _resolve_broll(edl_data)
+        edl_data = _attach_react_source(edl_data, job)
+        job["edl"] = edl_data
 
         job["status"] = "rendering"
         for c in job["clips"]: c["status"] = "rendering"
@@ -1128,6 +1139,49 @@ async def _fetch_pexels(query: str) -> str | None:
     files = videos[0].get("video_files", [])
     hd = next((f for f in files if f.get("quality") == "hd"), files[0] if files else None)
     return hd.get("link") if hd else None
+
+
+_broll_url_cache: dict[str, str] = {}
+
+
+async def _resolve_broll(edl: dict) -> dict:
+    """Resolve each b-roll cue (broll_query, source='stock') to a real portrait video URL
+    via Pexels, in place. own_media entries (already have an asset/URL) are left alone.
+    Cached by query so re-renders don't re-hit Pexels. No-op without PEXELS_KEY."""
+    broll = edl.get("broll") or []
+    if not broll or not PEXELS_KEY:
+        return edl
+    for b in broll:
+        if b.get("resolved_url") or b.get("source") == "own_media":
+            continue
+        query = (b.get("broll_query") or b.get("cue_text") or "").strip()
+        if not query:
+            continue
+        if query in _broll_url_cache:
+            b["resolved_url"] = _broll_url_cache[query]
+            continue
+        url = await _fetch_pexels(query)
+        if url:
+            _broll_url_cache[query] = url
+            b["resolved_url"] = url
+    return edl
+
+
+def _attach_react_source(edl: dict, job: dict) -> dict:
+    """duet_split: attach the reacted-to clip (the app supplies a direct, renderable URL).
+    Share-URL resolution (TikTok/Reels → mp4) is a follow-up; today we accept a direct URL
+    or an uploaded-clip URL as-is."""
+    if job.get("style") != "duet_split":
+        return edl
+    url = (job.get("react_source_url") or "").strip()
+    if not url:
+        return edl
+    kind = "image" if url.lower().rsplit("?", 1)[0].endswith((".png", ".jpg", ".jpeg", ".webp")) else "video"
+    edl["react_source"] = {
+        "resolved_url": url, "kind": kind,
+        "credit_label": job.get("react_credit_label", ""),
+    }
+    return edl
 
 
 # ---------------------------------------------------------------------------

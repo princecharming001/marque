@@ -146,46 +146,61 @@ struct VideoFormat: Codable, Hashable, Identifiable {
 /// The coarse video style the creator picks; each produces a structurally different script.
 enum VideoStyle: String, CaseIterable, Codable, Identifiable {
     case talkingHead = "talking_head"
-    case splitThree = "split_three"
-    case faceless
-    case fastCuts = "fast_cuts"
     case greenScreen = "green_screen"
+    case brollCutaway = "broll_cutaway"
+    case splitThree = "split_three"
+    case duetSplit = "duet_split"
+    case faceless
+    case fastCuts = "fast_cuts"   // held back from the offered set (see `offered`); kept for decode-safety
     var id: String { rawValue }
+
+    /// The render styles offered in-app right now (mirrors backend prompts.ACTIVE_STYLES).
+    /// `fastCuts` stays a valid case so old persisted data still decodes, but isn't offered.
+    static let offered: [VideoStyle] = [.talkingHead, .greenScreen, .brollCutaway, .splitThree, .duetSplit, .faceless]
+
     var label: String {
         switch self {
         case .talkingHead: return "Talking-head"
+        case .greenScreen: return "Screenshot react"
+        case .brollCutaway: return "B-roll cutaway"
         case .splitThree: return "3-way split"
+        case .duetSplit: return "Duet / react split"
         case .faceless: return "Faceless voiceover"
         case .fastCuts: return "Fast cuts"
-        case .greenScreen: return "Green-screen react"
         }
     }
     var blurb: String {
         switch self {
         case .talkingHead: return "You, to camera, with captions."
+        case .greenScreen: return "You reacting over a post or screenshot."
+        case .brollCutaway: return "You to camera, with b-roll cutting in on your key words."
         case .splitThree: return "3 panels — a different point in each, one after another."
+        case .duetSplit: return "React to another clip, split above your talking head."
         case .faceless: return "Voiceover over b-roll — no on-camera."
         case .fastCuts: return "Rapid one-line cuts, high energy."
-        case .greenScreen: return "You reacting over a post or screenshot."
         }
     }
     var icon: String {
         switch self {
         case .talkingHead: return "person.fill"
+        case .greenScreen: return "person.crop.rectangle"
+        case .brollCutaway: return "film.stack"
         case .splitThree: return "rectangle.split.1x2"
+        case .duetSplit: return "rectangle.split.1x2.fill"
         case .faceless: return "film"
         case .fastCuts: return "scissors"
-        case .greenScreen: return "person.crop.rectangle"
         }
     }
     /// Fine-grained format recipes allowed within this style (mirrors the backend).
     var formats: [String] {
         switch self {
         case .talkingHead: return ["myth-buster", "listicle", "pov-story"]
+        case .greenScreen: return ["green-screen"]
+        case .brollCutaway: return ["myth-buster", "listicle", "do-this-not-that"]
         case .splitThree: return ["listicle", "do-this-not-that", "before-after"]
+        case .duetSplit: return ["green-screen", "do-this-not-that"]
         case .faceless: return ["faceless", "broll-hook"]
         case .fastCuts: return ["listicle", "broll-hook", "myth-buster"]
-        case .greenScreen: return ["green-screen"]
         }
     }
 }

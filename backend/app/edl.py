@@ -54,17 +54,36 @@ class Overlay(BaseModel):
 
 
 class BRoll(BaseModel):
-    src_in: int
+    src_in: int          # TIMELINE window (when the cutaway appears), source-frame coords
     src_out: int
-    cue_text: str
+    cue_text: str        # the scripted cue; doubles as the Pexels query + human label
     asset_id: Optional[str] = None
     broll_query: Optional[str] = None
+    source: str = "stock"           # stock (Pexels) | own_media
+    resolved_url: Optional[str] = None   # filled by the backend Pexels-resolve step
+
+
+class ReactSource(BaseModel):
+    """The reacted-to clip for duet_split — the second video/image the creator responds to."""
+    resolved_url: Optional[str] = None   # a direct, renderable video/image URL
+    kind: str = "video"                  # video | image (screenshot)
+    credit_label: str = ""               # e.g. "@originalcreator" for the attribution chip
+
+
+class ReactWindow(BaseModel):
+    """One entry in the top panel's play/freeze schedule (duet_split)."""
+    state: str           # play | freeze
+    src_in: int          # TIMELINE window start (when this state is active), source-frame coords
+    src_out: int         # TIMELINE window end
+    clip_from: int = 0   # which frame of the source to play-from / freeze-on
+    audio_gain: float = 1.0   # source audio level in this window (play ~1.0, freeze ~0.15)
 
 
 class Layout(BaseModel):
     style: str
     panels: int = 1
     panel_boundaries: list[int] = []  # frame boundaries for split_three
+    split_fraction: float = 0.58      # duet_split: top (source) panel height fraction
 
 
 class Audio(BaseModel):
@@ -79,6 +98,8 @@ class EDL(BaseModel):
     captions: list[CaptionWord] = []
     overlays: list[Overlay] = []
     broll: list[BRoll] = []
+    react_source: Optional[ReactSource] = None       # duet_split only
+    react_schedule: list[ReactWindow] = []           # duet_split only
     layout: Layout
     audio: Audio = Audio()
 
@@ -261,6 +282,21 @@ def build_render_plan(edl: dict) -> dict:
                 "frame_in": mapped[0], "frame_out": mapped[1],
                 "cue_text": b.get("cue_text", ""),
                 "asset_id": b.get("asset_id"), "broll_query": b.get("broll_query"),
+                "source": b.get("source", "stock"),
+                "resolved_url": b.get("resolved_url"),
+            })
+
+    # duet_split: remap the top-panel play/freeze schedule to output coords, carry the
+    # source. Windows landing entirely inside a cut are dropped.
+    react_schedule = []
+    for w in edl.get("react_schedule") or []:
+        mapped = map_range(w["src_in"], w["src_out"])
+        if mapped is not None:
+            react_schedule.append({
+                "state": w.get("state", "play"),
+                "frame_in": mapped[0], "frame_out": mapped[1],
+                "clip_from": w.get("clip_from", 0),
+                "audio_gain": w.get("audio_gain", 1.0),
             })
 
     return {
@@ -270,6 +306,8 @@ def build_render_plan(edl: dict) -> dict:
         "captions": captions,
         "overlays": overlays,
         "broll": broll,
+        "react_source": edl.get("react_source"),
+        "react_schedule": react_schedule,
         "layout": edl.get("layout") or {"style": edl.get("style", "talking_head"), "panels": 1, "panel_boundaries": []},
         "caption_style": edl.get("caption_style", "clean"),
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.

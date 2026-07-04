@@ -48,6 +48,31 @@ struct StylePreview: View {
                 RoundedRectangle(cornerRadius: 4).fill(Palette.accent.opacity(0.18))
                 Circle().fill(Palette.ink.opacity(0.32)).frame(width: 18, height: 18).padding(4)
             }
+        case .brollCutaway:
+            // Talking head with a b-roll cutaway tile overlapping — face + inset clip.
+            ZStack(alignment: .topTrailing) {
+                VStack {
+                    Circle().fill(Palette.ink.opacity(0.28)).frame(width: 20, height: 20).padding(.top, 8)
+                    Spacer()
+                    captionBar
+                }
+                RoundedRectangle(cornerRadius: 4).fill(Palette.accent.opacity(0.28))
+                    .frame(width: 34, height: 46).padding(6)
+                    .overlay(Image(systemName: "film").font(.system(size: 11)).foregroundStyle(.white.opacity(0.85)).padding(6), alignment: .topTrailing)
+            }
+        case .duetSplit:
+            // Two stacked panels: reacted-to clip on top, talking head below.
+            VStack(spacing: 3) {
+                RoundedRectangle(cornerRadius: 4).fill(Palette.ink.opacity(0.22))
+                    .overlay(Image(systemName: "play.fill").font(.system(size: 11)).foregroundStyle(.white.opacity(0.8)))
+                    .frame(maxHeight: .infinity)
+                ZStack(alignment: .bottom) {
+                    RoundedRectangle(cornerRadius: 4).fill(Palette.accent.opacity(0.16))
+                    Circle().fill(Palette.ink.opacity(0.3)).frame(width: 16, height: 16).padding(.bottom, 10)
+                    captionBar
+                }
+                .frame(maxHeight: .infinity)
+            }
         }
     }
 
@@ -69,7 +94,7 @@ struct StyleSelectionView: View {
     private let cols = [GridItem(.flexible(), spacing: Space.sm), GridItem(.flexible(), spacing: Space.sm)]
     var body: some View {
         LazyVGrid(columns: cols, spacing: Space.sm) {
-            ForEach(VideoStyle.allCases) { style in
+            ForEach(VideoStyle.offered) { style in
                 Button { toggle(style) } label: { StyleTile(style: style, on: selected.contains(style)) }
                     .buttonStyle(PressableStyle())
                     .accessibilityIdentifier("style.\(style.rawValue)")
