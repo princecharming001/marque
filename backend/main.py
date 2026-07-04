@@ -586,6 +586,8 @@ ASSEMBLY_KEY = os.environ.get("ASSEMBLYAI_KEY", "")
 REMOTION_SERVE_URL = os.environ.get("REMOTION_SERVE_URL", "")
 REMOTION_ACCESS_KEY = os.environ.get("REMOTION_AWS_ACCESS_KEY_ID", "")
 REMOTION_SECRET = os.environ.get("REMOTION_AWS_SECRET_ACCESS_KEY", "")
+REMOTION_FUNCTION_NAME = os.environ.get("REMOTION_FUNCTION_NAME", "")
+REMOTION_BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "render", "dist", "lambda-render.js")
 
 # In-memory job store (replaced by Supabase clip_jobs in Phase 4)
 _clip_jobs: dict[str, dict] = {}
@@ -749,13 +751,14 @@ async def _run_pipeline(job_id: str):
         job["status"] = "rendering"
         for c in job["clips"]: c["status"] = "rendering"
 
-        if REMOTION_SERVE_URL and REMOTION_ACCESS_KEY:
+        if REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME:
             for clip in job["clips"]:
-                render_id = await _submit_remotion_render(
+                submission = await _submit_remotion_render(
                     job["source_url"], edl_data, clip["format"], job["style"])
-                if render_id:
-                    clip["render_id"] = render_id
-                    render_url = await _poll_remotion_render(render_id)
+                if submission:
+                    clip["render_id"] = submission["render_id"]
+                    render_url = await _poll_remotion_render(
+                        submission["render_id"], submission["bucket_name"])
                     clip["render_url"] = render_url
                     clip["status"] = "ready" if render_url else "failed"
                 else:
@@ -804,39 +807,46 @@ async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> list
     return []
 
 
-async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str) -> str | None:
-    if not REMOTION_SERVE_URL:
-        return None
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            "https://api.remotion.dev/renders",
-            headers={"Authorization": f"Bearer {REMOTION_ACCESS_KEY}",
-                     "Content-Type": "application/json"},
-            json={
-                "serveUrl": REMOTION_SERVE_URL,
-                "composition": f"Marque_{style.title().replace('_', '')}",
-                "inputProps": {"sourceUrl": source_url, "edl": edl, "formatId": format_id},
-                "codec": "h264", "outputFormat": "mp4",
-            },
-        )
-    if r.status_code not in (200, 201):
-        return None
-    return r.json().get("renderId") or r.json().get("id")
+async def _run_render_bridge(*args: str) -> dict:
+    """Remotion's render API (renderMediaOnLambda/getRenderProgress) is Node-only —
+    there's no documented cross-language wire contract for invoking a deployed Lambda
+    function directly. The Node bridge at render/dist/lambda-render.js (built from
+    render/src/lambda-render.ts) is the integration point; AWS creds pass through via
+    the subprocess's inherited environment (Remotion's SDK reads the exact env var
+    names REMOTION_AWS_ACCESS_KEY_ID / REMOTION_AWS_SECRET_ACCESS_KEY itself)."""
+    proc = await asyncio.create_subprocess_exec(
+        "node", REMOTION_BRIDGE, *args,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logging.warning("remotion bridge failed: %s", stderr.decode(errors="replace")[:500])
+        return {}
+    try:
+        return json.loads(stdout.decode())
+    except json.JSONDecodeError:
+        logging.warning("remotion bridge non-JSON output: %s", stdout.decode(errors="replace")[:500])
+        return {}
 
 
-async def _poll_remotion_render(render_id: str, max_wait_s: int = 600) -> str | None:
+async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str) -> dict | None:
+    if not (REMOTION_SERVE_URL and REMOTION_FUNCTION_NAME):
+        return None
+    composition_id = f"Marque_{style.title().replace('_', '')}"
+    input_props = json.dumps({"sourceUrl": source_url, "edl": edl, "formatId": format_id})
+    result = await _run_render_bridge("submit", composition_id, input_props)
+    if not result.get("renderId"):
+        return None
+    return {"render_id": result["renderId"], "bucket_name": result.get("bucketName", "")}
+
+
+async def _poll_remotion_render(render_id: str, bucket_name: str, max_wait_s: int = 600) -> str | None:
     for _ in range(max_wait_s // 10):
         await asyncio.sleep(10)
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                f"https://api.remotion.dev/renders/{render_id}",
-                headers={"Authorization": f"Bearer {REMOTION_ACCESS_KEY}"},
-            )
-        data = r.json()
-        if data.get("status") == "done":
-            return data.get("outputUrl") or data.get("url")
-        if data.get("status") in ("failed", "error"):
+        progress = await _run_render_bridge("poll", render_id, bucket_name)
+        if progress.get("fatalErrorEncountered"):
             return None
+        if progress.get("done"):
+            return progress.get("outputFile")
     return None
 
 

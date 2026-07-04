@@ -20,3 +20,7 @@ backend/.venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Remotion render project
+render/node_modules/
+render/dist/

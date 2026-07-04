@@ -5,16 +5,22 @@
   "scripts": {
     "start": "remotion studio",
     "build": "remotion render",
-    "deploy": "remotion lambda sites create --site-name=marque-render"
+    "build:bridge": "tsc -p tsconfig.bridge.json",
+    "deploy:policies": "remotion lambda policies role && remotion lambda policies user",
+    "deploy:function": "remotion lambda functions deploy",
+    "deploy:site": "remotion lambda sites create src/index.ts --site-name=marque-render",
+    "render:submit": "node dist/lambda-render.js submit",
+    "render:poll": "node dist/lambda-render.js poll"
   },
   "dependencies": {
-    "react": "^18.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "remotion": "^4.0.0",
     "@remotion/lambda": "^4.0.0",
     "@remotion/player": "^4.0.0"
   },
   "devDependencies": {
-    "@types/react": "^18.0.0",
+    "@types/react": "^19.0.0",
     "typescript": "^5.0.0"
   }
 }
