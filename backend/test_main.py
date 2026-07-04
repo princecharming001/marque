@@ -647,7 +647,7 @@ def test_verify_and_repair_edl_pass(monkeypatch):
     monkeypatch.setattr(main, "AI_QUALITY", True)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
 
-    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
         assert "QA gate" in system
         return json.dumps({"verdict": "pass", "issues": [], "fix": ""})
     monkeypatch.setattr(main, "anthropic", fake)
@@ -665,7 +665,7 @@ def test_verify_and_repair_edl_repairs_on_violation(monkeypatch):
              "segments": [{"src_in": 0, "src_out": 300}], "drops": [], "captions": [],
              "overlays": [], "broll": [], "layout": {"style": "talking_head"}}
 
-    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
         if "QA gate" in system:
             return json.dumps({"verdict": "revise", "issues": ["segment src_out<=src_in"], "fix": "reorder"})
         return json.dumps(fixed)                                             # repair pass
@@ -698,7 +698,7 @@ def _script(hook="Old weak hook", alts=None, fmt="talking-point"):
 def _judge_fake(verdicts):
     """Return a fake `anthropic` that answers the script judge with `verdicts`
     and any revise call with a canned rewritten array."""
-    async def fake(system, user, model=main.OPUS, max_tokens=3000):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
         if "harshest short-form editor" in system:
             return json.dumps(verdicts)
         if "senior script editor rewriting" in system:
@@ -765,7 +765,7 @@ def test_quality_scripts_revises_flagged(monkeypatch):
 def test_quality_scripts_fallback_on_empty_judge(monkeypatch):
     monkeypatch.setattr(main, "AI_QUALITY", True)
 
-    async def empty(system, user, model=main.OPUS, max_tokens=3000):
+    async def empty(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
         return "[]"
     monkeypatch.setattr(main, "anthropic", empty)
     scr = [_script(hook="unchanged")]
@@ -864,7 +864,7 @@ def test_best_hooks_generates_pool_and_returns_top(monkeypatch):
     monkeypatch.setattr(main, "BEST_OF_N_HOOKS", True)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
 
-    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
         if "hook engine" in system:                 # generation pass (temp 1.0)
             assert temperature == 1.0                # best-of-N must diversify
             return json.dumps([
@@ -911,6 +911,78 @@ def test_hooks_prompt_injects_memory():
     _, user = prompts.hooks_prompt({"niche": "finance"}, "index funds", "faceless",
                                    memory={"facts": ["audience is beginners"]})
     assert "audience is beginners" in user
+
+
+# ---------------------------------------------------------------------------
+# Native Structured Outputs (item 2): typed JSON helper + schema legality
+# ---------------------------------------------------------------------------
+
+def test_anthropic_passes_output_config_when_schema_given(monkeypatch):
+    captured = {}
+
+    async def fake_post(self, url, headers=None, json=None):
+        captured["body"] = json
+        class R:
+            status_code = 200
+            def json(self_): return {"content": [{"text": "{\"ok\": true}"}]}
+        return R()
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main.httpx.AsyncClient, "post", fake_post)
+    schema = {"type": "object", "additionalProperties": False, "required": ["ok"],
+              "properties": {"ok": {"type": "boolean"}}}
+    asyncio.run(main.anthropic("s", "u", main.HAIKU, 100, schema=schema))
+    assert captured["body"]["output_config"] == {"format": {"type": "json_schema", "schema": schema}}
+
+
+def test_anthropic_json_unwraps_array(monkeypatch):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        return json.dumps({"scripts": [{"hook": "a"}, {"hook": "b"}]})
+    monkeypatch.setattr(main, "anthropic", fake)
+    out = asyncio.run(main.anthropic_json("s", "u", {"type": "object"}, array_key="scripts"))
+    assert [x["hook"] for x in out] == ["a", "b"]
+
+
+def test_anthropic_json_object_and_fallback(monkeypatch):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        return 'here you go: {"reply": "hi"}'          # prose-wrapped → extract_json fallback
+    monkeypatch.setattr(main, "anthropic", fake)
+    out = asyncio.run(main.anthropic_json("s", "u", {"type": "object"}))
+    assert out == {"reply": "hi"}
+
+
+def test_parse_intent_args_handles_json_string_and_dict():
+    assert main._parse_intent_args({"intent_args_json": '{"topic": "abs", "count": 2}'}) == {"topic": "abs", "count": 2}
+    assert main._parse_intent_args({"intent_args": {"topic": "x"}}) == {"topic": "x"}   # back-compat
+    assert main._parse_intent_args({"intent_args_json": "not json"}) == {}              # malformed → {}
+    assert main._parse_intent_args({}) == {}
+
+
+def test_all_json_schemas_are_structured_output_legal():
+    """Guard the documented SO restrictions: additionalProperties:false on every
+    object, required == all properties, and NO numeric/length constraints."""
+    import prompts
+
+    def check(schema):
+        assert isinstance(schema, dict)
+        for banned in ("minimum", "maximum", "minLength", "maxLength", "multipleOf", "pattern"):
+            assert banned not in schema, f"{banned} not allowed by structured outputs"
+        if schema.get("type") == "object":
+            assert schema.get("additionalProperties") is False, "objects need additionalProperties:false"
+            props = schema.get("properties", {})
+            assert set(schema.get("required", [])) == set(props), \
+                f"required must list every property: {schema.get('required')} vs {list(props)}"
+            for v in props.values():
+                check(v)
+        elif schema.get("type") == "array":
+            check(schema["items"])
+
+    for s in (prompts.SCRIPT_JSON_ELEMENT, prompts.HOOK_JSON_ELEMENT,
+              prompts.SCRIPT_JUDGE_JSON_ELEMENT, prompts.HOOK_JUDGE_JSON_ELEMENT,
+              prompts.CONVERSE_ENVELOPE_JSON_SCHEMA):
+        check(s)
+    # The array wrappers the call sites actually send must be legal too.
+    check(main._array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT))
+    check(main._array_schema("verdicts", prompts.SCRIPT_JUDGE_JSON_ELEMENT))
 
 
 def test_arms_for_prompt_shapes_arms_so_learning_block_fires():
@@ -968,7 +1040,7 @@ def test_quality_hooks_drops_slop_and_reranks(monkeypatch):
         {"text": "$3,180 in 42 days — here's how", "signal": "authority", "strength": 55},
     ]
 
-    async def fake(system, user, model=main.OPUS, max_tokens=3000):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
         assert "ruthless short-form hook critic" in system
         return json.dumps([
             {"index": 0, "strength": 20, "slop": True},

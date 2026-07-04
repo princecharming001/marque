@@ -449,6 +449,7 @@ def edl_repair_prompt(style: str, broken_edl: dict, issues: list[str],
 
 
 SIGNALS = "[stakes,authority,curiosity,patternInterrupt,specificity,contrarian,narrative,callOut]"
+SIGNAL_LIST = [s.strip() for s in SIGNALS.strip("[]").split(",")]
 
 SCRIPT_SCHEMA = (
     'Each item: {"title": str (≤6 words, a human title), "summary": str (one line), "hook": str, '
@@ -456,6 +457,58 @@ SCRIPT_SCHEMA = (
     '"cta": str, "shotPlan": [str], "targetSeconds": int, "predictedScore": int 0-100, '
     '"altHooks": [{"text": str, "signal": str, "strength": int}], "style": str}'
 )
+
+# --- JSON Schemas for native Structured Outputs (guaranteed-valid generation) -----
+# Restrictions honored: additionalProperties:false on every object, all properties
+# listed in `required`, NO numeric/length constraints (0-100 is enforced in prose +
+# clamped in code, not the schema). These are element schemas; array call sites wrap
+# them via main._array_schema (arrays can't be a structured-output root).
+
+_STR = {"type": "string"}
+_INT = {"type": "integer"}
+
+SCRIPT_JSON_ELEMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["title", "summary", "hook", "hookSignal", "formatId", "body", "cta",
+                 "shotPlan", "targetSeconds", "predictedScore", "altHooks", "style"],
+    "properties": {
+        "title": _STR, "summary": _STR, "hook": _STR,
+        "hookSignal": {"type": "string", "enum": SIGNAL_LIST},
+        "formatId": _STR, "body": _STR, "cta": _STR,
+        "shotPlan": {"type": "array", "items": _STR},
+        "targetSeconds": _INT, "predictedScore": _INT,
+        "altHooks": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["text", "signal", "strength"],
+            "properties": {"text": _STR, "signal": _STR, "strength": _INT}}},
+        "style": _STR,
+    },
+}
+
+HOOK_JSON_ELEMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["text", "signal", "strength"],
+    "properties": {"text": _STR, "signal": {"type": "string", "enum": SIGNAL_LIST},
+                   "strength": _INT},
+}
+
+SCRIPT_JUDGE_JSON_ELEMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["index", "hook_strength", "specificity", "format_fit", "voice_match",
+                 "slop", "best_hook", "verdict", "weakest", "note"],
+    "properties": {
+        "index": _INT, "hook_strength": _INT, "specificity": _INT, "format_fit": _INT,
+        "voice_match": _INT, "slop": {"type": "boolean"}, "best_hook": _INT,
+        "verdict": {"type": "string", "enum": ["keep", "revise"]},
+        "weakest": _STR, "note": _STR,
+    },
+}
+
+HOOK_JUDGE_JSON_ELEMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["index", "strength", "slop"],
+    "properties": {"index": _INT, "strength": _INT, "slop": {"type": "boolean"}},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -997,9 +1050,31 @@ CONVERSE_ENVELOPE_SCHEMA = (
     '{"reply": str, '
     '"memory_updates": [{"op": "add"|"remove"|"set", "field": "facts"|"perspective"|"ideas"|"preferences"|"angle", "value": str}], '
     '"intent": "none"|"generate_scripts"|"day_plan"|"save_idea"|"update_brand_angle", '
-    '"intent_args": object (see intent rules), '
+    '"intent_args_json": str (a JSON-ENCODED object of the intent\'s args per the intent rules; "{}" when none), '
     '"chips": [str] (2-3 short suggested next messages, ≤6 words each)}'
 )
+
+# Structured-output schema for the converse envelope. intent_args is carried as a
+# JSON string (intent_args_json) because its shape varies by intent — a free-form
+# object can't satisfy the additionalProperties:false requirement. Parsed server-side.
+CONVERSE_ENVELOPE_JSON_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["reply", "memory_updates", "intent", "intent_args_json", "chips"],
+    "properties": {
+        "reply": {"type": "string"},
+        "memory_updates": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["op", "field", "value"],
+            "properties": {
+                "op": {"type": "string", "enum": ["add", "remove", "set"]},
+                "field": {"type": "string", "enum": ["facts", "perspective", "ideas", "preferences", "angle"]},
+                "value": {"type": "string"}}}},
+        "intent": {"type": "string",
+                   "enum": ["none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle"]},
+        "intent_args_json": {"type": "string"},
+        "chips": {"type": "array", "items": {"type": "string"}},
+    },
+}
 
 CONVERSE_ENVELOPE_EXEMPLAR = (
     'User said: "I\'ve been thinking my content is too soft. I want to take harder stances on training myths. '
@@ -1011,7 +1086,7 @@ CONVERSE_ENVELOPE_EXEMPLAR = (
     '"memory_updates": ['
     '{"op": "set", "field": "angle", "value": "Taking harder, evidence-backed stances against training myths"}, '
     '{"op": "add", "field": "ideas", "value": "Debunk the anabolic window myth (with receipts)"}], '
-    '"intent": "update_brand_angle", "intent_args": {}, '
+    '"intent": "update_brand_angle", "intent_args_json": "{}", '
     '"chips": ["Write the anabolic window script", "What else should I debunk?", "Build my day"]}'
 )
 
@@ -1070,15 +1145,16 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "('preferences'), and 'angle' (op=set) when their brand direction shifts. Write each value as one crisp "
         "self-contained sentence. Do NOT store small talk, questions, or anything transient. 0–3 updates per turn "
         "is normal; empty list is fine.\n\n"
-        "INTENT RULES: Set intent when the creator asks for one of these, else \"none\".\n"
-        "- generate_scripts: they want a script/scripts written now. intent_args: {\"topic\": str, "
+        "INTENT RULES: Set intent when the creator asks for one of these, else \"none\". intent_args_json is a "
+        "JSON-ENCODED STRING of the object described (e.g. \"{\\\"topic\\\": \\\"...\\\", \\\"count\\\": 1}\"); use \"{}\" when empty.\n"
+        "- generate_scripts: they want a script/scripts written now. args: {\"topic\": str, "
         "\"style\": one of [talking_head, green_screen, broll_cutaway, split_three, duet_split, faceless] or \"\", \"count\": 1-3}. "
         "Your reply should tee up the scripts conversationally (they are generated and attached automatically).\n"
-        "- day_plan: they want their day/content day built out. intent_args: {\"plan\": {\"blocks\": "
+        "- day_plan: they want their day/content day built out. args: {\"plan\": {\"blocks\": "
         "[{\"time\": str (e.g. \"9:00\"), \"action\": str (≤6 words), \"detail\": str (one sentence)}]}} — "
         "build a realistic filming/posting day from their weekly target, blockers, and active ideas (4-6 blocks).\n"
-        "- save_idea: they shared an idea to remember (also add it to memory ideas). intent_args: {}.\n"
-        "- update_brand_angle: their brand direction/angle shifted (also set memory angle). intent_args: {}.\n\n"
+        "- save_idea: they shared an idea to remember (also add it to memory ideas). args: {}.\n"
+        "- update_brand_angle: their brand direction/angle shifted (also set memory angle). args: {}.\n\n"
         f"OUTPUT: Reply with ONLY a valid JSON object matching exactly: {CONVERSE_ENVELOPE_SCHEMA}\n"
         "No prose outside the JSON, no code fences.\n\n"
         f"Worked example:\n{CONVERSE_ENVELOPE_EXEMPLAR}"

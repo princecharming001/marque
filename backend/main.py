@@ -182,13 +182,18 @@ def _thompson_sample(creator_id: str, candidates: list) -> list:
 # ---------------------------------------------------------------------------
 
 async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000,
-                    temperature: float | None = None) -> str:
+                    temperature: float | None = None, schema: dict | None = None) -> str:
     delays = [0.5, 2.0, 8.0]
     last_err = None
     body = {"model": model, "max_tokens": max_tokens, "system": system,
             "messages": [{"role": "user", "content": user}]}
     if temperature is not None:
         body["temperature"] = temperature
+    if schema is not None:
+        # Native Structured Outputs (GA): the model's text is guaranteed to be valid
+        # JSON conforming to `schema`. No beta header; works with anthropic-version
+        # 2023-06-01. https://platform.claude.com/docs/en/build-with-claude/structured-outputs
+        body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
     for attempt, delay in enumerate(delays + [None]):
         try:
             async with httpx.AsyncClient(timeout=90) as client:
@@ -248,6 +253,37 @@ def extract_json(text: str, array: bool):
         i += 1
     logging.warning("extract_json: unbalanced brackets in: %s", text[:200])
     return None
+
+
+async def anthropic_json(system: str, user: str, schema: dict, model: str = OPUS,
+                         max_tokens: int = 3000, temperature: float | None = None,
+                         array_key: str | None = None):
+    """Structured-output call: returns parsed JSON guaranteed to match `schema`.
+
+    Because arrays can't be a top-level structured-output root, array call sites pass
+    an object schema wrapping the array under `array_key` and get the unwrapped list
+    back. Falls back to the hand-rolled extract_json (so a transient schema/API issue
+    degrades to today's behavior instead of failing), and returns None only if both
+    paths fail — callers keep their existing mock fallback."""
+    raw = await anthropic(system, user, model, max_tokens, temperature, schema=schema)
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        data = extract_json(raw, array=False)
+    if array_key:
+        if isinstance(data, dict):
+            return data.get(array_key) or []
+        return extract_json(raw, array=True) or []
+    return data
+
+
+def _array_schema(name: str, element: dict) -> dict:
+    """Wrap an element schema as {name: [element...]} — a structured-output-legal
+    object root (arrays can't be the root)."""
+    return {
+        "type": "object", "additionalProperties": False, "required": [name],
+        "properties": {name: {"type": "array", "items": element}},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +639,9 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
         return scripts
     try:
         jsys, jusr = prompts.script_judge_prompt(scripts, style)
-        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 1400), array=True) or []
+        verdicts = await anthropic_json(jsys, jusr,
+                                        _array_schema("verdicts", prompts.SCRIPT_JUDGE_JSON_ELEMENT),
+                                        HAIKU, 1400, array_key="verdicts")
     except HTTPException:
         return scripts
     by_index: dict[int, dict] = {}
@@ -634,7 +672,9 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
         return scripts
     try:
         rsys, rusr = prompts.script_revise_prompt(brand, style, flagged, posts)
-        revised = extract_json(await anthropic(rsys, rusr, OPUS, 3800), array=True) or []
+        revised = await anthropic_json(rsys, rusr,
+                                       _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
+                                       OPUS, 3800, array_key="scripts")
     except HTTPException:
         return scripts
     for f, new in zip(flagged, revised):
@@ -654,7 +694,9 @@ async def quality_hooks(topic: str, hooks: list[dict]) -> list[dict]:
         return hooks
     try:
         jsys, jusr = prompts.hook_judge_prompt(topic, hooks)
-        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 700), array=True) or []
+        verdicts = await anthropic_json(jsys, jusr,
+                                        _array_schema("verdicts", prompts.HOOK_JUDGE_JSON_ELEMENT),
+                                        HAIKU, 700, array_key="verdicts")
     except HTTPException:
         return hooks
     scored: list[tuple[int, dict]] = []
@@ -684,7 +726,8 @@ async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
     try:
         stats = await _arms_for_prompt(creator_id)
         hsys, husr = prompts.hooks_prompt(brand, topic, style, arm_stats=stats, memory=memory)
-        pool = extract_json(await anthropic(hsys, husr, OPUS, 1200, temperature=1.0), array=True) or []
+        pool = await anthropic_json(hsys, husr, _array_schema("hooks", prompts.HOOK_JSON_ELEMENT),
+                                    OPUS, 1200, temperature=1.0, array_key="hooks")
     except HTTPException:
         return []
     ranked = await quality_hooks(topic, pool)
@@ -730,7 +773,8 @@ async def scripts(req: ScriptRequest):
                                           req.media_context, req.posts or None,
                                           arm_stats=stats, memory=req.memory or None,
                                           mandated_hooks=mandated or None)
-        out = extract_json(await anthropic(sys, usr, OPUS, 3800), array=True)
+        out = await anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
+                                   OPUS, 3800, array_key="scripts")
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
         out = await quality_scripts(req.d(), req.style, out, req.posts or None,
@@ -746,8 +790,10 @@ async def hooks(req: HooksRequest):
         return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
     try:
         stats = await _arms_for_prompt(req.creator_id)
-        sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats)
-        out = extract_json(await anthropic(sys, usr, OPUS, 1200), array=True) or []
+        sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats,
+                                        memory=req.memory or None)
+        out = await anthropic_json(sys, usr, _array_schema("hooks", prompts.HOOK_JSON_ELEMENT),
+                                   OPUS, 1200, array_key="hooks")
         out = await quality_hooks(req.topic, out)
         return {"mode": "live", "hooks": out}
     except HTTPException:
@@ -1851,6 +1897,23 @@ async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
     return result.get("scripts", [])
 
 
+def _parse_intent_args(envelope: dict) -> dict:
+    """Read intent args from the structured envelope's intent_args_json (a JSON
+    string, because its shape varies by intent). Back-compat: accept a raw
+    intent_args dict if a caller/model still emits one. Never raises."""
+    raw = envelope.get("intent_args")
+    if isinstance(raw, dict):
+        return raw
+    s = envelope.get("intent_args_json")
+    if isinstance(s, str) and s.strip():
+        try:
+            parsed = json.loads(s)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 @app.post("/v1/converse")
 async def converse(req: ConverseRequest):
     if req.mode not in ("chat", "voice"):
@@ -1864,19 +1927,16 @@ async def converse(req: ConverseRequest):
         return {"mode": "mock", "reply": out["reply"], "memory_updates": out["memory_updates"],
                 "intent": out["intent"], "payload": out.get("payload"), "suggested_chips": out["chips"]}
 
-    stats = list(_arm_stats.get(req.creator_id, {}).values())
+    stats = await _arms_for_prompt(req.creator_id)
     system = prompts.converse_system(req.mode, persona=req.persona, response_length=req.response_length)
     user = prompts.converse_user(req.brand, req.memory, req.messages,
                                  arm_stats=stats, trends=mock_trends(req.brand.get("niche", "")))
     envelope = None
     try:
         model = SONNET if req.mode == "voice" else OPUS
-        raw = await anthropic(system, user, model, 1600)
-        envelope = extract_json(raw, array=False)
-        if envelope is None:
-            logging.warning("converse: envelope parse failed, retrying once")
-            raw = await anthropic(system, user + "\n\nREMINDER: output ONLY the JSON envelope.", model, 1600)
-            envelope = extract_json(raw, array=False)
+        # Structured output guarantees a valid envelope + a valid intent enum, so the
+        # old parse-fail-and-retry dance is unnecessary.
+        envelope = await anthropic_json(system, user, prompts.CONVERSE_ENVELOPE_JSON_SCHEMA, model, 1600)
     except HTTPException:
         envelope = None
     if not isinstance(envelope, dict) or not (envelope.get("reply") or "").strip():
@@ -1885,7 +1945,7 @@ async def converse(req: ConverseRequest):
                 "intent": out["intent"], "payload": None, "suggested_chips": out["chips"]}
 
     intent = envelope.get("intent") if envelope.get("intent") in _VALID_INTENTS else "none"
-    intent_args = envelope.get("intent_args") if isinstance(envelope.get("intent_args"), dict) else {}
+    intent_args = _parse_intent_args(envelope)
     payload = None
     if intent == "generate_scripts":
         payload = {"scripts": await _chain_scripts(req, intent_args)}
