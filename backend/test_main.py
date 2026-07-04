@@ -584,6 +584,107 @@ def test_render_plan_drops_react_window_straddling_a_cut():
 
 
 # ---------------------------------------------------------------------------
+# AI editor (EDL) upgrade: disfluency-grounded cuts, emphasis punch-ins, verify gate
+# ---------------------------------------------------------------------------
+
+def test_strip_fillers_prefers_disfluency_type():
+    from app.edl import strip_fillers
+    words = [
+        {"word": "So", "start_ms": 0, "end_ms": 200, "type": "filler"},       # tagged filler
+        {"word": "muscles", "start_ms": 200, "end_ms": 600, "type": None},    # real word (not lexicon)
+        {"word": "grow", "start_ms": 600, "end_ms": 900},                     # real, no type key
+    ]
+    kept, drops = strip_fillers(words)
+    assert [w["word"] for w in kept] == ["muscles", "grow"]
+    assert any(d.reason == "filler" for d in drops)                          # "So" dropped via type
+
+
+def test_strip_fillers_text_fallback_without_type():
+    from app.edl import strip_fillers
+    words = [{"word": "um", "start_ms": 0, "end_ms": 100},                    # lexicon fallback
+             {"word": "hello", "start_ms": 100, "end_ms": 400}]
+    kept, drops = strip_fillers(words)
+    assert [w["word"] for w in kept] == ["hello"]
+    assert any(d.reason == "filler" for d in drops)
+
+
+def test_normalize_words_maps_assemblyai_shape():
+    raw = [{"text": "hey", "start": 100, "end": 400, "confidence": 0.9,
+            "type": "filler", "is_emphasized": True}]
+    out = main._normalize_words(raw)
+    assert out[0] == {"word": "hey", "start_ms": 100, "end_ms": 400,
+                      "confidence": 0.9, "type": "filler", "is_emphasized": True}
+
+
+def test_extract_emphasis_regions_merges_words_and_highlights():
+    words = [{"start_ms": 0, "end_ms": 300, "is_emphasized": True},           # frames 0..9
+             {"start_ms": 1000, "end_ms": 1100, "is_emphasized": False}]
+    highlights = [{"text": "key phrase", "timestamps": [{"start": 200, "end": 500}]}]  # 6..15 overlaps
+    spans = main._extract_emphasis_regions(words, highlights)
+    assert spans == [(0, 15)]                                                 # merged overlap
+
+
+def test_merge_drops_skips_overlaps():
+    existing = [{"src_in": 100, "src_out": 150, "reason": "dead_air"}]
+    new = [{"src_in": 140, "src_out": 160, "reason": "filler"},               # overlaps → skip
+           {"src_in": 200, "src_out": 210, "reason": "filler"}]               # clean → add
+    out = main._merge_drops(existing, new)
+    assert len(out) == 2
+    assert out[-1]["src_in"] == 200
+
+
+def test_edl_prompt_injects_grounded_spans():
+    import prompts
+    _, user = prompts.edl_prompt(
+        "talking_head", [{"word": "hi", "start_ms": 0, "end_ms": 100}],
+        {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"}, {},
+        disfluency_spans=[(3, 6)], emphasis_spans=[(20, 40)])
+    assert "[3-6]" in user and "FILLER/DISFLUENCY" in user
+    assert "[20-40]" in user and "HIGH-EMPHASIS" in user
+
+
+def test_verify_and_repair_edl_pass(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+        assert "QA gate" in system
+        return json.dumps({"verdict": "pass", "issues": [], "fix": ""})
+    monkeypatch.setattr(main, "anthropic", fake)
+    edl = {"style": "talking_head", "format_id": "myth-buster",
+           "segments": [{"src_in": 0, "src_out": 300}], "drops": [], "captions": [],
+           "overlays": [], "broll": [], "layout": {"style": "talking_head"}}
+    out = asyncio.run(main.verify_and_repair_edl("talking_head", edl, [], {"formatId": "myth-buster"}))
+    assert out == edl                                                         # pass → unchanged
+
+
+def test_verify_and_repair_edl_repairs_on_violation(monkeypatch):
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    fixed = {"style": "talking_head", "format_id": "myth-buster",
+             "segments": [{"src_in": 0, "src_out": 300}], "drops": [], "captions": [],
+             "overlays": [], "broll": [], "layout": {"style": "talking_head"}}
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+        if "QA gate" in system:
+            return json.dumps({"verdict": "revise", "issues": ["segment src_out<=src_in"], "fix": "reorder"})
+        return json.dumps(fixed)                                             # repair pass
+    monkeypatch.setattr(main, "anthropic", fake)
+    broken = {"style": "talking_head", "format_id": "myth-buster",
+              "segments": [{"src_in": 0, "src_out": 300}], "drops": [], "captions": [],
+              "overlays": [], "broll": [], "layout": {"style": "talking_head"}}
+    out = asyncio.run(main.verify_and_repair_edl("talking_head", broken, [], {"formatId": "myth-buster"}))
+    assert out["segments"] == [{"src_in": 0, "src_out": 300}]                 # repaired EDL applied
+
+
+def test_verify_and_repair_edl_noop_keyless(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    edl = {"style": "talking_head", "segments": [{"src_in": 0, "src_out": 5}]}
+    out = asyncio.run(main.verify_and_repair_edl("talking_head", edl, [], {}))
+    assert out is edl                                                         # no LLM call keyless
+
+
+# ---------------------------------------------------------------------------
 # Inference-time quality gate: generate -> judge -> targeted self-repair
 # ---------------------------------------------------------------------------
 

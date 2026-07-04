@@ -174,18 +174,26 @@ def safe_default_edl(style: str, format_id: str, total_frames: int,
     )
 
 
-def strip_fillers(words: list[dict], gap_ms: int = 300) -> tuple[list[dict], list[Drop]]:
-    """Remove filler words and dead-air gaps; return clean word list + drop list."""
+def strip_fillers(words: list[dict], gap_ms: int = 300,
+                  use_disfluency_type: bool = True) -> tuple[list[dict], list[Drop]]:
+    """Remove filler words and dead-air gaps; return clean word list + drop list.
+
+    Disfluency detection is the SOURCE OF TRUTH: when AssemblyAI is asked for
+    `disfluencies` it tags filler tokens with `type == "filler"`, which is far more
+    reliable than string-matching (it catches false starts and context-dependent
+    "like"/"so"). We honor that tag first and fall back to the FILLER_WORDS lexicon
+    for legacy/mocked transcripts that carry no type."""
     kept, drops = [], []
     prev_end = 0
     for w in words:
         text = w.get("word", "").lower().strip(".,!?")
         start = w.get("start_ms", 0)
         end = w.get("end_ms", start + 100)
+        is_filler = (use_disfluency_type and w.get("type") == "filler") or text in FILLER_WORDS
         # Dead air before this word
         if prev_end > 0 and start - prev_end > gap_ms:
             drops.append(Drop(src_in=ms_to_frame(prev_end), src_out=ms_to_frame(start), reason="dead_air"))
-        if text in FILLER_WORDS:
+        if is_filler:
             drops.append(Drop(src_in=ms_to_frame(start), src_out=ms_to_frame(end), reason="filler"))
         else:
             kept.append(w)

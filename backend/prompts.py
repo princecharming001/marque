@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import logging
 
+from app.edl import ms_to_frame
+
 OPUS = "claude-opus-4-8"
 HAIKU = "claude-haiku-4-5-20251001"
 SONNET = "claude-sonnet-4-6"
@@ -337,8 +339,14 @@ Output EDL:
 }
 
 
+def _span_lines(spans: list | None, limit: int = 40) -> str:
+    return ", ".join(f"[{a}-{b}]" for a, b in (spans or [])[:limit]) or "none"
+
+
 def edl_prompt(style: str, transcript_words: list[dict], script: dict, brand: dict,
-               media_context: str = "") -> tuple[str, str]:
+               media_context: str = "",
+               disfluency_spans: list | None = None,
+               emphasis_spans: list | None = None) -> tuple[str, str]:
     """Return (system, user) for the per-style EDL generation call."""
     rubric = EDIT_RUBRICS.get(style, EDIT_RUBRICS["talking_head"])
     exemplar = EDL_EXEMPLARS.get(style, "")
@@ -369,6 +377,11 @@ Note: `broll` is used only by broll_cutaway/faceless; `react_source`/`react_sche
 Worked example for {style}:
 {exemplar}"""
 
+    grounding = f"""
+GROUNDED SIGNALS (from the transcript — trust these over your own guesses):
+- FILLER/DISFLUENCY frames already detected (put these in `drops` as reason="filler"; do NOT keep them): {_span_lines(disfluency_spans)}
+- HIGH-EMPHASIS frames (the creator's own stressed words + auto-detected key phrases — place `punch_in` overlays HERE, not on flat delivery): {_span_lines(emphasis_spans)}"""
+
     user = f"""Script:
 Hook: {hook}
 Body: {body}
@@ -381,9 +394,57 @@ Word-level transcript (30fps, frame = round(start_ms/1000*30)):
 {json.dumps(transcript_words[:200])}
 
 Media context: {media_context or "none"}
+{grounding}
 
 Generate the EDL for this {style} edit. Output JSON only."""
 
+    return system, user
+
+
+def edl_verify_prompt(style: str, edl_json: dict, transcript_words: list[dict],
+                      emphasis_spans: list | None = None) -> tuple[str, str]:
+    """A strict, cheap invariant check on a generated EDL — the renderer can't
+    recover from these, so catch them before we spend a render."""
+    last_frame = ms_to_frame(max((w.get("end_ms", 0) for w in transcript_words), default=30000)) \
+        if transcript_words else 30000
+    system = (
+        "You are a video-editor QA gate. Check the EDL against hard invariants and reply with ONLY "
+        'JSON: {"verdict": "pass" | "revise", "issues": [str], "fix": str}. '
+        "Flag an issue when:\n"
+        "- any segment or drop has src_out <= src_in, or a segment extends past the source's last frame;\n"
+        "- segments overlap each other;\n"
+        "- a caption frame or an overlay/broll window falls outside every kept segment;\n"
+        "- a punch_in overlay sits on flat delivery instead of a high-emphasis region;\n"
+        "- total kept duration is implausibly short (<3s) or the whole take is one static shot with no "
+        "emphasis punch-ins despite emphasis regions existing;\n"
+        "- react_source/react_schedule present for a non-duet style, or panel_boundaries missing for split_three.\n"
+        "Be precise and terse. verdict='pass' only if there are zero hard issues."
+    )
+    user = (
+        f"Style: {style}\nSource last frame: {last_frame}\n"
+        f"High-emphasis regions (good punch-in targets): {_span_lines(emphasis_spans)}\n\n"
+        f"EDL:\n{json.dumps(edl_json)[:6000]}\n\nJudge it."
+    )
+    return system, user
+
+
+def edl_repair_prompt(style: str, broken_edl: dict, issues: list[str],
+                      transcript_words: list[dict], script: dict) -> tuple[str, str]:
+    """Fix ONLY the flagged invariant violations, preserving the creative intent."""
+    rubric = EDIT_RUBRICS.get(style, EDIT_RUBRICS["talking_head"])
+    last_frame = ms_to_frame(max((w.get("end_ms", 0) for w in transcript_words), default=30000)) \
+        if transcript_words else 30000
+    system = (
+        f"You repair a short-form EDL. {rubric}\n\n"
+        "A QA gate found the issues listed below. Fix EXACTLY those and nothing else — keep every valid "
+        "cut, caption, punch-in, and b-roll cue as-is. Keep all frames within [0, source last frame]. "
+        "Output ONLY the corrected EDL as valid JSON, same schema as the input."
+    )
+    user = (
+        f"Source last frame: {last_frame}\n"
+        f"Issues to fix:\n" + "\n".join(f"- {i}" for i in issues) + "\n\n"
+        f"Current EDL:\n{json.dumps(broken_edl)}\n\nReturn the corrected EDL JSON only."
+    )
     return system, user
 
 

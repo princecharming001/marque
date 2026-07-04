@@ -962,13 +962,21 @@ async def _run_pipeline(job_id: str):
         transcript_id = await _submit_transcription(job["source_url"])
         if not transcript_id:
             raise RuntimeError("transcription submit failed")
-        words = await _poll_transcription(transcript_id)
+        transcript = await _poll_transcription(transcript_id)
+        words = transcript["words"]
 
         job["status"] = "editing"
         for c in job["clips"]: c["status"] = "editing"
         style = job["style"]
         script = job["script"]
-        system, user = prompts.edl_prompt(style, words, script, job["brand"], job["media_context"])
+        # Deterministic grounding: fillers from AssemblyAI disfluency tags (source of
+        # truth for cuts) and emphasis regions for punch-in placement.
+        _clean_words, filler_drops = strip_fillers(words)
+        disfluency_spans = [(d.src_in, d.src_out) for d in filler_drops if d.reason == "filler"]
+        emphasis_spans = _extract_emphasis_regions(words, transcript.get("auto_highlights"))
+        system, user = prompts.edl_prompt(style, words, script, job["brand"], job["media_context"],
+                                          disfluency_spans=disfluency_spans,
+                                          emphasis_spans=emphasis_spans)
         prefs = job.get("edit_prefs") or {}
         if prefs:
             hints = []
@@ -999,6 +1007,14 @@ async def _run_pipeline(job_id: str):
             total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
             edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
             edl_data = edl_obj.model_dump()
+
+        # Merge the deterministic filler drops in as source of truth (unless the
+        # creator turned trimming off), then self-verify + repair the EDL once.
+        if prefs.get("filler_trim") != "off":
+            edl_data["drops"] = _merge_drops(edl_data.get("drops", []),
+                                             [d.model_dump() for d in filler_drops])
+        edl_data = await verify_and_repair_edl(style, edl_data, words, script,
+                                               emphasis_spans=emphasis_spans)
 
         edl_data = _apply_edit_prefs(edl_data, prefs)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
@@ -1041,16 +1057,38 @@ async def _submit_transcription(video_url: str) -> str | None:
         r = await client.post(
             "https://api.assemblyai.com/v2/transcript",
             headers={"authorization": ASSEMBLY_KEY},
-            json={"audio_url": video_url, "auto_highlights": True, "speaker_labels": False},
+            # disfluencies=True tags um/uh/false-starts with type="filler" (source of
+            # truth for cuts); auto_highlights surfaces the key phrases for punch-ins.
+            json={"audio_url": video_url, "auto_highlights": True,
+                  "disfluencies": True, "speaker_labels": False},
         )
     if r.status_code != 200:
         return None
     return r.json().get("id")
 
 
-async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> list[dict]:
+def _normalize_words(raw: list[dict]) -> list[dict]:
+    """Map AssemblyAI word objects ({text,start,end,confidence,type,...}) onto the
+    EDL's expected shape ({word,start_ms,end_ms,confidence,type,is_emphasized}).
+    Idempotent — already-normalized (mock) words pass through unchanged."""
+    out = []
+    for w in raw:
+        out.append({
+            "word": w.get("word") or w.get("text", ""),
+            "start_ms": w.get("start_ms", w.get("start", 0)),
+            "end_ms": w.get("end_ms", w.get("end", 0)),
+            "confidence": w.get("confidence", 1.0),
+            "type": w.get("type"),                      # "filler" | None
+            "is_emphasized": bool(w.get("is_emphasized", False)),
+        })
+    return out
+
+
+async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> dict:
+    """Return {"words": [...normalized...], "auto_highlights": [...]}. Empty keyless
+    or on error/timeout."""
     if not ASSEMBLY_KEY:
-        return []
+        return {"words": [], "auto_highlights": []}
     for _ in range(max_wait_s // 5):
         await asyncio.sleep(5)
         async with httpx.AsyncClient(timeout=15) as client:
@@ -1060,10 +1098,88 @@ async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> list
             )
         data = r.json()
         if data.get("status") == "completed":
-            return data.get("words", [])
+            highlights = (data.get("auto_highlights_result") or {}).get("results") \
+                or data.get("auto_highlights") or []
+            return {"words": _normalize_words(data.get("words", [])),
+                    "auto_highlights": highlights}
         if data.get("status") == "error":
-            return []
-    return []
+            return {"words": [], "auto_highlights": []}
+    return {"words": [], "auto_highlights": []}
+
+
+def _extract_emphasis_regions(words: list[dict], auto_highlights: list[dict] | None = None,
+                              min_confidence: float = 0.0) -> list[tuple[int, int]]:
+    """Frame ranges worth a punch-in: words flagged is_emphasized, plus the spans of
+    AssemblyAI auto-highlight phrases. Deduped + merged so the editor gets a clean
+    list of 'emphasize here' regions instead of guessing."""
+    spans: list[tuple[int, int]] = []
+    for w in words:
+        if w.get("is_emphasized"):
+            a, b = ms_to_frame(w.get("start_ms", 0)), ms_to_frame(w.get("end_ms", 0))
+            if b > a:
+                spans.append((a, b))
+    for h in auto_highlights or []:
+        for ts in h.get("timestamps", []) or []:
+            a, b = ms_to_frame(ts.get("start", 0)), ms_to_frame(ts.get("end", 0))
+            if b > a:
+                spans.append((a, b))
+    if not spans:
+        return []
+    spans.sort()
+    merged = [spans[0]]
+    for a, b in spans[1:]:
+        if a <= merged[-1][1]:                          # overlap → merge
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged
+
+
+def _merge_drops(existing: list[dict], new: list[dict]) -> list[dict]:
+    """Union of drop lists; a new drop is added only if it doesn't overlap an
+    existing one (so deterministic filler cuts don't collide with the LLM's cuts)."""
+    out = list(existing or [])
+    for nd in new or []:
+        a, b = nd.get("src_in", 0), nd.get("src_out", 0)
+        if b <= a:
+            continue
+        if any(not (b <= e.get("src_in", 0) or a >= e.get("src_out", 0)) for e in out):
+            continue                                     # overlaps → skip
+        out.append(nd)
+    out.sort(key=lambda d: d.get("src_in", 0))
+    return out
+
+
+async def verify_and_repair_edl(style: str, edl_data: dict, words: list[dict],
+                                script: dict, emphasis_spans: list | None = None) -> dict:
+    """Self-verify gate for the AI editor (the EDL analogue of quality_scripts): a
+    strict HAIKU judge checks the invariants a renderer can't recover from — no
+    overlapping/backwards segments, captions & overlays inside clip bounds, punch-ins
+    on real emphasis, sane total duration. On a violation ONE SONNET repair pass fixes
+    only the named issues. Any failure (or a repair that won't validate) falls back to
+    the input EDL — the pipeline never breaks. Gated by AI_QUALITY; no-op keyless."""
+    if not (AI_QUALITY and ANTHROPIC_KEY):
+        return edl_data
+    try:
+        vsys, vusr = prompts.edl_verify_prompt(style, edl_data, words, emphasis_spans)
+        verdict = extract_json(await anthropic(vsys, vusr, HAIKU, 900), array=False) or {}
+    except HTTPException:
+        return edl_data
+    if verdict.get("verdict") == "pass" or not verdict.get("issues"):
+        return edl_data
+    try:
+        rsys, rusr = prompts.edl_repair_prompt(style, edl_data, verdict.get("issues", []), words, script)
+        repaired = extract_json(await anthropic(rsys, rusr, SONNET, 4000), array=False)
+    except HTTPException:
+        return edl_data
+    if not repaired:
+        return edl_data
+    try:
+        obj = EDL(**repaired)
+        obj, _ = validate_and_repair(obj)
+        return obj.model_dump()
+    except Exception:
+        return edl_data                                  # repair broke it → keep original
 
 
 async def _run_render_bridge(*args: str) -> dict:
