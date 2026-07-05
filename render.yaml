@@ -1,0 +1,38 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: Dashboard → New → Blueprint → connect this repo.
+#
+# Same pattern as maxapp's render.yaml (Docker web service, oregon, starter — bump
+# to standard if usage grows). Free tier spins down on idle, which would kill any
+# in-flight Remotion render polling; use at least Starter for real traffic.
+#
+# maxapp's GitHub auto-deploy webhook is dead on that account — deploys go out
+# manually via the Render API (POST /v1/services/{id}/deploys). Assume the same
+# is needed here until proven otherwise; verify the webhook fires on this new
+# account before relying on git-push-to-deploy.
+
+services:
+  - type: web
+    name: marque-api
+    runtime: docker
+    region: oregon
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # Set the rest in the Render dashboard (values already live in backend/.env
+      # — these are MARQUE's own keys, distinct from maxapp's; do not copy maxapp's
+      # secret values, its code doesn't read these names and vice versa):
+      # ANTHROPIC_API_KEY, ANTHROPIC_BASE_URL (optional)
+      # CARTESIA_API_KEY, CARTESIA_VOICE_ID
+      # ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ELEVENLABS_VOICE_ID
+      # ASSEMBLYAI_KEY
+      # PEXELS_KEY
+      # APIFY_KEY
+      # AYRSHARE_KEY   (not yet obtained — publish stays mock without it)
+      # SUPABASE_URL, SUPABASE_SERVICE_KEY
+      # REMOTION_AWS_ACCESS_KEY_ID, REMOTION_AWS_SECRET_ACCESS_KEY,
+      # REMOTION_AWS_REGION, REMOTION_FUNCTION_NAME, REMOTION_SERVE_URL
+      # AI_QUALITY=1, BEST_OF_N_HOOKS=1   (optional; both default on)
