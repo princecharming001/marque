@@ -1653,8 +1653,14 @@ async def _poll_transcription(transcript_id: str, max_wait_s: int | None = None)
             if not words:
                 raise PipelineError("transcribe_failed", "transcription completed with no words "
                                     "(is there speech in the video?)", "transcribe")
-            highlights = (data.get("auto_highlights_result") or {}).get("results") \
-                or data.get("auto_highlights") or []
+            # `auto_highlights_result.results` is the list of highlight phrases.
+            # Do NOT fall back to `data["auto_highlights"]` — that is AssemblyAI's
+            # boolean request-echo flag (`true`), and returning it here made
+            # _extract_emphasis_regions iterate a bool ('bool' object is not
+            # iterable) whenever a clip had no highlights (short/music/sparse speech).
+            highlights = (data.get("auto_highlights_result") or {}).get("results") or []
+            if not isinstance(highlights, list):
+                highlights = []
             return {"words": words, "auto_highlights": highlights}
         if data.get("status") == "error":
             raise PipelineError("transcribe_failed", str(data.get("error", ""))[:300], "transcribe")
@@ -1672,7 +1678,9 @@ def _extract_emphasis_regions(words: list[dict], auto_highlights: list[dict] | N
             a, b = ms_to_frame(w.get("start_ms", 0)), ms_to_frame(w.get("end_ms", 0))
             if b > a:
                 spans.append((a, b))
-    for h in auto_highlights or []:
+    for h in (auto_highlights if isinstance(auto_highlights, list) else []):
+        if not isinstance(h, dict):
+            continue
         for ts in h.get("timestamps", []) or []:
             a, b = ms_to_frame(ts.get("start", 0)), ms_to_frame(ts.get("end", 0))
             if b > a:

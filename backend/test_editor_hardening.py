@@ -677,3 +677,38 @@ def test_endpoint_direct_reorder_and_music():
     assert any(a["type"] == "undo" for a in undo["applied"])
     edl2 = client.get(f"/v1/clips/{job_id}").json()["edl"]
     assert edl2.get("segment_order") is None
+
+
+# ---- regression: AssemblyAI auto_highlights bool crashed real edits ----
+# _poll_transcription used to fall back to data["auto_highlights"] (a bool flag)
+# when highlight results were empty; _extract_emphasis_regions then iterated a
+# bool → "'bool' object is not iterable", failing every low-highlight recording.
+
+def test_extract_emphasis_regions_survives_bool_and_junk():
+    assert main._extract_emphasis_regions([], True) == []      # the exact poison value
+    assert main._extract_emphasis_regions([], False) == []
+    assert main._extract_emphasis_regions([], None) == []
+    # a valid highlight still yields a span; a non-dict entry is skipped, not fatal
+    out = main._extract_emphasis_regions(
+        [], [True, {"timestamps": [{"start": 1000, "end": 2000}]}])
+    assert out and out[0][1] > out[0][0]
+
+
+def test_poll_transcription_never_returns_bool_highlights(monkeypatch):
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            # AssemblyAI shape when there are no highlights: results empty,
+            # but the boolean request-echo flag is present.
+            return {"status": "completed",
+                    "words": [{"text": "hi", "start": 0, "end": 400, "confidence": 0.9}],
+                    "auto_highlights": True,
+                    "auto_highlights_result": {"status": "success", "results": []}}
+    async def fake_get(self, url, headers=None):
+        return FakeResp()
+    monkeypatch.setattr(main.httpx.AsyncClient, "get", fake_get)
+    out = asyncio.run(main._poll_transcription("t123", max_wait_s=5))
+    assert isinstance(out["auto_highlights"], list)   # never a bool again
+    # and the downstream consumer stays crash-free
+    assert main._extract_emphasis_regions(out["words"], out["auto_highlights"]) == []
