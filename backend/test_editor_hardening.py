@@ -856,6 +856,32 @@ def test_swept_job_returns_410_job_expired(monkeypatch):
     assert r3.status_code == 410
 
 
+# ---- F10: transcript hygiene — malformed words dropped, duplicates deduped ----
+
+def test_normalize_words_hygiene():
+    raw = [
+        {"text": "hello", "start": 0, "end": 300, "confidence": 0.9},
+        {"text": "", "start": 300, "end": 400, "confidence": 0.9},        # blank
+        {"text": "  ", "start": 400, "end": 500, "confidence": 0.9},      # whitespace-only
+        {"text": "world", "start": 500, "end": 400, "confidence": 0.9},   # end < start
+        {"text": "world", "start": 500, "end": 500, "confidence": 0.9},   # end == start
+        {"text": "world", "start": 500, "end": 800, "confidence": 0.9},   # valid
+        {"text": "world", "start": 500, "end": 800, "confidence": 0.9},   # exact duplicate
+        {"text": "there", "start": -100, "end": 1200, "confidence": 0.9}, # negative start
+    ]
+    out = main._normalize_words(raw)
+    assert [w["word"] for w in out] == ["hello", "world", "there"]
+    assert out[1]["start_ms"] == 500 and out[1]["end_ms"] == 800
+    assert out[2]["start_ms"] == 0   # clamped, never negative
+
+
+def test_normalize_words_idempotent_on_already_normalized_input():
+    # Already-normalized (mock) words must pass through unchanged (existing contract).
+    words = [{"word": "hi", "start_ms": 0, "end_ms": 280, "confidence": 1.0,
+              "type": None, "is_emphasized": False}]
+    assert main._normalize_words(words) == words
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

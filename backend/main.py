@@ -1668,13 +1668,31 @@ async def _submit_transcription(video_url: str) -> str | None:
 def _normalize_words(raw: list[dict]) -> list[dict]:
     """Map AssemblyAI word objects ({text,start,end,confidence,type,...}) onto the
     EDL's expected shape ({word,start_ms,end_ms,confidence,type,is_emphasized}).
-    Idempotent — already-normalized (mock) words pass through unchanged."""
+    Idempotent — already-normalized (mock) words pass through unchanged.
+
+    F10 hygiene (a corrupt/malformed transcript used to flow straight through,
+    producing empty-text captions, zero-length caption-frame collisions from
+    missing timestamps, and exact duplicates): drops blank/whitespace-only words,
+    drops entries where end<=start (no positive duration), clamps negative
+    timestamps to 0, and dedupes exact (word, start_ms, end_ms) repeats."""
     out = []
+    seen: set[tuple[str, int, int]] = set()
     for w in raw:
+        word = (w.get("word") or w.get("text", "")).strip()
+        if not word:
+            continue
+        start_ms = max(0, int(w.get("start_ms", w.get("start", 0)) or 0))
+        end_ms = max(0, int(w.get("end_ms", w.get("end", 0)) or 0))
+        if end_ms <= start_ms:
+            continue
+        key = (word, start_ms, end_ms)
+        if key in seen:
+            continue
+        seen.add(key)
         out.append({
-            "word": w.get("word") or w.get("text", ""),
-            "start_ms": w.get("start_ms", w.get("start", 0)),
-            "end_ms": w.get("end_ms", w.get("end", 0)),
+            "word": word,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
             "confidence": w.get("confidence", 1.0),
             "type": w.get("type"),                      # "filler" | None
             "is_emphasized": bool(w.get("is_emphasized", False)),

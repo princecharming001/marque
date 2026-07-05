@@ -44,8 +44,10 @@ fully green, keyless (no env keys).
       tweak now return 410 "job_expired" for a swept id vs 404 "job_not_found"
       for one that never existed — the client can tell "re-record" apart from
       "bad id" now.
-- [ ] F10 Transcript hygiene: drop malformed word entries, dedupe identical caption
-      frames, guard zero/duplicate timestamps (_normalize_words).
+- [x] F10 Fixed: _normalize_words now drops blank/whitespace-only words, drops
+      end<=start (non-positive duration), clamps negative timestamps to 0, and
+      dedupes exact (word,start_ms,end_ms) repeats. Was previously zero hygiene —
+      confirmed by direct repro (7 malformed inputs, all passed through raw).
 - [ ] F11 _merge_drops unions overlapping LLM+filler windows instead of silently
       skipping the LLM's cut.
 - [ ] F12 Tweaked EDL wins over stale edit_prefs on re-render (manual
