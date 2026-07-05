@@ -312,19 +312,18 @@ def build_render_plan(edl: dict) -> dict:
                 return out_start + (f - s_in)
         return None
 
-    def map_range(a: int, b: int) -> tuple[int, int] | None:
-        """Source [a,b) → output [in,out); None if no kept footage overlaps it.
-        Under a reorder, one source range can land in non-contiguous output pieces —
-        merge adjacent spans and return the LONGEST contiguous one (global min/max
-        would smear an overlay across unrelated reordered content). With identity
-        order the pieces are always adjacent, so this reduces to the old behavior."""
+    def _map_range_merged(a: int, b: int) -> list[list[int]]:
+        """Source [a,b) → merged output spans: adjacent/overlapping pieces combined
+        into one (so a single-segment drop still yields one continuous span), but
+        genuinely non-adjacent pieces (a reorder scattering the range across the
+        output) are kept separate rather than collapsed to the longest."""
         spans = []
         for s_in, s_out, out_start in index:
             lo, hi = max(a, s_in), min(b, s_out)
             if lo < hi:
                 spans.append((out_start + (lo - s_in), out_start + (hi - s_in)))
         if not spans:
-            return None
+            return []
         spans.sort()
         merged = [list(spans[0])]
         for lo, hi in spans[1:]:
@@ -332,8 +331,25 @@ def build_render_plan(edl: dict) -> dict:
                 merged[-1][1] = max(merged[-1][1], hi)
             else:
                 merged.append([lo, hi])
+        return merged
+
+    def map_range(a: int, b: int) -> tuple[int, int] | None:
+        """Source [a,b) → output [in,out); None if no kept footage overlaps it.
+        Under a reorder, one source range can land in non-contiguous output pieces —
+        this returns only the LONGEST merged one (global min/max would smear an
+        overlay across unrelated reordered content). Callers that must not silently
+        drop the other pieces (overlays, b-roll) should use map_range_all instead."""
+        merged = _map_range_merged(a, b)
+        if not merged:
+            return None
         best = max(merged, key=lambda m: m[1] - m[0])
         return best[0], best[1]
+
+    def map_range_all(a: int, b: int) -> list[tuple[int, int]]:
+        """Source [a,b) → EVERY merged output piece (adjacent pieces combined,
+        non-adjacent reordered pieces kept separate). Overlays/b-roll need every
+        piece so a reorder never silently drops half the effect (F3)."""
+        return [(lo, hi) for lo, hi in _map_range_merged(a, b)]
 
     def map_range_pieces(a: int, b: int) -> list[tuple[int, int]]:
         """Source [a,b) → EVERY output piece (unmerged). Volume ranges need this —
@@ -351,22 +367,25 @@ def build_render_plan(edl: dict) -> dict:
         if of is not None:
             captions.append({"word": c["word"], "frame": of})
 
+    # Overlays/b-roll use map_range_all (every MERGED piece), not map_range
+    # (longest-only) — under a reorder a single source range can land in TWO
+    # non-adjacent output pieces, and keeping only the longest silently dropped
+    # the other one entirely (F3). Adjacent pieces (the common single-segment-
+    # drop case) still merge into one, matching prior behavior exactly.
     overlays = []
     for o in edl.get("overlays") or []:
-        mapped = map_range(o["src_in"], o["src_out"])
-        if mapped is not None:
+        for lo, hi in map_range_all(o["src_in"], o["src_out"]):
             overlays.append({
                 "type": o.get("type", "punch_in"),
-                "frame_in": mapped[0], "frame_out": mapped[1],
+                "frame_in": lo, "frame_out": hi,
                 "scale": o.get("scale", 1.08), "text": o.get("text", ""),
             })
 
     broll = []
     for b in edl.get("broll") or []:
-        mapped = map_range(b["src_in"], b["src_out"])
-        if mapped is not None:
+        for lo, hi in map_range_all(b["src_in"], b["src_out"]):
             broll.append({
-                "frame_in": mapped[0], "frame_out": mapped[1],
+                "frame_in": lo, "frame_out": hi,
                 "cue_text": b.get("cue_text", ""),
                 "asset_id": b.get("asset_id"), "broll_query": b.get("broll_query"),
                 "source": b.get("source", "stock"),

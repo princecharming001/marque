@@ -14,8 +14,12 @@ fully green, keyless (no env keys).
       (segments/drops/captions all derive from the same ms_to_frame). Verified with
       a direct repro at every boundary frame around a drop; pinned as a permanent
       regression test (test_caption_frame_exactly_at_drop_boundary_maps_correctly).
-- [ ] F3 Overlays/captions spanning reordered+cut segments emit MULTIPLE mapped
-      pieces instead of only the longest (map_range, edl.py) — no silent loss.
+- [x] F3 Fixed: overlays/b-roll now use new map_range_all (merges adjacent pieces,
+      keeps non-adjacent reordered pieces separate) instead of map_range
+      (longest-only, silently dropped the rest). Adjacent-piece case (single-
+      segment drop) still merges identically to before — pinned in a dedicated
+      test. react_schedule stays on map_range by design (freeze/play windows
+      can't split without desyncing clip_from — that's F14's scope).
 - [ ] F4 Overlapping mute/volume_ranges merge on apply; kept-frames math stays
       correct with overlapping drops.
 - [ ] F5 Out-of-bounds ops REJECTED with a reason (start>=source-end, end<=start,

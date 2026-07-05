@@ -735,6 +735,43 @@ def test_endpoint_direct_reorder_and_music():
     assert edl2.get("segment_order") is None
 
 
+# ---- F3: overlays/b-roll must not silently drop a non-adjacent piece ----
+
+def test_overlay_survives_reorder_as_two_pieces():
+    from app.edl import build_render_plan
+    edl = _base_edl(
+        segments=[{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 200}],
+        segment_order=[1, 0],
+        overlays=[{"src_in": 50, "src_out": 150, "type": "punch_in"}])
+    plan = build_render_plan(edl)
+    assert len(plan["overlays"]) == 2
+    assert {(o["frame_in"], o["frame_out"]) for o in plan["overlays"]} == {(0, 50), (150, 200)}
+
+
+def test_overlay_adjacent_pieces_still_merge():
+    # Same single-segment-straddles-a-drop case as test_render_plan_overlay_
+    # remapped_and_clamped in test_main.py — pinned here too so a future change
+    # to map_range_all can't silently un-merge the common (non-reorder) case.
+    from app.edl import build_render_plan
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 200}],
+                    drops=[{"src_in": 80, "src_out": 100, "reason": "dead_air"}],
+                    overlays=[{"src_in": 60, "src_out": 120, "type": "punch_in"}])
+    plan = build_render_plan(edl)
+    assert len(plan["overlays"]) == 1
+    assert (plan["overlays"][0]["frame_in"], plan["overlays"][0]["frame_out"]) == (60, 100)
+
+
+def test_broll_survives_reorder_as_two_pieces():
+    from app.edl import build_render_plan
+    edl = _base_edl(
+        segments=[{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 200}],
+        segment_order=[1, 0],
+        broll=[{"src_in": 50, "src_out": 150, "cue_text": "city skyline"}])
+    plan = build_render_plan(edl)
+    assert len(plan["broll"]) == 2
+    assert {(b["frame_in"], b["frame_out"]) for b in plan["broll"]} == {(0, 50), (150, 200)}
+
+
 # ---- regression: AssemblyAI auto_highlights bool crashed real edits ----
 # _poll_transcription used to fall back to data["auto_highlights"] (a bool flag)
 # when highlight results were empty; _extract_emphasis_regions then iterated a
