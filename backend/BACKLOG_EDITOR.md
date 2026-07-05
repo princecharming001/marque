@@ -34,8 +34,8 @@ verification. iOS items additionally gate on a green
 - [x] E17 iOS: EditorView.swift manual editor (segment cut/reorder/mute rows, trim
       steppers, captions, overlays delete, music+duck; op-diffing; direct-ops apply;
       render-wait via pollJob + friendlyRenderError) — BUILD SUCCEEDED
-- [ ] E18 Maestro: editor step in flow-extras.yaml (open editor on a mock clip, toggle
-      a segment, apply, assert saved)
+- [x] E18 Maestro: editor-flow.yaml (open editor on a mock clip, cut a segment, apply,
+      dismisses back to clip) — PASSED on sim; also appended a leg to flow-extras
 
 Completion promise (only when EVERY box is checked and the full pytest suite +
 iOS build gates are green): EDITOR PIPELINE HARDENED
