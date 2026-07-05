@@ -86,8 +86,32 @@ class Layout(BaseModel):
     split_fraction: float = 0.58      # duet_split: top (source) panel height fraction
 
 
+class MusicTrack(BaseModel):
+    """Background music. `url` is a direct audio URL (the app ships a small bundled
+    catalog); `query` stores intent for future server-side resolution."""
+    url: Optional[str] = None
+    query: Optional[str] = None
+    volume: float = 0.15          # clamped 0.0–1.0 on apply
+    duck_voice: bool = True       # duck music under speech (caption-activity proxy)
+
+
+class VolumeRange(BaseModel):
+    """Per-range source-audio volume (0.0 = mute), source-frame coords."""
+    src_in: int
+    src_out: int
+    volume: float                 # clamped 0.0–2.0 on apply
+
+    @model_validator(mode="after")
+    def check_order(self):
+        if self.src_out <= self.src_in:
+            raise ValueError(f"src_out {self.src_out} must be > src_in {self.src_in}")
+        return self
+
+
 class Audio(BaseModel):
     lufs_target: float = -14.0
+    music: Optional[MusicTrack] = None
+    volume_ranges: list[VolumeRange] = []
 
 
 class EDL(BaseModel):
@@ -107,6 +131,11 @@ class EDL(BaseModel):
     # which the tweak flow does on every edit, and would otherwise lose them.
     caption_style: Optional[str] = None              # clean | bold-word | karaoke
     trim_aggressiveness: Optional[str] = None        # aggressive | None
+    # Playback order of segments as a PERMUTATION of indices. Segments themselves
+    # stay monotonic in source coords (the validator below is untouched) — physical
+    # reordering would break every source-coord invariant; the render plan walks
+    # this order instead. None = source order.
+    segment_order: Optional[list[int]] = None
 
     @property
     def duration_frames(self) -> int:
@@ -119,6 +148,13 @@ class EDL(BaseModel):
             if seg.src_in < prev_out:
                 raise ValueError("Segments must be monotonically increasing (no overlaps)")
             prev_out = seg.src_out
+        return self
+
+    @model_validator(mode="after")
+    def check_segment_order(self):
+        if self.segment_order is not None:
+            if sorted(self.segment_order) != list(range(len(self.segments))):
+                raise ValueError("segment_order must be a permutation of segment indices")
         return self
 
 

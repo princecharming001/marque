@@ -436,9 +436,12 @@ class ClipJobRequest(BaseModel):
 
 
 class TweakRequest(BaseModel):
-    """One conversational tweak turn on a finished clip."""
+    """One tweak turn on a finished clip: a natural-language instruction (chat)
+    OR pre-typed ops (the manual editor) — ops bypass LLM interpretation entirely
+    and go straight to deterministic application."""
     clip_id: str = ""
     instruction: str = ""
+    ops: list[dict] = []
 
 
 class MediaAnalyzeRequest(BaseModel):
@@ -1081,19 +1084,75 @@ async def create_clip_job(req: ClipJobRequest):
 
 
 @app.get("/v1/clips/{job_id}")
-async def get_clip_job(job_id: str):
+async def get_clip_job(job_id: str, include_words: int = 0):
     _sweep_ttl_jobs(_clip_jobs)
+    _sweep_stuck_renders(_clip_jobs)
     if job_id not in _clip_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _clip_jobs[job_id]
-    return {
+    out = {
         "mode": "mock" if job["status"] == "mock_ready" else "live",
         "job_id": job_id,
         "status": job["status"],
         "clips": job["clips"],
         "edl": job.get("edl"),
         "error": job.get("error"),
+        "error_detail": job.get("error_detail"),
     }
+    if include_words:
+        # Opt-in only — real transcripts are thousands of words and this endpoint
+        # is polled every 5s; the manual editor is the only caller that needs them.
+        out["words"] = job.get("words") or []
+    return out
+
+
+@app.post("/v1/clips/{job_id}/retry")
+async def retry_clip_job(job_id: str):
+    """Recover a failed job. If an EDL exists, only the render stage re-runs (the
+    transcript + edit are still good); otherwise the full pipeline restarts. The
+    job dict retains everything needed — no re-upload from the app."""
+    job = _clip_jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job_not_found")
+    if job["status"] in ("transcribing", "editing", "rendering") \
+            or any(c.get("status") == "rendering" for c in job["clips"]):
+        raise HTTPException(status_code=409, detail="retry_in_progress")
+    if job["status"] == "mock_ready":
+        return {"mode": "mock", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
+
+    for key in ("error", "error_detail", "error_stage"):
+        job.pop(key, None)
+    for c in job["clips"]:
+        if c.get("status") == "failed":
+            c.pop("error", None)
+            c.pop("error_detail", None)
+            c["status"] = "queued"
+
+    if job.get("edl"):
+        job["status"] = "rendering"
+        asyncio.create_task(_retry_render(job_id))
+    else:
+        job["status"] = "transcribing"
+        asyncio.create_task(_run_pipeline(job_id))
+    return {"mode": "live", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
+
+
+async def _retry_render(job_id: str) -> None:
+    """Render-stage-only retry, with the same terminal-state guarantees."""
+    job = _clip_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        await _render_all_clips(job_id)
+        job["status"] = "ready" if any(c["status"] == "ready" for c in job["clips"]) else "failed"
+        if job["status"] == "failed" and not job.get("error"):
+            first = next((c for c in job["clips"] if c.get("error")), None)
+            job["error"] = (first or {}).get("error", "render_no_output")
+            job["error_detail"] = (first or {}).get("error_detail", "")
+    except PipelineError as e:
+        _fail_job(job, e.code, e.detail, e.stage)
+    except Exception as e:
+        _fail_job(job, "internal_error", str(e))
 
 
 @app.post("/v1/clips/{job_id}/tweak")
@@ -1110,7 +1169,7 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     clip = next((c for c in job["clips"] if c["clip_id"].lower() == want), None)
     if clip is None:
         raise HTTPException(status_code=404, detail="clip_not_found")
-    if not req.instruction.strip():
+    if not req.instruction.strip() and not req.ops:
         raise HTTPException(status_code=422, detail="empty_instruction")
     # Concurrency guard: asyncio is single-threaded, so status checks + the
     # later synchronous status set (before any await) are atomic per request.
@@ -1119,10 +1178,14 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     if not job.get("edl"):
         raise HTTPException(status_code=409, detail="no_edl")
 
-    # 1) Interpretation → (reply, ops)
+    # 1) Interpretation → (reply, ops). The manual editor sends typed ops directly —
+    #    no LLM in the loop, fully deterministic and keyless-testable.
     mode = "mock"
     reply, ops = "", []
-    if ANTHROPIC_KEY:
+    if req.ops:
+        mode = "direct"
+        ops = [o for o in req.ops if isinstance(o, dict)]
+    elif ANTHROPIC_KEY:
         mode = "live"
         try:
             sys_p, usr_p = prompts.tweak_prompt(job["edl"], job.get("words") or [],
@@ -1183,7 +1246,7 @@ async def tweak_clip(job_id: str, req: TweakRequest):
 
     # 4) History entry (feeds the next turn's prompt context)
     job["tweaks"].append({
-        "instruction": req.instruction, "reply": reply,
+        "instruction": req.instruction or "manual edit", "reply": reply,
         "summary": ", ".join(r["type"] for r in applied) or "no changes",
         "applied": applied, "skipped": skipped,
     })
@@ -1203,21 +1266,23 @@ async def tweak_clip(job_id: str, req: TweakRequest):
             # will be picked up by the next render rather than double-rendering.
             needs_render = False
         else:
+            # Status set + create_task are adjacent with NO await between them —
+            # the b-roll resolve (an await that used to sit here and could strand
+            # the clip in "rendering" if it died) now lives inside the task's try.
             clip["status"] = "rendering"
-            if resolve_broll_needed:
-                try:
-                    job["edl"] = await _resolve_broll(job["edl"])
-                except Exception:
-                    pass   # unresolved b-roll renders as a skipped cue, not a failure
-            asyncio.create_task(_rerender_clip(job_id, req.clip_id))
+            clip["render_started_at"] = time.time()
+            asyncio.create_task(_rerender_clip(job_id, req.clip_id,
+                                               resolve_broll=resolve_broll_needed))
 
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"]}
 
 
-async def _rerender_clip(job_id: str, clip_id: str):
-    """Re-render one clip after a tweak. NEVER strands the clip: on any failure
-    the previous render_url is restored and status returns to ready."""
+async def _rerender_clip(job_id: str, clip_id: str, resolve_broll: bool = False):
+    """Re-render one clip after a tweak. NEVER strands the clip: on any failure the
+    previous render_url is restored (status ready) — or, if there was never a good
+    render to fall back to, the clip fails with a structured code instead of going
+    fake-ready with no playable URL."""
     job = _clip_jobs.get(job_id)
     if not job:
         return
@@ -1226,25 +1291,35 @@ async def _rerender_clip(job_id: str, clip_id: str):
         return
     prev_url = clip.get("render_url")
     try:
+        if resolve_broll:
+            try:
+                job["edl"] = await _resolve_broll(job["edl"])
+            except Exception:
+                clip.setdefault("warnings", []).append("broll_unresolved: resolve failed")
         submission = await _submit_remotion_render(
             job["source_url"], job["edl"], clip["format"], job["style"])
-        render_url = None
-        if submission:
-            clip["render_id"] = submission["render_id"]
-            render_url = await _poll_remotion_render(
-                submission["render_id"], submission["bucket_name"])
-        if render_url:
-            clip["render_url"] = render_url
-        else:
-            clip["render_url"] = prev_url
-            if job["tweaks"]:
-                job["tweaks"][-1]["render_error"] = "re-render failed — kept the previous cut"
+        if not submission:
+            raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+        clip["render_id"] = submission["render_id"]
+        clip["render_url"] = await _poll_remotion_render(
+            submission["render_id"], submission["bucket_name"])
+        clip.pop("error", None)
+        clip.pop("error_detail", None)
+    except PipelineError as e:
+        clip["render_url"] = prev_url
+        if job["tweaks"]:
+            job["tweaks"][-1]["render_error"] = f"{e.code}: {e.detail}"[:200]
+        if not prev_url:
+            _fail_clip(clip, e.code, e.detail)
     except Exception as e:
         clip["render_url"] = prev_url
         if job["tweaks"]:
             job["tweaks"][-1]["render_error"] = str(e)[:200]
+        if not prev_url:
+            _fail_clip(clip, "internal_error", str(e))
     finally:
-        clip["status"] = "ready"
+        if clip.get("status") != "failed":
+            clip["status"] = "ready" if clip.get("render_url") else "failed"
 
 
 def _mock_edl(style: str, script: dict) -> dict:
@@ -1294,15 +1369,109 @@ def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
             "and undo tweaks — tell me what to change."), []
 
 
+# ---------------------------------------------------------------------------
+# Pipeline error contract — every way a clip job can fail maps to a short,
+# machine-readable code the app can translate into human copy. The old behavior
+# (raw exception strings, silent empty transcripts, 10-minute hangs) is exactly
+# what read as "the editor keeps failing" — clips must now always land in a
+# terminal state (ready with a render_url, or failed with a code) and fast.
+# ---------------------------------------------------------------------------
+
+class PipelineError(RuntimeError):
+    """Structured pipeline failure. `code` is a short slug from ERROR_CODES."""
+    def __init__(self, code: str, detail: str = "", stage: str = ""):
+        super().__init__(detail or code)
+        self.code, self.detail, self.stage = code, detail[:300], stage
+
+
+ERROR_CODES = [
+    "source_unreachable",       # HEAD/Range probe of source_url failed
+    "transcribe_submit_failed",
+    "transcribe_failed",        # AssemblyAI returned status=error (or empty transcript)
+    "transcribe_timeout",       # poll exhausted TRANSCRIBE_MAX_S
+    "render_submit_failed",     # bridge submit returned no renderId
+    "render_fatal",             # fatalErrorEncountered from Lambda
+    "render_stalled",           # progress flat for RENDER_STALL_S, or watchdog sweep
+    "render_timeout",           # poll exhausted RENDER_POLL_MAX_S
+    "render_no_output",         # done=true but outputFile missing
+    "bridge_error",             # node bridge crashed / non-JSON / subprocess timeout
+    "internal_error",           # catch-all
+]
+
+# Fail-fast budgets — env-tunable, monkeypatchable in tests.
+SOURCE_PROBE_TIMEOUT_S = float(os.environ.get("SOURCE_PROBE_TIMEOUT_S", "5"))
+TRANSCRIBE_MAX_S = int(os.environ.get("TRANSCRIBE_MAX_S", "300"))
+RENDER_POLL_MAX_S = int(os.environ.get("RENDER_POLL_MAX_S", "240"))
+RENDER_STALL_S = int(os.environ.get("RENDER_STALL_S", "75"))
+BRIDGE_CALL_TIMEOUT_S = float(os.environ.get("BRIDGE_CALL_TIMEOUT_S", "30"))
+RENDER_WATCHDOG_S = int(os.environ.get("RENDER_WATCHDOG_S", "480"))
+
+
+def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
+    clip["status"] = "failed"
+    clip["error"] = code
+    if detail:
+        clip["error_detail"] = detail[:300]
+
+
+def _fail_job(job: dict, code: str, detail: str = "", stage: str = "") -> None:
+    """Fail the job AND every non-terminal clip — nothing is ever left mid-flight."""
+    job["status"] = "failed"
+    job["error"] = code
+    job["error_detail"] = detail[:300]
+    if stage:
+        job["error_stage"] = stage
+    for c in job["clips"]:
+        if c.get("status") not in ("ready", "failed"):
+            _fail_clip(c, code, detail)
+
+
+async def _validate_source_url(url: str) -> None:
+    """Probe the source before handing it to AssemblyAI/Remotion — a bad URL used
+    to hang the pipeline 5-15 minutes across two external services before failing.
+    HEAD first; some CDNs reject HEAD, so fall back to a 1-byte ranged GET."""
+    if not url.startswith(("http://", "https://")):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=SOURCE_PROBE_TIMEOUT_S, follow_redirects=True) as client:
+            r = await client.head(url)
+            if r.status_code in (405, 501):
+                r = await client.get(url, headers={"Range": "bytes=0-0"})
+            if r.status_code not in (200, 206):
+                raise PipelineError("source_unreachable", f"source returned {r.status_code}", "transcribe")
+    except PipelineError:
+        raise
+    except Exception as e:
+        raise PipelineError("source_unreachable", str(e), "transcribe")
+
+
+def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
+    """Watchdog, swept on every GET poll (same zero-background-task pattern as
+    _sweep_ttl_jobs): any clip stuck in 'rendering' past the watchdog budget is
+    failed as render_stalled — this catches every stranding vector (bridge hang,
+    task death, pre-finally crash) that used to leave clips spinning forever."""
+    budget = max_render_s if max_render_s is not None else RENDER_WATCHDOG_S
+    now = time.time()
+    for job in jobs.values():
+        for c in job.get("clips", []):
+            if c.get("status") == "rendering" and now - c.get("render_started_at", now) > budget:
+                _fail_clip(c, "render_stalled", f"render exceeded {int(budget)}s watchdog")
+        if job.get("status") in ("transcribing", "editing", "rendering") \
+                and now - job.get("created_at", now) > budget * 2:
+            _fail_job(job, "render_stalled", "job exceeded the pipeline watchdog")
+
+
 async def _run_pipeline(job_id: str):
-    """Background pipeline: transcribe → edit → render."""
+    """Background pipeline: transcribe → edit → render. Contract: this function
+    ALWAYS leaves the job and every clip in a terminal state."""
     job = _clip_jobs[job_id]
     try:
         job["status"] = "transcribing"
         for c in job["clips"]: c["status"] = "transcribing"
+        await _validate_source_url(job["source_url"])
         transcript_id = await _submit_transcription(job["source_url"])
         if not transcript_id:
-            raise RuntimeError("transcription submit failed")
+            raise PipelineError("transcribe_submit_failed", "AssemblyAI rejected the submission", "transcribe")
         transcript = await _poll_transcription(transcript_id)
         words = transcript["words"]
         job["words"] = words          # kept for conversational tweaks (re-editing needs the transcript)
@@ -1333,8 +1502,13 @@ async def _run_pipeline(job_id: str):
                 hints.append("Filler trimming is AGGRESSIVE — also drop dead-air gaps > 200ms and hesitations.")
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
-        edl_text = await anthropic(system, user, model=HAIKU, max_tokens=4000)
-        edl_data = extract_json(edl_text, array=False)
+        try:
+            edl_text = await anthropic(system, user, model=HAIKU, max_tokens=4000)
+            edl_data = extract_json(edl_text, array=False)
+        except HTTPException:
+            # LLM down ≠ pipeline dead: the safe default edit (full footage +
+            # caption timing + deterministic filler cuts) still renders fine.
+            edl_data = None
 
         if edl_data:
             try:
@@ -1362,34 +1536,65 @@ async def _run_pipeline(job_id: str):
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built.
         edl_data = await _resolve_broll(edl_data)
+        # Unresolved stock b-roll is a WARNING, not a failure — but no longer silent.
+        unresolved = [b.get("broll_query") or b.get("cue_text", "")
+                      for b in (edl_data.get("broll") or [])
+                      if b.get("source") != "own_media" and not b.get("resolved_url")]
+        if unresolved:
+            for c in job["clips"]:
+                c.setdefault("warnings", []).extend(f"broll_unresolved: {q}"[:120] for q in unresolved)
         edl_data = _attach_react_source(edl_data, job)
         job["edl"] = edl_data
 
         job["status"] = "rendering"
-        for c in job["clips"]: c["status"] = "rendering"
+        await _render_all_clips(job_id)
 
-        if REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME:
-            for clip in job["clips"]:
-                submission = await _submit_remotion_render(
-                    job["source_url"], edl_data, clip["format"], job["style"])
-                if submission:
-                    clip["render_id"] = submission["render_id"]
-                    render_url = await _poll_remotion_render(
-                        submission["render_id"], submission["bucket_name"])
-                    clip["render_url"] = render_url
-                    clip["status"] = "ready" if render_url else "failed"
-                else:
-                    clip["status"] = "failed"
-        else:
-            for clip in job["clips"]:
+        # Ready ONLY if at least one clip actually delivered a render. The old
+        # unconditional ready-set is how "ready" jobs with zero playable clips
+        # reached the app.
+        job["status"] = "ready" if any(c["status"] == "ready" for c in job["clips"]) else "failed"
+        if job["status"] == "failed" and not job.get("error"):
+            first = next((c for c in job["clips"] if c.get("error")), None)
+            job["error"] = (first or {}).get("error", "render_no_output")
+            job["error_detail"] = (first or {}).get("error_detail", "")
+            job["error_stage"] = "render"
+    except PipelineError as e:
+        _fail_job(job, e.code, e.detail, e.stage)
+    except Exception as e:
+        _fail_job(job, "internal_error", str(e))
+
+
+async def _render_all_clips(job_id: str) -> None:
+    """Render every non-ready clip from job['edl']. Per-clip isolation: one clip's
+    failure marks THAT clip failed (with a structured code) and the others continue.
+    Invariant on exit: every touched clip is 'ready' (with render_url) or 'failed'."""
+    job = _clip_jobs[job_id]
+    edl_data = job["edl"]
+    if not (REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME):
+        for clip in job["clips"]:
+            if clip.get("status") != "ready":
                 clip["status"] = "ready"
                 clip["render_url"] = job["source_url"]
-
-        job["status"] = "ready"
-    except Exception as e:
-        job["status"] = "failed"
-        job["error"] = str(e)
-        for c in job["clips"]: c["status"] = "failed"
+        return
+    for clip in job["clips"]:
+        if clip.get("status") == "ready":
+            continue
+        clip["status"] = "rendering"
+        clip["render_started_at"] = time.time()
+        try:
+            submission = await _submit_remotion_render(
+                job["source_url"], edl_data, clip["format"], job["style"])
+            if not submission:
+                raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+            clip["render_id"] = submission["render_id"]
+            render_url = await _poll_remotion_render(
+                submission["render_id"], submission["bucket_name"])
+            clip["render_url"] = render_url
+            clip["status"] = "ready"
+        except PipelineError as e:
+            _fail_clip(clip, e.code, e.detail)
+        except Exception as e:
+            _fail_clip(clip, "internal_error", str(e))
 
 
 async def _submit_transcription(video_url: str) -> str | None:
@@ -1426,12 +1631,15 @@ def _normalize_words(raw: list[dict]) -> list[dict]:
     return out
 
 
-async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> dict:
-    """Return {"words": [...normalized...], "auto_highlights": [...]}. Empty keyless
-    or on error/timeout."""
+async def _poll_transcription(transcript_id: str, max_wait_s: int | None = None) -> dict:
+    """Return {"words": [...normalized...], "auto_highlights": [...]}. Keyless returns
+    empty (mock path never calls this). Live failures raise structured PipelineErrors —
+    the old silent-empty return made bad transcriptions produce a caption-less,
+    cut-less "safe default" edit with no indication anything went wrong."""
     if not ASSEMBLY_KEY:
         return {"words": [], "auto_highlights": []}
-    for _ in range(max_wait_s // 5):
+    budget = max_wait_s if max_wait_s is not None else TRANSCRIBE_MAX_S
+    for _ in range(max(1, budget // 5)):
         await asyncio.sleep(5)
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
@@ -1440,13 +1648,16 @@ async def _poll_transcription(transcript_id: str, max_wait_s: int = 300) -> dict
             )
         data = r.json()
         if data.get("status") == "completed":
+            words = _normalize_words(data.get("words", []))
+            if not words:
+                raise PipelineError("transcribe_failed", "transcription completed with no words "
+                                    "(is there speech in the video?)", "transcribe")
             highlights = (data.get("auto_highlights_result") or {}).get("results") \
                 or data.get("auto_highlights") or []
-            return {"words": _normalize_words(data.get("words", [])),
-                    "auto_highlights": highlights}
+            return {"words": words, "auto_highlights": highlights}
         if data.get("status") == "error":
-            return {"words": [], "auto_highlights": []}
-    return {"words": [], "auto_highlights": []}
+            raise PipelineError("transcribe_failed", str(data.get("error", ""))[:300], "transcribe")
+    raise PipelineError("transcribe_timeout", f"no transcript after {budget}s", "transcribe")
 
 
 def _extract_emphasis_regions(words: list[dict], auto_highlights: list[dict] | None = None,
@@ -1524,25 +1735,40 @@ async def verify_and_repair_edl(style: str, edl_data: dict, words: list[dict],
         return edl_data                                  # repair broke it → keep original
 
 
-async def _run_render_bridge(*args: str) -> dict:
+async def _run_render_bridge(*args: str, timeout_s: float | None = None) -> dict:
     """Remotion's render API (renderMediaOnLambda/getRenderProgress) is Node-only —
     there's no documented cross-language wire contract for invoking a deployed Lambda
     function directly. The Node bridge at render/dist/lambda-render.js (built from
     render/src/lambda-render.ts) is the integration point; AWS creds pass through via
     the subprocess's inherited environment (Remotion's SDK reads the exact env var
-    names REMOTION_AWS_ACCESS_KEY_ID / REMOTION_AWS_SECRET_ACCESS_KEY itself)."""
+    names REMOTION_AWS_ACCESS_KEY_ID / REMOTION_AWS_SECRET_ACCESS_KEY itself).
+
+    Hardened: the subprocess call is bounded (a hung node process used to strand a
+    clip in 'rendering' forever), and errors come back in-band via `_error` so they
+    reach the clip's error field instead of dying in a log line."""
     proc = await asyncio.create_subprocess_exec(
         "node", REMOTION_BRIDGE, *args,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout_s or BRIDGE_CALL_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return {"_error": f"bridge timed out after {timeout_s or BRIDGE_CALL_TIMEOUT_S:.0f}s"}
     if proc.returncode != 0:
-        logging.warning("remotion bridge failed: %s", stderr.decode(errors="replace")[:500])
-        return {}
+        raw = stderr.decode(errors="replace")[:500]
+        logging.warning("remotion bridge failed: %s", raw)
+        try:
+            detail = json.loads(raw).get("error", raw)
+        except json.JSONDecodeError:
+            detail = raw
+        return {"_error": str(detail)[:300]}
     try:
         return json.loads(stdout.decode())
     except json.JSONDecodeError:
-        logging.warning("remotion bridge non-JSON output: %s", stdout.decode(errors="replace")[:500])
-        return {}
+        raw = stdout.decode(errors="replace")[:300]
+        logging.warning("remotion bridge non-JSON output: %s", raw)
+        return {"_error": f"bridge non-JSON output: {raw}"}
 
 
 async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str) -> dict | None:
@@ -1558,20 +1784,48 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     plan = build_render_plan(edl)
     input_props = json.dumps({"sourceUrl": source_url, "edl": plan, "formatId": format_id})
     result = await _run_render_bridge("submit", composition_id, input_props)
+    if result.get("_error"):
+        raise PipelineError("bridge_error", result["_error"], "render")
     if not result.get("renderId"):
         return None
     return {"render_id": result["renderId"], "bucket_name": result.get("bucketName", "")}
 
 
-async def _poll_remotion_render(render_id: str, bucket_name: str, max_wait_s: int = 600) -> str | None:
-    for _ in range(max_wait_s // 10):
-        await asyncio.sleep(10)
+async def _poll_remotion_render(render_id: str, bucket_name: str,
+                                max_wait_s: int | None = None) -> str:
+    """Poll the Lambda render to completion. Fail-FAST: exponential backoff within a
+    hard wall-clock budget, stall detection on overallProgress, and every failure
+    raises a structured PipelineError. (The old version linear-polled for 10 minutes
+    and returned None with no reason — the single biggest 'clips never finish' vector.)"""
+    budget = max_wait_s if max_wait_s is not None else RENDER_POLL_MAX_S
+    start = time.time()
+    delays = [2.0, 4.0, 8.0]
+    i = 0
+    last_progress = -1.0
+    last_change = start
+    while time.time() - start < budget:
+        await asyncio.sleep(delays[i] if i < len(delays) else 15.0)
+        i += 1
         progress = await _run_render_bridge("poll", render_id, bucket_name)
+        if progress.get("_error"):
+            raise PipelineError("bridge_error", progress["_error"], "render")
         if progress.get("fatalErrorEncountered"):
-            return None
+            errs = progress.get("errors") or []
+            detail = "; ".join(str(e.get("message", e)) if isinstance(e, dict) else str(e)
+                               for e in errs)[:300] or "Lambda reported a fatal render error"
+            raise PipelineError("render_fatal", detail, "render")
         if progress.get("done"):
-            return progress.get("outputFile")
-    return None
+            output = progress.get("outputFile")
+            if not output:
+                raise PipelineError("render_no_output", "render finished but produced no file", "render")
+            return output
+        p = float(progress.get("overallProgress") or 0.0)
+        now = time.time()
+        if p > last_progress:
+            last_progress, last_change = p, now
+        elif now - last_change > RENDER_STALL_S:
+            raise PipelineError("render_stalled", f"progress stuck at {p:.0%} for {int(now - last_change)}s", "render")
+    raise PipelineError("render_timeout", f"render exceeded {int(budget)}s budget", "render")
 
 
 # ----- brand-scan + voice onboarding -----
@@ -1594,6 +1848,10 @@ def _normalize_apify_post(item: dict, platform: str) -> dict | None:
                      or item.get("videoUrl") or "")
         duration = meta.get("duration") or item.get("duration") or 0
         posted_at = item.get("createTimeISO") or item.get("createTime") or ""
+        thumbnail = (meta.get("coverUrl") or meta.get("originalCoverUrl")
+                     or (item.get("covers") or [None])[0] or "")
+        author = ((item.get("authorMeta") or {}).get("name")
+                  or item.get("authorName") or "")
     else:  # instagram
         caption = (item.get("caption") or "").strip()
         hashtags = item.get("hashtags") or []
@@ -1603,18 +1861,49 @@ def _normalize_apify_post(item: dict, platform: str) -> dict | None:
         video_url = item.get("videoUrl") or ""
         duration = item.get("videoDuration") or 0
         posted_at = item.get("timestamp") or ""
+        thumbnail = item.get("displayUrl") or ""
+        author = item.get("ownerUsername") or item.get("ownerFullName") or ""
     if not caption and not video_url:
         return None
     return {"caption": caption[:600], "hashtags": [h for h in hashtags if h][:8],
             "likes": int(likes or 0), "comments": int(comments or 0),
-            "views": int(views or 0), "video_url": video_url,
+            "views": int(views or 0), "video_url": video_url or "",
+            "thumbnail_url": thumbnail or "", "author": (author or "").lstrip("@"),
             "duration_s": int(duration or 0), "posted_at": str(posted_at)}
 
 
+async def _run_apify_actor(actor: str, payload: dict, timeout_s: int = 110) -> list[dict]:
+    """Run a paid Apify actor synchronously and return its dataset items. Never
+    raises — any failure (402 no-budget, timeout, network, non-list body) degrades
+    to []. Logs a one-liner on the budget/HTTP failure so the Render logs show WHY
+    a scrape came back empty (the difference between 'no budget' and 'no results')."""
+    if not APIFY_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.post(
+                f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items",
+                params={"token": APIFY_KEY, "timeout": timeout_s - 20},
+                json=payload,
+            )
+        if r.status_code not in (200, 201):
+            detail = ""
+            try:
+                detail = (r.json().get("error", {}) or {}).get("type", "")
+            except Exception:
+                detail = r.text[:80]
+            logging.warning("apify %s -> HTTP %d %s", actor, r.status_code, detail)
+            return []
+        items = r.json()
+        return items if isinstance(items, list) else []
+    except Exception as e:
+        logging.warning("apify %s failed: %s", actor, e)
+        return []
+
+
 async def scrape_posts(handle: str, platform: str, limit: int = 10) -> list[dict]:
-    """Scrape the creator's recent posts via Apify when keyed; else empty (caller
-    supplies posts for testing / mock derive covers keyless). Never raises — any
-    failure degrades to [] so the mock fallback path stays intact."""
+    """Scrape a specific creator's recent posts via Apify when keyed; else empty
+    (caller supplies posts for testing / mock derive covers keyless)."""
     if not APIFY_KEY or not handle:
         return []
     handle = handle.lstrip("@")
@@ -1626,22 +1915,57 @@ async def scrape_posts(handle: str, platform: str, limit: int = 10) -> list[dict
         actor = "apify~instagram-scraper"
         payload = {"directUrls": [f"https://www.instagram.com/{handle}/"],
                    "resultsType": "posts", "resultsLimit": limit}
-    try:
-        async with httpx.AsyncClient(timeout=110) as client:
-            r = await client.post(
-                f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items",
-                params={"token": APIFY_KEY, "timeout": 90},
-                json=payload,
-            )
-        if r.status_code not in (200, 201):
-            return []
-        items = r.json()
-        if not isinstance(items, list):
-            return []
-        posts = [p for p in (_normalize_apify_post(i, platform) for i in items if isinstance(i, dict)) if p]
-        return posts[:limit]
-    except Exception:
+    items = await _run_apify_actor(actor, payload)
+    posts = [p for p in (_normalize_apify_post(i, platform) for i in items if isinstance(i, dict)) if p]
+    return posts[:limit]
+
+
+def _niche_hashtags(niche: str) -> list[str]:
+    """Turn a free-text niche into 1-2 search hashtags/terms (alnum-slugged)."""
+    words = [w for w in re.split(r"[^a-z0-9]+", niche.lower()) if w]
+    if not words:
         return []
+    slug = "".join(words)[:30]
+    tags = [slug]
+    if words[0] != slug:
+        tags.append(words[0])
+    return tags
+
+
+async def scrape_niche_posts(niche: str, limit: int = 20) -> list[dict]:
+    """Scrape recent well-performing posts for a niche across IG (hashtag) + TikTok
+    (search) via Apify. Returns normalized posts (platform tagged). Never raises."""
+    if not APIFY_KEY or not niche.strip():
+        return []
+    tags = _niche_hashtags(niche)
+    if not tags:
+        return []
+
+    async def _ig() -> list[dict]:
+        items = await _run_apify_actor("apify~instagram-hashtag-scraper",
+                                       {"hashtags": tags, "resultsLimit": limit})
+        out = [_normalize_apify_post(i, "instagram") for i in items if isinstance(i, dict)]
+        for p in out:
+            if p:
+                p["platform"] = "instagram"
+        return [p for p in out if p]
+
+    async def _tt() -> list[dict]:
+        items = await _run_apify_actor("clockworks~tiktok-scraper",
+                                       {"searchQueries": [niche], "resultsPerPage": limit,
+                                        "shouldDownloadVideos": False})
+        out = [_normalize_apify_post(i, "tiktok") for i in items if isinstance(i, dict)]
+        for p in out:
+            if p:
+                p["platform"] = "tiktok"
+        return [p for p in out if p]
+
+    ig, tt = await asyncio.gather(_ig(), _tt(), return_exceptions=True)
+    posts: list[dict] = []
+    for res in (ig, tt):
+        if isinstance(res, list):
+            posts.extend(res)
+    return posts
 
 
 async def _transcribe_top_posts(posts: list[dict], top_n: int = 4) -> list[dict]:
