@@ -833,6 +833,29 @@ def test_get_clip_exposes_undo_available():
     assert client.get(f"/v1/clips/{job_id}").json()["undo_available"] is True
 
 
+# ---- F9: swept (TTL-expired) jobs return 410, never-existed jobs return 404 ----
+
+def test_never_existed_job_returns_404():
+    r = client.get("/v1/clips/00000000-0000-0000-0000-000000000000")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "job_not_found"
+
+
+def test_swept_job_returns_410_job_expired(monkeypatch):
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    # Force it past the TTL, then trigger the lazy sweep via a GET.
+    main._clip_jobs[job_id]["created_at"] = time.time() - main._JOB_TTL_S - 10
+    r2 = client.get(f"/v1/clips/{job_id}")
+    assert r2.status_code == 410
+    assert r2.json()["detail"] == "job_expired"
+    # And it stays 410 on a second lookup (not swallowed back to plain 404).
+    r3 = client.get(f"/v1/clips/{job_id}")
+    assert r3.status_code == 410
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

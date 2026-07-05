@@ -472,6 +472,11 @@ def _cap_evict(cache: dict, cap: int) -> None:
 
 
 _JOB_TTL_S = 24 * 3600
+# F9: remember recently-swept job_ids so a subsequent lookup can tell "your
+# session expired" (410) apart from "that id never existed" (404) — the client
+# UX differs (re-record vs a bad/typo'd id). Bounded FIFO so this never grows
+# unbounded; only needs to outlive a client's next poll after expiry.
+_expired_job_ids: dict[str, float] = {}
 
 
 def _sweep_ttl_jobs(jobs: dict, ttl_s: float = _JOB_TTL_S) -> None:
@@ -483,6 +488,15 @@ def _sweep_ttl_jobs(jobs: dict, ttl_s: float = _JOB_TTL_S) -> None:
     dead = [jid for jid, j in jobs.items() if now - j.get("created_at", now) > ttl_s]
     for jid in dead:
         jobs.pop(jid, None)
+        _expired_job_ids[jid] = now
+    _cap_evict(_expired_job_ids, 4096)
+
+
+def _raise_job_not_found(job_id: str) -> None:
+    """404 for a never-existed id; structured 410 job_expired for a swept one."""
+    if job_id in _expired_job_ids:
+        raise HTTPException(status_code=410, detail="job_expired")
+    raise HTTPException(status_code=404, detail="job_not_found")
 
 
 class PostRegisterRequest(BaseModel):
@@ -1089,7 +1103,7 @@ async def get_clip_job(job_id: str, include_words: int = 0):
     _sweep_ttl_jobs(_clip_jobs)
     _sweep_stuck_renders(_clip_jobs)
     if job_id not in _clip_jobs:
-        raise HTTPException(status_code=404, detail="job not found")
+        _raise_job_not_found(job_id)
     job = _clip_jobs[job_id]
     out = {
         "mode": "mock" if job["status"] == "mock_ready" else "live",
@@ -1115,7 +1129,7 @@ async def retry_clip_job(job_id: str):
     job dict retains everything needed — no re-upload from the app."""
     job = _clip_jobs.get(job_id)
     if job is None:
-        raise HTTPException(status_code=404, detail="job_not_found")
+        _raise_job_not_found(job_id)
     if job["status"] in ("transcribing", "editing", "rendering") \
             or any(c.get("status") == "rendering" for c in job["clips"]):
         raise HTTPException(status_code=409, detail="retry_in_progress")
@@ -1164,8 +1178,9 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     stored EDL, and re-render just the targeted clip."""
     job = _clip_jobs.get(job_id)
     if job is None:
-        # In-memory job store — a backend restart orphans old jobs.
-        raise HTTPException(status_code=404, detail="job_not_found")
+        # In-memory job store — a backend restart orphans old jobs (indistinguishable
+        # from "never existed" here since it wasn't a TTL sweep; 404 is correct).
+        _raise_job_not_found(job_id)
     # Case-insensitive: iOS UUID.uuidString is uppercase, uuid4() is lowercase.
     want = req.clip_id.lower()
     clip = next((c for c in job["clips"] if c["clip_id"].lower() == want), None)

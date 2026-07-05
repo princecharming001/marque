@@ -40,7 +40,10 @@ fully green, keyless (no env keys).
 - [x] F8 Verified undo already restores the triple (wholesale EDL snapshot swap,
       not per-field — structurally can't partially restore). Depth bumped 10->25.
       Added undo_available to both the tweak response and GET /v1/clips/{id}.
-- [ ] F9 Swept/expired jobs return structured 410 job_expired (not bare 404).
+- [x] F9 Fixed: _expired_job_ids (bounded FIFO) records swept job_ids; GET/retry/
+      tweak now return 410 "job_expired" for a swept id vs 404 "job_not_found"
+      for one that never existed — the client can tell "re-record" apart from
+      "bad id" now.
 - [ ] F10 Transcript hygiene: drop malformed word entries, dedupe identical caption
       frames, guard zero/duplicate timestamps (_normalize_words).
 - [ ] F11 _merge_drops unions overlapping LLM+filler windows instead of silently
