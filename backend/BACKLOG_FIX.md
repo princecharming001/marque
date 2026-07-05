@@ -66,7 +66,14 @@ fully green, keyless (no env keys).
       unchanged contract). verify_and_repair_edl's internal fallbacks left
       as-is — it's a best-effort secondary quality gate, already documented as
       silent-safe by design, not user-actionable.
-- [ ] F14 Duet clip_from/react_windows remapped under segment_order (backend side).
+- [x] F14 no-repro: clip_from is a cursor into the INDEPENDENT react-source video,
+      unrelated to the creator's segment_order — it never needed remapping.
+      Verified reorder already maps react_schedule windows to the correct output
+      position with clip_from correctly left untouched, and a window straddled
+      by a cut/reorder is already dropped outright by the existing length-
+      preservation guard (never desynced). Both pinned. Minor adjacent gap (a
+      dropped react_window produces no warning, unlike b-roll/F6) flagged as a
+      follow-up, out of this item's scope.
 - [ ] F15 Durable edit sessions: persist {job_id: words, edl, clip meta} to Supabase
       (clone upsert_arm_stat pattern) with lazy restore on job-miss; keyless
       fallback stays in-memory.

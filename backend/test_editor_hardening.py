@@ -965,6 +965,34 @@ def test_tweak_not_degraded_on_direct_ops():
     assert out["degraded"] is False
 
 
+# ---- F14 (no-repro, pinned): react_schedule clip_from doesn't need segment_order
+# remapping — it's a cursor into the INDEPENDENT react-source video, unrelated to
+# the creator's own segment order. A window straddled by a cut/reorder that would
+# desync it is already dropped outright by the existing length-preservation guard.
+
+def test_react_window_reorders_correctly_clip_from_untouched():
+    from app.edl import build_render_plan
+    edl = _base_edl(
+        style="duet_split",
+        segments=[{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 200}],
+        segment_order=[1, 0],
+        react_schedule=[{"state": "freeze", "src_in": 120, "src_out": 180, "clip_from": 50}])
+    plan = build_render_plan(edl)
+    assert len(plan["react_schedule"]) == 1
+    w = plan["react_schedule"][0]
+    assert (w["frame_in"], w["frame_out"]) == (20, 80)
+    assert w["clip_from"] == 50   # unchanged — independent of segment_order by design
+
+
+def test_react_window_straddled_by_cut_dropped_not_desynced():
+    from app.edl import build_render_plan
+    edl = _base_edl(style="duet_split", segments=[{"src_in": 0, "src_out": 200}],
+                    drops=[{"src_in": 140, "src_out": 160, "reason": "manual"}],
+                    react_schedule=[{"state": "freeze", "src_in": 100, "src_out": 180, "clip_from": 20}])
+    plan = build_render_plan(edl)
+    assert plan["react_schedule"] == []   # dropped outright rather than desynced
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():
