@@ -663,6 +663,24 @@ def test_volume_ranges_remap_as_split_pieces():
     assert all(v["volume"] == 0.0 for v in vr)
 
 
+def test_caption_frame_exactly_at_drop_boundary_maps_correctly():
+    # F2 (no-repro, pinned as regression): map_point's half-open interval check
+    # (s_in <= f < s_out) is internally consistent because segments/drops/captions
+    # are all derived from the same ms_to_frame() — verify the exact boundary frames
+    # around a drop resolve as expected (audited as a suspected off-by-one; disproved
+    # by direct repro, pinned here so a future change can't silently reintroduce it).
+    from app.edl import build_render_plan
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 100}],
+                     drops=[{"src_in": 40, "src_out": 50, "reason": "filler"}],
+                     captions=[{"word": "before", "frame": 39},
+                               {"word": "dropped1", "frame": 40},
+                               {"word": "dropped2", "frame": 49},
+                               {"word": "after", "frame": 50}])
+    plan = build_render_plan(edl)
+    words_kept = {c["word"]: c["frame"] for c in plan["captions"]}
+    assert words_kept == {"before": 39, "after": 40}   # dropped1/dropped2 excluded
+
+
 def test_plan_audio_music_passthrough():
     from app.edl import build_render_plan
     edl = _base_edl(audio={"lufs_target": -14.0,

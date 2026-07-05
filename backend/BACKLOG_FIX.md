@@ -10,8 +10,10 @@ fully green, keyless (no env keys).
       ("index 0 removed" despite segment_order=[2,0,1] meaning segment 2 plays
       first) — corrected with 3 new regression tests (partial spillover, trim_end,
       identity-order no-op preserved).
-- [ ] F2 Caption/word exactly at a drop/segment boundary survives the cut remap
-      (map_point exclusive-bound off-by-one, edl.py).
+- [x] F2 no-repro: map_point's half-open interval math is internally consistent
+      (segments/drops/captions all derive from the same ms_to_frame). Verified with
+      a direct repro at every boundary frame around a drop; pinned as a permanent
+      regression test (test_caption_frame_exactly_at_drop_boundary_maps_correctly).
 - [ ] F3 Overlays/captions spanning reordered+cut segments emit MULTIPLE mapped
       pieces instead of only the longest (map_range, edl.py) — no silent loss.
 - [ ] F4 Overlapping mute/volume_ranges merge on apply; kept-frames math stays
