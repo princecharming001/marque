@@ -735,6 +735,41 @@ def test_endpoint_direct_reorder_and_music():
     assert edl2.get("segment_order") is None
 
 
+# ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
+
+def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}])
+    out, res = apply_edl_ops(edl, [{"type": "cut_range", "start_frame": 5000, "end_frame": 6000}])
+    assert res[0]["applied"] is False
+    assert out["segments"] == [{"src_in": 0, "src_out": 300}]   # untouched
+
+
+def test_reversed_and_negative_ranges_rejected():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}])
+    for op in ({"type": "cut_range", "start_frame": 200, "end_frame": 100},
+               {"type": "cut_range", "start_frame": -500, "end_frame": -100}):
+        _, res = apply_edl_ops(edl, [op])
+        assert res[0]["applied"] is False, op
+
+
+def test_malformed_op_input_never_crashes():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}])
+    _, res = apply_edl_ops(edl, [{"type": "mute_range", "start_frame": "abc", "end_frame": 100}])
+    assert res[0]["applied"] is False
+    assert "malformed" in res[0]["reason"]
+
+
+def test_overlong_end_clamped_but_min_duration_guard_still_blocks_whole_clip_cut():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}])
+    _, res = apply_edl_ops(edl, [{"type": "cut_range", "start_frame": 0, "end_frame": 100000}])
+    assert res[0]["applied"] is False
+    assert "2 seconds" in res[0]["reason"]
+
+
 # ---- F4 (no-repro, pinned): overlap handling was already correct ----
 
 def test_overlapping_mute_ranges_produce_no_overlap():

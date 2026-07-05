@@ -23,8 +23,10 @@ fully green, keyless (no env keys).
 - [x] F4 no-repro: mute_range already does replace-with-split (no overlapping
       volume_ranges can persist); _kept_frames already unions drops before
       summing (no double-subtraction). Both pinned as regression tests.
-- [ ] F5 Out-of-bounds ops REJECTED with a reason (start>=source-end, end<=start,
-      negative frames) — never silently clamped into "cut everything".
+- [x] F5 no-repro: clamp_range already rejects reversed/negative/way-out-of-bounds
+      ranges (b>a check); the min-duration guard already blocks an over-long-end
+      clamp from cutting the whole clip; malformed inputs already caught by the
+      outer except and reported as "malformed op", never crash. All 4 pinned.
 - [ ] F6 Unresolved b-roll fail-soft: strip unresolved entries from the render plan
       (never a black/blank layer); warnings[] records what was skipped.
 - [ ] F7 Tweak/re-render race: per-clip render generation counter so a stale Lambda
