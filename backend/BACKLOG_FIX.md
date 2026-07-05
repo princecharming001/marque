@@ -37,8 +37,9 @@ fully green, keyless (no env keys).
       cancel it) could still complete late and silently overwrite a newer
       successful render_url. Every write site in _render_all_clips and
       _rerender_clip now checks the generation first.
-- [ ] F8 Undo restores segment_order/audio/captions fully (test the triple); depth
-      10->25; response exposes undo_available.
+- [x] F8 Verified undo already restores the triple (wholesale EDL snapshot swap,
+      not per-field — structurally can't partially restore). Depth bumped 10->25.
+      Added undo_available to both the tweak response and GET /v1/clips/{id}.
 - [ ] F9 Swept/expired jobs return structured 410 job_expired (not bare 404).
 - [ ] F10 Transcript hygiene: drop malformed word entries, dedupe identical caption
       frames, guard zero/duplicate timestamps (_normalize_words).

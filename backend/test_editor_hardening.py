@@ -779,6 +779,60 @@ def test_endpoint_direct_reorder_and_music():
     assert edl2.get("segment_order") is None
 
 
+# ---- F8: undo restores the full EDL triple; depth 25; undo_available exposed ----
+
+def test_undo_restores_segment_order_audio_captions_together():
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    job = main._clip_jobs[job_id]
+    extent = job["edl"]["segments"][0]["src_out"]
+    third = max(1, extent // 3)
+    job["edl"]["segments"] = [{"src_in": 0, "src_out": third},
+                               {"src_in": third, "src_out": 2 * third},
+                               {"src_in": 2 * third, "src_out": extent}]
+    captions_before = list(job["edl"]["captions"])
+    client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id,
+        "ops": [{"type": "reorder_segments", "order": [2, 0, 1]},
+                {"type": "set_music", "enabled": True, "url": "https://cdn/t.mp3", "volume": 0.3},
+                {"type": "set_captions_enabled", "enabled": False}]})
+    undo = client.post(f"/v1/clips/{job_id}/tweak",
+                       json={"clip_id": clip_id, "ops": [{"type": "undo"}]}).json()
+    assert undo["undo_available"] is False   # single tweak → stack now empty
+    edl = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert edl.get("segment_order") is None
+    assert edl["audio"].get("music") is None
+    assert edl["captions"] == captions_before
+
+
+def test_undo_depth_is_25():
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    for i in range(30):
+        client.post(f"/v1/clips/{job_id}/tweak", json={
+            "clip_id": clip_id,
+            "ops": [{"type": "set_caption_style", "style": "karaoke" if i % 2 else "clean"}]})
+    assert len(main._clip_jobs[job_id]["edl_history"]) == 25
+
+
+def test_get_clip_exposes_undo_available():
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    assert client.get(f"/v1/clips/{job_id}").json()["undo_available"] is False
+    client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]})
+    assert client.get(f"/v1/clips/{job_id}").json()["undo_available"] is True
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

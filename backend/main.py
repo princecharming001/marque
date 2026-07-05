@@ -1099,6 +1099,7 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         "edl": job.get("edl"),
         "error": job.get("error"),
         "error_detail": job.get("error_detail"),
+        "undo_available": bool(job.get("edl_history")),
     }
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint
@@ -1238,7 +1239,7 @@ async def tweak_clip(job_id: str, req: TweakRequest):
                 ok = []
         if ok:
             job["edl_history"].append(copy.deepcopy(job["edl"]))
-            del job["edl_history"][:-10]                 # cap the undo stack
+            del job["edl_history"][:-25]                 # cap the undo stack (F8: 10→25)
             job["edl"] = new_edl
             changed = True
             resolve_broll_needed = any(r["type"] == "add_broll" for r in ok)
@@ -1277,7 +1278,8 @@ async def tweak_clip(job_id: str, req: TweakRequest):
                                                resolve_broll=resolve_broll_needed))
 
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
-            "changed": changed, "needs_render": needs_render, "clip_status": clip["status"]}
+            "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
+            "undo_available": bool(job["edl_history"])}
 
 
 async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: bool = False):
