@@ -895,6 +895,30 @@ def test_merge_drops_partial_overlap_unions_not_discards():
     assert out[0]["src_in"] == 1000 and out[0]["src_out"] == 1500
 
 
+# ---- F12 (no-repro, pinned): manual tweaks survive a retry without prefs reverting ----
+
+def test_manual_captions_off_survives_a_retry():
+    # _apply_edit_prefs is only ever called once, at initial pipeline generation
+    # (main.py _run_pipeline) — a retry re-runs _render_all_clips only, which never
+    # calls _apply_edit_prefs again, so a manual tweak can't be silently reverted
+    # by stale edit_prefs on retry.
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source",
+        "edit_prefs": {"auto_captions": True}})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_captions_enabled", "enabled": False}]})
+    assert client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"] == []
+
+    job = main._clip_jobs[job_id]
+    job["clips"][0]["status"] = "failed"
+    job["status"] = "failed"
+    client.post(f"/v1/clips/{job_id}/retry")
+    assert client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"] == []
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

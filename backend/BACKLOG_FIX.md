@@ -53,8 +53,10 @@ fully green, keyless (no env keys).
       old behavior left the non-overlapping remainder of a partially-covered
       filler word un-cut (repro: LLM cut [1250,1500) + filler [1000,1300) used
       to keep only [1250,1500), now correctly unions to [1000,1500)).
-- [ ] F12 Tweaked EDL wins over stale edit_prefs on re-render (manual
-      set_captions_enabled/style must not be reverted by _apply_edit_prefs).
+- [x] F12 no-repro: _apply_edit_prefs is only ever called once, at initial
+      pipeline generation — retries call _render_all_clips directly, never
+      re-applying prefs. Verified a manual captions-off tweak survives a retry
+      unchanged; pinned as a regression test.
 - [ ] F13 Silent-except sweep across the edit path: every swallow becomes a
       structured warnings[] entry or log line.
 - [ ] F14 Duet clip_from/react_windows remapped under segment_order (backend side).
