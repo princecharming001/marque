@@ -57,8 +57,15 @@ fully green, keyless (no env keys).
       pipeline generation — retries call _render_all_clips directly, never
       re-applying prefs. Verified a manual captions-off tweak survives a retry
       unchanged; pinned as a regression test.
-- [ ] F13 Silent-except sweep across the edit path: every swallow becomes a
-      structured warnings[] entry or log line.
+- [x] F13 Swept the edit path's silent excepts. Most were already correctly
+      surfaced (tweak validation rejection, broll-resolve warning, source-probe
+      structured error). Two genuine silent degradations found + fixed: (1)
+      _run_pipeline falling back to safe_default_edl (LLM down or invalid EDL)
+      now warns the clip ("ai_edit_unavailable"); (2) tweak_clip's live→mock
+      fallback now returns a new `degraded: true` flag (mode stays "live",
+      unchanged contract). verify_and_repair_edl's internal fallbacks left
+      as-is — it's a best-effort secondary quality gate, already documented as
+      silent-safe by design, not user-actionable.
 - [ ] F14 Duet clip_from/react_windows remapped under segment_order (backend side).
 - [ ] F15 Durable edit sessions: persist {job_id: words, edl, clip meta} to Supabase
       (clone upsert_arm_stat pattern) with lazy restore on job-miss; keyless

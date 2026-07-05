@@ -1199,6 +1199,9 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     #    no LLM in the loop, fully deterministic and keyless-testable.
     mode = "mock"
     reply, ops = "", []
+    degraded = False   # F13: mode stayed "live" even when the LLM call failed and
+                       # fell back to the deterministic mock reply — no signal to
+                       # the client that this turn wasn't actually AI-interpreted.
     if req.ops:
         mode = "direct"
         ops = [o for o in req.ops if isinstance(o, dict)]
@@ -1216,6 +1219,7 @@ async def tweak_clip(job_id: str, req: TweakRequest):
             ops = [o for o in (envelope.get("ops") or []) if isinstance(o, dict)]
         else:
             reply, ops = _mock_tweak(req.instruction)   # degrade, never strand the chat
+            degraded = True
     else:
         reply, ops = _mock_tweak(req.instruction)
 
@@ -1294,7 +1298,7 @@ async def tweak_clip(job_id: str, req: TweakRequest):
 
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
-            "undo_available": bool(job["edl_history"])}
+            "undo_available": bool(job["edl_history"]), "degraded": degraded}
 
 
 async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: bool = False):
@@ -1549,6 +1553,7 @@ async def _run_pipeline(job_id: str):
                 hints.append("Filler trimming is AGGRESSIVE — also drop dead-air gaps > 200ms and hesitations.")
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
+        used_safe_default = False
         try:
             edl_text = await anthropic(system, user, model=HAIKU, max_tokens=4000)
             edl_data = extract_json(edl_text, array=False)
@@ -1563,13 +1568,23 @@ async def _run_pipeline(job_id: str):
                 edl_obj, issues = validate_and_repair(edl_obj)
                 edl_data = edl_obj.model_dump()
             except Exception:
+                used_safe_default = True
                 total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
                 edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
                 edl_data = edl_obj.model_dump()
         else:
+            used_safe_default = True
             total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
             edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
             edl_data = edl_obj.model_dump()
+
+        # F13: this used to be a silent degradation — the creator got a generic
+        # "keep everything, strip fillers" cut instead of a tailored AI edit with
+        # zero indication anything was different.
+        if used_safe_default:
+            for c in job["clips"]:
+                c.setdefault("warnings", []).append(
+                    "ai_edit_unavailable: used a safe default cut (full take, fillers stripped)")
 
         # Merge the deterministic filler drops in as source of truth (unless the
         # creator turned trimming off), then self-verify + repair the EDL once.

@@ -919,6 +919,52 @@ def test_manual_captions_off_survives_a_retry():
     assert client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"] == []
 
 
+# ---- F13: silent degradations now surface a warning / flag ----
+
+def test_safe_default_fallback_warns_the_clip(monkeypatch):
+    # _renderable_job forces the LLM-down path (anthropic() raises), which used to
+    # silently substitute a generic safe-default cut with zero signal to the client
+    # that they didn't get a tailored AI edit.
+    job_id = _renderable_job(monkeypatch)
+    async def bridge(*args, timeout_s=None):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_): pass
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+    _run_pipeline_sync(job_id)
+    job = main._clip_jobs[job_id]
+    assert any("ai_edit_unavailable" in w for w in job["clips"][0].get("warnings", []))
+
+
+def test_tweak_flags_degraded_when_live_llm_falls_back_to_mock(monkeypatch):
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "test-key")
+    async def failing_llm(*a, **k):
+        raise main.HTTPException(status_code=502, detail="down")
+    monkeypatch.setattr(main, "anthropic_json", failing_llm)
+    out = client.post(f"/v1/clips/{job_id}/tweak",
+                      json={"clip_id": clip_id, "instruction": "make it punchier"}).json()
+    assert out["mode"] == "live"          # contract unchanged
+    assert out["degraded"] is True        # but now flagged as a fallback turn
+
+
+def test_tweak_not_degraded_on_direct_ops():
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    out = client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]}).json()
+    assert out["degraded"] is False
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():
