@@ -383,6 +383,9 @@ def build_render_plan(edl: dict) -> dict:
 
     broll = []
     for b in edl.get("broll") or []:
+        if not b.get("resolved_url"):
+            continue  # F6: unresolved (e.g. Pexels failed/no key) — fail-soft, skip
+                      # the layer entirely rather than emit a None-URL render instruction.
         for lo, hi in map_range_all(b["src_in"], b["src_out"]):
             broll.append({
                 "frame_in": lo, "frame_out": hi,

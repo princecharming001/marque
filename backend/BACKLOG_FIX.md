@@ -27,8 +27,10 @@ fully green, keyless (no env keys).
       ranges (b>a check); the min-duration guard already blocks an over-long-end
       clamp from cutting the whole clip; malformed inputs already caught by the
       outer except and reported as "malformed op", never crash. All 4 pinned.
-- [ ] F6 Unresolved b-roll fail-soft: strip unresolved entries from the render plan
-      (never a black/blank layer); warnings[] records what was skipped.
+- [x] F6 Fixed: build_render_plan now skips broll entries with no resolved_url
+      (was passing a None-URL layer straight to the renderer). warnings[] was
+      already flowing to the client unfiltered (job["clips"] is a raw dict) —
+      no change needed there.
 - [ ] F7 Tweak/re-render race: per-clip render generation counter so a stale Lambda
       result can never overwrite a newer tweak's render_url.
 - [ ] F8 Undo restores segment_order/audio/captions fully (test the triple); depth

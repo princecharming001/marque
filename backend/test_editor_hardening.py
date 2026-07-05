@@ -825,10 +825,26 @@ def test_broll_survives_reorder_as_two_pieces():
     edl = _base_edl(
         segments=[{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 200}],
         segment_order=[1, 0],
-        broll=[{"src_in": 50, "src_out": 150, "cue_text": "city skyline"}])
+        broll=[{"src_in": 50, "src_out": 150, "cue_text": "city skyline",
+                "resolved_url": "https://cdn/skyline.mp4"}])
     plan = build_render_plan(edl)
     assert len(plan["broll"]) == 2
     assert {(b["frame_in"], b["frame_out"]) for b in plan["broll"]} == {(0, 50), (150, 200)}
+
+
+# ---- F6: unresolved b-roll must fail-soft, never a None-URL render layer ----
+
+def test_unresolved_broll_stripped_from_render_plan():
+    from app.edl import build_render_plan
+    edl = _base_edl(
+        segments=[{"src_in": 0, "src_out": 200}],
+        broll=[{"src_in": 20, "src_out": 80, "cue_text": "unresolved",
+                "source": "stock", "resolved_url": None},
+               {"src_in": 100, "src_out": 150, "cue_text": "resolved",
+                "source": "stock", "resolved_url": "https://cdn/office.mp4"}])
+    plan = build_render_plan(edl)
+    assert len(plan["broll"]) == 1
+    assert plan["broll"][0]["cue_text"] == "resolved"
 
 
 # ---- regression: AssemblyAI auto_highlights bool crashed real edits ----
