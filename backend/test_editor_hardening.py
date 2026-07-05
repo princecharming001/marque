@@ -882,6 +882,19 @@ def test_normalize_words_idempotent_on_already_normalized_input():
     assert main._normalize_words(words) == words
 
 
+# ---- F11: partial-overlap filler drop must union, not vanish entirely ----
+
+def test_merge_drops_partial_overlap_unions_not_discards():
+    # An LLM editorial cut [1250,1500) that only PARTIALLY overlaps a filler word's
+    # drop [1000,1300) used to discard the filler drop entirely, leaving frames
+    # 1000-1250 of that filler word un-cut in the final render.
+    existing = [{"src_in": 1250, "src_out": 1500, "reason": "manual"}]
+    new = [{"src_in": 1000, "src_out": 1300, "reason": "filler"}]
+    out = main._merge_drops(existing, new)
+    assert len(out) == 1
+    assert out[0]["src_in"] == 1000 and out[0]["src_out"] == 1500
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

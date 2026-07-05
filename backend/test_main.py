@@ -676,12 +676,16 @@ def test_extract_emphasis_regions_merges_words_and_highlights():
     assert spans == [(0, 15)]                                                 # merged overlap
 
 
-def test_merge_drops_skips_overlaps():
+def test_merge_drops_unions_overlaps_instead_of_skipping():
+    # F11: an overlapping new (filler) drop must be MERGED into the existing (LLM)
+    # drop — extending its boundaries — not silently discarded outright, which used
+    # to leave the non-overlapping remainder of the filler word un-cut.
     existing = [{"src_in": 100, "src_out": 150, "reason": "dead_air"}]
-    new = [{"src_in": 140, "src_out": 160, "reason": "filler"},               # overlaps → skip
+    new = [{"src_in": 140, "src_out": 160, "reason": "filler"},               # overlaps → merge
            {"src_in": 200, "src_out": 210, "reason": "filler"}]               # clean → add
     out = main._merge_drops(existing, new)
     assert len(out) == 2
+    assert out[0]["src_in"] == 100 and out[0]["src_out"] == 160   # extended to cover both
     assert out[-1]["src_in"] == 200
 
 

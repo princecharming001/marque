@@ -48,8 +48,11 @@ fully green, keyless (no env keys).
       end<=start (non-positive duration), clamps negative timestamps to 0, and
       dedupes exact (word,start_ms,end_ms) repeats. Was previously zero hygiene —
       confirmed by direct repro (7 malformed inputs, all passed through raw).
-- [ ] F11 _merge_drops unions overlapping LLM+filler windows instead of silently
-      skipping the LLM's cut.
+- [x] F11 Fixed: _merge_drops now unions overlapping drops (extends boundaries)
+      instead of discarding the overlapping filler drop outright — confirmed the
+      old behavior left the non-overlapping remainder of a partially-covered
+      filler word un-cut (repro: LLM cut [1250,1500) + filler [1000,1300) used
+      to keep only [1250,1500), now correctly unions to [1000,1500)).
 - [ ] F12 Tweaked EDL wins over stale edit_prefs on re-render (manual
       set_captions_enabled/style must not be reverted by _apply_edit_prefs).
 - [ ] F13 Silent-except sweep across the edit path: every swallow becomes a

@@ -1766,17 +1766,24 @@ def _extract_emphasis_regions(words: list[dict], auto_highlights: list[dict] | N
 
 
 def _merge_drops(existing: list[dict], new: list[dict]) -> list[dict]:
-    """Union of drop lists; a new drop is added only if it doesn't overlap an
-    existing one (so deterministic filler cuts don't collide with the LLM's cuts)."""
-    out = list(existing or [])
-    for nd in new or []:
-        a, b = nd.get("src_in", 0), nd.get("src_out", 0)
-        if b <= a:
-            continue
-        if any(not (b <= e.get("src_in", 0) or a >= e.get("src_out", 0)) for e in out):
-            continue                                     # overlaps → skip
-        out.append(nd)
-    out.sort(key=lambda d: d.get("src_in", 0))
+    """Union of drop lists. A new (filler) drop that overlaps an existing (LLM)
+    drop is MERGED into it (extending the boundaries), not skipped outright —
+    skipping used to leave the non-overlapping remainder of a filler word un-cut
+    whenever a nearby editorial cut only partially covered it (F11)."""
+    combined = ([dict(e) for e in (existing or [])]
+                + [dict(n) for n in (new or []) if n.get("src_out", 0) > n.get("src_in", 0)])
+    if not combined:
+        return []
+    combined.sort(key=lambda d: d["src_in"])
+    out = [combined[0]]
+    for d in combined[1:]:
+        last = out[-1]
+        if d["src_in"] <= last["src_out"]:
+            last["src_out"] = max(last["src_out"], d["src_out"])
+            if last.get("reason") != "manual" and d.get("reason") == "manual":
+                last["reason"] = "manual"
+        else:
+            out.append(d)
     return out
 
 
