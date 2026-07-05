@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
 import { CutVideo } from "../components/CutVideo";
+import { AudioMix } from "../components/AudioMix";
 import { BrollLayer } from "../components/BrollLayer";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
@@ -12,9 +13,10 @@ import { CompositionProps } from "../types";
 export const Faceless: React.FC<CompositionProps> = ({ sourceUrl, edl }) => (
   <AbsoluteFill style={{ background: "#000" }}>
     <AbsoluteFill style={{ opacity: 0 }}>
-      <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} />
+      <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
     </AbsoluteFill>
     {edl && <BrollLayer broll={edl.broll} />}
     {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
+    <AudioMix audio={edl?.audio} captions={edl?.captions} />
   </AbsoluteFill>
 );

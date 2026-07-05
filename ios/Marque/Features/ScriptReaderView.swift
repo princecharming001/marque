@@ -116,7 +116,6 @@ struct ScriptReaderView: View {
             }
             HStack(spacing: Space.sm) {
                 Chip(text: live.hook.signal.label)
-                ScoreBadge(score: live.hook.strength)
             }
         }
     }
@@ -211,7 +210,7 @@ struct HookLabSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     Text("Pick your hook").font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-                    Text("Ranked by predicted strength.")
+                    Text("Different angles on the same idea — pick the one that sounds most like you.")
                         .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     if loading {
                         ProgressView().tint(Palette.gold).frame(maxWidth: .infinity).padding()
@@ -224,7 +223,7 @@ struct HookLabSheet: View {
                                     Text(h.text).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
                                         .fixedSize(horizontal: false, vertical: true)
                                         .multilineTextAlignment(.leading)
-                                    HStack { Chip(text: h.signal.label); Spacer(); ScoreBadge(score: h.strength) }
+                                    Chip(text: h.signal.label)
                                 }
                                 .marqueCard()
                             }

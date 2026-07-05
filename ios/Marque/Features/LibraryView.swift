@@ -128,7 +128,6 @@ struct ClipCell: View {
                         .foregroundStyle(clip.status.railColor.opacity(0.8))
                 }
                 Spacer()
-                ScoreBadge(score: clip.predictedScore)
             }
             .padding(Space.md)
         }
@@ -161,11 +160,6 @@ struct ClipGridCell: View {
                 Text("\(clip.seconds)s").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
             }
             .padding(6)
-        }
-        .overlay(alignment: .topTrailing) {
-            ScoreBadge(score: clip.predictedScore)
-                .scaleEffect(0.75)
-                .padding(4)
         }
         .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
@@ -237,7 +231,6 @@ struct ClipDetailSheet: View {
                         FormatTag(formatId: clip.formatId)
                         Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         Spacer()
-                        ScoreBadge(score: clip.predictedScore)
                     }
 
                     // Conversational tweaks — only for server-edited clips whose job

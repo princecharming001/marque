@@ -181,7 +181,6 @@ struct ReelDetailSheet: View {
                 HStack {
                     FormatTag(formatId: script.formatId)
                     Spacer()
-                    ScoreBadge(score: script.predictedScore)
                 }
                 Text(script.title.isEmpty ? script.hook.text : script.title)
                     .font(AppFont.serifM).tracking(Track.title)

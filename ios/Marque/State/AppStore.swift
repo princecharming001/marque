@@ -706,7 +706,15 @@ final class AppStore {
 
     func loadInsights() async {
         guard !clips.isEmpty else { return }
-        let summary = "\(activeClipCount) clips out this week, top predicted score \(bestClip?.predictedScore ?? 0), about \(weekViews) projected views and +\(weekFollows) follows."
+        // Describe REAL activity + measured metrics only — no fabricated "predicted
+        // score". When no post has real metrics yet, say so plainly so the coach
+        // gives process advice instead of reacting to made-up numbers.
+        let summary: String
+        if hasRealMetrics {
+            summary = "\(activeClipCount) clips out this week, about \(weekViews) measured views and +\(weekFollows) follows so far."
+        } else {
+            summary = "\(activeClipCount) clips scheduled or posted this week; no performance data has come back yet."
+        }
         coaching = await llm.interpretInsights(brand: brand, summary: summary)
     }
 

@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame, interpolate } from "remotion";
 import { CutVideo } from "../components/CutVideo";
+import { AudioMix } from "../components/AudioMix";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
@@ -23,9 +24,10 @@ export const TalkingHead: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   return (
     <AbsoluteFill style={{ background: "#000" }}>
       <AbsoluteFill style={{ transform: `scale(${scale})` }}>
-        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} />
+        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
       </AbsoluteFill>
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
+      <AudioMix audio={edl?.audio} captions={edl?.captions} />
     </AbsoluteFill>
   );
 };

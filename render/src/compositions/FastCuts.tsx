@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { CutVideo } from "../components/CutVideo";
+import { AudioMix } from "../components/AudioMix";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
@@ -21,11 +22,12 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
 
   return (
     <AbsoluteFill style={{ background: "#000" }}>
-      <CutVideo sourceUrl={sourceUrl} clips={clips} />
+      <CutVideo sourceUrl={sourceUrl} clips={clips} volumeRanges={edl?.audio?.volume_ranges} />
       {flashing && (
         <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.18 }} />
       )}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
+      <AudioMix audio={edl?.audio} captions={edl?.captions} />
     </AbsoluteFill>
   );
 };

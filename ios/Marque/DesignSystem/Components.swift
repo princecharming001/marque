@@ -231,22 +231,9 @@ struct UnderlineTabBar: View {
     }
 }
 
-// A predicted (not measured) virality signal. The leading sparkle + "est." keep it
-// visually distinct from real metrics, so a creator never mistakes it for a measured stat.
-struct ScoreBadge: View {
-    let score: Int
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "sparkle").font(.system(size: 8, weight: .semibold)).foregroundStyle(color)
-            Text("\(score)").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-            Text("est.").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-        }
-        .accessibilityLabel("Predicted score \(score) of 100")
-    }
-    private var color: Color {
-        score >= 85 ? Palette.positive : score >= 70 ? Palette.accent : Palette.textTertiary
-    }
-}
+// (ScoreBadge removed — predicted "virality scores" had no data basis and read as
+//  filler. predictedScore/strength model fields stay for the learning loop; nothing
+//  in the UI surfaces a fabricated number until it's backed by real measured lift.)
 
 struct StreakGlyph: View {
     let count: Int

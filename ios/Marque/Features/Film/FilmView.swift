@@ -162,7 +162,6 @@ struct FilmView: View {
                 }
             }
             Spacer()
-            ScoreBadge(score: saved.script.predictedScore).scaleEffect(0.9)
             Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
         }
         .padding(Space.lg)

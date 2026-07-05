@@ -10,10 +10,13 @@ final class CameraModel: NSObject, ObservableObject {
     @Published var status: Status = .idle
     @Published var hasAudio = false     // false when mic permission was denied → warn the user
 
+    @Published var position: AVCaptureDevice.Position = .front
+
     let session = AVCaptureSession()
     private let output = AVCaptureMovieFileOutput()
     private let q = DispatchQueue(label: "marque.camera.session")
     private var onFinish: ((URL?) -> Void)?
+    private var videoInput: AVCaptureDeviceInput?
 
     var hasCamera: Bool {
         #if targetEnvironment(simulator)
@@ -41,6 +44,7 @@ final class CameraModel: NSObject, ObservableObject {
         if let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
            let input = try? AVCaptureDeviceInput(device: cam), session.canAddInput(input) {
             session.addInput(input)
+            videoInput = input
         }
         if audio, let mic = AVCaptureDevice.default(for: .audio),
            let aInput = try? AVCaptureDeviceInput(device: mic), session.canAddInput(aInput) {
@@ -51,6 +55,29 @@ final class CameraModel: NSObject, ObservableObject {
         session.commitConfiguration()
         session.startRunning()
         setStatus(.ready)
+    }
+
+    /// Flip front/back between takes (used while paused, never mid-recording — the
+    /// segments stitch together afterward). Swaps only the video input. Simulator
+    /// no-op (no camera). The camera flip is why a paused multi-take can change
+    /// angle and still export as one continuous clip.
+    func flip() {
+        guard hasCamera, status == .ready else { return }
+        let target: AVCaptureDevice.Position = (position == .front) ? .back : .front
+        q.async {
+            guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: target),
+                  let newInput = try? AVCaptureDeviceInput(device: cam) else { return }
+            self.session.beginConfiguration()
+            if let old = self.videoInput { self.session.removeInput(old) }
+            if self.session.canAddInput(newInput) {
+                self.session.addInput(newInput)
+                self.videoInput = newInput
+            } else if let old = self.videoInput {
+                self.session.addInput(old)   // restore on failure
+            }
+            self.session.commitConfiguration()
+            DispatchQueue.main.async { self.position = target }
+        }
     }
 
     func start() {

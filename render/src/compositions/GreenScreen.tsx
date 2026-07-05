@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { CutVideo } from "../components/CutVideo";
+import { AudioMix } from "../components/AudioMix";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
@@ -26,9 +27,10 @@ export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       </div>
       <div style={{ position: "absolute", right: 0, top: 0, width: "60%", height: "100%",
         mixBlendMode: "multiply", overflow: "hidden" }}>
-        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} />
+        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
       </div>
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
+      <AudioMix audio={edl?.audio} captions={edl?.captions} />
     </AbsoluteFill>
   );
 };

@@ -334,7 +334,6 @@ struct VoiceScriptRow: View {
             HStack {
                 FormatTag(formatId: script.formatId)
                 Spacer()
-                ScoreBadge(score: script.predictedScore).scaleEffect(0.85)
             }
             Text(script.title.isEmpty ? script.hook.text : script.title)
                 .font(AppFont.serifM).foregroundStyle(Palette.textPrimary)

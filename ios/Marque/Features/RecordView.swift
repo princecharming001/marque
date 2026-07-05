@@ -24,8 +24,12 @@ struct RecordView: View {
     @State private var reactSourceURL: String = ""
     // Mutable copy so inline teleprompter edits flow through without modifying the store mid-take.
     @State private var liveScript: Script
+    // Multi-take: each pause finalizes a segment; finishing stitches them into one
+    // continuous clip on-device (so the backend still gets a single source_url).
+    @State private var segments: [URL] = []
+    @State private var takeElapsed: TimeInterval = 0   // accumulated across finished segments
 
-    enum Phase { case ready, recording, recorded, making }
+    enum Phase { case ready, recording, paused, stitching, recorded, making }
 
     init(script: Script) {
         self.script = script
@@ -93,8 +97,9 @@ struct RecordView: View {
 
             Spacer()
 
-            // Format pill (right side)
-            FormatTag(formatId: script.formatId).colorScheme(.dark)
+            // Balancer keeps the kicker optically centered against the 38pt close
+            // pill (the old format badge here read as an odd floating tab).
+            Color.clear.frame(width: 38, height: 38)
         }
     }
 
@@ -121,24 +126,17 @@ struct RecordView: View {
                 }
                 .accessibilityIdentifier("record.upload")
             case .recording:
-                HStack(spacing: Space.sm) {
-                    Circle().fill(Palette.critical).frame(width: 8, height: 8)
-                    if let start = recordStart {
-                        TimelineView(.periodic(from: start, by: 1)) { ctx in
-                            let secs = max(0, Int(ctx.date.timeIntervalSince(start)))
-                            Text(String(format: "%d:%02d / ~%ds", secs / 60, secs % 60, liveScript.targetSeconds))
-                                .font(AppFont.body).foregroundStyle(.white).monospacedDigit()
-                        }
-                    } else {
-                        Text("Recording…").font(AppFont.body).foregroundStyle(Palette.accent)
-                    }
-                }
+                takeTimer
                 if camera.hasCamera && !camera.hasAudio {
                     Text("Microphone is off — your clip will have no sound. Enable mic access in Settings.")
                         .font(AppFont.caption).foregroundStyle(Palette.critical).multilineTextAlignment(.center)
                 }
+                if segments.count > 0 {
+                    Text("Take \(segments.count + 1)").font(AppFont.caption).foregroundStyle(.white.opacity(0.6))
+                }
                 speedControl
                 HStack(spacing: Space.xl) {
+                    // Teleprompter scroll play/pause (does not stop recording).
                     Button { promptRunning.toggle() } label: {
                         Image(systemName: promptRunning ? "pause.fill" : "play.fill")
                             .font(.system(size: 18)).foregroundStyle(.white)
@@ -146,8 +144,41 @@ struct RecordView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("record.pausePrompt")
-                    recordButton(active: true) { stopRecording() }
+                    recordButton(active: true) { finishTake() }
+                    // Pause the TAKE — device only (lets you resume from a new angle).
+                    if camera.hasCamera {
+                        Button { pauseTake() } label: {
+                            Image(systemName: "pause.circle")
+                                .font(.system(size: 20)).foregroundStyle(.white)
+                                .marqueGlassCircle(diameter: 52)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("record.pauseTake")
+                    }
                 }
+            case .paused:
+                takeTimer
+                Text("Paused — flip the camera for a new angle, then resume. Your takes stitch into one clip.")
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                HStack(spacing: Space.xl) {
+                    Button { camera.flip() } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath.camera")
+                            .font(.system(size: 18)).foregroundStyle(.white)
+                            .marqueGlassCircle(diameter: 52)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.flipCamera")
+                    recordButton(active: false) { resumeTake() }
+                    Button { finishTake() } label: {
+                        Text("Done").font(AppFont.headline).foregroundStyle(.white)
+                            .frame(width: 52, height: 52).marqueGlassCircle(diameter: 52)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.finishTake")
+                }
+            case .stitching:
+                ProgressView().tint(Palette.accent)
+                Text("Stitching your takes…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
             case .recorded:
                 Text("Nice take. Choose the formats to cut it into.").font(AppFont.callout).foregroundStyle(.white.opacity(0.85)).multilineTextAlignment(.center)
                 Button { reRecord() } label: {
@@ -201,7 +232,28 @@ struct RecordView: View {
 
     // MARK: actions
 
+    // Accumulated take time across finished segments + the live segment.
+    private var takeTimer: some View {
+        HStack(spacing: Space.sm) {
+            Circle().fill(phase == .paused ? Palette.textTertiary : Palette.critical)
+                .frame(width: 8, height: 8)
+            if phase == .recording, let start = recordStart {
+                TimelineView(.periodic(from: start, by: 1)) { ctx in
+                    let secs = Int(takeElapsed + max(0, ctx.date.timeIntervalSince(start)))
+                    Text(String(format: "%d:%02d / ~%ds", secs / 60, secs % 60, liveScript.targetSeconds))
+                        .font(AppFont.body).foregroundStyle(.white).monospacedDigit()
+                }
+            } else {
+                let secs = Int(takeElapsed)
+                Text(String(format: "%d:%02d / ~%ds", secs / 60, secs % 60, liveScript.targetSeconds))
+                    .font(AppFont.body).foregroundStyle(.white.opacity(0.85)).monospacedDigit()
+            }
+        }
+    }
+
     private func startRecording() {
+        segments = []
+        takeElapsed = 0
         phase = .recording
         restartToken += 1
         recordStart = Date()
@@ -209,22 +261,66 @@ struct RecordView: View {
         if camera.hasCamera && camera.status == .ready {
             camera.start()
         } else {
+            // Simulator (no camera): single mock take → straight to .recorded, so
+            // the Maestro fast path (one record.capture tap) is unchanged.
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
                 if phase == .recording { phase = .recorded }
             }
         }
     }
 
-    private func stopRecording() {
+    /// Pause the current take: finalize this segment, hold in .paused so the user
+    /// can flip the camera and resume. Device only.
+    private func pauseTake() {
+        guard camera.hasCamera else { return }
         promptRunning = false
-        if camera.hasCamera {
+        if let s = recordStart { takeElapsed += Date().timeIntervalSince(s) }
+        camera.stop { url in
+            if let url { segments.append(url) }
+            recordStart = nil
+            phase = .paused
+        }
+    }
+
+    private func resumeTake() {
+        phase = .recording
+        recordStart = Date()
+        promptRunning = true
+        if camera.hasCamera && camera.status == .ready { camera.start() }
+    }
+
+    /// Finish the take from either .recording (stop the live segment first) or
+    /// .paused (no live segment), then stitch all segments into one clip.
+    private func finishTake() {
+        promptRunning = false
+        guard camera.hasCamera else { phase = .recorded; return }   // sim
+        if phase == .recording {
+            if let s = recordStart { takeElapsed += Date().timeIntervalSince(s) }
             camera.stop { url in
-                if let url, let data = try? Data(contentsOf: url) {
-                    footagePath = MediaStore.save(data, ext: "mov")
-                }
-                phase = .recorded
+                if let url { segments.append(url) }
+                recordStart = nil
+                stitchAndFinish()
             }
         } else {
+            stitchAndFinish()
+        }
+    }
+
+    private func stitchAndFinish() {
+        if segments.count <= 1 {
+            if let only = segments.first, let data = try? Data(contentsOf: only) {
+                footagePath = MediaStore.save(data, ext: "mov")
+            }
+            phase = .recorded
+            return
+        }
+        phase = .stitching
+        Task {
+            let stitched = await VideoStitcher.stitch(segments)
+            let final = stitched ?? segments.first   // never strand: fall back to take 1
+            if let final, let data = try? Data(contentsOf: final) {
+                footagePath = MediaStore.save(data, ext: "mov")
+            }
             phase = .recorded
         }
     }
@@ -232,6 +328,8 @@ struct RecordView: View {
     private func reRecord() {
         footagePath = nil
         recordStart = nil
+        segments = []
+        takeElapsed = 0
         restartToken += 1
         phase = .ready
     }
@@ -331,6 +429,10 @@ struct Teleprompter: View {
     @State private var contentH: CGFloat = 1
     @State private var editingField: EditField? = nil
     @State private var draft = ""
+    // Non-nil while the user is dragging the teleprompter to override the auto-pace.
+    // Captures the offset at touch-down; auto-scroll suspends until release, then
+    // resumes immediately from wherever they left it.
+    @State private var dragBase: CGFloat? = nil
     @FocusState private var editorFocused: Bool
     private let ticker = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
 
@@ -377,6 +479,18 @@ struct Teleprompter: View {
                 .offset(y: -offset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .clipped()
+                .contentShape(Rectangle())
+                .gesture(
+                    // Drag to scrub the script yourself — auto-pace hands off while
+                    // you drag and picks back up from where you release. 12pt min so
+                    // a tap still routes to a line's edit gesture.
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { g in
+                            if dragBase == nil { dragBase = offset }
+                            offset = min(maxScroll, max(0, (dragBase ?? offset) - g.translation.height))
+                        }
+                        .onEnded { _ in dragBase = nil }
+                )
 
                 if isEditing {
                     Color.black.opacity(0.7).ignoresSafeArea()
@@ -406,7 +520,7 @@ struct Teleprompter: View {
             .onPreferenceChange(TeleHeightKey.self) { contentH = $0 }
             .onChange(of: restartToken) { _, _ in offset = 0 }
             .onReceive(ticker) { _ in
-                guard running, !isEditing, maxScroll > 0 else { return }
+                guard running, !isEditing, dragBase == nil, maxScroll > 0 else { return }
                 let pxPerSec = contentH / CGFloat(max(6, script.targetSeconds)) * CGFloat(speed)
                 offset = min(maxScroll, offset + pxPerSec / 60.0)
             }
