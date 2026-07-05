@@ -1006,8 +1006,49 @@ REMOTION_SECRET = os.environ.get("REMOTION_AWS_SECRET_ACCESS_KEY", "")
 REMOTION_FUNCTION_NAME = os.environ.get("REMOTION_FUNCTION_NAME", "")
 REMOTION_BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "render", "dist", "lambda-render.js")
 
-# In-memory job store (replaced by Supabase clip_jobs in Phase 4)
+# In-memory job store — the fast path for every request. Best-effort durably
+# backed by Supabase clip_edit_sessions (F15) so a 24h TTL sweep or a Render
+# restart doesn't lose a creator's edit session; see _persist_clip_job /
+# _restore_clip_job below. Keyless/no Supabase configured → pure in-memory,
+# unchanged from before.
 _clip_jobs: dict[str, dict] = {}
+
+
+async def _persist_clip_job(job_id: str) -> None:
+    """Best-effort durable write-through for one edit session (F15). Call from
+    a fire-and-forget asyncio.create_task at the end of any code path that
+    materially changes a job (creation, pipeline completion, tweak, retry,
+    re-render) — never awaited inline, so a slow/unavailable Supabase never
+    adds latency to the hot path. No-op without Supabase configured."""
+    if not _supabase_client:
+        return
+    job = _clip_jobs.get(job_id)
+    if not job:
+        return
+    try:
+        await _supabase_client.upsert_clip_job(job_id, job)
+    except Exception as e:
+        logging.warning("supabase upsert_clip_job failed: %s", e)
+
+
+async def _restore_clip_job(job_id: str) -> dict | None:
+    """Lazy-restore an edit session from Supabase on an in-memory miss (this
+    Render instance never saw it, a restart wiped it, or the 24h in-memory TTL
+    swept it) — kills the "edit session expired" class for creators returning
+    to a clip days later. Restores directly into _clip_jobs so the caller can
+    proceed exactly as if it had been there all along. Returns None (does
+    nothing) keyless, or when nothing durable exists for this id."""
+    if not _supabase_client:
+        return None
+    try:
+        state = await _supabase_client.load_clip_job(job_id)
+    except Exception as e:
+        logging.warning("supabase load_clip_job failed: %s", e)
+        return None
+    if not state:
+        return None
+    _clip_jobs[job_id] = state
+    return state
 
 
 @app.post("/v1/uploads/mint")
@@ -1095,6 +1136,7 @@ async def create_clip_job(req: ClipJobRequest):
         job["words"] = _mock_words(req.script)
         return {"mode": "mock", "job_id": job_id, "clips": clips}
     asyncio.create_task(_run_pipeline(job_id))
+    asyncio.create_task(_persist_clip_job(job_id))   # F15: durable from creation
     return {"mode": "live", "job_id": job_id, "clips": clips}
 
 
@@ -1102,7 +1144,7 @@ async def create_clip_job(req: ClipJobRequest):
 async def get_clip_job(job_id: str, include_words: int = 0):
     _sweep_ttl_jobs(_clip_jobs)
     _sweep_stuck_renders(_clip_jobs)
-    if job_id not in _clip_jobs:
+    if job_id not in _clip_jobs and not await _restore_clip_job(job_id):
         _raise_job_not_found(job_id)
     job = _clip_jobs[job_id]
     out = {
@@ -1127,7 +1169,7 @@ async def retry_clip_job(job_id: str):
     """Recover a failed job. If an EDL exists, only the render stage re-runs (the
     transcript + edit are still good); otherwise the full pipeline restarts. The
     job dict retains everything needed — no re-upload from the app."""
-    job = _clip_jobs.get(job_id)
+    job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
     if job is None:
         _raise_job_not_found(job_id)
     if job["status"] in ("transcribing", "editing", "rendering") \
@@ -1169,6 +1211,8 @@ async def _retry_render(job_id: str) -> None:
         _fail_job(job, e.code, e.detail, e.stage)
     except Exception as e:
         _fail_job(job, "internal_error", str(e))
+    finally:
+        asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after retry
 
 
 @app.post("/v1/clips/{job_id}/tweak")
@@ -1176,10 +1220,10 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     """One conversational tweak turn: interpret the instruction into typed ops
     (LLM live / keyword grammar keyless), apply them deterministically to the
     stored EDL, and re-render just the targeted clip."""
-    job = _clip_jobs.get(job_id)
+    job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
     if job is None:
-        # In-memory job store — a backend restart orphans old jobs (indistinguishable
-        # from "never existed" here since it wasn't a TTL sweep; 404 is correct).
+        # In-memory job store — a backend restart orphans old jobs (F15: unless a
+        # durable Supabase copy exists, tried above via _restore_clip_job).
         _raise_job_not_found(job_id)
     # Case-insensitive: iOS UUID.uuidString is uppercase, uuid4() is lowercase.
     want = req.clip_id.lower()
@@ -1296,6 +1340,7 @@ async def tweak_clip(job_id: str, req: TweakRequest):
             asyncio.create_task(_rerender_clip(job_id, req.clip_id, my_gen,
                                                resolve_broll=resolve_broll_needed))
 
+    asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after every tweak
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
             "undo_available": bool(job["edl_history"]), "degraded": degraded}
@@ -1352,8 +1397,10 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             if not prev_url:
                 _fail_clip(clip, "internal_error", str(e))
     finally:
-        if _is_current_render(clip, my_gen) and clip.get("status") != "failed":
-            clip["status"] = "ready" if clip.get("render_url") else "failed"
+        if _is_current_render(clip, my_gen):
+            if clip.get("status") != "failed":
+                clip["status"] = "ready" if clip.get("render_url") else "failed"
+            asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after re-render
 
 
 def _mock_edl(style: str, script: dict) -> dict:
@@ -1624,6 +1671,8 @@ async def _run_pipeline(job_id: str):
         _fail_job(job, e.code, e.detail, e.stage)
     except Exception as e:
         _fail_job(job, "internal_error", str(e))
+    finally:
+        asyncio.create_task(_persist_clip_job(job_id))   # F15: durable at terminal state
 
 
 async def _render_all_clips(job_id: str) -> None:

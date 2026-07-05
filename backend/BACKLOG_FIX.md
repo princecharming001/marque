@@ -74,9 +74,14 @@ fully green, keyless (no env keys).
       preservation guard (never desynced). Both pinned. Minor adjacent gap (a
       dropped react_window produces no warning, unlike b-roll/F6) flagged as a
       follow-up, out of this item's scope.
-- [ ] F15 Durable edit sessions: persist {job_id: words, edl, clip meta} to Supabase
-      (clone upsert_arm_stat pattern) with lazy restore on job-miss; keyless
-      fallback stays in-memory.
+- [x] F15 Implemented: clip_edit_sessions table (migrations.sql, one JSONB blob
+      per job_id) + upsert_clip_job/load_clip_job (supabase_persistence.py,
+      clones the upsert_arm_stat pattern) + _persist_clip_job/_restore_clip_job
+      (main.py). Fire-and-forget persist after job creation, pipeline terminal
+      state, every tweak, retry, and re-render; lazy restore-on-miss wired into
+      GET/retry/tweak before the 404/410 check. No-op with zero behavior change
+      when Supabase isn't configured (the only path every existing test runs).
+      5 new tests incl. a FakeSupabase exercising the real persist+restore code.
 - [ ] F16 Fuzz gate: seeded randomized op sequences over randomized EDLs assert
       invariants (segments monotonic, order a valid permutation, kept-frames>0 or
       rejected, plan always builds, captions within output bounds).

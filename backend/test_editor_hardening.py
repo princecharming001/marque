@@ -8,6 +8,7 @@ code runs end-to-end with injected failures. The core contract under test:
     never a silent hang, never "ready" without a playable render_url.
 """
 import asyncio
+import json
 import time
 
 from fastapi.testclient import TestClient
@@ -991,6 +992,95 @@ def test_react_window_straddled_by_cut_dropped_not_desynced():
                     react_schedule=[{"state": "freeze", "src_in": 100, "src_out": 180, "clip_from": 20}])
     plan = build_render_plan(edl)
     assert plan["react_schedule"] == []   # dropped outright rather than desynced
+
+
+# ---- F15: durable edit sessions (Supabase write-through + lazy restore) ----
+
+class _FakeSupabase:
+    """In-memory stand-in for SupabaseClient — exercises the real persist/restore
+    code paths in main.py without a network call."""
+    def __init__(self):
+        self.jobs: dict[str, dict] = {}
+
+    async def upsert_clip_job(self, job_id, job):
+        self.jobs[job_id] = json.loads(json.dumps(job))   # round-trips like real JSON storage
+        return True
+
+    async def load_clip_job(self, job_id):
+        return self.jobs.get(job_id)
+
+
+def _wait_until(predicate, timeout_s=2.0):
+    """Poll from a SYNC test while a fire-and-forget asyncio.create_task (running
+    on the TestClient's background event-loop thread) catches up."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_tweak_persists_to_supabase_when_configured(monkeypatch):
+    fake = _FakeSupabase()
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]})
+    assert _wait_until(lambda: job_id in fake.jobs)
+    assert fake.jobs[job_id]["edl"]["caption_style"] == "karaoke"
+
+
+def test_get_clip_restores_from_supabase_on_in_memory_miss(monkeypatch):
+    fake = _FakeSupabase()
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "bold-word"}]})
+    assert _wait_until(lambda: job_id in fake.jobs)
+
+    # Simulate this instance never having seen it (restart / TTL sweep) — pop it
+    # from the in-memory store, but the durable copy remains.
+    main._clip_jobs.pop(job_id, None)
+    r2 = client.get(f"/v1/clips/{job_id}")
+    assert r2.status_code == 200   # NOT 404/410 — restored from Supabase
+    assert r2.json()["edl"]["caption_style"] == "bold-word"
+    assert job_id in main._clip_jobs   # cached back into memory
+
+
+def test_tweak_restores_from_supabase_on_in_memory_miss(monkeypatch):
+    fake = _FakeSupabase()
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "clean"}]})
+    assert _wait_until(lambda: job_id in fake.jobs)
+
+    main._clip_jobs.pop(job_id, None)
+    out = client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "set_captions_enabled", "enabled": False}]})
+    assert out.status_code == 200
+    assert client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"] == []
+
+
+def test_restore_is_a_noop_keyless():
+    # No _supabase_client configured (the default in every other test in this
+    # file) — restore must return None and never raise.
+    assert main._supabase_client is None
+    out = asyncio.run(main._restore_clip_job("00000000-0000-0000-0000-000000000000"))
+    assert out is None
 
 
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----

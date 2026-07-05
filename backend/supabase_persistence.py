@@ -147,3 +147,25 @@ class SupabaseClient:
         except Exception:
             return None
         return rows[0]["profile"] if rows and rows[0].get("profile") else None
+
+    # --- clip_edit_sessions (F15: durable manual-editor state) ----------------
+    # The whole in-memory job dict, stored as one JSONB blob — see migrations.sql
+    # for why this is a blob rather than a column-per-field table.
+
+    async def upsert_clip_job(self, job_id: str, job: dict) -> bool:
+        row = {"job_id": job_id, "state": job}
+        r = await self._request(
+            "POST", "/clip_edit_sessions", params={"on_conflict": "job_id"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_clip_job(self, job_id: str) -> dict | None:
+        r = await self._request("GET", "/clip_edit_sessions",
+                                params={"job_id": f"eq.{job_id}", "select": "state"})
+        if not (r and r.status_code == 200):
+            return None
+        try:
+            rows = r.json()
+        except Exception:
+            return None
+        return rows[0]["state"] if rows and rows[0].get("state") else None

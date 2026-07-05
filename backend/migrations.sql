@@ -49,9 +49,24 @@ CREATE TABLE IF NOT EXISTS emulation_profiles (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- F15: durable clip-editing sessions. The full in-memory job dict (words, edl,
+-- edl_history, tweaks, clips w/ render_url+status+warnings, style, source_url)
+-- is write-through'd here as a single JSONB blob keyed by job_id — kills the
+-- "edit session expired" class: a 24h in-memory TTL sweep or a Render restart
+-- no longer loses a creator's edit; it's lazily restored from here on the next
+-- access. Kept as one blob (not columns) since the job shape is internal and
+-- already evolves inside main.py — a schema-per-field table would need a
+-- migration every time a new job key is added.
+CREATE TABLE IF NOT EXISTS clip_edit_sessions (
+    job_id      TEXT PRIMARY KEY,
+    state       JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- These tables are written ONLY by the backend using the Supabase service-role key,
 -- which bypasses RLS. Enabling RLS with no policies denies the anon/authenticated
 -- roles entirely — the correct, closed-by-default posture for internal learning state.
 ALTER TABLE arm_stats           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE post_registry       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE emulation_profiles  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clip_edit_sessions  ENABLE ROW LEVEL SECURITY;
