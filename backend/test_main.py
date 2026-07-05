@@ -1651,3 +1651,72 @@ def test_anthropic_client_recreated_across_event_loops(monkeypatch):
     r1 = asyncio.run(main.anthropic("s", "u", main.HAIKU, 50))
     r2 = asyncio.run(main.anthropic("s", "u", main.HAIKU, 50))
     assert r1 == "ok" and r2 == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Round 3: real reels (Apify) — parsing, mapping, warm, keyless invariance
+# ---------------------------------------------------------------------------
+
+def test_parse_watched_platform_prefix_and_backcompat():
+    assert main._parse_watched("tiktok:mrbeast, hormozi, instagram:@gary") == [
+        ("tiktok", "mrbeast"), ("instagram", "hormozi"), ("instagram", "gary")]
+    assert main._parse_watched("") == []
+    # unknown prefix falls back to treating the whole token as an IG handle
+    assert main._parse_watched("bogus:name") == [("instagram", "bogus:name".replace(":", ""))] or \
+        main._parse_watched("bogus:name")[0][0] == "instagram"
+
+
+def test_niche_hashtags_slugging():
+    assert main._niche_hashtags("strength training") == ["strengthtraining", "strength"]
+    assert main._niche_hashtags("") == []
+    assert main._niche_hashtags("SEO") == ["seo"]
+
+
+def test_normalize_apify_post_thumbnail_instagram():
+    p = main._normalize_apify_post({
+        "caption": "hi", "likesCount": 10, "videoViewCount": 500,
+        "displayUrl": "https://cdn/thumb.jpg", "videoUrl": "https://cdn/v.mp4",
+        "ownerUsername": "coach"}, "instagram")
+    assert p["thumbnail_url"] == "https://cdn/thumb.jpg"
+    assert p["author"] == "coach"
+
+
+def test_normalize_apify_post_thumbnail_tiktok():
+    p = main._normalize_apify_post({
+        "text": "hi", "diggCount": 10, "playCount": 900,
+        "videoMeta": {"coverUrl": "https://cdn/cover.jpg", "duration": 20},
+        "authorMeta": {"name": "lifter"}}, "tiktok")
+    assert p["thumbnail_url"] == "https://cdn/cover.jpg"
+    assert p["author"] == "lifter"
+
+
+def test_reel_from_post_mapping_and_stable_id():
+    post = {"caption": "3 mistakes killing your gains #x", "likes": 100, "views": 50_000,
+            "thumbnail_url": "https://cdn/t.jpg", "video_url": "https://cdn/v.mp4",
+            "author": "hormozi", "posted_at": "2026-01-01"}
+    r1 = main._reel_from_post(post, "hormozi", "instagram", 0, True)
+    r2 = main._reel_from_post(post, "hormozi", "instagram", 5, True)
+    assert r1["id"] == r2["id"]                      # stable across index (posted_at seed)
+    assert r1["id"].startswith("real-instagram-hormozi-")
+    assert r1["title"] == "3 mistakes killing your gains"   # trailing hashtag stripped
+    assert r1["format_id"] == "listicle" and r1["format_id"] in main._VALID_REEL_FORMATS
+    assert r1["from_watched"] is True and r1["thumbnail_url"]
+
+
+def test_heuristic_annotation_covers_format_cues():
+    assert main._heuristic_reel_annotation({"caption": "the myth that won't die"})["format_id"] == "myth-buster"
+    assert main._heuristic_reel_annotation({"caption": "stop doing this"})["format_id"] == "do-this-not-that"
+    assert main._heuristic_reel_annotation({"caption": "before and after 30 days"})["format_id"] == "before-after"
+
+
+def test_reels_warm_keyless():
+    r = client.post("/v1/reels/warm", json={"handle": "@someone", "platform": "tiktok"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert client.post("/v1/reels/warm", json={"handle": ""}).status_code == 422
+
+
+def test_reels_keyless_still_mock_corpus():
+    # keyless path must be byte-identical to the pre-round-3 mock behavior
+    b = client.get("/v1/reels", params={"niche": "fitness", "watched": "tiktok:mrbeast"}).json()
+    assert b["mode"] == "mock" and len(b["reels"]) == main.REELS_PAGE
+    assert all("id" in r and "thumbnail_url" in r for r in b["reels"])

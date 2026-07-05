@@ -202,8 +202,8 @@ struct HomeView: View {
                 }
             } else if feed.reelItems.isEmpty {
                 EmptyStateView(icon: "rectangle.stack.badge.play",
-                               title: "No reels yet",
-                               message: "Pull down to refresh — we'll find proven reels from your niche.")
+                               title: "Finding real reels…",
+                               message: "We're scanning your niche and the creators you watch for reels that are actually performing. Pull to refresh in a moment — or add creators to watch in your profile.")
             } else {
                 LazyVGrid(columns: reelColumns, spacing: Space.md) {
                     ForEach(feed.reelItems) { r in

@@ -16,6 +16,11 @@ export interface ReactWindow { state: string; frame_in: number; frame_out: numbe
 
 export type CaptionStyle = "clean" | "bold-word" | "karaoke";
 
+// Audio plan (output coords for volume_ranges; music plays across the whole output).
+export interface MusicTrack { url?: string | null; query?: string | null; volume: number; duck_voice: boolean; }
+export interface VolumeRange { frame_in: number; frame_out: number; volume: number; }
+export interface AudioPlan { lufs_target: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; }
+
 export interface RenderPlan {
   style: string;
   format_id: string;
@@ -27,8 +32,18 @@ export interface RenderPlan {
   react_schedule?: ReactWindow[];
   layout: Layout;
   caption_style: CaptionStyle;
+  audio?: AudioPlan | null;
   total_frames: number;
 }
+
+// Source-audio volume at an output frame (default 1.0 outside every range).
+export const volumeAt = (frame: number, ranges: VolumeRange[] | undefined | null): number => {
+  if (!ranges) return 1.0;
+  for (const r of ranges) {
+    if (frame >= r.frame_in && frame < r.frame_out) return r.volume;
+  }
+  return 1.0;
+};
 
 // A `type` alias (not `interface`) so it satisfies Remotion's Record<string, unknown>
 // props constraint — interfaces lack the implicit index signature and are rejected.

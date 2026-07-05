@@ -279,17 +279,30 @@ def _kept_intervals(segments: list[dict], drops: list[dict]) -> list[tuple[int, 
 
 
 def build_render_plan(edl: dict) -> dict:
-    """Transform an editorial EDL (source coords) into a render-ready plan (see above)."""
-    clips_src = _kept_intervals(edl.get("segments") or [], edl.get("drops") or [])
+    """Transform an editorial EDL (source coords) into a render-ready plan (see above).
 
-    # cumulative output offset per kept interval
+    Segments are walked in `segment_order` (a permutation; None = source order), so
+    reordered segments land at their new output position — and because captions/
+    overlays/broll are mapped through the same source→output index, they travel with
+    their segment automatically. With identity order the index is exactly the flat
+    kept-interval list this function always produced, so plans are byte-identical."""
+    segments = edl.get("segments") or []
+    drops = edl.get("drops") or []
+    order = edl.get("segment_order")
+    if order is not None and sorted(order) == list(range(len(segments))):
+        ordered_segments = [segments[i] for i in order]
+    else:
+        ordered_segments = sorted(segments, key=lambda s: s["src_in"])
+
+    # cumulative output offset per kept interval, per segment IN PLAYBACK ORDER
     clips: list[dict] = []
     index: list[tuple[int, int, int]] = []   # (src_in, src_out, out_start)
     out_cursor = 0
-    for s_in, s_out in clips_src:
-        clips.append({"src_in": s_in, "src_out": s_out})
-        index.append((s_in, s_out, out_cursor))
-        out_cursor += s_out - s_in
+    for seg in ordered_segments:
+        for s_in, s_out in _kept_intervals([seg], drops):
+            clips.append({"src_in": s_in, "src_out": s_out})
+            index.append((s_in, s_out, out_cursor))
+            out_cursor += s_out - s_in
     total_frames = out_cursor
 
     def map_point(f: int) -> int | None:
@@ -300,7 +313,11 @@ def build_render_plan(edl: dict) -> dict:
         return None
 
     def map_range(a: int, b: int) -> tuple[int, int] | None:
-        """Source [a,b) → output [in,out); None if no kept footage overlaps it."""
+        """Source [a,b) → output [in,out); None if no kept footage overlaps it.
+        Under a reorder, one source range can land in non-contiguous output pieces —
+        merge adjacent spans and return the LONGEST contiguous one (global min/max
+        would smear an overlay across unrelated reordered content). With identity
+        order the pieces are always adjacent, so this reduces to the old behavior."""
         spans = []
         for s_in, s_out, out_start in index:
             lo, hi = max(a, s_in), min(b, s_out)
@@ -308,7 +325,25 @@ def build_render_plan(edl: dict) -> dict:
                 spans.append((out_start + (lo - s_in), out_start + (hi - s_in)))
         if not spans:
             return None
-        return min(s[0] for s in spans), max(s[1] for s in spans)
+        spans.sort()
+        merged = [list(spans[0])]
+        for lo, hi in spans[1:]:
+            if lo <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], hi)
+            else:
+                merged.append([lo, hi])
+        best = max(merged, key=lambda m: m[1] - m[0])
+        return best[0], best[1]
+
+    def map_range_pieces(a: int, b: int) -> list[tuple[int, int]]:
+        """Source [a,b) → EVERY output piece (unmerged). Volume ranges need this —
+        a mute must not swallow reordered content that lands between its pieces."""
+        pieces = []
+        for s_in, s_out, out_start in index:
+            lo, hi = max(a, s_in), min(b, s_out)
+            if lo < hi:
+                pieces.append((out_start + (lo - s_in), out_start + (hi - s_in)))
+        return sorted(pieces)
 
     captions = []
     for c in edl.get("captions") or []:
@@ -357,6 +392,20 @@ def build_render_plan(edl: dict) -> dict:
             "audio_gain": w.get("audio_gain", 1.0),
         })
 
+    # Audio plan: music passes through; per-range source volume remaps to output
+    # coords as SPLIT pieces (never merged — see map_range_pieces).
+    audio_src = edl.get("audio") or {}
+    volume_ranges_out = []
+    for vr in audio_src.get("volume_ranges") or []:
+        for lo, hi in map_range_pieces(vr["src_in"], vr["src_out"]):
+            volume_ranges_out.append({"frame_in": lo, "frame_out": hi,
+                                      "volume": vr.get("volume", 1.0)})
+    audio_plan = {
+        "lufs_target": audio_src.get("lufs_target", -14.0),
+        "music": audio_src.get("music"),
+        "volume_ranges": volume_ranges_out,
+    }
+
     return {
         "style": edl.get("style", "talking_head"),
         "format_id": edl.get("format_id", ""),
@@ -370,6 +419,7 @@ def build_render_plan(edl: dict) -> dict:
         # `or "clean"` (not a dict default): the key is now always present from
         # model_dump() with value None when unset.
         "caption_style": edl.get("caption_style") or "clean",
+        "audio": audio_plan,
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
         "total_frames": max(1, total_frames),
     }
@@ -387,6 +437,7 @@ TWEAK_OP_TYPES = [
     "set_caption_style", "set_captions_enabled", "cut_range", "restore_range",
     "remove_overlays", "add_punch_in", "add_text_card", "add_broll",
     "remove_broll", "set_split_fraction", "trim_start", "trim_end", "undo",
+    "reorder_segments", "set_music", "set_segment_volume", "mute_range",
 ]
 
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
@@ -604,23 +655,99 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     reason = "trim would leave less than 2 seconds of footage"
                 else:
                     segs = [dict(s) for s in edl["segments"]]
+                    popped: list[int] = []           # original indices removed
                     remaining = frames
                     if t == "trim_start":
+                        idx = 0
                         while remaining > 0 and segs:
                             take = min(remaining, segs[0]["src_out"] - segs[0]["src_in"])
                             segs[0]["src_in"] += take
                             remaining -= take
                             if segs[0]["src_in"] >= segs[0]["src_out"]:
                                 segs.pop(0)
+                                popped.append(idx)
+                                idx += 1
                     else:
+                        idx = len(segs) - 1
                         while remaining > 0 and segs:
                             take = min(remaining, segs[-1]["src_out"] - segs[-1]["src_in"])
                             segs[-1]["src_out"] -= take
                             remaining -= take
                             if segs[-1]["src_in"] >= segs[-1]["src_out"]:
                                 segs.pop()
+                                popped.append(idx)
+                                idx -= 1
                     edl["segments"] = segs
                     segments = segs
+                    # A popped segment invalidates segment_order indices — drop the
+                    # removed index and renumber survivors so the permutation stays
+                    # valid against the shrunken segment list.
+                    order = edl.get("segment_order")
+                    if order is not None:
+                        for gone in sorted(popped, reverse=True):
+                            order = [i - 1 if i > gone else i for i in order if i != gone]
+                        edl["segment_order"] = order if order else None
+                    applied = True
+
+            elif t == "reorder_segments":
+                order = op.get("order")
+                if not isinstance(order, list) or sorted(order) != list(range(len(segments))):
+                    reason = "order must be a permutation of segment indices"
+                elif order == list(range(len(segments))):
+                    # Identity — also clears any prior reorder back to source order.
+                    if edl.get("segment_order") is not None:
+                        edl["segment_order"] = None
+                        applied = True
+                    else:
+                        reason = "already in that order"
+                else:
+                    edl["segment_order"] = [int(i) for i in order]
+                    applied = True
+
+            elif t == "set_music":
+                enabled = op.get("enabled")
+                audio = edl.setdefault("audio", {})
+                if enabled is False:
+                    if audio.get("music"):
+                        audio["music"] = None
+                        applied = True
+                    else:
+                        reason = "no music to remove"
+                elif enabled is True or op.get("url") or op.get("query"):
+                    url = (op.get("url") or "").strip() or None
+                    query = (op.get("query") or "").strip() or None
+                    if not url and not query:
+                        reason = "music needs a url or a search query"
+                    else:
+                        volume = max(0.0, min(1.0, float(op.get("volume", 0.15))))
+                        audio["music"] = {"url": url, "query": query, "volume": volume,
+                                          "duck_voice": bool(op.get("duck_voice", True))}
+                        applied = True
+                else:
+                    reason = "enabled must be true or false"
+
+            elif t in ("set_segment_volume", "mute_range"):
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                else:
+                    volume = 0.0 if t == "mute_range" else max(0.0, min(2.0, float(op.get("volume", 1.0))))
+                    audio = edl.setdefault("audio", {})
+                    existing = audio.get("volume_ranges") or []
+                    # New range REPLACES the overlapped portion of existing ranges
+                    # (split remainders survive) — last write wins, deterministic.
+                    s, e = r
+                    rebuilt: list[dict] = []
+                    for vr in existing:
+                        if vr["src_out"] <= s or vr["src_in"] >= e:
+                            rebuilt.append(vr)
+                        else:
+                            if vr["src_in"] < s:
+                                rebuilt.append({**vr, "src_out": s})
+                            if vr["src_out"] > e:
+                                rebuilt.append({**vr, "src_in": e})
+                    rebuilt.append({"src_in": s, "src_out": e, "volume": volume})
+                    audio["volume_ranges"] = sorted(rebuilt, key=lambda v: v["src_in"])
                     applied = True
 
             elif t == "undo":

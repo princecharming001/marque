@@ -563,7 +563,24 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
 
     private func watchedParam(_ brand: BrandGraph) -> String {
-        (brand.watchedCreators ?? []).map { $0.handle }.filter { !$0.isEmpty }.joined(separator: ",")
+        // `platform:handle` tokens so the backend scrapes the RIGHT network — you
+        // can't tell IG from TikTok from a bare handle. Back-compat: the backend
+        // still accepts bare handles (defaults instagram).
+        (brand.watchedCreators ?? [])
+            .filter { !$0.handle.isEmpty }
+            .map { "\($0.platform.rawValue):\($0.handle)" }
+            .joined(separator: ",")
+    }
+
+    private struct WarmResp: Decodable { let ok: Bool? }
+
+    /// Fire-and-forget: pre-scrape a newly-added watched creator so their real
+    /// reels are cached by the time the user reaches Home. Non-blocking.
+    @discardableResult
+    func warmWatchedCreator(handle: String, platform: String) async -> Bool {
+        guard let data = await post("/v1/reels/warm", ["handle": handle, "platform": platform]),
+              let r = try? JSONDecoder().decode(WarmResp.self, from: data) else { return false }
+        return r.ok ?? false
     }
 
     private func q(_ s: String) -> String {

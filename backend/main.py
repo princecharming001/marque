@@ -12,6 +12,7 @@ import re
 import copy
 import time
 import uuid
+import hashlib
 import asyncio
 import random
 import logging
@@ -3123,17 +3124,221 @@ def _reel_from_template(t, niche: str, slug: str, handle_override: str | None = 
 
 REELS_PAGE = 6
 
+# ---------------------------------------------------------------------------
+# Real reels — actual well-performing posts scraped from IG/TikTok via Apify.
+# The fabricated _REEL_TEMPLATES above are used ONLY in keyless/dev mode; when
+# APIFY_KEY is set (production) the "Steal these" grid serves ONLY real reels
+# (watched creators' top posts + niche-trending posts). No fabricated handles.
+# Stale-while-revalidate: a cold/stale read serves what's cached and kicks a
+# background scrape — generation/UI never blocks on a 30-90s Apify run.
+# ---------------------------------------------------------------------------
+
+_watched_reels_cache: dict[str, dict] = {}   # "platform:handle" -> {"reels", "ts"}
+_niche_reels_cache: dict[str, dict] = {}     # "niche:<slug>"    -> {"reels", "ts"}
+_reels_refreshing: set[str] = set()
+_WATCHED_REELS_TTL_S = 12 * 3600
+_NICHE_REELS_TTL_S = 18 * 3600
+_WATCHED_CACHE_CAP = 256
+_NICHE_CACHE_CAP = 128
+
+_VALID_REEL_FORMATS = {"pov-story", "listicle", "do-this-not-that",
+                       "myth-buster", "broll-hook", "before-after"}
+
+
+def _parse_watched(watched: str) -> list[tuple[str, str]]:
+    """Parse the `watched` query param into [(platform, handle)]. New wire format
+    is `platform:handle` (e.g. `tiktok:mrbeast`); a bare handle (old clients /
+    tests) defaults to instagram. Handles lowercased, @-stripped."""
+    out: list[tuple[str, str]] = []
+    for tok in watched.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if ":" in tok:
+            plat, _, handle = tok.partition(":")
+            plat = plat.strip().lower()
+            handle = handle.strip().lstrip("@").lower()
+            if plat not in ("instagram", "tiktok"):
+                plat, handle = "instagram", tok.lstrip("@").lower()
+        else:
+            plat, handle = "instagram", tok.lstrip("@").lower()
+        if handle:
+            out.append((plat, handle))
+    return out
+
+
+def _niche_cache_key(niche: str) -> str:
+    return "niche:" + "".join(re.split(r"[^a-z0-9]+", niche.lower()))[:40]
+
+
+def _compact_count(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.0f}K"
+    return str(n)
+
+
+def _heuristic_reel_annotation(post: dict) -> dict:
+    """Deterministic format/style/why/hook inference from a real post's caption +
+    stats. Free (no LLM), so a reel refresh costs only the Apify scrape — respects
+    the creator's scraping budget."""
+    cap = (post.get("caption") or "").strip()
+    low = cap.lower()
+    if re.search(r"\b\d+\s+(things|rules|ways|tips|mistakes|reasons|signs|habits)\b", low) or re.match(r"^\s*\d+[\).\s]", cap):
+        fmt = "listicle"
+    elif any(w in low for w in ("myth", "wrong", "actually", "the truth", "lied", "lie")):
+        fmt = "myth-buster"
+    elif any(w in low for w in ("stop ", "don't", "dont", "instead", "never ")):
+        fmt = "do-this-not-that"
+    elif any(w in low for w in ("before", "after", "day 1", "30 days", "results", "transformation")):
+        fmt = "before-after"
+    elif post.get("duration_s", 0) and not cap:
+        fmt = "broll-hook"
+    else:
+        fmt = "pov-story"
+    style = "faceless" if (post.get("duration_s", 0) and len(cap) < 15) else "talking_head"
+    views = post.get("views", 0) or post.get("likes", 0) * 10
+    why = f"{_compact_count(views)} views — this {fmt.replace('-', ' ')} format is landing in the niche right now."
+    src = (post.get("transcript") or cap or "").strip()
+    hook = re.split(r"(?<=[.!?])\s", src)[0][:120] if src else ""
+    return {"format_id": fmt if fmt in _VALID_REEL_FORMATS else "pov-story",
+            "style": style, "why_trending": why, "hook_text": hook}
+
+
+def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: bool) -> dict:
+    """Map a normalized Apify post → the ReelItem shape iOS renders. Stable id
+    (hash of platform+handle+timestamp) so FeedStore dedupes across pages."""
+    ann = _heuristic_reel_annotation(post)
+    cap = (post.get("caption") or "").strip()
+    first_line = cap.split("\n")[0].strip()
+    title = re.sub(r"(#\w+\s*)+$", "", first_line).strip()[:80] or f"@{handle} — {ann['format_id'].replace('-', ' ')}"
+    seed = post.get("posted_at") or cap or str(idx)
+    sid = hashlib.sha1(f"{platform}:{handle}:{seed}".encode()).hexdigest()[:10]
+    return {
+        "id": f"real-{platform}-{handle}-{sid}",
+        "creator_handle": (post.get("author") or handle).lstrip("@"),
+        "platform": platform,
+        "title": title,
+        "hook_text": ann["hook_text"] or title,
+        "transcript": post.get("transcript") or cap,
+        "thumbnail_url": post.get("thumbnail_url") or "",
+        "video_url": post.get("video_url") or "",
+        "views": int(post.get("views", 0) or 0),
+        "likes": int(post.get("likes", 0) or 0),
+        "why_trending": ann["why_trending"],
+        "format_id": ann["format_id"],
+        "style": ann["style"],
+        "from_watched": watched,
+    }
+
+
+async def _refresh_watched_creator(platform: str, handle: str) -> None:
+    """Background: scrape one watched creator's top posts → real reels in cache."""
+    key = f"{platform}:{handle}"
+    try:
+        posts = await scrape_posts(handle, platform, limit=8)
+        if not posts:
+            return
+        posts = await _transcribe_top_posts(posts, top_n=2)
+        posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
+        reels = [_reel_from_post(p, handle, platform, i, True) for i, p in enumerate(posts[:6])]
+        _watched_reels_cache[key] = {"reels": reels, "ts": time.time()}
+        _cap_evict(_watched_reels_cache, _WATCHED_CACHE_CAP)
+    except Exception as e:
+        logging.warning("watched-reel refresh failed for %s: %s", key, e)
+    finally:
+        _reels_refreshing.discard(key)
+
+
+async def _refresh_niche_reels(niche: str) -> None:
+    """Background: scrape trending niche posts → real reels in cache."""
+    key = _niche_cache_key(niche)
+    try:
+        posts = await scrape_niche_posts(niche, limit=20)
+        posts = [p for p in posts if p.get("views", 0) >= 10_000]
+        posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
+        posts = posts[:18]
+        reels = [_reel_from_post(p, p.get("author") or "creator",
+                                 p.get("platform", "instagram"), i, False)
+                 for i, p in enumerate(posts)]
+        _niche_reels_cache[key] = {"reels": reels, "ts": time.time()}
+        _cap_evict(_niche_reels_cache, _NICHE_CACHE_CAP)
+    except Exception as e:
+        logging.warning("niche-reel refresh failed for %s: %s", key, e)
+    finally:
+        _reels_refreshing.discard(key)
+
+
+def _watched_real_reels(parsed: list[tuple[str, str]]) -> list[dict]:
+    now = time.time()
+    out: list[dict] = []
+    for platform, handle in parsed:
+        key = f"{platform}:{handle}"
+        entry = _watched_reels_cache.get(key)
+        if entry:
+            out.extend(entry["reels"])
+        stale = not entry or (now - entry["ts"]) > _WATCHED_REELS_TTL_S
+        if stale and APIFY_KEY and key not in _reels_refreshing:
+            _reels_refreshing.add(key)
+            asyncio.create_task(_refresh_watched_creator(platform, handle))
+    return out
+
+
+def _niche_real_reels(niche: str) -> list[dict]:
+    if not niche.strip():
+        return []
+    key = _niche_cache_key(niche)
+    entry = _niche_reels_cache.get(key)
+    out = list(entry["reels"]) if entry else []
+    stale = not entry or (time.time() - entry["ts"]) > _NICHE_REELS_TTL_S
+    if stale and APIFY_KEY and key not in _reels_refreshing:
+        _reels_refreshing.add(key)
+        asyncio.create_task(_refresh_niche_reels(niche))
+    return out
+
+
+class ReelsWarmRequest(BaseModel):
+    handle: str = ""
+    platform: str = "instagram"
+
+
+@app.post("/v1/reels/warm")
+async def reels_warm(req: ReelsWarmRequest):
+    """Fire-and-forget: pre-scrape a newly-added watched creator so their real
+    reels are cached before the user reaches the Home feed. Never blocks."""
+    handle = req.handle.lstrip("@").lower()
+    if not handle:
+        raise HTTPException(status_code=422, detail="handle required")
+    platform = req.platform if req.platform in ("instagram", "tiktok") else "instagram"
+    key = f"{platform}:{handle}"
+    cached = key in _watched_reels_cache
+    if APIFY_KEY and key not in _reels_refreshing:
+        _reels_refreshing.add(key)
+        asyncio.create_task(_refresh_watched_creator(platform, handle))
+    return {"ok": True, "mode": "live" if APIFY_KEY else "mock", "cached": cached}
+
 
 @app.get("/v1/reels")
 async def reels(niche: str = "", creator_id: str = "default", watched: str = "", cursor: int = 0):
     cursor = max(0, min(cursor, 50))
-    watched_list = [w.strip().lstrip("@") for w in watched.split(",") if w.strip()]
-    # Real path (key-gated scraper) would land here; mock corpus is niche-parameterized.
-    corpus = _mock_reels(niche, watched_list)
+    parsed = _parse_watched(watched)
+    if APIFY_KEY:
+        # Production: ONLY real reels. Watched creators' top posts first, then
+        # niche-trending. No fabricated filler — an empty list (cold cache) is
+        # honest; iOS shows a "finding real reels" state and pull-to-refresh fills.
+        corpus, seen = [], set()
+        for r in _watched_real_reels(parsed) + _niche_real_reels(niche):
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                corpus.append(r)
+        mode = "live"
+    else:
+        corpus = _mock_reels(niche, [h for _, h in parsed])
+        mode = "mock"
     page = corpus[cursor * REELS_PAGE:(cursor + 1) * REELS_PAGE]
     next_cursor = cursor + 1 if (cursor + 1) * REELS_PAGE < len(corpus) else None
-    return {"mode": "live" if APIFY_KEY else "mock",
-            "reels": page, "next_cursor": next_cursor}
+    return {"mode": mode, "reels": page, "next_cursor": next_cursor}
 
 
 # ---------------------------------------------------------------------------

@@ -404,6 +404,9 @@ private struct WatchedCreatorSlot: View {
         if index < list.count { list[index] = creator } else { list.append(creator) }
         store.brand.watchedCreators = Array(list.prefix(2))
         store.save()
+        // Kick a background scrape so this creator's REAL reels are cached before
+        // the user reaches Home — non-blocking, fire-and-forget.
+        Task { await store.backend.warmWatchedCreator(handle: h, platform: platform.rawValue) }
         withAnimation(Motion.quick) { expanded = false; handle = "" }
     }
 
@@ -552,37 +555,124 @@ struct VoiceEditorSheet: View {
 struct PillarsEditorSheet: View {
     let store: AppStore
     @Environment(\.dismiss) private var dismiss
+    @State private var draft: [Pillar] = []
     @State private var regenerating = false
+    @State private var confirmRefresh = false
+    @FocusState private var focusedNew: UUID?
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.md) {
-                    ForEach(store.pillars) { p in
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            HStack {
-                                Circle().fill(Color(hex: p.colorHex)).frame(width: 10, height: 10)
-                                Text(p.name).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                            }
-                            Text(p.angle.isEmpty ? p.summary : p.angle)
-                                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .marqueCard(padding: Space.md)
+                    Text("Rename, retune the mix, add or remove — these shape every script Marque writes.")
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+
+                    ForEach($draft) { $p in
+                        PillarEditRow(pillar: $p,
+                                      canDelete: draft.count > 1,
+                                      focusedNew: $focusedNew,
+                                      onDelete: { draft.removeAll { $0.id == p.id } })
                     }
-                    GhostButton(title: regenerating ? "Regenerating…" : "Refresh pillars", systemImage: "sparkles") {
-                        regenerating = true
-                        Task { await store.analyzePage(); regenerating = false }
+
+                    if draft.count < 6 {
+                        GhostButton(title: "Add pillar", systemImage: "plus") { addPillar() }
+                            .accessibilityIdentifier("pillars.add")
+                    }
+
+                    GhostButton(title: regenerating ? "Regenerating…" : "Refresh with AI", systemImage: "sparkles") {
+                        confirmRefresh = true
                     }
                     .disabled(regenerating)
+                    .confirmationDialog("Regenerate pillars?",
+                                        isPresented: $confirmRefresh, titleVisibility: .visible) {
+                        Button("Replace my edits", role: .destructive) {
+                            regenerating = true
+                            Task { await store.analyzePage(); draft = store.pillars; regenerating = false }
+                        }
+                        Button("Keep my edits", role: .cancel) {}
+                    } message: {
+                        Text("This replaces everything here with a fresh AI analysis of your brand.")
+                    }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Content pillars")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { commit(); dismiss() }.fontWeight(.semibold)
+                        .accessibilityIdentifier("pillars.done")
+                }
+            }
         }
+        .onAppear { if draft.isEmpty { draft = store.pillars } }
+    }
+
+    private func addPillar() {
+        let colors = Catalog.pillarColors
+        let p = Pillar(name: "", summary: "", angle: "", exampleTopics: [],
+                       weight: 1.0 / Double(draft.count + 1),
+                       colorHex: colors[draft.count % colors.count])
+        draft.append(p)
+        focusedNew = p.id
+    }
+
+    /// Drop empty-named rows, normalize weights to sum 1.0, mirror topThemes, persist.
+    private func commit() {
+        var kept = draft.filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
+        if kept.isEmpty { kept = draft }               // never leave zero pillars
+        let total = kept.map(\.weight).reduce(0, +)
+        if total > 0.0001 { for i in kept.indices { kept[i].weight /= total } }
+        store.pillars = kept
+        store.brand.topThemes = kept.map(\.name)
+        store.save()
+    }
+}
+
+private struct PillarEditRow: View {
+    @Binding var pillar: Pillar
+    let canDelete: Bool
+    var focusedNew: FocusState<UUID?>.Binding
+    let onDelete: () -> Void
+    @State private var confirmDelete = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
+                Circle().fill(Color(hex: pillar.colorHex)).frame(width: 12, height: 12)
+                TextField("Pillar name", text: $pillar.name)
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    .focused(focusedNew, equals: pillar.id)
+                    .accessibilityIdentifier("pillars.name")
+                Spacer(minLength: 0)
+                Button { confirmDelete = true } label: {
+                    Image(systemName: "trash").font(.system(size: 14)).foregroundStyle(Palette.textTertiary)
+                }
+                .disabled(!canDelete)
+                .opacity(canDelete ? 1 : 0.3)
+                .accessibilityIdentifier("pillars.delete")
+                .confirmationDialog("Delete this pillar?", isPresented: $confirmDelete, titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) { onDelete() }
+                    Button("Cancel", role: .cancel) {}
+                }
+            }
+            TextField("One-line summary", text: $pillar.summary, axis: .vertical)
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...2)
+            TextField("Your angle — why it's yours", text: $pillar.angle, axis: .vertical)
+                .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...3)
+            HStack(spacing: Space.sm) {
+                Text("Mix").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                Slider(value: $pillar.weight, in: 0.05...0.5)
+                    .tint(Color(hex: pillar.colorHex))
+                    .accessibilityIdentifier("pillars.weight")
+                Text("\(Int((pillar.weight * 100).rounded()))%")
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .frame(width: 38, alignment: .trailing)
+            }
+        }
+        .marqueCard(padding: Space.md)
     }
 }
 

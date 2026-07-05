@@ -485,3 +485,195 @@ def test_volume_range_rejects_backwards():
         assert False
     except ValueError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# E12: new ops — reorder / music / volume through apply_edl_ops
+# ---------------------------------------------------------------------------
+
+def test_reorder_op_applies_and_identity_clears():
+    from app.edl import apply_edl_ops
+    edl = _base_edl()
+    out, res = apply_edl_ops(edl, [{"type": "reorder_segments", "order": [2, 0, 1]}])
+    assert res[0]["applied"] and out["segment_order"] == [2, 0, 1]
+    out2, res2 = apply_edl_ops(out, [{"type": "reorder_segments", "order": [0, 1, 2]}])
+    assert res2[0]["applied"] and out2["segment_order"] is None    # identity clears
+
+
+def test_reorder_op_rejects_bad_permutation():
+    from app.edl import apply_edl_ops
+    _, res = apply_edl_ops(_base_edl(), [{"type": "reorder_segments", "order": [0, 0, 1]}])
+    assert not res[0]["applied"]
+
+
+def test_trim_start_remaps_segment_order():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segment_order=[2, 0, 1])
+    # trim exactly the first segment away (100 frames) → index 0 removed,
+    # survivors renumber: [2,0,1] -> drop 0 -> [2,1] -> renumber -> [1,0]
+    out, res = apply_edl_ops(edl, [{"type": "trim_start", "frames": 100}])
+    assert res[0]["applied"]
+    assert len(out["segments"]) == 2
+    assert out["segment_order"] == [1, 0]
+    from app.edl import EDL
+    EDL(**out)                                       # still validates
+
+
+def test_set_music_and_remove():
+    from app.edl import apply_edl_ops
+    out, res = apply_edl_ops(_base_edl(), [
+        {"type": "set_music", "enabled": True, "url": "https://cdn/track.mp3",
+         "volume": 0.3, "duck_voice": False}])
+    assert res[0]["applied"]
+    assert out["audio"]["music"]["volume"] == 0.3
+    assert out["audio"]["music"]["duck_voice"] is False
+    out2, res2 = apply_edl_ops(out, [{"type": "set_music", "enabled": False}])
+    assert res2[0]["applied"] and out2["audio"]["music"] is None
+
+
+def test_set_music_requires_url_or_query():
+    from app.edl import apply_edl_ops
+    _, res = apply_edl_ops(_base_edl(), [{"type": "set_music", "enabled": True}])
+    assert not res[0]["applied"]
+
+
+def test_mute_range_and_volume_replace_semantics():
+    from app.edl import apply_edl_ops
+    out, _ = apply_edl_ops(_base_edl(), [
+        {"type": "set_segment_volume", "start_frame": 0, "end_frame": 200, "volume": 0.5}])
+    # Now mute the middle — the 0.5 range must split around it.
+    out2, res = apply_edl_ops(out, [{"type": "mute_range", "start_frame": 50, "end_frame": 100}])
+    assert res[0]["applied"]
+    ranges = out2["audio"]["volume_ranges"]
+    assert [(r["src_in"], r["src_out"], r["volume"]) for r in ranges] == [
+        (0, 50, 0.5), (50, 100, 0.0), (100, 200, 0.5)]
+
+
+def test_new_ops_roundtrip_through_edl_model():
+    from app.edl import apply_edl_ops, EDL
+    out, _ = apply_edl_ops(_base_edl(), [
+        {"type": "reorder_segments", "order": [1, 0, 2]},
+        {"type": "set_music", "enabled": True, "query": "lofi", "volume": 0.2},
+        {"type": "mute_range", "start_frame": 0, "end_frame": 30},
+    ])
+    validated = EDL(**out).model_dump()
+    assert validated["segment_order"] == [1, 0, 2]
+    assert validated["audio"]["music"]["query"] == "lofi"
+    assert validated["audio"]["volume_ranges"]
+
+
+# ---------------------------------------------------------------------------
+# E13: build_render_plan — reorder + audio remap
+# ---------------------------------------------------------------------------
+
+def test_reorder_identity_plan_unchanged():
+    from app.edl import build_render_plan
+    edl = _base_edl(captions=[{"word": "hi", "frame": 150}],
+                    overlays=[{"type": "punch_in", "src_in": 110, "src_out": 130,
+                               "scale": 1.1, "text": ""}])
+    base_plan = build_render_plan(edl)
+    identity_plan = build_render_plan({**edl, "segment_order": [0, 1, 2]})
+    assert base_plan == identity_plan
+
+
+def test_reorder_remaps_captions_with_segment():
+    from app.edl import build_render_plan
+    # Word at source frame 150 lives in segment 1 (100-200). Order [1,0,2] puts
+    # segment 1 FIRST → the word's output frame becomes 150-100+0 = 50.
+    edl = _base_edl(captions=[{"word": "moved", "frame": 150}],
+                    segment_order=[1, 0, 2])
+    plan = build_render_plan(edl)
+    assert plan["clips"][0] == {"src_in": 100, "src_out": 200}   # segment 1 plays first
+    assert plan["captions"][0]["frame"] == 50
+
+
+def test_reorder_overlay_travels_and_does_not_smear():
+    from app.edl import build_render_plan
+    # Overlay spans source 90-120: 10 frames in segment 0 (ends at out 100 in
+    # identity), 20 frames in segment 1. Under order [1,0,2] the pieces land
+    # non-contiguously — the plan must keep the LONGEST piece, not smear min..max.
+    edl = _base_edl(overlays=[{"type": "punch_in", "src_in": 90, "src_out": 120,
+                               "scale": 1.1, "text": ""}],
+                    segment_order=[1, 0, 2])
+    plan = build_render_plan(edl)
+    o = plan["overlays"][0]
+    # Segment 1 plays at out 0-100; its piece of the overlay is source 100-120 → out 0-20 (20 frames).
+    # Segment 0 plays at out 100-200; its piece is source 90-100 → out 190-200 (10 frames).
+    assert (o["frame_in"], o["frame_out"]) == (0, 20)
+
+
+def test_reorder_with_drops_composes():
+    from app.edl import build_render_plan
+    edl = _base_edl(drops=[{"src_in": 100, "src_out": 150, "reason": "manual"}],
+                    segment_order=[1, 0, 2])
+    plan = build_render_plan(edl)
+    # Segment 1 (100-200) minus drop (100-150) = kept (150-200) plays first.
+    assert plan["clips"][0] == {"src_in": 150, "src_out": 200}
+    assert plan["total_frames"] == 50 + 100 + 100
+
+
+def test_volume_ranges_remap_as_split_pieces():
+    from app.edl import build_render_plan
+    # Mute source 90-160 with a cut at 100-150: output pieces must be the two
+    # surviving slivers (90-100 and 150-160), NOT one merged span.
+    edl = _base_edl(drops=[{"src_in": 100, "src_out": 150, "reason": "manual"}],
+                    audio={"lufs_target": -14.0, "music": None,
+                           "volume_ranges": [{"src_in": 90, "src_out": 160, "volume": 0.0}]})
+    plan = build_render_plan(edl)
+    vr = plan["audio"]["volume_ranges"]
+    assert [(v["frame_in"], v["frame_out"]) for v in vr] == [(90, 100), (100, 110)]
+    assert all(v["volume"] == 0.0 for v in vr)
+
+
+def test_plan_audio_music_passthrough():
+    from app.edl import build_render_plan
+    edl = _base_edl(audio={"lufs_target": -14.0,
+                           "music": {"url": "https://cdn/t.mp3", "query": None,
+                                     "volume": 0.2, "duck_voice": True},
+                           "volume_ranges": []})
+    plan = build_render_plan(edl)
+    assert plan["audio"]["music"]["url"] == "https://cdn/t.mp3"
+    assert plan["audio"]["volume_ranges"] == []
+
+
+# ---------------------------------------------------------------------------
+# E14: reorder + audio ops through the tweak endpoint (direct-ops)
+# ---------------------------------------------------------------------------
+
+def test_endpoint_direct_reorder_and_music():
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    # The mock EDL is single-segment; reorder needs several — split it in place.
+    job = main._clip_jobs[job_id]
+    extent = job["edl"]["segments"][0]["src_out"]
+    third = max(1, extent // 3)
+    job["edl"]["segments"] = [
+        {"src_in": 0, "src_out": third},
+        {"src_in": third, "src_out": 2 * third},
+        {"src_in": 2 * third, "src_out": extent},
+    ]
+    order = [2, 0, 1]
+    out = client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id,
+        "ops": [
+            {"type": "reorder_segments", "order": order},
+            {"type": "set_music", "enabled": True, "url": "https://cdn/t.mp3", "volume": 0.25},
+            {"type": "mute_range", "start_frame": 0, "end_frame": 30},
+        ],
+    }).json()
+    assert out["mode"] == "direct"
+    applied_types = {a["type"] for a in out["applied"]}
+    assert {"reorder_segments", "set_music", "mute_range"} <= applied_types
+    edl = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert edl["segment_order"] == order
+    assert edl["audio"]["music"]["url"] == "https://cdn/t.mp3"
+    assert edl["audio"]["volume_ranges"]
+    # And undo still works across the new ops
+    undo = client.post(f"/v1/clips/{job_id}/tweak", json={
+        "clip_id": clip_id, "ops": [{"type": "undo"}]}).json()
+    assert any(a["type"] == "undo" for a in undo["applied"])
+    edl2 = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert edl2.get("segment_order") is None

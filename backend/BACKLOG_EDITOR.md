@@ -18,12 +18,12 @@ verification. iOS items additionally gate on a green
 - [x] E10 GET include_words=1 + error_detail; LLM-down EDL stage falls back to safe default
 - [x] E11 edl.py: segment_order permutation field + Audio models (MusicTrack, VolumeRange)
       with validators; EDL round-trips (EDL(**data) survives with new fields) — 4 tests
-- [ ] E12 apply_edl_ops: reorder_segments / set_music / set_segment_volume / mute_range
-      (TWEAK_OP_TYPES 13→17); trim ops remap segment_order when they pop a segment
-- [ ] E13 build_render_plan: per-segment kept intervals iterated in segment_order
+- [x] E12 apply_edl_ops: reorder_segments / set_music / set_segment_volume / mute_range
+      (TWEAK_OP_TYPES 13→17); trim ops remap segment_order when they pop a segment — 7 tests
+- [x] E13 build_render_plan: per-segment kept intervals iterated in segment_order
       (captions/overlays travel with segments); map_range longest-merged-span; identity
       order produces byte-identical plans (regression-asserted); audio block in plan
-      output with volume_ranges remapped as split pieces
+      output with volume_ranges remapped as split pieces — 6 tests, all 184 legacy green
 - [ ] E14 tweak direct-ops tests live in test_editor_hardening.py (done in A) — extend
       with reorder + audio op coverage through the endpoint
 - [ ] E15 render bridge: types.ts AudioPlan/VolumeRange, AudioMix.tsx (music +
