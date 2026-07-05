@@ -190,10 +190,18 @@ struct ClipDetailSheet: View {
     let clip: Clip
     @State private var caption: String
     @State private var showDelete = false
+    @State private var showTweak = false
 
     init(clip: Clip) {
         self.clip = clip
         _caption = State(initialValue: clip.caption)
+    }
+
+    /// Live view of this clip — the sheet captures an immutable copy at present
+    /// time, but tweaks mutate the store's clip (status/remoteURL) while the
+    /// sheet is up. Reading through the store keeps the player + actions honest.
+    private var current: Clip {
+        store.clips.first(where: { $0.id == clip.id }) ?? clip
     }
 
     /// Draft-aware mode: a draft is a half-finished take — the only forward action
@@ -202,8 +210,8 @@ struct ClipDetailSheet: View {
 
     // A shareable file/URL for export to Photos, Messages, the platform apps, etc.
     private var shareURL: URL? {
-        if let p = clip.localVideoPath { return MediaStore.url(for: p) }
-        if let r = clip.remoteURL, let u = URL(string: r) { return u }
+        if let p = current.localVideoPath { return MediaStore.url(for: p) }
+        if let r = current.remoteURL, let u = URL(string: r) { return u }
         return nil
     }
 
@@ -211,14 +219,34 @@ struct ClipDetailSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
-                    LocalVideoPlayer(path: clip.localVideoPath, remoteURL: clip.remoteURL)
-                        .frame(height: 340)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    ZStack {
+                        LocalVideoPlayer(path: current.localVideoPath, remoteURL: current.remoteURL)
+                            // Re-create the player when a tweak lands a NEW render URL.
+                            .id(current.remoteURL ?? current.localVideoPath ?? "")
+                        if current.status == .rendering {
+                            Rectangle().fill(.black.opacity(0.45))
+                            VStack(spacing: Space.sm) {
+                                ProgressView().tint(.white)
+                                Text("Re-editing…").font(AppFont.caption).foregroundStyle(.white)
+                            }
+                        }
+                    }
+                    .frame(height: 340)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                     HStack(spacing: Space.sm) {
                         FormatTag(formatId: clip.formatId)
                         Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         Spacer()
                         ScoreBadge(score: clip.predictedScore)
+                    }
+
+                    // Conversational tweaks — only for server-edited clips whose job
+                    // is still alive (jobId == nil means the offline mock engine).
+                    if !isDraft, clip.jobId != nil, current.status == .ready || current.status == .rendering {
+                        GhostButton(title: "Tweak with AI", systemImage: "wand.and.stars") {
+                            showTweak = true
+                        }
+                        .accessibilityIdentifier("clip.tweak")
                     }
 
                     if isDraft {
@@ -280,7 +308,7 @@ struct ClipDetailSheet: View {
                     .accessibilityIdentifier("library.finishDraft")
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
-                } else if clip.status == .ready {
+                } else if current.status == .ready {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
                         store.updateClipCaption(clip, caption: caption)
                         router.pendingScheduleClipId = clip.id
@@ -297,6 +325,7 @@ struct ClipDetailSheet: View {
                 Text(isDraft ? "This removes the draft take. This can't be undone."
                              : "This removes the clip and any times it's scheduled. This can't be undone.")
             }
+            .sheet(isPresented: $showTweak) { TweakChatSheet(clip: clip) }
         }
     }
 }

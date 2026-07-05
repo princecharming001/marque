@@ -258,9 +258,21 @@ struct CustomScriptSheet: View {
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Your script")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                // Without this the keyboard buries "Queue it up" with no way out —
+                // TextEditor never dismisses on its own.
+                ToolbarItem(placement: .keyboard) {
+                    HStack {
+                        Spacer()
+                        Button("Done") { focused = false }
+                            .accessibilityIdentifier("film.customDone")
+                    }
+                }
+            }
             .onAppear { focused = true }
         }
     }

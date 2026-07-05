@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import json
 import re
+import copy
 import uuid
 import asyncio
 import random
@@ -22,7 +23,8 @@ import prompts
 from prompts import OPUS, HAIKU, SONNET, STYLES, FORMAT_IDS
 from contextlib import asynccontextmanager
 
-from app.edl import EDL, safe_default_edl, validate_and_repair, strip_fillers, ms_to_frame, build_render_plan
+from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
+                     ms_to_frame, build_render_plan, apply_edl_ops)
 from supabase_persistence import SupabaseClient
 
 
@@ -380,6 +382,12 @@ class ClipJobRequest(BaseModel):
     react_credit_label: str = ""
     # Per-creator editing preferences (Settings → threaded into every edit)
     edit_prefs: dict = {}      # {auto_captions: bool, caption_style: clean|bold-word|karaoke, filler_trim: off|standard|aggressive}
+
+
+class TweakRequest(BaseModel):
+    """One conversational tweak turn on a finished clip."""
+    clip_id: str = ""
+    instruction: str = ""
 
 
 class MediaAnalyzeRequest(BaseModel):
@@ -943,13 +951,17 @@ def _apply_edit_prefs(edl: dict, prefs: dict) -> dict:
         edl["captions"] = []
     style = prefs.get("caption_style")
     if style in ("clean", "bold-word", "karaoke") and edl.get("captions") is not None:
-        edl.setdefault("caption_style", style)
+        # Falsy-check, not setdefault: caption_style is now a real EDL model field,
+        # so model_dump() emits the key with value None when unset.
+        if not edl.get("caption_style"):
+            edl["caption_style"] = style
     trim = prefs.get("filler_trim")
     if trim == "off":
         edl["drops"] = []
     elif trim == "aggressive" and edl.get("drops") is not None:
         # tighten: mark every drop, and flag the EDL so the renderer trims gaps > 200ms
-        edl.setdefault("trim_aggressiveness", "aggressive")
+        if not edl.get("trim_aggressiveness"):
+            edl["trim_aggressiveness"] = "aggressive"
     return edl
 
 
@@ -967,12 +979,17 @@ async def create_clip_job(req: ClipJobRequest):
         "edit_prefs": req.edit_prefs or {},
         "react_source_url": req.react_source_url,
         "react_credit_label": req.react_credit_label,
+        # Conversational-tweak state: transcript kept for re-editing, prior EDLs
+        # for undo, and the tweak chat history.
+        "words": [], "edl_history": [], "tweaks": [],
     }
     _clip_jobs[job_id] = job
     if not ASSEMBLY_KEY:
         job["status"] = "mock_ready"
         for c in clips: c["status"] = "ready"
         job["edl"] = _apply_edit_prefs(_mock_edl(req.style, req.script), job["edit_prefs"])
+        # Deterministic transcript so caption-rebuild tweaks work in keyless demo.
+        job["words"] = _mock_words(req.script)
         return {"mode": "mock", "job_id": job_id, "clips": clips}
     asyncio.create_task(_run_pipeline(job_id))
     return {"mode": "live", "job_id": job_id, "clips": clips}
@@ -993,6 +1010,157 @@ async def get_clip_job(job_id: str):
     }
 
 
+@app.post("/v1/clips/{job_id}/tweak")
+async def tweak_clip(job_id: str, req: TweakRequest):
+    """One conversational tweak turn: interpret the instruction into typed ops
+    (LLM live / keyword grammar keyless), apply them deterministically to the
+    stored EDL, and re-render just the targeted clip."""
+    job = _clip_jobs.get(job_id)
+    if job is None:
+        # In-memory job store — a backend restart orphans old jobs.
+        raise HTTPException(status_code=404, detail="job_not_found")
+    # Case-insensitive: iOS UUID.uuidString is uppercase, uuid4() is lowercase.
+    want = req.clip_id.lower()
+    clip = next((c for c in job["clips"] if c["clip_id"].lower() == want), None)
+    if clip is None:
+        raise HTTPException(status_code=404, detail="clip_not_found")
+    if not req.instruction.strip():
+        raise HTTPException(status_code=422, detail="empty_instruction")
+    # Concurrency guard: asyncio is single-threaded, so status checks + the
+    # later synchronous status set (before any await) are atomic per request.
+    if clip.get("status") == "rendering" or job["status"] in ("transcribing", "editing", "rendering"):
+        raise HTTPException(status_code=409, detail="render_in_progress")
+    if not job.get("edl"):
+        raise HTTPException(status_code=409, detail="no_edl")
+
+    # 1) Interpretation → (reply, ops)
+    mode = "mock"
+    reply, ops = "", []
+    if ANTHROPIC_KEY:
+        mode = "live"
+        try:
+            sys_p, usr_p = prompts.tweak_prompt(job["edl"], job.get("words") or [],
+                                                req.instruction, job["tweaks"])
+            envelope = await anthropic_json(sys_p, usr_p, prompts.TWEAK_ENVELOPE_JSON_SCHEMA,
+                                            SONNET, 1000)
+        except HTTPException:
+            envelope = None
+        if isinstance(envelope, dict) and (envelope.get("reply") or "").strip():
+            reply = envelope["reply"]
+            ops = [o for o in (envelope.get("ops") or []) if isinstance(o, dict)]
+        else:
+            reply, ops = _mock_tweak(req.instruction)   # degrade, never strand the chat
+    else:
+        reply, ops = _mock_tweak(req.instruction)
+
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    changed = False
+    resolve_broll_needed = False
+
+    # 2) undo is server-level (needs the history stack apply_edl_ops can't see)
+    edit_ops = []
+    for o in ops:
+        if o.get("type") == "undo":
+            if job["edl_history"]:
+                job["edl"] = job["edl_history"].pop()
+                applied.append({"type": "undo", "applied": True, "reason": ""})
+                changed = True
+            else:
+                skipped.append({"type": "undo", "applied": False, "reason": "nothing to undo yet"})
+        else:
+            edit_ops.append(o)
+
+    # 3) Deterministic application + validation round-trip
+    if edit_ops:
+        new_edl, results = apply_edl_ops(job["edl"], edit_ops, job.get("words") or [])
+        ok = [r for r in results if r["applied"]]
+        if ok:
+            try:
+                obj = EDL(**new_edl)
+                obj, _ = validate_and_repair(obj)
+                new_edl = obj.model_dump()
+            except Exception:
+                # The batch produced an invalid EDL — reject it wholesale, keep the current cut.
+                for r in results:
+                    if r["applied"]:
+                        r.update(applied=False, reason="change failed validation")
+                ok = []
+        if ok:
+            job["edl_history"].append(copy.deepcopy(job["edl"]))
+            del job["edl_history"][:-10]                 # cap the undo stack
+            job["edl"] = new_edl
+            changed = True
+            resolve_broll_needed = any(r["type"] == "add_broll" for r in ok)
+        applied.extend(r for r in results if r["applied"])
+        skipped.extend(r for r in results if not r["applied"])
+
+    # 4) History entry (feeds the next turn's prompt context)
+    job["tweaks"].append({
+        "instruction": req.instruction, "reply": reply,
+        "summary": ", ".join(r["type"] for r in applied) or "no changes",
+        "applied": applied, "skipped": skipped,
+    })
+    del job["tweaks"][:-20]
+
+    # 5) Re-render just this clip (real renderer only; keyless/mock jobs keep
+    #    their clip ready — the EDL still updates, visible via GET).
+    #    RACE NOTE: the LLM call above was awaited, so a concurrent tweak may have
+    #    started a render since the top-of-request 409 check. Re-check NOW and set
+    #    the rendering flag synchronously (no await between check and set) — that
+    #    pair is atomic under asyncio's single thread.
+    needs_render = (changed and job["status"] == "ready"
+                    and bool(REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME))
+    if needs_render:
+        if clip.get("status") == "rendering":
+            # Someone else's re-render is in flight; our EDL change is saved and
+            # will be picked up by the next render rather than double-rendering.
+            needs_render = False
+        else:
+            clip["status"] = "rendering"
+            if resolve_broll_needed:
+                try:
+                    job["edl"] = await _resolve_broll(job["edl"])
+                except Exception:
+                    pass   # unresolved b-roll renders as a skipped cue, not a failure
+            asyncio.create_task(_rerender_clip(job_id, req.clip_id))
+
+    return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
+            "changed": changed, "needs_render": needs_render, "clip_status": clip["status"]}
+
+
+async def _rerender_clip(job_id: str, clip_id: str):
+    """Re-render one clip after a tweak. NEVER strands the clip: on any failure
+    the previous render_url is restored and status returns to ready."""
+    job = _clip_jobs.get(job_id)
+    if not job:
+        return
+    clip = next((c for c in job["clips"] if c["clip_id"].lower() == clip_id.lower()), None)
+    if not clip:
+        return
+    prev_url = clip.get("render_url")
+    try:
+        submission = await _submit_remotion_render(
+            job["source_url"], job["edl"], clip["format"], job["style"])
+        render_url = None
+        if submission:
+            clip["render_id"] = submission["render_id"]
+            render_url = await _poll_remotion_render(
+                submission["render_id"], submission["bucket_name"])
+        if render_url:
+            clip["render_url"] = render_url
+        else:
+            clip["render_url"] = prev_url
+            if job["tweaks"]:
+                job["tweaks"][-1]["render_error"] = "re-render failed — kept the previous cut"
+    except Exception as e:
+        clip["render_url"] = prev_url
+        if job["tweaks"]:
+            job["tweaks"][-1]["render_error"] = str(e)[:200]
+    finally:
+        clip["status"] = "ready"
+
+
 def _mock_edl(style: str, script: dict) -> dict:
     """Deterministic mock EDL for dev/test."""
     return {
@@ -1008,6 +1176,38 @@ def _mock_edl(style: str, script: dict) -> dict:
     }
 
 
+def _mock_words(script: dict) -> list[dict]:
+    """Deterministic word-frame transcript for keyless jobs — enough for tweak
+    ops that need words (caption rebuild) and for the tweak prompt's context."""
+    text = " ".join(filter(None, [script.get("hook", ""), script.get("body", ""), script.get("cta", "")]))
+    words = text.split()[:80] or ["Great", "hook", "here"]
+    out, t = [], 0
+    for w in words:
+        out.append({"word": w, "start_ms": t, "end_ms": t + 280, "confidence": 1.0,
+                    "type": None, "is_emphasized": False})
+        t += 300
+    return out
+
+
+def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
+    """Keyless tweak grammar (deterministic, first-match) so the demo/tests work
+    without a key: returns (reply, ops)."""
+    low = instruction.lower()
+    if "undo" in low:
+        return "Rolling back your last tweak.", [{"type": "undo"}]
+    for style, word in (("karaoke", "karaoke"), ("bold-word", "bold"), ("clean", "clean")):
+        # karaoke/bold read as caption intent on their own; "clean" is too generic
+        # a word ("clean up the audio") so it requires explicit caption context.
+        if word in low and (style != "clean" or "caption" in low):
+            return f"Switched your captions to the {style} style.", [{"type": "set_caption_style", "style": style}]
+    if any(p in low for p in ("captions off", "no captions", "remove captions", "remove the captions")):
+        return "Captions are off for this clip.", [{"type": "set_captions_enabled", "enabled": False}]
+    if any(p in low for p in ("captions on", "add captions", "turn on captions")):
+        return "Captions are back on.", [{"type": "set_captions_enabled", "enabled": True}]
+    return ("I can change caption styles, cut or restore sections, add punch-ins or b-roll, "
+            "and undo tweaks — tell me what to change."), []
+
+
 async def _run_pipeline(job_id: str):
     """Background pipeline: transcribe → edit → render."""
     job = _clip_jobs[job_id]
@@ -1019,6 +1219,7 @@ async def _run_pipeline(job_id: str):
             raise RuntimeError("transcription submit failed")
         transcript = await _poll_transcription(transcript_id)
         words = transcript["words"]
+        job["words"] = words          # kept for conversational tweaks (re-editing needs the transcript)
 
         job["status"] = "editing"
         for c in job["clips"]: c["status"] = "editing"

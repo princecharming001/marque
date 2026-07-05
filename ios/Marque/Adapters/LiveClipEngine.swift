@@ -83,4 +83,23 @@ extension BackendClient {
         guard let data = await get("/v1/clips/\(jobId)") else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
+
+    /// One conversational tweak turn on a finished clip. Returns the decoded
+    /// response dict, or a synthesized error dict mapping the backend's status
+    /// codes to user-facing copy (404 = expired in-memory session, 409 = a
+    /// render is already in flight).
+    func tweakClip(jobId: String, clipId: String, instruction: String) async -> [String: Any] {
+        let body: [String: Any] = ["clip_id": clipId, "instruction": instruction]
+        let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
+        if status == 404 {
+            return ["error": true, "reply": "This edit session has expired — re-submit the take to tweak it."]
+        }
+        if status == 409 {
+            return ["error": true, "reply": "Hold on — I'm still rendering your last tweak. Try again in a minute."]
+        }
+        guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["error": true, "reply": "I couldn't reach the editor — check your connection and try again."]
+        }
+        return dict
+    }
 }

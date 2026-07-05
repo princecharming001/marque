@@ -1119,3 +1119,236 @@ def test_quality_hooks_drops_slop_and_reranks(monkeypatch):
         "$3,180 in 42 days — here's how",               # 92, ranked first
         "Everyone does this backwards",                 # 78
     ]                                                   # slop hook dropped
+
+
+# ---------------------------------------------------------------------------
+# Conversational tweaks: apply_edl_ops + /v1/clips/{job_id}/tweak
+# ---------------------------------------------------------------------------
+
+def _tweak_edl(style="talking_head"):
+    return {
+        "style": style, "format_id": "myth-buster",
+        "segments": [{"src_in": 0, "src_out": 900}],
+        "drops": [{"src_in": 100, "src_out": 130, "reason": "filler"}],
+        "captions": [{"word": "hey", "frame": 0}],
+        "overlays": [{"type": "punch_in", "src_in": 200, "src_out": 260, "scale": 1.08, "text": ""}],
+        "broll": [], "react_source": None, "react_schedule": [],
+        "layout": {"style": style, "panels": 1, "panel_boundaries": [], "split_fraction": 0.58},
+        "audio": {"lufs_target": -14.0},
+        "caption_style": "clean", "trim_aggressiveness": None,
+    }
+
+
+def test_apply_ops_caption_style_and_enabled():
+    from app.edl import apply_edl_ops
+    words = [{"word": "hello", "start_ms": 0, "end_ms": 300},
+             {"word": "um", "start_ms": 300, "end_ms": 400},
+             {"word": "world", "start_ms": 400, "end_ms": 700}]
+    edl, res = apply_edl_ops(_tweak_edl(), [{"type": "set_caption_style", "style": "karaoke"}], words)
+    assert res[0]["applied"] and edl["caption_style"] == "karaoke"
+    edl, res = apply_edl_ops(edl, [{"type": "set_captions_enabled", "enabled": False}], words)
+    assert res[0]["applied"] and edl["captions"] == []
+    edl, res = apply_edl_ops(edl, [{"type": "set_captions_enabled", "enabled": True}], words)
+    assert res[0]["applied"]
+    assert [c["word"] for c in edl["captions"]] == ["hello", "world"]   # filler stripped
+    # No words → rebuild skipped with a reason
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "set_captions_enabled", "enabled": True}], [])
+    assert not res[0]["applied"] and "transcript" in res[0]["reason"]
+
+
+def test_apply_ops_cut_restore_roundtrip():
+    from app.edl import apply_edl_ops
+    edl, res = apply_edl_ops(_tweak_edl(), [{"type": "cut_range", "start_frame": 300, "end_frame": 390}], [])
+    assert res[0]["applied"]
+    assert {"src_in": 300, "src_out": 390, "reason": "manual"} in edl["drops"]
+    # Cut overlapping the existing filler drop coalesces into a union
+    edl2, res2 = apply_edl_ops(edl, [{"type": "cut_range", "start_frame": 90, "end_frame": 120}], [])
+    assert res2[0]["applied"]
+    merged = [d for d in edl2["drops"] if d["src_in"] == 90]
+    assert merged and merged[0]["src_out"] == 130 and merged[0]["reason"] == "manual"
+    # Restore the middle of the manual cut → splits into two remainders
+    edl3, res3 = apply_edl_ops(edl2, [{"type": "restore_range", "start_frame": 320, "end_frame": 360}], [])
+    assert res3[0]["applied"]
+    spans = [(d["src_in"], d["src_out"]) for d in edl3["drops"]]
+    assert (300, 320) in spans and (360, 390) in spans and (300, 390) not in spans
+    # Cut that would leave <2s is refused
+    _, res4 = apply_edl_ops(_tweak_edl(), [{"type": "cut_range", "start_frame": 0, "end_frame": 880}], [])
+    assert not res4[0]["applied"] and "2 seconds" in res4[0]["reason"]
+
+
+def test_kept_frames_overlap_aware():
+    """Regression: _kept_frames must subtract only drop∩segment overlap — drops
+    outside segment bounds previously inflated the subtraction (even negative),
+    wrongly blocking legitimate trims."""
+    from app.edl import _kept_frames, apply_edl_ops
+    edl = {"segments": [{"src_in": 100, "src_out": 500}],           # 400 real frames
+           "drops": [{"src_in": 0, "src_out": 150, "reason": "dead_air"}]}  # only 50 overlap
+    assert _kept_frames(edl) == 350                                 # was 250 pre-fix
+    # fully-outside drop subtracts nothing (was negative-prone pre-fix)
+    edl2 = {"segments": [{"src_in": 1000, "src_out": 1100}],
+            "drops": [{"src_in": 0, "src_out": 900, "reason": "filler"}]}
+    assert _kept_frames(edl2) == 100
+    # overlapping drops union-merge instead of double-subtracting
+    edl3 = {"segments": [{"src_in": 0, "src_out": 300}],
+            "drops": [{"src_in": 50, "src_out": 150, "reason": "filler"},
+                      {"src_in": 100, "src_out": 200, "reason": "manual"}]}
+    assert _kept_frames(edl3) == 150
+    # and a legitimate trim on edl-with-outside-drop is now allowed
+    full = {**_tweak_edl(), "segments": [{"src_in": 100, "src_out": 500}],
+            "drops": [{"src_in": 0, "src_out": 150, "reason": "dead_air"}]}
+    _, res = apply_edl_ops(full, [{"type": "trim_end", "frames": 100}], [])
+    assert res[0]["applied"], res[0]["reason"]
+
+
+def test_apply_ops_overlays_broll_split_trims():
+    from app.edl import apply_edl_ops
+    # remove punch-ins
+    edl, res = apply_edl_ops(_tweak_edl(), [{"type": "remove_overlays", "kind": "punch_in"}], [])
+    assert res[0]["applied"] and edl["overlays"] == []
+    _, res = apply_edl_ops(edl, [{"type": "remove_overlays", "kind": "punch_in"}], [])
+    assert not res[0]["applied"]                     # nothing left to remove
+    # add punch-in with clamped scale
+    edl, res = apply_edl_ops(edl, [{"type": "add_punch_in", "start_frame": 60, "end_frame": 120, "scale": 9}], [])
+    assert res[0]["applied"] and edl["overlays"][0]["scale"] == 1.35
+    # b-roll refused on talking_head, allowed on faceless
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "add_broll", "start_frame": 30, "end_frame": 90, "query": "city"}], [])
+    assert not res[0]["applied"] and "style" in res[0]["reason"]
+    edl_f, res = apply_edl_ops(_tweak_edl("faceless"), [{"type": "add_broll", "start_frame": 30, "end_frame": 90, "query": "city"}], [])
+    assert res[0]["applied"] and edl_f["broll"][0]["broll_query"] == "city"
+    # split fraction only for duet
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "set_split_fraction", "value": 0.5}], [])
+    assert not res[0]["applied"]
+    edl_d, res = apply_edl_ops(_tweak_edl("duet_split"), [{"type": "set_split_fraction", "value": 0.9}], [])
+    assert res[0]["applied"] and edl_d["layout"]["split_fraction"] == 0.75   # clamped
+    # trims shrink from the right end and refuse below the floor
+    edl_t, res = apply_edl_ops(_tweak_edl(), [{"type": "trim_end", "frames": 100}], [])
+    assert res[0]["applied"] and edl_t["segments"][0]["src_out"] == 800
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "trim_start", "frames": 900}], [])
+    assert not res[0]["applied"]
+    # unknown / undo ops are reported, not raised
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "explode"}, {"type": "undo"}], [])
+    assert not res[0]["applied"] and not res[1]["applied"]
+
+
+def _make_mock_job():
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/take.mov", "source_id": "tw-1",
+        "formats": ["myth-buster"], "style": "talking_head",
+        "script": {"hook": "Stop overthinking", "body": "Do the simple thing daily.",
+                   "cta": "Follow.", "formatId": "myth-buster"},
+    })
+    b = r.json()
+    return b["job_id"], b["clips"][0]["clip_id"]
+
+
+def test_tweak_endpoint_mock_caption_style_and_undo():
+    job_id, clip_id = _make_mock_job()
+    r = client.post(f"/v1/clips/{job_id}/tweak",
+                    json={"clip_id": clip_id, "instruction": "make the captions karaoke"})
+    assert r.status_code == 200
+    b = r.json()
+    assert b["mode"] == "mock" and b["changed"] is True and b["needs_render"] is False
+    assert b["clip_status"] == "ready"                       # keyless: no re-render
+    edl = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert edl["caption_style"] == "karaoke"
+    # undo restores the previous style
+    r2 = client.post(f"/v1/clips/{job_id}/tweak", json={"clip_id": clip_id, "instruction": "undo that"})
+    assert r2.json()["changed"] is True
+    edl2 = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert (edl2.get("caption_style") or "clean") != "karaoke"
+    # nothing left to undo → reported, not an error
+    r3 = client.post(f"/v1/clips/{job_id}/tweak", json={"clip_id": clip_id, "instruction": "undo"})
+    assert r3.status_code == 200 and r3.json()["changed"] is False
+
+
+def test_tweak_endpoint_mock_captions_rebuild_uses_mock_words():
+    job_id, clip_id = _make_mock_job()
+    client.post(f"/v1/clips/{job_id}/tweak", json={"clip_id": clip_id, "instruction": "captions off"})
+    assert client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"] == []
+    r = client.post(f"/v1/clips/{job_id}/tweak", json={"clip_id": clip_id, "instruction": "captions on please"})
+    assert r.json()["changed"] is True
+    caps = client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"]
+    assert caps and caps[0]["word"] == "Stop"                # rebuilt from mock words
+
+
+def test_tweak_endpoint_errors():
+    job_id, clip_id = _make_mock_job()
+    assert client.post("/v1/clips/nope/tweak",
+                       json={"clip_id": clip_id, "instruction": "x"}).status_code == 404
+    assert client.post(f"/v1/clips/{job_id}/tweak",
+                       json={"clip_id": "nope", "instruction": "x"}).status_code == 404
+    assert client.post(f"/v1/clips/{job_id}/tweak",
+                       json={"clip_id": clip_id, "instruction": "  "}).status_code == 422
+    # 409 while the clip is mid-render
+    job = main._clip_jobs[job_id]
+    job["clips"][0]["status"] = "rendering"
+    assert client.post(f"/v1/clips/{job_id}/tweak",
+                       json={"clip_id": clip_id, "instruction": "x"}).status_code == 409
+    job["clips"][0]["status"] = "ready"
+    # conversational turn (no keywords) → 200, no change, helpful reply
+    r = client.post(f"/v1/clips/{job_id}/tweak",
+                    json={"clip_id": clip_id, "instruction": "what can you do?"})
+    assert r.status_code == 200 and r.json()["changed"] is False and r.json()["reply"]
+
+
+def test_tweak_live_path_applies_llm_ops(monkeypatch):
+    job_id, clip_id = _make_mock_job()
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def fake_json(system, user, schema, model=main.OPUS, max_tokens=3000,
+                        temperature=None, array_key=None):
+        assert "edit assistant" in system
+        return {"reply": "Cutting that section now.",
+                "ops": [{"type": "cut_range", "start_frame": 300, "end_frame": 390,
+                         "style": None, "enabled": None, "scale": None, "text": None,
+                         "query": None, "value": None, "kind": None, "frames": None}]}
+    monkeypatch.setattr(main, "anthropic_json", fake_json)
+    rendered = []
+
+    async def fake_rerender(j, c):
+        rendered.append((j, c))
+    monkeypatch.setattr(main, "_rerender_clip", fake_rerender)
+
+    r = client.post(f"/v1/clips/{job_id}/tweak",
+                    json={"clip_id": clip_id, "instruction": "cut the boring part at 10s"})
+    b = r.json()
+    assert b["mode"] == "live" and b["changed"] is True
+    assert b["applied"][0]["type"] == "cut_range"
+    # mock_ready job → no real renderer → no re-render even on the live path
+    assert b["needs_render"] is False and rendered == []
+    job = main._clip_jobs[job_id]
+    assert len(job["edl_history"]) == 1                      # undo stack pushed
+    assert job["tweaks"][-1]["summary"] == "cut_range"
+
+
+def test_tweak_schema_is_structured_output_legal():
+    """The tweak envelope must obey the same SO restrictions as every other schema."""
+    import prompts
+
+    def check(schema):
+        for banned in ("minimum", "maximum", "minLength", "maxLength", "multipleOf", "pattern"):
+            assert banned not in schema
+        if schema.get("type") == "object":
+            assert schema.get("additionalProperties") is False
+            props = schema.get("properties", {})
+            assert set(schema.get("required", [])) == set(props)
+            for v in props.values():
+                check(v)
+        elif schema.get("type") == "array":
+            check(schema["items"])
+    check(prompts.TWEAK_ENVELOPE_JSON_SCHEMA)
+
+
+def test_caption_style_survives_pydantic_roundtrip():
+    """Regression: caption_style/trim_aggressiveness are real EDL fields now —
+    the tweak flow's EDL(**data)→model_dump() must not lose them."""
+    from app.edl import EDL, build_render_plan
+    d = _tweak_edl()
+    d["caption_style"] = "karaoke"
+    d["trim_aggressiveness"] = "aggressive"
+    out = EDL(**d).model_dump()
+    assert out["caption_style"] == "karaoke"
+    assert out["trim_aggressiveness"] == "aggressive"
+    # And the unset case still renders as clean (key present but None)
+    d2 = _tweak_edl(); d2["caption_style"] = None
+    assert build_render_plan(EDL(**d2).model_dump())["caption_style"] == "clean"

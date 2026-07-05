@@ -331,7 +331,11 @@ final class AppStore {
                 let clipIdStr = jobClip["clip_id"] as? String ?? ""
                 let clipStatus = jobClip["status"] as? String ?? ""
                 let renderURL = jobClip["render_url"] as? String
-                if let idx = clips.firstIndex(where: { $0.id.uuidString == clipIdStr }) {
+                // Compare as UUIDs, not strings: Swift's uuidString is UPPERCASE while
+                // the backend's uuid4() ids are lowercase — a string compare never
+                // matched, silently stranding mock-path clips in "rendering".
+                if let backendId = UUID(uuidString: clipIdStr),
+                   let idx = clips.firstIndex(where: { $0.id == backendId }) {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
                     if let url = renderURL { clips[idx].remoteURL = url }
                 }
@@ -401,6 +405,23 @@ final class AppStore {
     func updateClipCaption(_ clip: Clip, caption: String) {
         if let idx = clips.firstIndex(where: { $0.id == clip.id }) {
             clips[idx].caption = caption
+            save()
+        }
+    }
+
+    /// Conversational tweaks: reflect a tweak re-render's lifecycle on the local clip
+    /// so the Library grid + detail sheet stay honest while the backend re-edits.
+    func setClipRendering(_ clipId: UUID) {
+        if let idx = clips.firstIndex(where: { $0.id == clipId }) {
+            clips[idx].status = .rendering
+            save()
+        }
+    }
+
+    func applyTweakResult(_ clipId: UUID, remoteURL: String?) {
+        if let idx = clips.firstIndex(where: { $0.id == clipId }) {
+            clips[idx].status = .ready
+            if let remoteURL, !remoteURL.isEmpty { clips[idx].remoteURL = remoteURL }
             save()
         }
     }

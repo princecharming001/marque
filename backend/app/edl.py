@@ -102,6 +102,11 @@ class EDL(BaseModel):
     react_schedule: list[ReactWindow] = []           # duet_split only
     layout: Layout
     audio: Audio = Audio()
+    # Rendering hints. REAL model fields (not loose dict keys) because Pydantic
+    # silently drops unknown keys on the EDL(**data) → model_dump() round-trip —
+    # which the tweak flow does on every edit, and would otherwise lose them.
+    caption_style: Optional[str] = None              # clean | bold-word | karaoke
+    trim_aggressiveness: Optional[str] = None        # aggressive | None
 
     @property
     def duration_frames(self) -> int:
@@ -326,7 +331,270 @@ def build_render_plan(edl: dict) -> dict:
         "react_source": edl.get("react_source"),
         "react_schedule": react_schedule,
         "layout": edl.get("layout") or {"style": edl.get("style", "talking_head"), "panels": 1, "panel_boundaries": []},
-        "caption_style": edl.get("caption_style", "clean"),
+        # `or "clean"` (not a dict default): the key is now always present from
+        # model_dump() with value None when unset.
+        "caption_style": edl.get("caption_style") or "clean",
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
         "total_frames": max(1, total_frames),
     }
+
+
+# ---------------------------------------------------------------------------
+# Tweak ops — deterministic application of typed edit operations to an EDL dict.
+# The conversational tweak endpoint has the LLM emit these small typed ops
+# (structured outputs); this function is the ONLY thing that mutates the EDL,
+# so every change is bounded, auditable, and invariant-safe. Works on plain
+# dicts (the job-store representation); caller re-validates via EDL(**data).
+# ---------------------------------------------------------------------------
+
+TWEAK_OP_TYPES = [
+    "set_caption_style", "set_captions_enabled", "cut_range", "restore_range",
+    "remove_overlays", "add_punch_in", "add_text_card", "add_broll",
+    "remove_broll", "set_split_fraction", "trim_start", "trim_end", "undo",
+]
+
+# Only these compositions actually draw the b-roll layer (render/src/compositions).
+_BROLL_STYLES = {"broll_cutaway", "faceless"}
+_MIN_DURATION_FRAMES = 60   # never let trims/cuts leave less than ~2s of footage
+
+
+def _coalesce_drops(drops: list[dict]) -> list[dict]:
+    """Sort + union-merge overlapping/adjacent drops (manual cuts may swallow
+    smaller filler drops — the union is what the user meant)."""
+    ordered = sorted((dict(d) for d in drops), key=lambda d: d["src_in"])
+    out: list[dict] = []
+    for d in ordered:
+        if out and d["src_in"] <= out[-1]["src_out"]:
+            out[-1]["src_out"] = max(out[-1]["src_out"], d["src_out"])
+            if d.get("reason") == "manual":
+                out[-1]["reason"] = "manual"
+        else:
+            out.append(d)
+    return out
+
+
+def _kept_frames(edl: dict) -> int:
+    """True playable duration: segment frames minus only the drop portions that
+    actually OVERLAP a segment. (Naive seg_total - drop_total is wrong whenever a
+    drop extends outside segment bounds — e.g. pipeline filler drops on footage
+    the LLM's segments never included — and could even go negative.)"""
+    # Union-merge drops first so overlapping drops can't double-subtract.
+    merged: list[tuple[int, int]] = []
+    for d in sorted(edl.get("drops") or [], key=lambda d: d["src_in"]):
+        if merged and d["src_in"] <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], d["src_out"]))
+        else:
+            merged.append((d["src_in"], d["src_out"]))
+    total = 0
+    for s in edl.get("segments") or []:
+        seg_len = s["src_out"] - s["src_in"]
+        cut = sum(max(0, min(s["src_out"], b) - max(s["src_in"], a)) for a, b in merged)
+        total += max(0, seg_len - cut)
+    return total
+
+
+def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
+                  ) -> tuple[dict, list[dict]]:
+    """Apply typed tweak ops to an EDL dict. Returns (new_edl, results) where each
+    result is {"type", "applied", "reason"}. Never raises on a bad op — it's
+    reported as skipped. `undo` is a server-level op (needs the history stack)
+    and is always reported as skipped here."""
+    import copy
+    edl = copy.deepcopy(edl)
+    results: list[dict] = []
+    segments = edl.get("segments") or []
+    src_extent = max((s["src_out"] for s in segments), default=0)
+
+    def clamp_range(a, b):
+        a = max(0, int(a)); b = min(src_extent, int(b))
+        return (a, b) if b > a else None
+
+    for op in ops or []:
+        t = op.get("type", "")
+        applied, reason = False, ""
+        try:
+            if t == "set_caption_style":
+                style = op.get("style") or ""
+                if style in ("clean", "bold-word", "karaoke"):
+                    edl["caption_style"] = style
+                    applied = True
+                else:
+                    reason = f"unknown caption style '{style}'"
+
+            elif t == "set_captions_enabled":
+                if op.get("enabled") is False:
+                    edl["captions"] = []
+                    applied = True
+                elif op.get("enabled") is True:
+                    if not words:
+                        reason = "no transcript available to rebuild captions"
+                    else:
+                        kept, _ = strip_fillers(words)
+                        edl["captions"] = [
+                            {"word": w["word"], "frame": ms_to_frame(w.get("start_ms", 0))}
+                            for w in kept if w.get("word")
+                        ]
+                        applied = True
+                else:
+                    reason = "enabled must be true or false"
+
+            elif t == "cut_range":
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                else:
+                    candidate = _coalesce_drops(
+                        (edl.get("drops") or []) + [{"src_in": r[0], "src_out": r[1], "reason": "manual"}])
+                    trial = dict(edl); trial["drops"] = candidate
+                    if _kept_frames(trial) < _MIN_DURATION_FRAMES:
+                        reason = "cut would leave less than 2 seconds of footage"
+                    else:
+                        edl["drops"] = candidate
+                        applied = True
+
+            elif t == "restore_range":
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                else:
+                    s, e = r
+                    new_drops, touched = [], False
+                    for d in edl.get("drops") or []:
+                        if d["src_out"] <= s or d["src_in"] >= e:
+                            new_drops.append(d)          # no overlap
+                        else:
+                            touched = True
+                            if d["src_in"] < s:          # left remainder survives
+                                new_drops.append({**d, "src_out": s})
+                            if d["src_out"] > e:         # right remainder survives
+                                new_drops.append({**d, "src_in": e})
+                    if touched:
+                        edl["drops"] = sorted(new_drops, key=lambda d: d["src_in"])
+                        applied = True
+                    else:
+                        reason = "no cuts found in that range"
+
+            elif t == "remove_overlays":
+                kind = op.get("kind") or "all"
+                r = None
+                if op.get("start_frame") is not None and op.get("end_frame") is not None:
+                    r = clamp_range(op["start_frame"], op["end_frame"])
+                before = edl.get("overlays") or []
+
+                def keep(o):
+                    if kind != "all" and o.get("type") != kind:
+                        return True
+                    if r and (o["src_out"] <= r[0] or o["src_in"] >= r[1]):
+                        return True
+                    return False
+                after = [o for o in before if keep(o)]
+                if len(after) < len(before):
+                    edl["overlays"] = after
+                    applied = True
+                else:
+                    reason = "no matching overlays found"
+
+            elif t == "add_punch_in":
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                else:
+                    scale = op.get("scale") or 1.08
+                    scale = max(1.02, min(1.35, float(scale)))
+                    edl.setdefault("overlays", []).append(
+                        {"type": "punch_in", "src_in": r[0], "src_out": r[1], "scale": scale, "text": ""})
+                    applied = True
+
+            elif t == "add_text_card":
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                text = (op.get("text") or "").strip()
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                elif not text:
+                    reason = "text card needs text"
+                else:
+                    edl.setdefault("overlays", []).append(
+                        {"type": "text_card", "src_in": r[0], "src_out": r[1], "scale": 1.0, "text": text[:80]})
+                    applied = True
+
+            elif t == "add_broll":
+                if edl.get("style") not in _BROLL_STYLES:
+                    reason = "b-roll isn't rendered in this video style"
+                else:
+                    r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                    query = (op.get("query") or "").strip()
+                    if r is None:
+                        reason = "invalid or out-of-bounds range"
+                    elif not query:
+                        reason = "b-roll needs a search query"
+                    else:
+                        edl.setdefault("broll", []).append(
+                            {"src_in": r[0], "src_out": r[1], "cue_text": query,
+                             "asset_id": None, "broll_query": query, "source": "stock",
+                             "resolved_url": None})
+                        applied = True
+
+            elif t == "remove_broll":
+                r = None
+                if op.get("start_frame") is not None and op.get("end_frame") is not None:
+                    r = clamp_range(op["start_frame"], op["end_frame"])
+                before = edl.get("broll") or []
+                after = [b for b in before
+                         if r and (b["src_out"] <= r[0] or b["src_in"] >= r[1])]
+                if len(after) < len(before):
+                    edl["broll"] = after
+                    applied = True
+                else:
+                    reason = "no b-roll found" + (" in that range" if r else "")
+
+            elif t == "set_split_fraction":
+                if edl.get("style") != "duet_split":
+                    reason = "split sizing only applies to duet-style edits"
+                else:
+                    v = op.get("value")
+                    if v is None:
+                        reason = "missing split value"
+                    else:
+                        edl.setdefault("layout", {})["split_fraction"] = max(0.3, min(0.75, float(v)))
+                        applied = True
+
+            elif t in ("trim_start", "trim_end"):
+                frames = int(op.get("frames") or 0)
+                if frames <= 0:
+                    reason = "trim needs a positive frame count"
+                elif not segments:
+                    reason = "no segments to trim"
+                elif _kept_frames(edl) - frames < _MIN_DURATION_FRAMES:
+                    reason = "trim would leave less than 2 seconds of footage"
+                else:
+                    segs = [dict(s) for s in edl["segments"]]
+                    remaining = frames
+                    if t == "trim_start":
+                        while remaining > 0 and segs:
+                            take = min(remaining, segs[0]["src_out"] - segs[0]["src_in"])
+                            segs[0]["src_in"] += take
+                            remaining -= take
+                            if segs[0]["src_in"] >= segs[0]["src_out"]:
+                                segs.pop(0)
+                    else:
+                        while remaining > 0 and segs:
+                            take = min(remaining, segs[-1]["src_out"] - segs[-1]["src_in"])
+                            segs[-1]["src_out"] -= take
+                            remaining -= take
+                            if segs[-1]["src_in"] >= segs[-1]["src_out"]:
+                                segs.pop()
+                    edl["segments"] = segs
+                    segments = segs
+                    applied = True
+
+            elif t == "undo":
+                reason = "handled by the server history stack"
+
+            else:
+                reason = f"unknown op '{t}'"
+        except (TypeError, ValueError, KeyError) as e:
+            applied, reason = False, f"malformed op ({type(e).__name__})"
+
+        results.append({"type": t, "applied": applied, "reason": reason})
+
+    return edl, results

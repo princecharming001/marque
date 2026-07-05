@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 
-from app.edl import ms_to_frame
+from app.edl import ms_to_frame, TWEAK_OP_TYPES
 
 OPUS = "claude-opus-4-8"
 HAIKU = "claude-haiku-4-5-20251001"
@@ -444,6 +444,108 @@ def edl_repair_prompt(style: str, broken_edl: dict, issues: list[str],
         f"Source last frame: {last_frame}\n"
         f"Issues to fix:\n" + "\n".join(f"- {i}" for i in issues) + "\n\n"
         f"Current EDL:\n{json.dumps(broken_edl)}\n\nReturn the corrected EDL JSON only."
+    )
+    return system, user
+
+
+# ---------------------------------------------------------------------------
+# Conversational tweaks — the creator chats small changes to a finished edit.
+# The LLM's ONLY job is interpretation: user words -> typed ops (applied
+# deterministically by app.edl.apply_edl_ops) + a chat reply. It never writes
+# EDL JSON itself.
+# ---------------------------------------------------------------------------
+
+# Structured-output envelope. Op params are union-typed with null (SO supports
+# null types; the repo schema-guard test only inspects object/array branches).
+TWEAK_ENVELOPE_JSON_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["reply", "ops"],
+    "properties": {
+        "reply": {"type": "string"},
+        "ops": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["type", "style", "enabled", "start_frame", "end_frame",
+                         "scale", "text", "query", "value", "kind", "frames"],
+            "properties": {
+                "type": {"type": "string", "enum": TWEAK_OP_TYPES},
+                "style": {"type": ["string", "null"]},
+                "enabled": {"type": ["boolean", "null"]},
+                "start_frame": {"type": ["integer", "null"]},
+                "end_frame": {"type": ["integer", "null"]},
+                "scale": {"type": ["number", "null"]},
+                "text": {"type": ["string", "null"]},
+                "query": {"type": ["string", "null"]},
+                "value": {"type": ["number", "null"]},
+                "kind": {"type": ["string", "null"]},
+                "frames": {"type": ["integer", "null"]},
+            },
+        }},
+    },
+}
+
+
+def _edl_summary(edl: dict) -> str:
+    """Compact human-readable state of the edit for the tweak prompt — the raw
+    captions array alone can be 200+ entries, so summarize instead."""
+    segs = edl.get("segments") or []
+    drops = edl.get("drops") or []
+    overlays = edl.get("overlays") or []
+    broll = edl.get("broll") or []
+    kept = sum(s["src_out"] - s["src_in"] for s in segs) - sum(d["src_out"] - d["src_in"] for d in drops)
+    lines = [
+        f"style: {edl.get('style')}  |  kept duration: {kept} frames (~{kept / 30:.1f}s)",
+        f"segments: {[(s['src_in'], s['src_out']) for s in segs]}",
+        f"cuts (drops): {[(d['src_in'], d['src_out'], d.get('reason', '')) for d in drops] or 'none'}",
+        f"overlays: {[(o.get('type'), o['src_in'], o['src_out'], o.get('scale'), (o.get('text') or '')[:30]) for o in overlays] or 'none'}",
+        f"b-roll: {[(b['src_in'], b['src_out'], (b.get('cue_text') or '')[:40]) for b in broll] or 'none'}",
+        f"captions: {len(edl.get('captions') or [])} words, style={edl.get('caption_style') or 'clean'}",
+    ]
+    if edl.get("style") == "duet_split":
+        lines.append(f"split_fraction: {(edl.get('layout') or {}).get('split_fraction', 0.58)}")
+    return "\n".join(lines)
+
+
+def tweak_prompt(edl: dict, transcript_words: list[dict], instruction: str,
+                 history: list[dict] | None = None) -> tuple[str, str]:
+    """(system, user) for one conversational tweak turn."""
+    system = (
+        "You are Marque's edit assistant. A creator is chatting small changes to a FINISHED short-form "
+        "edit. Translate their request into zero or more typed operations from this fixed vocabulary — "
+        "you NEVER write edit data yourself, the server applies ops deterministically:\n"
+        "- set_caption_style {style: clean|bold-word|karaoke}\n"
+        "- set_captions_enabled {enabled}\n"
+        "- cut_range {start_frame, end_frame} — remove a section of footage\n"
+        "- restore_range {start_frame, end_frame} — bring back previously cut footage\n"
+        "- remove_overlays {kind: punch_in|text_card|all, start_frame?, end_frame?}\n"
+        "- add_punch_in {start_frame, end_frame, scale 1.02-1.35}\n"
+        "- add_text_card {start_frame, end_frame, text}\n"
+        "- add_broll {start_frame, end_frame, query} (only broll_cutaway/faceless styles)\n"
+        "- remove_broll {start_frame?, end_frame?}\n"
+        "- set_split_fraction {value 0.3-0.75} (duet only)\n"
+        "- trim_start {frames} / trim_end {frames}\n"
+        "- undo {} — revert the last tweak\n\n"
+        "FRAME MATH: 30fps; frame = round(seconds * 30). The transcript below maps words to frames — "
+        "when the creator references CONTENT ('cut the part about X', 'zoom on the punchline'), find "
+        "those words and use their frames. When they reference TIME ('at 5 seconds'), convert directly.\n"
+        "Unused op params must be null. reply is your short, warm chat answer (1-2 sentences, no "
+        "markdown) — confirm what you're changing, or ask ONE clarifying question (with ops=[]) when "
+        "the request is genuinely ambiguous, or explain briefly when something isn't possible. If the "
+        "creator asks a question about the edit, answer it from the EDIT STATE (ops=[])."
+    )
+    hist = ""
+    if history:
+        hist_lines = [f'- "{h.get("instruction", "")}" -> {h.get("summary", "")}' for h in history[-5:]]
+        hist = "\nPrevious tweaks this session:\n" + "\n".join(hist_lines) + "\n"
+    words_slice = [
+        {"word": w.get("word", ""), "frame": ms_to_frame(w.get("start_ms", 0))}
+        for w in (transcript_words or [])[:250]
+    ]
+    user = (
+        f"EDIT STATE:\n{_edl_summary(edl)}\n"
+        f"{hist}\n"
+        f"Word-frame transcript: {json.dumps(words_slice) if words_slice else '(unavailable)'}\n\n"
+        f"Creator says: \"{instruction}\"\n\n"
+        "Return the envelope JSON."
     )
     return system, user
 

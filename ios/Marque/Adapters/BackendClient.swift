@@ -36,6 +36,22 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return data
     }
 
+    /// Like post(), but surfaces the HTTP status code so callers can distinguish
+    /// meaningful non-200s (the tweak endpoint uses 404/409 as part of its contract).
+    /// Returns (nil, 0) on transport failure.
+    func postWithStatus(_ path: String, _ body: [String: Any]) async -> (Data?, Int) {
+        guard let url = URL(string: AppConfig.backendBaseURL + path) else { return (nil, 0) }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 90
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse else { return (nil, 0) }
+        return (data, http.statusCode)
+    }
+
     private func note(_ mode: String?) { if let mode { lastMode = mode == "live" ? "Claude" : "Mock" } }
 
     // MARK: Serialization
