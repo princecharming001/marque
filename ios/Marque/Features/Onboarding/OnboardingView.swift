@@ -199,7 +199,7 @@ struct OnboardingView: View {
         let freq = store.brand.postingFrequency
         let line: String = switch freq {
         case .rarely, .none:
-            "Most creators stall because every post is built from scratch. Marque flips that: film once a week, and I turn it into daily content."
+            "Most creators stall because every post is built from scratch. Yunicorn flips that: film once a week, and I turn it into daily content."
         case .sometimes:
             "You're already posting — the problem is the cost per post. Film once a week with me, and every session becomes 5+ pieces of content."
         case .often, .daily:
@@ -432,7 +432,7 @@ struct OnboardingView: View {
         let tone = funny < 0.35 ? "witty and light" : funny > 0.65 ? "grounded and serious" : "balanced"
         let style = polished < 0.35 ? "clean and produced" : polished > 0.65 ? "unfiltered and real" : "conversational"
         let mode = teacher < 0.35 ? "teaching the room" : teacher > 0.65 ? "talking to peers" : "guiding alongside"
-        return "\u{201C}\(tone.capitalized), \(style), \(mode).\u{201D} Marque will write every script in this voice."
+        return "\u{201C}\(tone.capitalized), \(style), \(mode).\u{201D} Yunicorn will write every script in this voice."
     }
 
     private func voiceSliderRow(_ leading: String, _ trailing: String, value: Binding<Double>) -> some View {
@@ -616,7 +616,7 @@ private struct MethodStatCard: View {
         VStack(alignment: .leading, spacing: Space.lg) {
             statRow(label: "Chasing viral hits", value: "1×", fraction: 0.22, filled: false)
             MarqueHairline()
-            statRow(label: "Posting weekly with Marque", value: "4×", fraction: 0.92, filled: true)
+            statRow(label: "Posting weekly with Yunicorn", value: "4×", fraction: 0.92, filled: true)
             Text("Accounts that post 3×+ a week grow ~4× faster than accounts that post sporadically.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .multilineTextAlignment(.leading)

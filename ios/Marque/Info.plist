@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Marque</string>
+	<string>Yunicorn</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIconName</key>
@@ -41,13 +41,13 @@
 		<true/>
 	</dict>
 	<key>NSCameraUsageDescription</key>
-	<string>Marque records talking-head video so the AI can edit it into clips.</string>
+	<string>Yunicorn records talking-head video so the AI can edit it into clips.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Marque records audio with your video so your clips have sound.</string>
+	<string>Yunicorn records audio with your video so your clips have sound.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Marque imports existing videos to repurpose into clips.</string>
+	<string>Yunicorn imports existing videos to repurpose into clips.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Marque transcribes what you say to the voice assistant so it can build your content.</string>
+	<string>Yunicorn transcribes what you say to the voice assistant so it can build your content.</string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im54aWJlaXlrY2d4cGJta2VhZHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1MjA4MDcsImV4cCI6MjA4MTA5NjgwN30.0ViO1YkTQ2CEVjf1VoBun6cgVodu2u3DrcDipeWnr28</string>
 	<key>SUPABASE_URL</key>

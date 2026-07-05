@@ -165,7 +165,7 @@ struct InsightsSection: View {
             Image(systemName: "chart.line.uptrend.xyaxis")
                 .font(.system(size: 26)).foregroundStyle(Palette.accent)
             Text("Unlock your winning formula").font(AppFont.title).foregroundStyle(Palette.textPrimary)
-            Text("Post \(learningTarget) clips and Marque learns what actually works for you — the hooks, formats, and topics ranked by real results.")
+            Text("Post \(learningTarget) clips and Yunicorn learns what actually works for you — the hooks, formats, and topics ranked by real results.")
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)

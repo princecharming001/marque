@@ -105,7 +105,7 @@ struct ChatView: View {
             .padding(.horizontal, 10)
             .frame(height: 52)
             .overlay(
-                Text("Marque")
+                Text("Yunicorn")
                     .font(Typeface.display(17, .semibold))
                     .tracking(-0.2)
                     .foregroundStyle(Palette.textPrimary)
@@ -227,7 +227,7 @@ struct ChatView: View {
             .accessibilityIdentifier("chat.attach")
             .accessibilityLabel("Add")
 
-            TextField("Ask Marque anything", text: $draft, axis: .vertical)
+            TextField("Ask Yunicorn anything", text: $draft, axis: .vertical)
                 .font(AppFont.bodyL)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(1...5)

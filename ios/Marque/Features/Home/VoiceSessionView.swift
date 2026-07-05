@@ -67,7 +67,7 @@ struct VoiceSessionView: View {
                         if thinking {
                             HStack(spacing: 6) {
                                 ProgressView().tint(Palette.accent)
-                                Text("Marque is thinking…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                Text("Yunicorn is thinking…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                             }
                         }
                         if !lastChips.isEmpty && !thinking {

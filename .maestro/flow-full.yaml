@@ -121,7 +121,7 @@ name: Marque — full core loop
 
 # Non-blocking aha: staged build screen → ready (live Claude writes 3 scripts; allow time)
 - extendedWaitUntil:
-    visible: "Enter Marque"
+    visible: "Enter Yunicorn"
     timeout: 120000
 - takeScreenshot: /Users/home/Marque/.shots/live-aha
 - tapOn:

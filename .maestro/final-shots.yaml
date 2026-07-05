@@ -6,5 +6,5 @@ appId: com.getmarque.app
     id: "today.settings"
 - tapOn:
     id: "settings.upgrade"
-- assertVisible: "Marque Pro"
+- assertVisible: "Yunicorn Pro"
 - takeScreenshot: /Users/home/Marque/.shots/final-paywall

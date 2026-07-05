@@ -396,7 +396,7 @@ struct ConversationsDrawer: View {
     private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Marque")
+                Text("Yunicorn")
                     .font(Typeface.display(20, .semibold)).tracking(-0.3)
                     .foregroundStyle(Palette.textPrimary)
                 Spacer()

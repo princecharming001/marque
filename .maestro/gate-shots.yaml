@@ -77,7 +77,7 @@ name: Marque — gate screenshots (paywall→auth order QA)
 - tapOn:
     id: "onboard.buildPlan"
 - extendedWaitUntil:
-    visible: "Enter Marque"
+    visible: "Enter Yunicorn"
     timeout: 120000
 - tapOn:
     id: "onboard.finish"

@@ -22,11 +22,11 @@ struct PaywallView: View {
                         .padding(.top, Space.md)
 
                     VStack(alignment: .leading, spacing: Space.sm) {
-                        SectionLabel(text: "Marque Pro", accent: Palette.accent)
+                        SectionLabel(text: "Yunicorn Pro", accent: Palette.accent)
                         Text("Film once.\nPost all week.")
                             .font(AppFont.displayXL).tracking(-1).foregroundStyle(Palette.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("Go Pro to publish everything Marque makes for you.")
+                        Text("Go Pro to publish everything Yunicorn makes for you.")
                             .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                             .lineSpacing(3)
                     }
@@ -66,7 +66,7 @@ struct PaywallView: View {
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Marque Pro")
+            .navigationTitle("Yunicorn Pro")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Close") { dismiss() } } }
         }

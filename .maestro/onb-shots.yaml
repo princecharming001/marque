@@ -132,6 +132,6 @@ name: Marque — onboarding per-step screenshot walk (visual QA)
 - takeScreenshot: /Users/home/Marque/.shots/onb-18-building
 
 - extendedWaitUntil:
-    visible: "Enter Marque"
+    visible: "Enter Yunicorn"
     timeout: 120000
 - takeScreenshot: /Users/home/Marque/.shots/onb-19-ready

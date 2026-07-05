@@ -91,7 +91,7 @@ struct PlanReadyView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            OnbPill(title: "Enter Marque") { onFinish() }
+            OnbPill(title: "Enter Yunicorn") { onFinish() }
                 .accessibilityIdentifier("onboard.finish")
         }
     }

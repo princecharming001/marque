@@ -114,7 +114,7 @@ struct SettingsView: View {
                         HStack(spacing: Space.md) {
                             iconTile("crown", tint: Palette.accent)
                             VStack(alignment: .leading, spacing: 1) {
-                                Text("Marque Pro — \(monthlyPrice)")
+                                Text("Yunicorn Pro — \(monthlyPrice)")
                                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                 Text("Billed monthly. Cancel anytime.")
                                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
@@ -195,8 +195,8 @@ struct SettingsView: View {
                         if let data = try? JSONEncoder().encode(store.brand),
                            let str = String(data: data, encoding: .utf8) {
                             ShareLink(item: str,
-                                      subject: Text("Marque Brand Data"),
-                                      message: Text("My Marque brand export")) {
+                                      subject: Text("Yunicorn Brand Data"),
+                                      message: Text("My Yunicorn brand export")) {
                                 row("Export my data", "square.and.arrow.up")
                                     .padding(.horizontal, Space.md)
                             }
@@ -235,7 +235,7 @@ struct SettingsView: View {
                         .padding(.horizontal, Space.md).padding(.vertical, 12)
                     }
 
-                    Text("Marque \(appVersion)")
+                    Text("Yunicorn \(appVersion)")
                         .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, Space.lg)

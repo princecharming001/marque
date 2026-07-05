@@ -1,0 +1,34 @@
+appId: com.getmarque.app
+name: emulate icons check
+---
+- launchApp:
+    arguments:
+      reset: "true"
+- tapOn: { id: "onboard.start" }
+- tapOn: { id: "onboard.goal.audience" }
+- extendedWaitUntil: { visible: "What gets in the way most?", timeout: 4000 }
+- tapOn: { id: "onboard.blocker.time" }
+- extendedWaitUntil: { visible: "How often do you post right now?", timeout: 4000 }
+- tapOn: { id: "onboard.frequency.sometimes" }
+- extendedWaitUntil: { visible: "Consistency beats virality", timeout: 4000 }
+- tapOn: { id: "onboard.continue" }
+- tapOn: { id: "onboard.creatorName" }
+- inputText: "Alex"
+- tapOn: { id: "onboard.nameContinue" }
+- tapOn: { id: "onboard.niche" }
+- inputText: "Fitness coaching"
+- tapOn: { id: "onboard.nicheContinue" }
+- tapOn: { id: "onboard.whatYouDo" }
+- inputText: "I coach busy professionals"
+- tapOn: { id: "onboard.audience" }
+- inputText: "busy professionals"
+- tapOn: { id: "onboard.aboutContinue" }
+- tapOn: { id: "onboard.knownForSkip" }
+- tapOn: { id: "onboard.platform.instagram" }
+- extendedWaitUntil: { visible: "Connect your accounts", timeout: 4000 }
+- tapOn: { id: "onboard.connect.skip" }
+- extendedWaitUntil: { visible: "A few quick questions", timeout: 4000 }
+- tapOn: { id: "onboard.interview.skip" }
+- tapOn: { id: "onboard.voiceContinue" }
+- extendedWaitUntil: { visible: "Who do you want to sound like?", timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/emulate-recheck

@@ -28,7 +28,7 @@ struct SubscriptionGateView: View {
                         .font(AppFont.displayXL).tracking(-1)
                         .foregroundStyle(Palette.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text("Marque is a subscription. One plan, everything included.")
+                    Text("Yunicorn is a subscription. One plan, everything included.")
                         .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                         .lineSpacing(3)
                 }

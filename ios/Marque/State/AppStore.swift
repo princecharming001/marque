@@ -628,7 +628,7 @@ final class AppStore {
         center.removeAllPendingNotificationRequests()
         let content = UNMutableNotificationContent()
         content.title = "Time to film"
-        content.body = "One recording today keeps your week full. Open Marque."
+        content.body = "One recording today keeps your week full. Open Yunicorn."
         content.sound = .default
         var comps = DateComponents(); comps.hour = 9; comps.minute = 0
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
@@ -688,7 +688,7 @@ final class AppStore {
     private nonisolated static func postScriptsReadyNotification() {
         let content = UNMutableNotificationContent()
         content.title = "Your first scripts are ready ✍️"
-        content.body = "Your content plan is built — come see what Marque wrote for you."
+        content.body = "Your content plan is built — come see what Yunicorn wrote for you."
         content.sound = .default
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "marque.scriptsReady.\(UUID().uuidString)",

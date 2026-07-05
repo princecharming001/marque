@@ -114,7 +114,7 @@ struct ProfileView: View {
     private var brandSummaryCard: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack(alignment: .center, spacing: Space.sm) {
-                SectionLabel(text: "What Marque knows about you", accent: Palette.accent)
+                SectionLabel(text: "What Yunicorn knows about you", accent: Palette.accent)
                 Spacer(minLength: 0)
                 Button {
                     Task { await refreshSummary() }
@@ -213,7 +213,7 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             SectionLabel(text: "Creators to watch")
                 .padding(.top, Space.lg)
-            Text("Two creators you love — Marque studies their reels and feeds you mimicable ones.")
+            Text("Two creators you love — Yunicorn studies their reels and feeds you mimicable ones.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, Space.xs)
@@ -564,7 +564,7 @@ struct PillarsEditorSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.md) {
-                    Text("Rename, retune the mix, add or remove — these shape every script Marque writes.")
+                    Text("Rename, retune the mix, add or remove — these shape every script Yunicorn writes.")
                         .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
 
                     ForEach($draft) { $p in

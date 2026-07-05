@@ -24,7 +24,7 @@ struct AuthGateView: View {
                         .foregroundStyle(Palette.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text(mode == .create
-                         ? "Everything Marque learns about you — your voice, your angle, your scripts — lives on your account."
+                         ? "Everything Yunicorn learns about you — your voice, your angle, your scripts — lives on your account."
                          : "Sign in to pick up your brand where you left it.")
                         .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                         .lineSpacing(3)
@@ -53,10 +53,11 @@ struct AuthGateView: View {
                         }
                         .foregroundStyle(Palette.textPrimary)
                         .frame(maxWidth: .infinity).frame(height: 52)
-                        .background(Palette.surfaceRaised)
+                        .background(LiquidGlassFill(radius: Radius.md, corners: false))
                         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .strokeBorder(Palette.hairline, lineWidth: 1))
+                            .strokeBorder(.white.opacity(0.55), lineWidth: 1))
+                        .shadow(color: Palette.shadowCool.opacity(0.16), radius: 16, x: 0, y: 8)
                     }
                     .buttonStyle(PressableStyle())
                     .accessibilityIdentifier("auth.google")
@@ -91,15 +92,41 @@ struct AuthGateView: View {
                 }
 
                 VStack(spacing: Space.md) {
-                    PrimaryButton(title: store.auth.isWorking ? "One moment…"
-                                  : (mode == .create ? "Create account" : "Sign in"),
-                                  shine: mode == .create) {
+                    // Glossy-glass primary: solid ink base keeps the light label
+                    // legible, with a liquid-glass sheen + luminous top rim on top
+                    // (no material blur — that would frost the ink and kill contrast).
+                    Button {
                         focus = nil
                         Task {
                             if mode == .create { await store.auth.createAccount(email: email, password: password) }
                             else { await store.auth.signIn(email: email, password: password) }
                         }
+                    } label: {
+                        Text(store.auth.isWorking ? "One moment…"
+                             : (mode == .create ? "Create account" : "Sign in"))
+                            .font(AppFont.headline)
+                            .foregroundStyle(Palette.onInk)
+                            .frame(maxWidth: .infinity).frame(height: 54)
+                            .background(
+                                ZStack {
+                                    Palette.ink
+                                    LinearGradient(colors: [.white.opacity(0.20), .white.opacity(0.04), .clear],
+                                                   startPoint: .top, endPoint: .bottom)
+                                    RadialGradient(colors: [.white.opacity(0.22), .clear],
+                                                   center: .topLeading, startRadius: 0, endRadius: 160)
+                                    VStack(spacing: 0) {
+                                        Rectangle().fill(.white.opacity(0.38)).frame(height: 1)
+                                        Spacer(minLength: 0)
+                                    }
+                                    if mode == .create { ShineSweep() }
+                                }
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                .strokeBorder(.white.opacity(0.22), lineWidth: 1))
+                            .shadow(color: .black.opacity(0.16), radius: 14, x: 0, y: 8)
                     }
+                    .buttonStyle(PressableStyle())
                     .disabled(store.auth.isWorking)
                     .accessibilityIdentifier(mode == .create ? "auth.createAccount" : "auth.signIn")
 
