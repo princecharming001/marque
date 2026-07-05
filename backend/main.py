@@ -1272,18 +1272,26 @@ async def tweak_clip(job_id: str, req: TweakRequest):
             # the clip in "rendering" if it died) now lives inside the task's try.
             clip["status"] = "rendering"
             clip["render_started_at"] = time.time()
-            asyncio.create_task(_rerender_clip(job_id, req.clip_id,
+            my_gen = _bump_render_gen(clip)
+            asyncio.create_task(_rerender_clip(job_id, req.clip_id, my_gen,
                                                resolve_broll=resolve_broll_needed))
 
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"]}
 
 
-async def _rerender_clip(job_id: str, clip_id: str, resolve_broll: bool = False):
+async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: bool = False):
     """Re-render one clip after a tweak. NEVER strands the clip: on any failure the
     previous render_url is restored (status ready) — or, if there was never a good
     render to fall back to, the clip fails with a structured code instead of going
-    fake-ready with no playable URL."""
+    fake-ready with no playable URL.
+
+    Every write is gated on _is_current_render(clip, my_gen): a watchdog can mark
+    this clip failed while this task is still silently running in the background
+    (asyncio doesn't cancel it), and a subsequent retry/tweak can start a NEWER
+    render for the same clip. If that happens, my_gen no longer matches the
+    clip's current generation and this stale attempt writes NOTHING at all —
+    the newer attempt's result (or in-flight state) is left untouched (F7)."""
     job = _clip_jobs.get(job_id)
     if not job:
         return
@@ -1302,24 +1310,28 @@ async def _rerender_clip(job_id: str, clip_id: str, resolve_broll: bool = False)
         if not submission:
             raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
         clip["render_id"] = submission["render_id"]
-        clip["render_url"] = await _poll_remotion_render(
+        render_url = await _poll_remotion_render(
             submission["render_id"], submission["bucket_name"])
-        clip.pop("error", None)
-        clip.pop("error_detail", None)
+        if _is_current_render(clip, my_gen):
+            clip["render_url"] = render_url
+            clip.pop("error", None)
+            clip.pop("error_detail", None)
     except PipelineError as e:
-        clip["render_url"] = prev_url
-        if job["tweaks"]:
-            job["tweaks"][-1]["render_error"] = f"{e.code}: {e.detail}"[:200]
-        if not prev_url:
-            _fail_clip(clip, e.code, e.detail)
+        if _is_current_render(clip, my_gen):
+            clip["render_url"] = prev_url
+            if job["tweaks"]:
+                job["tweaks"][-1]["render_error"] = f"{e.code}: {e.detail}"[:200]
+            if not prev_url:
+                _fail_clip(clip, e.code, e.detail)
     except Exception as e:
-        clip["render_url"] = prev_url
-        if job["tweaks"]:
-            job["tweaks"][-1]["render_error"] = str(e)[:200]
-        if not prev_url:
-            _fail_clip(clip, "internal_error", str(e))
+        if _is_current_render(clip, my_gen):
+            clip["render_url"] = prev_url
+            if job["tweaks"]:
+                job["tweaks"][-1]["render_error"] = str(e)[:200]
+            if not prev_url:
+                _fail_clip(clip, "internal_error", str(e))
     finally:
-        if clip.get("status") != "failed":
+        if _is_current_render(clip, my_gen) and clip.get("status") != "failed":
             clip["status"] = "ready" if clip.get("render_url") else "failed"
 
 
@@ -1425,6 +1437,23 @@ def _fail_job(job: dict, code: str, detail: str = "", stage: str = "") -> None:
     for c in job["clips"]:
         if c.get("status") not in ("ready", "failed"):
             _fail_clip(c, code, detail)
+
+
+def _bump_render_gen(clip: dict) -> int:
+    """Increment + return this clip's render generation. Call synchronously (no
+    await before/after) right where a new render attempt starts, so the returned
+    value can be captured as the attempt's identity. F7: a watchdog can mark a
+    clip failed while its render task is still silently running in the
+    background (asyncio doesn't actually cancel it) — if a retry/tweak then
+    starts a NEWER render, the stale task must not be allowed to overwrite it
+    when it eventually completes. Every write site checks _is_current_render
+    first and silently discards its result if a newer generation has started."""
+    clip["render_gen"] = clip.get("render_gen", 0) + 1
+    return clip["render_gen"]
+
+
+def _is_current_render(clip: dict, my_gen: int) -> bool:
+    return clip.get("render_gen", 0) == my_gen
 
 
 async def _validate_source_url(url: str) -> None:
@@ -1582,6 +1611,7 @@ async def _render_all_clips(job_id: str) -> None:
             continue
         clip["status"] = "rendering"
         clip["render_started_at"] = time.time()
+        my_gen = _bump_render_gen(clip)
         try:
             submission = await _submit_remotion_render(
                 job["source_url"], edl_data, clip["format"], job["style"])
@@ -1590,12 +1620,15 @@ async def _render_all_clips(job_id: str) -> None:
             clip["render_id"] = submission["render_id"]
             render_url = await _poll_remotion_render(
                 submission["render_id"], submission["bucket_name"])
-            clip["render_url"] = render_url
-            clip["status"] = "ready"
+            if _is_current_render(clip, my_gen):
+                clip["render_url"] = render_url
+                clip["status"] = "ready"
         except PipelineError as e:
-            _fail_clip(clip, e.code, e.detail)
+            if _is_current_render(clip, my_gen):
+                _fail_clip(clip, e.code, e.detail)
         except Exception as e:
-            _fail_clip(clip, "internal_error", str(e))
+            if _is_current_render(clip, my_gen):
+                _fail_clip(clip, "internal_error", str(e))
 
 
 async def _submit_transcription(video_url: str) -> str | None:

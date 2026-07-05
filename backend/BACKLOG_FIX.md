@@ -31,8 +31,12 @@ fully green, keyless (no env keys).
       (was passing a None-URL layer straight to the renderer). warnings[] was
       already flowing to the client unfiltered (job["clips"] is a raw dict) —
       no change needed there.
-- [ ] F7 Tweak/re-render race: per-clip render generation counter so a stale Lambda
-      result can never overwrite a newer tweak's render_url.
+- [x] F7 Fixed: per-clip render_gen counter (_bump_render_gen/_is_current_render).
+      Simultaneous concurrent tweaks were already serialized via the status flag,
+      but a watchdog-killed-then-retried render's ORIGINAL task (asyncio doesn't
+      cancel it) could still complete late and silently overwrite a newer
+      successful render_url. Every write site in _render_all_clips and
+      _rerender_clip now checks the generation first.
 - [ ] F8 Undo restores segment_order/audio/captions fully (test the triple); depth
       10->25; response exposes undo_available.
 - [ ] F9 Swept/expired jobs return structured 410 job_expired (not bare 404).

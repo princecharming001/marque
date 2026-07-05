@@ -293,7 +293,8 @@ def test_rerender_never_strands(monkeypatch):
         raise RuntimeError("mid-flight death")
     monkeypatch.setattr(main, "_submit_remotion_render", exploding_submit)
     job["clips"][0]["render_url"] = "https://prev.example/v.mp4"
-    asyncio.run(main._rerender_clip(job_id, clip_id))
+    my_gen = main._bump_render_gen(job["clips"][0])
+    asyncio.run(main._rerender_clip(job_id, clip_id, my_gen))
     clip = job["clips"][0]
     assert clip["status"] == "ready"                       # prev URL restored
     assert clip["render_url"] == "https://prev.example/v.mp4"
@@ -310,8 +311,51 @@ def test_rerender_no_prev_url_fails_structured(monkeypatch):
     async def exploding_submit(*a, **k):
         raise main.PipelineError("render_submit_failed", "no bridge", "render")
     monkeypatch.setattr(main, "_submit_remotion_render", exploding_submit)
-    asyncio.run(main._rerender_clip(job_id, clip["clip_id"]))
+    my_gen = main._bump_render_gen(clip)
+    asyncio.run(main._rerender_clip(job_id, clip["clip_id"], my_gen))
     assert clip["status"] == "failed" and clip["error"] == "render_submit_failed"
+
+
+def test_stale_rerender_cannot_overwrite_a_newer_one(monkeypatch):
+    # F7: a stale render task (superseded by a newer tweak/retry while it was
+    # still in flight — e.g. after a watchdog marked it failed but the original
+    # asyncio task keeps running to completion) must not overwrite the newer
+    # attempt's result when it finally finishes.
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    job = main._clip_jobs[job_id]
+    clip = job["clips"][0]
+    clip_id = clip["clip_id"]
+
+    # Start the STALE attempt (captures gen=1) but don't let it finish yet —
+    # simulate it being slow by NOT awaiting it until after a newer one starts.
+    stale_gen = main._bump_render_gen(clip)
+
+    async def slow_submit_stale(*a, **k):
+        return {"render_id": "stale-render", "bucket_name": "b"}
+    async def poll_stale(*a, **k):
+        return "https://stale.example/v.mp4"
+
+    # A NEWER attempt (e.g. a retry) starts and bumps the generation while the
+    # stale one is "still in flight" (we just haven't awaited it yet).
+    newer_gen = main._bump_render_gen(clip)
+    assert newer_gen != stale_gen
+
+    monkeypatch.setattr(main, "_submit_remotion_render", slow_submit_stale)
+    monkeypatch.setattr(main, "_poll_remotion_render", poll_stale)
+    # Now the stale task finally "completes" — it must write NOTHING.
+    asyncio.run(main._rerender_clip(job_id, clip_id, stale_gen))
+    assert clip.get("render_url") != "https://stale.example/v.mp4"
+
+    # The newer attempt completing normally DOES write.
+    async def poll_fresh(*a, **k):
+        return "https://fresh.example/v.mp4"
+    monkeypatch.setattr(main, "_poll_remotion_render", poll_fresh)
+    asyncio.run(main._rerender_clip(job_id, clip_id, newer_gen))
+    assert clip["render_url"] == "https://fresh.example/v.mp4"
+    assert clip["status"] == "ready"
 
 
 # ---------------------------------------------------------------------------
