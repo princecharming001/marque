@@ -1,17 +1,17 @@
 import SwiftUI
 
-// The universal 3-band onboarding layout (docs/ONBOARDING-DESIGN.md §2):
+// The universal onboarding layout (docs/ONBOARDING-DESIGN.md §2):
 //   top bar (back + progress, fixed 44pt)
-//   headline + subtitle (centered)
-//   content region (pinned just under the header, not dead-centered)
+//   ONE centered group: headline + subtitle + content, tight fixed gaps inside
 //   optional CTA slot (only multi-select / freeform / interstitial steps)
 //
-// Every step renders through this — no step lays itself out — which is what fixes
-// the old flow's content drifting to the top/bottom per step. Content sits a fixed
-// gap below the header (upper-third rhythm) rather than centering in the full
-// remaining space, which read as "floaty" on short MCQ stacks. The scaffold does
-// NOT ignore the keyboard safe area: when a keyboard rises, only the bottom slack
-// compresses, so a text field near the top never jumps.
+// Every step renders through this — no step lays itself out. The header and the
+// content travel TOGETHER as a single block that floats in the vertical center of
+// the space between the chrome and the CTA: the question never hugs the top, and
+// the choices never drift away from their question (the two earlier complaints,
+// respectively). The scaffold does NOT ignore the keyboard safe area: when a
+// keyboard rises the flexible spacers compress symmetrically, so the group stays
+// centered in whatever room remains above it.
 struct OnboardingScaffold<Content: View, CTA: View>: View {
     var headline: String
     var subtitle: String? = nil
@@ -44,35 +44,36 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
             .padding(.horizontal, Space.screenH)
             .padding(.top, Space.sm)
 
-            // Band 2 — header
-            VStack(spacing: Space.sm) {
-                Text(headline)
-                    .font(Typeface.display(30)).tracking(-0.6)
-                    .foregroundStyle(Palette.textPrimary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .staggerReveal(0)
-                if let subtitle {
-                    Text(subtitle)
-                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+            // Centered group — header + content as ONE block, floating in the
+            // middle of the space between the chrome and the CTA. Internal gaps
+            // are fixed (Space.xxl between header and content) so the question and
+            // its choices always read as a unit wherever the block lands.
+            Spacer(minLength: Space.md)
+
+            VStack(spacing: 0) {
+                VStack(spacing: Space.sm) {
+                    Text(headline)
+                        .font(Typeface.display(30)).tracking(-0.6)
+                        .foregroundStyle(Palette.textPrimary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
-                        .staggerReveal(1)
+                        .staggerReveal(0)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .staggerReveal(1)
+                    }
                 }
-            }
-            .padding(.horizontal, Space.screenH)
-            .padding(.top, Space.xl)
+                .padding(.bottom, Space.xxl)
 
-            // Band 3 — content, pinned a fixed gap under the header (upper-third
-            // rhythm); only the trailing spacer flexes, so short MCQ stacks read
-            // as "attached" to the question instead of floating mid-screen.
-            VStack(spacing: 0) {
                 content()
-                Spacer(minLength: Space.md)
             }
-            .padding(.top, Space.xxl)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, Space.screenH)
+
+            Spacer(minLength: Space.md)
 
             // CTA slot
             cta()
