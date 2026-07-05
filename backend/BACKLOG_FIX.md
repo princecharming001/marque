@@ -20,8 +20,9 @@ fully green, keyless (no env keys).
       segment drop) still merges identically to before — pinned in a dedicated
       test. react_schedule stays on map_range by design (freeze/play windows
       can't split without desyncing clip_from — that's F14's scope).
-- [ ] F4 Overlapping mute/volume_ranges merge on apply; kept-frames math stays
-      correct with overlapping drops.
+- [x] F4 no-repro: mute_range already does replace-with-split (no overlapping
+      volume_ranges can persist); _kept_frames already unions drops before
+      summing (no double-subtraction). Both pinned as regression tests.
 - [ ] F5 Out-of-bounds ops REJECTED with a reason (start>=source-end, end<=start,
       negative frames) — never silently clamped into "cut everything".
 - [ ] F6 Unresolved b-roll fail-soft: strip unresolved entries from the render plan

@@ -735,6 +735,30 @@ def test_endpoint_direct_reorder_and_music():
     assert edl2.get("segment_order") is None
 
 
+# ---- F4 (no-repro, pinned): overlap handling was already correct ----
+
+def test_overlapping_mute_ranges_produce_no_overlap():
+    from app.edl import apply_edl_ops
+    out, res = apply_edl_ops(_base_edl(segments=[{"src_in": 0, "src_out": 300}]), [
+        {"type": "mute_range", "start_frame": 0, "end_frame": 50},
+        {"type": "mute_range", "start_frame": 40, "end_frame": 60},
+    ])
+    ranges = sorted((v["src_in"], v["src_out"]) for v in out["audio"]["volume_ranges"])
+    for i in range(len(ranges) - 1):
+        assert ranges[i][1] <= ranges[i + 1][0], f"overlap found: {ranges}"
+
+
+def test_kept_frames_unions_overlapping_drops():
+    from app.edl import _kept_frames
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}], drops=[
+        {"src_in": 100, "src_out": 200, "reason": "manual"},
+        {"src_in": 150, "src_out": 250, "reason": "manual"},   # overlaps by 50f
+    ])
+    # union of [100,200) and [150,250) = [100,250) = 150f cut → 300-150=150 kept,
+    # NOT double-subtracted (which would wrongly report 300-100-100=100).
+    assert _kept_frames(edl) == 150
+
+
 # ---- F3: overlays/b-roll must not silently drop a non-adjacent piece ----
 
 def test_overlay_survives_reorder_as_two_pieces():
