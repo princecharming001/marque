@@ -1,18 +1,120 @@
-appId: com.marque.app
+appId: com.getmarque.app
+name: Marque — onboarding per-step screenshot walk (visual QA)
 ---
 - launchApp:
     arguments:
       reset: "true"
-- takeScreenshot: /Users/home/Marque/.shots/onb-welcome
+
+- assertVisible: "Get started"
+- takeScreenshot: /Users/home/Marque/.shots/onb-00-landing
 - tapOn:
     id: "onboard.start"
+
 - assertVisible: "What are you here to do?"
-- tapOn: "Grow my audience"
-- takeScreenshot: /Users/home/Marque/.shots/onb-goal
-- tapOn: "Continue"
+- takeScreenshot: /Users/home/Marque/.shots/onb-01-goal
+- tapOn:
+    id: "onboard.goal.audience"
+
+- extendedWaitUntil:
+    visible: "What gets in the way most?"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-02-blocker
+- tapOn:
+    id: "onboard.blocker.time"
+
+- extendedWaitUntil:
+    visible: "How often do you post right now?"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-03-frequency
+- tapOn:
+    id: "onboard.frequency.sometimes"
+
+- extendedWaitUntil:
+    visible: "Consistency beats virality"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-04-method
+- tapOn:
+    id: "onboard.continue"
+
+- assertVisible: "What should I call you?"
+- takeScreenshot: /Users/home/Marque/.shots/onb-05-name
+- tapOn:
+    id: "onboard.creatorName"
+- inputText: "Alex"
+- takeScreenshot: /Users/home/Marque/.shots/onb-05b-name-keyboard
+- tapOn:
+    id: "onboard.nameContinue"
+
+- assertVisible: "What's your niche?"
+- takeScreenshot: /Users/home/Marque/.shots/onb-06-niche
 - tapOn:
     id: "onboard.niche"
 - inputText: "Fitness coaching"
 - tapOn:
-    point: "50%,12%"
-- takeScreenshot: /Users/home/Marque/.shots/onb-about
+    id: "onboard.nicheContinue"
+
+- assertVisible: "Tell me about you"
+- takeScreenshot: /Users/home/Marque/.shots/onb-07-about
+- tapOn:
+    id: "onboard.whatYouDo"
+- inputText: "I coach busy professionals"
+- tapOn:
+    id: "onboard.audience"
+- inputText: "busy professionals"
+- tapOn:
+    id: "onboard.aboutContinue"
+
+- assertVisible: "What do you want to be known for?"
+- takeScreenshot: /Users/home/Marque/.shots/onb-08-knownfor
+- tapOn:
+    id: "onboard.knownForSkip"
+
+- assertVisible: "Where does your audience live?"
+- takeScreenshot: /Users/home/Marque/.shots/onb-09-platform
+- tapOn:
+    id: "onboard.platform.instagram"
+
+- extendedWaitUntil:
+    visible: "Let me learn your voice"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-10-voiceteach
+- tapOn:
+    id: "onboard.voiceTeach.skip"
+
+- assertVisible: "Fine-tune your voice"
+- takeScreenshot: /Users/home/Marque/.shots/onb-11-sliders
+- tapOn:
+    id: "onboard.voiceContinue"
+
+- assertVisible: "How do you feel on camera?"
+- takeScreenshot: /Users/home/Marque/.shots/onb-12-comfort
+- tapOn:
+    id: "onboard.comfort.natural"
+
+- extendedWaitUntil:
+    visible: "Pick your video styles"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-13-styles
+- tapOn:
+    id: "onboard.stylesContinue"
+
+- assertVisible: "Pick your weekly pace"
+- takeScreenshot: /Users/home/Marque/.shots/onb-14-pace
+- tapOn:
+    id: "onboard.pace.5"
+
+- extendedWaitUntil:
+    visible: "Your brand, in a sentence"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-15-mirror
+- tapOn:
+    id: "onboard.buildPlan"
+
+# Building screen may flash past instantly when generation is fast (mock/local
+# fallback) — screenshot whatever state we're in, then wait for ready.
+- takeScreenshot: /Users/home/Marque/.shots/onb-16-building
+
+- extendedWaitUntil:
+    visible: "Enter Marque"
+    timeout: 120000
+- takeScreenshot: /Users/home/Marque/.shots/onb-17-ready

@@ -34,7 +34,6 @@ final class AppStore {
     // Transient
     var isGenerating = false
     var showCelebration = false
-    var showVoiceOnboarding = false
     var coaching = ""                    // this-week coaching line (interpretInsights)
 
     // Learning loop
@@ -186,6 +185,110 @@ final class AppStore {
     func generateStarterScripts() async {
         guard scripts.isEmpty, let p = pillars.first else { return }
         await generateScripts(for: p, style: brand.preferredStyles.first ?? .talkingHead, count: 3)
+    }
+
+    // MARK: Starter digest (onboarding plan-building — async + backgroundable)
+
+    enum StarterScriptsState: Equatable {
+        case idle
+        case running(stage: Int)     // index into PlanBuildingView.stages
+        case ready
+        case failed
+    }
+    var starterScriptsState: StarterScriptsState = .idle
+    private var digestTask: Task<Void, Never>?
+    private static let digestJobKey = "marque.digest.jobId"
+
+    /// Fired from the brand-mirror step ("Build my plan"). Prefers the backend
+    /// digest job (scrape reels → transcribe → derive → write scripts; keeps
+    /// running server-side if the app is closed) and falls back to the local
+    /// keyless path so onboarding never dead-ends.
+    func beginStarterScripts() {
+        switch starterScriptsState {
+        case .running, .ready: return
+        default: break
+        }
+        if !scripts.isEmpty { starterScriptsState = .ready; return }
+        starterScriptsState = .running(stage: 0)
+        digestTask?.cancel()
+        digestTask = Task { await runStarterDigest() }
+    }
+
+    /// Resume after a relaunch mid-job (building step onAppear).
+    func resumeStarterDigestIfNeeded() {
+        guard case .idle = starterScriptsState, scripts.isEmpty else { return }
+        guard let jobId = UserDefaults.standard.string(forKey: Self.digestJobKey) else { return }
+        starterScriptsState = .running(stage: 0)
+        digestTask = Task {
+            if await pollDigest(jobId: jobId) { return }
+            await localStarterFallback()
+        }
+    }
+
+    private func runStarterDigest() async {
+        if let jobId = await backend.startBrandDigest(brand: brand) {
+            UserDefaults.standard.set(jobId, forKey: Self.digestJobKey)
+            if await pollDigest(jobId: jobId) { return }
+        }
+        await localStarterFallback()
+    }
+
+    /// Poll until ready/failed. Returns false when the job can't complete
+    /// server-side (offline, backend restart) so the local fallback takes over.
+    private func pollDigest(jobId: String) async -> Bool {
+        var misses = 0
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            guard let s = await backend.pollBrandDigest(jobId: jobId, brand: brand) else {
+                misses += 1
+                if misses >= 3 { return false }
+                continue
+            }
+            misses = 0
+            starterScriptsState = .running(stage: Self.digestStageIndex(s.stage))
+            if s.status == "ready" {
+                UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
+                if let scan = s.scan { applyVoiceScan(scan) }
+                if pillars.isEmpty { derivePillars() }
+                if scripts.isEmpty { scripts = s.scripts }
+                guard !scripts.isEmpty else { return false }
+                starterScriptsState = .ready
+                save()
+                notifyScriptsReady()
+                return true
+            }
+            if s.status == "failed" {
+                UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
+                return false
+            }
+        }
+        return true    // cancelled — don't kick off the fallback
+    }
+
+    private static func digestStageIndex(_ stage: String) -> Int {
+        switch stage {
+        case "scraping", "transcribing": return 1
+        case "deriving": return 2
+        case "writing_scripts": return 3
+        default: return 0
+        }
+    }
+
+    private func localStarterFallback() async {
+        UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
+        starterScriptsState = .running(stage: 2)
+        if pillars.isEmpty { derivePillars() }
+        starterScriptsState = .running(stage: 3)
+        await generateStarterScripts()
+        guard !scripts.isEmpty else { starterScriptsState = .failed; return }
+        starterScriptsState = .ready
+        save()
+        notifyScriptsReady()
+    }
+
+    func retryStarterScripts() {
+        starterScriptsState = .idle
+        beginStarterScripts()
     }
 
     func steer(_ script: Script, instruction: String) async {
@@ -524,6 +627,34 @@ final class AppStore {
         content.sound = .default
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "marque.clipsReady.\(UUID().uuidString)",
+                                  content: content, trigger: nil))
+    }
+
+    /// Onboarding digest completion — fires so users who backgrounded the app during
+    /// plan-building ("feel free to close the app") come back at the right moment.
+    private func notifyScriptsReady() {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .notDetermined:
+                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+                    if granted { AppStore.postScriptsReadyNotification() }
+                }
+            case .denied:
+                break
+            default:
+                AppStore.postScriptsReadyNotification()
+            }
+        }
+    }
+
+    private nonisolated static func postScriptsReadyNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "Your first scripts are ready ✍️"
+        content.body = "Your content plan is built — come see what Marque wrote for you."
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "marque.scriptsReady.\(UUID().uuidString)",
                                   content: content, trigger: nil))
     }
 

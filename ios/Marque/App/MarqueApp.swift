@@ -11,6 +11,8 @@ struct MarqueApp: App {
         if CommandLine.arguments.contains("-reset") {
             UserDefaults.standard.removeObject(forKey: "marque.state.v1")
             UserDefaults.standard.removeObject(forKey: "dev.subscribed")
+            UserDefaults.standard.removeObject(forKey: "mock.subscribed")
+            UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
         }
     }
 
@@ -34,7 +36,9 @@ struct MarqueApp: App {
     }
 }
 
-// Gate machine: onboarding → account wall → subscription wall → the app.
+// Gate machine: onboarding → subscription wall → account wall → the app.
+// Paywall BEFORE auth (conversion order): commit first, then "Save your brand"
+// is literally saving the plan the digest just built.
 struct RootView: View {
     @Environment(AppStore.self) private var store
     @StateObject private var net = NetworkMonitor()
@@ -42,10 +46,10 @@ struct RootView: View {
         Group {
             if !store.hasOnboarded {
                 OnboardingView()
-            } else if !store.auth.isAuthed {
-                AuthGateView()
             } else if !store.subscription.isSubscribed {
                 SubscriptionGateView()
+            } else if !store.auth.isAuthed {
+                AuthGateView()
             } else {
                 RootTabView()
             }

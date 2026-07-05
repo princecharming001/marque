@@ -1,31 +1,60 @@
-appId: com.marque.app
-name: Marque — connect & verify a real account
+appId: com.getmarque.app
+name: Marque — connect & verify a real account (via the voice-teach step)
 ---
 - launchApp:
     arguments:
       reset: "true"
 - tapOn:
     id: "onboard.start"
-- tapOn: "Grow my audience"
-- tapOn: "Continue"
+
+# Fast-path the quiz up to the voice-teach step.
+- tapOn:
+    id: "onboard.goal.audience"
+- extendedWaitUntil:
+    visible: "What gets in the way most?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.blocker.time"
+- extendedWaitUntil:
+    visible: "How often do you post right now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.frequency.sometimes"
+- extendedWaitUntil:
+    visible: "Consistency beats virality"
+    timeout: 4000
+- tapOn:
+    id: "onboard.continue"
+- tapOn:
+    id: "onboard.creatorName"
+- inputText: "Alex"
+- tapOn:
+    id: "onboard.nameContinue"
 - tapOn:
     id: "onboard.niche"
 - inputText: "strength training"
 - tapOn:
-    point: "50%,12%"
-- tapOn: "Continue"
+    id: "onboard.nicheContinue"
 - tapOn:
-    id: "onboard.knownFor"
+    id: "onboard.whatYouDo"
 - inputText: "time-efficient workouts"
 - tapOn:
-    point: "50%,12%"
-- tapOn: "Continue"
-- assertVisible: "What kind of videos?"
+    id: "onboard.audience"
+- inputText: "busy lifters"
 - tapOn:
-    id: "style.talking_head"
-- tapOn: "Continue"
-- assertVisible: "Connect your accounts"
-# Link a real TikTok account and verify it comes back with a follower count + avatar
+    id: "onboard.aboutContinue"
+- tapOn:
+    id: "onboard.knownForSkip"
+- tapOn:
+    id: "onboard.platform.tiktok"
+
+# Voice-teach step → connect path: link a real TikTok account and verify it
+# comes back with a follower count + avatar.
+- extendedWaitUntil:
+    visible: "Let me learn your voice"
+    timeout: 4000
+- tapOn:
+    id: "onboard.voiceTeach.connect"
 - tapOn:
     id: "connect.tiktok"
 - tapOn:

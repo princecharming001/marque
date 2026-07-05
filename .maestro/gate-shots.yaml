@@ -1,0 +1,97 @@
+appId: com.getmarque.app
+name: Marque — gate screenshots (paywall→auth order QA)
+---
+- launchApp:
+    arguments:
+      reset: "true"
+- tapOn:
+    id: "onboard.start"
+- tapOn:
+    id: "onboard.goal.audience"
+- extendedWaitUntil:
+    visible: "What gets in the way most?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.blocker.time"
+- extendedWaitUntil:
+    visible: "How often do you post right now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.frequency.sometimes"
+- extendedWaitUntil:
+    visible: "Consistency beats virality"
+    timeout: 4000
+- tapOn:
+    id: "onboard.continue"
+- tapOn:
+    id: "onboard.creatorName"
+- inputText: "Alex"
+- tapOn:
+    id: "onboard.nameContinue"
+- tapOn:
+    id: "onboard.niche"
+- inputText: "Fitness coaching"
+- tapOn:
+    id: "onboard.nicheContinue"
+- tapOn:
+    id: "onboard.whatYouDo"
+- inputText: "I coach busy professionals"
+- tapOn:
+    id: "onboard.audience"
+- inputText: "busy professionals"
+- tapOn:
+    id: "onboard.aboutContinue"
+- tapOn:
+    id: "onboard.knownForSkip"
+- tapOn:
+    id: "onboard.platform.instagram"
+- extendedWaitUntil:
+    visible: "Let me learn your voice"
+    timeout: 4000
+- tapOn:
+    id: "onboard.voiceTeach.skip"
+- tapOn:
+    id: "onboard.voiceContinue"
+- tapOn:
+    id: "onboard.comfort.natural"
+- extendedWaitUntil:
+    visible: "Pick your video styles"
+    timeout: 4000
+- tapOn:
+    id: "onboard.stylesContinue"
+- tapOn:
+    id: "onboard.pace.5"
+- extendedWaitUntil:
+    visible: "Your brand, in a sentence"
+    timeout: 4000
+- tapOn:
+    id: "onboard.buildPlan"
+- extendedWaitUntil:
+    visible: "Enter Marque"
+    timeout: 120000
+- tapOn:
+    id: "onboard.finish"
+
+# Gate 1 must now be the PAYWALL
+- extendedWaitUntil:
+    visible: "Start my week free"
+    timeout: 6000
+- takeScreenshot: /Users/home/Marque/.shots/gate-1-paywall
+- tapOn:
+    id: "paywall.devContinue"
+
+# Gate 2 must now be AUTH with Apple + Google buttons
+- extendedWaitUntil:
+    visible: "Save your brand."
+    timeout: 6000
+- assertVisible:
+    id: "auth.apple"
+- assertVisible:
+    id: "auth.google"
+- takeScreenshot: /Users/home/Marque/.shots/gate-2-auth
+- tapOn:
+    id: "auth.demoContinue"
+- extendedWaitUntil:
+    visible:
+      id: "home.voiceBubble"
+    timeout: 6000

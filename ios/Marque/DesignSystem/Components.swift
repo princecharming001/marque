@@ -449,3 +449,41 @@ extension View {
                 .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 }
+
+// MARK: - Onboarding chrome (docs/ONBOARDING-DESIGN.md §3)
+
+/// Alma-style segmented-dash progress: one capsule per quiz question.
+/// Filled = ink, remainder = warm neutral; fill animates as the index moves.
+struct SegmentedProgress: View {
+    let total: Int
+    let index: Int
+    var body: some View {
+        HStack(spacing: Space.xs) {
+            ForEach(0..<total, id: \.self) { i in
+                Capsule()
+                    .fill(i < index ? Palette.ink : Color(hex: 0xE2E1DE))
+                    .frame(height: 4)
+            }
+        }
+        .animation(.easeOut(duration: 0.38), value: index)
+        .accessibilityIdentifier("onboard.progress")
+    }
+}
+
+/// Circled back chevron pinned top-left of every onboarding step.
+struct BackCircle: View {
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 36, height: 36)
+                .background(Circle().fill(Palette.surface))
+                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+        }
+        .buttonStyle(PressableStyle(dim: 0.7))
+        .accessibilityLabel("Back")
+        .accessibilityIdentifier("onboard.back")
+    }
+}

@@ -23,10 +23,13 @@ final class SubscriptionManager {
     private(set) var products: [Product] = []
     private(set) var entitled = false
     private(set) var devUnlocked = UserDefaults.standard.bool(forKey: "dev.subscribed")
+    // ⚠️ TESTFLIGHT-ONLY mock entitlement (no ASC IAP products exist yet). Set by the
+    // MOCK_PAYWALL purchase branch below; remove the flag before App Review.
+    private(set) var mockUnlocked = UserDefaults.standard.bool(forKey: "mock.subscribed")
     var isWorking = false
     var lastError = ""
 
-    var isSubscribed: Bool { entitled || devUnlocked }
+    var isSubscribed: Bool { entitled || devUnlocked || mockUnlocked }
     var monthly: Product? { products.first { $0.id == "com.marque.pro.monthly" } }
 
     func load() async {
@@ -45,7 +48,17 @@ final class SubscriptionManager {
     func purchase() async {
         lastError = ""
         guard let product = monthly ?? products.first else {
+            #if MOCK_PAYWALL
+            // ⚠️ TESTFLIGHT-ONLY: no ASC IAP products exist yet, so "Start my week
+            // free" mock-subscribes instead of dead-ending. Fires ONLY on the
+            // empty-products branch — once real products exist this is unreachable.
+            // MUST be removed (drop MOCK_PAYWALL from project.yml Release
+            // SWIFT_ACTIVE_COMPILATION_CONDITIONS) before App Review.
+            UserDefaults.standard.set(true, forKey: "mock.subscribed")
+            mockUnlocked = true
+            #else
             lastError = "Products unavailable right now. Try Restore, or check your connection."
+            #endif
             return
         }
         isWorking = true
@@ -65,6 +78,10 @@ final class SubscriptionManager {
         isWorking = true
         try? await StoreKit.AppStore.sync()
         await refresh()
+        #if MOCK_PAYWALL
+        // Mock restore parity so "Restore" also works on TestFlight pre-products.
+        mockUnlocked = UserDefaults.standard.bool(forKey: "mock.subscribed")
+        #endif
         isWorking = false
     }
 
@@ -76,7 +93,9 @@ final class SubscriptionManager {
 
     func resetDev() {
         UserDefaults.standard.removeObject(forKey: "dev.subscribed")
+        UserDefaults.standard.removeObject(forKey: "mock.subscribed")
         devUnlocked = false
+        mockUnlocked = false
     }
 }
 

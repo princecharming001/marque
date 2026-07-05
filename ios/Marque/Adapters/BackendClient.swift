@@ -272,6 +272,10 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
               let r = try? JSONDecoder().decode(BrandScanResp.self, from: data),
               let scan = r.scan else { return nil }
         note(r.mode)
+        return mapScan(scan)
+    }
+
+    private func mapScan(_ scan: BrandScanResp.ScanBlock) -> BrandScanResult {
         let colors = Catalog.pillarColors
         let pillars = (scan.pillars ?? []).enumerated().map { i, d in
             Pillar(name: d.name, summary: d.summary ?? "", angle: d.angle ?? "",
@@ -287,6 +291,52 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
         return BrandScanResult(pillars: pillars, voiceUpdate: voice,
                                topThemes: scan.top_themes ?? pillars.map { $0.name })
+    }
+
+    // MARK: Onboarding brand digest (async job — clone of the clip-job pattern)
+
+    struct DigestStatus {
+        let status: String          // queued | running | ready | failed
+        let stage: String           // scraping | transcribing | deriving | writing_scripts | ready
+        let scan: BrandScanResult?
+        let scripts: [Script]
+    }
+
+    private struct DigestResp: Decodable {
+        let job_id: String?
+        let status: String?
+        let stage: String?
+        let scan: BrandScanResp.ScanBlock?
+        let scripts: [ScriptDTO]?
+        let pillar: String?
+    }
+
+    /// Kick off the comprehensive onboarding digest (scrape recent reels → transcribe
+    /// the top ones → derive brand/voice → write starter scripts). Returns the job id,
+    /// or nil when keyless/offline (caller falls back to local generation).
+    func startBrandDigest(brand: BrandGraph, voiceTranscript: String? = nil) async -> String? {
+        var body = brandBody(brand)
+        if let acct = brand.connectedAccounts.first {
+            body["handle"] = acct.handle
+            body["scan_platform"] = acct.platform
+        }
+        if let voiceTranscript { body["voice_transcript"] = voiceTranscript }
+        guard let data = await post("/v1/onboarding/digest", body),
+              let r = try? JSONDecoder().decode(DigestResp.self, from: data) else { return nil }
+        return r.job_id
+    }
+
+    /// Poll a digest job. Returns nil on network failure or unknown job (404 after
+    /// a backend restart) — the caller treats nil as "fall back to local".
+    func pollBrandDigest(jobId: String, brand: BrandGraph) async -> DigestStatus? {
+        guard let data = await get("/v1/onboarding/digest/\(jobId)"),
+              let r = try? JSONDecoder().decode(DigestResp.self, from: data),
+              r.status != nil else { return nil }
+        let scanResult = r.scan.map(mapScan)
+        let style = brand.preferredStyles.first ?? .talkingHead
+        let scripts = (r.scripts ?? []).map { script($0, pillar: r.pillar ?? "", style: style) }
+        return DigestStatus(status: r.status ?? "failed", stage: r.stage ?? "",
+                            scan: scanResult, scripts: scripts)
     }
 
     // MARK: Voice onboarding

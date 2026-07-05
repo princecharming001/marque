@@ -20,6 +20,17 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.getmarque.app.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>marque</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>MARQUE_BACKEND_URL</key>
@@ -37,6 +48,10 @@
 	<string>Marque imports existing videos to repurpose into clips.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Marque transcribes what you say to the voice assistant so it can build your content.</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im54aWJlaXlrY2d4cGJta2VhZHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1MjA4MDcsImV4cCI6MjA4MTA5NjgwN30.0ViO1YkTQ2CEVjf1VoBun6cgVodu2u3DrcDipeWnr28</string>
+	<key>SUPABASE_URL</key>
+	<string>https://nxibeiykcgxpbmkeadth.supabase.co</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Inter-400.ttf</string>

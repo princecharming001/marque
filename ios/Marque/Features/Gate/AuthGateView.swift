@@ -1,8 +1,9 @@
 import SwiftUI
+import AuthenticationServices
 
-// The account wall — hit right after onboarding, before the subscription gate.
-// Email/password via Supabase when configured; a one-tap demo account otherwise
-// (which is also the Maestro path). Sign in with Apple lands with signed builds.
+// The account wall — now AFTER the paywall (commit first; "Save your brand" is
+// literally saving the plan the digest built). Apple + Google + email/password
+// via Supabase when configured; a one-tap demo account otherwise (Maestro path).
 struct AuthGateView: View {
     @Environment(AppStore.self) private var store
     @State private var mode: Mode = .create
@@ -29,6 +30,43 @@ struct AuthGateView: View {
                         .lineSpacing(3)
                 }
                 .padding(.top, Space.huge)
+
+                // Social sign-in first (the fast path), email below.
+                VStack(spacing: Space.md) {
+                    SignInWithAppleButton(.continue) { request in
+                        store.auth.prepareAppleRequest(request)
+                    } onCompletion: { result in
+                        Task { await store.auth.handleAppleCompletion(result) }
+                    }
+                    .signInWithAppleButtonStyle(.black)
+                    .frame(height: 52)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .accessibilityIdentifier("auth.apple")
+
+                    Button {
+                        Task { await store.auth.signInWithGoogle() }
+                    } label: {
+                        HStack(spacing: Space.sm) {
+                            Image(systemName: "globe")
+                                .font(.system(size: 16, weight: .medium))
+                            Text("Continue with Google").font(AppFont.headline)
+                        }
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(maxWidth: .infinity).frame(height: 52)
+                        .background(Palette.surfaceRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .strokeBorder(Palette.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(PressableStyle())
+                    .accessibilityIdentifier("auth.google")
+
+                    HStack(spacing: Space.md) {
+                        MarqueHairline()
+                        Text("or").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        MarqueHairline()
+                    }
+                }
 
                 VStack(spacing: Space.md) {
                     TextField("Email", text: $email)
@@ -71,7 +109,15 @@ struct AuthGateView: View {
                     .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                     .accessibilityIdentifier("auth.toggleMode")
 
-                    if AppConfig.supabaseAnonKey.isEmpty {
+                    // Demo path: keyless installs, plus DEBUG builds always (Supabase
+                    // config now ships in Info.plist, but Maestro flows sign in via
+                    // the demo account — never against the real auth backend).
+                    #if DEBUG
+                    let showDemo = true
+                    #else
+                    let showDemo = AppConfig.supabaseAnonKey.isEmpty
+                    #endif
+                    if showDemo {
                         Button("Continue with a demo account") { store.auth.continueAsDemo() }
                             .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
                             .padding(.top, Space.sm)

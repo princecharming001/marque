@@ -57,12 +57,28 @@ targets:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
           PROVISIONING_PROFILE_SPECIFIER: "Marque App Store"
           DEVELOPMENT_TEAM: 3TJ8RC3JCX
+          # ⚠️ REMOVE MOCK_PAYWALL BEFORE APP REVIEW — lets "Start my week free"
+          # mock-subscribe on TestFlight while no ASC IAP products exist yet.
+          # (Only fires on the empty-products branch in Billing.purchase().)
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) MOCK_PAYWALL"
+    entitlements:
+      path: Marque/Marque.entitlements
+      properties:
+        com.apple.developer.applesignin: [Default]
     info:
       path: Marque/Info.plist
       properties:
         CFBundleDisplayName: Marque
         CFBundleIconName: AppIcon
         MARQUE_BACKEND_URL: https://marque-api.onrender.com
+        # Supabase auth (anon key is client-shippable by design). Without these,
+        # TestFlight builds silently run demo-mode auth.
+        SUPABASE_URL: https://nxibeiykcgxpbmkeadth.supabase.co
+        SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im54aWJlaXlrY2d4cGJta2VhZHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1MjA4MDcsImV4cCI6MjA4MTA5NjgwN30.0ViO1YkTQ2CEVjf1VoBun6cgVodu2u3DrcDipeWnr28
+        # URL scheme for the Google OAuth callback (ASWebAuthenticationSession).
+        CFBundleURLTypes:
+          - CFBundleURLName: com.getmarque.app.auth
+            CFBundleURLSchemes: [marque]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

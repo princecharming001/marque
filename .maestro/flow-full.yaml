@@ -1,80 +1,52 @@
-appId: com.marque.app
+appId: com.getmarque.app
 name: Marque — full core loop
 ---
 - launchApp:
     arguments:
       reset: "true"
-- assertVisible: "Get started"
 
-# Onboarding — step 0: landing
+# Landing (cream, unicorn hero)
+- assertVisible: "Get started"
 - tapOn:
     id: "onboard.start"
 
-# Step 1: Mascot self-intro
-- assertVisible: "Hi, I’m Marque"
+# Pain cluster — single-select MCQs AUTO-ADVANCE (no "Next" taps).
+- assertVisible: "What are you here to do?"
 - tapOn:
-    id: "onboard.mascotIntro.continue"
+    id: "onboard.goal.audience"
+- extendedWaitUntil:
+    visible: "What gets in the way most?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.blocker.time"
+- extendedWaitUntil:
+    visible: "How often do you post right now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.frequency.sometimes"
 
-# Step 2: Collect creator name
-- assertVisible: "…and who are you?"
+# Interstitial A — the method
+- extendedWaitUntil:
+    visible: "Consistency beats virality"
+    timeout: 4000
+- tapOn:
+    id: "onboard.continue"
+
+# Identity cluster (freeform, Continue pills)
+- assertVisible: "What should I call you?"
 - tapOn:
     id: "onboard.creatorName"
 - inputText: "Alex"
 - tapOn:
     id: "onboard.nameContinue"
 
-# Step 3: Mascot greets by name
-- assertVisible: "Let’s get to know each other, Alex!"
-- tapOn:
-    id: "onboard.mascotReady.continue"
-
-# Step 4: Feature explainer
-- assertVisible: "I learn what works for you."
-- tapOn:
-    id: "onboard.featureExplainer.continue"
-
-# Step 5: Goal
-- assertVisible: "What are you here to do?"
-- tapOn: "Grow my audience"
-- tapOn: "Next"
-
-# Step 6: Platform
-- assertVisible: "Where does your audience live?"
-- tapOn:
-    id: "onboard.platform.instagram"
-- tapOn: "Next"
-
-# Step 7: Stage
-- assertVisible: "Where’s your audience today?"
-- tapOn:
-    id: "onboard.stage.nano"
-- tapOn: "Next"
-
-# Step 8: Frequency
-- assertVisible: "How often do you post right now?"
-- tapOn:
-    id: "onboard.frequency.sometimes"
-- tapOn: "Next"
-
-# Step 9: Interstitial
-- tapOn:
-    id: "onboard.continue"
-
-# Step 10: Blocker
-- assertVisible: "What gets in the way most?"
-- tapOn:
-    id: "onboard.blocker.time"
-- tapOn: "Next"
-
-# Step 11: Niche
-- assertVisible: "What’s your niche?"
+- assertVisible: "What's your niche?"
 - tapOn:
     id: "onboard.niche"
 - inputText: "Fitness coaching"
 - tapOn:
     id: "onboard.nicheContinue"
 
-# Step 12: What You Do + Audience
 - assertVisible: "Tell me about you"
 - tapOn:
     id: "onboard.whatYouDo"
@@ -85,7 +57,6 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.aboutContinue"
 
-# Step 13: Known For
 - assertVisible: "What do you want to be known for?"
 - tapOn:
     id: "onboard.knownFor"
@@ -93,60 +64,72 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.knownForContinue"
 
-# Step 14: Mirror interstitial
+# Platform (auto-advance)
+- assertVisible: "Where does your audience live?"
 - tapOn:
-    id: "onboard.continue"
+    id: "onboard.platform.instagram"
 
-# Step 15: Voice
-- assertVisible: "What’s your voice like?"
-- tapOn: "Next"
+# Voice teach — in-flow now; fast path = skip
+- extendedWaitUntil:
+    visible: "Let me learn your voice"
+    timeout: 4000
+- tapOn:
+    id: "onboard.voiceTeach.skip"
 
-# Step 16: Camera comfort
+# Voice sliders
+- assertVisible: "Fine-tune your voice"
+- tapOn:
+    id: "onboard.voiceContinue"
+
+# Camera comfort (auto-advance; Natural pre-seeds talking-head)
 - assertVisible: "How do you feel on camera?"
 - tapOn:
     id: "onboard.comfort.natural"
-- tapOn: "Next"
 
-# Step 17: Styles — "Natural" camera comfort (previous step) already pre-seeds
-# preferredStyles=[talkingHead], so Talking-head arrives pre-selected; tapping it
-# would TOGGLE IT OFF and leave Continue disabled. Just confirm and move on.
-- assertVisible: "What kind of videos?"
-- tapOn: "Next"
+# Styles — talking-head arrives PRE-SELECTED from comfort seeding; tapping it
+# would toggle it OFF and disable Continue. Just continue.
+- extendedWaitUntil:
+    visible: "Pick your video styles"
+    timeout: 4000
+- tapOn:
+    id: "onboard.stylesContinue"
 
-# Step 18: Pace
+# Pace (auto-advance)
 - assertVisible: "Pick your weekly pace"
 - tapOn:
     id: "onboard.pace.5"
-- tapOn: "Next"
 
-# Step 19: Connect
-- assertVisible: "Connect your accounts"
-- tapOn: "Skip for now"
+# Interstitial B — brand mirror → kick the digest
+- extendedWaitUntil:
+    visible: "Your brand, in a sentence"
+    timeout: 4000
+- tapOn:
+    id: "onboard.buildPlan"
 
-# AHA — AI generated the first scripts (live Claude/Opus writes 3 rich scripts; allow time)
+# Non-blocking aha: staged build screen → ready (live Claude writes 3 scripts; allow time)
 - extendedWaitUntil:
     visible: "Enter Marque"
-    timeout: 90000
+    timeout: 120000
 - takeScreenshot: /Users/home/Marque/.shots/live-aha
 - tapOn:
     id: "onboard.finish"
 
-# Gate 1: account wall (demo path in keyless dev)
+# Gate 1 (REORDERED): hard subscription wall first. The tap is optional:
+# a real/leftover StoreKit entitlement in the simulator legitimately skips
+# this screen entirely.
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "paywall.devContinue"
+    optional: true
+
+# Gate 2: account wall (demo path in dev builds)
 - extendedWaitUntil:
     visible:
       id: "auth.demoContinue"
     timeout: 6000
 - tapOn:
     id: "auth.demoContinue"
-
-# Gate 2: hard subscription wall (dev bypass in DEBUG builds). The tap is optional:
-# a real/leftover StoreKit entitlement in the simulator legitimately skips this
-# screen entirely (correct product behavior for an already-subscribed device).
-- waitForAnimationToEnd:
-    timeout: 2000
-- tapOn:
-    id: "paywall.devContinue"
-    optional: true
 
 # Into the app — Home with the voice bubble
 - extendedWaitUntil:

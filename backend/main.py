@@ -355,6 +355,18 @@ class ScanRequest(Brand):
     posts: list[dict] = []          # caller-supplied posts (testing) or filled by the scraper
 
 
+class DigestRequest(Brand):
+    """The onboarding brand digest: everything the quiz collected, plus an optional
+    connected handle (reel analysis) or spoken-interview transcript."""
+    handle: str = ""
+    scan_platform: str = "instagram"       # "instagram" | "tiktok" (avoid Brand field clashes)
+    voice_transcript: list[dict] = []      # interview alternative to a handle
+    posts: list[dict] = []                 # test injection (same as ScanRequest)
+    preferred_styles: list[str] = []
+    creator_id: str = "default"
+    memory: dict = {}
+
+
 class VoiceFinalizeRequest(Brand):
     transcript: list[dict] = []
 
@@ -777,6 +789,12 @@ async def pillars(req: PillarRequest):
 
 @app.post("/v1/scripts")
 async def scripts(req: ScriptRequest):
+    return await _generate_scripts(req)
+
+
+async def _generate_scripts(req: ScriptRequest) -> dict:
+    """The full quality-gated script pipeline (best-of-N hooks → write → judge →
+    repair). Shared by /v1/scripts and the onboarding digest job."""
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(req)}
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
@@ -1490,13 +1508,96 @@ async def _poll_remotion_render(render_id: str, bucket_name: str, max_wait_s: in
 
 # ----- brand-scan + voice onboarding -----
 
-async def scrape_posts(handle: str, platform: str) -> list[dict]:
-    """Real scrape when keyed (Apify); else empty (caller supplies posts for testing)."""
+def _normalize_apify_post(item: dict, platform: str) -> dict | None:
+    """Map one Apify actor item onto the corpus shape prompts already consume
+    ({caption, hashtags, likes, comments}) extended with the reel-analysis fields
+    ({views, video_url, duration_s, posted_at}). Pure + defensive: actor output
+    schemas drift between versions, so everything is .get() chains; items with no
+    caption AND no video are dropped."""
+    if platform == "tiktok":
+        caption = (item.get("text") or item.get("desc") or "").strip()
+        hashtags = [h.get("name", "") if isinstance(h, dict) else str(h)
+                    for h in (item.get("hashtags") or [])]
+        likes = item.get("diggCount") or item.get("likes") or 0
+        comments = item.get("commentCount") or item.get("comments") or 0
+        views = item.get("playCount") or item.get("views") or 0
+        meta = item.get("videoMeta") or {}
+        video_url = (meta.get("downloadAddr") or (item.get("mediaUrls") or [None])[0]
+                     or item.get("videoUrl") or "")
+        duration = meta.get("duration") or item.get("duration") or 0
+        posted_at = item.get("createTimeISO") or item.get("createTime") or ""
+    else:  # instagram
+        caption = (item.get("caption") or "").strip()
+        hashtags = item.get("hashtags") or []
+        likes = item.get("likesCount") or item.get("likes") or 0
+        comments = item.get("commentsCount") or item.get("comments") or 0
+        views = item.get("videoViewCount") or item.get("videoPlayCount") or 0
+        video_url = item.get("videoUrl") or ""
+        duration = item.get("videoDuration") or 0
+        posted_at = item.get("timestamp") or ""
+    if not caption and not video_url:
+        return None
+    return {"caption": caption[:600], "hashtags": [h for h in hashtags if h][:8],
+            "likes": int(likes or 0), "comments": int(comments or 0),
+            "views": int(views or 0), "video_url": video_url,
+            "duration_s": int(duration or 0), "posted_at": str(posted_at)}
+
+
+async def scrape_posts(handle: str, platform: str, limit: int = 10) -> list[dict]:
+    """Scrape the creator's recent posts via Apify when keyed; else empty (caller
+    supplies posts for testing / mock derive covers keyless). Never raises — any
+    failure degrades to [] so the mock fallback path stays intact."""
     if not APIFY_KEY or not handle:
         return []
-    # Structural Apify actor call — wired to the actor run when the key is present.
-    # (Left as the single integration point; returns [] until provisioned.)
-    return []
+    handle = handle.lstrip("@")
+    if platform == "tiktok":
+        actor = "clockworks~tiktok-scraper"
+        payload: dict = {"profiles": [handle], "resultsPerPage": limit,
+                         "shouldDownloadVideos": False, "profileScrapeSections": ["videos"]}
+    else:
+        actor = "apify~instagram-scraper"
+        payload = {"directUrls": [f"https://www.instagram.com/{handle}/"],
+                   "resultsType": "posts", "resultsLimit": limit}
+    try:
+        async with httpx.AsyncClient(timeout=110) as client:
+            r = await client.post(
+                f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items",
+                params={"token": APIFY_KEY, "timeout": 90},
+                json=payload,
+            )
+        if r.status_code not in (200, 201):
+            return []
+        items = r.json()
+        if not isinstance(items, list):
+            return []
+        posts = [p for p in (_normalize_apify_post(i, platform) for i in items if isinstance(i, dict)) if p]
+        return posts[:limit]
+    except Exception:
+        return []
+
+
+async def _transcribe_top_posts(posts: list[dict], top_n: int = 4) -> list[dict]:
+    """Transcribe the creator's strongest recent reels (by views, then likes) so the
+    derive step can weigh how they actually SPEAK, not just how they caption.
+    Per-post failures are non-fatal (CDN URLs 403/expire); keyless is a no-op."""
+    if not ASSEMBLY_KEY or not posts:
+        return posts
+    ranked = sorted((p for p in posts if p.get("video_url")),
+                    key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)[:top_n]
+    if not ranked:
+        return posts
+
+    async def _one(post: dict) -> None:
+        tid = await _submit_transcription(post["video_url"])
+        if not tid:
+            return
+        result = await _poll_transcription(tid, max_wait_s=180)
+        words = result.get("words") or []
+        if words:
+            post["transcript"] = " ".join(w.get("word", "") for w in words)[:1500]
+
+    await asyncio.gather(*(_one(p) for p in ranked), return_exceptions=True)
+    return posts
 
 
 @app.post("/v1/brand-scan/handle")
@@ -1515,6 +1616,127 @@ async def brand_scan_handle(req: ScanRequest):
         return {"mode": "live", "scanned_posts": len(posts), "scan": derived}
     except HTTPException:
         return {"mode": "mock", "scanned_posts": len(posts), "scan": mock_derive(brand, posts)}
+
+
+# ----- onboarding brand digest (async job — clone of the _clip_jobs pattern) -----
+# In-memory like _clip_jobs (wiped on deploy — accepted v1; the app falls back to
+# local generation on 404). Stages: scraping → transcribing → deriving →
+# writing_scripts → ready.
+
+_digest_jobs: dict[str, dict] = {}
+
+
+def _digest_public(job: dict) -> dict:
+    """The poll payload — scan/scripts/pillar at top level (what the app decodes)."""
+    result = job.get("result") or {}
+    return {
+        "mode": job.get("mode", "live"),
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "stage": job.get("stage", ""),
+        "scan": result.get("scan"),
+        "scripts": result.get("scripts") or [],
+        "pillar": result.get("pillar", ""),
+        "scanned_posts": result.get("scanned_posts", 0),
+        "transcribed": result.get("transcribed", 0),
+        "error": job.get("error"),
+    }
+
+
+@app.post("/v1/onboarding/digest")
+async def create_digest_job(req: DigestRequest):
+    """Comprehensive brand digest: scrape recent reels → transcribe the top ones →
+    derive brand/voice/pillars → write 3 quality-gated starter scripts. Returns a
+    job_id immediately; the app can be closed while it runs."""
+    job_id = str(uuid.uuid4())
+    job = {"job_id": job_id, "status": "running", "stage": "scraping",
+           "mode": "live", "req": req, "result": None, "error": None}
+    _digest_jobs[job_id] = job
+    if not ANTHROPIC_KEY:
+        # Keyless: complete synchronously with the mock derive + scripts so demo
+        # mode and tests stay deterministic and instant.
+        brand = req.d()
+        scan = mock_derive(brand, req.posts)
+        sreq = _digest_script_request(req, scan)
+        job.update(status="ready", stage="ready", mode="mock",
+                   result={"scan": scan, "scripts": mock_scripts(sreq),
+                           "pillar": sreq.pillar, "scanned_posts": len(req.posts),
+                           "transcribed": 0})
+        return {"mode": "mock", "job_id": job_id, "status": "ready"}
+    asyncio.create_task(_run_digest(job_id))
+    return {"mode": "live", "job_id": job_id, "status": "running"}
+
+
+@app.get("/v1/onboarding/digest/{job_id}")
+async def get_digest_job(job_id: str):
+    if job_id not in _digest_jobs:
+        raise HTTPException(status_code=404, detail="job not found")
+    return _digest_public(_digest_jobs[job_id])
+
+
+def _digest_script_request(req: DigestRequest, scan: dict) -> ScriptRequest:
+    """Build the starter-scripts request from the derived scan (voice + first pillar
+    flow straight from the digest evidence into the script pipeline)."""
+    pillars = scan.get("pillars") or []
+    first = pillars[0] if pillars else {}
+    voice = scan.get("voice") or req.voice or {}
+    catchphrases = (scan.get("voice") or {}).get("catchphrases") or req.catchphrases
+    return ScriptRequest(
+        niche=scan.get("niche") or req.niche,
+        audience=req.audience, known_for=req.known_for, what_you_do=req.what_you_do,
+        goal=req.goal, voice=voice, non_negotiables=req.non_negotiables,
+        catchphrases=catchphrases,
+        pillar=first.get("name", ""), pillar_summary=first.get("summary", ""),
+        pillar_angle=first.get("angle", ""),
+        example_topics=first.get("exampleTopics") or [],
+        style=(req.preferred_styles[0] if req.preferred_styles else "talking_head"),
+        count=3, creator_id=req.creator_id, memory=req.memory,
+    )
+
+
+async def _run_digest(job_id: str) -> None:
+    job = _digest_jobs[job_id]
+    req: DigestRequest = job["req"]
+    brand = req.d()
+    try:
+        # 1) Evidence: caller-supplied posts (tests) or a real scrape.
+        posts = req.posts
+        if not posts and req.handle:
+            posts = await scrape_posts(req.handle, req.scan_platform)
+
+        # 2) Speech: transcribe the creator's strongest reels.
+        job["stage"] = "transcribing"
+        posts = await _transcribe_top_posts(posts)
+        transcribed = sum(1 for p in posts if p.get("transcript"))
+
+        # 3) Derive brand/voice/pillars from the best evidence available.
+        job["stage"] = "deriving"
+        scan: dict | None = None
+        if posts:
+            sys, usr = prompts.derive_from_posts_prompt(brand, posts)
+            scan = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False)
+        elif req.voice_transcript:
+            sys, usr = prompts.voice_finalize_prompt(brand, req.voice_transcript)
+            scan = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False)
+        scan = scan or mock_derive(brand, posts)
+        if scan.get("pillars"):
+            merged = {**brand, "niche": scan.get("niche", brand.get("niche", ""))}
+            scan["pillars"] = await judge_and_fix_pillars(merged, scan["pillars"], posts or None)
+
+        # 4) Starter scripts through the full quality gate.
+        job["stage"] = "writing_scripts"
+        sreq = _digest_script_request(req, scan)
+        sreq.posts = posts
+        script_out = await _generate_scripts(sreq)
+
+        job["result"] = {"scan": scan, "scripts": script_out.get("scripts") or [],
+                         "pillar": sreq.pillar, "scanned_posts": len(posts),
+                         "transcribed": transcribed}
+        job["status"] = "ready"
+        job["stage"] = "ready"
+    except Exception as e:  # never leave a job stuck in "running"
+        job["status"] = "failed"
+        job["error"] = str(e)
 
 
 @app.post("/v1/voice-onboarding/session")

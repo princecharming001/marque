@@ -622,10 +622,17 @@ def _post_lines(posts: list[dict] | None) -> str:
         return ""
     out = ["", "Their REAL recent posts (analyze these for voice, topics, and what their audience rewards):"]
     for i, p in enumerate(posts[:20], 1):
-        cap = (p.get("caption") or p.get("transcript") or "").strip().replace("\n", " ")
+        cap = (p.get("caption") or "").strip().replace("\n", " ")
+        t = (p.get("transcript") or "").strip().replace("\n", " ")
+        if not cap and not t:
+            continue
         tags = " ".join(p.get("hashtags", [])[:6])
         eng = f"{p.get('likes', 0)} likes / {p.get('comments', 0)} comments"
-        out.append(f"  {i}. \"{cap[:240]}\" [{tags}] ({eng})")
+        line = f"  {i}. \"{cap[:240]}\" [{tags}] ({eng})"
+        # Spoken transcript (from reel analysis) — how they actually TALK on camera.
+        if t:
+            line += f"\n     spoken: \"{t[:400]}\""
+        out.append(line)
     return "\n".join(out)
 
 
@@ -1009,7 +1016,10 @@ def derive_from_posts_prompt(brand: dict, posts: list[dict]) -> tuple[str, str]:
         "You are Marque's brand analyst. You are given a creator's REAL recent posts. Derive their ACTUAL niche, "
         "voice, and content pillars from the evidence — not generic archetypes. Infer the voice axes from HOW "
         "they write. Extract catchphrases they actually use and words they'd never say. Every pillar must be "
-        "grounded in their real topics and specific enough that they recognize themselves. Reply with ONLY a JSON object."
+        "grounded in their real topics and specific enough that they recognize themselves. "
+        "When posts include a spoken: transcript, weigh HOW they SPEAK above how they caption for the voice "
+        "axes, and catchphrases must be verbatim phrases from the spoken transcripts where available. "
+        "Reply with ONLY a JSON object."
     )
     user = f"{brand_block(brand, posts)}\n\nAnalyze the posts above and derive the brand. {DERIVE_SCHEMA}"
     return system, user

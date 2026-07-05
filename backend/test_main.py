@@ -1352,3 +1352,93 @@ def test_caption_style_survives_pydantic_roundtrip():
     # And the unset case still renders as clean (key present but None)
     d2 = _tweak_edl(); d2["caption_style"] = None
     assert build_render_plan(EDL(**d2).model_dump())["caption_style"] == "clean"
+
+
+# ---------- onboarding digest (async brand digest job) ----------
+
+def test_digest_keyless_completes_immediately():
+    r = client.post("/v1/onboarding/digest", json={"niche": "fitness coaching"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "mock"
+    assert body["status"] == "ready"
+    job = client.get(f"/v1/onboarding/digest/{body['job_id']}").json()
+    assert job["status"] == "ready"
+    assert job["stage"] == "ready"
+    assert len(job["scan"]["pillars"]) == 5
+    assert len(job["scripts"]) == 3
+    assert all(s.get("hook") for s in job["scripts"])
+
+
+def test_digest_with_posts_injection():
+    posts = [{"caption": "Deadlift myth debunked", "hashtags": ["fitness"],
+              "likes": 900, "comments": 40}]
+    r = client.post("/v1/onboarding/digest",
+                    json={"niche": "fitness", "posts": posts})
+    job = client.get(f"/v1/onboarding/digest/{r.json()['job_id']}").json()
+    assert job["scanned_posts"] == 1
+    assert job["status"] == "ready"
+
+
+def test_digest_with_voice_transcript():
+    transcript = [{"role": "agent", "text": "What do you make videos about?"},
+                  {"role": "user", "text": "Honest fitness for busy people"}]
+    r = client.post("/v1/onboarding/digest",
+                    json={"niche": "fitness", "voice_transcript": transcript})
+    job = client.get(f"/v1/onboarding/digest/{r.json()['job_id']}").json()
+    assert job["status"] == "ready"
+    assert job["scan"]["pillars"]
+
+
+def test_digest_job_not_found():
+    assert client.get("/v1/onboarding/digest/nope").status_code == 404
+
+
+def test_normalize_apify_post_instagram():
+    item = {"caption": "My best hook yet #growth", "hashtags": ["growth"],
+            "likesCount": 1200, "commentsCount": 88, "videoViewCount": 54000,
+            "videoUrl": "https://cdn.example/v.mp4", "videoDuration": 31,
+            "timestamp": "2026-06-30T12:00:00Z"}
+    p = main._normalize_apify_post(item, "instagram")
+    assert p["caption"].startswith("My best hook")
+    assert p["likes"] == 1200 and p["comments"] == 88 and p["views"] == 54000
+    assert p["video_url"].endswith(".mp4") and p["duration_s"] == 31
+
+
+def test_normalize_apify_post_tiktok():
+    item = {"text": "POV: your first client call", "hashtags": [{"name": "freelance"}],
+            "diggCount": 3400, "commentCount": 120, "playCount": 99000,
+            "videoMeta": {"downloadAddr": "https://cdn.example/t.mp4", "duration": 22},
+            "createTimeISO": "2026-06-29T09:00:00Z"}
+    p = main._normalize_apify_post(item, "tiktok")
+    assert p["caption"].startswith("POV")
+    assert p["hashtags"] == ["freelance"]
+    assert p["views"] == 99000 and p["video_url"].endswith(".mp4")
+
+
+def test_normalize_apify_post_drops_empty():
+    assert main._normalize_apify_post({}, "instagram") is None
+    assert main._normalize_apify_post({"likesCount": 5}, "instagram") is None
+
+
+def test_scrape_posts_keyless_empty():
+    import asyncio as _a
+    assert _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main.scrape_posts("someone", "instagram")) == []
+
+
+def test_transcribe_top_posts_keyless_noop():
+    import asyncio as _a
+    posts = [{"caption": "x", "video_url": "https://cdn.example/v.mp4", "views": 10}]
+    out = _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._transcribe_top_posts(posts))
+    assert out == posts and "transcript" not in out[0]
+
+
+def test_derive_prompt_includes_transcript():
+    import prompts as P
+    posts = [{"caption": "cap", "hashtags": [], "likes": 1, "comments": 0,
+              "transcript": "okay so here's the thing about consistency"}]
+    _, usr = P.derive_from_posts_prompt({"niche": "fitness"}, posts)
+    assert "here's the thing about consistency" in usr
+    assert "spoken:" in usr
