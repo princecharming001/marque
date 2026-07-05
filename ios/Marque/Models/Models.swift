@@ -254,6 +254,7 @@ struct Clip: Codable, Hashable, Identifiable {
     var thumbnailPath: String? = nil    // poster frame in the app container
     var captioned: Bool = false         // whether auto-captions were burned in
     var jobId: String? = nil            // backend clip-job ID for polling render status
+    var lastError: String? = nil        // structured render error code when status == .failed
     var createdAt: Date = Date()
 }
 

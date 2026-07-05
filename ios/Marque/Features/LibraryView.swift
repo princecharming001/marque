@@ -185,6 +185,7 @@ struct ClipDetailSheet: View {
     @State private var caption: String
     @State private var showDelete = false
     @State private var showTweak = false
+    @State private var showEditor = false
 
     init(clip: Clip) {
         self.clip = clip
@@ -233,13 +234,38 @@ struct ClipDetailSheet: View {
                         Spacer()
                     }
 
-                    // Conversational tweaks — only for server-edited clips whose job
-                    // is still alive (jobId == nil means the offline mock engine).
-                    if !isDraft, clip.jobId != nil, current.status == .ready || current.status == .rendering {
-                        GhostButton(title: "Tweak with AI", systemImage: "wand.and.stars") {
-                            showTweak = true
+                    // Failed render → tell the creator WHY + let them retry (the
+                    // backend still holds the source + EDL). No more silent spin.
+                    if !isDraft, current.status == .failed {
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            Label(store.friendlyRenderError(current.lastError), systemImage: "exclamationmark.triangle")
+                                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if clip.jobId != nil {
+                                PrimaryButton(title: "Try again", systemImage: "arrow.clockwise") {
+                                    Task { await store.retryClipJob(clip) }
+                                }
+                                .accessibilityIdentifier("clip.retry")
+                            }
                         }
-                        .accessibilityIdentifier("clip.tweak")
+                        .padding(Space.md)
+                        .background(Palette.surfaceRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    }
+
+                    // Edit tooling — only for server-edited clips whose job is still
+                    // alive (jobId == nil means the offline mock engine).
+                    if !isDraft, clip.jobId != nil, current.status == .ready || current.status == .rendering {
+                        HStack(spacing: Space.sm) {
+                            GhostButton(title: "Edit manually", systemImage: "slider.horizontal.3") {
+                                showEditor = true
+                            }
+                            .accessibilityIdentifier("clip.editManual")
+                            GhostButton(title: "Tweak with AI", systemImage: "wand.and.stars") {
+                                showTweak = true
+                            }
+                            .accessibilityIdentifier("clip.tweak")
+                        }
                     }
 
                     if isDraft {
@@ -319,6 +345,7 @@ struct ClipDetailSheet: View {
                              : "This removes the clip and any times it's scheduled. This can't be undone.")
             }
             .sheet(isPresented: $showTweak) { TweakChatSheet(clip: clip) }
+            .sheet(isPresented: $showEditor) { EditorView(clip: clip) }
         }
     }
 }

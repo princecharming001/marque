@@ -24,16 +24,16 @@ verification. iOS items additionally gate on a green
       (captions/overlays travel with segments); map_range longest-merged-span; identity
       order produces byte-identical plans (regression-asserted); audio block in plan
       output with volume_ranges remapped as split pieces — 6 tests, all 184 legacy green
-- [ ] E14 tweak direct-ops tests live in test_editor_hardening.py (done in A) — extend
-      with reorder + audio op coverage through the endpoint
-- [ ] E15 render bridge: types.ts AudioPlan/VolumeRange, AudioMix.tsx (music +
-      caption-activity ducking), CutVideo volumeRanges prop, wire all compositions,
-      `cd /Users/home/Marque/render && npm run build` succeeds
-- [ ] E16 iOS: Clip.lastError + friendlyRenderError map + failed-clip error card +
+- [x] E14 tweak direct-ops tests live in test_editor_hardening.py (done in A) — extended
+      with reorder + audio op coverage through the endpoint (incl. undo across new ops)
+- [x] E15 render bridge: types.ts AudioPlan/VolumeRange, AudioMix.tsx (music +
+      caption-activity ducking), CutVideo volumeRanges prop, all 7 compositions wired,
+      tsc clean (bridge + full project), Remotion site redeploy kicked
+- [x] E16 iOS: Clip.lastError + friendlyRenderError map + failed-clip error card +
       "Try again" (retry endpoint) in ClipDetailSheet; AppStore.retryClipJob
-- [ ] E17 iOS: EditorView.swift manual editor (SegmentStrip tap-cut/drag-reorder/trim,
-      captions, overlays, audio sections; op-diffing; direct-ops apply; shared
-      awaitClipRerender helper extracted from TweakChatSheet)
+- [x] E17 iOS: EditorView.swift manual editor (segment cut/reorder/mute rows, trim
+      steppers, captions, overlays delete, music+duck; op-diffing; direct-ops apply;
+      render-wait via pollJob + friendlyRenderError) — BUILD SUCCEEDED
 - [ ] E18 Maestro: editor step in flow-extras.yaml (open editor on a mock clip, toggle
       a segment, apply, assert saved)
 

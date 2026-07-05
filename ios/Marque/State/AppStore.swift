@@ -430,10 +430,12 @@ final class AppStore {
             guard let result = await backend.pollClipJob(jobId: jobId),
                   let jobClips = result["clips"] as? [[String: Any]] else { continue }
             let status = result["status"] as? String ?? ""
+            let jobError = result["error"] as? String
             for jobClip in jobClips {
                 let clipIdStr = jobClip["clip_id"] as? String ?? ""
                 let clipStatus = jobClip["status"] as? String ?? ""
                 let renderURL = jobClip["render_url"] as? String
+                let clipError = jobClip["error"] as? String ?? jobError
                 // Compare as UUIDs, not strings: Swift's uuidString is UPPERCASE while
                 // the backend's uuid4() ids are lowercase — a string compare never
                 // matched, silently stranding mock-path clips in "rendering".
@@ -441,6 +443,7 @@ final class AppStore {
                    let idx = clips.firstIndex(where: { $0.id == backendId }) {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
                     if let url = renderURL { clips[idx].remoteURL = url }
+                    clips[idx].lastError = clipStatus == "failed" ? clipError : nil
                 }
             }
             save()
@@ -452,6 +455,40 @@ final class AppStore {
                 notifyClipsReady(count: readyCount)
             }
         }
+    }
+
+    /// Plain-English copy for a structured backend render-error code, so a failed
+    /// clip tells the creator what actually happened instead of spinning forever.
+    func friendlyRenderError(_ code: String?) -> String {
+        switch code {
+        case "source_unreachable":
+            return "We couldn't reach your uploaded video. Check your connection and try again."
+        case "transcribe_failed", "transcribe_timeout", "transcribe_submit_failed":
+            return "We couldn't read the audio in your take. Re-record with clearer sound, or try again."
+        case "render_stalled", "render_timeout":
+            return "The edit took too long and timed out. Tap to try again."
+        case "render_fatal", "render_no_output", "render_submit_failed", "bridge_error":
+            return "Something went wrong while rendering this clip. Tap to try again."
+        default:
+            return "This clip didn't finish. Tap to try again."
+        }
+    }
+
+    /// Re-run a failed clip's render from the backend (the job still holds the
+    /// source + EDL). Optimistically flips affected clips back to .rendering and
+    /// resumes polling.
+    func retryClipJob(_ clip: Clip) async {
+        guard let jobId = clip.jobId else { return }
+        let affected = clips.filter { $0.jobId == jobId && $0.status == .failed }.map { $0.id }
+        for id in affected {
+            if let idx = clips.firstIndex(where: { $0.id == id }) {
+                clips[idx].status = .rendering
+                clips[idx].lastError = nil
+            }
+        }
+        save()
+        _ = await backend.retryClipJob(jobId: jobId)
+        await pollJob(jobId: jobId, clipIds: affected)
     }
 
     // MARK: Scheduling / publishing

@@ -162,7 +162,12 @@ name: Marque — full core loop
 - tapOn:
     id: "film.readied"
     index: 0
-- assertVisible: "Shot plan"
+# The script reader opened — record CTA is pinned at the bottom (Shot plan is
+# further down the scroll, so assert the always-visible record button instead).
+- extendedWaitUntil:
+    visible:
+      id: "script.record"
+    timeout: 6000
 - tapOn:
     id: "script.record"
 - extendedWaitUntil:

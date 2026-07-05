@@ -79,9 +79,31 @@ extension BackendClient {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    func pollClipJob(jobId: String) async -> [String: Any]? {
-        guard let data = await get("/v1/clips/\(jobId)") else { return nil }
+    func pollClipJob(jobId: String, includeWords: Bool = false) async -> [String: Any]? {
+        let path = "/v1/clips/\(jobId)" + (includeWords ? "?include_words=1" : "")
+        guard let data = await get(path) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    /// Re-run a failed clip job's render (backend keeps the source + EDL). Returns
+    /// true on 200; 404/409 are treated as no-op (nothing to retry / already running).
+    @discardableResult
+    func retryClipJob(jobId: String) async -> Bool {
+        let (_, status) = await postWithStatus("/v1/clips/\(jobId)/retry", [:])
+        return status == 200
+    }
+
+    /// The manual-editor apply path: pre-typed EDL ops bypass LLM interpretation
+    /// and go straight to deterministic application + a single re-render.
+    func tweakClipOps(jobId: String, clipId: String, ops: [[String: Any]]) async -> [String: Any] {
+        let body: [String: Any] = ["clip_id": clipId, "ops": ops]
+        let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
+        if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
+        if status == 409 { return ["error": true, "reply": "Still rendering your last change — try again in a minute."] }
+        guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["error": true, "reply": "Couldn't reach the editor — check your connection."]
+        }
+        return dict
     }
 
     /// One conversational tweak turn on a finished clip. Returns the decoded
