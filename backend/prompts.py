@@ -1104,6 +1104,18 @@ PRESET_EMULATION: dict[str, dict] = {
         "voice": {"funnyToSerious": 0.45, "polishedToRaw": 0.55, "teacherToPeer": 0.7},
         "never_borrow": ["her specific client names, deals, or numbers"],
     },
+    "MrBeast": {
+        "top_hooks": [
+            "I gave away $100,000 to whoever did this first.",
+            "This is the last person to leave the circle wins.",
+            "I spent 50 hours doing this so you don't have to.",
+        ],
+        "hook_signals": ["stakes", "curiosity", "specificity"],
+        "top_format": "escalating-stakes challenge — open on the biggest number, keep raising it, pay off the loop",
+        "pacing": "relentless, zero dead air, a new visual beat every couple seconds",
+        "voice": {"funnyToSerious": 0.6, "polishedToRaw": 0.5, "teacherToPeer": 0.75},
+        "never_borrow": ["his specific stunts, giveaways, dollar amounts, or contestants"],
+    },
 }
 
 

@@ -16,7 +16,11 @@ struct EmulateStep: View {
         ("Alex Hormozi", "hormozi"),
         ("Andrew Tate", "tate"),
         ("Shelby Sapp", "sapp"),
+        ("MrBeast", "mrbeast"),
     ]
+
+    private let columns = [GridItem(.flexible(), spacing: Space.md),
+                           GridItem(.flexible(), spacing: Space.md)]
 
     private var targets: [EmulationTarget] {
         store.brand.emulationTargets ?? []
@@ -24,13 +28,11 @@ struct EmulateStep: View {
 
     var body: some View {
         VStack(spacing: Space.md) {
-            ForEach(Self.presets, id: \.id) { preset in
-                let selected = targets.contains { $0.source == .preset && $0.name == preset.name }
-                OptionCard(icon: "OnbIcon-emulate-\(preset.id)", sfFallback: "person.crop.circle",
-                           title: preset.name, selected: selected) {
-                    togglePreset(preset.name)
+            // 2×2 grid of larger liquid-glass preset buttons.
+            LazyVGrid(columns: columns, spacing: Space.md) {
+                ForEach(Self.presets, id: \.id) { preset in
+                    presetCard(preset)
                 }
-                .accessibilityIdentifier("onboard.emulate.preset.\(preset.id)")
             }
 
             ForEach(targets.filter { $0.source == .custom }) { target in
@@ -54,6 +56,15 @@ struct EmulateStep: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private func presetCard(_ preset: (name: String, id: String)) -> some View {
+        let selected = targets.contains { $0.source == .preset && $0.name == preset.name }
+        return PresetGlassCard(iconName: "OnbIcon-emulate-\(preset.id)",
+                               name: preset.name, selected: selected) {
+            togglePreset(preset.name)
+        }
+        .accessibilityIdentifier("onboard.emulate.preset.\(preset.id)")
     }
 
     private func togglePreset(_ name: String) {
@@ -148,5 +159,56 @@ struct EmulateStep: View {
             linking = false
         }
         handle = ""
+    }
+}
+
+// A large square liquid-glass preset button: clay bust on top, name below,
+// selected state = ink ring + checkmark. Sits in the emulate step's 2-column grid.
+private struct PresetGlassCard: View {
+    let iconName: String
+    let name: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: Space.sm) {
+                bust
+                Text(name)
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 168)
+            .background(LiquidGlassFill(radius: Radius.xl))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                .strokeBorder(selected ? Palette.ink : Color.white.opacity(0.6),
+                              lineWidth: selected ? 2 : 1))
+            .overlay(alignment: .topTrailing) {
+                if selected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(Palette.ink)
+                        .padding(10)
+                }
+            }
+            .shadow(color: Palette.shadowCool.opacity(0.16), radius: 18, y: 10)
+            .scaleEffect(selected ? 1.02 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        }
+        .buttonStyle(PressableStyle(dim: 0.9))
+        .animation(Motion.spring, value: selected)
+    }
+
+    @ViewBuilder private var bust: some View {
+        if UIImage(named: iconName) != nil {
+            Image(iconName).resizable().scaledToFit().frame(width: 76, height: 76)
+        } else {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 40, weight: .light))
+                .foregroundStyle(Palette.textSecondary)
+                .frame(width: 76, height: 76)
+        }
     }
 }
