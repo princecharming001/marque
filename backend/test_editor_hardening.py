@@ -507,16 +507,54 @@ def test_reorder_op_rejects_bad_permutation():
 
 
 def test_trim_start_remaps_segment_order():
+    # F1 regression: "trim the start" means the start the VIEWER sees, so trim_start
+    # must walk PLAY order (segment_order), not array order. segment_order=[2,0,1]
+    # means segment 2 plays FIRST — trimming 100 frames (exactly segment 2's length)
+    # must consume segment 2 (index 2), not segment 0.
     from app.edl import apply_edl_ops
     edl = _base_edl(segment_order=[2, 0, 1])
-    # trim exactly the first segment away (100 frames) → index 0 removed,
-    # survivors renumber: [2,0,1] -> drop 0 -> [2,1] -> renumber -> [1,0]
     out, res = apply_edl_ops(edl, [{"type": "trim_start", "frames": 100}])
     assert res[0]["applied"]
     assert len(out["segments"]) == 2
-    assert out["segment_order"] == [1, 0]
+    assert out["segments"] == [{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 200}]
+    # segment 2 (played first) is gone; remaining play order [0, 1] is identity.
+    assert out.get("segment_order") is None
     from app.edl import EDL
     EDL(**out)                                       # still validates
+
+
+def test_trim_start_partial_into_play_order_first_segment():
+    # Trimming MORE than the first-played segment's length must spill into the
+    # NEXT-played segment (not the next array-order segment).
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segment_order=[2, 0, 1])
+    out, res = apply_edl_ops(edl, [{"type": "trim_start", "frames": 150}])
+    assert res[0]["applied"]
+    # segment 2 (100f, played first) fully consumed; 50 more frames taken from the
+    # start of segment 0 (played second) since it's now first in the shrunken order.
+    assert out["segments"] == [{"src_in": 50, "src_out": 100}, {"src_in": 100, "src_out": 200}]
+    assert out.get("segment_order") is None
+
+
+def test_trim_end_respects_play_order():
+    # trim_end must consume the LAST-PLAYED segment first, not the highest array index.
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segment_order=[1, 2, 0])   # segment 0 plays LAST
+    out, res = apply_edl_ops(edl, [{"type": "trim_end", "frames": 100}])
+    assert res[0]["applied"]
+    # segment 0 (100f, played last) fully consumed; segments 1 and 2 untouched.
+    assert out["segments"] == [{"src_in": 100, "src_out": 200}, {"src_in": 200, "src_out": 300}]
+    assert out.get("segment_order") is None
+
+
+def test_trim_start_identity_order_unaffected():
+    # No segment_order set (None) → behaves exactly as before: trims array-order front.
+    from app.edl import apply_edl_ops
+    edl = _base_edl()
+    out, res = apply_edl_ops(edl, [{"type": "trim_start", "frames": 50}])
+    assert res[0]["applied"]
+    assert out["segments"][0] == {"src_in": 50, "src_out": 100}
+    assert out.get("segment_order") is None
 
 
 def test_set_music_and_remove():

@@ -3,10 +3,13 @@
 One item per iteration. Gate: `cd /Users/home/Marque/backend && python -m pytest -q`
 fully green, keyless (no env keys).
 
-- [ ] F0 Commit the local auto_highlights fix (already in working tree); note the
-      deploy step as a standing checkpoint (do not deploy — surface it instead).
-- [ ] F1 Trim ops (trim_start/trim_end) respect segment_order: operate on the
-      first/last segment IN PLAY ORDER, remap segment_order correctly afterward.
+- [x] F0 Committed (966e34b). Deploy is a standing checkpoint — NOT deployed;
+      surfaced to user, awaiting explicit "deploy it" authorization.
+- [x] F1 Fixed: trim_start/trim_end now walk PLAY order (segment_order) instead of
+      array order. One pre-existing test encoded the bug as its expectation
+      ("index 0 removed" despite segment_order=[2,0,1] meaning segment 2 plays
+      first) — corrected with 3 new regression tests (partial spillover, trim_end,
+      identity-order no-op preserved).
 - [ ] F2 Caption/word exactly at a drop/segment boundary survives the cut remap
       (map_point exclusive-bound off-by-one, edl.py).
 - [ ] F3 Overlays/captions spanning reordered+cut segments emit MULTIPLE mapped

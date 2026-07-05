@@ -655,38 +655,40 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     reason = "trim would leave less than 2 seconds of footage"
                 else:
                     segs = [dict(s) for s in edl["segments"]]
-                    popped: list[int] = []           # original indices removed
+                    order = edl.get("segment_order")
+                    # "Trim the start/end" means the start/end the VIEWER sees, so
+                    # walk segments in PLAY order (segment_order), not array order —
+                    # otherwise trimming after a reorder cuts the wrong segment.
+                    play_order = list(order) if order is not None else list(range(len(segs)))
+                    walk = play_order if t == "trim_start" else list(reversed(play_order))
+                    popped: list[int] = []           # original indices fully consumed
                     remaining = frames
-                    if t == "trim_start":
-                        idx = 0
-                        while remaining > 0 and segs:
-                            take = min(remaining, segs[0]["src_out"] - segs[0]["src_in"])
-                            segs[0]["src_in"] += take
-                            remaining -= take
-                            if segs[0]["src_in"] >= segs[0]["src_out"]:
-                                segs.pop(0)
-                                popped.append(idx)
-                                idx += 1
-                    else:
-                        idx = len(segs) - 1
-                        while remaining > 0 and segs:
-                            take = min(remaining, segs[-1]["src_out"] - segs[-1]["src_in"])
-                            segs[-1]["src_out"] -= take
-                            remaining -= take
-                            if segs[-1]["src_in"] >= segs[-1]["src_out"]:
-                                segs.pop()
-                                popped.append(idx)
-                                idx -= 1
+                    for orig_idx in walk:
+                        if remaining <= 0:
+                            break
+                        seg = segs[orig_idx]
+                        span = seg["src_out"] - seg["src_in"]
+                        if span <= 0:
+                            continue
+                        take = min(remaining, span)
+                        if t == "trim_start":
+                            seg["src_in"] += take
+                        else:
+                            seg["src_out"] -= take
+                        remaining -= take
+                        if seg["src_in"] >= seg["src_out"]:
+                            popped.append(orig_idx)
+                    for gone in sorted(popped, reverse=True):
+                        segs.pop(gone)
+                    if popped:
+                        gone_set = set(popped)
+                        def _remap(i: int) -> int:
+                            return i - sum(1 for g in popped if g < i)
+                        new_order = [_remap(i) for i in play_order if i not in gone_set]
+                        identity = list(range(len(segs)))
+                        edl["segment_order"] = new_order if new_order != identity else None
                     edl["segments"] = segs
                     segments = segs
-                    # A popped segment invalidates segment_order indices — drop the
-                    # removed index and renumber survivors so the permutation stays
-                    # valid against the shrunken segment list.
-                    order = edl.get("segment_order")
-                    if order is not None:
-                        for gone in sorted(popped, reverse=True):
-                            order = [i - 1 if i > gone else i for i in order if i != gone]
-                        edl["segment_order"] = order if order else None
                     applied = True
 
             elif t == "reorder_segments":
