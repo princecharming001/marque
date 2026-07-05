@@ -1,0 +1,38 @@
+appId: com.getmarque.app
+name: "Marque — manual editor (assumes flow-full ran; clips exist in Library)"
+---
+- launchApp
+- tapOn:
+    id: "paywall.devContinue"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: "YOUR CREATIVE VAULT"
+    timeout: 6000
+- extendedWaitUntil:
+    visible: "READY"
+    timeout: 8000
+- tapOn:
+    point: "19%,30%"
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible: "Segments"
+    timeout: 6000
+- takeScreenshot: /Users/home/Marque/.shots/editor-open
+- tapOn:
+    id: "editor.cut"
+    index: 0
+- takeScreenshot: /Users/home/Marque/.shots/editor-cut
+- tapOn:
+    id: "editor.apply"
+# Mock path: applied in place (no render) → editor dismisses back to the clip.
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 10000
+- takeScreenshot: /Users/home/Marque/.shots/editor-applied
