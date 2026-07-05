@@ -72,6 +72,14 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         if let bl = b.biggestBlocker { body["biggest_blocker"] = bl.rawValue }
         if let c = b.cameraComfort { body["camera_comfort"] = c.rawValue }
         if let wt = b.weeklyTarget { body["weekly_target"] = wt }
+        if let targets = b.emulationTargets, !targets.isEmpty {
+            body["emulation_targets"] = targets.map { t -> [String: Any] in
+                var d: [String: Any] = ["name": t.name, "source": t.source.rawValue]
+                if !t.handle.isEmpty { d["handle"] = t.handle }
+                if !t.platform.isEmpty { d["platform"] = t.platform }
+                return d
+            }
+        }
         return body
     }
 
@@ -240,6 +248,22 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return ConnectedAccount(platform: r.platform ?? platform, handle: r.handle ?? handle,
                                 displayName: r.displayName ?? handle, followers: r.followers ?? 0,
                                 avatarUrl: r.avatarUrl ?? "", bio: r.bio ?? "")
+    }
+
+    // MARK: Emulate (analyze a linked creator's style — fire-and-forget from onboarding)
+
+    private struct EmulateAnalyzeResp: Decodable {
+        let mode: String?; let ok: Bool?
+    }
+
+    /// Kicks off style analysis of a custom emulation target. Non-blocking by
+    /// design — the profile is cached server-side and resolved lazily the next
+    /// time this creator generates scripts/hooks, so onboarding never waits on it.
+    @discardableResult
+    func emulateAnalyze(handle: String, platform: String) async -> Bool {
+        guard let data = await post("/v1/emulate/analyze", ["handle": handle, "platform": platform]),
+              let r = try? JSONDecoder().decode(EmulateAnalyzeResp.self, from: data) else { return false }
+        return r.ok ?? true
     }
 
     // MARK: Brand scan (derive pillars + voice from real scraped posts)

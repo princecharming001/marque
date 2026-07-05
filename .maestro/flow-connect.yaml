@@ -1,5 +1,5 @@
 appId: com.getmarque.app
-name: Marque — connect & verify a real account (via the voice-teach step)
+name: Marque — connect & verify a real account (via the connectAccounts step)
 ---
 - launchApp:
     arguments:
@@ -48,13 +48,11 @@ name: Marque — connect & verify a real account (via the voice-teach step)
 - tapOn:
     id: "onboard.platform.tiktok"
 
-# Voice-teach step → connect path: link a real TikTok account and verify it
-# comes back with a follower count + avatar.
+# connectAccounts step: link a real TikTok account and verify it comes back
+# with a follower count + avatar.
 - extendedWaitUntil:
-    visible: "Let me learn your voice"
+    visible: "Connect your accounts"
     timeout: 4000
-- tapOn:
-    id: "onboard.voiceTeach.connect"
 - tapOn:
     id: "connect.tiktok"
 - tapOn:

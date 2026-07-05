@@ -10,6 +10,7 @@ import os
 import json
 import re
 import copy
+import time
 import uuid
 import asyncio
 import random
@@ -32,9 +33,25 @@ from supabase_persistence import SupabaseClient
 async def _lifespan(app: FastAPI):
     await _load_learning_state()
     yield
+    if _anthropic_client is not None:
+        await _anthropic_client.aclose()
 
 
 app = FastAPI(title="Marque API", version="0.3.0", lifespan=_lifespan)
+
+
+@app.middleware("http")
+async def _timing_middleware(request, call_next):
+    """One log line per request (method path status ms) — the only latency
+    instrumentation the backend had was silence; this makes p50/p95 measurable
+    from Render logs with a plain awk/grep one-liner."""
+    start = time.time()
+    response = await call_next(request)
+    elapsed_ms = round((time.time() - start) * 1000, 1)
+    logging.info("timing %s %s %d %sms", request.method, request.url.path,
+                response.status_code, elapsed_ms)
+    return response
+
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages"
@@ -183,6 +200,25 @@ def _thompson_sample(creator_id: str, candidates: list) -> list:
 # Anthropic + JSON helpers
 # ---------------------------------------------------------------------------
 
+_anthropic_client: httpx.AsyncClient | None = None
+_anthropic_client_loop: object | None = None
+
+
+def _get_anthropic_client() -> httpx.AsyncClient:
+    """A shared, connection-pooled client instead of one-per-call. Loop-aware:
+    tests drive anthropic() via asyncio.run() per test (a fresh event loop each
+    time), and an httpx client is bound to the loop it was created under — reusing
+    one across a closed loop raises. So a loop change transparently recreates the
+    client; in production (one long-lived uvicorn loop) this is created exactly
+    once, giving real connection pooling. Closed in _lifespan on shutdown."""
+    global _anthropic_client, _anthropic_client_loop
+    loop = asyncio.get_running_loop()
+    if _anthropic_client is None or _anthropic_client_loop is not loop:
+        _anthropic_client = httpx.AsyncClient(timeout=90)
+        _anthropic_client_loop = loop
+    return _anthropic_client
+
+
 async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000,
                     temperature: float | None = None, schema: dict | None = None) -> str:
     delays = [0.5, 2.0, 8.0]
@@ -198,13 +234,13 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
         body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
     for attempt, delay in enumerate(delays + [None]):
         try:
-            async with httpx.AsyncClient(timeout=90) as client:
-                r = await client.post(
-                    ANTHROPIC_URL,
-                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                             "content-type": "application/json"},
-                    json=body,
-                )
+            client = _get_anthropic_client()
+            r = await client.post(
+                ANTHROPIC_URL,
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json=body,
+            )
             if r.status_code == 200:
                 return "".join(b.get("text", "") for b in r.json().get("content", []))
             if r.status_code in (429, 500, 502, 503, 529):
@@ -301,6 +337,9 @@ class Brand(BaseModel):
     voice: dict = {}
     non_negotiables: list[str] = []
     catchphrases: list[str] = []      # verbatim signature phrases (from brand-scan)
+    # Creators whose style this creator wants scripts to channel — presets resolve
+    # instantly (PRESET_EMULATION); custom links resolve from cache/Supabase/scrape.
+    emulation_targets: list[dict] = []
 
     def d(self) -> dict:
         return self.model_dump()
@@ -418,6 +457,28 @@ class BRollMatchRequest(BaseModel):
 
 
 _media_cache: dict[str, dict] = {}
+
+
+def _cap_evict(cache: dict, cap: int) -> None:
+    """FIFO-evict oldest entries once a dict cache exceeds `cap` (dicts preserve
+    insertion order in Python 3.7+). Same pattern _tts_cache already used inline;
+    shared here so every in-memory cache gets a bound."""
+    while len(cache) > cap:
+        cache.pop(next(iter(cache)))
+
+
+_JOB_TTL_S = 24 * 3600
+
+
+def _sweep_ttl_jobs(jobs: dict, ttl_s: float = _JOB_TTL_S) -> None:
+    """Evict jobs older than ttl_s. Sweep-on-access (called from the GET poll
+    endpoints) rather than a background timer — no extra event loop task, and
+    the in-memory job stores are already accepted-orphaned-on-restart, so a
+    lazily-swept TTL is a strict improvement with zero new failure modes."""
+    now = time.time()
+    dead = [jid for jid, j in jobs.items() if now - j.get("created_at", now) > ttl_s]
+    for jid in dead:
+        jobs.pop(jid, None)
 
 
 class PostRegisterRequest(BaseModel):
@@ -795,19 +856,21 @@ async def scripts(req: ScriptRequest):
 async def _generate_scripts(req: ScriptRequest) -> dict:
     """The full quality-gated script pipeline (best-of-N hooks → write → judge →
     repair). Shared by /v1/scripts and the onboarding digest job."""
+    req.count = max(1, min(5, req.count))
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(req)}
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
         stats = await _arms_for_prompt(req.creator_id)
+        emulation = await _resolve_emulation_profiles(req.emulation_targets)
         # Best-of-N: pre-select the strongest openers, then write bodies around them.
         topic = req.pillar or req.niche or "your next post"
         mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count))
         sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
                                           req.media_context, req.posts or None,
                                           arm_stats=stats, memory=req.memory or None,
-                                          mandated_hooks=mandated or None)
+                                          mandated_hooks=mandated or None, emulation=emulation or None)
         out = await anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                                    OPUS, 3800, array_key="scripts")
         if not out:
@@ -825,8 +888,9 @@ async def hooks(req: HooksRequest):
         return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about", "signal": "curiosity", "strength": 82}]}
     try:
         stats = await _arms_for_prompt(req.creator_id)
+        emulation = await _resolve_emulation_profiles(req.emulation_targets)
         sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats,
-                                        memory=req.memory or None)
+                                        memory=req.memory or None, emulation=emulation or None)
         out = await anthropic_json(sys, usr, _array_schema("hooks", prompts.HOOK_JSON_ELEMENT),
                                    OPUS, 1200, array_key="hooks")
         out = await quality_hooks(req.topic, out)
@@ -900,8 +964,10 @@ async def insights(req: InsightsRequest):
 
 @app.get("/v1/trends")
 async def trends(niche: str = ""):
-    # TODO(task#6): serve from trends_cache populated by the scrape job. For now: niche-aware,
-    # with a Haiku-written "why" when keyed.
+    # DECISION (2026-07): real trend-scraping is explicitly deferred, not a live
+    # gap to close opportunistically. The niche-aware mock set is good enough for
+    # the current surface (a ticker line, not a ranked feed); wiring a scrape job
+    # here is only worth it once trends becomes a primary discovery surface.
     base = mock_trends(niche)
     return {"mode": "mock", "trends": base}
 
@@ -1000,6 +1066,7 @@ async def create_clip_job(req: ClipJobRequest):
         # Conversational-tweak state: transcript kept for re-editing, prior EDLs
         # for undo, and the tweak chat history.
         "words": [], "edl_history": [], "tweaks": [],
+        "created_at": time.time(),
     }
     _clip_jobs[job_id] = job
     if not ASSEMBLY_KEY:
@@ -1015,6 +1082,7 @@ async def create_clip_job(req: ClipJobRequest):
 
 @app.get("/v1/clips/{job_id}")
 async def get_clip_job(job_id: str):
+    _sweep_ttl_jobs(_clip_jobs)
     if job_id not in _clip_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     job = _clip_jobs[job_id]
@@ -1600,6 +1668,100 @@ async def _transcribe_top_posts(posts: list[dict], top_n: int = 4) -> list[dict]
     return posts
 
 
+# ---------------------------------------------------------------------------
+# Emulate creators — analyze a target creator's transferable style DNA and
+# thread it into script/hook generation. Presets resolve instantly (hand-
+# authored, keyless-safe); custom links resolve from memory cache → Supabase →
+# live scrape, and NEVER scrape synchronously inside a generation call — a
+# target that hasn't finished analyzing yet is silently omitted this round.
+# ---------------------------------------------------------------------------
+
+_emulation_cache: dict[str, dict] = {}   # handle.lower() -> profile
+_EMULATION_CACHE_CAP = 1024
+
+
+class EmulateAnalyzeRequest(BaseModel):
+    handle: str
+    platform: str = "instagram"
+
+
+def _mock_emulation_profile(handle: str) -> dict:
+    return {
+        "top_hooks": [f"The thing nobody tells you about being @{handle}."],
+        "hook_signals": ["curiosity"],
+        "top_format": "direct-to-camera with a fast cut every few seconds",
+        "pacing": "quick, confident, minimal pauses",
+        "voice": {"funnyToSerious": 0.5, "polishedToRaw": 0.5, "teacherToPeer": 0.5},
+        "never_borrow": [f"@{handle}'s specific stories or claims"],
+    }
+
+
+@app.post("/v1/emulate/analyze")
+async def emulate_analyze(req: EmulateAnalyzeRequest):
+    """Kick off (and cache) style analysis for a custom emulation target. Called
+    fire-and-forget from onboarding — the profile resolves lazily on the next
+    generation call via _resolve_emulation_profiles, so this never blocks the UI."""
+    handle = req.handle.lstrip("@").lower()
+    if not handle:
+        raise HTTPException(status_code=422, detail="handle required")
+    if handle in _emulation_cache:
+        return {"mode": "cached", "ok": True}
+    if _supabase_client:
+        cached = await _supabase_client.load_emulation_profile(handle)
+        if cached:
+            _emulation_cache[handle] = cached
+            return {"mode": "cached", "ok": True}
+
+    posts = await scrape_posts(handle, req.platform)
+    posts = await _transcribe_top_posts(posts)
+    if not ANTHROPIC_KEY or not posts:
+        profile = _mock_emulation_profile(handle)
+        mode = "mock"
+    else:
+        try:
+            sys, usr = prompts.derive_emulation_prompt(handle, posts)
+            profile = extract_json(await anthropic(sys, usr, HAIKU, 900), array=False) \
+                or _mock_emulation_profile(handle)
+            mode = "live"
+        except HTTPException:
+            profile = _mock_emulation_profile(handle)
+            mode = "mock"
+
+    _emulation_cache[handle] = profile
+    _cap_evict(_emulation_cache, _EMULATION_CACHE_CAP)
+    if _supabase_client:
+        await _supabase_client.upsert_emulation_profile(handle, req.platform, profile)
+    return {"mode": mode, "ok": True}
+
+
+async def _resolve_emulation_profiles(targets: list[dict]) -> list[dict]:
+    """Resolve each {name, handle, platform, source} target to a style profile.
+    Preset lookup by name is instant; custom targets resolve from the in-memory
+    cache (backfilled from Supabase on miss). A target still mid-analysis (or
+    never explicitly analyzed) is silently omitted — generation never blocks on
+    a scrape, and a missing profile degrades to "no emulation this round", not
+    an error."""
+    if not targets:
+        return []
+    out: list[dict] = []
+    for t in targets[:3]:
+        name = t.get("name", "")
+        if t.get("source") == "preset" and name in prompts.PRESET_EMULATION:
+            out.append({"name": name, **prompts.PRESET_EMULATION[name]})
+            continue
+        handle = (t.get("handle") or "").lstrip("@").lower()
+        if not handle:
+            continue
+        profile = _emulation_cache.get(handle)
+        if not profile and _supabase_client:
+            profile = await _supabase_client.load_emulation_profile(handle)
+            if profile:
+                _emulation_cache[handle] = profile
+        if profile:
+            out.append({"name": name or f"@{handle}", **profile})
+    return out
+
+
 @app.post("/v1/brand-scan/handle")
 async def brand_scan_handle(req: ScanRequest):
     posts = req.posts or await scrape_posts(req.handle, req.platform)
@@ -1650,7 +1812,8 @@ async def create_digest_job(req: DigestRequest):
     job_id immediately; the app can be closed while it runs."""
     job_id = str(uuid.uuid4())
     job = {"job_id": job_id, "status": "running", "stage": "scraping",
-           "mode": "live", "req": req, "result": None, "error": None}
+           "mode": "live", "req": req, "result": None, "error": None,
+           "created_at": time.time()}
     _digest_jobs[job_id] = job
     if not ANTHROPIC_KEY:
         # Keyless: complete synchronously with the mock derive + scripts so demo
@@ -1669,6 +1832,7 @@ async def create_digest_job(req: DigestRequest):
 
 @app.get("/v1/onboarding/digest/{job_id}")
 async def get_digest_job(job_id: str):
+    _sweep_ttl_jobs(_digest_jobs)
     if job_id not in _digest_jobs:
         raise HTTPException(status_code=404, detail="job not found")
     return _digest_public(_digest_jobs[job_id])
@@ -1691,6 +1855,7 @@ def _digest_script_request(req: DigestRequest, scan: dict) -> ScriptRequest:
         example_topics=first.get("exampleTopics") or [],
         style=(req.preferred_styles[0] if req.preferred_styles else "talking_head"),
         count=3, creator_id=req.creator_id, memory=req.memory,
+        emulation_targets=req.emulation_targets,
     )
 
 
@@ -1709,8 +1874,19 @@ async def _run_digest(job_id: str) -> None:
         posts = await _transcribe_top_posts(posts)
         transcribed = sum(1 for p in posts if p.get("transcript"))
 
-        # 3) Derive brand/voice/pillars from the best evidence available.
+        # 3) Derive brand/voice/pillars from the best evidence available. Also
+        # best-effort analyze any emulation target that hasn't been resolved yet
+        # (e.g. the user linked a page seconds before hitting "Build my plan") —
+        # the digest job is already a background task, so absorbing that scrape
+        # here costs nothing the UI is waiting on.
         job["stage"] = "deriving"
+        for t in req.emulation_targets:
+            handle = (t.get("handle") or "").lstrip("@").lower()
+            if t.get("source") == "custom" and handle and handle not in _emulation_cache:
+                try:
+                    await emulate_analyze(EmulateAnalyzeRequest(handle=handle, platform=t.get("platform", "instagram")))
+                except Exception:
+                    pass
         scan: dict | None = None
         if posts:
             sys, usr = prompts.derive_from_posts_prompt(brand, posts)
@@ -1904,6 +2080,7 @@ async def analyze_media(req: MediaAnalyzeRequest):
             "tags": [req.kind, "interior", "natural light", "close-up", "lifestyle"],
         }
         _media_cache[req.content_hash] = mock
+        _cap_evict(_media_cache, 256)
         return {"mode": "mock", **mock}
 
     system, user_text = prompts.media_analyze_prompt(req.filename, req.kind)
@@ -1923,6 +2100,7 @@ async def analyze_media(req: MediaAnalyzeRequest):
     text = "".join(b.get("text", "") for b in r.json().get("content", []))
     result = extract_json(text, array=False) or {}
     _media_cache[req.content_hash] = result
+    _cap_evict(_media_cache, 256)
     return {"mode": "live", **result}
 
 
@@ -2005,6 +2183,7 @@ async def _resolve_broll(edl: dict) -> dict:
         url = await _fetch_pexels(query)
         if url:
             _broll_url_cache[query] = url
+            _cap_evict(_broll_url_cache, 10_000)
             b["resolved_url"] = url
     return edl
 
@@ -2310,25 +2489,36 @@ def _apply_persona_voice(reply: str, persona: str, length: str) -> str:
 
 
 async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
-    """generate_scripts intent → run the real scripts engine and attach the results."""
-    topic = (intent_args.get("topic") or req.brand.get("niche") or "your next post").strip()
-    style = intent_args.get("style") or "talking_head"
-    if style not in STYLES:
-        style = "talking_head"
-    count = max(1, min(3, int(intent_args.get("count") or 1)))
-    angle = (req.memory.get("angle") or "").strip()
-    sreq = ScriptRequest(
-        niche=req.brand.get("niche", ""), audience=req.brand.get("audience", ""),
-        known_for=req.brand.get("known_for", ""), what_you_do=req.brand.get("what_you_do", ""),
-        goal=req.brand.get("goal", "Grow my audience"), voice=req.brand.get("voice", {}) or {},
-        non_negotiables=req.brand.get("non_negotiables", []) or [],
-        catchphrases=req.brand.get("catchphrases", []) or [],
-        pillar=topic, pillar_summary=f"A one-off script request from conversation: {topic}",
-        pillar_angle=angle, style=style, count=count, creator_id=req.creator_id,
-        memory=req.memory or {},          # carry chat-learned memory into generation
-    )
-    result = await scripts(sreq)
-    return result.get("scripts", [])
+    """generate_scripts intent → run the real scripts engine and attach the results.
+    Fully guarded: a malformed model-emitted intent_args (non-numeric count) or a
+    malformed client brand dict must degrade to "no scripts this turn", never a
+    500 that kills the whole conversational reply."""
+    try:
+        topic = (intent_args.get("topic") or req.brand.get("niche") or "your next post").strip()
+        style = intent_args.get("style") or "talking_head"
+        if style not in STYLES:
+            style = "talking_head"
+        try:
+            count = max(1, min(3, int(intent_args.get("count") or 1)))
+        except (TypeError, ValueError):
+            count = 1
+        angle = (req.memory.get("angle") or "").strip()
+        sreq = ScriptRequest(
+            niche=req.brand.get("niche", ""), audience=req.brand.get("audience", ""),
+            known_for=req.brand.get("known_for", ""), what_you_do=req.brand.get("what_you_do", ""),
+            goal=req.brand.get("goal", "Grow my audience"), voice=req.brand.get("voice", {}) or {},
+            non_negotiables=req.brand.get("non_negotiables", []) or [],
+            catchphrases=req.brand.get("catchphrases", []) or [],
+            pillar=topic, pillar_summary=f"A one-off script request from conversation: {topic}",
+            pillar_angle=angle, style=style, count=count, creator_id=req.creator_id,
+            memory=req.memory or {},          # carry chat-learned memory into generation
+            emulation_targets=req.brand.get("emulation_targets", []) or [],
+        )
+        result = await scripts(sreq)
+        return result.get("scripts", [])
+    except Exception as e:
+        logging.warning("chain_scripts failed, degrading to reply-only: %s", e)
+        return []
 
 
 def _parse_intent_args(envelope: dict) -> dict:
@@ -2352,6 +2542,8 @@ def _parse_intent_args(envelope: dict) -> dict:
 async def converse(req: ConverseRequest):
     if req.mode not in ("chat", "voice"):
         req.mode = "chat"
+    if len(req.messages) > 40:
+        req.messages = req.messages[-40:]  # keep the recent tail, same window iOS already caps at
     if not ANTHROPIC_KEY:
         out = mock_converse(req)
         if out["intent"] == "generate_scripts":
@@ -2470,9 +2662,8 @@ async def tts(req: TTSRequest):
         synth = _tts_cartesia if provider == "cartesia" else _tts_elevenlabs
         audio = await synth(text, req.voice_id)
         if audio:
-            if len(_tts_cache) > 64:
-                _tts_cache.pop(next(iter(_tts_cache)))
             _tts_cache[key] = audio
+            _cap_evict(_tts_cache, 256)
             return Response(content=audio, media_type="audio/mpeg")
     except (httpx.TimeoutException, httpx.ConnectError) as e:
         logging.warning("tts: network error %s", e)
@@ -2593,7 +2784,9 @@ def _reel_from_template(t, niche: str, slug: str, handle_override: str | None = 
         "title": title.format(niche=niche),
         "hook_text": hook.format(niche=niche),
         "transcript": transcript.format(niche=niche),
-        "thumbnail_url": "",
+        # Deterministic placeholder still (no real reel video exists in mock mode),
+        # but a real image URL — the iOS "Steal these" grid otherwise renders blank.
+        "thumbnail_url": f"https://picsum.photos/seed/{handle.lstrip('@')}-{fmt}-{idx}/400/711",
         "video_url": "",
         "views": views + idx * 37_000,
         "likes": likes + idx * 4_100,
@@ -2609,6 +2802,7 @@ REELS_PAGE = 6
 
 @app.get("/v1/reels")
 async def reels(niche: str = "", creator_id: str = "default", watched: str = "", cursor: int = 0):
+    cursor = max(0, min(cursor, 50))
     watched_list = [w.strip().lstrip("@") for w in watched.split(",") if w.strip()]
     # Real path (key-gated scraper) would land here; mock corpus is niche-parameterized.
     corpus = _mock_reels(niche, watched_list)
@@ -2620,17 +2814,24 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
 
 # ---------------------------------------------------------------------------
 # Daily feed — server-composed mix of script suggestions + reels + a trend
+#
+# The full quality-gated script pipeline (best-of-N hooks + generate + judge +
+# repair) is 4-6 LLM calls — measured ~40s live, which reads as "Couldn't load
+# today's picks" on the client. Feed pages are cached per creator+params with a
+# fast first paint (one cheap SONNET call, no judge) so the FIRST-EVER request
+# still returns in seconds; a background task then upgrades the cache entry to
+# the full quality-gated set for every subsequent fetch.
 # ---------------------------------------------------------------------------
 
 _FEED_MAX_PAGES = 5
+_FEED_CACHE_TTL_S = 6 * 3600
+_FEED_CACHE_CAP = 512
+
+_feed_cache: dict[str, dict] = {}       # key -> {"items", "next_cursor", "mode", "ts"}
+_feed_refreshing: set[str] = set()      # keys with a background upgrade already in flight
 
 
-@app.get("/v1/feed")
-async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
-               known_for: str = "", goal: str = "Grow my audience",
-               styles: str = "", watched: str = "", cursor: int = 0):
-    allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
-    style = allowed[cursor % len(allowed)]
+def _feed_topics(niche: str, cursor: int) -> str:
     topics = [
         f"the {niche or 'creator'} mistake everyone makes",
         f"what nobody tells beginners about {niche or 'your field'}",
@@ -2638,13 +2839,44 @@ async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
         f"the fastest win in {niche or 'your field'} this month",
         f"what I'd do differently starting {niche or 'out'} today",
     ]
-    sreq = ScriptRequest(
-        niche=niche, audience=audience, known_for=known_for, goal=goal,
-        pillar=topics[cursor % len(topics)],
-        pillar_summary="Daily feed suggestion",
-        style=style, count=3, creator_id=creator_id,
-    )
-    script_result = await scripts(sreq)
+    return topics[cursor % len(topics)]
+
+
+def _feed_cache_key(creator_id: str, niche: str, audience: str, known_for: str,
+                    goal: str, styles: str, watched: str, cursor: int) -> str:
+    # Param-signature sub-key: a niche/style change invalidates the cached page
+    # instead of serving stale content for a brand the creator just edited.
+    sig = "|".join([niche, audience, known_for, goal, styles, watched, str(cursor)])
+    return f"{creator_id}::{sig}"
+
+
+async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
+    """First-paint script generation: ONE cheap SONNET call, no best-of-N hooks
+    and no judge/repair pass. Bounded to 12s so a slow model never reproduces the
+    original timeout — falls back to the deterministic mock set instead."""
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", "scripts": mock_scripts(sreq)}
+    pillar = {"name": sreq.pillar, "summary": sreq.pillar_summary,
+              "angle": sreq.pillar_angle, "exampleTopics": sreq.example_topics}
+    try:
+        sys, usr = prompts.scripts_prompt(sreq.d(), pillar, sreq.style, sreq.count,
+                                          sreq.media_context, sreq.posts or None)
+        out = await asyncio.wait_for(
+            anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
+                           SONNET, 2200, array_key="scripts"),
+            timeout=12,
+        )
+        if not out:
+            return {"mode": "mock", "scripts": mock_scripts(sreq)}
+        return {"mode": "live", "scripts": out}
+    except (HTTPException, asyncio.TimeoutError):
+        return {"mode": "mock", "scripts": mock_scripts(sreq)}
+
+
+async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
+                              watched: str, cursor: int) -> tuple[list[dict], int | None]:
+    """Shared item-composition body — the fast path, the cached path, and the
+    background full-quality refresh all emit byte-identical FeedResp shapes."""
     items = [{"type": "script", "script": s} for s in script_result.get("scripts", [])[:3]]
 
     reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
@@ -2655,6 +2887,68 @@ async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
 
     reels_more = reel_result.get("next_cursor") is not None
     next_cursor = cursor + 1 if (cursor + 1 < _FEED_MAX_PAGES or reels_more) else None
+    return items, next_cursor
+
+
+async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
+                             watched: str, cursor: int) -> None:
+    """Background upgrade: run the full quality-gated pipeline and overwrite the
+    cache entry so the NEXT fetch for this key is both instant and high-quality."""
+    try:
+        script_result = await scripts(sreq)
+        items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
+        _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
+                            "mode": script_result.get("mode", "mock"), "ts": time.time()}
+        _cap_evict(_feed_cache, _FEED_CACHE_CAP)
+    except Exception as e:
+        logging.warning("feed background refresh failed for %s: %s", key, e)
+    finally:
+        _feed_refreshing.discard(key)
+
+
+@app.get("/v1/feed")
+async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
+               known_for: str = "", goal: str = "Grow my audience",
+               styles: str = "", watched: str = "", cursor: int = 0, fresh: int = 0):
+    cursor = max(0, min(cursor, 50))
+    allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
+    style = allowed[cursor % len(allowed)]
+    key = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched, cursor)
+
+    cached = _feed_cache.get(key)
+    fresh_enough = cached and (time.time() - cached["ts"]) < _FEED_CACHE_TTL_S
+    if cached and fresh_enough and not fresh:
+        return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
+
+    sreq = ScriptRequest(
+        niche=niche, audience=audience, known_for=known_for, goal=goal,
+        pillar=_feed_topics(niche, cursor),
+        pillar_summary="Daily feed suggestion",
+        style=style, count=3, creator_id=creator_id,
+    )
+
+    if cached and not fresh:
+        # Stale-while-revalidate: serve the last good page instantly, upgrade
+        # in the background for next time.
+        if key not in _feed_refreshing:
+            _feed_refreshing.add(key)
+            asyncio.create_task(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+        return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
+
+    # No cache yet (first-ever fetch) — fast single-call path so the client
+    # never waits on the full 4-6-call quality gate for its very first paint.
+    script_result = await _fast_feed_scripts(sreq)
+    items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
+    _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
+                        "mode": script_result.get("mode", "mock"), "ts": time.time()}
+    _cap_evict(_feed_cache, _FEED_CACHE_CAP)
+
+    # Kick the full quality-gated set in the background so the SECOND fetch
+    # (e.g. pull-to-refresh, or the app reopening) gets the upgraded page.
+    if key not in _feed_refreshing:
+        _feed_refreshing.add(key)
+        asyncio.create_task(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+
     return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
 
 

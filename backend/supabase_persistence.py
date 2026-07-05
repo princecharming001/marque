@@ -125,3 +125,25 @@ class SupabaseClient:
             return r.json()
         except Exception:
             return []
+
+    # --- emulation_profiles ---------------------------------------------------
+    # Analyzed style-DNA for a creator someone wants to emulate — keyed by
+    # lowercase handle so re-linking the same page across users hits cache.
+
+    async def upsert_emulation_profile(self, handle: str, platform: str, profile: dict) -> bool:
+        row = {"handle": handle.lower(), "platform": platform, "profile": profile}
+        r = await self._request(
+            "POST", "/emulation_profiles", params={"on_conflict": "handle"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_emulation_profile(self, handle: str) -> dict | None:
+        r = await self._request("GET", "/emulation_profiles",
+                                params={"handle": f"eq.{handle.lower()}", "select": "profile"})
+        if not (r and r.status_code == 200):
+            return None
+        try:
+            rows = r.json()
+        except Exception:
+            return None
+        return rows[0]["profile"] if rows and rows[0].get("profile") else None

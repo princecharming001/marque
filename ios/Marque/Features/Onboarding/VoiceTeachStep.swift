@@ -1,94 +1,9 @@
 import SwiftUI
 
-// "Let me learn your voice" — voice-teaching IN the flow (replaces the old
-// optional VoiceOnboardingSheet + the standalone connect step). Two paths:
-//   1. PRIMARY: connect Instagram/TikTok → the backend studies recent reels
-//      (captions + transcripts) and derives voice + pillars.
-//   2. Answer 4 quick questions (the embedded interview).
-// A small "Skip for now" keeps the step non-blocking.
-struct VoiceTeachStep: View {
-    @Environment(AppStore.self) private var store
-    let onDone: () -> Void        // advance()
-    let onSkip: () -> Void        // derivePillars + advance()
-
-    private enum Mode { case choose, connect, interview }
-    @State private var mode: Mode = .choose
-    @State private var analyzing = false
-
-    var body: some View {
-        VStack(spacing: Space.lg) {
-            switch mode {
-            case .choose:  chooser
-            case .connect: connectView
-            case .interview:
-                VoiceInterviewView {
-                    onDone()
-                }
-            }
-        }
-        .animation(Motion.enter, value: mode == .choose)
-    }
-
-    // MARK: chooser
-
-    private var chooser: some View {
-        VStack(spacing: Space.md) {
-            OptionCard(icon: "OnbIcon-voice-connect", sfFallback: "link",
-                       title: "Connect Instagram or TikTok",
-                       subtitle: "I'll study your recent reels and learn how you actually talk",
-                       selected: false) {
-                withAnimation(Motion.enter) { mode = .connect }
-            }
-            .accessibilityIdentifier("onboard.voiceTeach.connect")
-
-            OptionCard(icon: "OnbIcon-voice-interview", sfFallback: "bubble.left.and.text.bubble.right",
-                       title: "Answer 4 quick questions",
-                       subtitle: "Two minutes, typed — I listen for your real voice",
-                       selected: false) {
-                withAnimation(Motion.enter) { mode = .interview }
-            }
-            .accessibilityIdentifier("onboard.voiceTeach.interview")
-
-            Button {
-                store.derivePillars()
-                onSkip()
-            } label: {
-                Text("Skip for now")
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-            }
-            .accessibilityIdentifier("onboard.voiceTeach.skip")
-            .padding(.top, Space.sm)
-        }
-    }
-
-    // MARK: connect
-
-    private var connectView: some View {
-        VStack(spacing: Space.lg) {
-            ConnectAccountsView()
-
-            if store.brand.connectedAccounts.isEmpty {
-                Button {
-                    withAnimation(Motion.enter) { mode = .choose }
-                } label: {
-                    Text("Actually, let me answer questions instead")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                }
-            } else {
-                OnbPill(title: analyzing ? "Reading your reels…" : "Learn my voice",
-                        enabled: !analyzing) {
-                    analyzing = true
-                    Task {
-                        await store.analyzePage()
-                        analyzing = false
-                        onDone()
-                    }
-                }
-                .accessibilityIdentifier("onboard.voiceTeach.analyze")
-            }
-        }
-    }
-}
+// Voice teaching lives as two consecutive onboarding steps now (connectAccounts
+// then voiceInterview in OnboardingView.swift) — every user walks through both
+// instead of choosing one path. This file keeps the embedded 4-question
+// interview component that the voiceInterview step renders.
 
 // MARK: - Embedded 4-question interview (refactored from VoiceOnboardingSheet)
 

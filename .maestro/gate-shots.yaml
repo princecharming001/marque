@@ -46,12 +46,22 @@ name: Marque — gate screenshots (paywall→auth order QA)
 - tapOn:
     id: "onboard.platform.instagram"
 - extendedWaitUntil:
-    visible: "Let me learn your voice"
+    visible: "Connect your accounts"
     timeout: 4000
 - tapOn:
-    id: "onboard.voiceTeach.skip"
+    id: "onboard.connect.skip"
+- extendedWaitUntil:
+    visible: "A few quick questions"
+    timeout: 4000
+- tapOn:
+    id: "onboard.interview.skip"
 - tapOn:
     id: "onboard.voiceContinue"
+- extendedWaitUntil:
+    visible: "Who do you want to sound like?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.emulate.skip"
 - tapOn:
     id: "onboard.comfort.natural"
 - extendedWaitUntil:

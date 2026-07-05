@@ -75,46 +75,63 @@ name: Marque — onboarding per-step screenshot walk (visual QA)
     id: "onboard.platform.instagram"
 
 - extendedWaitUntil:
-    visible: "Let me learn your voice"
+    visible: "Connect your accounts"
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-10-voiceteach
+- takeScreenshot: /Users/home/Marque/.shots/onb-10-connect
 - tapOn:
-    id: "onboard.voiceTeach.skip"
+    id: "onboard.connect.skip"
+
+- extendedWaitUntil:
+    visible: "A few quick questions"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-11-interview
+- tapOn:
+    id: "onboard.interview.skip"
 
 - assertVisible: "Fine-tune your voice"
-- takeScreenshot: /Users/home/Marque/.shots/onb-11-sliders
+- takeScreenshot: /Users/home/Marque/.shots/onb-12-sliders
 - tapOn:
     id: "onboard.voiceContinue"
 
+- extendedWaitUntil:
+    visible: "Who do you want to sound like?"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-13-emulate
+- tapOn:
+    id: "onboard.emulate.preset.tate"
+- takeScreenshot: /Users/home/Marque/.shots/onb-13b-emulate-selected
+- tapOn:
+    id: "onboard.emulate.continue"
+
 - assertVisible: "How do you feel on camera?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-12-comfort
+- takeScreenshot: /Users/home/Marque/.shots/onb-14-comfort
 - tapOn:
     id: "onboard.comfort.natural"
 
 - extendedWaitUntil:
     visible: "Pick your video styles"
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-13-styles
+- takeScreenshot: /Users/home/Marque/.shots/onb-15-styles
 - tapOn:
     id: "onboard.stylesContinue"
 
 - assertVisible: "Pick your weekly pace"
-- takeScreenshot: /Users/home/Marque/.shots/onb-14-pace
+- takeScreenshot: /Users/home/Marque/.shots/onb-16-pace
 - tapOn:
     id: "onboard.pace.5"
 
 - extendedWaitUntil:
     visible: "Your brand, in a sentence"
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-15-mirror
+- takeScreenshot: /Users/home/Marque/.shots/onb-17-mirror
 - tapOn:
     id: "onboard.buildPlan"
 
 # Building screen may flash past instantly when generation is fast (mock/local
 # fallback) — screenshot whatever state we're in, then wait for ready.
-- takeScreenshot: /Users/home/Marque/.shots/onb-16-building
+- takeScreenshot: /Users/home/Marque/.shots/onb-18-building
 
 - extendedWaitUntil:
     visible: "Enter Marque"
     timeout: 120000
-- takeScreenshot: /Users/home/Marque/.shots/onb-17-ready
+- takeScreenshot: /Users/home/Marque/.shots/onb-19-ready

@@ -755,7 +755,8 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
                    media_context: str = "", posts: list[dict] | None = None,
                    arm_stats: list[dict] | None = None,
                    memory: dict | None = None,
-                   mandated_hooks: list[dict] | None = None) -> tuple[str, str]:
+                   mandated_hooks: list[dict] | None = None,
+                   emulation: list[dict] | None = None) -> tuple[str, str]:
     s = STYLES.get(style, STYLES["talking_head"])
     voice_ex = _voice_exemplars(posts)
     voice_section = f"\n\n{voice_ex}" if voice_ex else ""
@@ -774,6 +775,8 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
     learn_section = f"\n{learn}\n" if learn else ""
     mem = memory_block(memory) if memory else ""
     mem_section = f"\n{mem}\n" if mem else ""
+    emul = emulation_block(emulation or [])
+    emul_section = f"\n{emul}\n" if emul else ""
     mandate = ""
     if mandated_hooks:
         picks = "\n".join(
@@ -790,6 +793,7 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
     user = (
         f"{learn_section}"
         f"{mem_section}"
+        f"{emul_section}"
         f"{brand_block(brand, posts)}\n"
         f"Content pillar: {pillar.get('name','')} — {pillar.get('summary','')}\n"
         f"Their angle on it: {pillar.get('angle','')}\n"
@@ -894,7 +898,8 @@ def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
 
 def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
                  arm_stats: list[dict] | None = None,
-                 memory: dict | None = None) -> tuple[str, str]:
+                 memory: dict | None = None,
+                 emulation: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's hook engine. Generate scroll-stopping first-3-second hooks in the creator's voice "
         "across the 8 signal types. Each hook must be DIFFERENT in structure and signal — no two hooks "
@@ -911,8 +916,10 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
     extra = f"\n{learn}" if learn else ""
     mem = memory_block(memory) if memory else ""
     mem_section = f"\n{mem}\n" if mem else ""
+    emul = emulation_block(emulation or [])
+    emul_section = f"\n{emul}\n" if emul else ""
     user = (
-        f"{brand_block(brand)}\n{mem_section}Topic: {topic}\n"
+        f"{brand_block(brand)}\n{mem_section}{emul_section}Topic: {topic}\n"
         f"Style: {STYLES.get(style, STYLES['talking_head'])['label']}\n{extra}"
         f"Return ONLY a JSON array of 6 hooks with diverse signals and structures. Each: "
         f'{{\"text\": str, \"signal\": one of {SIGNALS}, \"strength\": int 0-100}}'
@@ -1023,6 +1030,101 @@ def derive_from_posts_prompt(brand: dict, posts: list[dict]) -> tuple[str, str]:
     )
     user = f"{brand_block(brand, posts)}\n\nAnalyze the posts above and derive the brand. {DERIVE_SCHEMA}"
     return system, user
+
+
+# ---------------------------------------------------------------------------
+# Emulate creators — analyze a target creator's style DNA and thread it into
+# script/hook generation as structural inspiration (never content to copy).
+# ---------------------------------------------------------------------------
+
+EMULATION_SCHEMA = (
+    'Return ONLY a JSON object: {"top_hooks": [str] (3-5 verbatim opening lines from '
+    'their strongest posts), "hook_signals": [str] (which of the 8 signal types they '
+    'lean on), "top_format": str (their dominant structural pattern, one short phrase), '
+    '"pacing": str (one sentence on their editing/speaking rhythm), '
+    '"voice": {"funnyToSerious": 0-1, "polishedToRaw": 0-1, "teacherToPeer": 0-1}, '
+    '"never_borrow": [str] (their specific claims/stories/niche-facts that must NEVER '
+    'be reused — only the mechanics are transferable)}'
+)
+
+
+def derive_emulation_prompt(handle: str, posts: list[dict]) -> tuple[str, str]:
+    """Extract a target creator's transferable style DNA from their real posts —
+    hook mechanics, format, pacing, voice — with an explicit list of what must
+    NOT be borrowed (their specific claims/stories), so downstream generation
+    can channel the mechanics without copying content."""
+    system = (
+        "You are Marque's style analyst. You are given a creator's REAL recent posts. Extract what makes "
+        "their content WORK structurally — their hook mechanics, format, pacing, voice — so another creator "
+        "in a DIFFERENT niche could learn from the mechanics without copying the substance. "
+        "Quote hooks VERBATIM. Be explicit in never_borrow about their specific claims, stories, and niche "
+        "facts that are theirs alone. Reply with ONLY a JSON object."
+    )
+    user = f"Creator: @{handle}{_post_lines(posts)}\n\nAnalyze the posts above. {EMULATION_SCHEMA}"
+    return system, user
+
+
+# Hand-authored style-DNA for the onboarding presets — these must work keyless/
+# offline (no scrape needed) so the emulate step never blocks on a live call.
+# Keyed by the exact display name the iOS EmulateStep sends.
+PRESET_EMULATION: dict[str, dict] = {
+    "Alex Hormozi": {
+        "top_hooks": [
+            "Here's the math nobody wants to do.",
+            "I made $100M and this is the only thing that mattered.",
+            "Most people quit right before this works.",
+        ],
+        "hook_signals": ["authority", "specificity", "stakes"],
+        "top_format": "proof-stacked direct response — claim, then the number that backs it, then the mechanism",
+        "pacing": "flat, unhurried delivery; the confidence comes from certainty, not energy",
+        "voice": {"funnyToSerious": 0.25, "polishedToRaw": 0.4, "teacherToPeer": 0.15},
+        "never_borrow": ["his specific business numbers, deals, or client stories"],
+    },
+    "Andrew Tate": {
+        "top_hooks": [
+            "Nobody tells you this because it's uncomfortable.",
+            "There are two types of people. You're probably the wrong one.",
+            "This is why you're losing and you don't even know it.",
+        ],
+        "hook_signals": ["contrarian", "callOut", "stakes"],
+        "top_format": "declarative frame — plant a polarizing claim, defend it fast, close with a challenge",
+        "pacing": "high-intensity, short punchy sentences, minimal hedging",
+        "voice": {"funnyToSerious": 0.3, "polishedToRaw": 0.7, "teacherToPeer": 0.1},
+        "never_borrow": ["his specific claims, persona, or any content that isn't purely structural"],
+    },
+    "Shelby Sapp": {
+        "top_hooks": [
+            "If you're not doing this, you're leaving money on the table.",
+            "I closed this deal in under five minutes. Here's exactly how.",
+            "Stop overthinking the pitch — do this instead.",
+        ],
+        "hook_signals": ["authority", "curiosity", "patternInterrupt"],
+        "top_format": "high-energy sales talk-track — hook, quick proof, one actionable script line",
+        "pacing": "fast, upbeat, conversational — like coaching a friend mid-call",
+        "voice": {"funnyToSerious": 0.45, "polishedToRaw": 0.55, "teacherToPeer": 0.7},
+        "never_borrow": ["her specific client names, deals, or numbers"],
+    },
+}
+
+
+def emulation_block(profiles: list[dict]) -> str:
+    """Render resolved emulation profiles into the prompt block generation
+    threads into scripts_prompt/hooks_prompt. Explicit about borrowing
+    MECHANICS only — never the target's content, claims, or niche facts."""
+    if not profiles:
+        return ""
+    lines = ["STYLE INSPIRATION — the creator wants to channel these creators' MECHANICS "
+             "(hook shapes, pacing, structure), NEVER their content, claims, or stories. "
+             "Adapt everything to THIS creator's own niche and voice:"]
+    for p in profiles[:3]:
+        name = p.get("name", "")
+        hooks = "; ".join(f'"{h}"' for h in (p.get("top_hooks") or [])[:2])
+        lines.append(f"- {name}: format = {p.get('top_format', '')}; "
+                    f"pacing = {p.get('pacing', '')}; example hook shapes: {hooks}")
+        never = p.get("never_borrow") or []
+        if never:
+            lines.append(f"  NEVER borrow: {'; '.join(never)}")
+    return "\n".join(lines)
 
 
 def voice_finalize_prompt(brand: dict, transcript: list[dict]) -> tuple[str, str]:

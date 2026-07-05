@@ -38,8 +38,20 @@ CREATE INDEX IF NOT EXISTS idx_arm_stats_creator     ON arm_stats(creator_id);
 CREATE INDEX IF NOT EXISTS idx_post_registry_creator ON post_registry(creator_id);
 CREATE INDEX IF NOT EXISTS idx_post_registry_settled ON post_registry(settled);
 
+-- Analyzed style-DNA for a creator someone wants to emulate (hook mechanics,
+-- format dominance, pacing, voice axes) — keyed by handle so linking the same
+-- page from two different users hits the same cached analysis.
+CREATE TABLE IF NOT EXISTS emulation_profiles (
+    handle      TEXT PRIMARY KEY,            -- lowercase, no leading @
+    platform    TEXT NOT NULL,
+    profile     JSONB NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- These tables are written ONLY by the backend using the Supabase service-role key,
 -- which bypasses RLS. Enabling RLS with no policies denies the anon/authenticated
 -- roles entirely — the correct, closed-by-default posture for internal learning state.
-ALTER TABLE arm_stats     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE post_registry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE arm_stats           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE post_registry       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE emulation_profiles  ENABLE ROW LEVEL SECURITY;

@@ -10,8 +10,8 @@ struct OnboardingView: View {
 
     enum Step: Int, CaseIterable {
         case landing, goal, blocker, frequency, method, name, niche, about,
-             knownFor, platform, voiceTeach, voiceSliders, cameraComfort,
-             styles, pace, mirror, building
+             knownFor, platform, connectAccounts, voiceInterview, voiceSliders,
+             emulate, cameraComfort, styles, pace, mirror, building
 
         /// Quiz-progress dashes cover everything between landing and building.
         var quizIndex: Int? {
@@ -33,6 +33,7 @@ struct OnboardingView: View {
     @State private var goalTouched = false
     // Disambiguates "nil because unset" from "nil because user picked Both".
     @State private var platformBothChosen = false
+    @State private var analyzingConnect = false
 
     var body: some View {
         Group {
@@ -55,10 +56,12 @@ struct OnboardingView: View {
             case .niche:         nicheStep
             case .about:         aboutStep
             case .knownFor:      knownForStep
-            case .platform:      platformStep
-            case .voiceTeach:    voiceTeachStep
-            case .voiceSliders:  voiceSlidersStep
-            case .cameraComfort: cameraComfortStep
+            case .platform:        platformStep
+            case .connectAccounts: connectAccountsStep
+            case .voiceInterview:  voiceInterviewStep
+            case .voiceSliders:    voiceSlidersStep
+            case .emulate:         emulateStep
+            case .cameraComfort:   cameraComfortStep
             case .styles:        stylesStep
             case .pace:          paceStep
             case .mirror:        mirrorStep
@@ -134,7 +137,7 @@ struct OnboardingView: View {
         scaffold("What are you here to do?", "This shapes every script I write for you.") {
             VStack(spacing: Space.md) {
                 goalCard(.audience, "OnbIcon-goal-audience", "megaphone")
-                goalCard(.clients, "OnbIcon-goal-clients", "handshake")
+                goalCard(.clients, "OnbIcon-goal-clients", "briefcase")
                 goalCard(.authority, "OnbIcon-goal-authority", "crown")
                 goalCard(.monetize, "OnbIcon-goal-monetize", "dollarsign.circle")
             }
@@ -158,7 +161,7 @@ struct OnboardingView: View {
                 blockerCard(.ideas, "OnbIcon-blocker-ideas", "lightbulb", "ideas")
                 blockerCard(.time, "OnbIcon-blocker-time", "hourglass", "time")
                 blockerCard(.editing, "OnbIcon-blocker-editing", "scissors", "editing")
-                blockerCard(.confidence, "OnbIcon-blocker-confidence", "theatermasks", "confidence")
+                blockerCard(.confidence, "OnbIcon-blocker-confidence", "face.dashed", "confidence")
             }
         }
     }
@@ -203,41 +206,13 @@ struct OnboardingView: View {
             "You've got the volume. Now make every post compound: one filming session, scripts in your voice, edits handled."
         }
         return scaffold("Consistency beats virality", line) {
-            VStack(spacing: Space.xl) {
-                // Two-bar comparison, drawn with capsules — ink vs neutral.
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    barRow(label: "Chasing viral hits", fraction: 0.3, filled: false)
-                    barRow(label: "Posting weekly with Marque", fraction: 0.9, filled: true)
-                }
-                .padding(Space.lg)
-                .background(Palette.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
-
-                Text("Accounts that post 3×+ a week grow ~4× faster than accounts that post sporadically.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    .multilineTextAlignment(.center)
-
-                UnicornMascot(pose: .thinking, size: 120)
+            VStack(spacing: Space.lg) {
+                UnicornMascot(pose: .thinking, size: 170)
+                MethodStatCard()
             }
         } cta: {
             OnbPill(title: "Let's do it") { advance() }
                 .accessibilityIdentifier("onboard.continue")
-        }
-    }
-
-    private func barRow(label: String, fraction: CGFloat, filled: Bool) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text(label)
-                .font(AppFont.callout)
-                .foregroundStyle(filled ? Palette.textPrimary : Palette.textTertiary)
-            GeometryReader { geo in
-                Capsule()
-                    .fill(filled ? Palette.ink : Color(hex: 0xE2E1DE))
-                    .frame(width: geo.size.width * fraction, height: 10)
-            }
-            .frame(height: 10)
         }
     }
 
@@ -376,11 +351,49 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Voice teach (in flow)
+    // MARK: - Voice teach (in flow, two consecutive steps — connect THEN interview)
 
-    private var voiceTeachStep: some View {
-        scaffold("Let me learn your voice", "So every script sounds like you — not a template.") {
-            VoiceTeachStep(onDone: { advance() }, onSkip: { advance() })
+    private var connectAccountsStep: some View {
+        scaffold("Connect your accounts", "I'll study your recent posts and learn how you actually talk.") {
+            ConnectAccountsView()
+        } cta: {
+            VStack(spacing: Space.md) {
+                OnbPill(title: store.brand.connectedAccounts.isEmpty ? "Continue"
+                        : (analyzingConnect ? "Reading your posts…" : "Continue"),
+                        enabled: !analyzingConnect) {
+                    guard !store.brand.connectedAccounts.isEmpty else { advance(); return }
+                    analyzingConnect = true
+                    Task {
+                        await store.analyzePage()
+                        analyzingConnect = false
+                        advance()
+                    }
+                }
+                .accessibilityIdentifier("onboard.connect.continue")
+                Button {
+                    advance()
+                } label: {
+                    Text("Skip for now")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                }
+                .accessibilityIdentifier("onboard.connect.skip")
+            }
+        }
+    }
+
+    private var voiceInterviewStep: some View {
+        scaffold("A few quick questions", "Two minutes, typed — I listen for your real voice.") {
+            VoiceInterviewView { advance() }
+        } cta: {
+            Button {
+                // Don't clobber a successful connect-analyze from the prior step.
+                if !store.brand.analyzed { store.derivePillars() }
+                advance()
+            } label: {
+                Text("Skip for now")
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+            }
+            .accessibilityIdentifier("onboard.interview.skip")
         }
     }
 
@@ -437,13 +450,34 @@ struct OnboardingView: View {
         }
     }
 
+    // MARK: - Emulate creators
+
+    private var emulateStep: some View {
+        scaffold("Who do you want to sound like?",
+                 "Pick creators whose style you admire — I'll study how they hook, pace, and talk.") {
+            EmulateStep()
+        } cta: {
+            VStack(spacing: Space.md) {
+                OnbPill(title: "Continue", enabled: !(store.brand.emulationTargets ?? []).isEmpty) {
+                    advance()
+                }
+                .accessibilityIdentifier("onboard.emulate.continue")
+                Button { advance() } label: {
+                    Text("Skip for now")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                }
+                .accessibilityIdentifier("onboard.emulate.skip")
+            }
+        }
+    }
+
     // MARK: - Format cluster
 
     private var cameraComfortStep: some View {
         scaffold("How do you feel on camera?", "There's a format for every comfort level.") {
             VStack(spacing: Space.md) {
                 comfortCard(.natural, "OnbIcon-comfort-natural", "video", "natural")
-                comfortCard(.gettingThere, "OnbIcon-comfort-getting", "video.badge.ellipsis", "getting")
+                comfortCard(.gettingThere, "OnbIcon-comfort-getting", "video.badge.checkmark", "getting")
                 comfortCard(.preferOff, "OnbIcon-comfort-off", "mic", "off")
             }
         }
@@ -567,5 +601,59 @@ private extension BrandGraph {
     var creatorNameBinding: String {
         get { creatorName ?? "" }
         set { creatorName = newValue.isEmpty ? nil : newValue }
+    }
+}
+
+// MARK: - Method interstitial stat card
+
+/// The "consistency beats virality" comparison — two labeled, animated bars with
+/// trailing multiplier values, on a sunken track. Replaces the old floaty capsule
+/// pair; owns its own appear-animation state so the bars grow in on first render.
+private struct MethodStatCard: View {
+    @State private var grown = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            statRow(label: "Chasing viral hits", value: "1×", fraction: 0.22, filled: false)
+            MarqueHairline()
+            statRow(label: "Posting weekly with Marque", value: "4×", fraction: 0.92, filled: true)
+            Text("Accounts that post 3×+ a week grow ~4× faster than accounts that post sporadically.")
+                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Space.lg)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .onAppear {
+            withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.15)) {
+                grown = true
+            }
+        }
+    }
+
+    private func statRow(label: String, value: String, fraction: CGFloat, filled: Bool) -> some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text(label)
+                    .font(AppFont.callout)
+                    .foregroundStyle(filled ? Palette.textPrimary : Palette.textTertiary)
+                Spacer()
+                Text(value)
+                    .font(AppFont.headline)
+                    .foregroundStyle(filled ? Palette.textPrimary : Palette.textTertiary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.surfaceSunken)
+                    Capsule()
+                        .fill(filled ? Palette.ink : Color(hex: 0xC9C7C2))
+                        .frame(width: geo.size.width * (grown ? fraction : 0))
+                }
+            }
+            .frame(height: 14)
+        }
     }
 }

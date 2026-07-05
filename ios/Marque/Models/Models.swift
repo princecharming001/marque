@@ -82,6 +82,19 @@ struct BrandGraph: Codable, Hashable {
     var weeklyTarget: Int? = nil
     var watchedCreators: [WatchedCreator]? = nil   // ≤2 "creators to watch" (Profile)
     var creatorName: String? = nil                 // collected in the mascot-intro onboarding step
+    var emulationTargets: [EmulationTarget]? = nil // whose style the creator wants scripts to borrow
+}
+
+/// A creator whose style the AI should study (preset or a custom linked page).
+/// Optional array on BrandGraph — a non-optional field would fail to decode
+/// existing installs' persisted snapshots (see watchedCreators precedent above).
+struct EmulationTarget: Codable, Hashable, Identifiable {
+    enum Source: String, Codable { case preset, custom }
+    var id = UUID()
+    var name: String
+    var handle: String = ""
+    var platform: String = ""      // "instagram" | "tiktok"; empty for presets without a linked page
+    var source: Source
 }
 
 /// A linked Instagram/TikTok account, verified by fetching the real public profile.

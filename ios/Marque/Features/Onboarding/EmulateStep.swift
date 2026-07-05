@@ -1,0 +1,152 @@
+import SwiftUI
+
+// "Who do you want to sound like?" — multi-select emulation targets. Three
+// hand-picked presets work instantly (curated style profiles on the backend,
+// no scraping needed); "Link a creator you love" fires a non-blocking backend
+// analysis of a real page. Skip is always available — this step never blocks.
+struct EmulateStep: View {
+    @Environment(AppStore.self) private var store
+    @State private var linking = false
+    @State private var showLinkRow = false
+    @State private var linkPlatform = "instagram"
+    @State private var handle = ""
+    @State private var error: String?
+
+    private static let presets: [(name: String, id: String)] = [
+        ("Alex Hormozi", "hormozi"),
+        ("Andrew Tate", "tate"),
+        ("Shelby Sapp", "sapp"),
+    ]
+
+    private var targets: [EmulationTarget] {
+        store.brand.emulationTargets ?? []
+    }
+
+    var body: some View {
+        VStack(spacing: Space.md) {
+            ForEach(Self.presets, id: \.id) { preset in
+                let selected = targets.contains { $0.source == .preset && $0.name == preset.name }
+                OptionCard(icon: "OnbIcon-emulate-\(preset.id)", sfFallback: "person.crop.circle",
+                           title: preset.name, selected: selected) {
+                    togglePreset(preset.name)
+                }
+                .accessibilityIdentifier("onboard.emulate.preset.\(preset.id)")
+            }
+
+            ForEach(targets.filter { $0.source == .custom }) { target in
+                customTargetRow(target)
+            }
+
+            if showLinkRow {
+                linkInputRow
+            } else {
+                OptionCard(icon: "OnbIcon-emulate-custom", sfFallback: "link.badge.plus",
+                           title: "Link a creator you love",
+                           subtitle: "I'll study their page and learn their style",
+                           selected: false) {
+                    withAnimation(Motion.enter) { showLinkRow = true }
+                }
+                .accessibilityIdentifier("onboard.emulate.custom")
+            }
+
+            if let error {
+                Text(error).font(AppFont.caption).foregroundStyle(Palette.critical)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func togglePreset(_ name: String) {
+        var list = store.brand.emulationTargets ?? []
+        if let idx = list.firstIndex(where: { $0.source == .preset && $0.name == name }) {
+            list.remove(at: idx)
+        } else {
+            list.append(EmulationTarget(name: name, source: .preset))
+        }
+        store.brand.emulationTargets = list
+        store.save()
+    }
+
+    private func customTargetRow(_ target: EmulationTarget) -> some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(target.name).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                Text("@\(target.handle) · \(target.platform.capitalized)")
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            }
+            Spacer(minLength: 0)
+            Button {
+                store.brand.emulationTargets?.removeAll { $0.id == target.id }
+                store.save()
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
+            }
+        }
+        .padding(Space.md)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
+    private var linkInputRow: some View {
+        VStack(spacing: Space.sm) {
+            Picker("Platform", selection: $linkPlatform) {
+                Text("Instagram").tag("instagram")
+                Text("TikTok").tag("tiktok")
+            }
+            .pickerStyle(.segmented)
+
+            HStack(spacing: 4) {
+                Text("@").foregroundStyle(Palette.textTertiary)
+                TextField("creator handle", text: $handle)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("onboard.emulate.handle")
+            }
+            .font(AppFont.bodyL)
+            .padding(.horizontal, Space.md).frame(height: 50)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
+
+            HStack {
+                Button("Cancel") { showLinkRow = false; handle = ""; error = nil }
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                Spacer()
+                Button { addCustom() } label: {
+                    HStack(spacing: 6) {
+                        if linking { ProgressView().controlSize(.small).tint(Palette.onInk) }
+                        Text(linking ? "Adding…" : "Add").font(AppFont.callout)
+                    }
+                    .foregroundStyle(Palette.onInk)
+                    .padding(.horizontal, Space.lg).frame(height: 40)
+                    .background(Palette.ink).clipShape(Capsule())
+                }
+                .buttonStyle(PressableStyle())
+                .disabled(linking || handle.trimmingCharacters(in: .whitespaces).isEmpty)
+                .accessibilityIdentifier("onboard.emulate.add")
+            }
+        }
+    }
+
+    private func addCustom() {
+        linking = true; error = nil
+        let h = handle.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "@", with: "")
+        let platform = linkPlatform
+        var list = store.brand.emulationTargets ?? []
+        list.append(EmulationTarget(name: "@\(h)", handle: h, platform: platform, source: .custom))
+        store.brand.emulationTargets = list
+        store.save()
+        showLinkRow = false
+        Task {
+            // Fire-and-forget: the backend caches the analyzed style profile and
+            // resolves it lazily on the next generation call — onboarding never
+            // waits on a scrape.
+            await store.backend.emulateAnalyze(handle: h, platform: platform)
+            linking = false
+        }
+        handle = ""
+    }
+}

@@ -3,13 +3,15 @@ import SwiftUI
 // The universal 3-band onboarding layout (docs/ONBOARDING-DESIGN.md §2):
 //   top bar (back + progress, fixed 44pt)
 //   headline + subtitle (centered)
-//   content region (vertically CENTERED in the remaining space)
+//   content region (pinned just under the header, not dead-centered)
 //   optional CTA slot (only multi-select / freeform / interstitial steps)
 //
 // Every step renders through this — no step lays itself out — which is what fixes
-// the old flow's content drifting to the top/bottom per step. The scaffold does
-// NOT ignore the keyboard safe area: when a keyboard rises, the centered content
-// region compresses symmetrically so a text field stays visually centered.
+// the old flow's content drifting to the top/bottom per step. Content sits a fixed
+// gap below the header (upper-third rhythm) rather than centering in the full
+// remaining space, which read as "floaty" on short MCQ stacks. The scaffold does
+// NOT ignore the keyboard safe area: when a keyboard rises, only the bottom slack
+// compresses, so a text field near the top never jumps.
 struct OnboardingScaffold<Content: View, CTA: View>: View {
     var headline: String
     var subtitle: String? = nil
@@ -61,13 +63,15 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
             .padding(.horizontal, Space.screenH)
             .padding(.top, Space.xl)
 
-            // Band 3 — content, centered in whatever space remains
+            // Band 3 — content, pinned a fixed gap under the header (upper-third
+            // rhythm); only the trailing spacer flexes, so short MCQ stacks read
+            // as "attached" to the question instead of floating mid-screen.
             VStack(spacing: 0) {
-                Spacer(minLength: Space.md)
                 content()
                 Spacer(minLength: Space.md)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.top, Space.xxl)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.horizontal, Space.screenH)
 
             // CTA slot

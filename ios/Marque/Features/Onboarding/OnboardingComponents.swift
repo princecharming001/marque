@@ -54,7 +54,10 @@ struct OptionCard: View {
                 .frame(width: 44, height: 44)
         } else {
             // Interim monochrome fallback until the clay icon set is generated.
-            Image(systemName: sfFallback)
+            // Never-blank guard: an invalid/misspelled SF Symbol name silently
+            // renders nothing, which read as a missing icon in review — fall
+            // back to a plain circle glyph so a bad symbol name is never invisible.
+            Image(systemName: UIImage(systemName: sfFallback) != nil ? sfFallback : "circle")
                 .font(.system(size: 19, weight: .medium))
                 .foregroundStyle(Palette.textPrimary)
                 .frame(width: 44, height: 44)

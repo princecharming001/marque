@@ -1,4 +1,5 @@
 import json
+import time
 
 from fastapi.testclient import TestClient
 
@@ -1442,3 +1443,211 @@ def test_derive_prompt_includes_transcript():
     _, usr = P.derive_from_posts_prompt({"niche": "fitness"}, posts)
     assert "here's the thing about consistency" in usr
     assert "spoken:" in usr
+
+
+# ---------------------------------------------------------------------------
+# Round 2: instant feed cache + reel stills + emulate creators + hardening
+# ---------------------------------------------------------------------------
+
+def test_feed_thumbnails_are_populated():
+    b = client.get("/v1/feed", params={"niche": "fitness", "cursor": 0}).json()
+    reels_ = [i["reel"] for i in b["items"] if i["type"] == "reel"]
+    assert reels_ and all(r["thumbnail_url"].startswith("https://") for r in reels_)
+
+
+def test_feed_cache_hit_is_instant_and_stable():
+    params = {"niche": "unique-cache-niche", "cursor": 0}
+    first = client.get("/v1/feed", params=params).json()
+    second = client.get("/v1/feed", params=params).json()
+    # Same cache key → identical script hooks on the cached hit (no regeneration).
+    assert first["items"] == second["items"]
+
+
+def test_feed_fresh_param_bypasses_cache():
+    params = {"niche": "fresh-bypass-niche", "cursor": 0}
+    client.get("/v1/feed", params=params)
+    key = main._feed_cache_key("default", "fresh-bypass-niche", "", "", "Grow my audience", "", "", 0)
+    assert key in main._feed_cache
+    r = client.get("/v1/feed", params={**params, "fresh": 1})
+    assert r.status_code == 200  # fresh=1 recomputes rather than erroring
+
+
+def test_feed_cache_key_changes_with_niche():
+    k1 = main._feed_cache_key("c1", "fitness", "a", "k", "g", "s", "w", 0)
+    k2 = main._feed_cache_key("c1", "finance", "a", "k", "g", "s", "w", 0)
+    assert k1 != k2
+
+
+def test_feed_cursor_clamped():
+    b = client.get("/v1/feed", params={"niche": "fitness", "cursor": 9999}).json()
+    assert b["items"]  # doesn't 500 or return empty from an out-of-range cursor
+
+
+def test_cap_evict_bounds_dict_size():
+    d = {str(i): i for i in range(10)}
+    main._cap_evict(d, 5)
+    assert len(d) == 5
+    # FIFO: the earliest-inserted keys are the ones evicted.
+    assert "0" not in d and "9" in d
+
+
+def test_reels_cursor_clamped_no_error():
+    r = client.get("/v1/reels", params={"niche": "fitness", "cursor": -5})
+    assert r.status_code == 200
+    r2 = client.get("/v1/reels", params={"niche": "fitness", "cursor": 99999})
+    assert r2.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Emulate creators
+# ---------------------------------------------------------------------------
+
+def test_emulate_analyze_keyless_mock():
+    r = client.post("/v1/emulate/analyze", json={"handle": "@SomeCreator", "platform": "instagram"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "mock" and body["ok"] is True
+    assert "somecreator" in main._emulation_cache
+
+
+def test_emulate_analyze_requires_handle():
+    r = client.post("/v1/emulate/analyze", json={"handle": "", "platform": "instagram"})
+    assert r.status_code == 422
+
+
+def test_emulate_analyze_second_call_hits_cache():
+    client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
+    r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
+    assert r.json()["mode"] == "cached"
+
+
+def test_resolve_emulation_profiles_preset():
+    import asyncio as _a
+    targets = [{"name": "Alex Hormozi", "source": "preset"}]
+    profiles = _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._resolve_emulation_profiles(targets))
+    assert len(profiles) == 1
+    assert profiles[0]["name"] == "Alex Hormozi"
+    assert "top_hooks" in profiles[0] and "never_borrow" in profiles[0]
+
+
+def test_resolve_emulation_profiles_unresolved_custom_omitted():
+    import asyncio as _a
+    targets = [{"name": "@neverseen", "handle": "neverseenhandleabc", "platform": "instagram", "source": "custom"}]
+    profiles = _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._resolve_emulation_profiles(targets))
+    assert profiles == []   # never analyzed → silently omitted, not an error
+
+
+def test_resolve_emulation_profiles_empty_targets():
+    import asyncio as _a
+    profiles = _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._resolve_emulation_profiles([]))
+    assert profiles == []
+
+
+def test_scripts_thread_emulation_preset_keyless():
+    # Keyless still returns mock scripts (the important thing: no crash on the
+    # emulation_targets field, and the field round-trips through the request).
+    r = client.post("/v1/scripts", json={
+        "niche": "fitness", "pillar": "test",
+        "emulation_targets": [{"name": "Andrew Tate", "source": "preset"}],
+    })
+    assert r.status_code == 200
+    assert len(r.json()["scripts"]) == 3
+
+
+def test_emulation_block_renders_never_borrow():
+    import prompts as P
+    profiles = [{"name": "Shelby Sapp", **P.PRESET_EMULATION["Shelby Sapp"]}]
+    block = P.emulation_block(profiles)
+    assert "Shelby Sapp" in block
+    assert "NEVER borrow" in block
+
+
+def test_emulation_block_empty_on_no_profiles():
+    import prompts as P
+    assert P.emulation_block([]) == ""
+
+
+def test_scripts_prompt_includes_emulation_block():
+    import prompts as P
+    profiles = [{"name": "Alex Hormozi", **P.PRESET_EMULATION["Alex Hormozi"]}]
+    _, usr = P.scripts_prompt({"niche": "fitness"}, {"name": "p"}, "talking_head", 3,
+                              emulation=profiles)
+    assert "STYLE INSPIRATION" in usr and "Alex Hormozi" in usr
+
+
+def test_hooks_prompt_includes_emulation_block():
+    import prompts as P
+    profiles = [{"name": "Andrew Tate", **P.PRESET_EMULATION["Andrew Tate"]}]
+    _, usr = P.hooks_prompt({"niche": "fitness"}, "topic", emulation=profiles)
+    assert "STYLE INSPIRATION" in usr and "Andrew Tate" in usr
+
+
+def test_digest_threads_emulation_targets():
+    r = client.post("/v1/onboarding/digest", json={
+        "niche": "fitness",
+        "emulation_targets": [{"name": "Alex Hormozi", "source": "preset"}],
+    })
+    job = client.get(f"/v1/onboarding/digest/{r.json()['job_id']}").json()
+    assert job["status"] == "ready"
+
+
+# ---------------------------------------------------------------------------
+# Hardening: chain_scripts guard, TTL sweep, clamps, shared client
+# ---------------------------------------------------------------------------
+
+def test_chain_scripts_survives_non_numeric_count():
+    import asyncio as _a
+    req = main.ConverseRequest(brand={"niche": "fitness"}, creator_id="x")
+    out = _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._chain_scripts(req, {"topic": "abs", "count": "not-a-number"}))
+    assert out == [] or isinstance(out, list)   # degrades, never raises
+
+
+def test_chain_scripts_survives_malformed_brand():
+    import asyncio as _a
+    req = main.ConverseRequest(brand={"voice": "not-a-dict-should-be"}, creator_id="x")
+    out = _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._chain_scripts(req, {}))
+    assert isinstance(out, list)   # never a 500 / unhandled exception
+
+
+def test_converse_clamps_long_message_history():
+    long_history = [{"role": "user", "content": f"msg {i}"} for i in range(100)]
+    r = client.post("/v1/converse", json={"creator_id": "x", "mode": "chat", "messages": long_history})
+    assert r.status_code == 200   # doesn't choke on an oversized history
+
+
+def test_sweep_ttl_jobs_evicts_old_entries():
+    jobs = {"old": {"created_at": time.time() - 999999}, "new": {"created_at": time.time()}}
+    main._sweep_ttl_jobs(jobs, ttl_s=100)
+    assert "old" not in jobs and "new" in jobs
+
+
+def test_generate_scripts_clamps_count():
+    import asyncio as _a
+    req = main.ScriptRequest(niche="fitness", pillar="p", count=999)
+    _a.get_event_loop_policy().new_event_loop().run_until_complete(main._generate_scripts(req))
+    assert req.count == 5
+
+
+def test_timing_middleware_does_not_break_requests():
+    r = client.get("/healthz")
+    assert r.status_code == 200
+
+
+def test_anthropic_client_recreated_across_event_loops(monkeypatch):
+    """The loop-aware shared client must not raise 'Event loop is closed' when
+    reused across the asyncio.run()-per-test pattern this suite already uses."""
+    async def fake_post(self, url, headers=None, json=None):
+        class R:
+            status_code = 200
+            def json(self_): return {"content": [{"text": "ok"}]}
+        return R()
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main.httpx.AsyncClient, "post", fake_post)
+    r1 = asyncio.run(main.anthropic("s", "u", main.HAIKU, 50))
+    r2 = asyncio.run(main.anthropic("s", "u", main.HAIKU, 50))
+    assert r1 == "ok" and r2 == "ok"

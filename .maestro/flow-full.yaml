@@ -69,17 +69,30 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.platform.instagram"
 
-# Voice teach — in-flow now; fast path = skip
+# Connect accounts + voice interview — now two consecutive steps; fast path = skip both
 - extendedWaitUntil:
-    visible: "Let me learn your voice"
+    visible: "Connect your accounts"
     timeout: 4000
 - tapOn:
-    id: "onboard.voiceTeach.skip"
+    id: "onboard.connect.skip"
+
+- extendedWaitUntil:
+    visible: "A few quick questions"
+    timeout: 4000
+- tapOn:
+    id: "onboard.interview.skip"
 
 # Voice sliders
 - assertVisible: "Fine-tune your voice"
 - tapOn:
     id: "onboard.voiceContinue"
+
+# Emulate creators (multi-select; fast path = skip)
+- extendedWaitUntil:
+    visible: "Who do you want to sound like?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.emulate.skip"
 
 # Camera comfort (auto-advance; Natural pre-seeds talking-head)
 - assertVisible: "How do you feel on camera?"
