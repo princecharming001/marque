@@ -66,9 +66,17 @@ items also gate on the relevant flow passing on a booted sim.
       (backend had no way to expose the original video URL at all — small,
       tested, additive-only addition). "Preview" button in the Segments
       section header, gated on source_url being available.
-- [ ] H8 Filler-cut review: per-segment word strip shows cut words struck-
-      through; tap a struck word → restore_range; tap a kept word → cut_range
-      for that word's span.
+- [x] H8 Implemented: EditSegment.words (from the RAW transcript, distinct
+      from edl.captions' single-frame entries — needed start_ms/end_ms for a
+      real frame span per word) each carry originallyCut (overlaps an
+      existing drop); wordOverrides dict tracks explicit taps; wordStrip
+      shows struck-through/dimmed cut words in a horizontal scroll, tap to
+      toggle. computeOps emits cut_range/restore_range for words whose
+      override actually flips their original state, ordered AFTER whole-
+      segment cuts (so "cut this segment but keep one word" carves correctly
+      out of the wholesale cut) but before mutes/reorder/trims. Verified
+      restore_range against the real backend: correctly splits the existing
+      drop around the restored word.
 - [ ] H9 Render progress: per-phase status line + elapsed time, Cancel that
       detaches cleanly (pairs with H1).
 - [ ] H10 Undo in the editor UI (backend undo op + undo_available from F8) +

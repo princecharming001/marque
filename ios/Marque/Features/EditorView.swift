@@ -55,6 +55,11 @@ struct EditorView: View {
     // H7: rough-cut local preview — the job's original source video URL.
     @State private var sourceURLString: String?
     @State private var showRoughCutPreview = false
+    // H8: per-word filler-cut review overrides, keyed by the word's startFrame.
+    // Absent = use the word's original (AI-decided) cut state; present = the
+    // creator's explicit override (true = force-kept/restored, false =
+    // force-cut) for that exact word's frame span.
+    @State private var wordOverrides: [Int: Bool] = [:]
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -71,7 +76,19 @@ struct EditorView: View {
         let srcIn: Int
         let srcOut: Int
         let preview: String
+        var words: [WordEntry] = []   // H8: per-word filler-cut review
         var seconds: Double { Double(srcOut - srcIn) / 30.0 }
+    }
+
+    // H8: one word from the raw transcript, with its own frame span (distinct
+    // from edl.captions' single-frame entries) and whether the AI's filler/
+    // dead-air pass already cut it (falls inside an existing drop).
+    struct WordEntry: Identifiable {
+        var id: Int { startFrame }
+        let text: String
+        let startFrame: Int
+        let endFrame: Int
+        let originallyCut: Bool
     }
 
     private let captionStyles = ["clean", "bold-word", "karaoke"]
@@ -316,11 +333,19 @@ struct EditorView: View {
         let isMuted = muted.contains(segIdx)
         return HStack(spacing: Space.sm) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(seg.preview)
-                    .font(AppFont.callout)
-                    .foregroundStyle(isCut ? Palette.textTertiary : Palette.textPrimary)
-                    .strikethrough(isCut)
-                    .lineLimit(2)
+                // H8: word-level filler-cut review when the transcript has
+                // per-word spans for this segment; falls back to the plain
+                // joined-caption preview otherwise (e.g. keyless/mock jobs).
+                if !seg.words.isEmpty {
+                    wordStrip(seg.words)
+                        .opacity(isCut ? 0.5 : 1)
+                } else {
+                    Text(seg.preview)
+                        .font(AppFont.callout)
+                        .foregroundStyle(isCut ? Palette.textTertiary : Palette.textPrimary)
+                        .strikethrough(isCut)
+                        .lineLimit(2)
+                }
                 Text(String(format: "%.1fs%@", seg.seconds, isMuted ? " · muted" : ""))
                     .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
             }
@@ -355,6 +380,30 @@ struct EditorView: View {
         .onTapGesture { toggle(&cut, segIdx) }
     }
 
+    // H8: the AI already cut filler/dead-air words (struck-through, dimmed) —
+    // tap a struck word to restore it, tap a kept word to cut it. A horizontal
+    // scroll rather than a wrapping flow layout: simpler, still fully
+    // functional, and every word stays independently tappable.
+    private func wordStrip(_ words: [WordEntry]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ForEach(words) { w in
+                    let effectivelyCut = wordOverrides[w.startFrame] ?? w.originallyCut
+                    Button {
+                        wordOverrides[w.startFrame] = !effectivelyCut
+                    } label: {
+                        Text(w.text)
+                            .font(AppFont.callout)
+                            .foregroundStyle(effectivelyCut ? Palette.textTertiary : Palette.textPrimary)
+                            .strikethrough(effectivelyCut)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editor.word.\(w.startFrame)")
+                }
+            }
+        }
+    }
+
     // MARK: helpers
 
     private func toggle(_ set: inout Set<Int>, _ i: Int) {
@@ -367,6 +416,17 @@ struct EditorView: View {
         withAnimation(Motion.quick) { order.swapAt(pos, dest) }
     }
 
+    /// H8: words whose override actually flips their original AI-decided cut
+    /// state (a word toggled back to its original state twice is not a
+    /// change) — shared by hasChanges and computeOps.
+    private var meaningfulWordOverrides: [(word: WordEntry, cut: Bool)] {
+        segments.flatMap(\.words).compactMap { w in
+            guard let override = wordOverrides[w.startFrame], override != w.originallyCut
+            else { return nil }
+            return (w, !override)   // override==true means "force kept", i.e. cut==false
+        }
+    }
+
     private var hasChanges: Bool {
         !cut.isEmpty || !muted.isEmpty || order != baseOrder
             || captionsEnabled != baseCaptionsEnabled || captionStyle != baseCaptionStyle
@@ -376,6 +436,7 @@ struct EditorView: View {
             || (musicEnabled && (musicURL != baseMusic.url
                                  || musicVolume != baseMusic.volume
                                  || duckVoice != baseMusic.duck))
+            || !meaningfulWordOverrides.isEmpty
     }
 
     /// H7: the DRAFT edit's kept intervals (source seconds, PLAY order) for the
@@ -409,24 +470,45 @@ struct EditorView: View {
         }
         let segs = (edl["segments"] as? [[String: Any]]) ?? []
         let caps = (edl["captions"] as? [[String: Any]]) ?? []
-        let words = (result["words"] as? [[String: Any]]) ?? []
-        wordsAvailable = !words.isEmpty
+        let rawWords = (result["words"] as? [[String: Any]]) ?? []
+        wordsAvailable = !rawWords.isEmpty
         sourceURLString = result["source_url"] as? String
         captionsEnabled = !caps.isEmpty
         captionStyle = (edl["caption_style"] as? String) ?? "clean"
         baseCaptionsEnabled = captionsEnabled
         baseCaptionStyle = captionStyle
+
+        // H8: raw transcript words, each carrying its OWN frame span (distinct
+        // from edl.captions' single start-frame entries) and whether the AI's
+        // filler/dead-air pass already cut it (falls inside an existing drop).
+        let drops: [(Int, Int)] = ((edl["drops"] as? [[String: Any]]) ?? []).compactMap {
+            guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
+            return (a, b)
+        }
+        func msToFrame(_ ms: Double) -> Int { Int((ms * 30.0 / 1000.0).rounded()) }
+        let wordEntries: [WordEntry] = rawWords.compactMap { w in
+            guard let text = w["word"] as? String, !text.isEmpty else { return nil }
+            let startMs = (w["start_ms"] as? Double) ?? Double(w["start_ms"] as? Int ?? 0)
+            let endMs = (w["end_ms"] as? Double) ?? Double(w["end_ms"] as? Int ?? 0)
+            let sf = msToFrame(startMs), ef = max(sf + 1, msToFrame(endMs))
+            let cut = drops.contains { d in sf < d.1 && ef > d.0 }   // overlaps any drop
+            return WordEntry(text: text, startFrame: sf, endFrame: ef, originallyCut: cut)
+        }.sorted { $0.startFrame < $1.startFrame }
+
         var built: [EditSegment] = []
         for (i, s) in segs.enumerated() {
             let si = s["src_in"] as? Int ?? 0
             let so = s["src_out"] as? Int ?? 0
-            let words = caps.filter { let f = $0["frame"] as? Int ?? -1; return f >= si && f < so }
-                            .compactMap { $0["word"] as? String }
-            let preview = words.joined(separator: " ")
+            let capWords = caps.filter { let f = $0["frame"] as? Int ?? -1; return f >= si && f < so }
+                               .compactMap { $0["word"] as? String }
+            let preview = capWords.joined(separator: " ")
+            let segWords = wordEntries.filter { $0.startFrame >= si && $0.startFrame < so }
             built.append(EditSegment(id: i, srcIn: si, srcOut: so,
-                                     preview: preview.isEmpty ? "Segment \(i + 1)" : preview))
+                                     preview: preview.isEmpty ? "Segment \(i + 1)" : preview,
+                                     words: segWords))
         }
         segments = built
+        wordOverrides = [:]
         // H2: honor an existing segment_order rather than always resetting to
         // identity — validated as a genuine permutation of the CURRENT segment
         // count (defensive: a stale/malformed order from an old shape must
@@ -462,6 +544,16 @@ struct EditorView: View {
         var ops: [[String: Any]] = []
         for i in cut.sorted() {
             ops.append(["type": "cut_range", "start_frame": segments[i].srcIn, "end_frame": segments[i].srcOut])
+        }
+        // H8: word-level overrides AFTER whole-segment cuts (so "cut this
+        // segment but keep this one word" restores correctly carve out of the
+        // wholesale cut, rather than being immediately overwritten by it), but
+        // BEFORE mutes/reorder/trims (both are SOURCE-frame ops, immune to
+        // segment_order/trims either way — this ordering is about coarse-to-
+        // fine within the cut/restore family specifically).
+        for (w, isCut) in meaningfulWordOverrides.sorted(by: { $0.word.startFrame < $1.word.startFrame }) {
+            ops.append(["type": isCut ? "cut_range" : "restore_range",
+                        "start_frame": w.startFrame, "end_frame": w.endFrame])
         }
         for i in muted.sorted() {
             ops.append(["type": "mute_range", "start_frame": segments[i].srcIn, "end_frame": segments[i].srcOut])
