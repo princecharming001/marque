@@ -74,7 +74,11 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       the submit+poll critical section in both _render_all_clips and
       _rerender_clip. Verified with a test proving peak concurrency hits the
       job count (6) unprotected vs. the cap (2) protected.
-- [ ] G8 Cold-start resilience: one retry on a render submit timeout.
+- [x] G8 Fixed: _submit_remotion_render retries ONCE, with double the timeout
+      budget, specifically when the bridge reports a timeout (the cold-start
+      signature) — not on any other bridge error (e.g. a bad composition id,
+      which would just fail identically twice). Verified both the recovery
+      path and that non-timeout errors still fail fast with no wasted retry.
 - [ ] G9 Preview render path: preview=true through the bridge → cheap low-res
       proof render; new contract param, doesn't overwrite render_url.
 - [ ] G10 FastCuts flash boundary + volumeAt ±1-frame boundary: pin exact

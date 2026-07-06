@@ -1949,7 +1949,18 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     input_props = json.dumps({"sourceUrl": source_url, "edl": plan, "formatId": format_id})
     result = await _run_render_bridge("submit", composition_id, input_props)
     if result.get("_error"):
-        raise PipelineError("bridge_error", result["_error"], "render")
+        # G8: a cold Lambda function (first invocation after a deploy/idle period)
+        # can make renderMediaOnLambda's own submit call slow enough to trip the
+        # bridge's timeout — transient, and the retry (now against a function
+        # that's had extra time to warm) typically succeeds. Only retries on a
+        # TIMEOUT specifically (not every bridge error), once, with double the
+        # budget so a genuinely-slow-but-succeeding cold start has room to land.
+        if "timed out" in result["_error"]:
+            result = await _run_render_bridge(
+                "submit", composition_id, input_props,
+                timeout_s=BRIDGE_CALL_TIMEOUT_S * 2)
+        if result.get("_error"):
+            raise PipelineError("bridge_error", result["_error"], "render")
     if not result.get("renderId"):
         return None
     return {"render_id": result["renderId"], "bucket_name": result.get("bucketName", "")}

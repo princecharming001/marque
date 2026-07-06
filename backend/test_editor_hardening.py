@@ -1403,6 +1403,44 @@ def test_render_semaphore_caps_cross_job_concurrency(monkeypatch):
         main._clip_jobs.pop(jid, None)
 
 
+# ---- G8: a cold-Lambda submit timeout is transient — one retry with double the
+# budget should recover instead of failing the clip outright ----
+
+def test_submit_retries_once_on_timeout_then_succeeds(monkeypatch):
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+    calls = {"n": 0, "timeouts": []}
+    async def bridge(*args, timeout_s=None):
+        calls["n"] += 1
+        calls["timeouts"].append(timeout_s)
+        if calls["n"] == 1:
+            return {"_error": "bridge timed out after 30s"}   # cold-start
+        return {"renderId": "r1", "bucketName": "b1"}
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    out = asyncio.run(main._submit_remotion_render(
+        "https://x/v.mov", {"style": "talking_head", "format_id": "x"}, "myth-buster", "talking_head"))
+    assert out == {"render_id": "r1", "bucket_name": "b1"}
+    assert calls["n"] == 2
+    assert calls["timeouts"][1] == main.BRIDGE_CALL_TIMEOUT_S * 2   # retry gets more room
+
+
+def test_submit_does_not_retry_on_a_non_timeout_bridge_error(monkeypatch):
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+    calls = {"n": 0}
+    async def bridge(*args, timeout_s=None):
+        calls["n"] += 1
+        return {"_error": "composition not found"}
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    try:
+        asyncio.run(main._submit_remotion_render(
+            "https://x/v.mov", {"style": "talking_head", "format_id": "x"}, "myth-buster", "talking_head"))
+        assert False, "should have raised"
+    except main.PipelineError as e:
+        assert e.code == "bridge_error"
+    assert calls["n"] == 1   # no retry — only timeouts are transient
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():
