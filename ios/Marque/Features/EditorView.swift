@@ -328,29 +328,33 @@ struct EditorView: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             SectionLabel(text: "Trim", accent: Palette.accent)
             HStack(spacing: Space.lg) {
-                trimStepper(label: "Start", value: $trimStart)
-                trimStepper(label: "End", value: $trimEnd)
+                trimStepper(label: "Start", id: "start", value: $trimStart)
+                trimStepper(label: "End", id: "end", value: $trimEnd)
             }
         }
     }
 
-    private func trimStepper(label: String, value: Binding<Int>) -> some View {
+    private func trimStepper(label: String, id: String, value: Binding<Int>) -> some View {
         HStack(spacing: Space.sm) {
             Text(label).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
             Button { value.wrappedValue = max(0, value.wrappedValue - 15) } label: {
                 Image(systemName: "minus.circle").foregroundStyle(Palette.textPrimary)
             }
+            .accessibilityIdentifier("editor.trim.\(id).decrement")
             Text(String(format: "%.1fs", Double(value.wrappedValue) / 30.0))
                 .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
                 .monospacedDigit().frame(minWidth: 40)
+                .accessibilityIdentifier("editor.trim.\(id).value")
             Button { value.wrappedValue += 15 } label: {
                 Image(systemName: "plus.circle").foregroundStyle(Palette.textPrimary)
             }
+            .accessibilityIdentifier("editor.trim.\(id).increment")
         }
         .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
         .background(Palette.surfaceRaised)
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+        .accessibilityIdentifier("editor.trim.\(id)")
     }
 
     @ViewBuilder private var overlaysSection: some View {
@@ -395,13 +399,16 @@ struct EditorView: View {
                     }
                 }
                 .pickerStyle(.menu).tint(Palette.textPrimary)
+                .accessibilityIdentifier("editor.music.track")
                 HStack {
                     Image(systemName: "speaker.wave.1").foregroundStyle(Palette.textTertiary)
                     Slider(value: $musicVolume, in: 0.05...0.5).tint(Palette.ink)
+                        .accessibilityIdentifier("editor.music.volume")
                     Image(systemName: "speaker.wave.3").foregroundStyle(Palette.textTertiary)
                 }
                 Toggle("Duck under my voice", isOn: $duckVoice)
                     .font(AppFont.callout).tint(Palette.ink)
+                    .accessibilityIdentifier("editor.music.duck")
             }
         }
         .padding(Space.md)
@@ -432,12 +439,15 @@ struct EditorView: View {
                     .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
             }
             Spacer(minLength: 0)
-            // Reorder
+            // Reorder — ids keyed by segIdx (stable identity), not position
+            // (which changes meaning every time the order changes).
             VStack(spacing: 2) {
                 Button { move(position, by: -1) } label: { Image(systemName: "chevron.up") }
                     .disabled(position == 0)
+                    .accessibilityIdentifier("editor.segment.\(segIdx).moveUp")
                 Button { move(position, by: 1) } label: { Image(systemName: "chevron.down") }
                     .disabled(position == order.count - 1)
+                    .accessibilityIdentifier("editor.segment.\(segIdx).moveDown")
             }
             .font(.system(size: 12)).foregroundStyle(Palette.textSecondary)
             // Mute
@@ -460,6 +470,7 @@ struct EditorView: View {
             .strokeBorder(Palette.hairline, lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { toggle(&cut, segIdx) }
+        .accessibilityIdentifier("editor.segment.\(segIdx)")
     }
 
     // H8: the AI already cut filler/dead-air words (struck-through, dimmed) —

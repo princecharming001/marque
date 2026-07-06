@@ -100,8 +100,16 @@ items also gate on the relevant flow passing on a booted sim.
       preview=true, then polls GET for THIS clip's preview_status/
       preview_url (~60s budget) — never render_url/status, since a preview
       never commits. Inline VideoPlayer shows the result once ready.
-- [ ] H12 A11y ids on every editor control (segment rows, trim steppers,
-      style picker, music menu, apply/cancel) — Maestro-stable.
+- [x] H12 Audited + filled gaps: trim stepper +/- buttons and value label
+      (editor.trim.start/end.*), reorder up/down buttons keyed by STABLE
+      segIdx not position (editor.segment.N.moveUp/moveDown — position
+      changes meaning every reorder), music track picker/volume slider/duck
+      toggle (editor.music.track/volume/duck), whole-segment-row id
+      (editor.segment.N). Deliberately did NOT rename the existing generic
+      editor.cut/editor.mute ids — the existing editor-flow.yaml already
+      targets them via Maestro's `index:` disambiguation (an established,
+      working pattern here); renaming would have broken that flow, violating
+      the loop's "never weaken/delete an existing test" rule.
 - [ ] H13 Maestro expansion: reorder+cut+apply on mock; reopen-editor
       persistence leg (catches H2-class regressions); failed-render path
       (garbage URL) asserting the error card + Try again.
