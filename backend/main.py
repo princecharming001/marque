@@ -1156,6 +1156,11 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         "error": job.get("error"),
         "error_detail": job.get("error_detail"),
         "undo_available": bool(job.get("edl_history")),
+        # H7: the original source video URL — the manual editor's rough-cut
+        # local preview plays THIS (seeking through kept intervals) rather
+        # than the rendered output, so it needs it and previously had no way
+        # to get it from this endpoint at all.
+        "source_url": job.get("source_url"),
     }
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint

@@ -1,4 +1,6 @@
 import SwiftUI
+import AVKit
+import AVFoundation
 
 // The manual video editor — for creators who want frame-level control instead of
 // chatting with the AI. Loads the clip's server EDL + transcript, lets them cut /
@@ -50,6 +52,9 @@ struct EditorView: View {
     // H6: whether the job's transcript (job.words) is present — captions can
     // only be rebuilt from it, so this gates the captions toggle.
     @State private var wordsAvailable = true
+    // H7: rough-cut local preview — the job's original source video URL.
+    @State private var sourceURLString: String?
+    @State private var showRoughCutPreview = false
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -131,6 +136,11 @@ struct EditorView: View {
             }
         }
         .task { await load() }
+        .sheet(isPresented: $showRoughCutPreview) {
+            if let sourceURLString, let url = URL(string: sourceURLString) {
+                RoughCutPreviewSheet(sourceURL: url, intervals: keptIntervalsSeconds)
+            }
+        }
     }
 
     private var editor: some View {
@@ -152,10 +162,24 @@ struct EditorView: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                     .accessibilityIdentifier("editor.transientMessage")
                 }
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    SectionLabel(text: "Segments", accent: Palette.accent)
-                    Text("Tap to cut a line, reorder with the arrows, or mute a section.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        SectionLabel(text: "Segments", accent: Palette.accent)
+                        Text("Tap to cut a line, reorder with the arrows, or mute a section.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    }
+                    Spacer(minLength: Space.md)
+                    // H7: rough-cut local preview — instant, zero Lambda cost.
+                    if sourceURLString != nil {
+                        Button {
+                            showRoughCutPreview = true
+                        } label: {
+                            Label("Preview", systemImage: "play.circle")
+                                .font(AppFont.callout)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Palette.accent)
+                        .accessibilityIdentifier("editor.previewCuts")
+                    }
                 }
                 VStack(spacing: Space.sm) {
                     ForEach(Array(order.enumerated()), id: \.offset) { pos, segIdx in
@@ -354,6 +378,28 @@ struct EditorView: View {
                                  || duckVoice != baseMusic.duck))
     }
 
+    /// H7: the DRAFT edit's kept intervals (source seconds, PLAY order) for the
+    /// rough-cut preview — cut segments removed, walked in `order`, trims
+    /// clamped against the first/last PLAYED segment (mirrors F1's play-order-
+    /// aware trim on the backend; a simplified single-segment clamp rather
+    /// than F1's cross-segment spillover, which is plenty accurate for a
+    /// scrub-through preview — the real render still uses the exact backend
+    /// logic). Mutes/captions/overlays/music are NOT reflected — this is a
+    /// structure-only preview.
+    private var keptIntervalsSeconds: [(start: Double, end: Double)] {
+        var kept: [(Double, Double)] = order.compactMap { idx in
+            cut.contains(idx) ? nil : (Double(segments[idx].srcIn), Double(segments[idx].srcOut))
+        }
+        if trimStart > 0, !kept.isEmpty {
+            kept[0].0 = min(kept[0].0 + Double(trimStart), kept[0].1)
+        }
+        if trimEnd > 0, !kept.isEmpty {
+            let last = kept.count - 1
+            kept[last].1 = max(kept[last].1 - Double(trimEnd), kept[last].0)
+        }
+        return kept.filter { $0.1 > $0.0 }.map { (start: $0.0 / 30.0, end: $0.1 / 30.0) }
+    }
+
     private func load() async {
         guard let jobId = clip.jobId,
               let result = await store.backend.pollClipJob(jobId: jobId, includeWords: true),
@@ -365,6 +411,7 @@ struct EditorView: View {
         let caps = (edl["captions"] as? [[String: Any]]) ?? []
         let words = (result["words"] as? [[String: Any]]) ?? []
         wordsAvailable = !words.isEmpty
+        sourceURLString = result["source_url"] as? String
         captionsEnabled = !caps.isEmpty
         captionStyle = (edl["caption_style"] as? String) ?? "clean"
         baseCaptionsEnabled = captionsEnabled
@@ -488,6 +535,119 @@ struct EditorView: View {
         } else {
             dismiss()   // keyless/mock path: applied in place, no render needed
         }
+    }
+}
+
+// H7: rough-cut local preview — seeks a single AVPlayer through the DRAFT
+// edit's kept intervals (cuts/reorder/trims), in PLAY order, against the
+// ORIGINAL source video. Zero Lambda cost, instant feedback. Deliberately a
+// "rough cut": captions/overlays/music/mutes are NOT simulated (this previews
+// STRUCTURE — what's kept, in what order — not the final look), labeled as
+// such so it's never mistaken for the real render.
+@Observable
+final class RoughCutController {
+    private var player: AVPlayer?
+    private var timeObserver: Any?
+    private var intervals: [(start: Double, end: Double)] = []
+    private var currentIndex = 0
+    var isPlaying = false
+    var isEmpty: Bool { intervals.isEmpty }
+
+    func configure(url: URL, intervals: [(start: Double, end: Double)]) {
+        teardown()
+        self.intervals = intervals
+        guard !intervals.isEmpty else { return }
+        player = AVPlayer(url: url)
+    }
+
+    var avPlayer: AVPlayer? { player }
+
+    func play() {
+        guard let player, !intervals.isEmpty else { return }
+        currentIndex = 0
+        seekToCurrent()
+        player.play()
+        isPlaying = true
+        observeTime()
+    }
+
+    func pause() {
+        player?.pause()
+        isPlaying = false
+    }
+
+    private func seekToCurrent() {
+        guard currentIndex < intervals.count else { return }
+        let t = CMTime(seconds: intervals[currentIndex].start, preferredTimescale: 600)
+        player?.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    private func observeTime() {
+        guard let player, timeObserver == nil else { return }
+        let interval = CMTime(seconds: 0.1, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
+            guard let self, self.currentIndex < self.intervals.count else { return }
+            if time.seconds >= self.intervals[self.currentIndex].end {
+                self.currentIndex += 1
+                if self.currentIndex < self.intervals.count {
+                    self.seekToCurrent()
+                } else {
+                    self.pause()
+                }
+            }
+        }
+    }
+
+    func teardown() {
+        if let timeObserver, let player { player.removeTimeObserver(timeObserver) }
+        timeObserver = nil
+        player?.pause()
+        player = nil
+        isPlaying = false
+        currentIndex = 0
+    }
+}
+
+struct RoughCutPreviewSheet: View {
+    let sourceURL: URL
+    let intervals: [(start: Double, end: Double)]
+    @State private var controller = RoughCutController()
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: Space.md) {
+                if controller.isEmpty {
+                    VStack(spacing: Space.sm) {
+                        Image(systemName: "film.stack").font(.system(size: 28)).foregroundStyle(Palette.textTertiary)
+                        Text("Nothing left to preview — every segment is cut.")
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    if let player = controller.avPlayer {
+                        VideoPlayer(player: player)
+                            .aspectRatio(9.0/16.0, contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    }
+                    Text("Rough cut — structure only. Captions, music, and overlays render when you tap Apply.")
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, Space.lg)
+                }
+            }
+            .padding(Space.lg)
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Preview cuts").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+        }
+        .onAppear {
+            controller.configure(url: sourceURL, intervals: intervals)
+            controller.play()
+        }
+        .onDisappear { controller.teardown() }
+        .accessibilityIdentifier("editor.roughCutPreview")
     }
 }
 

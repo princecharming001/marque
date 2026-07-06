@@ -1586,6 +1586,17 @@ def test_ios_canonical_op_order_end_to_end():
     assert out["captions"] == []
 
 
+# ---- H7 (iOS Loop): GET must expose source_url so the manual editor's local
+# rough-cut preview can play the original footage ----
+
+def test_get_clip_exposes_source_url():
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "https://cdn.example/take.mov"})
+    job_id = r.json()["job_id"]
+    assert client.get(f"/v1/clips/{job_id}").json()["source_url"] == "https://cdn.example/take.mov"
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

@@ -58,9 +58,14 @@ items also gate on the relevant flow passing on a booted sim.
       apply() never inspected resp["skipped"]. Now wordsAvailable (from the
       GET response's words array) disables the whole toggle + shows an
       explanatory caption when the transcript isn't available.
-- [ ] H7 Rough-cut local preview: AVPlayer seek-skip playback through kept
-      intervals in play order (cuts + reorder + trims, zero Lambda cost).
-      Reuse LocalVideoPlayer/MediaStore.
+- [x] H7 Implemented: RoughCutController (AVPlayer + periodic time observer,
+      seeks through kept intervals — cuts removed, walked in `order`, trims
+      clamped against the first/last PLAYED segment) + RoughCutPreviewSheet
+      (VideoPlayer, labeled "structure only" since captions/music/overlays/
+      mutes aren't simulated). Needed adding source_url to GET /v1/clips/{id}
+      (backend had no way to expose the original video URL at all — small,
+      tested, additive-only addition). "Preview" button in the Segments
+      section header, gated on source_url being available.
 - [ ] H8 Filler-cut review: per-segment word strip shows cut words struck-
       through; tap a struck word → restore_range; tap a kept word → cut_range
       for that word's span.
