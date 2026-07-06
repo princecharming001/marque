@@ -1555,6 +1555,37 @@ def test_render_plan_clips_never_degenerate():
         assert c["src_out"] > c["src_in"], plan["clips"]
 
 
+# ---- H4 (iOS Loop): fixture parity for EditorView.computeOps()'s canonical
+# op order (cuts/mutes by ORIGINAL index -> reorder -> trims -> captions/music).
+# This is a cross-layer contract test: it applies ops in the EXACT sequence
+# EditorView.swift emits them and pins the result. Given F1 (trim walks PLAY
+# order), applying reorder BEFORE trim means "trim the start/end" refers to
+# whatever the creator's reorder just put at the front/back — the least-
+# surprising reading, since the editor UI displays segments in that same
+# (reordered) order. If EditorView.swift's op order ever changes, update the
+# `ops` list below to match and re-verify the expected result by hand. ----
+
+def test_ios_canonical_op_order_end_to_end():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 100},
+                              {"src_in": 100, "src_out": 200},
+                              {"src_in": 200, "src_out": 300}])
+    ops = [
+        {"type": "cut_range", "start_frame": 100, "end_frame": 200},   # cut original segment 1
+        {"type": "reorder_segments", "order": [2, 0, 1]},              # segment 2 now plays first
+        {"type": "trim_start", "frames": 50},                          # trims the NEW first segment (2)
+        {"type": "set_captions_enabled", "enabled": False},
+    ]
+    out, results = apply_edl_ops(edl, ops)
+    assert all(r["applied"] for r in results), results
+    assert out["segments"] == [{"src_in": 0, "src_out": 100},
+                                {"src_in": 100, "src_out": 200},
+                                {"src_in": 250, "src_out": 300}]       # segment 2 trimmed, not segment 0
+    assert out["drops"] == [{"src_in": 100, "src_out": 200, "reason": "manual"}]
+    assert out["segment_order"] == [2, 0, 1]
+    assert out["captions"] == []
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

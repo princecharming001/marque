@@ -32,9 +32,15 @@ items also gate on the relevant flow passing on a booted sim.
       410 job_expired status isn't yet recognized by tweakClipOps at all
       (falls through to a "success" parse) — H5 will handle it alongside the
       rest of the ERROR_CODE mapping.
-- [ ] H4 Canonical op order tested end-to-end: cuts/mutes (original indices) →
-      trims → reorder → captions/music; one test asserts iOS-computed ops
-      applied by the real backend produce the intended EDL.
+- [x] H4 Verified EditorView.computeOps()'s actual order (cuts/mutes by
+      original index → reorder → trims → captions/music — NOT "trims →
+      reorder" as originally worded here) is semantically correct given F1
+      (trim walks PLAY order): reordering first means "trim the start/end"
+      refers to whatever the creator's reorder just put at the front/back,
+      matching what the editor UI visually displays. Added a cross-layer
+      fixture-parity test (backend/test_editor_hardening.py) applying ops in
+      the exact iOS-emitted sequence and pinning the result — protects
+      against a future accidental reordering silently breaking the semantics.
 - [ ] H5 friendlyRenderError covers every backend ERROR_CODE + job_expired
       (F9) + fallback shows the raw error_detail one-liner.
 - [ ] H6 Words-unavailable path: captions toggle disabled with explanation
