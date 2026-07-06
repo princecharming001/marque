@@ -7,6 +7,16 @@ interface Props { captions: CaptionWord[]; style?: CaptionStyle; }
 const ACCENT = "#FFD60A";
 const FONT = "system-ui, -apple-system, sans-serif";
 
+// G2: bottom safe-area. At 1080x1920, TikTok/IG Reels/YT Shorts all reserve the
+// bottom ~300-350px of the frame for their OWN chrome (username, caption/
+// description line, sound title, the like/comment/share icon column's lower
+// edge, the tab bar) — a caption anchored at bottom:180 sits UNDER that chrome
+// and gets visually collided with or fully obscured on-platform (this is only
+// visible once posted to an actual app, never in Remotion Studio/preview,
+// which is exactly why it went unnoticed). 320px clears all three platforms'
+// published safe-zone guidance with margin to spare.
+const CAPTION_SAFE_BOTTOM = 320;
+
 // Captions carry OUTPUT-frame coords (remapped by the backend after cutting), so they
 // render straight against the composition's global useCurrentFrame(). Three looks driven
 // by the creator's Settings → caption_style:
@@ -32,7 +42,7 @@ export const Captions: React.FC<Props> = ({ captions, style = "clean" }) => {
 };
 
 const wrap: React.CSSProperties = {
-  position: "absolute", bottom: 180, left: 0, right: 0,
+  position: "absolute", bottom: CAPTION_SAFE_BOTTOM, left: 0, right: 0,
   display: "flex", flexWrap: "wrap", justifyContent: "center",
   padding: "0 40px", gap: 8,
 };

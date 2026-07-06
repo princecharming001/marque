@@ -24,8 +24,12 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       layout (e.g. only {"style": ...}) produced a plan missing panels/
       panel_boundaries — REQUIRED fields in TS's Layout interface. Fixed:
       layout is now always normalized through the Layout Pydantic model.
-- [ ] G2 Captions safe-area: bottom-180px collides with TikTok/IG UI chrome —
-      move to a configurable safe band.
+- [x] G2 Fixed: bottom offset 180→320px (named CAPTION_SAFE_BOTTOM constant,
+      documented against TikTok/IG Reels/YT Shorts published safe-zone
+      guidance). Only visible once posted to an actual app (never in Remotion
+      Studio/preview), which is why it went unnoticed. BoldWord already
+      vertically centers (inset:0 + alignItems:center) — unaffected, already
+      clears the bottom chrome by design.
 - [ ] G3 Ducking honors duck_voice:false (AudioMix.tsx ducks off caption
       presence regardless today); duck from word timings when captions are off.
 - [ ] G4 lufs_target is currently a dead contract field (never applied anywhere)
