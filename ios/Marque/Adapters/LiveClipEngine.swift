@@ -99,6 +99,12 @@ extension BackendClient {
         let body: [String: Any] = ["clip_id": clipId, "ops": ops]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
         if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
+        // H5: F9 added a structured 410 (a job that genuinely existed but was
+        // TTL-swept) distinct from 404 (never existed) — this was previously
+        // unrecognized entirely and fell through to the JSON-parse guard
+        // below, which would have "succeeded" parsing the 410 body
+        // ({"detail":"job_expired"}) and returned it as if the tweak worked.
+        if status == 410 { return ["error": true, "reply": "This edit session has expired. Re-record and try again."] }
         // H3: "transient" lets the caller distinguish "a render is still in
         // flight, just retry shortly" from a genuinely fatal error — the
         // manual editor uses this to stay on the editing screen (preserving

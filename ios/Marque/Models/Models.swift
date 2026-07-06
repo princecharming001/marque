@@ -255,6 +255,12 @@ struct Clip: Codable, Hashable, Identifiable {
     var captioned: Bool = false         // whether auto-captions were burned in
     var jobId: String? = nil            // backend clip-job ID for polling render status
     var lastError: String? = nil        // structured render error code when status == .failed
+    // H5: the backend's more specific error_detail (e.g. the actual exception
+    // text), paired with lastError's structured code. Optional-with-default —
+    // safe for the Snapshot round-trip on existing installs. Lets
+    // friendlyRenderError's fallback show something more useful than a fully
+    // generic message for an error code it doesn't have copy for yet.
+    var lastErrorDetail: String? = nil
     var createdAt: Date = Date()
 }
 

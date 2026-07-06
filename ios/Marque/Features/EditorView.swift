@@ -464,9 +464,9 @@ struct EditorView: View {
             store.setClipRendering(clip.id)
             await store.pollJob(jobId: jobId, clipIds: [clip.id])
             guard !Task.isCancelled else { return }   // H1: dismissed mid-poll — onDisappear owns cleanup now
-            let final = store.clips.first { $0.id == clip.id }?.status
-            if final == .failed {
-                phase = .failed(store.friendlyRenderError(store.clips.first { $0.id == clip.id }?.lastError))
+            let finalClip = store.clips.first { $0.id == clip.id }
+            if finalClip?.status == .failed {
+                phase = .failed(store.friendlyRenderError(finalClip?.lastError, detail: finalClip?.lastErrorDetail))
             } else {
                 dismiss()
             }

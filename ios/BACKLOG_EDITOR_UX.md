@@ -41,8 +41,16 @@ items also gate on the relevant flow passing on a booted sim.
       fixture-parity test (backend/test_editor_hardening.py) applying ops in
       the exact iOS-emitted sequence and pinning the result — protects
       against a future accidental reordering silently breaking the semantics.
-- [ ] H5 friendlyRenderError covers every backend ERROR_CODE + job_expired
-      (F9) + fallback shows the raw error_detail one-liner.
+- [x] H5 Fixed 3 gaps: (1) friendlyRenderError now explicitly cases
+      internal_error (was falling to the fully generic default) and adds
+      job_expired (F9); (2) the fallback/internal_error cases now accept an
+      optional `detail` param and surface the raw error_detail one-liner when
+      available — needed adding Clip.lastErrorDetail (Optional-with-default,
+      Snapshot-safe) since pollJob only ever captured the error CODE, never
+      the detail; (3) fixed the H3-flagged gap: tweakClipOps didn't recognize
+      410 at all and would have silently treated an expired-session response
+      as a successful tweak (parsed the {"detail":"job_expired"} body as if
+      it were a normal success dict).
 - [ ] H6 Words-unavailable path: captions toggle disabled with explanation
       when the job has no words.
 - [ ] H7 Rough-cut local preview: AVPlayer seek-skip playback through kept

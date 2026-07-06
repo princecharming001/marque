@@ -238,7 +238,7 @@ struct ClipDetailSheet: View {
                     // backend still holds the source + EDL). No more silent spin.
                     if !isDraft, current.status == .failed {
                         VStack(alignment: .leading, spacing: Space.sm) {
-                            Label(store.friendlyRenderError(current.lastError), systemImage: "exclamationmark.triangle")
+                            Label(store.friendlyRenderError(current.lastError, detail: current.lastErrorDetail), systemImage: "exclamationmark.triangle")
                                 .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                             if clip.jobId != nil {

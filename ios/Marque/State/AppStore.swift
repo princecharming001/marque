@@ -435,11 +435,13 @@ final class AppStore {
                   let jobClips = result["clips"] as? [[String: Any]] else { continue }
             let status = result["status"] as? String ?? ""
             let jobError = result["error"] as? String
+            let jobErrorDetail = result["error_detail"] as? String
             for jobClip in jobClips {
                 let clipIdStr = jobClip["clip_id"] as? String ?? ""
                 let clipStatus = jobClip["status"] as? String ?? ""
                 let renderURL = jobClip["render_url"] as? String
                 let clipError = jobClip["error"] as? String ?? jobError
+                let clipErrorDetail = jobClip["error_detail"] as? String ?? jobErrorDetail
                 // Compare as UUIDs, not strings: Swift's uuidString is UPPERCASE while
                 // the backend's uuid4() ids are lowercase — a string compare never
                 // matched, silently stranding mock-path clips in "rendering".
@@ -448,6 +450,7 @@ final class AppStore {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
                     if let url = renderURL { clips[idx].remoteURL = url }
                     clips[idx].lastError = clipStatus == "failed" ? clipError : nil
+                    clips[idx].lastErrorDetail = clipStatus == "failed" ? clipErrorDetail : nil
                 }
             }
             save()
@@ -463,7 +466,11 @@ final class AppStore {
 
     /// Plain-English copy for a structured backend render-error code, so a failed
     /// clip tells the creator what actually happened instead of spinning forever.
-    func friendlyRenderError(_ code: String?) -> String {
+    /// H5: `detail` (the backend's more specific error_detail) is optional and
+    /// only surfaced for the least-specific codes (internal_error, unknown) —
+    /// where it's genuinely the most useful thing to show — not for the
+    /// well-understood codes above, which already have precise, actionable copy.
+    func friendlyRenderError(_ code: String?, detail: String? = nil) -> String {
         switch code {
         case "source_unreachable":
             return "We couldn't reach your uploaded video. Check your connection and try again."
@@ -473,7 +480,17 @@ final class AppStore {
             return "The edit took too long and timed out. Tap to try again."
         case "render_fatal", "render_no_output", "render_submit_failed", "bridge_error":
             return "Something went wrong while rendering this clip. Tap to try again."
+        case "internal_error":
+            if let detail, !detail.isEmpty {
+                return "Something unexpected happened (\(detail)). Tap to try again."
+            }
+            return "Something unexpected happened while processing this clip. Tap to try again."
+        case "job_expired":
+            return "This edit session has expired. Re-record and try again."
         default:
+            if let detail, !detail.isEmpty {
+                return "This clip didn't finish (\(detail)). Tap to try again."
+            }
             return "This clip didn't finish. Tap to try again."
         }
     }
@@ -488,6 +505,7 @@ final class AppStore {
             if let idx = clips.firstIndex(where: { $0.id == id }) {
                 clips[idx].status = .rendering
                 clips[idx].lastError = nil
+                clips[idx].lastErrorDetail = nil
             }
         }
         save()
