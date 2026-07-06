@@ -82,9 +82,39 @@ fully green, keyless (no env keys).
       GET/retry/tweak before the 404/410 check. No-op with zero behavior change
       when Supabase isn't configured (the only path every existing test runs).
       5 new tests incl. a FakeSupabase exercising the real persist+restore code.
-- [ ] F16 Fuzz gate: seeded randomized op sequences over randomized EDLs assert
-      invariants (segments monotonic, order a valid permutation, kept-frames>0 or
-      rejected, plan always builds, captions within output bounds).
+- [x] F16 Implemented: test_fuzz_random_op_sequences_preserve_invariants — 50
+      seeded rounds (random segment counts/lengths, random op sequences from all
+      10 op types), asserting segments-monotonic, segment_order-valid-permutation,
+      EDL re-validates, kept-frames>0, render plan always builds, and every
+      caption/overlay frame lands within the plan's own output bounds. Stress-
+      tested ad-hoc at 2000 seeds (all pass) before settling on 50 for the
+      committed gate.
 
 Completion promise (only when EVERY box is checked and the full pytest suite is
 green): EDITOR CORRECTNESS GREEN
+
+## Summary
+
+All 16 items done. 227/227 tests green (was 193 before this loop).
+
+Genuine bugs found + fixed (7): F1 trim ignoring segment_order, F3 overlay/
+b-roll losing a piece under reorder, F6 unresolved b-roll rendering a blank
+layer, F7 stale-render race overwriting a newer result, F10 zero transcript
+hygiene, F11 merge_drops discarding a partially-overlapping filler cut, F13
+two silent degradations (safe-default fallback, live→mock tweak fallback).
+
+Real gaps closed with new behavior (2): F9 404-vs-410 distinction for expired
+sessions, F15 durable Supabase-backed edit sessions.
+
+Audited claims disproved by direct repro, pinned as regressions (5): F2
+(map_point boundary), F4 (overlap handling), F5 (out-of-bounds clamping), F12
+(prefs-vs-tweak precedence), F14 (duet clip_from remapping).
+
+Improved without a bug (1): F8 undo depth 10→25 + undo_available exposed.
+
+Fuzz gate (1): F16, 50 seeded rounds, stress-tested ad-hoc to 2000 (all pass).
+
+F0's fix is committed but NOT deployed — deploy is a standing checkpoint
+requiring explicit per-time user authorization.
+
+<promise>EDITOR CORRECTNESS GREEN</promise>
