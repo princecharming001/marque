@@ -38,9 +38,14 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       once from the transcript and never cleared by it) threaded through
       build_render_plan → AudioPlan (types.ts) → AudioMix.tsx. All 8 composition
       call sites updated (dropped the now-unused `captions` prop on AudioMix).
-- [ ] G4 lufs_target is currently a dead contract field (never applied anywhere)
-      — either implement an approximation or explicitly document+test it as
-      intentionally unimplemented (no silently-ignored contract fields).
+- [x] G4 Documented as deliberately deferred (not silent): real LUFS
+      normalization needs an ffmpeg loudnorm two-pass or equivalent, which
+      doesn't exist in this render bridge — that's DSP infrastructure work, not
+      a bug fix, so out of scope for this loop. Added clear comments at all 3
+      sites (Audio Pydantic model, build_render_plan, AudioPlan in types.ts) +
+      a pinning test confirming the field flows through the full contract with
+      its published-platform-target default (-14 LUFS) and round-trips a
+      custom value, so it's ready for that work whenever it lands.
 - [ ] G5 B-roll aspect handling: prefer portrait video_files at Pexels-resolve
       time; verify landscape fallback center-crops sanely.
 - [ ] G6 Caption font embedded (staticFile/loadFont) so Lambda renders match

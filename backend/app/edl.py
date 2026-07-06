@@ -109,6 +109,14 @@ class VolumeRange(BaseModel):
 
 
 class Audio(BaseModel):
+    # G4 (deliberately deferred, not a bug): -14 LUFS matches TikTok/YouTube's
+    # published loudness targets, but nothing in the pipeline actually MEASURES
+    # or normalizes to it yet — real loudness normalization needs either an
+    # ffmpeg loudnorm two-pass (analyze then apply gain) in the render bridge,
+    # or an equivalent Lambda-side audio analysis step; neither exists today.
+    # The field is captured end-to-end (Pydantic → render plan → AudioPlan in
+    # types.ts) so the contract is ready for that work, but it currently has NO
+    # effect on the mix. Documented + pinned rather than silently ignored.
     lufs_target: float = -14.0
     music: Optional[MusicTrack] = None
     volume_ranges: list[VolumeRange] = []

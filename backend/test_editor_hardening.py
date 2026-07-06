@@ -1298,6 +1298,23 @@ def test_speech_frames_populated_from_transcript_in_live_pipeline(monkeypatch):
     assert job["edl"]["speech_frames"], "speech_frames must be populated after the pipeline runs"
 
 
+# ---- G4 (deliberately deferred, documented not silent): lufs_target flows
+# through the full contract with its published-platform-target default, but is
+# not yet applied by any composition — real normalization needs an ffmpeg
+# loudnorm pass or equivalent that doesn't exist in this render bridge. ----
+
+def test_lufs_target_flows_through_contract_with_documented_default():
+    from app.edl import build_render_plan
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}])   # no audio block set
+    plan = build_render_plan(edl)
+    assert plan["audio"]["lufs_target"] == -14.0   # TikTok/YouTube's published target
+    # explicit override round-trips too (the field is a real contract slot, not
+    # a hardcoded constant, so it's ready for whenever normalization ships)
+    edl2 = _base_edl(segments=[{"src_in": 0, "src_out": 300}],
+                     audio={"lufs_target": -12.0})
+    assert build_render_plan(edl2)["audio"]["lufs_target"] == -12.0
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

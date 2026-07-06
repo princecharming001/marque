@@ -22,6 +22,11 @@ export interface VolumeRange { frame_in: number; frame_out: number; volume: numb
 // speech_frames: word-start output frames for the ducking heuristic, independent
 // of whether captions are visually enabled (G3) — always present when the
 // transcript has words, even with captions toggled off.
+//
+// lufs_target (G4, deliberately deferred): carried through the contract for
+// future loudness-normalization work, but nothing in the compositions reads it
+// today — real LUFS normalization needs an ffmpeg loudnorm pass or equivalent,
+// which doesn't exist in this render bridge yet. Not a bug; documented.
 export interface AudioPlan { lufs_target: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; }
 
 export interface RenderPlan {
