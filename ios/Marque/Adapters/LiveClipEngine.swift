@@ -95,9 +95,12 @@ extension BackendClient {
 
     /// The manual-editor apply path: pre-typed EDL ops bypass LLM interpretation
     /// and go straight to deterministic application + a single re-render.
-    func tweakClipOps(jobId: String, clipId: String, ops: [[String: Any]]) async -> [String: Any] {
+    /// H11: preview=true asks the backend for the G9 cheap proof render
+    /// instead of committing to the full one — never overwrites render_url.
+    func tweakClipOps(jobId: String, clipId: String, ops: [[String: Any]], preview: Bool = false) async -> [String: Any] {
         let body: [String: Any] = ["clip_id": clipId, "ops": ops]
-        let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
+        let path = "/v1/clips/\(jobId)/tweak" + (preview ? "?preview=1" : "")
+        let (data, status) = await postWithStatus(path, body)
         if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
         // H5: F9 added a structured 410 (a job that genuinely existed but was
         // TTL-swept) distinct from 404 (never existed) — this was previously

@@ -67,6 +67,14 @@ struct EditorView: View {
     // undo_available in the GET response.
     @State private var undoAvailable = false
     @State private var undoing = false
+    // H11: HD preview — a real (if cheap, G9) Lambda render of the staged
+    // caption/music/overlay changes, shown inline before committing to Apply.
+    @State private var hdPreviewPhase: HDPreviewPhase = .idle
+    @State private var hdPreviewPollTask: Task<Void, Never>?
+
+    enum HDPreviewPhase: Equatable {
+        case idle, requesting, rendering, ready(String), failed(String)
+    }
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -174,6 +182,8 @@ struct EditorView: View {
         .onDisappear {
             applyTask?.cancel()
             applyTask = nil
+            hdPreviewPollTask?.cancel()   // H11: never poll for a preview after dismissal
+            hdPreviewPollTask = nil
             // If we're dismissed mid-render, revert the clip to its pre-apply
             // status locally — the backend keeps rendering regardless (it
             // doesn't know or care that the sheet closed), so this only avoids
@@ -271,8 +281,46 @@ struct EditorView: View {
 
                 overlaysSection
                 audioSection
+                hdPreviewSection
             }
             .screenPadding().padding(.vertical, Space.lg)
+        }
+    }
+
+    // H11: only offered when there's a caption/music/overlay change to show —
+    // the H7 rough-cut preview already covers structure (cuts/reorder/trims)
+    // for free; this costs a real (if cheap, G9) Lambda render.
+    @ViewBuilder private var hdPreviewSection: some View {
+        if hasStyleChanges {
+            VStack(alignment: .leading, spacing: Space.sm) {
+                SectionLabel(text: "HD preview", accent: Palette.accent)
+                switch hdPreviewPhase {
+                case .idle, .failed:
+                    if case .failed(let msg) = hdPreviewPhase {
+                        Text(msg).font(AppFont.caption).foregroundStyle(Palette.critical)
+                    }
+                    GhostButton(title: "Preview captions & music", systemImage: "sparkles.tv") {
+                        requestHDPreview()
+                    }
+                    .accessibilityIdentifier("editor.hdPreview")
+                case .requesting, .rendering:
+                    HStack(spacing: Space.sm) {
+                        ProgressView()
+                        Text(hdPreviewPhase == .requesting ? "Starting preview…" : "Rendering a quick preview…")
+                            .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    }
+                case .ready(let url):
+                    if let previewURL = URL(string: url) {
+                        VideoPlayer(player: AVPlayer(url: previewURL))
+                            .aspectRatio(9.0/16.0, contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                            .accessibilityIdentifier("editor.hdPreviewPlayer")
+                    }
+                }
+            }
+            .padding(Space.md)
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         }
     }
 
@@ -473,6 +521,20 @@ struct EditorView: View {
             || !meaningfulWordOverrides.isEmpty
     }
 
+    /// H11: specifically caption/music/overlay changes — the ones the H7
+    /// rough-cut preview CAN'T show (it only reflects structure: cuts,
+    /// reorder, trims). Gates the "HD preview" button, which costs a real
+    /// (if cheap) Lambda render, so it's only offered when it would actually
+    /// show the creator something new.
+    private var hasStyleChanges: Bool {
+        captionsEnabled != baseCaptionsEnabled || captionStyle != baseCaptionStyle
+            || overlays != baseOverlays
+            || musicEnabled != baseMusic.enabled
+            || (musicEnabled && (musicURL != baseMusic.url
+                                 || musicVolume != baseMusic.volume
+                                 || duckVoice != baseMusic.duck))
+    }
+
     /// H7: the DRAFT edit's kept intervals (source seconds, PLAY order) for the
     /// rough-cut preview — cut segments removed, walked in `order`, trims
     /// clamped against the first/last PLAYED segment (mirrors F1's play-order-
@@ -646,6 +708,52 @@ struct EditorView: View {
         }
         phase = .loading
         await load()
+    }
+
+    /// H11: requests the G9 cheap proof render of the staged caption/music/
+    /// overlay changes, then polls until it's ready — mirrors the shape of
+    /// AppStore.pollJob but targets THIS clip's preview_status/preview_url
+    /// specifically, never render_url/status (a preview never commits).
+    private func requestHDPreview() {
+        guard let jobId = clip.jobId else { return }
+        hdPreviewPollTask?.cancel()
+        hdPreviewPhase = .requesting
+        hdPreviewPollTask = Task {
+            let ops = computeOps()
+            guard !ops.isEmpty else { hdPreviewPhase = .idle; return }
+            let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString,
+                                                         ops: ops, preview: true)
+            guard !Task.isCancelled else { return }
+            if resp["error"] as? Bool == true {
+                hdPreviewPhase = .failed(resp["reply"] as? String ?? "Couldn't build a preview.")
+                return
+            }
+            guard resp["preview_requested"] as? Bool == true else {
+                hdPreviewPhase = .failed("Preview isn't available for this clip right now.")
+                return
+            }
+            hdPreviewPhase = .rendering
+            for _ in 0..<30 {   // ~60s budget at 2s intervals
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                guard let result = await store.backend.pollClipJob(jobId: jobId),
+                      let jobClips = result["clips"] as? [[String: Any]],
+                      let mine = jobClips.first(where: {
+                          ($0["clip_id"] as? String)?.lowercased() == clip.id.uuidString.lowercased()
+                      }) else { continue }
+                let previewStatus = mine["preview_status"] as? String
+                if previewStatus == "ready", let url = mine["preview_url"] as? String {
+                    hdPreviewPhase = .ready(url)
+                    return
+                }
+                if previewStatus == "failed" {
+                    hdPreviewPhase = .failed(mine["preview_error"] as? String ?? "The preview render failed.")
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            hdPreviewPhase = .failed("The preview is taking longer than expected. Try again shortly.")
+        }
     }
 
     private func apply() async {

@@ -92,8 +92,14 @@ items also gate on the relevant flow passing on a booted sim.
       ever read them) + a warningChipLabel mapper + chip row on the Library
       card, independent of status (a "ready" clip can be quietly missing a
       feature it asked for).
-- [ ] H11 "HD preview" button when caption/music/overlay changes exist: calls
-      the G9 preview path (tweak?preview=1), shows preview_url inline.
+- [x] H11 Implemented: tweakClipOps gains a preview param (appends ?preview=1);
+      hasStyleChanges gates the button to when there's a caption/music/
+      overlay change specifically (H7's rough-cut preview already covers
+      structure — cuts/reorder/trims — for free; this costs a real, if
+      cheap, G9 Lambda render). requestHDPreview applies the staged ops with
+      preview=true, then polls GET for THIS clip's preview_status/
+      preview_url (~60s budget) — never render_url/status, since a preview
+      never commits. Inline VideoPlayer shows the result once ready.
 - [ ] H12 A11y ids on every editor control (segment rows, trim steppers,
       style picker, music menu, apply/cancel) — Maestro-stable.
 - [ ] H13 Maestro expansion: reorder+cut+apply on mock; reopen-editor
