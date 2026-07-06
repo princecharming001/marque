@@ -10,6 +10,14 @@ import { Clip, VolumeRange, volumeAt } from "../types";
 // Rendered as a sibling of captions/overlays (not their parent), so those keep using the
 // global output frame from useCurrentFrame().
 //
+// G0 (verified against Remotion's OWN source, not just docs — a prior audit flagged
+// this as backwards): trimBefore/trimAfter are ABSOLUTE source-frame positions, not
+// "skip N frames" durations. remotion's validateTrimProps requires trimAfter >
+// trimBefore (see node_modules/remotion/dist/cjs/validate-start-from-props.js —
+// same contract as the deprecated startFrom/endAt props it aliases). That is exactly
+// src_in/src_out's contract, so `trimBefore={c.src_in} trimAfter={c.src_out}` below
+// is correct as written. Do not "fix" this without re-reading that file.
+//
 // volumeRanges (OUTPUT coords, from the plan's audio block) drive per-range source
 // volume — mutes and duck-downs from the manual editor. Each Series.Sequence knows its
 // own output offset (cumulative durations), so localFrame + outStart = output frame.
