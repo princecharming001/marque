@@ -77,8 +77,11 @@ items also gate on the relevant flow passing on a booted sim.
       out of the wholesale cut) but before mutes/reorder/trims. Verified
       restore_range against the real backend: correctly splits the existing
       drop around the restored word.
-- [ ] H9 Render progress: per-phase status line + elapsed time, Cancel that
-      detaches cleanly (pairs with H1).
+- [x] H9 Added: renderStartedAt + a TimelineView elapsed-time counter in the
+      .rendering phase (so a long render doesn't read as hung), plus an
+      explicit Cancel button. Cancel just calls dismiss() — H1's onDisappear
+      already cancels applyTask and reverts clip.status, so no new detach
+      logic was needed, only the visible affordance.
 - [ ] H10 Undo in the editor UI (backend undo op + undo_available from F8) +
       warning chips on the clip card (b-roll skipped etc., from F6/F13).
 - [ ] H11 "HD preview" button when caption/music/overlay changes exist: calls

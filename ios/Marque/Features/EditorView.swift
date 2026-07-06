@@ -60,6 +60,8 @@ struct EditorView: View {
     // creator's explicit override (true = force-kept/restored, false =
     // force-cut) for that exact word's frame span.
     @State private var wordOverrides: [Int: Bool] = [:]
+    // H9: when the current render/apply started, for the elapsed-time display.
+    @State private var renderStartedAt: Date?
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -102,9 +104,24 @@ struct EditorView: View {
                 case .applying:
                     ProgressView("Applying your edits…").frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .rendering:
+                    // H9: elapsed time (so a long render doesn't read as
+                    // hung) + an explicit Cancel that detaches cleanly —
+                    // dismiss() triggers onDisappear, which already cancels
+                    // applyTask and reverts clip.status (H1).
                     VStack(spacing: Space.md) {
                         ProgressView()
                         Text("Re-rendering your clip…").font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        if let renderStartedAt {
+                            TimelineView(.periodic(from: renderStartedAt, by: 1)) { context in
+                                Text("\(Int(context.date.timeIntervalSince(renderStartedAt)))s elapsed")
+                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                    .monospacedDigit()
+                            }
+                        }
+                        Button("Cancel") { dismiss() }
+                            .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                            .padding(.top, Space.sm)
+                            .accessibilityIdentifier("editor.cancelRender")
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 case .failed(let msg):
                     VStack(spacing: Space.md) {
@@ -615,6 +632,7 @@ struct EditorView: View {
         if needsRender {
             statusBeforeApply = store.clips.first { $0.id == clip.id }?.status
             phase = .rendering
+            renderStartedAt = Date()
             store.setClipRendering(clip.id)
             await store.pollJob(jobId: jobId, clipIds: [clip.id])
             guard !Task.isCancelled else { return }   // H1: dismissed mid-poll — onDisappear owns cleanup now
