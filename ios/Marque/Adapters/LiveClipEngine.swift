@@ -99,7 +99,14 @@ extension BackendClient {
         let body: [String: Any] = ["clip_id": clipId, "ops": ops]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
         if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
-        if status == 409 { return ["error": true, "reply": "Still rendering your last change — try again in a minute."] }
+        // H3: "transient" lets the caller distinguish "a render is still in
+        // flight, just retry shortly" from a genuinely fatal error — the
+        // manual editor uses this to stay on the editing screen (preserving
+        // all staged local edits) instead of treating it as terminal.
+        if status == 409 {
+            return ["error": true, "transient": true,
+                    "reply": "Still rendering your last change — try again in a minute."]
+        }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return ["error": true, "reply": "Couldn't reach the editor — check your connection."]
         }

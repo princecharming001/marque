@@ -21,8 +21,17 @@ items also gate on the relevant flow passing on a booted sim.
       already-reordered clip would show Apply as active with zero new edits,
       and emit a redundant (harmless but wrong-signal) reorder op. Full E2E
       regression coverage lands in H13's reopen-editor persistence leg.
-- [ ] H3 Apply hardening: button disabled while applying; 409 surfaces as
-      transient "still rendering — try again shortly", not terminal failure.
+- [x] H3 Fixed: (a) explicit re-entrancy guard on Apply (applyTask==nil check)
+      against a double-tap race before the toolbar item disappears; (b)
+      LiveClipEngine.tweakClipOps's 409 response now carries a `transient`
+      flag; EditorView.apply() checks it and stays in .editing (all staged
+      local edits intact, inline dismissible banner) instead of the terminal
+      .failed phase, which only offered "Close" and would have discarded the
+      creator's in-progress edits over a purely transient "still rendering"
+      condition. Noted a related but separately-scoped gap for H5: F9's new
+      410 job_expired status isn't yet recognized by tweakClipOps at all
+      (falls through to a "success" parse) — H5 will handle it alongside the
+      rest of the ERROR_CODE mapping.
 - [ ] H4 Canonical op order tested end-to-end: cuts/mutes (original indices) →
       trims → reorder → captions/music; one test asserts iOS-computed ops
       applied by the real backend produce the intended EDL.

@@ -42,6 +42,11 @@ struct EditorView: View {
     // Task.isCancelled, so a cancelled task busy-spun instead of stopping.
     @State private var applyTask: Task<Void, Never>?
     @State private var statusBeforeApply: ClipStatus?
+    // H3: a 409 ("still rendering, retry shortly") must not be treated the
+    // same as a fatal error — it stays on the editing screen (all staged
+    // local edits preserved) with an inline, auto-dismissing message instead
+    // of the terminal .failed phase (which only offers "Close").
+    @State private var transientMessage: String?
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -92,9 +97,17 @@ struct EditorView: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     if phase == .editing {
-                        Button("Apply") { applyTask = Task { await apply() } }
-                            .fontWeight(.semibold).disabled(!hasChanges)
-                            .accessibilityIdentifier("editor.apply")
+                        // H3: explicit re-entrancy guard — the toolbar item
+                        // itself disappears once phase leaves .editing, but
+                        // that only takes effect once the Task actually starts
+                        // running; a rapid double-tap before then could
+                        // otherwise queue two overlapping applies.
+                        Button("Apply") {
+                            guard applyTask == nil else { return }
+                            applyTask = Task { await apply() }
+                        }
+                        .fontWeight(.semibold).disabled(!hasChanges)
+                        .accessibilityIdentifier("editor.apply")
                     }
                 }
             }
@@ -120,6 +133,22 @@ struct EditorView: View {
     private var editor: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
+                if let transientMessage {
+                    HStack(spacing: Space.sm) {
+                        Image(systemName: "clock.arrow.circlepath").foregroundStyle(Palette.textSecondary)
+                        Text(transientMessage).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        Spacer(minLength: 0)
+                        Button {
+                            withAnimation(Motion.quick) { self.transientMessage = nil }
+                        } label: {
+                            Image(systemName: "xmark").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
+                        }
+                    }
+                    .padding(Space.md)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .accessibilityIdentifier("editor.transientMessage")
+                }
                 VStack(alignment: .leading, spacing: Space.xs) {
                     SectionLabel(text: "Segments", accent: Palette.accent)
                     Text("Tap to cut a line, reorder with the arrows, or mute a section.")
@@ -412,8 +441,19 @@ struct EditorView: View {
         let ops = computeOps()
         guard !ops.isEmpty, let jobId = clip.jobId else { dismiss(); return }
         phase = .applying
+        transientMessage = nil
         let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString, ops: ops)
         if resp["error"] as? Bool == true {
+            // H3: a 409 ("still rendering") is transient — stay on the editing
+            // screen with every staged local edit intact so the creator can
+            // just retry in a moment, instead of the terminal .failed phase
+            // (which only offers "Close" and would discard their edits).
+            if resp["transient"] as? Bool == true {
+                phase = .editing
+                applyTask = nil
+                transientMessage = resp["reply"] as? String ?? "Still busy — try again shortly."
+                return
+            }
             phase = .failed(resp["reply"] as? String ?? "Couldn't apply your edits.")
             return
         }
