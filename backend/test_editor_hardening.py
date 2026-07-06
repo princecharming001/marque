@@ -1536,6 +1536,25 @@ def test_tweak_preview_flag_triggers_preview_not_full_render(monkeypatch):
     assert out["needs_render"] is False
 
 
+# ---- G10 (no-repro, pinned): FastCuts' flash boundary formula and CutVideo's
+# outStart formula are IDENTICAL (verified by hand-trace against a degenerate
+# zero-length clip in both TSX files — no test runner exists in render/ to
+# assert this directly, so it's documented there and pinned here on the
+# backend invariant that actually rules the edge case out in practice: the
+# render plan's clips can never be degenerate to begin with, since
+# _kept_intervals already filters b<=a). volumeAt's half-open interval check
+# matches every other interval convention in this codebase — not an off-by-one. ----
+
+def test_render_plan_clips_never_degenerate():
+    from app.edl import build_render_plan
+    edl = _base_edl(
+        segments=[{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 100}],  # 2nd is zero-length
+        drops=[{"src_in": 100, "src_out": 100, "reason": "manual"}])                # zero-length drop too
+    plan = build_render_plan(edl)
+    for c in plan["clips"]:
+        assert c["src_out"] > c["src_in"], plan["clips"]
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

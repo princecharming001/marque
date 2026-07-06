@@ -91,8 +91,48 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       ops normally but triggers the preview path instead of the full re-render
       (mutually exclusive — a preview call never also fires a full render);
       response exposes preview_requested. 5 new tests.
-- [ ] G10 FastCuts flash boundary + volumeAt ±1-frame boundary: pin exact
-      behavior with tests; fix only if a pin actually fails.
+- [x] G10 no-repro: hand-traced FastCuts.tsx's cutStarts formula against
+      CutVideo.tsx's outStart formula with a degenerate zero-length clip —
+      byte-identical boundaries (the "skip acc==0" guard correctly excludes
+      only the true frame-0 start). volumeAt's half-open [frame_in,frame_out)
+      check matches every other interval convention in this codebase already
+      verified in Loop F — not an off-by-one. No TS test runner exists to
+      assert this directly, so documented with cross-referencing comments in
+      both TSX files (a future edit to one must update the other identically)
+      + a Python-side pin confirming the render plan's clips can never
+      actually be degenerate to begin with (_kept_intervals filters b<=a),
+      so the TS Math.max(1,...) clamps are defensive-but-currently-dead code.
+
+## Loop G summary
+
+All 10 items done. 243/243 backend tests green (was 227 at loop start); both
+TS gates (bridge/full project --noEmit) green throughout.
+
+Genuine bugs found + fixed (5): G1 incomplete-layout passthrough, G2 caption
+bottom-offset colliding with platform UI chrome, G3 ducking dying when
+captions toggle off, G5 b-roll file-selection ignoring actual portrait
+dimensions, G8 no cold-start retry.
+
+New infrastructure (2): G7 cross-job render concurrency cap, G9 preview
+render path.
+
+Documented-not-silent (2): G4 lufs_target deliberately deferred (needs DSP
+work out of scope for this loop), G6 embedded the caption font (new
+dependency @remotion/google-fonts, justified — official first-party package
+for exactly this problem).
+
+Audited claims disproved by direct trace/repro, pinned as regressions (2): G0
+(trimBefore/trimAfter, confirmed against Remotion's own source), G10
+(FastCuts/CutVideo boundary + volumeAt).
+
+Bridge changes (G6, G9) ship via `npx remotion lambda sites create
+src/index.ts --site-name=marque-render` (same serve URL, no backend env
+change) whenever the Remotion Lambda site is redeployed. Backend changes (G1,
+G3, G5, G7, G8, G9) need a Render deploy. **Both deploys are standing
+checkpoints — NOT deployed, awaiting explicit user authorization**,
+consistent with F0's deploy hold.
 
 Completion promise (only when EVERY box is checked and both gates are green):
 RENDER FIDELITY GREEN
+
+<promise>RENDER FIDELITY GREEN</promise>

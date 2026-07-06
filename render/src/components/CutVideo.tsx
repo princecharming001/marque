@@ -21,6 +21,15 @@ import { Clip, VolumeRange, volumeAt } from "../types";
 // volumeRanges (OUTPUT coords, from the plan's audio block) drive per-range source
 // volume — mutes and duck-downs from the manual editor. Each Series.Sequence knows its
 // own output offset (cumulative durations), so localFrame + outStart = output frame.
+// volumeAt (types.ts) uses a half-open [frame_in, frame_out) check, matching every
+// other interval convention in this codebase (segments/drops/kept-intervals) —
+// verified, not an off-by-one (G10).
+//
+// G10: outStart/outCursor here (Math.max(1, src_out-src_in) per clip, running total)
+// MUST stay identical to FastCuts.tsx's cutStarts computation — that file duplicates
+// this formula to place its cut-flash at the same boundaries. Traced by hand against
+// a degenerate zero-length clip and confirmed byte-identical; if you change this
+// formula, change FastCuts.tsx's identically or the flash will visibly drift.
 export const CutVideo: React.FC<{
   sourceUrl: string;
   clips: Clip[];
