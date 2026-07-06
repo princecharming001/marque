@@ -50,6 +50,14 @@ struct LiveClipEngine: ClipEngineProtocol {
               let clipDicts = jobData["clips"] as? [[String: Any]] else {
             return await fallback.makeClips(from: script, formats: formats)
         }
+        // Misconfigured-backend guard: a LIVE backend (real transcribe/render) with
+        // storage unconfigured mints an empty public_url, so the job just created will
+        // fail on an unfetchable source. Hand the user working local mock clips instead
+        // of a doomed .rendering clip. A MOCK backend returns mode="mock" here and is
+        // the intended offline/demo path (mock-ready job + jobId, editor works) — keep it.
+        if publicURL.isEmpty, (jobData["mode"] as? String) == "live" {
+            return await fallback.makeClips(from: script, formats: formats)
+        }
         let jobId = jobData["job_id"] as? String ?? UUID().uuidString
         return clipDicts.map { d in
             let clipId = UUID(uuidString: d["clip_id"] as? String ?? "") ?? UUID()
@@ -122,7 +130,12 @@ enum MediaCompressor {
         session.shouldOptimizeForNetworkUse = true
         return await withCheckedContinuation { cont in
             session.exportAsynchronously {
-                cont.resume(returning: session.status == .completed ? out : nil)
+                if session.status == .completed {
+                    cont.resume(returning: out)
+                } else {
+                    try? FileManager.default.removeItem(at: out)   // don't leak a partial temp file
+                    cont.resume(returning: nil)
+                }
             }
         }
     }
