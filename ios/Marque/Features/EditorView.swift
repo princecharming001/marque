@@ -11,6 +11,12 @@ struct EditorView: View {
 
     @State private var segments: [EditSegment] = []
     @State private var order: [Int] = []          // permutation of segment indices
+    // H2: the EDL's existing segment_order (if any) — loaded once, compared
+    // against for both hasChanges and computeOps' reorder-op emission. Without
+    // this, the editor reset to identity order on every load(), silently
+    // discarding a PRIOR reorder the moment the creator re-opened the editor
+    // to make an unrelated change (e.g. just a caption tweak).
+    @State private var baseOrder: [Int] = []
     @State private var cut: Set<Int> = []         // segment indices the user cut
     @State private var muted: Set<Int> = []        // segment indices muted (volume 0)
     @State private var captionsEnabled = true
@@ -296,7 +302,7 @@ struct EditorView: View {
     }
 
     private var hasChanges: Bool {
-        !cut.isEmpty || !muted.isEmpty || order != Array(segments.indices)
+        !cut.isEmpty || !muted.isEmpty || order != baseOrder
             || captionsEnabled != baseCaptionsEnabled || captionStyle != baseCaptionStyle
             || trimStart > 0 || trimEnd > 0
             || overlays != baseOverlays
@@ -330,7 +336,18 @@ struct EditorView: View {
                                      preview: preview.isEmpty ? "Segment \(i + 1)" : preview))
         }
         segments = built
-        order = Array(built.indices)
+        // H2: honor an existing segment_order rather than always resetting to
+        // identity — validated as a genuine permutation of the CURRENT segment
+        // count (defensive: a stale/malformed order from an old shape must
+        // never crash the picker or produce an invalid reorder_segments op).
+        if let existingOrder = edl["segment_order"] as? [Int],
+           existingOrder.count == built.count,
+           Set(existingOrder) == Set(built.indices) {
+            order = existingOrder
+        } else {
+            order = Array(built.indices)
+        }
+        baseOrder = order
         overlays = ((edl["overlays"] as? [[String: Any]]) ?? []).compactMap { o in
             guard let a = o["src_in"] as? Int, let b = o["src_out"] as? Int else { return nil }
             return OverlayRow(type: (o["type"] as? String) ?? "punch_in",
@@ -358,7 +375,7 @@ struct EditorView: View {
         for i in muted.sorted() {
             ops.append(["type": "mute_range", "start_frame": segments[i].srcIn, "end_frame": segments[i].srcOut])
         }
-        if order != Array(segments.indices) {
+        if order != baseOrder {
             ops.append(["type": "reorder_segments", "order": order])
         }
         if trimStart > 0 {

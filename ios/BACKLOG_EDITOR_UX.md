@@ -12,9 +12,15 @@ items also gate on the relevant flow passing on a booted sim.
       Task.isCancelled, so a cancelled task busy-spun (Task.sleep throws
       immediately once cancelled, swallowed by try?) instead of stopping —
       fixed for every caller, not just EditorView.
-- [ ] H2 Editor initializes from the EDL's existing segment_order (today it
-      resets to identity, so re-editing a reordered clip silently loses the
-      reorder) — audit-CONFIRMED.
+- [x] H2 Fixed (audit-CONFIRMED, matches the backend's own F1 bug class):
+      load() now reads edl["segment_order"] when present + valid (a genuine
+      permutation of the current segment count), instead of always resetting
+      to identity. Added baseOrder (mirroring the base* pattern already used
+      for captions/overlays/music) so hasChanges/computeOps compare against
+      the ORIGINAL loaded order, not identity — otherwise re-opening an
+      already-reordered clip would show Apply as active with zero new edits,
+      and emit a redundant (harmless but wrong-signal) reorder op. Full E2E
+      regression coverage lands in H13's reopen-editor persistence leg.
 - [ ] H3 Apply hardening: button disabled while applying; 409 surfaces as
       transient "still rendering — try again shortly", not terminal failure.
 - [ ] H4 Canonical op order tested end-to-end: cuts/mutes (original indices) →
