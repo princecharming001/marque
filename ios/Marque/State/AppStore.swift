@@ -424,7 +424,11 @@ final class AppStore {
     func pollJob(jobId: String, clipIds: [UUID]) async {
         var done = false
         var attempts = 0
-        while !done && attempts < 60 {
+        // H1: without the cancellation check, a cancelled caller Task doesn't stop
+        // this loop — it busy-spins instead (Task.sleep throws immediately once
+        // cancelled, and the `try?` below swallows that), hammering the backend
+        // until `done` or the 60-attempt ceiling instead of actually stopping.
+        while !done && attempts < 60 && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5s
             attempts += 1
             guard let result = await backend.pollClipJob(jobId: jobId),

@@ -30,6 +30,12 @@ struct EditorView: View {
     @State private var duckVoice = true
     @State private var baseMusic: (enabled: Bool, url: String, volume: Double, duck: Bool) = (false, "", 0.15, true)
     @State private var phase: Phase = .loading
+    // H1: cancel-safety, mirroring TweakChatSheet's pattern. An untracked
+    // `Task { await apply() }` kept polling after the sheet was dismissed,
+    // writing to dead @State — worse, AppStore.pollJob's loop didn't even check
+    // Task.isCancelled, so a cancelled task busy-spun instead of stopping.
+    @State private var applyTask: Task<Void, Never>?
+    @State private var statusBeforeApply: ClipStatus?
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -80,11 +86,26 @@ struct EditorView: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
                     if phase == .editing {
-                        Button("Apply") { Task { await apply() } }
+                        Button("Apply") { applyTask = Task { await apply() } }
                             .fontWeight(.semibold).disabled(!hasChanges)
                             .accessibilityIdentifier("editor.apply")
                     }
                 }
+            }
+        }
+        .onDisappear {
+            applyTask?.cancel()
+            applyTask = nil
+            // If we're dismissed mid-render, revert the clip to its pre-apply
+            // status locally — the backend keeps rendering regardless (it
+            // doesn't know or care that the sheet closed), so this only avoids
+            // the clip looking permanently stuck in "re-editing…" in the
+            // Library; the next real poll (Library refresh / reopening this
+            // clip) picks up whatever the server actually finished with.
+            if let prev = statusBeforeApply,
+               let idx = store.clips.firstIndex(where: { $0.id == clip.id }),
+               store.clips[idx].status == .rendering {
+                store.clips[idx].status = prev
             }
         }
         .task { await load() }
@@ -381,9 +402,11 @@ struct EditorView: View {
         }
         let needsRender = resp["needs_render"] as? Bool ?? false
         if needsRender {
+            statusBeforeApply = store.clips.first { $0.id == clip.id }?.status
             phase = .rendering
             store.setClipRendering(clip.id)
             await store.pollJob(jobId: jobId, clipIds: [clip.id])
+            guard !Task.isCancelled else { return }   // H1: dismissed mid-poll — onDisappear owns cleanup now
             let final = store.clips.first { $0.id == clip.id }?.status
             if final == .failed {
                 phase = .failed(store.friendlyRenderError(store.clips.first { $0.id == clip.id }?.lastError))
