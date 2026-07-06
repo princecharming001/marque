@@ -19,7 +19,10 @@ export type CaptionStyle = "clean" | "bold-word" | "karaoke";
 // Audio plan (output coords for volume_ranges; music plays across the whole output).
 export interface MusicTrack { url?: string | null; query?: string | null; volume: number; duck_voice: boolean; }
 export interface VolumeRange { frame_in: number; frame_out: number; volume: number; }
-export interface AudioPlan { lufs_target: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; }
+// speech_frames: word-start output frames for the ducking heuristic, independent
+// of whether captions are visually enabled (G3) — always present when the
+// transcript has words, even with captions toggled off.
+export interface AudioPlan { lufs_target: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; }
 
 export interface RenderPlan {
   style: string;

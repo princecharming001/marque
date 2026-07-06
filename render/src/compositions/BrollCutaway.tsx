@@ -15,6 +15,6 @@ export const BrollCutaway: React.FC<CompositionProps> = ({ sourceUrl, edl }) => 
     <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
     {edl && <BrollLayer broll={edl.broll} />}
     {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-    <AudioMix audio={edl?.audio} captions={edl?.captions} />
+    <AudioMix audio={edl?.audio} />
   </AbsoluteFill>
 );

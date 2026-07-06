@@ -29,7 +29,7 @@ export const SplitThree: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         </div>
       ))}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-      <AudioMix audio={edl?.audio} captions={edl?.captions} />
+      <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );
 };

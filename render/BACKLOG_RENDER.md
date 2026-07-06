@@ -30,8 +30,14 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       Studio/preview), which is why it went unnoticed. BoldWord already
       vertically centers (inset:0 + alignItems:center) — unaffected, already
       clears the bottom chrome by design.
-- [ ] G3 Ducking honors duck_voice:false (AudioMix.tsx ducks off caption
-      presence regardless today); duck from word timings when captions are off.
+- [x] G3 Fixed a real gap (duck_voice:false itself was ALREADY honored, contra
+      the audit — but ducking used the visual `captions` array as its ONLY
+      speech-activity signal, so turning captions off silently killed ducking
+      too even with duck_voice:true). Added a new EDL field `speech_frames`
+      (word-start frames, independent of the captions-enabled toggle, populated
+      once from the transcript and never cleared by it) threaded through
+      build_render_plan → AudioPlan (types.ts) → AudioMix.tsx. All 8 composition
+      call sites updated (dropped the now-unused `captions` prop on AudioMix).
 - [ ] G4 lufs_target is currently a dead contract field (never applied anywhere)
       — either implement an approximation or explicitly document+test it as
       intentionally unimplemented (no silently-ignored contract fields).

@@ -21,7 +21,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       <AbsoluteFill style={{ background: "#000" }}>
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
         {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-        <AudioMix audio={edl?.audio} captions={edl?.captions} />
+        <AudioMix audio={edl?.audio} />
       </AbsoluteFill>
     );
   }
@@ -81,7 +81,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       </div>
 
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-      <AudioMix audio={edl?.audio} captions={edl?.captions} />
+      <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );
 };

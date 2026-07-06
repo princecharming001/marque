@@ -120,6 +120,12 @@ class EDL(BaseModel):
     segments: list[Segment]
     drops: list[Drop] = []
     captions: list[CaptionWord] = []
+    # G3: word-start frames for the music-ducking heuristic, INDEPENDENT of the
+    # visual captions toggle. set_captions_enabled(False) clears `captions` (the
+    # on-screen text) but must not also silently kill ducking — a creator can
+    # want captions off and voice-ducked music at the same time. Populated once
+    # from the transcript at generation time and never cleared by that toggle.
+    speech_frames: list[int] = []
     overlays: list[Overlay] = []
     broll: list[BRoll] = []
     react_source: Optional[ReactSource] = None       # duet_split only
@@ -211,6 +217,7 @@ def safe_default_edl(style: str, format_id: str, total_frames: int,
         format_id=format_id,
         segments=segments,
         captions=captions,
+        speech_frames=[c.frame for c in captions],
         layout=Layout(style=style),
     )
 
@@ -422,10 +429,19 @@ def build_render_plan(edl: dict) -> dict:
         for lo, hi in map_range_pieces(vr["src_in"], vr["src_out"]):
             volume_ranges_out.append({"frame_in": lo, "frame_out": hi,
                                       "volume": vr.get("volume", 1.0)})
+    # G3: speech_frames map the same way captions do (source→output via map_point),
+    # so a cut/dropped word's frame correctly disappears from the ducking signal
+    # too — but unlike captions, this list is NEVER cleared by the visual
+    # captions-enabled toggle, so ducking keeps working when captions are off.
+    speech_frames_out = [f for f in
+                         (map_point(f) for f in (edl.get("speech_frames") or []))
+                         if f is not None]
+
     audio_plan = {
         "lufs_target": audio_src.get("lufs_target", -14.0),
         "music": audio_src.get("music"),
         "volume_ranges": volume_ranges_out,
+        "speech_frames": speech_frames_out,
     }
 
     return {

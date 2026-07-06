@@ -1183,7 +1183,7 @@ _TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
 _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
 _TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
-_TS_AUDIO_PLAN_KEYS = {"lufs_target", "music", "volume_ranges"}
+_TS_AUDIO_PLAN_KEYS = {"lufs_target", "music", "volume_ranges", "speech_frames"}
 
 
 def test_render_plan_matches_typescript_contract_exactly():
@@ -1262,6 +1262,40 @@ def test_render_plan_contract_holds_for_every_composition_style():
         plan = build_render_plan(edl)
         assert set(plan.keys()) == _TS_RENDER_PLAN_KEYS, style
         assert set(plan["layout"].keys()) == _TS_LAYOUT_KEYS, style
+
+
+# ---- G3: ducking must survive the captions-off toggle (independent creative
+# choices — a creator can want music ducked under their voice without on-screen
+# captions) ----
+
+def test_speech_frames_independent_of_captions_toggle():
+    from app.edl import apply_edl_ops, build_render_plan
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 300}],
+                    captions=[{"word": "hi", "frame": 30}, {"word": "there", "frame": 60}],
+                    speech_frames=[30, 60],
+                    audio={"lufs_target": -14.0,
+                          "music": {"url": "https://cdn/t.mp3", "volume": 0.2,
+                                   "duck_voice": True}})
+    out, _ = apply_edl_ops(edl, [{"type": "set_captions_enabled", "enabled": False}])
+    plan = build_render_plan(out)
+    assert plan["captions"] == []                        # visual toggle honored
+    assert plan["audio"]["speech_frames"] == [30, 60]     # ducking signal survives
+
+
+def test_speech_frames_populated_from_transcript_in_live_pipeline(monkeypatch):
+    # The LLM's own JSON never emits speech_frames (it's derived, not authored) —
+    # _run_pipeline must (re-)populate it from the actual transcript regardless.
+    job_id = _renderable_job(monkeypatch)
+    async def bridge(*args, timeout_s=None):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_): pass
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+    _run_pipeline_sync(job_id)
+    job = main._clip_jobs[job_id]
+    assert job["edl"]["speech_frames"], "speech_frames must be populated after the pipeline runs"
 
 
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----

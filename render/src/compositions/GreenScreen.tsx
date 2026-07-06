@@ -30,7 +30,7 @@ export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
       </div>
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-      <AudioMix audio={edl?.audio} captions={edl?.captions} />
+      <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );
 };

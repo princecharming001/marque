@@ -1653,6 +1653,11 @@ async def _run_pipeline(job_id: str):
             for c in job["clips"]:
                 c.setdefault("warnings", []).extend(f"broll_unresolved: {q}"[:120] for q in unresolved)
         edl_data = _attach_react_source(edl_data, job)
+        # G3: (re-)populate speech_frames from the actual transcript, not whatever
+        # the LLM's JSON did/didn't echo back through the edit + verify/repair
+        # passes above — it's derived data, never something an LLM should author,
+        # and it must survive regardless of what those steps preserved.
+        edl_data["speech_frames"] = [ms_to_frame(w["start_ms"]) for w in _clean_words if w.get("word")]
         job["edl"] = edl_data
 
         job["status"] = "rendering"

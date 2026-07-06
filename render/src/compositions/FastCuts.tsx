@@ -27,7 +27,7 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.18 }} />
       )}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-      <AudioMix audio={edl?.audio} captions={edl?.captions} />
+      <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );
 };

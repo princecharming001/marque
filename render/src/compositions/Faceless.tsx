@@ -17,6 +17,6 @@ export const Faceless: React.FC<CompositionProps> = ({ sourceUrl, edl }) => (
     </AbsoluteFill>
     {edl && <BrollLayer broll={edl.broll} />}
     {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
-    <AudioMix audio={edl?.audio} captions={edl?.captions} />
+    <AudioMix audio={edl?.audio} />
   </AbsoluteFill>
 );

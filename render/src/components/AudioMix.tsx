@@ -1,23 +1,25 @@
 import React from "react";
 import { Audio } from "remotion";
-import { AudioPlan, CaptionWord } from "../types";
+import { AudioPlan } from "../types";
 
-// Background-music layer. Ducking v1 uses CAPTION ACTIVITY as the speech proxy —
-// deterministic and analysis-free: within ±15 frames of any caption word the music
-// drops to 35% of its set volume. No captions → constant volume (no ducking data).
+// Background-music layer. Ducking v1 uses SPEECH-FRAME activity as the speech
+// proxy — deterministic and analysis-free: within ±15 frames of any spoken word
+// the music drops to 35% of its set volume. G3: speech_frames (not the visual
+// captions list) is the source here specifically so ducking keeps working when
+// a creator turns captions OFF but still wants music ducked under their voice —
+// captions and duck_voice are independent creative choices.
 const DUCK_WINDOW = 15;
 const DUCK_FACTOR = 0.35;
 
 export const AudioMix: React.FC<{
   audio?: AudioPlan | null;
-  captions?: CaptionWord[];
-}> = ({ audio, captions }) => {
+}> = ({ audio }) => {
   const music = audio?.music;
   if (!music || !music.url) return null;
 
-  const frames = (captions ?? []).map((c) => c.frame).sort((a, b) => a - b);
+  const frames = (audio?.speech_frames ?? []).slice().sort((a, b) => a - b);
   const speechActive = (f: number): boolean => {
-    // Binary-search-free scan is fine: captions are ≤ a few hundred entries.
+    // Binary-search-free scan is fine: a transcript is ≤ a few hundred words.
     for (const cf of frames) {
       if (cf > f + DUCK_WINDOW) break;
       if (Math.abs(cf - f) <= DUCK_WINDOW) return true;
