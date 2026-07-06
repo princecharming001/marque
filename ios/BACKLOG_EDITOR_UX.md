@@ -51,8 +51,13 @@ items also gate on the relevant flow passing on a booted sim.
       410 at all and would have silently treated an expired-session response
       as a successful tweak (parsed the {"detail":"job_expired"} body as if
       it were a normal success dict).
-- [ ] H6 Words-unavailable path: captions toggle disabled with explanation
-      when the job has no words.
+- [x] H6 Fixed: without this, an editor session on a job whose transcript
+      isn't saved anymore (old/swept) let the creator toggle captions on and
+      tap Apply, and the backend would silently SKIP the set_captions_enabled
+      op ("no transcript available to rebuild captions") with zero feedback —
+      apply() never inspected resp["skipped"]. Now wordsAvailable (from the
+      GET response's words array) disables the whole toggle + shows an
+      explanatory caption when the transcript isn't available.
 - [ ] H7 Rough-cut local preview: AVPlayer seek-skip playback through kept
       intervals in play order (cuts + reorder + trims, zero Lambda cost).
       Reuse LocalVideoPlayer/MediaStore.

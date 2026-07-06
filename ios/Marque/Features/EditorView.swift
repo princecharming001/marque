@@ -47,6 +47,9 @@ struct EditorView: View {
     // local edits preserved) with an inline, auto-dismissing message instead
     // of the terminal .failed phase (which only offers "Close").
     @State private var transientMessage: String?
+    // H6: whether the job's transcript (job.words) is present — captions can
+    // only be rebuilt from it, so this gates the captions toggle.
+    @State private var wordsAvailable = true
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -166,7 +169,17 @@ struct EditorView: View {
                     SectionLabel(text: "Captions", accent: Palette.accent)
                     Toggle("Show captions", isOn: $captionsEnabled)
                         .font(AppFont.body).tint(Palette.ink)
+                        .disabled(!wordsAvailable)
                         .accessibilityIdentifier("editor.captionsToggle")
+                    // H6: the backend can only rebuild captions from the saved
+                    // transcript (job.words) — a job whose transcript isn't
+                    // available anymore (old/swept) would silently SKIP a
+                    // set_captions_enabled op with zero feedback to the user.
+                    // Disable proactively instead of failing silently later.
+                    if !wordsAvailable {
+                        Text("This clip's transcript isn't available anymore, so captions can't be changed.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    }
                     if captionsEnabled {
                         Picker("Style", selection: $captionStyle) {
                             Text("Clean").tag("clean")
@@ -350,6 +363,8 @@ struct EditorView: View {
         }
         let segs = (edl["segments"] as? [[String: Any]]) ?? []
         let caps = (edl["captions"] as? [[String: Any]]) ?? []
+        let words = (result["words"] as? [[String: Any]]) ?? []
+        wordsAvailable = !words.isEmpty
         captionsEnabled = !caps.isEmpty
         captionStyle = (edl["caption_style"] as? String) ?? "clean"
         baseCaptionsEnabled = captionsEnabled
