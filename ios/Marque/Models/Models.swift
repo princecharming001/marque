@@ -261,6 +261,11 @@ struct Clip: Codable, Hashable, Identifiable {
     // friendlyRenderError's fallback show something more useful than a fully
     // generic message for an error code it doesn't have copy for yet.
     var lastErrorDetail: String? = nil
+    // H10: non-fatal degradations the backend already tracked (F6 unresolved
+    // b-roll, F13 safe-default-cut fallback) but nothing in iOS ever read —
+    // the clip could be "ready" and playable while quietly missing a feature
+    // the creator asked for, with zero visibility. Optional — Snapshot-safe.
+    var warnings: [String]? = nil
     var createdAt: Date = Date()
 }
 

@@ -1,6 +1,17 @@
 import SwiftUI
 import PhotosUI
 
+/// H10: short, human-readable labels for the backend's raw warning strings
+/// (F6 "broll_unresolved: <query>", F13 "ai_edit_unavailable: <reason>").
+/// Unknown/future warning types degrade to a generic label rather than
+/// showing raw backend internals.
+func warningChipLabel(_ raw: String) -> String {
+    if raw.hasPrefix("broll_unresolved") { return "B-roll skipped" }
+    if raw.hasPrefix("ai_edit_unavailable") { return "Used a default cut" }
+    if raw.hasPrefix("react_window_dropped") { return "A reaction clip was skipped" }
+    return "Heads up — check this clip"
+}
+
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
     @State private var tabIndex = 0
@@ -232,6 +243,23 @@ struct ClipDetailSheet: View {
                         FormatTag(formatId: clip.formatId)
                         Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         Spacer()
+                    }
+
+                    // H10: non-fatal warnings (F6 unresolved b-roll, F13
+                    // safe-default-cut fallback) — surfaces independent of
+                    // status, since a "ready" clip can still be quietly
+                    // missing a feature the creator asked for.
+                    if !isDraft, let warnings = current.warnings, !warnings.isEmpty {
+                        HStack(spacing: Space.xs) {
+                            ForEach(Array(Set(warnings.map(warningChipLabel))).sorted(), id: \.self) { label in
+                                Label(label, systemImage: "info.circle")
+                                    .font(AppFont.micro).foregroundStyle(Palette.textSecondary)
+                                    .padding(.horizontal, Space.sm).padding(.vertical, 4)
+                                    .background(Palette.surfaceRaised)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        .accessibilityIdentifier("clip.warnings")
                     }
 
                     // Failed render → tell the creator WHY + let them retry (the

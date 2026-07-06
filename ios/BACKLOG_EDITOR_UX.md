@@ -82,8 +82,16 @@ items also gate on the relevant flow passing on a booted sim.
       explicit Cancel button. Cancel just calls dismiss() — H1's onDisappear
       already cancels applyTask and reverts clip.status, so no new detach
       logic was needed, only the visible affordance.
-- [ ] H10 Undo in the editor UI (backend undo op + undo_available from F8) +
-      warning chips on the clip card (b-roll skipped etc., from F6/F13).
+- [x] H10 Implemented both halves: (1) Undo toolbar button, gated on
+      undo_available (F8), sends {"type":"undo"} via the same tweak endpoint
+      then discards the unsaved local draft and reloads from the reverted
+      EDL (undo targets what was actually APPLIED, not in-progress local
+      changes — those the creator can just not Apply); (2) Clip.warnings
+      (Optional, Snapshot-safe) populated from the per-clip JSON's warnings
+      array (F6/F13 already wrote these backend-side, but nothing in iOS
+      ever read them) + a warningChipLabel mapper + chip row on the Library
+      card, independent of status (a "ready" clip can be quietly missing a
+      feature it asked for).
 - [ ] H11 "HD preview" button when caption/music/overlay changes exist: calls
       the G9 preview path (tweak?preview=1), shows preview_url inline.
 - [ ] H12 A11y ids on every editor control (segment rows, trim steppers,

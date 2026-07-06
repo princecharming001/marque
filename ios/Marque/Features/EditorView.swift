@@ -62,6 +62,11 @@ struct EditorView: View {
     @State private var wordOverrides: [Int: Bool] = [:]
     // H9: when the current render/apply started, for the elapsed-time display.
     @State private var renderStartedAt: Date?
+    // H10: undo the last APPLIED server-side tweak (not the current unsaved
+    // local draft — the creator can just not tap Apply for that). From F8's
+    // undo_available in the GET response.
+    @State private var undoAvailable = false
+    @State private var undoing = false
 
     struct OverlayRow: Identifiable, Equatable {
         let id = UUID()
@@ -137,6 +142,18 @@ struct EditorView: View {
             .navigationTitle("Edit clip").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    if phase == .editing && undoAvailable {
+                        Button {
+                            Task { await undo() }
+                        } label: {
+                            if undoing { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "arrow.uturn.backward") }
+                        }
+                        .disabled(undoing)
+                        .accessibilityIdentifier("editor.undo")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     if phase == .editing {
                         // H3: explicit re-entrancy guard — the toolbar item
@@ -490,6 +507,7 @@ struct EditorView: View {
         let rawWords = (result["words"] as? [[String: Any]]) ?? []
         wordsAvailable = !rawWords.isEmpty
         sourceURLString = result["source_url"] as? String
+        undoAvailable = (result["undo_available"] as? Bool) ?? false
         captionsEnabled = !caps.isEmpty
         captionStyle = (edl["caption_style"] as? String) ?? "clean"
         baseCaptionsEnabled = captionsEnabled
@@ -606,6 +624,28 @@ struct EditorView: View {
             }
         }
         return ops
+    }
+
+    /// H10: undo the last APPLIED server-side tweak. Discards the current
+    /// unsaved local draft and reloads from the (now-reverted) EDL — undo
+    /// targets what was actually applied, not in-progress local changes the
+    /// creator hasn't tapped Apply for yet.
+    private func undo() async {
+        guard let jobId = clip.jobId, !undoing else { return }
+        undoing = true
+        defer { undoing = false }
+        let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString,
+                                                     ops: [["type": "undo"]])
+        if resp["error"] as? Bool == true {
+            if resp["transient"] as? Bool == true {
+                transientMessage = resp["reply"] as? String ?? "Still busy — try again shortly."
+            } else {
+                phase = .failed(resp["reply"] as? String ?? "Couldn't undo.")
+                return
+            }
+        }
+        phase = .loading
+        await load()
     }
 
     private func apply() async {

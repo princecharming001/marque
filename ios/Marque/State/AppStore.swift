@@ -451,6 +451,10 @@ final class AppStore {
                     if let url = renderURL { clips[idx].remoteURL = url }
                     clips[idx].lastError = clipStatus == "failed" ? clipError : nil
                     clips[idx].lastErrorDetail = clipStatus == "failed" ? clipErrorDetail : nil
+                    // H10: non-fatal warnings apply regardless of status (a
+                    // "ready" clip can still be missing b-roll it asked for).
+                    let warnings = jobClip["warnings"] as? [String]
+                    clips[idx].warnings = (warnings?.isEmpty ?? true) ? nil : warnings
                 }
             }
             save()
