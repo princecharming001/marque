@@ -128,6 +128,27 @@ def test_mint_upload_url():
     assert b["mode"] in ("live", "mock")
 
 
+def test_mint_upload_url_mock_returns_empty_urls_when_no_storage(monkeypatch):
+    # With no storage backend configured, mint must NOT hand back a real-looking
+    # (but dead) public_url — that's exactly the prod bug where every upload got a
+    # media.marque.app/mock/... URL that no fetcher could resolve. Empty strings
+    # let the client detect "no storage" and fall back to local/mock clips instead
+    # of creating a live job doomed to fail at transcribe/render.
+    monkeypatch.setattr(main, "SUPABASE_URL", "")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "")
+    monkeypatch.setattr(main, "R2_ACCESS_KEY", "")
+    b = client.post("/v1/uploads/mint",
+                    json={"filename": "test.mov", "content_type": "video/quicktime"}).json()
+    assert b["mode"] == "mock"
+    assert b["upload_url"] == "" and b["public_url"] == ""
+    assert "media.marque.app" not in b["public_url"]
+
+
+def test_readyz_reports_storage_status():
+    b = client.get("/readyz").json()
+    assert b["storage"] in ("live", "mock")
+
+
 def test_create_clip_job():
     r = client.post("/v1/clips", json={
         "source_url": "https://example.com/footage.mov",

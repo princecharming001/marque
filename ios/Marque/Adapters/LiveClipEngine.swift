@@ -1,25 +1,46 @@
 import Foundation
 
-// Live clip engine: mints an R2 upload URL, uploads the raw take direct to R2,
-// creates a server-side clip job, and polls the job status. Falls back to
-// MockClipEngine when the backend is unreachable (preserves offline/CI behavior).
+// Live clip engine: mints a signed upload URL, uploads the raw take to storage
+// (Supabase Storage), creates a server-side clip job pointing at the public URL,
+// and polls the job status. Falls back to MockClipEngine when the backend is
+// unreachable, when no storage backend is configured, or when the upload fails —
+// in every one of those cases a live job would just fail on an unfetchable source.
 struct LiveClipEngine: ClipEngineProtocol {
     private let fallback = MockClipEngine()
 
-    func makeClips(from script: Script, formats: [String], reactSourceURL: String = "") async -> [Clip] {
-        // 1. Mint a presigned R2 upload URL.
-        guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov"),
-              let sourceURL = mintData["public_url"] as? String,
-              let jobData = await BackendClient.shared.createClipJob(
-                sourceURL: sourceURL,
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String = "",
+                   footagePath: String? = nil) async -> [Clip] {
+        // 1. Mint a signed upload URL + the public read URL from the backend.
+        guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else {
+            return await fallback.makeClips(from: script, formats: formats)   // backend unreachable
+        }
+        let uploadURLString = mintData["upload_url"] as? String ?? ""
+        let publicURL = mintData["public_url"] as? String ?? ""
+        // 2. Upload the recorded take when we have BOTH footage and a real (non-empty)
+        //    signed upload URL. A live backend fetches the public URL to transcribe +
+        //    render, so the bytes must actually land first. A genuine upload FAILURE
+        //    (couldn't store the video) falls back — a live job on a source that
+        //    isn't really there would just fail at fetch. When there's no footage or
+        //    no storage backend (empty upload URL), we skip the upload and still
+        //    create the job: a keyless/mock backend returns a mock-ready job (jobId +
+        //    mock EDL) regardless of source, which is the offline/demo path.
+        if let footagePath, !footagePath.isEmpty, !uploadURLString.isEmpty {
+            guard await uploadFootage(to: uploadURLString,
+                                      fileURL: MediaStore.url(for: footagePath)) else {
+                return await fallback.makeClips(from: script, formats: formats)
+            }
+        }
+        // 3. Create the clip job pointing at the (now-uploaded) public source. The
+        //    backend decides mock vs live: keyless → mock-ready; live + real source →
+        //    the real pipeline; live + unconfigured storage → fails fast + cleanly
+        //    (source_unreachable), which /readyz surfaces as storage:"mock".
+        guard let jobData = await BackendClient.shared.createClipJob(
+                sourceURL: publicURL,
                 script: script,
                 formats: formats,
                 reactSourceURL: reactSourceURL
-              ) else {
-            return await fallback.makeClips(from: script, formats: formats)
-        }
-        // 2. Parse clips from the job creation response.
-        guard let clipDicts = jobData["clips"] as? [[String: Any]] else {
+              ),
+              let clipDicts = jobData["clips"] as? [[String: Any]] else {
             return await fallback.makeClips(from: script, formats: formats)
         }
         let jobId = jobData["job_id"] as? String ?? UUID().uuidString
@@ -39,6 +60,25 @@ struct LiveClipEngine: ClipEngineProtocol {
                 jobId: jobId
             )
         }
+    }
+
+    /// PUT the recorded take to the minted signed-upload URL. Streams from the file
+    /// on disk (a full talking-head take is tens/hundreds of MB — never load it all
+    /// into memory). Content-Type matches what the mint request declared. Returns
+    /// true only on a 2xx; any transport/HTTP failure returns false so makeClips
+    /// falls back instead of creating a job with an empty source object.
+    private func uploadFootage(to uploadURLString: String, fileURL: URL) async -> Bool {
+        guard let url = URL(string: uploadURLString),
+              FileManager.default.fileExists(atPath: fileURL.path) else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.timeoutInterval = 300   // large upload, possibly on cellular
+        req.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
+        guard let (_, resp) = try? await URLSession.shared.upload(for: req, fromFile: fileURL),
+              let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            return false
+        }
+        return true
     }
 
     func render(clipId: UUID) async -> ClipStatus {

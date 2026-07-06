@@ -857,6 +857,10 @@ def readyz():
             "ai": "live" if ANTHROPIC_KEY else "mock",
             "scrape": "live" if APIFY_KEY else "mock",
             "publish": "live" if AYRSHARE_KEY else "mock",
+            # "storage" surfaces whether recorded footage can actually be saved +
+            # fetched by the pipeline. "mock" here means every real upload is doomed
+            # (source unreachable) — the exact prod failure this makes visible.
+            "storage": "live" if STORAGE_CONFIGURED else "mock",
             "tts": _tts_provider()}
 
 
@@ -999,6 +1003,13 @@ R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY", "")
 R2_SECRET_KEY = os.environ.get("R2_SECRET_KEY", "")
 R2_BUCKET = os.environ.get("R2_BUCKET", "marque-media")
 R2_PUBLIC_BASE = os.environ.get("R2_PUBLIC_BASE", "https://media.marque.app")
+# Supabase Storage is the primary object store for recorded footage (R2 was never
+# provisioned; media.marque.app never resolved — see mint_upload_url). Reuses the
+# same project as the learning stack (SUPABASE_URL/SUPABASE_KEY above). The bucket
+# is PUBLIC so AssemblyAI + Remotion Lambda can fetch the source by URL; keys are
+# unguessable UUIDs. Storage is "live" whenever the Supabase project is configured.
+SUPABASE_STORAGE_BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "marque-clips")
+STORAGE_CONFIGURED = bool(SUPABASE_URL and SUPABASE_KEY) or bool(R2_ACCESS_KEY)
 ASSEMBLY_KEY = os.environ.get("ASSEMBLYAI_KEY", "")
 REMOTION_SERVE_URL = os.environ.get("REMOTION_SERVE_URL", "")
 REMOTION_ACCESS_KEY = os.environ.get("REMOTION_AWS_ACCESS_KEY_ID", "")
@@ -1051,12 +1062,57 @@ async def _restore_clip_job(job_id: str) -> dict | None:
     return state
 
 
+async def _mint_supabase_upload(filename: str) -> dict | None:
+    """Mint a Supabase Storage signed-upload URL + its public read URL.
+
+    Flow (verified against the live Storage API): POST .../object/upload/sign/
+    {bucket}/{key} with the service key returns a relative signed path; the client
+    PUTs the bytes to {SUPABASE_URL}/storage/v1{that path} with the file's
+    Content-Type. The bucket is public, so {SUPABASE_URL}/storage/v1/object/public/
+    {bucket}/{key} is the durable, no-expiry read URL AssemblyAI + Remotion fetch.
+
+    Returns None (caller falls through to the next storage backend / mock) if
+    Supabase isn't configured or the sign call fails — never raises into the request."""
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return None
+    key = f"uploads/{uuid.uuid4()}/{filename}"
+    base = SUPABASE_URL.rstrip("/")
+    sign_url = f"{base}/storage/v1/object/upload/sign/{SUPABASE_STORAGE_BUCKET}/{key}"
+    headers = {"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(sign_url, headers=headers)
+        if r.status_code != 200:
+            logging.warning("supabase upload-sign failed: %s %s", r.status_code, r.text[:200])
+            return None
+        signed_path = (r.json() or {}).get("url") or ""
+    except Exception as e:
+        logging.warning("supabase upload-sign error: %s", e)
+        return None
+    if not signed_path:
+        return None
+    return {
+        "mode": "live",
+        # signed_path is relative to /storage/v1 (e.g. /object/upload/sign/...?token=)
+        "upload_url": f"{base}/storage/v1{signed_path}",
+        "key": key,
+        "public_url": f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}",
+    }
+
+
 @app.post("/v1/uploads/mint")
 async def mint_upload_url(req: UploadMintRequest):
+    # Primary: Supabase Storage (R2 was never provisioned — see STORAGE_CONFIGURED).
+    supa = await _mint_supabase_upload(req.filename)
+    if supa:
+        return supa
     if not R2_ACCESS_KEY:
+        # No storage backend configured: return a clearly-mock response. `public_url`
+        # is deliberately empty (not a real-looking dead domain) so a client can tell
+        # this apart from a live mint and fall back to local/mock clips instead of
+        # creating a live job whose source can never be fetched.
         key = f"mock/{uuid.uuid4()}/{req.filename}"
-        return {"mode": "mock", "upload_url": f"https://mock-r2.example.com/{key}",
-                "key": key, "public_url": f"{R2_PUBLIC_BASE}/{key}"}
+        return {"mode": "mock", "upload_url": "", "key": key, "public_url": ""}
     import hmac, hashlib, datetime
     key = f"uploads/{uuid.uuid4()}/{req.filename}"
     public_url = f"{R2_PUBLIC_BASE}/{key}"

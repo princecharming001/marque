@@ -26,13 +26,21 @@ extension LLMRouting {
 
 protocol ClipEngineProtocol {
     // reactSourceURL is the reacted-to clip for a duet_split render (empty otherwise).
-    func makeClips(from script: Script, formats: [String], reactSourceURL: String) async -> [Clip]
+    // footagePath is the local (Documents-relative) path to the recorded take; the
+    // live engine uploads it to storage so the backend can actually fetch it to
+    // transcribe + render. Without an upload the source URL points at nothing.
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String, footagePath: String?) async -> [Clip]
     func render(clipId: UUID) async -> ClipStatus
 }
 
 extension ClipEngineProtocol {
     func makeClips(from script: Script, formats: [String]) async -> [Clip] {
-        await makeClips(from: script, formats: formats, reactSourceURL: "")
+        await makeClips(from: script, formats: formats, reactSourceURL: "", footagePath: nil)
+    }
+    // Back-compat convenience for callers that don't have footage (kept so existing
+    // 3-arg call sites still compile).
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String) async -> [Clip] {
+        await makeClips(from: script, formats: formats, reactSourceURL: reactSourceURL, footagePath: nil)
     }
 }
 
@@ -358,7 +366,8 @@ struct MockLLMRouter: LLMRouting {
 // MARK: - Mock clip engine
 
 struct MockClipEngine: ClipEngineProtocol {
-    func makeClips(from script: Script, formats: [String], reactSourceURL: String = "") async -> [Clip] {
+    func makeClips(from script: Script, formats: [String], reactSourceURL: String = "",
+                   footagePath: String? = nil) async -> [Clip] {
         try? await Task.sleep(nanoseconds: 700_000_000)
         return formats.map { fid in
             let f = Catalog.format(fid)
