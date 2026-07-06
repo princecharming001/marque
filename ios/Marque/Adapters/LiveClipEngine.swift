@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 // Live clip engine: mints a signed upload URL, uploads the raw take to storage
 // (Supabase Storage), creates a server-side clip job pointing at the public URL,
@@ -25,10 +26,16 @@ struct LiveClipEngine: ClipEngineProtocol {
         //    create the job: a keyless/mock backend returns a mock-ready job (jobId +
         //    mock EDL) regardless of source, which is the offline/demo path.
         if let footagePath, !footagePath.isEmpty, !uploadURLString.isEmpty {
-            guard await uploadFootage(to: uploadURLString,
-                                      fileURL: MediaStore.url(for: footagePath)) else {
-                return await fallback.makeClips(from: script, formats: formats)
-            }
+            // Compress the raw take (full device bitrate — often >50MB) down to fit
+            // the storage cap before uploading; keep the on-disk original for the
+            // local rough-cut preview. Fall back to the original if compression
+            // fails (an oversize original just fails the upload → mock fallback).
+            let original = MediaStore.url(for: footagePath)
+            let compressed = await MediaCompressor.forUpload(original)
+            let toUpload = compressed ?? original
+            let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
+            if let compressed { try? FileManager.default.removeItem(at: compressed) }
+            guard ok else { return await fallback.makeClips(from: script, formats: formats) }
         }
         // 3. Create the clip job pointing at the (now-uploaded) public source. The
         //    backend decides mock vs live: keyless → mock-ready; live + real source →
@@ -84,6 +91,40 @@ struct LiveClipEngine: ClipEngineProtocol {
     func render(clipId: UUID) async -> ClipStatus {
         // Render is driven by the backend job; caller uses pollJob(jobId:) for status.
         return .rendering
+    }
+}
+
+// Compresses a recorded take so it fits object storage before upload. The raw
+// camera file is full device bitrate (a 60–90s 1080p take is often 80–150MB);
+// the current Supabase free-tier cap is ~50MB. 720p is the quality target; if a
+// long take is still oversize at 720p it retries at 540p so a recording is never
+// silently dropped for being too big. Raising the storage limit later lets this
+// target a higher preset (or be removed) with no other change.
+enum MediaCompressor {
+    private static let maxUploadBytes = 48_000_000   // safety margin under the ~50MB cap
+
+    static func forUpload(_ source: URL) async -> URL? {
+        for preset in [AVAssetExportPreset1280x720, AVAssetExportPreset960x540] {
+            guard let out = await export(source, preset: preset) else { continue }
+            let size = (try? FileManager.default.attributesOfItem(atPath: out.path))?[.size] as? Int
+            if let size, size <= maxUploadBytes { return out }
+            try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
+        }
+        return nil
+    }
+
+    private static func export(_ source: URL, preset: String) async -> URL? {
+        let asset = AVURLAsset(url: source)
+        guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { return nil }
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        session.outputURL = out
+        session.outputFileType = .mov
+        session.shouldOptimizeForNetworkUse = true
+        return await withCheckedContinuation { cont in
+            session.exportAsynchronously {
+                cont.resume(returning: session.status == .completed ? out : nil)
+            }
+        }
     }
 }
 
