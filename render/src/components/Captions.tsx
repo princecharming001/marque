@@ -1,11 +1,22 @@
 import React from "react";
 import { useCurrentFrame } from "remotion";
+import { loadFont } from "@remotion/google-fonts/Inter";
 import { CaptionWord, CaptionStyle } from "../types";
 
 interface Props { captions: CaptionWord[]; style?: CaptionStyle; }
 
 const ACCENT = "#FFD60A";
-const FONT = "system-ui, -apple-system, sans-serif";
+// G6: "system-ui, -apple-system" resolves to San Francisco when previewing in
+// Remotion Studio on a Mac, but Lambda's headless Linux container has no Apple
+// fonts and falls back to whatever generic sans-serif ships in that container
+// image — so a caption style tuned/reviewed locally could render with a
+// DIFFERENT typeface in the actual delivered video, with no error anywhere.
+// @remotion/google-fonts embeds Inter (visually close to San Francisco's
+// proportions, so local review stays representative) and blocks the render
+// via Remotion's own delayRender/continueRender until the font is ready —
+// identical in Studio preview and on Lambda.
+const { fontFamily } = loadFont("normal", { weights: ["600", "700", "800"] });
+const FONT = fontFamily;
 
 // G2: bottom safe-area. At 1080x1920, TikTok/IG Reels/YT Shorts all reserve the
 // bottom ~300-350px of the frame for their OWN chrome (username, caption/

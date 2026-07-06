@@ -13,11 +13,12 @@
     "render:poll": "node dist/lambda-render.js poll"
   },
   "dependencies": {
+    "@remotion/google-fonts": "^4.0.484",
+    "@remotion/lambda": "^4.0.0",
+    "@remotion/player": "^4.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "remotion": "^4.0.0",
-    "@remotion/lambda": "^4.0.0",
-    "@remotion/player": "^4.0.0"
+    "remotion": "^4.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

@@ -55,8 +55,16 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       BrollLayer.tsx's objectFit:cover already center-crops sanely (verified —
       no letterboxing either way; this only improves crop QUALITY, since a
       landscape 16:9 file cropped to fill 9:16 loses ~70% of its width).
-- [ ] G6 Caption font embedded (staticFile/loadFont) so Lambda renders match
-      design instead of relying on a system-ui fallback that may differ.
+- [x] G6 Fixed: replaced "system-ui, -apple-system" (resolves to San Francisco
+      in Studio-on-Mac preview, but Lambda's headless Linux container has no
+      Apple fonts and falls back to a different generic sans, silently) with
+      @remotion/google-fonts/Inter's loadFont() — embeds the font and blocks
+      the render via Remotion's own delayRender/continueRender until ready,
+      identical in Studio and on Lambda. New dependency, justified: this is
+      the official first-party Remotion package built for exactly this
+      problem; pinned to 4.0.484, matching remotion/@remotion/lambda's
+      resolved version (and the deployed Lambda function verified earlier
+      this session).
 - [ ] G7 Render concurrency cap in _render_all_clips (no Lambda stampede on a
       many-clip job).
 - [ ] G8 Cold-start resilience: one retry on a render submit timeout.
