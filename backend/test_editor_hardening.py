@@ -1315,6 +1315,43 @@ def test_lufs_target_flows_through_contract_with_documented_default():
     assert build_render_plan(edl2)["audio"]["lufs_target"] == -12.0
 
 
+# ---- G5: b-roll resolution prefers an actual portrait file among a video's
+# renditions, not just any "hd"-quality one (orientation=portrait only biases
+# which VIDEOS are returned, not which transcoded FILE gets picked) ----
+
+def test_fetch_pexels_prefers_portrait_file_over_landscape_hd(monkeypatch):
+    monkeypatch.setattr(main, "PEXELS_KEY", "test-key")
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"videos": [{"video_files": [
+                {"quality": "hd", "width": 1920, "height": 1080, "link": "landscape-hd"},
+                {"quality": "sd", "width": 720, "height": 1280, "link": "portrait-sd"},
+                {"quality": "hd", "width": 1080, "height": 1920, "link": "portrait-hd"},
+            ]}]}
+    async def fake_get(self, url, headers=None, params=None):
+        return FakeResp()
+    monkeypatch.setattr(main.httpx.AsyncClient, "get", fake_get)
+    link = asyncio.run(main._fetch_pexels("city skyline"))
+    assert link == "portrait-hd"
+
+
+def test_fetch_pexels_falls_back_to_landscape_hd_when_no_portrait_exists(monkeypatch):
+    monkeypatch.setattr(main, "PEXELS_KEY", "test-key")
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"videos": [{"video_files": [
+                {"quality": "sd", "width": 640, "height": 360, "link": "landscape-sd"},
+                {"quality": "hd", "width": 1920, "height": 1080, "link": "landscape-hd"},
+            ]}]}
+    async def fake_get(self, url, headers=None, params=None):
+        return FakeResp()
+    monkeypatch.setattr(main.httpx.AsyncClient, "get", fake_get)
+    link = asyncio.run(main._fetch_pexels("office"))
+    assert link == "landscape-hd"   # never letterboxed either way — objectFit:cover
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

@@ -2634,8 +2634,21 @@ async def _fetch_pexels(query: str) -> str | None:
     if not videos:
         return None
     files = videos[0].get("video_files", [])
-    hd = next((f for f in files if f.get("quality") == "hd"), files[0] if files else None)
-    return hd.get("link") if hd else None
+    if not files:
+        return None
+    # G5: orientation=portrait only biases which VIDEOS Pexels returns — a
+    # matched video can still expose landscape transcodes among its own
+    # video_files. objectFit:cover (BrollLayer.tsx) never letterboxes either
+    # way, but a native-portrait file needs far less cropping (a 16:9 file
+    # cropped to fill 9:16 loses ~70% of its width) — prefer an actual
+    # portrait (height > width) rendition, hd quality first.
+    def _is_portrait(f: dict) -> bool:
+        return (f.get("height") or 0) > (f.get("width") or 0)
+    best = (next((f for f in files if _is_portrait(f) and f.get("quality") == "hd"), None)
+            or next((f for f in files if _is_portrait(f)), None)
+            or next((f for f in files if f.get("quality") == "hd"), None)
+            or files[0])
+    return best.get("link")
 
 
 _broll_url_cache: dict[str, str] = {}

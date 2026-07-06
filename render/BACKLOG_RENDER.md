@@ -46,8 +46,15 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       a pinning test confirming the field flows through the full contract with
       its published-platform-target default (-14 LUFS) and round-trips a
       custom value, so it's ready for that work whenever it lands.
-- [ ] G5 B-roll aspect handling: prefer portrait video_files at Pexels-resolve
-      time; verify landscape fallback center-crops sanely.
+- [x] G5 Fixed: _fetch_pexels already searched with orientation=portrait, but
+      that only biases which VIDEOS Pexels returns — the matched video's OWN
+      video_files can still include landscape transcodes, and the old code
+      just grabbed the first "hd"-quality one regardless of actual w/h. Now
+      prefers an actual portrait (height>width) file, hd quality first,
+      falling back to any portrait, then any hd, then the first file.
+      BrollLayer.tsx's objectFit:cover already center-crops sanely (verified —
+      no letterboxing either way; this only improves crop QUALITY, since a
+      landscape 16:9 file cropped to fill 9:16 loses ~70% of its width).
 - [ ] G6 Caption font embedded (staticFile/loadFont) so Lambda renders match
       design instead of relying on a system-ui fallback that may differ.
 - [ ] G7 Render concurrency cap in _render_all_clips (no Lambda stampede on a
