@@ -110,9 +110,33 @@ items also gate on the relevant flow passing on a booted sim.
       targets them via Maestro's `index:` disambiguation (an established,
       working pattern here); renaming would have broken that flow, violating
       the loop's "never weaken/delete an existing test" rule.
-- [ ] H13 Maestro expansion: reorder+cut+apply on mock; reopen-editor
-      persistence leg (catches H2-class regressions); failed-render path
-      (garbage URL) asserting the error card + Try again.
+- [x] H13 Maestro expansion: added the reopen-editor persistence leg (toggle
+      captions off, apply, reopen, assert the style picker stays absent —
+      proves load() reflects saved state rather than resetting to a default;
+      catches H2-class regressions). segment_order/reorder isn't exercisable
+      here (the mock EDL is single-segment, so a reorder op is a no-op) and
+      the failed-render path isn't reachable either (keyless mock tweaks
+      never hit `can_render`, so there's no render to fail) — both are
+      already covered at the unit/integration level in
+      backend/test_editor_hardening.py instead of via Maestro.
+
+      Found and fixed TWO real regressions while getting this leg green:
+      (1) a stray `.accessibilityIdentifier("editor.segment.\(segIdx)")` on
+      the segment row's own `.onTapGesture`-carrying view collapsed the
+      whole row into one opaque accessibility element, hiding the child
+      mute/cut/reorder buttons from XCUITest entirely — removed, replaced
+      with a comment; (2) the captions/music/duck Toggles' real interactive
+      target is their UIKit-backed switch knob only (the label is a
+      non-interactive sibling) — `.contentShape(Rectangle())` does NOT
+      extend a hit region into that embedded UIKit control, so a tap
+      anywhere on the row except the knob itself silently did nothing.
+      Confirmed live via Maestro hierarchy dumps (toggle stayed checked=true,
+      Apply stayed disabled, across two separate runs — including one AFTER
+      the contentShape attempt, which is what proved that fix insufficient).
+      Fixed with an explicit `.onTapGesture` that toggles the bound value;
+      a tap landing on the knob itself is already consumed by the native
+      control and never reaches the outer gesture, so this can't
+      double-toggle. Applied to all three editor toggles for consistency.
 
 Completion promise (only when EVERY box is checked and all gates are green):
 EDITOR PRO UX GREEN

@@ -255,6 +255,19 @@ struct EditorView: View {
                     Toggle("Show captions", isOn: $captionsEnabled)
                         .font(AppFont.body).tint(Palette.ink)
                         .disabled(!wordsAvailable)
+                        .contentShape(Rectangle())
+                        // A bare Toggle's real interactive target is its UIKit-backed
+                        // switch knob only — the label is a separate, non-interactive
+                        // sibling, and contentShape can't extend a hit region into that
+                        // embedded UIKit control. A tap landing anywhere else on the row
+                        // (label, or the gap between them) falls through to this gesture
+                        // instead; a tap that lands ON the knob is already consumed by
+                        // its own native control and never reaches here, so this can't
+                        // double-toggle.
+                        .onTapGesture {
+                            guard wordsAvailable else { return }
+                            captionsEnabled.toggle()
+                        }
                         .accessibilityIdentifier("editor.captionsToggle")
                     // H6: the backend can only rebuild captions from the saved
                     // transcript (job.words) — a job whose transcript isn't
@@ -391,6 +404,8 @@ struct EditorView: View {
             SectionLabel(text: "Music", accent: Palette.accent)
             Toggle("Background music", isOn: $musicEnabled)
                 .font(AppFont.body).tint(Palette.ink)
+                .contentShape(Rectangle())
+                .onTapGesture { musicEnabled.toggle() }
                 .accessibilityIdentifier("editor.music")
             if musicEnabled {
                 Picker("Track", selection: $musicURL) {
@@ -408,6 +423,8 @@ struct EditorView: View {
                 }
                 Toggle("Duck under my voice", isOn: $duckVoice)
                     .font(AppFont.callout).tint(Palette.ink)
+                    .contentShape(Rectangle())
+                    .onTapGesture { duckVoice.toggle() }
                     .accessibilityIdentifier("editor.music.duck")
             }
         }
@@ -470,7 +487,11 @@ struct EditorView: View {
             .strokeBorder(Palette.hairline, lineWidth: 1))
         .contentShape(Rectangle())
         .onTapGesture { toggle(&cut, segIdx) }
-        .accessibilityIdentifier("editor.segment.\(segIdx)")
+        // H13 regression found + fixed: an accessibilityIdentifier on THIS row
+        // (the same view carrying .onTapGesture) made SwiftUI collapse the
+        // whole HStack into one opaque accessibility element, hiding the
+        // child mute/cut/reorder buttons' own identifiers from XCUITest
+        // entirely (editor.cut became unfindable) — do not add one here.
     }
 
     // H8: the AI already cut filler/dead-air words (struck-through, dimmed) —

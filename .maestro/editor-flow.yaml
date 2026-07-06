@@ -24,6 +24,13 @@ name: "Marque — manual editor (assumes flow-full ran; clips exist in Library)"
     visible: "Segments"
     timeout: 6000
 - takeScreenshot: /Users/home/Marque/.shots/editor-open
+# Segments re-render once the transcript loads async (plain preview text →
+# per-word H8 strip), shifting the row's layout — wait for that settle
+# instead of a bare tapOn, or the tap can race the re-layout and miss.
+- extendedWaitUntil:
+    visible:
+      id: "editor.cut"
+    timeout: 5000
 - tapOn:
     id: "editor.cut"
     index: 0
@@ -36,3 +43,38 @@ name: "Marque — manual editor (assumes flow-full ran; clips exist in Library)"
       id: "clip.editManual"
     timeout: 10000
 - takeScreenshot: /Users/home/Marque/.shots/editor-applied
+
+# H13 leg: reopen-editor persistence — a general regression guard for the
+# H2 bug class (the editor silently discarding server-side state on reload).
+# segment_order specifically isn't exercisable here (the mock EDL is single-
+# segment, so a reorder op is a no-op — see BACKLOG_EDITOR_UX.md), but turning
+# captions OFF, applying, and reopening exercises the SAME "does load()
+# correctly reflect what was saved" code path: the style picker only renders
+# `if captionsEnabled`, so its absence after reopen proves the toggle's
+# false state survived the round-trip rather than resetting to a default.
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible: "Segments"
+    timeout: 6000
+- extendedWaitUntil:
+    visible:
+      id: "editor.captionsToggle"
+    timeout: 5000
+- tapOn:
+    id: "editor.captionsToggle"
+- tapOn:
+    id: "editor.apply"
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 10000
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible: "Segments"
+    timeout: 6000
+- assertNotVisible:
+    id: "editor.captionStyle"
+- takeScreenshot: /Users/home/Marque/.shots/editor-reopen-persisted
+- tapOn: "Cancel"
