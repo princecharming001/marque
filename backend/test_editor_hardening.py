@@ -994,6 +994,76 @@ def test_react_window_straddled_by_cut_dropped_not_desynced():
     assert plan["react_schedule"] == []   # dropped outright rather than desynced
 
 
+# ---- react_window_dropped: the straddled-drop case above used to vanish with zero
+# trace anywhere in the render plan (mirrors the F6 broll_unresolved class) ----
+
+def test_react_window_straddled_by_cut_appends_warning():
+    from app.edl import build_render_plan
+    edl = _base_edl(style="duet_split", segments=[{"src_in": 0, "src_out": 200}],
+                    drops=[{"src_in": 140, "src_out": 160, "reason": "manual"}],
+                    react_schedule=[{"state": "freeze", "src_in": 100, "src_out": 180, "clip_from": 20}])
+    warnings = []
+    build_render_plan(edl, warnings)
+    assert any("react_window_dropped" in w for w in warnings)
+
+
+def test_react_window_fully_inside_cut_no_warning():
+    # A window landing entirely inside a cut is just the creator's own cut removing
+    # it — expected, not a desync — so it must NOT get the same warning as the
+    # straddled case above.
+    from app.edl import build_render_plan
+    edl = _base_edl(style="duet_split", segments=[{"src_in": 0, "src_out": 200}],
+                    drops=[{"src_in": 90, "src_out": 200, "reason": "manual"}],
+                    react_schedule=[{"state": "freeze", "src_in": 100, "src_out": 180, "clip_from": 20}])
+    warnings = []
+    plan = build_render_plan(edl, warnings)
+    assert plan["react_schedule"] == []
+    assert warnings == []
+
+
+def test_react_window_not_dropped_no_warning():
+    from app.edl import build_render_plan
+    edl = _base_edl(
+        style="duet_split",
+        segments=[{"src_in": 0, "src_out": 100}, {"src_in": 100, "src_out": 200}],
+        segment_order=[1, 0],
+        react_schedule=[{"state": "freeze", "src_in": 120, "src_out": 180, "clip_from": 50}])
+    warnings = []
+    build_render_plan(edl, warnings)
+    assert warnings == []
+
+
+def test_run_pipeline_warns_clip_on_react_window_desync(monkeypatch):
+    # End-to-end: the desync-drop case above must actually reach the clip's
+    # warnings[] through _run_pipeline, not just build_render_plan's return value.
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "duet_split",
+        "formats": ["myth-buster"], "source_url": "https://example.com/video.mov",
+        "react_source_url": "https://example.com/react.mp4"})
+    job_id = r.json()["job_id"]
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "test-key")
+    async def ok_probe(url): pass
+    monkeypatch.setattr(main, "_validate_source_url", ok_probe)
+    _mock_transcript_ok(monkeypatch)
+    async def no_llm(*a, **k):
+        raise main.HTTPException(status_code=502, detail="keyless")
+    monkeypatch.setattr(main, "anthropic", no_llm)
+
+    from app.edl import EDL, Layout
+    def fake_safe_default(style, format_id, total_frames, words):
+        return EDL(
+            style=style, format_id=format_id,
+            segments=[{"src_in": 0, "src_out": 200}],
+            drops=[{"src_in": 140, "src_out": 160, "reason": "filler"}],
+            react_schedule=[{"state": "freeze", "src_in": 100, "src_out": 180, "clip_from": 20}],
+            layout=Layout(style=style),
+        )
+    monkeypatch.setattr(main, "safe_default_edl", fake_safe_default)
+    _run_pipeline_sync(job_id)
+    job = main._clip_jobs[job_id]
+    assert any("react_window_dropped" in w for w in job["clips"][0].get("warnings", []))
+
+
 # ---- F15: durable edit sessions (Supabase write-through + lazy restore) ----
 
 class _FakeSupabase:
@@ -1419,7 +1489,7 @@ def test_submit_retries_once_on_timeout_then_succeeds(monkeypatch):
     monkeypatch.setattr(main, "_run_render_bridge", bridge)
     out = asyncio.run(main._submit_remotion_render(
         "https://x/v.mov", {"style": "talking_head", "format_id": "x"}, "myth-buster", "talking_head"))
-    assert out == {"render_id": "r1", "bucket_name": "b1"}
+    assert out == {"render_id": "r1", "bucket_name": "b1", "plan_warnings": []}
     assert calls["n"] == 2
     assert calls["timeouts"][1] == main.BRIDGE_CALL_TIMEOUT_S * 2   # retry gets more room
 

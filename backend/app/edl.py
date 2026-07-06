@@ -293,14 +293,20 @@ def _kept_intervals(segments: list[dict], drops: list[dict]) -> list[tuple[int, 
     return [(a, b) for a, b in kept if b > a]
 
 
-def build_render_plan(edl: dict) -> dict:
+def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     """Transform an editorial EDL (source coords) into a render-ready plan (see above).
 
     Segments are walked in `segment_order` (a permutation; None = source order), so
     reordered segments land at their new output position — and because captions/
     overlays/broll are mapped through the same source→output index, they travel with
     their segment automatically. With identity order the index is exactly the flat
-    kept-interval list this function always produced, so plans are byte-identical."""
+    kept-interval list this function always produced, so plans are byte-identical.
+
+    `warnings`, if passed, collects human-readable strings for content this function
+    silently drops that the caller should surface to the creator (mirrors the
+    `warnings[]` clip field used for unresolved b-roll) — currently just the
+    react_schedule desync-drop below. Optional and additive: omitting it reproduces
+    the exact prior behavior."""
     segments = edl.get("segments") or []
     drops = edl.get("drops") or []
     order = edl.get("segment_order")
@@ -421,6 +427,9 @@ def build_render_plan(edl: dict) -> dict:
         if mapped is None:
             continue
         if (mapped[1] - mapped[0]) != (w["src_out"] - w["src_in"]):
+            if warnings is not None:
+                warnings.append(
+                    "react_window_dropped: cut/reorder would have desynced the reaction video")
             continue  # a cut straddles this window — skip rather than desync the source
         react_schedule.append({
             "state": w.get("state", "play"),

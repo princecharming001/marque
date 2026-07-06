@@ -1403,6 +1403,12 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip["render_url"] = render_url
             clip.pop("error", None)
             clip.pop("error_detail", None)
+            # A tweak (e.g. a fresh cut) can newly straddle an existing duet react
+            # window, which build_render_plan then silently drops — this only
+            # surfaces here (not in _run_pipeline's one-time check) since it's a
+            # NEW drop introduced by this tweak's edit, not the original EDL.
+            if submission.get("plan_warnings"):
+                clip.setdefault("warnings", []).extend(submission["plan_warnings"])
     except PipelineError as e:
         if _is_current_render(clip, my_gen):
             clip["render_url"] = prev_url
@@ -1715,6 +1721,15 @@ async def _run_pipeline(job_id: str):
             for c in job["clips"]:
                 c.setdefault("warnings", []).extend(f"broll_unresolved: {q}"[:120] for q in unresolved)
         edl_data = _attach_react_source(edl_data, job)
+        # A duet_split react window whose length a cut/reorder would desync gets
+        # silently dropped by build_render_plan's length-preservation guard (see
+        # app/edl.py) — surface it the same way as the broll_unresolved warning
+        # just above, rather than the reaction video silently vanishing.
+        plan_warnings: list[str] = []
+        build_render_plan(edl_data, plan_warnings)
+        if plan_warnings:
+            for c in job["clips"]:
+                c.setdefault("warnings", []).extend(plan_warnings)
         # G3: (re-)populate speech_frames from the actual transcript, not whatever
         # the LLM's JSON did/didn't echo back through the edit + verify/repair
         # passes above — it's derived data, never something an LLM should author,
@@ -1998,7 +2013,8 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     # Transform the editorial EDL (source coords) into a render-ready plan: the actual
     # cut list + captions/overlays remapped to the post-cut output timeline. The
     # compositions consume this plan directly (they no longer trim it themselves).
-    plan = build_render_plan(edl)
+    plan_warnings: list[str] = []
+    plan = build_render_plan(edl, plan_warnings)
     input_props = json.dumps({"sourceUrl": source_url, "edl": plan, "formatId": format_id})
     # G9: preview=true asks the bridge for a cheap low-res proof render (half
     # scale, higher CRF — see lambda-render.ts submit()); the caller is
@@ -2020,7 +2036,8 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
             raise PipelineError("bridge_error", result["_error"], "render")
     if not result.get("renderId"):
         return None
-    return {"render_id": result["renderId"], "bucket_name": result.get("bucketName", "")}
+    return {"render_id": result["renderId"], "bucket_name": result.get("bucketName", ""),
+            "plan_warnings": plan_warnings}
 
 
 async def _poll_remotion_render(render_id: str, bucket_name: str,
