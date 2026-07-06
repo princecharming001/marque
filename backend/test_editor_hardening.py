@@ -1083,6 +1083,187 @@ def test_restore_is_a_noop_keyless():
     assert out is None
 
 
+# ---- F16: fuzz gate — random op sequences over random EDLs must never violate
+# the core invariants. Seeded (deterministic), not sampled at collection time. ----
+
+def test_fuzz_random_op_sequences_preserve_invariants():
+    import random as _random
+    from app.edl import EDL, apply_edl_ops, build_render_plan, _kept_frames
+
+    OP_TYPES = ["trim_start", "trim_end", "cut_range", "restore_range",
+                "mute_range", "reorder_segments", "set_music",
+                "set_caption_style", "set_captions_enabled", "remove_overlays"]
+
+    for seed in range(50):
+        rng = _random.Random(seed)
+        n_segs = rng.randint(1, 5)
+        segs, cursor = [], 0
+        for _ in range(n_segs):
+            length = rng.randint(30, 300)
+            segs.append({"src_in": cursor, "src_out": cursor + length})
+            cursor += length
+        edl = {
+            "style": "talking_head", "format_id": "myth-buster",
+            "segments": segs, "layout": {"style": "talking_head"},
+            "captions": [{"word": f"w{i}", "frame": rng.randint(0, cursor - 1)}
+                         for i in range(rng.randint(0, 5))],
+        }
+        ops = []
+        for _ in range(rng.randint(1, 8)):
+            t = rng.choice(OP_TYPES)
+            if t in ("trim_start", "trim_end"):
+                ops.append({"type": t, "frames": rng.randint(1, 50)})
+            elif t in ("cut_range", "restore_range", "mute_range"):
+                a = rng.randint(0, cursor)
+                ops.append({"type": t, "start_frame": a, "end_frame": a + rng.randint(1, 50)})
+            elif t == "reorder_segments":
+                order = list(range(len(edl["segments"])))
+                rng.shuffle(order)
+                ops.append({"type": t, "order": order})
+            elif t == "set_music":
+                ops.append({"type": t, "enabled": rng.choice([True, False]),
+                           "url": "https://cdn/t.mp3", "volume": rng.random()})
+            elif t == "set_caption_style":
+                ops.append({"type": t, "style": rng.choice(["clean", "bold-word", "karaoke"])})
+            elif t == "set_captions_enabled":
+                ops.append({"type": t, "enabled": rng.choice([True, False])})
+            elif t == "remove_overlays":
+                ops.append({"type": t})
+
+        out, results = apply_edl_ops(edl, ops)
+        ctx = {"seed": seed, "ops": ops, "segments": out["segments"]}
+
+        # 1) segments stay monotonic (no overlaps, no non-positive length)
+        prev_out = -1
+        for s in out["segments"]:
+            assert s["src_in"] < s["src_out"], ctx
+            assert s["src_in"] >= prev_out, ctx
+            prev_out = s["src_out"]
+
+        # 2) segment_order (if set) is a valid permutation of the CURRENT segments
+        order = out.get("segment_order")
+        if order is not None:
+            assert sorted(order) == list(range(len(out["segments"]))), ctx
+
+        # 3) the output is itself a legally constructible EDL
+        EDL(**out)
+
+        # 4) kept-frames never drops to (or below) zero — every op that would
+        # violate the min-duration guard must have been rejected, not applied.
+        assert _kept_frames(out) > 0, ctx
+
+        # 5) the render plan always builds without raising
+        plan = build_render_plan(out)
+
+        # 6) every caption/overlay frame lands within the plan's own output bounds
+        total = sum(c["src_out"] - c["src_in"] for c in plan["clips"])
+        for cap in plan["captions"]:
+            assert 0 <= cap["frame"] < total, (ctx, cap, total)
+        for ov in plan["overlays"]:
+            assert 0 <= ov["frame_in"] < ov["frame_out"] <= total, (ctx, ov, total)
+
+
+# ---- G1: golden plan-contract fixtures — build_render_plan's output MUST match
+# render/src/types.ts's RenderPlan interface field-for-field. This is the single
+# source of truth the render bridge consumes; a drift here silently breaks/no-ops
+# a feature in the rendered video with no error anywhere. Key sets are checked
+# EXACT (not superset/subset) so adding/removing a field on either side fails
+# this test until the other side is updated to match. ----
+
+_TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "broll",
+                        "react_source", "react_schedule", "layout", "caption_style",
+                        "audio", "total_frames"}
+_TS_CLIP_KEYS = {"src_in", "src_out"}
+_TS_CAPTION_KEYS = {"word", "frame"}
+_TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text"}
+_TS_BROLL_KEYS = {"frame_in", "frame_out", "cue_text", "asset_id", "broll_query",
+                  "source", "resolved_url"}
+_TS_LAYOUT_KEYS = {"style", "panels", "panel_boundaries", "split_fraction"}
+_TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
+_TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
+_TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
+_TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
+_TS_AUDIO_PLAN_KEYS = {"lufs_target", "music", "volume_ranges"}
+
+
+def test_render_plan_matches_typescript_contract_exactly():
+    from app.edl import build_render_plan
+    edl = {
+        "style": "duet_split", "format_id": "myth-buster",
+        "segments": [{"src_in": 0, "src_out": 300}, {"src_in": 300, "src_out": 600}],
+        "drops": [{"src_in": 100, "src_out": 120, "reason": "filler"}],
+        "captions": [{"word": "hi", "frame": 10}],
+        "overlays": [{"type": "punch_in", "src_in": 20, "src_out": 60, "scale": 1.1, "text": "wow"}],
+        "broll": [{"src_in": 200, "src_out": 250, "cue_text": "city", "asset_id": "a1",
+                   "broll_query": "city skyline", "source": "stock",
+                   "resolved_url": "https://cdn/city.mp4"}],
+        "react_source": {"resolved_url": "https://cdn/react.mp4", "kind": "video",
+                         "credit_label": "@original"},
+        "react_schedule": [{"state": "play", "src_in": 300, "src_out": 400,
+                            "clip_from": 50, "audio_gain": 0.5}],
+        "layout": {"style": "duet_split", "panels": 1, "panel_boundaries": [],
+                  "split_fraction": 0.6},
+        "caption_style": "karaoke",
+        "audio": {"lufs_target": -14.0,
+                 "music": {"url": "https://cdn/t.mp3", "query": None, "volume": 0.2,
+                          "duck_voice": True},
+                 "volume_ranges": [{"src_in": 0, "src_out": 30, "volume": 0.0}]},
+    }
+    plan = build_render_plan(edl)
+
+    assert set(plan.keys()) == _TS_RENDER_PLAN_KEYS
+    for c in plan["clips"]:
+        assert set(c.keys()) == _TS_CLIP_KEYS
+    for c in plan["captions"]:
+        assert set(c.keys()) == _TS_CAPTION_KEYS
+    for o in plan["overlays"]:
+        assert set(o.keys()) == _TS_OVERLAY_KEYS
+    for b in plan["broll"]:
+        assert set(b.keys()) == _TS_BROLL_KEYS
+    assert set(plan["layout"].keys()) == _TS_LAYOUT_KEYS
+    assert set(plan["react_source"].keys()) == _TS_REACT_SOURCE_KEYS
+    for w in plan["react_schedule"]:
+        assert set(w.keys()) == _TS_REACT_WINDOW_KEYS
+    assert set(plan["audio"].keys()) == _TS_AUDIO_PLAN_KEYS
+    assert set(plan["audio"]["music"].keys()) == _TS_MUSIC_KEYS
+    for vr in plan["audio"]["volume_ranges"]:
+        assert set(vr.keys()) == _TS_VOLUME_RANGE_KEYS
+
+
+def test_render_plan_matches_contract_with_all_optionals_absent():
+    # The minimal case (no drops/captions/overlays/broll/react/music) must still
+    # produce every REQUIRED top-level key, with the right (empty/None) shape for
+    # the optional ones — never a missing key (types.ts has no way to signal
+    # "field just isn't there" at the JS runtime level; a missing key reads as
+    # `undefined` for a required field, which is exactly the drift this guards).
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "myth-buster",
+          "segments": [{"src_in": 0, "src_out": 300}],
+          "layout": {"style": "talking_head"}}
+    plan = build_render_plan(edl)
+    assert set(plan.keys()) == _TS_RENDER_PLAN_KEYS
+    assert plan["captions"] == [] and plan["overlays"] == [] and plan["broll"] == []
+    assert plan["react_source"] is None and plan["react_schedule"] == []
+    assert set(plan["audio"].keys()) == _TS_AUDIO_PLAN_KEYS
+    assert plan["audio"]["music"] is None and plan["audio"]["volume_ranges"] == []
+    assert isinstance(plan["total_frames"], int) and plan["total_frames"] >= 1
+
+
+def test_render_plan_contract_holds_for_every_composition_style():
+    # One golden fixture per composition (7 styles, matching render/src/Root.tsx's
+    # 7 <Composition> entries) — every style must produce the exact same top-level
+    # contract; no style-specific code path is allowed to silently omit a key.
+    from app.edl import build_render_plan
+    for style in ("talking_head", "faceless", "split_three", "fast_cuts",
+                  "green_screen", "broll_cutaway", "duet_split"):
+        edl = {"style": style, "format_id": "x",
+              "segments": [{"src_in": 0, "src_out": 300}],
+              "layout": {"style": style}}
+        plan = build_render_plan(edl)
+        assert set(plan.keys()) == _TS_RENDER_PLAN_KEYS, style
+        assert set(plan["layout"].keys()) == _TS_LAYOUT_KEYS, style
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

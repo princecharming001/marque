@@ -437,7 +437,15 @@ def build_render_plan(edl: dict) -> dict:
         "broll": broll,
         "react_source": edl.get("react_source"),
         "react_schedule": react_schedule,
-        "layout": edl.get("layout") or {"style": edl.get("style", "talking_head"), "panels": 1, "panel_boundaries": []},
+        # G1: normalize through the Layout model rather than passing the raw dict
+        # through as-is — a caller that builds/patches a layout dict by hand (e.g.
+        # set_split_fraction's edl.setdefault("layout", {})[...] = ...) can produce
+        # one missing panels/panel_boundaries, which the render bridge's Layout
+        # interface declares as REQUIRED (a missing key reads as `undefined` at
+        # the JS runtime, not "use the default"). `style` folded in as a fallback
+        # (not an override) since Layout.style has no default of its own.
+        "layout": Layout(**{"style": edl.get("style", "talking_head"),
+                            **(edl.get("layout") or {})}).model_dump(),
         # `or "clean"` (not a dict default): the key is now always present from
         # model_dump() with value None when unset.
         "caption_style": edl.get("caption_style") or "clean",

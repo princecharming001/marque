@@ -13,8 +13,17 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       test framework exists in render/ yet — adding one just for this single
       fact would be disproportionate; revisit if/when one gets added for other
       reasons).
-- [ ] G1 Golden plan-contract fixtures: build_render_plan output validated
-      field-by-field against types.ts's expected shape for all 7 compositions.
+- [x] G1 Added 3 golden-fixture tests (test_render_plan_matches_typescript_
+      contract_exactly, ..._with_all_optionals_absent, ..._for_every_composition_
+      style) asserting build_render_plan's output keys match render/src/types.ts's
+      RenderPlan/Clip/CaptionWord/Overlay/BRoll/Layout/ReactSource/ReactWindow/
+      MusicTrack/VolumeRange/AudioPlan EXACTLY (not superset/subset) — manual
+      inspection found the contract already matched, but the fixtures caught a
+      REAL gap: build_render_plan passed a hand-built/incomplete layout dict
+      through as-is instead of normalizing it, so a caller supplying a partial
+      layout (e.g. only {"style": ...}) produced a plan missing panels/
+      panel_boundaries — REQUIRED fields in TS's Layout interface. Fixed:
+      layout is now always normalized through the Layout Pydantic model.
 - [ ] G2 Captions safe-area: bottom-180px collides with TikTok/IG UI chrome —
       move to a configurable safe band.
 - [ ] G3 Ducking honors duck_voice:false (AudioMix.tsx ducks off caption
