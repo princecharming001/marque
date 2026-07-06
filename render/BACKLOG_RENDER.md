@@ -65,8 +65,15 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       problem; pinned to 4.0.484, matching remotion/@remotion/lambda's
       resolved version (and the deployed Lambda function verified earlier
       this session).
-- [ ] G7 Render concurrency cap in _render_all_clips (no Lambda stampede on a
-      many-clip job).
+- [x] G7 The audit's exact framing was a false positive (clips WITHIN one job
+      already render sequentially — a plain for-loop, no gather/create_task) —
+      but the underlying concern was real from a different angle: separate
+      JOBS each run in their own asyncio task with NO cap at all, so a burst
+      of users could still stack up unbounded concurrent Lambda invocations.
+      Added a process-wide asyncio.Semaphore(RENDER_CONCURRENCY_CAP=3) around
+      the submit+poll critical section in both _render_all_clips and
+      _rerender_clip. Verified with a test proving peak concurrency hits the
+      job count (6) unprotected vs. the cap (2) protected.
 - [ ] G8 Cold-start resilience: one retry on a render submit timeout.
 - [ ] G9 Preview render path: preview=true through the bridge → cheap low-res
       proof render; new contract param, doesn't overwrite render_url.

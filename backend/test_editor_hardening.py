@@ -1352,6 +1352,57 @@ def test_fetch_pexels_falls_back_to_landscape_hd_when_no_portrait_exists(monkeyp
     assert link == "landscape-hd"   # never letterboxed either way — objectFit:cover
 
 
+# ---- G7: a process-wide semaphore must cap concurrent Lambda submissions
+# ACROSS jobs (clips within one job were already sequential — the audit's
+# framing was off, but a burst of separate jobs had no cap at all) ----
+
+def test_render_semaphore_caps_cross_job_concurrency(monkeypatch):
+    cap = 2
+    monkeypatch.setattr(main, "RENDER_CONCURRENCY_CAP", cap)
+    monkeypatch.setattr(main, "_render_semaphore", asyncio.Semaphore(cap))
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+
+    state = {"current": 0, "peak": 0}
+
+    async def submit(*a, **k):
+        state["current"] += 1
+        state["peak"] = max(state["peak"], state["current"])
+        await asyncio.sleep(0.03)
+        return {"render_id": "r", "bucket_name": "b"}
+
+    async def poll(*a, **k):
+        await asyncio.sleep(0.03)
+        state["current"] -= 1
+        return "https://cdn/out.mp4"
+
+    monkeypatch.setattr(main, "_submit_remotion_render", submit)
+    monkeypatch.setattr(main, "_poll_remotion_render", poll)
+
+    job_ids = []
+    for i in range(6):
+        job_id = f"g7-job-{i}"
+        main._clip_jobs[job_id] = {
+            "job_id": job_id, "status": "rendering", "source_url": "https://x/v.mov",
+            "style": "talking_head", "edl": {"style": "talking_head", "format_id": "x"},
+            "clips": [{"clip_id": f"c{i}", "format": "myth-buster", "status": "queued"}],
+            "created_at": time.time(), "script": SCRIPT, "brand": {}, "media_context": "",
+            "words": [], "edl_history": [], "tweaks": [], "edit_prefs": {},
+            "react_source_url": None, "react_credit_label": None,
+        }
+        job_ids.append(job_id)
+
+    async def run_all():
+        await asyncio.gather(*(main._render_all_clips(jid) for jid in job_ids))
+    asyncio.run(run_all())
+
+    assert state["peak"] <= cap, f"peak concurrent renders {state['peak']} exceeded cap {cap}"
+    for jid in job_ids:
+        assert main._clip_jobs[jid]["clips"][0]["status"] == "ready"
+        main._clip_jobs.pop(jid, None)
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

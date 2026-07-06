@@ -1371,13 +1371,14 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
                 job["edl"] = await _resolve_broll(job["edl"])
             except Exception:
                 clip.setdefault("warnings", []).append("broll_unresolved: resolve failed")
-        submission = await _submit_remotion_render(
-            job["source_url"], job["edl"], clip["format"], job["style"])
-        if not submission:
-            raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
-        clip["render_id"] = submission["render_id"]
-        render_url = await _poll_remotion_render(
-            submission["render_id"], submission["bucket_name"])
+        async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+            submission = await _submit_remotion_render(
+                job["source_url"], job["edl"], clip["format"], job["style"])
+            if not submission:
+                raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+            clip["render_id"] = submission["render_id"]
+            render_url = await _poll_remotion_render(
+                submission["render_id"], submission["bucket_name"])
         if _is_current_render(clip, my_gen):
             clip["render_url"] = render_url
             clip.pop("error", None)
@@ -1486,6 +1487,15 @@ RENDER_POLL_MAX_S = int(os.environ.get("RENDER_POLL_MAX_S", "240"))
 RENDER_STALL_S = int(os.environ.get("RENDER_STALL_S", "75"))
 BRIDGE_CALL_TIMEOUT_S = float(os.environ.get("BRIDGE_CALL_TIMEOUT_S", "30"))
 RENDER_WATCHDOG_S = int(os.environ.get("RENDER_WATCHDOG_S", "480"))
+
+# G7: clips WITHIN one job already render sequentially (the for-loop below has
+# no gather/create_task fan-out) — but separate JOBS each run in their own
+# asyncio task, so a burst of users submitting around the same time can still
+# stack up many concurrent Lambda invocations with no cap at all. A process-
+# wide semaphore bounds that across every render path (initial pipeline, retry,
+# and tweak-triggered re-render all funnel through _submit_remotion_render).
+RENDER_CONCURRENCY_CAP = int(os.environ.get("RENDER_CONCURRENCY_CAP", "3"))
+_render_semaphore = asyncio.Semaphore(RENDER_CONCURRENCY_CAP)
 
 
 def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
@@ -1699,13 +1709,14 @@ async def _render_all_clips(job_id: str) -> None:
         clip["render_started_at"] = time.time()
         my_gen = _bump_render_gen(clip)
         try:
-            submission = await _submit_remotion_render(
-                job["source_url"], edl_data, clip["format"], job["style"])
-            if not submission:
-                raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
-            clip["render_id"] = submission["render_id"]
-            render_url = await _poll_remotion_render(
-                submission["render_id"], submission["bucket_name"])
+            async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+                submission = await _submit_remotion_render(
+                    job["source_url"], edl_data, clip["format"], job["style"])
+                if not submission:
+                    raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+                clip["render_id"] = submission["render_id"]
+                render_url = await _poll_remotion_render(
+                    submission["render_id"], submission["bucket_name"])
             if _is_current_render(clip, my_gen):
                 clip["render_url"] = render_url
                 clip["status"] = "ready"
