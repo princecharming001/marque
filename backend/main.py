@@ -1216,10 +1216,15 @@ async def _retry_render(job_id: str) -> None:
 
 
 @app.post("/v1/clips/{job_id}/tweak")
-async def tweak_clip(job_id: str, req: TweakRequest):
+async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
     """One conversational tweak turn: interpret the instruction into typed ops
     (LLM live / keyword grammar keyless), apply them deterministically to the
-    stored EDL, and re-render just the targeted clip."""
+    stored EDL, and re-render just the targeted clip.
+
+    preview=1 (G9): after applying the ops, ALSO kick off a cheap low-res
+    proof render (fire-and-forget) so the manual editor can show the creator
+    roughly what changed before they commit to the full-quality re-render.
+    Writes to clip["preview_url"], never render_url — see _preview_rerender_clip."""
     job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
     if job is None:
         # In-memory job store — a backend restart orphans old jobs (F15: unless a
@@ -1323,9 +1328,18 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     #    started a render since the top-of-request 409 check. Re-check NOW and set
     #    the rendering flag synchronously (no await between check and set) — that
     #    pair is atomic under asyncio's single thread.
-    needs_render = (changed and job["status"] == "ready"
-                    and bool(REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME))
-    if needs_render:
+    can_render = bool(REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME)
+    preview_requested = False
+    needs_render = changed and job["status"] == "ready" and can_render
+    if preview and changed and can_render:
+        # G9: preview=1 asks for a cheap proof render instead of committing to
+        # the full one — never touches render_url/status/render_gen, so it
+        # can't race with a real render. Fire-and-forget; doesn't block the
+        # tweak response the way _rerender_clip's completion doesn't either.
+        needs_render = False
+        preview_requested = True
+        asyncio.create_task(_preview_rerender_clip(job_id, req.clip_id))
+    elif needs_render:
         if clip.get("status") == "rendering":
             # Someone else's re-render is in flight; our EDL change is saved and
             # will be picked up by the next render rather than double-rendering.
@@ -1343,7 +1357,8 @@ async def tweak_clip(job_id: str, req: TweakRequest):
     asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after every tweak
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
-            "undo_available": bool(job["edl_history"]), "degraded": degraded}
+            "undo_available": bool(job["edl_history"]), "degraded": degraded,
+            "preview_requested": preview_requested}
 
 
 async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: bool = False):
@@ -1402,6 +1417,38 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             if clip.get("status") != "failed":
                 clip["status"] = "ready" if clip.get("render_url") else "failed"
             asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after re-render
+
+
+async def _preview_rerender_clip(job_id: str, clip_id: str) -> None:
+    """G9: a cheap, non-committing low-res proof render triggered by the manual
+    editor's "HD preview" button. Deliberately separate from _rerender_clip:
+    writes ONLY clip["preview_status"]/["preview_url"], never touches
+    render_url/status/render_gen — a preview must never race with or overwrite
+    the clip's real, committed render. Still goes through _render_semaphore
+    (G7) since it's a genuine Lambda invocation and competes for the same cap."""
+    job = _clip_jobs.get(job_id)
+    if not job:
+        return
+    clip = next((c for c in job["clips"] if c["clip_id"].lower() == clip_id.lower()), None)
+    if not clip:
+        return
+    clip["preview_status"] = "rendering"
+    try:
+        async with _render_semaphore:
+            submission = await _submit_remotion_render(
+                job["source_url"], job["edl"], clip["format"], job["style"], preview=True)
+            if not submission:
+                raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
+            preview_url = await _poll_remotion_render(
+                submission["render_id"], submission["bucket_name"])
+        clip["preview_url"] = preview_url
+        clip["preview_status"] = "ready"
+    except PipelineError as e:
+        clip["preview_status"] = "failed"
+        clip["preview_error"] = f"{e.code}: {e.detail}"[:200]
+    except Exception as e:
+        clip["preview_status"] = "failed"
+        clip["preview_error"] = str(e)[:200]
 
 
 def _mock_edl(style: str, script: dict) -> dict:
@@ -1935,7 +1982,8 @@ async def _run_render_bridge(*args: str, timeout_s: float | None = None) -> dict
         return {"_error": f"bridge non-JSON output: {raw}"}
 
 
-async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str) -> dict | None:
+async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, style: str,
+                                  preview: bool = False) -> dict | None:
     if not (REMOTION_SERVE_URL and REMOTION_FUNCTION_NAME):
         return None
     # Remotion Lambda composition IDs may only contain a-z, A-Z, 0-9, CJK, and "-" —
@@ -1947,7 +1995,11 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     # compositions consume this plan directly (they no longer trim it themselves).
     plan = build_render_plan(edl)
     input_props = json.dumps({"sourceUrl": source_url, "edl": plan, "formatId": format_id})
-    result = await _run_render_bridge("submit", composition_id, input_props)
+    # G9: preview=true asks the bridge for a cheap low-res proof render (half
+    # scale, higher CRF — see lambda-render.ts submit()); the caller is
+    # responsible for writing the result to a side-channel field, never
+    # render_url, since this is not the final output.
+    result = await _run_render_bridge("submit", composition_id, input_props, "1" if preview else "0")
     if result.get("_error"):
         # G8: a cold Lambda function (first invocation after a deploy/idle period)
         # can make renderMediaOnLambda's own submit call slow enough to trip the
@@ -1957,7 +2009,7 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
         # budget so a genuinely-slow-but-succeeding cold start has room to land.
         if "timed out" in result["_error"]:
             result = await _run_render_bridge(
-                "submit", composition_id, input_props,
+                "submit", composition_id, input_props, "1" if preview else "0",
                 timeout_s=BRIDGE_CALL_TIMEOUT_S * 2)
         if result.get("_error"):
             raise PipelineError("bridge_error", result["_error"], "render")

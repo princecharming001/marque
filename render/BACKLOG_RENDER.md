@@ -79,8 +79,18 @@ One item per iteration. Gate: keyless `python -m pytest -q` (backend) AND
       signature) — not on any other bridge error (e.g. a bad composition id,
       which would just fail identically twice). Verified both the recovery
       path and that non-timeout errors still fail fast with no wasted retry.
-- [ ] G9 Preview render path: preview=true through the bridge → cheap low-res
-      proof render; new contract param, doesn't overwrite render_url.
+- [x] G9 Implemented: lambda-render.ts submit() accepts an optional preview arg
+      (scale:0.5, crf:30 — half-res/cheaper compression, same timing/duration
+      logic); _submit_remotion_render(preview=bool) threads it through
+      (including the G8 cold-start retry, which was missing the flag —
+      would've silently fallen back to full-res on a timeout retry, fixed);
+      new _preview_rerender_clip writes ONLY clip.preview_url/preview_status/
+      preview_error — never render_url/status/render_gen, so it can't race
+      with a real render, but still goes through the G7 semaphore since it's
+      a genuine Lambda invocation. POST /v1/clips/{id}/tweak?preview=1 applies
+      ops normally but triggers the preview path instead of the full re-render
+      (mutually exclusive — a preview call never also fires a full render);
+      response exposes preview_requested. 5 new tests.
 - [ ] G10 FastCuts flash boundary + volumeAt ±1-frame boundary: pin exact
       behavior with tests; fix only if a pin actually fails.
 

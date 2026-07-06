@@ -1441,6 +1441,101 @@ def test_submit_does_not_retry_on_a_non_timeout_bridge_error(monkeypatch):
     assert calls["n"] == 1   # no retry — only timeouts are transient
 
 
+# ---- G9: preview render path — cheap proof render, never touches render_url ----
+
+def test_submit_passes_preview_flag_to_the_bridge(monkeypatch):
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+    seen = {}
+    async def bridge(*args, timeout_s=None):
+        seen["args"] = args
+        return {"renderId": "r1", "bucketName": "b1"}
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    asyncio.run(main._submit_remotion_render(
+        "https://x/v.mov", {"style": "talking_head", "format_id": "x"},
+        "myth-buster", "talking_head", preview=True))
+    assert seen["args"][-1] == "1"
+
+    asyncio.run(main._submit_remotion_render(
+        "https://x/v.mov", {"style": "talking_head", "format_id": "x"},
+        "myth-buster", "talking_head", preview=False))
+    assert seen["args"][-1] == "0"
+
+
+def test_preview_rerender_never_touches_render_url_or_status(monkeypatch):
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    job = main._clip_jobs[job_id]
+    clip = job["clips"][0]
+    clip["render_url"] = "https://real.example/committed.mp4"
+    clip["status"] = "ready"
+
+    async def submit(*a, **k):
+        return {"render_id": "r1", "bucket_name": "b1"}
+    async def poll(*a, **k):
+        return "https://cdn/preview.mp4"
+    monkeypatch.setattr(main, "_submit_remotion_render", submit)
+    monkeypatch.setattr(main, "_poll_remotion_render", poll)
+
+    asyncio.run(main._preview_rerender_clip(job_id, clip["clip_id"]))
+
+    assert clip["preview_url"] == "https://cdn/preview.mp4"
+    assert clip["preview_status"] == "ready"
+    assert clip["render_url"] == "https://real.example/committed.mp4"   # untouched
+    assert clip["status"] == "ready"                                     # untouched
+
+
+def test_preview_rerender_failure_never_touches_committed_state(monkeypatch):
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    job = main._clip_jobs[job_id]
+    clip = job["clips"][0]
+    clip["render_url"] = "https://real.example/committed.mp4"
+    clip["status"] = "ready"
+
+    async def exploding_submit(*a, **k):
+        raise main.PipelineError("render_submit_failed", "no bridge", "render")
+    monkeypatch.setattr(main, "_submit_remotion_render", exploding_submit)
+
+    asyncio.run(main._preview_rerender_clip(job_id, clip["clip_id"]))
+
+    assert clip["preview_status"] == "failed"
+    assert "render_submit_failed" in clip["preview_error"]
+    assert clip["render_url"] == "https://real.example/committed.mp4"
+    assert clip["status"] == "ready"
+
+
+def test_tweak_preview_flag_triggers_preview_not_full_render(monkeypatch):
+    # A mock (keyless-source) job already has a valid EDL from creation; only
+    # the REMOTION_* capability flags need faking so can_render is true.
+    r = client.post("/v1/clips", json={
+        "source_id": "s", "script": SCRIPT, "style": "talking_head",
+        "formats": ["myth-buster"], "source_url": "mock://source"})
+    job_id = r.json()["job_id"]
+    clip_id = r.json()["clips"][0]["clip_id"]
+    # needs_render/preview both gate on status=="ready" (a completed LIVE job) —
+    # a mock job starts "mock_ready" by design (no real render to trigger), so
+    # override it here purely to exercise this branch; the EDL is already valid.
+    main._clip_jobs[job_id]["status"] = "ready"
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+
+    async def fake_preview(jid, cid): pass
+    async def fake_full(jid, cid, gen, resolve_broll=False): pass
+    monkeypatch.setattr(main, "_preview_rerender_clip", fake_preview)
+    monkeypatch.setattr(main, "_rerender_clip", fake_full)
+
+    out = client.post(f"/v1/clips/{job_id}/tweak?preview=1", json={
+        "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]}).json()
+    assert out["preview_requested"] is True
+    assert out["needs_render"] is False
+
+
 # ---- F5 (no-repro, pinned): out-of-bounds ops already rejected, not clamped ----
 
 def test_way_out_of_bounds_cut_range_rejected_not_cut_everything():

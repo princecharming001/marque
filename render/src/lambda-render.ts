@@ -6,8 +6,11 @@
 // the compiled JS here instead of calling a REST endpoint.
 //
 // Usage:
-//   node dist/lambda-render.js submit <compositionId> <inputPropsJson>
+//   node dist/lambda-render.js submit <compositionId> <inputPropsJson> [preview]
 //     -> prints {"renderId": "...", "bucketName": "..."} to stdout
+//     -> preview="1": G9 cheap low-res proof render (half scale, higher CRF) —
+//        for the manual editor's "show me before I commit" HD-preview button;
+//        NOT the final render, and the backend never writes this to render_url.
 //   node dist/lambda-render.js poll <renderId> <bucketName>
 //     -> prints {"done": bool, "overallProgress": 0-1, "outputFile": "..."|null, ...}
 //
@@ -23,10 +26,11 @@ const REGION = (process.env.REMOTION_AWS_REGION || "us-east-1") as AwsRegion;
 const FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME || "";
 const SERVE_URL = process.env.REMOTION_SERVE_URL || "";
 
-async function submit(compositionId: string, inputPropsJson: string) {
+async function submit(compositionId: string, inputPropsJson: string, preview?: string) {
   if (!FUNCTION_NAME) throw new Error("REMOTION_FUNCTION_NAME is not set");
   if (!SERVE_URL) throw new Error("REMOTION_SERVE_URL is not set");
   const inputProps = JSON.parse(inputPropsJson);
+  const isPreview = preview === "1";
   const { renderId, bucketName } = await renderMediaOnLambda({
     region: REGION,
     functionName: FUNCTION_NAME,
@@ -34,6 +38,10 @@ async function submit(compositionId: string, inputPropsJson: string) {
     composition: compositionId,
     inputProps,
     codec: "h264",
+    // G9: half resolution + higher compression — same composition/timing logic,
+    // just cheaper/faster pixels. Never touches width/height/fps/duration, so
+    // total_frames-driven durationInFrames (calculateMetadata) stays identical.
+    ...(isPreview ? { scale: 0.5, crf: 30, outName: "preview.mp4" } : {}),
   });
   process.stdout.write(JSON.stringify({ renderId, bucketName }));
 }
@@ -55,13 +63,13 @@ async function poll(renderId: string, bucketName: string) {
   }));
 }
 
-const [, , cmd, a, b] = process.argv;
+const [, , cmd, a, b, c] = process.argv;
 
 (async () => {
   try {
-    if (cmd === "submit") await submit(a, b);
+    if (cmd === "submit") await submit(a, b, c);
     else if (cmd === "poll") await poll(a, b);
-    else throw new Error(`Unknown command "${cmd}" — use "submit <compositionId> <inputPropsJson>" or "poll <renderId> <bucketName>"`);
+    else throw new Error(`Unknown command "${cmd}" — use "submit <compositionId> <inputPropsJson> [preview]" or "poll <renderId> <bucketName>"`);
   } catch (err) {
     process.stderr.write(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
     process.exitCode = 1;
