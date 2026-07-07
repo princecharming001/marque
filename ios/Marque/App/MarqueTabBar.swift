@@ -35,18 +35,15 @@ struct MarqueTabBar: View {
                 tabButton(item).frame(maxWidth: .infinity)
             }
 
-            // Center Film button — sits inline with the row, same family as the glass bar.
+            // Center Film button — liquid glass circle with + icon
             Button {
                 createTaps += 1
                 onCreateTap()
             } label: {
-                Image(systemName: "video.badge.plus")
+                Image(systemName: "plus")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: filmSize, height: filmSize)
-                    .background(Circle().fill(Palette.accent))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
-                    .shadow(color: Palette.accent.opacity(0.35), radius: 10, x: 0, y: 4)
+                    .marqueGlassCircle(diameter: filmSize)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Film")
