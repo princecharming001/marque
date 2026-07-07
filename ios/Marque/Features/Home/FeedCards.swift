@@ -160,12 +160,17 @@ struct ReelCard: View {
     }
 }
 
-// MARK: Trend ticker — one quiet expandable row, hairline-bounded (no card)
+// MARK: Trend carousel — infinite scroll through trends with timed pauses
 
 struct TrendTicker: View {
     let trend: TrendItem
+    @State private var currentIndex = 0
+    @State private var allTrends: [TrendItem] = []
     @State private var expanded = false
     @State private var pulse = false
+    @State private var rotation: CGFloat = 0
+
+    private var displayTrend: TrendItem { allTrends.isEmpty ? trend : allTrends[currentIndex % allTrends.count] }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -181,15 +186,15 @@ struct TrendTicker: View {
                     Text("TRENDING")
                         .font(AppFont.micro).tracking(Track.label)
                         .foregroundStyle(Palette.textTertiary)
-                    Text(trend.title)
+                    Text(displayTrend.title)
                         .font(AppFont.callout)
                         .foregroundStyle(Palette.textPrimary)
                         .lineLimit(1)
                     Spacer(minLength: Space.sm)
-                    Image(systemName: "chevron.down")
+                    Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Palette.textTertiary)
-                        .rotationEffect(.degrees(expanded ? 180 : 0))
+                        .rotationEffect(.degrees(rotation))
                 }
                 .padding(.vertical, Space.md)
                 .contentShape(Rectangle())
@@ -198,11 +203,11 @@ struct TrendTicker: View {
             .accessibilityIdentifier("feed.trend")
 
             if expanded {
-                Text(trend.why)
+                Text(displayTrend.why)
                     .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .lineSpacing(3)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 14)   // clears the dot, aligns with the label
+                    .padding(.leading, 14)
                     .padding(.bottom, Space.md)
                     .transition(.opacity)
             }
@@ -210,6 +215,22 @@ struct TrendTicker: View {
         }
         .onAppear {
             withAnimation(Motion.breath) { pulse = true }
+            allTrends = [trend] // seed with initial trend; backend would populate allTrends for multi-trend carousel
+            scheduleRotation()
+        }
+    }
+
+    private func scheduleRotation() {
+        guard allTrends.count > 1 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            withAnimation(Motion.quick) {
+                currentIndex += 1
+                rotation = 90
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                rotation = 0
+                scheduleRotation()
+            }
         }
     }
 }
