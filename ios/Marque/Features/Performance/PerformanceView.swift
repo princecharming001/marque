@@ -128,6 +128,32 @@ struct InsightsSection: View {
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("performance.platformToggle")
 
+                // Coach persona picker — controls the tone of performance coaching feedback
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    Text("COACH").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                    HStack(spacing: Space.sm) {
+                        ForEach(ChatPersona.allCases) { persona in
+                            Button { store.coachPersona = persona } label: {
+                                VStack(spacing: 4) {
+                                    Image(systemName: persona.icon)
+                                        .font(.system(size: 14, weight: .semibold))
+                                    Text(persona.label)
+                                        .font(AppFont.micro).tracking(0.3)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(Space.md)
+                                .background(store.coachPersona == persona ? Color(hex: persona.glow) : Palette.surfaceRaised)
+                                .foregroundStyle(store.coachPersona == persona ? Color.white : Palette.textPrimary)
+                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                    .strokeBorder(store.coachPersona == persona ? Color.clear : Palette.hairline, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("performance.coach.\(persona.rawValue)")
+                        }
+                    }
+                }
+
                 if let s = summary {
                     HStack(spacing: Space.md) {
                         statTile(compactNumber(views(s)), "Views")

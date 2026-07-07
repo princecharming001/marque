@@ -26,6 +26,7 @@ final class AppStore {
     var brandSummary: BrandSummaryCard? = nil    // cached Profile hero card
     var chatPersona: ChatPersona? = nil           // nil → .closer default (drawer picker)
     var chatResponseLength: ChatResponseLength? = nil   // nil → .medium default
+    var coachPersona: ChatPersona? = nil          // performance coaching style (picker)
 
     // V3: account + subscription gates (onboarding → auth wall → paywall → app)
     let auth = AuthManager()
