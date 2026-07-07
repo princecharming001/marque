@@ -51,7 +51,7 @@ struct ChatView: View {
             // Floats from the left over the chat content (maxapp pattern) — not a sheet.
             ConversationsDrawer(isPresented: $showDrawer, chat: chat)
         }
-        .background(Palette.surface.ignoresSafeArea())
+        .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("Add to chat", isPresented: $showAttach, titleVisibility: .hidden) {
