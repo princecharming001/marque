@@ -1024,6 +1024,69 @@ async def insights(req: InsightsRequest):
         return {"mode": "mock", "coaching": ""}
 
 
+class ScoreRequest(BaseModel):
+    hook: str = ""
+    body: str = ""
+    style: str = "talking_head"
+
+
+# all_scores.txt (High/Mid/Low) → a 0-100 read the app can display. Fluff is inverted
+# (less filler = better). This scorer is deliberately kept OUT of the bandit reward.
+_RATING_NUM = {"High": 85, "Mid": 60, "Low": 30}
+_FLUFF_GOOD = {"Low": 90, "Mid": 60, "High": 30}
+
+
+def _score_overall(hook: str, fluff: str, sat: str) -> int:
+    return max(0, min(100, round(
+        0.4 * _RATING_NUM.get(hook, 60) + 0.4 * _RATING_NUM.get(sat, 60)
+        + 0.2 * _FLUFF_GOOD.get(fluff, 60))))
+
+
+def _mock_score_script(hook: str, body: str) -> dict:
+    """Deterministic keyless heuristic mirroring the all_scores axes so /v1/score is
+    testable and never blank without a key."""
+    h, b = (hook or "").strip(), (body or "").strip()
+    words = len(b.split())
+    text_l = (h + " " + b).lower()
+    has_number = any(c.isdigit() for c in h + b)
+    contrarian = any(w in h.lower() for w in
+                     ("wrong", "myth", "stop", "nobody", "everyone", "actually", "don't", "backwards"))
+    hook_pts = ((0 < len(h.split()) <= 16) + has_number + contrarian
+                + bool(h and not h.rstrip().endswith("?")))
+    hook_r = "High" if hook_pts >= 3 else "Mid" if hook_pts >= 1 else "Low"
+    fluff_r = "High" if words > 130 else "Mid" if words > 80 else "Low"
+    has_cta = any(w in text_l for w in ("try ", "save ", "follow", "comment", "do this", "here's"))
+    sat_r = "High" if (has_cta and 20 <= words <= 120) else "Mid" if words >= 15 else "Low"
+    weakest = ("fluff" if fluff_r == "High" else "hook" if hook_r == "Low"
+               else "payoff" if sat_r != "High" else "none")
+    fix = ("Tighten the body — cut any line that doesn't move the story." if fluff_r == "High"
+           else "Open on a more specific, contrarian first line." if hook_r != "High"
+           else "Land a clearer, more surprising payoff before the CTA.")
+    return {"hook": hook_r, "fluff": fluff_r, "satisfaction": sat_r,
+            "overall": _score_overall(hook_r, fluff_r, sat_r),
+            "strongest": "hook" if hook_r == "High" else "payoff" if sat_r == "High" else "clarity",
+            "weakest": weakest, "fix": fix}
+
+
+@app.post("/v1/score")
+async def score(req: ScoreRequest):
+    """Independent Hook/Fluff/Payoff read on a script, for the creator to see BEFORE
+    filming. Not a performance metric and not fed to the bandit."""
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", **_mock_score_script(req.hook, req.body)}
+    try:
+        sys, usr = prompts.score_script_prompt(req.hook, req.body, req.style)
+        out = extract_json(await anthropic(sys, usr, HAIKU, 400), array=False)
+        if out and out.get("hook") in _RATING_NUM:
+            out["overall"] = (int(out["overall"]) if isinstance(out.get("overall"), (int, float))
+                              else _score_overall(out.get("hook"), out.get("fluff"), out.get("satisfaction")))
+            out["overall"] = max(0, min(100, out["overall"]))
+            return {"mode": "live", **out}
+    except HTTPException:
+        pass
+    return {"mode": "mock", **_mock_score_script(req.hook, req.body)}
+
+
 @app.get("/v1/trends")
 async def trends(niche: str = ""):
     # DECISION (2026-07): real trend-scraping is explicitly deferred, not a live

@@ -970,6 +970,44 @@ def captions_prompt(hook: str, body: str) -> tuple[str, str]:
     return system, f"Hook: {hook}\nBody: {body}\nReturn ONLY a JSON array of caption lines."
 
 
+SCORE_SCHEMA = (
+    'Reply with ONLY a JSON object, no prose, no code fences: '
+    '{"hook": "High"|"Mid"|"Low", "fluff": "High"|"Mid"|"Low", '
+    '"satisfaction": "High"|"Mid"|"Low", "overall": int 0-100, '
+    '"strongest": str, "weakest": str, "fix": str (one concrete improvement)}'
+)
+
+
+def score_script_prompt(hook: str, body: str, style: str = "talking_head") -> tuple[str, str]:
+    """Port of Palo's all_scores rubric: a DETERMINISTIC, independent read of a
+    short-form script on Hook / Fluff / Viewer-Satisfaction, shown to the creator
+    BEFORE they film. Deliberately NOT wired into the bandit reward — it judges
+    content quality, not realized performance, so it can't masquerade as a metric."""
+    system = (
+        "You are an expert short-form (TikTok/Reels) scriptwriter scoring a script meant to be SPOKEN OUT "
+        "LOUD in a talking-head video. Prioritize engaging, conversational flow and concise storytelling; "
+        "visual formatting (line breaks, spacing) is irrelevant since this is read aloud.\n\n"
+        "Consistency is critical: apply the criteria strictly so identical content always scores the same "
+        "and small changes move the score proportionally. Scores should ENCOURAGE improvement — if there is "
+        "real room to better meet a criterion, give 'Mid' rather than 'High' (within reason).\n\n"
+        "HOOK — the opening lines. A strong hook is a scroll-stopper that makes the viewer curious about the "
+        "story and promises a payoff worth staying for: it provokes a strong reaction (surprise, urgency, "
+        "excitement), is clear and easy to follow, and sets up a compelling conclusion. Grabbing attention "
+        "AND establishing the narrative payoff is the whole job; specific techniques are secondary to that.\n"
+        "FLUFF — how much unnecessary filler exists (High = a lot, and worse). From a scrolling viewer's "
+        "perspective, is there redundant content that kills engagement and invites a scroll-away? Fluff that "
+        "adds to the bones of the narrative is fine; only distracting, unnecessary filler counts against it.\n"
+        "SATISFACTION — the concluding payoff. Did the script hold attention to build to it, does the payoff "
+        "meet or exceed expectations, and does the ending feel satisfying or impactful? A strong payoff is "
+        "what earns the like/share.\n\n" + SCORE_SCHEMA
+    )
+    user = (
+        f"Style: {STYLES.get(style, STYLES['talking_head'])['label']}\n"
+        f"HOOK:\n{hook}\n\nBODY (spoken aloud):\n{body}\n\nScore it strictly and consistently."
+    )
+    return system, user
+
+
 def teardown_prompt(clip: dict) -> tuple[str, str]:
     system = (
         "You explain in one tight insight why a short-form clip performed, plus the single next move. "

@@ -1860,3 +1860,40 @@ def test_thompson_sample_unseen_arm_niche_seeded_and_neutral_default():
     a_pref, b_pref = main._niche_prior_for_arm("style:talking_head", "fitness")
     a_neu, b_neu = main._niche_prior_for_arm("style:faceless", "fitness")
     assert a_pref / (a_pref + b_pref) > a_neu / (a_neu + b_neu)
+
+
+# ---------------------------------------------------------------------------
+# A2 · Script scorer (all_scores.txt) — creator-facing, NOT a bandit reward
+# ---------------------------------------------------------------------------
+
+def test_score_prompt_covers_all_three_axes():
+    sysm, usr = prompts.score_script_prompt("You're doing cardio wrong.", "Here's the fix...", "talking_head")
+    for axis in ("HOOK", "FLUFF", "SATISFACTION"):
+        assert axis in sysm
+    assert "cardio" in usr
+
+
+def test_score_keyless_is_deterministic_and_bounded():
+    payload = {"hook": "You're eating protein wrong. Here's the 30g rule.",
+               "body": "Everyone maxes protein at dinner. Wrong. Spread 30g across 4 meals and you actually "
+                       "absorb it. I tested it for 42 days. Try it and save this."}
+    a = client.post("/v1/score", json=payload).json()
+    b = client.post("/v1/score", json=payload).json()
+    assert a == b                                        # determinism
+    assert a["mode"] == "mock"
+    assert a["hook"] in ("High", "Mid", "Low") and a["fluff"] in ("High", "Mid", "Low")
+    assert 0 <= a["overall"] <= 100 and a["fix"]
+
+
+def test_score_rewards_strong_script_over_weak():
+    strong = client.post("/v1/score", json={
+        "hook": "Nobody tells you this about sleep. It's costing you 2 hours a day.",
+        "body": "Here's the fix: cut caffeine after 2pm and your deep sleep doubles. I tracked 30 nights. "
+                "Try it tonight and save this."}).json()
+    weak = client.post("/v1/score", json={
+        "hook": "Hey guys so today I wanted to talk a little bit about sleep and stuff?",
+        "body": ("So basically sleep is really important and there are a lot of things you can do and I've "
+                 "been thinking about it a lot lately and honestly it's just something that matters and you "
+                 "should probably try to get more of it if you can because it helps with a lot of things in "
+                 "your day and your mood and your energy and just generally feeling good overall you know.")}).json()
+    assert strong["overall"] > weak["overall"]
