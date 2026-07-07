@@ -32,3 +32,11 @@ name: emulate icons check
 - tapOn: { id: "onboard.voiceContinue" }
 - extendedWaitUntil: { visible: "Who do you want to sound like?", timeout: 4000 }
 - takeScreenshot: /Users/home/Marque/.shots/emulate-recheck
+- tapOn: { id: "onboard.emulate.custom" }
+- extendedWaitUntil: { visible: { id: "onboard.emulate.handle" }, timeout: 4000 }
+- tapOn: { id: "onboard.emulate.handle" }
+- inputText: "asdkjaslkdjaslkdjxyznonexistent999"
+- tapOn: { point: "50%,20%" }
+- tapOn: { id: "onboard.emulate.add" }
+- extendedWaitUntil: { visible: "Couldn't find", timeout: 10000 }
+- takeScreenshot: /Users/home/Marque/.shots/emulate-verify-fail

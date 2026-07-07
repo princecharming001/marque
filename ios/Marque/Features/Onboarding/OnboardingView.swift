@@ -33,7 +33,6 @@ struct OnboardingView: View {
     @State private var goalTouched = false
     // Disambiguates "nil because unset" from "nil because user picked Both".
     @State private var platformBothChosen = false
-    @State private var analyzingConnect = false
 
     var body: some View {
         Group {
@@ -357,16 +356,16 @@ struct OnboardingView: View {
             ConnectAccountsView()
         } cta: {
             VStack(spacing: Space.md) {
-                OnbPill(title: store.brand.connectedAccounts.isEmpty ? "Continue"
-                        : (analyzingConnect ? "Reading your posts…" : "Continue"),
-                        enabled: !analyzingConnect) {
-                    guard !store.brand.connectedAccounts.isEmpty else { advance(); return }
-                    analyzingConnect = true
-                    Task {
-                        await store.analyzePage()
-                        analyzingConnect = false
-                        advance()
+                OnbPill(title: "Continue") {
+                    // Reading past posts is never worth blocking onboarding for — kick it
+                    // off detached and move on immediately. By the time onboarding
+                    // finishes (several more screens), the scan has usually landed;
+                    // analyzePage() is safe to call concurrently with itself/mirrorStep
+                    // and just overwrites pillars/voice when it resolves.
+                    if !store.brand.connectedAccounts.isEmpty {
+                        Task { await store.analyzePage() }
                     }
+                    advance()
                 }
                 .accessibilityIdentifier("onboard.connect.continue")
                 Button {

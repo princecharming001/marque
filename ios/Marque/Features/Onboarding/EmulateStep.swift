@@ -80,19 +80,30 @@ struct EmulateStep: View {
 
     private func customTargetRow(_ target: EmulationTarget) -> some View {
         HStack(spacing: Space.md) {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
+            AsyncImage(url: URL(string: target.avatarUrl)) { img in
+                img.resizable().scaledToFill()
+            } placeholder: {
+                Palette.surfaceSunken.overlay(Image(systemName: "person.fill").foregroundStyle(Palette.textTertiary))
+            }
+            .frame(width: 40, height: 40).clipShape(Circle())
+            .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(target.name).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                Text("@\(target.handle) · \(target.platform.capitalized)")
+                Text(target.followers > 0
+                     ? "\(compactNumber(target.followers)) followers · \(target.platform.capitalized)"
+                     : "@\(target.handle) · \(target.platform.capitalized)")
                     .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             }
             Spacer(minLength: 0)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
             Button {
                 store.brand.emulationTargets?.removeAll { $0.id == target.id }
                 store.save()
             } label: {
                 Image(systemName: "xmark").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
             }
+            .padding(.leading, 4)
         }
         .padding(Space.md)
         .background(Palette.surfaceRaised)
@@ -146,19 +157,30 @@ struct EmulateStep: View {
         linking = true; error = nil
         let h = handle.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "@", with: "")
         let platform = linkPlatform
-        var list = store.brand.emulationTargets ?? []
-        list.append(EmulationTarget(name: "@\(h)", handle: h, platform: platform, source: .custom))
-        store.brand.emulationTargets = list
-        store.save()
-        showLinkRow = false
         Task {
+            // Verify the page is real first — same check "Connect your accounts" uses
+            // (fetches the actual public profile), just without the OAuth grant since
+            // an emulation target only needs to be studied, never posted to.
+            guard let preview = await store.connectPreview(handle: h, platform: platform) else {
+                error = "Couldn't find @\(h) on \(platform.capitalized). Check the handle and try again."
+                linking = false
+                return
+            }
+            var list = store.brand.emulationTargets ?? []
+            list.append(EmulationTarget(
+                name: preview.displayName.isEmpty ? "@\(h)" : preview.displayName,
+                handle: h, platform: platform, source: .custom,
+                avatarUrl: preview.avatarUrl, followers: preview.followers))
+            store.brand.emulationTargets = list
+            store.save()
+            showLinkRow = false
+            handle = ""
+            linking = false
             // Fire-and-forget: the backend caches the analyzed style profile and
             // resolves it lazily on the next generation call — onboarding never
             // waits on a scrape.
-            await store.backend.emulateAnalyze(handle: h, platform: platform)
-            linking = false
+            Task { await store.backend.emulateAnalyze(handle: h, platform: platform) }
         }
-        handle = ""
     }
 }
 

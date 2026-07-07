@@ -95,6 +95,8 @@ struct EmulationTarget: Codable, Hashable, Identifiable {
     var handle: String = ""
     var platform: String = ""      // "instagram" | "tiktok"; empty for presets without a linked page
     var source: Source
+    var avatarUrl: String = ""     // set once a .custom target is verified against the real page
+    var followers: Int = 0
 }
 
 /// A linked Instagram/TikTok account, verified by fetching the real public profile.
