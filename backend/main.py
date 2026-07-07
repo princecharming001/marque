@@ -211,7 +211,7 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
         lift = round((s.get("effect", 0.5) - 0.5) * 200)
         sign = "+" if lift >= 0 else ""
         label = f"{val.replace('_', ' ')} {_dim_word.get(dim, dim)}: {sign}{lift}% vs your average"
-        out.append({**s, "lift_pct": lift, "label": label,
+        out.append({**s, "dimension": dim, "value": val, "lift_pct": lift, "label": label,
                     "confidence": s.get("confidence", "early_read")})
     out.sort(key=lambda a: abs(a["lift_pct"]), reverse=True)
     return out
@@ -3104,6 +3104,7 @@ async def get_learned_insights(creator_id: str = "default"):
             insights.append({
                 "dimension": dim, "value": val,
                 "lift_pct": lift, "n_posts": n, "confidence": confidence,
+                "band": prompts.classify_arm_lift(lift),
                 "label": f"{val.replace('_', ' ').title()}: {'+' if lift>0 else ''}{lift}% vs your average",
             })
 

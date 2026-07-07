@@ -1241,20 +1241,104 @@ def broll_match_prompt(cue_text: str, candidates: list[dict]) -> tuple[str, str]
     return system, user
 
 
+def classify_arm_lift(lift_pct: int) -> str:
+    """Palo's channel-analysis-v2 performance bands, mapped onto our lift scale.
+    lift_pct = (effect - 0.5) * 200, so the performance multiplier vs a 0.5 baseline
+    is (1 + lift_pct/100). DRIVER ≥ 1.8× (lift ≥ +80), ERROR ≤ 0.65× (lift ≤ -35),
+    everything in between is noise (don't over-read it)."""
+    mult = 1.0 + lift_pct / 100.0
+    if mult >= 1.8:
+        return "driver"
+    if mult <= 0.65:
+        return "error"
+    return "noise"
+
+
 def learning_block(arm_stats: list[dict]) -> str:
-    """Generate the learning context block injected into script/pillar prompts."""
+    """The learning context injected into script/hook/converse prompts. Renders the
+    creator's OWN settled-post signal with sample counts + confidence bands so the
+    model can weight a confirmed winner over an early read, plus an exploration cue
+    when the data is still thin."""
     if not arm_stats:
         return ""
-    lines = ["CREATOR PERFORMANCE DATA (use to inform hook/format choices):"]
+    lines = ["CREATOR PERFORMANCE DATA (their own settled posts — weight these by confidence):"]
+    any_confirmed = False
     for s in arm_stats[:5]:
         lift = s.get("lift_pct", 0)
         label = s.get("label", "")
-        if label and abs(lift) >= 5:
-            lines.append(f"- {label} ({s.get('confidence', 'early_read')})")
+        if not label or abs(lift) < 5:
+            continue
+        n = s.get("n", 0)
+        conf = s.get("confidence", "early_read")
+        band = classify_arm_lift(lift)
+        if conf == "confirmed":
+            any_confirmed = True
+        tag = f" [{band}]" if band != "noise" else ""
+        lines.append(f"- {label} — n={n} settled, {conf}{tag}")
     if len(lines) == 1:
         return ""
-    lines.append("Lean into outperforming signals; avoid confirmed underperformers.")
+    if any_confirmed:
+        lines.append("Exploit the confirmed drivers; keep exploring where the data is still an early read.")
+    else:
+        lines.append("These are EARLY READS (n<8) — lean toward them but keep experimenting; don't over-fit yet.")
     return "\n".join(lines)
+
+
+ATTRIBUTION_SCHEMA = (
+    'Reply with ONLY a JSON object, no prose: '
+    '{"dimension": "hook_signal"|"style"|"format_id"|"pillar"|"none", '
+    '"arm_value": str, "lift_pct": int, "band": "driver"|"error"|"noise", '
+    '"confidence": "confirmed"|"early_read"|"insufficient", '
+    '"verdict": str (ONE sentence, <=22 words, using ONLY the provided lift number)}'
+)
+
+
+def attribute_from_arms(arms: list[dict]) -> dict:
+    """Deterministic keyless attribution: the strongest driver/error arm with at least
+    an early read, else 'none'. Same shape attribution_prompt asks the model to emit —
+    so the keyless path and the live path agree."""
+    for a in sorted(arms, key=lambda x: abs(x.get("lift_pct", 0)), reverse=True):
+        lift = int(a.get("lift_pct", 0))
+        band = classify_arm_lift(lift)
+        if band != "noise" and a.get("confidence") in ("confirmed", "early_read"):
+            return {"dimension": a.get("dimension", ""), "arm_value": a.get("value", ""),
+                    "lift_pct": lift, "band": band, "confidence": a.get("confidence", "early_read"),
+                    "verdict": f"{a.get('label', 'This dimension')} — a {band} in your data."}
+    return {"dimension": "none", "arm_value": "", "lift_pct": 0, "band": "noise",
+            "confidence": "insufficient", "verdict": "Not enough settled data yet to attribute this one."}
+
+
+def attribution_prompt(settled_post: dict, arms: list[dict]) -> tuple[str, str]:
+    """Structured attribution for a just-settled post: name the single dimension that
+    most drove the outcome, using ONLY pre-computed lift numbers. Ported from Palo's
+    video-thoughts / channel-analysis-v2 number-discipline — NO math, cite the provided
+    lift verbatim, lock one number, and return dimension='none' rather than invent a
+    cause when nothing clears the driver/error band."""
+    system = (
+        "You attribute why one short-form post landed where it did, for the creator's own learning. "
+        "You are given PRE-COMPUTED performance lifts per content dimension; reason ONLY from those numbers.\n"
+        "HARD RULES (a single fabricated or drifted number destroys trust):\n"
+        "- Use ONLY the lift numbers provided. NEVER estimate, extrapolate, combine, or do ANY arithmetic.\n"
+        "- Pick exactly ONE number (the driving dimension's lift) and use it verbatim in the verdict.\n"
+        "- Attribute to the SINGLE strongest signal — a 'driver' if it overperformed, an 'error' if it "
+        "underperformed. If no dimension clears the driver/error band, or every arm is 'insufficient', "
+        'return dimension="none". Do not manufacture a cause.\n'
+        "- Never project weakness ('small sample', 'not sure'); attribute confidently from the data or none.\n\n"
+        + ATTRIBUTION_SCHEMA
+    )
+    arm_lines = "\n".join(
+        f"- {a.get('label', '')} — lift={a.get('lift_pct', 0)}, band={classify_arm_lift(a.get('lift_pct', 0))}, "
+        f"n={a.get('n', 0)}, {a.get('confidence', 'insufficient')}"
+        for a in arms
+    ) or "- (no dimension has an early read yet)"
+    user = (
+        f"Post just settled with outcome score y={settled_post.get('outcome_y')}. "
+        f"Its dimensions: pillar={settled_post.get('pillar', '')}, style={settled_post.get('style', '')}, "
+        f"format_id={settled_post.get('format_id', '')}, hook_signal={settled_post.get('hook_signal', '')}.\n"
+        f"Per-dimension performance (pre-computed — do NOT recompute):\n{arm_lines}\n\n"
+        "Attribute the result to the single driving dimension, or none."
+    )
+    return system, user
 
 
 # ---------------------------------------------------------------------------

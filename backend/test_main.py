@@ -1897,3 +1897,61 @@ def test_score_rewards_strong_script_over_weak():
                  "should probably try to get more of it if you can because it helps with a lot of things in "
                  "your day and your mood and your energy and just generally feeling good overall you know.")}).json()
     assert strong["overall"] > weak["overall"]
+
+
+# ---------------------------------------------------------------------------
+# A3 · Un-cosmetic the loop + confidence bands + attribution
+# ---------------------------------------------------------------------------
+
+def test_classify_arm_lift_bands():
+    assert prompts.classify_arm_lift(80) == "driver"     # 1.8x baseline
+    assert prompts.classify_arm_lift(120) == "driver"
+    assert prompts.classify_arm_lift(79) == "noise"
+    assert prompts.classify_arm_lift(0) == "noise"
+    assert prompts.classify_arm_lift(-35) == "error"     # 0.65x baseline
+    assert prompts.classify_arm_lift(-34) == "noise"
+
+
+def test_learning_block_renders_counts_confidence_and_exploration():
+    confirmed = [{"lift_pct": 40, "label": "contrarian hook: +40% vs your average",
+                  "confidence": "confirmed", "n": 10}]
+    blk = prompts.learning_block(confirmed)
+    assert "n=10 settled" in blk and "confirmed" in blk and "Exploit the confirmed" in blk
+    early = [{"lift_pct": 22, "label": "listicle format: +22% vs your average",
+              "confidence": "early_read", "n": 5}]
+    assert "EARLY READS" in prompts.learning_block(early)
+    assert prompts.learning_block([]) == ""
+
+
+def test_settled_arm_reaches_learning_block_end_to_end():
+    # The loop is only "cosmetic" below n>=4; prove that at n>=4 a creator's own arm
+    # is shaped and actually reaches the generation context block.
+    main._arm_stats.pop("loop_user", None)
+    main._creator_niche.pop("loop_user", None)
+    for _ in range(5):
+        asyncio.run(main._update_arm("loop_user", "hook_signal:contrarian", 0.9))
+    shaped = asyncio.run(main._arms_for_prompt("loop_user"))
+    assert shaped and shaped[0]["dimension"] == "hook_signal" and shaped[0]["value"] == "contrarian"
+    assert shaped[0]["confidence"] in ("early_read", "confirmed") and shaped[0]["n"] == 5
+    blk = prompts.learning_block(shaped)
+    assert "contrarian hook" in blk and "n=5 settled" in blk
+
+
+def test_attribute_from_arms_picks_driver_or_none():
+    driver = [{"dimension": "hook_signal", "value": "contrarian", "lift_pct": 90,
+               "label": "contrarian hook: +90% vs your average", "confidence": "confirmed"}]
+    a = prompts.attribute_from_arms(driver)
+    assert a["dimension"] == "hook_signal" and a["band"] == "driver" and a["lift_pct"] == 90
+    noise = [{"dimension": "style", "value": "faceless", "lift_pct": 10,
+              "label": "faceless style: +10%", "confidence": "early_read"}]
+    assert prompts.attribute_from_arms(noise)["dimension"] == "none"
+    assert prompts.attribute_from_arms([])["dimension"] == "none"
+
+
+def test_insights_learned_carries_band():
+    main._arm_stats.pop("band_user", None)
+    main._creator_niche.pop("band_user", None)
+    for _ in range(5):
+        asyncio.run(main._update_arm("band_user", "format_id:listicle", 0.9))
+    b = client.get("/v1/insights/learned", params={"creator_id": "band_user"}).json()
+    assert b["insights"] and all("band" in ins for ins in b["insights"])
