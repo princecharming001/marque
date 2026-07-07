@@ -73,19 +73,40 @@ struct TourOverlay: View {
         }
     }
 
+    // Fixed geometry so the bubble + mascot can be positioned exactly on-screen (no clip),
+    // and so their .position values are stable enough to animate between steps.
+    private static let bubbleW: CGFloat = 232
+    private static let bubbleH: CGFloat = 176
+    private static let mascotW: CGFloat = 104
+    private static let mascotH: CGFloat = 132
+    private static let gap: CGFloat = 6
+    private static let edge: CGFloat = 12
+
     @ViewBuilder
     private func overlay(step: TourManager.Step, target: CGRect, screen: CGSize) -> some View {
         let hole = target.insetBy(dx: ringPad, dy: ringPad)
+        let peekLeft = target.midX < screen.width * 0.5
+        let below = target.midY < screen.height * 0.55
+        // Bottom edge the bubble + mascot both sit on (below the target up top, above it
+        // when it's down low, so the cluster never covers what it points at).
+        let bottomY: CGFloat = below ? min(target.maxY + 24 + Self.bubbleH, screen.height - 24)
+                                     : max(target.minY - 24, 24 + Self.bubbleH)
+        let mascotX: CGFloat = peekLeft ? Self.edge + Self.mascotW / 2
+                                        : screen.width - Self.edge - Self.mascotW / 2
+        let bubbleX: CGFloat = peekLeft
+            ? Self.edge + Self.mascotW + Self.gap + Self.bubbleW / 2
+            : screen.width - Self.edge - Self.mascotW - Self.gap - Self.bubbleW / 2
+
         ZStack {
-            // Dimmed backdrop with a spotlight hole. Absorbs EVERY touch so a tour tap can
-            // never leak through to a paywall-gated control on the screen behind it.
+            // Dimmed backdrop with an ANIMATABLE spotlight hole — the dark cutout slides +
+            // resizes to the next control instead of snapping. Absorbs every touch so a
+            // tour tap can never leak to a paywall-gated control behind it.
             Spotlight(hole: hole)
                 .fill(Color.black.opacity(0.62), style: FillStyle(eoFill: true))
                 .contentShape(Rectangle())
                 .onTapGesture { }
 
-            // Bright accent ring so it's unmistakable which control the step points at
-            // (a plain white ring vanished against light cards like the greeting).
+            // Accent ring travels + resizes with the highlight.
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .strokeBorder(Palette.accent, lineWidth: 3)
                 .frame(width: hole.width, height: hole.height)
@@ -93,43 +114,22 @@ struct TourOverlay: View {
                 .shadow(color: Palette.accent.opacity(0.5), radius: 8)
                 .allowsHitTesting(false)
 
-            coachCluster(step: step, target: target, screen: screen)
-        }
-        .animation(Motion.calm, value: step.id)
-    }
+            // Bubble — stable identity, so its .position animates: it TRAVELS to the next
+            // step rather than fading in and out. (Its text crossfades inside — see below.)
+            bubble(step)
+                .position(x: bubbleX, y: bottomY - Self.bubbleH / 2)
 
-    // Fixed geometry so the cluster can be positioned exactly on-screen (no clipping).
-    private static let bubbleW: CGFloat = 232
-    private static let mascotW: CGFloat = 104
-    private static let gap: CGFloat = 6
-    private static let edge: CGFloat = 12
-    private var clusterW: CGFloat { Self.bubbleW + Self.gap + Self.mascotW }
-
-    /// A distinct STATIC Yuni pose sits NEXT TO the bubble (never behind/clipped), on the
-    /// side nearest the highlight so it reads as leaning in toward it. Sits below the target
-    /// when it's up top, above when it's down low, so it never covers what it points at.
-    @ViewBuilder
-    private func coachCluster(step: TourManager.Step, target: CGRect, screen: CGSize) -> some View {
-        let peekLeft = target.midX < screen.width * 0.5
-        let below = target.midY < screen.height * 0.55
-        HStack(alignment: .bottom, spacing: Self.gap) {
-            if peekLeft {
-                mascot(step, mirrored: false)   // generated facing right → faces the bubble
-                bubble(step)
-            } else {
-                bubble(step)
-                mascot(step, mirrored: true)    // flip → faces left, toward the bubble
+            // Mascot — the frame travels while the POSE crossfades to the next one, so Yuni
+            // glides toward the next control and changes pose on the way.
+            ZStack {
+                TourMascotView(resource: step.mascot, size: Self.mascotW, mirrored: !peekLeft)
+                    .id(step.mascot)
+                    .transition(.opacity)
             }
+            .frame(width: Self.mascotW, height: Self.mascotH)
+            .position(x: mascotX, y: bottomY - Self.mascotH / 2)
         }
-        .frame(width: clusterW, alignment: .bottom)
-        .position(x: peekLeft ? clusterW / 2 + Self.edge : screen.width - clusterW / 2 - Self.edge,
-                  y: below ? min(target.maxY + 104, screen.height - 150)
-                           : max(target.minY - 104, 170))
-        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-    }
-
-    private func mascot(_ step: TourManager.Step, mirrored: Bool) -> some View {
-        TourMascotView(resource: step.mascot, size: Self.mascotW, mirrored: mirrored)
+        .animation(.spring(response: 0.5, dampingFraction: 0.82), value: tour.index)
     }
 
     private func bubble(_ step: TourManager.Step) -> some View {
@@ -180,15 +180,25 @@ private struct TourSpeechBubble: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             progressDots
-            Text(step.title)
-                .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-            Text(step.message)
-                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
+            // Title + message crossfade to the next step's copy while the card travels;
+            // the progress dots and controls stay put so buttons never double up.
+            VStack(alignment: .leading, spacing: Space.sm) {
+                Text(step.title)
+                    .font(Typeface.display(22, .semibold)).tracking(-0.3)   // fancy serif
+                    .foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(step.message)
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .id(step.id)
+            .transition(.opacity)
+            Spacer(minLength: Space.sm)
             controls
         }
         .padding(Space.lg)
-        .frame(width: width, alignment: .leading)
+        .frame(width: width, height: 176, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
@@ -228,8 +238,17 @@ private struct TourSpeechBubble: View {
 // MARK: - Spotlight shape
 
 /// Full-screen dim rect with a rounded-rect hole cut at `hole` via the even-odd fill rule.
+/// Animatable so the hole slides + resizes smoothly to the next control between steps.
 private struct Spotlight: Shape {
-    let hole: CGRect
+    var hole: CGRect
+    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(AnimatablePair(hole.origin.x, hole.origin.y),
+                             AnimatablePair(hole.size.width, hole.size.height)) }
+        set {
+            hole = CGRect(x: newValue.first.first, y: newValue.first.second,
+                          width: newValue.second.first, height: newValue.second.second)
+        }
+    }
     func path(in rect: CGRect) -> Path {
         var p = Path(rect)
         p.addRoundedRect(in: hole, cornerSize: CGSize(width: 18, height: 18))
