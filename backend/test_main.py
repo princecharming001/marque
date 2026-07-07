@@ -119,6 +119,32 @@ def test_publish_mock():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+def test_publish_mock_when_no_target_accounts():
+    # Even with a key, an empty social_account_ids means nothing to post to -> mock.
+    b = client.post("/v1/publish", json={"caption": "hi", "social_account_ids": []}).json()
+    assert b["ok"] is True and b["mode"] == "mock"
+
+
+def test_social_auth_url_mock_returns_empty_url():
+    # Keyless: the client must be able to detect "linking unavailable" (empty url).
+    b = client.post("/v1/social/auth-url", json={"platform": "instagram",
+                                                 "external_id": "creator_1"}).json()
+    assert b["platform"] == "instagram"
+    assert b["url"] == ""
+    assert b["mode"] == "mock"
+
+
+def test_social_accounts_mock_returns_empty_list():
+    b = client.get("/v1/social/accounts", params={"external_id": "creator_1"}).json()
+    assert b["accounts"] == []
+    assert b["mode"] == "mock"
+
+
+def test_social_disconnect_mock_ok():
+    b = client.post("/v1/social/disconnect", json={"account_id": "spc_x"}).json()
+    assert b["ok"] is True and b["mode"] == "mock"
+
+
 def test_mint_upload_url():
     r = client.post("/v1/uploads/mint", json={"filename": "test.mov", "content_type": "video/quicktime"})
     assert r.status_code == 200
