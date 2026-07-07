@@ -51,22 +51,26 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
             Spacer(minLength: Space.md)
 
             VStack(spacing: 0) {
-                VStack(spacing: Space.sm) {
-                    Text(headline)
-                        .font(Typeface.display(30)).tracking(-0.6)
-                        .foregroundStyle(Palette.textPrimary)
-                        .multilineTextAlignment(.center)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .staggerReveal(0)
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                // An empty headline means the step draws its own header (e.g. a typed-out
+                // reveal), so the scaffold skips its static one entirely.
+                if !headline.isEmpty {
+                    VStack(spacing: Space.sm) {
+                        Text(headline)
+                            .font(Typeface.display(30)).tracking(-0.6)
+                            .foregroundStyle(Palette.textPrimary)
                             .multilineTextAlignment(.center)
                             .fixedSize(horizontal: false, vertical: true)
-                            .staggerReveal(1)
+                            .staggerReveal(0)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .staggerReveal(1)
+                        }
                     }
+                    .padding(.bottom, Space.xxl)
                 }
-                .padding(.bottom, Space.xxl)
 
                 content()
             }

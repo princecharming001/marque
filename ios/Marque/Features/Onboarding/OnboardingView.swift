@@ -205,13 +205,10 @@ struct OnboardingView: View {
         case .often, .daily:
             "You've got the volume. Now make every post compound: one filming session, scripts in your voice, edits handled."
         }
-        return scaffold("Consistency beats virality", line) {
-            VStack(spacing: Space.lg) {
-                UnicornMascot(pose: .thinking, size: 170)
-                    .staggerReveal(0)
-                MethodStatCard()
-                    .staggerReveal(1, distance: 20)
-            }
+        // No mascot, no stat card — just the copy, typed out. The scaffold's static
+        // header is suppressed (empty headline) so the typewriter owns the reveal.
+        return scaffold("") {
+            OnboardingTypewriter(headline: "Consistency beats virality", message: line)
         } cta: {
             OnbPill(title: "Let's do it") { advance() }
                 .accessibilityIdentifier("onboard.continue")
@@ -611,79 +608,74 @@ private extension BrandGraph {
 /// The "consistency beats virality" comparison — two labeled, animated bars with
 /// trailing multiplier values, on a sunken track. Replaces the old floaty capsule
 /// pair; owns its own appear-animation state so the bars grow in on first render.
-private struct MethodStatCard: View {
-    // Sequenced reveal: the weak "1×" row lands first, then a beat later the "4×" row
-    // punches in and fills — the contrast is the point, so it earns a dramatic pause
-    // rather than both bars racing at once.
-    @State private var grownViral = false
-    @State private var showYuni = false
-    @State private var grownYuni = false
-    @State private var showCaption = false
+// A typed-out reveal for interstitial copy: the serif headline types itself first, then
+// the body types beneath it, each trailed by a blinking caret — a calm "message arriving"
+// feel that replaces the old mascot + stat card. Reuses the chat typewriter cadence.
+private struct OnboardingTypewriter: View {
+    let headline: String
+    let message: String
+
+    @State private var headlineShown = ""
+    @State private var bodyShown = ""
+    @State private var stage = 0          // 0 = typing headline · 1 = typing body · 2 = done
+    @State private var caretOn = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            statRow(label: "Chasing viral hits", value: "1×", fraction: 0.22,
-                    filled: false, grown: grownViral)
-
-            if showYuni {
-                MarqueHairline().transition(.opacity)
-                statRow(label: "Posting weekly with Yunicorn", value: "4×", fraction: 0.92,
-                        filled: true, grown: grownYuni)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
-            if showCaption {
-                Text("Accounts that post 3×+ a week grow ~4× faster than accounts that post sporadically.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    .multilineTextAlignment(.leading)
+        VStack(spacing: Space.lg) {
+            headlineText
+                .fixedSize(horizontal: false, vertical: true)
+            if stage >= 1 {
+                bodyText
                     .fixedSize(horizontal: false, vertical: true)
                     .transition(.opacity)
             }
         }
-        .padding(Space.lg)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
-        .animation(Motion.spring, value: showYuni)
-        .animation(Motion.calm, value: showCaption)
-        .task { await revealSequence() }
+        .frame(maxWidth: .infinity)
+        .multilineTextAlignment(.center)
+        .animation(Motion.quick, value: stage)
+        .task { await type() }
+        .task { await blink() }
     }
 
-    /// Drives the staged build. Kept as an async sequence (not chained delays) so the
-    /// beats are readable and easy to retune.
-    private func revealSequence() async {
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) { grownViral = true }
-        try? await Task.sleep(nanoseconds: 650_000_000)   // the dramatic pause
-        showYuni = true
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        withAnimation(.spring(response: 0.55, dampingFraction: 0.75)) { grownYuni = true }
-        try? await Task.sleep(nanoseconds: 450_000_000)
-        showCaption = true
+    private var headlineText: Text {
+        let base = Text(headlineShown)
+            .font(Typeface.display(30)).tracking(-0.6)
+            .foregroundColor(Palette.textPrimary)
+        return stage == 0 ? base + caret : base
     }
 
-    private func statRow(label: String, value: String, fraction: CGFloat,
-                         filled: Bool, grown: Bool) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            HStack {
-                Text(label)
-                    .font(AppFont.callout)
-                    .foregroundStyle(filled ? Palette.textPrimary : Palette.textTertiary)
-                Spacer()
-                Text(value)
-                    .font(AppFont.headline)
-                    .foregroundStyle(filled ? Palette.textPrimary : Palette.textTertiary)
-            }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Palette.surfaceSunken)
-                    Capsule()
-                        .fill(filled ? Palette.ink : Color(hex: 0xC9C7C2))
-                        .frame(width: geo.size.width * (grown ? fraction : 0))
-                }
-            }
-            .frame(height: 14)
+    private var bodyText: Text {
+        let base = Text(bodyShown)
+            .font(AppFont.body).foregroundColor(Palette.textSecondary)
+        return stage == 1 ? base + caret : base
+    }
+
+    private var caret: Text {
+        Text("▍").foregroundColor(caretOn ? Palette.accent : .clear)
+    }
+
+    private func type() async {
+        await reveal(headline) { headlineShown = $0 }
+        try? await Task.sleep(nanoseconds: 280_000_000)   // a beat before the body
+        withAnimation(Motion.quick) { stage = 1 }
+        await reveal(message) { bodyShown = $0 }
+        stage = 2
+    }
+
+    /// Reveal `full` 2–3 characters at a time (~20ms/step), the chat typewriter cadence.
+    private func reveal(_ full: String, _ set: (String) -> Void) async {
+        var idx = full.startIndex
+        while idx < full.endIndex, !Task.isCancelled {
+            idx = full.index(idx, offsetBy: Int.random(in: 2...3), limitedBy: full.endIndex) ?? full.endIndex
+            set(String(full[..<idx]))
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
+
+    private func blink() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            caretOn.toggle()
         }
     }
 }
