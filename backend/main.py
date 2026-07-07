@@ -563,6 +563,8 @@ class MetricsIngestRequest(BaseModel):
     reach: int = 0
     avg_watch_pct: float = 0.0
     follows_gained: int = 0
+    goal: str = "grow"          # the creator's objective; picks the _compute_y weighting
+    niche: str = ""             # optional, for cold-arm Beta seeding consistency
 
 
 class ConverseRequest(BaseModel):
@@ -2996,13 +2998,17 @@ async def ingest_metrics(req: MetricsIngestRequest):
         return {"mode": "mock", "status": "below_min_reach", "reach": req.reach}
 
     m = req.model_dump()
-    y = _compute_y(m)
+    goal = req.goal if req.goal in ("grow", "authority", "clients", "monetize") else "grow"
+    y = _compute_y(m, goal)                      # score on the creator's OWN objective, not always "grow"
     creator_id = req.creator_id
+    if req.niche:
+        _creator_niche[creator_id] = req.niche
+    niche = req.niche or _creator_niche.get(creator_id, "")
 
     for dim in DIMENSIONS:
         val = entry.get(dim, "")
         if val:
-            await _update_arm(creator_id, f"{dim}:{val}", y)
+            await _update_arm(creator_id, f"{dim}:{val}", y, niche)
 
     entry["outcome_y"] = y
     entry["settled"] = True
@@ -3014,8 +3020,14 @@ async def ingest_metrics(req: MetricsIngestRequest):
         except Exception as e:
             logging.warning("supabase upsert_post (settled) failed: %s", e)
 
+    # Attribute the just-settled post from the creator's own arms so the app can show
+    # what drove it. Honest by construction (attribute_from_arms only speaks driver/
+    # error bands it can ground in the data; else "none").
+    attribution = prompts.attribute_from_arms(await _arms_for_prompt(creator_id))
+
     return {"mode": "live" if SUPABASE_URL else "mock", "status": "ingested",
-            "outcome_y": round(y, 3), "post_id": req.post_id}
+            "outcome_y": round(y, 3), "goal": goal, "attribution": attribution,
+            "post_id": req.post_id}
 
 
 def _cold_recommendations(niche: str) -> list[dict]:

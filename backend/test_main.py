@@ -1955,3 +1955,34 @@ def test_insights_learned_carries_band():
         asyncio.run(main._update_arm("band_user", "format_id:listicle", 0.9))
     b = client.get("/v1/insights/learned", params={"creator_id": "band_user"}).json()
     assert b["insights"] and all("band" in ins for ins in b["insights"])
+
+
+# ---------------------------------------------------------------------------
+# B1 · Real-reward ingest (creator-confirmed metrics, per-goal weighting)
+# ---------------------------------------------------------------------------
+
+def test_compute_y_respects_goal_weighting():
+    m = {"reach": 1000, "likes": 100, "comments": 300, "shares": 10, "saves": 20,
+         "follows_gained": 5, "avg_watch_pct": 0.3}
+    # a comment-heavy post scores higher for a "clients" goal than for "grow"
+    assert main._compute_y(m, "clients") > main._compute_y(m, "grow")
+    # unknown goal falls back to grow exactly
+    assert main._compute_y(m, "bogus") == main._compute_y(m, "grow")
+
+
+def test_ingest_uses_goal_niche_and_returns_attribution():
+    main._arm_stats.pop("b1_user", None)
+    main._creator_niche.pop("b1_user", None)
+    client.post("/v1/posts/register", json={
+        "post_id": "b1p1", "creator_id": "b1_user", "pillar": "Myth-busting",
+        "style": "talking_head", "format_id": "myth-buster", "hook_signal": "contrarian",
+        "niche": "fitness"})
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "b1p1", "creator_id": "b1_user", "reach": 1000, "likes": 100,
+        "comments": 300, "saves": 40, "shares": 20, "follows_gained": 8,
+        "avg_watch_pct": 0.5, "goal": "clients"}).json()
+    assert r["status"] == "ingested" and r["goal"] == "clients"
+    assert r["attribution"]["dimension"] in ("hook_signal", "style", "format_id", "pillar", "none")
+    s = main._arm_stats["b1_user"]["hook_signal:contrarian"]
+    assert s["n"] == 1                          # the settled post moved the arm
+    assert s["prior_alpha"] > 1.0               # and it was niche-seeded (contrarian is a fitness prior)
