@@ -98,40 +98,43 @@ struct TourOverlay: View {
         .animation(Motion.calm, value: step.id)
     }
 
-    /// Yuni peeking in from the corner next to the highlight, with a compact speech bubble.
-    /// Sits below the target when it's up top, above it when it's down low, so it never
-    /// covers what it points at.
+    // Fixed geometry so the cluster can be positioned exactly on-screen (no clipping).
+    private static let bubbleW: CGFloat = 232
+    private static let mascotW: CGFloat = 104
+    private static let gap: CGFloat = 6
+    private static let edge: CGFloat = 12
+    private var clusterW: CGFloat { Self.bubbleW + Self.gap + Self.mascotW }
+
+    /// A distinct STATIC Yuni pose sits NEXT TO the bubble (never behind/clipped), on the
+    /// side nearest the highlight so it reads as leaning in toward it. Sits below the target
+    /// when it's up top, above when it's down low, so it never covers what it points at.
     @ViewBuilder
     private func coachCluster(step: TourManager.Step, target: CGRect, screen: CGSize) -> some View {
         let peekLeft = target.midX < screen.width * 0.5
         let below = target.midY < screen.height * 0.55
-        // The unicorn sits BEHIND the bubble (zIndex -1) so it peeks out from behind the
-        // corner and can never cover the Skip/Next controls (which it did at zIndex 1 —
-        // making them untappable). Overlap tucks its body behind the bubble edge.
-        HStack(alignment: .bottom, spacing: -30) {
+        HStack(alignment: .bottom, spacing: Self.gap) {
             if peekLeft {
-                UnicornPeekView(mirrored: false).zIndex(-1)
+                mascot(step, mirrored: false)   // generated facing right → faces the bubble
                 bubble(step)
             } else {
                 bubble(step)
-                UnicornPeekView(mirrored: true).zIndex(-1)
+                mascot(step, mirrored: true)    // flip → faces left, toward the bubble
             }
         }
-        .fixedSize()
-        .position(x: clusterX(peekLeft: peekLeft, screen: screen),
-                  y: below ? min(target.maxY + 108, screen.height - 150)
-                           : max(target.minY - 108, 160))
-        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+        .frame(width: clusterW, alignment: .bottom)
+        .position(x: peekLeft ? clusterW / 2 + Self.edge : screen.width - clusterW / 2 - Self.edge,
+                  y: below ? min(target.maxY + 104, screen.height - 150)
+                           : max(target.minY - 104, 170))
+        .transition(.opacity.combined(with: .scale(scale: 0.96)))
     }
 
-    /// Keep the whole cluster comfortably on-screen, biased toward the peek side.
-    private func clusterX(peekLeft: Bool, screen: CGSize) -> CGFloat {
-        peekLeft ? screen.width * 0.42 : screen.width * 0.58
+    private func mascot(_ step: TourManager.Step, mirrored: Bool) -> some View {
+        TourMascotView(resource: step.mascot, size: Self.mascotW, mirrored: mirrored)
     }
 
     private func bubble(_ step: TourManager.Step) -> some View {
         TourSpeechBubble(
-            step: step,
+            step: step, width: Self.bubbleW,
             index: tour.index,
             total: TourManager.steps.count,
             isLast: tour.isLastStep,
@@ -141,33 +144,25 @@ struct TourOverlay: View {
     }
 }
 
-// MARK: - Peeking unicorn
+// MARK: - Static per-step mascot
 
-/// The Yuni "peek + wave" render (transparent). A gentle seamless wobble reads as an
-/// excited "hi!" wave. `mirrored` flips it to peek from the right edge instead of the left.
-private struct UnicornPeekView: View {
+/// A single static Yuni pose, fully visible beside the bubble. No motion — the character
+/// holds a whimsical pose (wave / lean / point / chill / cheer) that differs per step.
+private struct TourMascotView: View {
+    let resource: String
+    let size: CGFloat
     var mirrored: Bool
-    @State private var start: Date = .now
 
     var body: some View {
-        TimelineView(.animation) { ctx in
-            let t = ctx.date.timeIntervalSince(start)
-            let tilt = sin(t * 2.2) * 5.0    // seamless: pure sines, equal at loop endpoints
-            let bob = sin(t * 1.6) * 3.0
-            image
-                .rotationEffect(.degrees(mirrored ? -tilt : tilt), anchor: .bottom)
-                .offset(y: bob)
+        Group {
+            if UIImage(named: resource) != nil {
+                Image(resource).resizable().scaledToFit()
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+            } else {
+                UnicornMascot(pose: .hero, size: size * 0.9)   // fallback keeps the tour intact
+            }
         }
-        .frame(width: 96, height: 132)
-    }
-
-    @ViewBuilder private var image: some View {
-        if UIImage(named: "UnicornPeek") != nil {
-            Image("UnicornPeek").resizable().scaledToFit()
-                .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-        } else {
-            UnicornMascot(pose: .hero, size: 92)   // fallback keeps the tour intact
-        }
+        .frame(width: size, height: size * 1.25)
     }
 }
 
@@ -175,6 +170,7 @@ private struct UnicornPeekView: View {
 
 private struct TourSpeechBubble: View {
     let step: TourManager.Step
+    let width: CGFloat
     let index: Int
     let total: Int
     let isLast: Bool
@@ -192,7 +188,7 @@ private struct TourSpeechBubble: View {
             controls
         }
         .padding(Space.lg)
-        .frame(width: 250, alignment: .leading)
+        .frame(width: width, alignment: .leading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .shadow(color: .black.opacity(0.28), radius: 22, y: 10)

@@ -11,22 +11,27 @@ final class TourManager {
         let id: String            // matches the .tourAnchor(id) tag on the target control
         let title: String
         let message: String
+        let mascot: String        // per-step Yuni pose asset (distinct, static, whimsical)
     }
 
-    /// One pass through the four things a brand-new creator actually needs to find.
-    /// All four anchors live on the persistent tab bar / Home, so no tab-switching is
-    /// required mid-tour except landing on Home first (see `start`).
+    /// One pass through the things a brand-new creator needs to find. Each step gets its
+    /// own Yuni pose so it's never the same unicorn twice.
     static let steps: [Step] = [
         Step(id: "tour.voiceBubble", title: "Talk to Yuni",
-             message: "Tap here anytime to talk out loud — scripts, ideas, or your whole day, planned."),
+             message: "Tap here anytime to talk out loud — scripts, ideas, or your whole day, planned.",
+             mascot: "UnicornTourWave"),
         Step(id: "tour.chat", title: "Prefer typing?",
-             message: "Chat has the same brain as the voice bubble — same Yuni, just text."),
+             message: "Chat has the same brain as the voice bubble — same Yuni, just text.",
+             mascot: "UnicornTourLean"),
         Step(id: "tour.film", title: "Ready to record?",
-             message: "Tap here to film. I'll turn your take into ready-to-post clips."),
+             message: "Tap here to film. I'll turn your take into ready-to-post clips.",
+             mascot: "UnicornTourPoint"),
         Step(id: "tour.library", title: "Your clips live here",
-             message: "Ready clips, drafts, and saved footage — everything lands in Library."),
+             message: "Ready clips, drafts, and saved footage — everything lands in Library.",
+             mascot: "UnicornTourChill"),
         Step(id: "tour.performance", title: "Track what's working",
-             message: "See how your posts are doing and what to make more of."),
+             message: "See how your posts are doing and what to make more of.",
+             mascot: "UnicornTourCheer"),
     ]
 
     private static let completedKey = "tour.completed"
