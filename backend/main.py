@@ -56,7 +56,11 @@ async def _timing_middleware(request, call_next):
 
 ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 ANTHROPIC_URL = os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages"
-AYRSHARE_KEY = os.environ.get("AYRSHARE_KEY", "")
+# Post for Me — unified publishing API (per-post pricing, unlimited accounts, brings its
+# own approved IG/TikTok apps so users OAuth-link via Post for Me). Replaces Ayrshare as
+# the publish backend; the key stays server-side only. Empty => mock (nothing posts).
+POSTFORME_KEY = os.environ.get("POSTFORME_KEY", "")
+POSTFORME_BASE = os.environ.get("POSTFORME_BASE", "https://api.postforme.dev/v1")
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -856,7 +860,7 @@ def readyz():
     return {"status": "ready", "version": app.version,
             "ai": "live" if ANTHROPIC_KEY else "mock",
             "scrape": "live" if APIFY_KEY else "mock",
-            "publish": "live" if AYRSHARE_KEY else "mock",
+            "publish": "live" if POSTFORME_KEY else "mock",
             # "storage" surfaces whether recorded footage can actually be saved +
             # fetched by the pipeline. "mock" here means every real upload is doomed
             # (source unreachable) — the exact prod failure this makes visible.
@@ -2661,31 +2665,126 @@ async def connect_preview(req: ConnectPreviewRequest):
     return await preview_tiktok(handle)
 
 
-# ----- publishing (phase 2; kept so the surface is complete) -----
+# ----- publishing via Post for Me -----------------------------------------
+# Post for Me is the publish backend (per-post pricing, unlimited accounts, brings its
+# own approved IG/TikTok apps). The account-link flow is per-user: the app asks the
+# backend for an OAuth `auth-url` (tagged with the creator's external_id), the user
+# authorizes through Post for Me, then we look the account(s) up by external_id to get
+# their `spc_...` ids and post to them. The key lives only here (server-side).
+
+
+async def _pfm_request(method: str, path: str, *, json_body: dict | None = None,
+                       params: dict | None = None) -> tuple[int, dict]:
+    """One place all Post for Me calls go through. Returns (status_code, json)."""
+    headers = {"Authorization": f"Bearer {POSTFORME_KEY}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.request(method, f"{POSTFORME_BASE}{path}",
+                                 headers=headers, json=json_body, params=params)
+    try:
+        data = r.json()
+    except (ValueError, json.JSONDecodeError):
+        data = {}
+    return r.status_code, data
+
+
+class SocialAuthURLRequest(BaseModel):
+    platform: str                    # "instagram" | "tiktok" | "youtube" | ...
+    external_id: str = ""            # our per-user tag; how we find this account later
+    redirect_url: str = ""           # optional: deep-link back into the app after OAuth
+
+
+@app.post("/v1/social/auth-url")
+async def social_auth_url(req: SocialAuthURLRequest):
+    """Mint a Post for Me OAuth URL for a user to connect one IG/TikTok account.
+    Mock (no key) returns an empty url so the client shows 'linking unavailable'."""
+    if not POSTFORME_KEY:
+        return {"url": "", "platform": req.platform, "mode": "mock"}
+    body: dict = {"platform": req.platform, "permissions": ["posts"]}
+    if req.external_id:
+        body["external_id"] = req.external_id
+    if req.redirect_url:
+        body["redirect_url_override"] = req.redirect_url
+    try:
+        code, data = await _pfm_request("POST", "/social-accounts/auth-url", json_body=body)
+    except httpx.HTTPError:
+        return {"url": "", "platform": req.platform, "mode": "live", "error": "network"}
+    if 200 <= code < 300:
+        return {"url": data.get("url", ""), "platform": data.get("platform", req.platform), "mode": "live"}
+    return {"url": "", "platform": req.platform, "mode": "live", "error": data.get("message", f"http_{code}")}
+
+
+@app.get("/v1/social/accounts")
+async def social_accounts(external_id: str = "", platform: str = ""):
+    """List a user's connected accounts (filtered by our external_id tag). Returns the
+    normalized shape the app stores: id (spc_...), platform, username, profile photo."""
+    if not POSTFORME_KEY:
+        return {"accounts": [], "mode": "mock"}
+    params: dict = {}
+    if external_id:
+        params["external_id"] = external_id
+    if platform:
+        params["platform"] = platform
+    try:
+        code, data = await _pfm_request("GET", "/social-accounts", params=params)
+    except httpx.HTTPError:
+        return {"accounts": [], "mode": "live", "error": "network"}
+    accounts = [
+        {
+            "id": a.get("id", ""),
+            "platform": a.get("platform", ""),
+            "username": a.get("username", ""),
+            "profile_photo_url": a.get("profile_photo_url", ""),
+            "status": a.get("status", ""),
+            "external_id": a.get("external_id", ""),
+        }
+        for a in (data.get("data") or [])
+    ]
+    return {"accounts": accounts, "mode": "live"}
+
+
+class SocialDisconnectRequest(BaseModel):
+    account_id: str
+
+
+@app.post("/v1/social/disconnect")
+async def social_disconnect(req: SocialDisconnectRequest):
+    if not POSTFORME_KEY:
+        return {"ok": True, "mode": "mock"}
+    try:
+        code, _ = await _pfm_request("POST", f"/social-accounts/{req.account_id}/disconnect")
+    except httpx.HTTPError:
+        return {"ok": False, "mode": "live", "error": "network"}
+    return {"ok": 200 <= code < 300, "mode": "live"}
+
 
 class PublishRequest(BaseModel):
     caption: str = ""
     media_url: str = ""
-    platforms: list[str] = []
+    platforms: list[str] = []            # legacy field (kept for back-compat)
     schedule_date: str = ""
+    social_account_ids: list[str] = []   # Post for Me spc_ids to post to
+    draft: bool = False                  # if true, create as draft (no real post) — used for tests
 
 
 @app.post("/v1/publish")
 async def publish(req: PublishRequest):
-    if not AYRSHARE_KEY:
+    # No key, or no linked accounts to target => mock (nothing is actually posted).
+    if not POSTFORME_KEY or not req.social_account_ids:
         return {"ok": True, "mode": "mock", "id": f"post_{uuid.uuid4().hex[:10]}"}
-    body = {"post": req.caption, "platforms": req.platforms}
-    if req.schedule_date:
-        body["scheduleDate"] = req.schedule_date
+    body: dict = {"caption": req.caption, "social_accounts": req.social_account_ids}
     if req.media_url.startswith("http"):
-        body["mediaUrls"] = [req.media_url]
+        body["media"] = [{"url": req.media_url}]
+    if req.schedule_date:
+        body["scheduled_at"] = req.schedule_date
+    if req.draft:
+        body["isDraft"] = True
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post("https://api.ayrshare.com/api/post",
-                                  headers={"Authorization": f"Bearer {AYRSHARE_KEY}"}, json=body)
-        return {"ok": 200 <= r.status_code < 300, "mode": "live", "status": r.status_code}
+        code, data = await _pfm_request("POST", "/social-posts", json_body=body)
     except httpx.HTTPError:
         return {"ok": False, "mode": "live", "error": "network"}
+    return {"ok": 200 <= code < 300, "mode": "live", "id": data.get("id", ""),
+            "status": data.get("status", ""), "http": code,
+            **({"error": data.get("message")} if code >= 300 else {})}
 
 
 # ---------------------------------------------------------------------------
