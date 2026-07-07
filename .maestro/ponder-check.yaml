@@ -1,0 +1,12 @@
+appId: com.getmarque.app
+---
+- launchApp:
+    clearState: true
+    permissions: { all: allow }
+- assertVisible: "Get started"
+- tapOn: { id: onboard.start }
+- tapOn: { id: onboard.goal.audience }
+- tapOn: { id: onboard.blocker.time }
+- tapOn: { id: onboard.frequency.sometimes }
+- assertVisible: "Consistency beats virality"
+- takeScreenshot: /Users/home/Marque/.shots/ponder-live.png
