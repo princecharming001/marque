@@ -772,6 +772,8 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
     )
     media = f"\nReference footage the creator already has (reuse where natural): {media_context}" if media_context else ""
     learn = learning_block(arm_stats or [])
+    if not learn:                                    # cold start: no own data yet → niche baseline
+        learn = niche_prior_block(brand.get("niche", ""))
     learn_section = f"\n{learn}\n" if learn else ""
     mem = memory_block(memory) if memory else ""
     mem_section = f"\n{mem}\n" if mem else ""
@@ -913,6 +915,8 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
         "]\n\nReply with ONLY a JSON array, no prose."
     )
     learn = learning_block(arm_stats or [])
+    if not learn:                                    # cold start: no own data yet → niche baseline
+        learn = niche_prior_block(brand.get("niche", ""))
     extra = f"\n{learn}" if learn else ""
     mem = memory_block(memory) if memory else ""
     mem_section = f"\n{mem}\n" if mem else ""
@@ -1213,6 +1217,192 @@ def learning_block(arm_stats: list[dict]) -> str:
         return ""
     lines.append("Lean into outperforming signals; avoid confirmed underperformers.")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Cold-start niche priors — what tends to over-index in a niche BEFORE a creator
+# has any performance data of their own. Rendered by niche_prior_block() ONLY when
+# learning_block() is empty (no arm has an early read yet); the creator's own data
+# always wins the moment it exists. Keyless-safe: pure hand-authored constants, no
+# model call. `signals` are hook_signal values (see SIGNALS); `formats` are
+# FORMAT_IDS; `styles` are ACTIVE_STYLES. Ported framing from Palo's cold-start
+# discipline (mobile-onboarding-interaction-bouncer: "niche knowledge, not their
+# catalog"; onboarding-prompt-direction-options MODE-2 generic format lanes).
+# ---------------------------------------------------------------------------
+
+NICHE_PRIORS: dict[str, dict] = {
+    "fitness": {
+        "signals": ["contrarian", "authority", "specificity"],
+        "formats": ["myth-buster", "do-this-not-that", "before-after"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Form-check myth-busting and before/after transformations over-index; back every claim with receipts (a 90-day log, an exact number).",
+    },
+    "finance": {
+        "signals": ["specificity", "stakes", "contrarian"],
+        "formats": ["listicle", "do-this-not-that", "myth-buster"],
+        "styles": ["talking_head", "green_screen", "faceless"],
+        "note": "Exact dollar figures and 'this is costing you money' stakes convert; myth-bust the money advice everyone repeats.",
+    },
+    "business": {
+        "signals": ["contrarian", "stakes", "authority"],
+        "formats": ["myth-buster", "pov-story", "listicle"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "Contrarian takes on conventional advice plus a specific revenue/mistake number travel; a first-person POV story builds trust fast.",
+    },
+    "marketing": {
+        "signals": ["authority", "specificity", "contrarian"],
+        "formats": ["listicle", "do-this-not-that", "myth-buster"],
+        "styles": ["green_screen", "talking_head"],
+        "note": "Teardown listicles and receipts (real numbers, real examples) earn authority; green-screen over an example beats abstract advice.",
+    },
+    "food": {
+        "signals": ["curiosity", "specificity", "patternInterrupt"],
+        "formats": ["broll-hook", "do-this-not-that", "before-after"],
+        "styles": ["faceless", "broll_cutaway"],
+        "note": "Process b-roll plus one surprising technique or number dominates; faceless voiceover over cooking visuals is the default that works.",
+    },
+    "beauty": {
+        "signals": ["contrarian", "curiosity", "authority"],
+        "formats": ["myth-buster", "do-this-not-that", "before-after"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Ingredient myth-busting and before/after reveals travel; derm/pro-authority receipts beat vibes.",
+    },
+    "fashion": {
+        "signals": ["curiosity", "specificity", "patternInterrupt"],
+        "formats": ["before-after", "listicle", "do-this-not-that"],
+        "styles": ["talking_head", "split_three", "broll_cutaway"],
+        "note": "Styling reveals and transformations plus 'X ways to wear it' listicles carry; a strong visual first frame is non-negotiable.",
+    },
+    "tech": {
+        "signals": ["curiosity", "stakes", "specificity"],
+        "formats": ["listicle", "do-this-not-that", "broll-hook"],
+        "styles": ["green_screen", "talking_head", "faceless"],
+        "note": "'This tool does X in Y seconds' curiosity plus green-screen demos win; stakes on being left behind add urgency.",
+    },
+    "education": {
+        "signals": ["specificity", "contrarian", "authority"],
+        "formats": ["do-this-not-that", "listicle", "myth-buster"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "Study-method myth-busting and named specific techniques over-index; authority comes from receipts, not credentials.",
+    },
+    "mindset": {
+        "signals": ["contrarian", "narrative", "stakes"],
+        "formats": ["pov-story", "myth-buster", "listicle"],
+        "styles": ["talking_head"],
+        "note": "Contrarian reframes and a sincere personal narrative land; talking-head to camera carries the sincerity.",
+    },
+    "real_estate": {
+        "signals": ["specificity", "stakes", "authority"],
+        "formats": ["listicle", "do-this-not-that", "before-after"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Exact numbers (price, ROI, rates) plus 'the mistake buyers make' stakes convert; walkthrough b-roll adds proof.",
+    },
+    "health": {
+        "signals": ["contrarian", "authority", "specificity"],
+        "formats": ["myth-buster", "do-this-not-that", "listicle"],
+        "styles": ["talking_head", "faceless"],
+        "note": "Nutrition/wellness myth-busting with study-backed authority over-indexes; one specific protocol beats generic advice.",
+    },
+    "parenting": {
+        "signals": ["narrative", "contrarian", "curiosity"],
+        "formats": ["pov-story", "do-this-not-that", "listicle"],
+        "styles": ["talking_head"],
+        "note": "Relatable POV moments and gentle contrarian takes on common parenting advice resonate; sincerity over polish.",
+    },
+    "travel": {
+        "signals": ["curiosity", "specificity", "patternInterrupt"],
+        "formats": ["listicle", "broll-hook", "before-after"],
+        "styles": ["broll_cutaway", "faceless"],
+        "note": "Destination b-roll hooks plus '$X for Y days' specificity carry; open on the most striking visual, not a greeting.",
+    },
+    "comedy": {
+        "signals": ["patternInterrupt", "narrative", "curiosity"],
+        "formats": ["pov-story", "broll-hook"],
+        "styles": ["talking_head", "split_three", "duet_split"],
+        "note": "Pattern-interrupt cold opens and relatable POV skits travel; the first frame has to break the scroll's expectation.",
+    },
+    "career": {
+        "signals": ["contrarian", "stakes", "specificity"],
+        "formats": ["do-this-not-that", "listicle", "myth-buster"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "Contrarian career advice plus salary/number specifics and 'this is quietly killing your promotion' stakes convert.",
+    },
+    "creator": {
+        "signals": ["authority", "specificity", "contrarian"],
+        "formats": ["listicle", "do-this-not-that", "myth-buster"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "Growth receipts (real view/follower numbers) and algorithm myth-busting over-index; show the data on screen.",
+    },
+    "default": {
+        "signals": ["contrarian", "specificity", "curiosity"],
+        "formats": ["myth-buster", "listicle", "do-this-not-that"],
+        "styles": ["talking_head"],
+        "note": "Open mid-thought on a specific, contrarian claim; talking-head straight to camera is the safest default that works.",
+    },
+}
+
+# (keyword substrings -> canonical niche slug). First match wins, so order the more
+# specific entries before the generic ones. Freeform onboarding niche text is matched
+# case-insensitively against these.
+_NICHE_ALIASES: list[tuple[tuple[str, ...], str]] = [
+    (("fitness", "gym", "workout", "lifting", "bodybuild", "personal train", "calisthenic", "crossfit", "run"), "fitness"),
+    (("finance", "money", "invest", "stock", "wealth", "budget", "personal finance", "fire ", "crypto", "trading"), "finance"),
+    (("business", "entrepreneur", "startup", "founder", "ecommerce", "e-commerce", "dropship", "saas", "small business"), "business"),
+    (("marketing", "agency", "social media", "copywrit", "seo", "paid ads", "growth marketing", "branding"), "marketing"),
+    (("food", "cook", "recipe", "baking", "chef", "kitchen", "meal prep", "barista"), "food"),
+    (("beauty", "skincare", "makeup", "cosmetic", "esthet", "derm", "hair", "nails"), "beauty"),
+    (("fashion", "style", "outfit", "streetwear", "thrift", "wardrobe"), "fashion"),
+    (("tech", "ai ", " ai", "artificial intel", "software", "coding", "developer", "programming", "gadget", "no-code", "cybersec"), "tech"),
+    (("study", "student", "education", "teacher", "exam", "language learning", "academ", "college", "medical school"), "education"),
+    (("mindset", "self-improve", "self improvement", "motivation", "discipline", "productivity", "stoic", "spiritual", "manifest"), "mindset"),
+    (("real estate", "realtor", "property", "mortgage", "airbnb", "landlord"), "real_estate"),
+    (("health", "wellness", "nutrition", "diet", "gut ", "hormone", "sleep", "biohack", "therapist", "mental health"), "health"),
+    (("parent", "mom", "dad", "toddler", "newborn", "family", "motherhood"), "parenting"),
+    (("travel", "digital nomad", "backpack", "destination", "van life"), "travel"),
+    (("comedy", "skit", "entertain", "funny", "prank", "meme"), "comedy"),
+    (("career", "corporate", "9-5", "9 to 5", "resume", "job interview", "salary", "consulting"), "career"),
+    (("creator", "content creation", "influencer", "youtube", "podcast", "streamer"), "creator"),
+]
+
+
+def match_niche(niche: str) -> str:
+    """Map freeform niche text to a canonical NICHE_PRIORS slug ('default' if none)."""
+    n = (niche or "").strip().lower()
+    if not n:
+        return "default"
+    for keys, slug in _NICHE_ALIASES:
+        if any(k in n for k in keys):
+            return slug
+    return "default"
+
+
+def niche_priors_for(niche: str) -> dict:
+    """The prior dict for a niche (always returns something; falls back to default)."""
+    return NICHE_PRIORS.get(match_niche(niche), NICHE_PRIORS["default"])
+
+
+def niche_prior_block(niche: str) -> str:
+    """Cold-start baseline injected ONLY when the creator has no performance data
+    yet (learning_block empty). Framed as niche priors to lean on until their own
+    data lands — never as facts about THIS creator."""
+    p = niche_priors_for(niche)
+    slug = match_niche(niche)
+    if slug == "default":
+        head = "NICHE BASELINE (no performance data yet — general short-form priors until your own data lands):"
+    else:
+        head = (f"NICHE BASELINE ({slug.replace('_', ' ')} — what tends to over-index here, "
+                "until your own data lands):")
+    sig = ", ".join(p["signals"])
+    fmt = ", ".join(p["formats"])
+    sty = ", ".join(s.replace("_", " ") for s in p["styles"])
+    return (
+        f"{head}\n"
+        f"- hooks that tend to work: {sig}\n"
+        f"- formats that tend to travel: {fmt}\n"
+        f"- styles worth defaulting to: {sty}\n"
+        f"- why: {p['note']}\n"
+        "Treat these as a starting bias, not a rule — override the moment this creator's own data disagrees."
+    )
 
 
 # ---------------------------------------------------------------------------

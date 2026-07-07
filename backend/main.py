@@ -75,6 +75,10 @@ BEST_OF_N_HOOKS = os.environ.get("BEST_OF_N_HOOKS", "1") != "0"
 
 _arm_stats: dict[str, dict] = {}
 _post_registry: dict[str, dict] = {}
+# creator_id -> freeform niche, learned opportunistically (recommendations query,
+# post register) so the bandit can seed cold arms from a niche prior. In-memory only,
+# no migration; a miss just means the neutral Beta(1,1) prior, i.e. today's behavior.
+_creator_niche: dict[str, str] = {}
 # Durable backing store for the two dicts above. None keyless → pure in-memory (unchanged).
 _supabase_client: SupabaseClient | None = (
     SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if (SUPABASE_URL and SUPABASE_KEY) else None
@@ -104,6 +108,31 @@ DIMENSIONS = ["pillar", "style", "format_id", "hook_signal"]
 KAPPA = 5.0
 EXPLORATION_FLOOR = 0.15
 
+# Cold-start: seed a new arm's Beta prior from its niche so Thompson sampling favors
+# what tends to over-index in that niche BEFORE the creator has their own data. Small
+# pseudo-count → a handful of real posts dominate it. Neutral arms (and every arm when
+# the niche is unknown) get exactly Beta(1,1) — i.e. today's uniform prior, unchanged.
+_PRIOR_PSEUDO = 1.5                      # niche prior weight, in pseudo-observations
+_PRIOR_EFFECT = (0.65, 0.60, 0.57)       # optimism by rank in the niche's preferred list
+
+
+def _niche_prior_for_arm(dim_value: str, niche: str) -> tuple[float, float]:
+    """Beta(alpha, beta) prior for a fresh arm, from its niche. Returns the neutral
+    (1.0, 1.0) — the existing uniform prior — unless the arm's value is among the
+    niche's preferred hook_signals/formats/styles, where a small pseudo-count nudges
+    it optimistic. Pillars are creator-specific → always neutral."""
+    if not niche or ":" not in dim_value:
+        return (1.0, 1.0)
+    dim, val = dim_value.split(":", 1)
+    key = {"hook_signal": "signals", "format_id": "formats", "style": "styles"}.get(dim)
+    if not key:
+        return (1.0, 1.0)
+    prefs = prompts.niche_priors_for(niche).get(key, [])
+    if val not in prefs:
+        return (1.0, 1.0)
+    e = _PRIOR_EFFECT[min(prefs.index(val), len(_PRIOR_EFFECT) - 1)]
+    return (1.0 + _PRIOR_PSEUDO * e, 1.0 + _PRIOR_PSEUDO * (1.0 - e))
+
 
 def _compute_y(m: dict, goal: str = "grow") -> float:
     import math
@@ -126,18 +155,24 @@ def _compute_y(m: dict, goal: str = "grow") -> float:
     return 1 / (1 + math.exp(-0.5 * (raw - 2.0)))
 
 
-async def _update_arm(creator_id: str, dim_value: str, y: float):
+async def _update_arm(creator_id: str, dim_value: str, y: float, niche: str = ""):
     if creator_id not in _arm_stats:
         _arm_stats[creator_id] = {}
     stats = _arm_stats[creator_id]
     if dim_value not in stats:
-        stats[dim_value] = {"n": 0, "sum_y": 0.0, "alpha": 1.0, "beta": 1.0}
+        # Beta prior: niche-seeded for a fresh arm, else the neutral (1,1). Stored so
+        # the alpha/beta recompute below stays consistent; defaults to 1.0 for arms
+        # loaded from Supabase (which don't persist the prior) → unchanged behavior.
+        pa, pb = _niche_prior_for_arm(dim_value, niche or _creator_niche.get(creator_id, ""))
+        stats[dim_value] = {"n": 0, "sum_y": 0.0, "prior_alpha": pa, "prior_beta": pb,
+                            "alpha": pa, "beta": pb}
     s = stats[dim_value]
+    pa, pb = s.get("prior_alpha", 1.0), s.get("prior_beta", 1.0)
     s["n"] += 1
     s["sum_y"] += y
     s["effect"] = (s["sum_y"] + KAPPA * 0.5) / (s["n"] + KAPPA)
-    s["alpha"] = 1.0 + s["sum_y"]
-    s["beta"] = 1.0 + (s["n"] - s["sum_y"])
+    s["alpha"] = pa + s["sum_y"]
+    s["beta"] = pb + (s["n"] - s["sum_y"])
     s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
     if _supabase_client:                                  # write-through (best-effort)
         try:
@@ -182,13 +217,17 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
     return out
 
 
-def _thompson_sample(creator_id: str, candidates: list) -> list:
+def _thompson_sample(creator_id: str, candidates: list, niche: str = "") -> list:
     import random
     stats = _arm_stats.get(creator_id, {})
+    niche = niche or _creator_niche.get(creator_id, "")
     scored = []
     for c in candidates:
-        s = stats.get(c, {"alpha": 1.0, "beta": 1.0})
-        alpha, beta = s["alpha"], s["beta"]
+        s = stats.get(c)
+        if s is not None:
+            alpha, beta = s["alpha"], s["beta"]
+        else:                                    # unseen arm → niche-seeded prior (neutral if unknown)
+            alpha, beta = _niche_prior_for_arm(c, niche)
         mean = alpha / (alpha + beta)
         std = (alpha * beta / ((alpha + beta)**2 * (alpha + beta + 1))) ** 0.5
         sample = min(1.0, max(0.0, mean + std * random.gauss(0, 1)))
@@ -510,6 +549,7 @@ class PostRegisterRequest(BaseModel):
     hook_signal: str = ""
     predicted_score: int = 0
     creator_id: str = "default"
+    niche: str = ""
 
 
 class MetricsIngestRequest(BaseModel):
@@ -2854,6 +2894,8 @@ def _attach_react_source(edl: dict, job: dict) -> dict:
 @app.post("/v1/posts/register")
 async def register_post(req: PostRegisterRequest):
     """Register a scheduled post as a learning experiment."""
+    if req.niche:
+        _creator_niche[req.creator_id] = req.niche      # remember for cold-arm Beta seeding
     if req.post_id in _post_registry:
         return {"mode": "mock", "status": "already_registered"}
     post_data = {
@@ -2913,26 +2955,48 @@ async def ingest_metrics(req: MetricsIngestRequest):
             "outcome_y": round(y, 3), "post_id": req.post_id}
 
 
+def _cold_recommendations(niche: str) -> list[dict]:
+    """Cold-start recommendations from the niche prior (before any own arm data).
+    Pairs the niche's strongest styles with sensible starter pillars and an honest
+    'niche baseline, refines as you post' reason. Beats the old static mock, which
+    was niche-blind."""
+    p = prompts.niche_priors_for(niche)
+    styles = (p["styles"] + ["talking_head", "green_screen"])
+    fmts = p["formats"]
+    sigs = p["signals"]
+    niche_label = niche.strip() or "your niche"
+    pillars = ["Myth-bust the common advice", "Teach one specific thing well", "Contrarian take on a hot topic"]
+    _sig_word = {"patternInterrupt": "pattern-interrupt", "callOut": "call-out"}
+    arms = []
+    for i in range(3):
+        sig = _sig_word.get(sigs[i % len(sigs)], sigs[i % len(sigs)])
+        arms.append({
+            "pillar": pillars[i],
+            "style": styles[i % len(styles)],
+            "reason": (f"{sig} hooks + {fmts[i % len(fmts)]} tend to over-index in {niche_label} "
+                       "(niche baseline — refines to your own data as you post)"),
+        })
+    return arms
+
+
 @app.get("/v1/recommendations")
 async def get_recommendations(niche: str = "", creator_id: str = "default"):
     """Return top 3 Thompson-sampled arms for the creator's home feed."""
     await _ensure_arms_loaded(creator_id)
+    if niche:
+        _creator_niche[creator_id] = niche              # remember for cold-arm Beta seeding
     stats = _arm_stats.get(creator_id, {})
 
     if not stats:
-        return {"mode": "mock", "arms": [
-            {"pillar": "Myth-busting", "style": "talking_head", "reason": "Top performer in your niche"},
-            {"pillar": "Teach the fundamentals", "style": "faceless", "reason": "High saves for faceless content"},
-            {"pillar": "Hot takes", "style": "fast_cuts", "reason": "Fast-cuts trend spiking"},
-        ]}
+        return {"mode": "mock", "arms": _cold_recommendations(niche)}
 
     styles = ["talking_head", "faceless", "split_three", "fast_cuts", "green_screen"]
     pillars = list(set(
         k.split(":", 1)[1] for k in stats if k.startswith("pillar:")
     )) or ["Myth-busting", "Teach the fundamentals", "Hot takes"]
 
-    sampled_styles = _thompson_sample(creator_id, [f"style:{s}" for s in styles])
-    sampled_pillars = _thompson_sample(creator_id, [f"pillar:{p}" for p in pillars])
+    sampled_styles = _thompson_sample(creator_id, [f"style:{s}" for s in styles], niche)
+    sampled_pillars = _thompson_sample(creator_id, [f"pillar:{p}" for p in pillars], niche)
 
     arms = []
     for i in range(min(3, len(sampled_pillars))):

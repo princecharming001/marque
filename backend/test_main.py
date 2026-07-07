@@ -4,6 +4,7 @@ import time
 from fastapi.testclient import TestClient
 
 import main
+import prompts
 from main import app
 
 client = TestClient(app)
@@ -1745,3 +1746,117 @@ def test_reels_keyless_still_mock_corpus():
     b = client.get("/v1/reels", params={"niche": "fitness", "watched": "tiktok:mrbeast"}).json()
     assert b["mode"] == "mock" and len(b["reels"]) == main.REELS_PAGE
     assert all("id" in r and "thumbnail_url" in r for r in b["reels"])
+
+
+# ---------------------------------------------------------------------------
+# A1 · Cold-start niche priors
+# ---------------------------------------------------------------------------
+
+def test_match_niche_maps_freeform_to_slug():
+    assert prompts.match_niche("fitness coaching for busy dads") == "fitness"
+    assert prompts.match_niche("personal finance & investing") == "finance"
+    assert prompts.match_niche("AI tools for developers") == "tech"
+    assert prompts.match_niche("skincare & derm tips") == "beauty"
+    assert prompts.match_niche("") == "default"
+    assert prompts.match_niche("underwater basket weaving") == "default"
+
+
+def test_niche_prior_block_is_keyless_and_niche_specific():
+    blk = prompts.niche_prior_block("fitness")
+    assert "NICHE BASELINE" in blk
+    # names real hook signals / formats from the fitness prior
+    p = prompts.niche_priors_for("fitness")
+    assert p["signals"][0] in blk and p["formats"][0] in blk
+    # frames as a bias that yields to real data, never as a fact about the creator
+    assert "override" in blk.lower()
+    # unknown niche still returns a usable default block, never empty/crash
+    assert "NICHE BASELINE" in prompts.niche_prior_block("")
+
+
+def test_niche_priors_reference_only_valid_arm_values():
+    valid_sig = set(prompts.SIGNAL_LIST)
+    valid_fmt = set(prompts.FORMAT_IDS)
+    valid_sty = set(prompts.STYLES.keys())
+    for slug, p in prompts.NICHE_PRIORS.items():
+        assert set(p["signals"]) <= valid_sig, f"{slug} bad signal"
+        assert set(p["formats"]) <= valid_fmt, f"{slug} bad format"
+        assert set(p["styles"]) <= valid_sty, f"{slug} bad style"
+        assert p["note"].strip()
+
+
+def test_scripts_prompt_uses_niche_prior_when_cold_then_yields_to_learning():
+    brand = {"niche": "fitness", "what_you_do": "coach", "audience": "busy pros", "known_for": "form"}
+    pillar = {"name": "Myth-busting", "summary": "bust fitness myths", "angle": "no-nonsense"}
+    # cold: no arm data -> niche baseline present
+    _sys, user_cold = prompts.scripts_prompt(brand, pillar, "talking_head", 2, arm_stats=[])
+    assert "NICHE BASELINE" in user_cold
+    # warm: real arm data present -> learning_block wins, no niche baseline
+    arms = [{"lift_pct": 40, "label": "contrarian hook: +40% vs your average", "confidence": "confirmed"}]
+    _sys2, user_warm = prompts.scripts_prompt(brand, pillar, "talking_head", 2, arm_stats=arms)
+    assert "CREATOR PERFORMANCE DATA" in user_warm
+    assert "NICHE BASELINE" not in user_warm
+
+
+def test_recommendations_cold_path_is_niche_aware():
+    b = client.get("/v1/recommendations", params={"niche": "personal finance", "creator_id": "cold_fin_user"}).json()
+    assert b["mode"] == "mock" and len(b["arms"]) == 3
+    blob = json.dumps(b["arms"]).lower()
+    # niche-aware reason mentions the niche + is honest about being a baseline
+    assert "personal finance" in blob and "baseline" in blob
+    # styles come from the finance prior (talking_head/green_screen/faceless), not the old
+    # hardcoded fast_cuts mock
+    fin_styles = set(prompts.niche_priors_for("personal finance")["styles"]) | {"talking_head", "green_screen"}
+    assert all(a["style"] in fin_styles for a in b["arms"])
+
+
+# ---------------------------------------------------------------------------
+# A1 · Beta-seeding (niche prior into the bandit) — additive, default-preserving
+# ---------------------------------------------------------------------------
+
+def test_update_arm_default_prior_matches_old_math():
+    # No niche / no remembered niche -> exactly the pre-seeding uniform Beta(1,1) math.
+    main._arm_stats.pop("regr_user", None)
+    main._creator_niche.pop("regr_user", None)
+    asyncio.run(main._update_arm("regr_user", "style:talking_head", 0.8))
+    s = main._arm_stats["regr_user"]["style:talking_head"]
+    assert s["n"] == 1 and abs(s["sum_y"] - 0.8) < 1e-9
+    assert abs(s["alpha"] - 1.8) < 1e-9 and abs(s["beta"] - 1.2) < 1e-9
+    assert abs(s["effect"] - (0.8 + main.KAPPA * 0.5) / (1 + main.KAPPA)) < 1e-9
+
+
+def test_niche_prior_for_arm_seeds_preferred_only():
+    a, b = main._niche_prior_for_arm("hook_signal:contrarian", "fitness")  # fitness signal #1
+    assert a > b > 1.0                                                     # optimistic prior
+    assert main._niche_prior_for_arm("hook_signal:narrative", "fitness") == (1.0, 1.0)  # not preferred
+    assert main._niche_prior_for_arm("pillar:whatever", "fitness") == (1.0, 1.0)        # pillars neutral
+    assert main._niche_prior_for_arm("style:talking_head", "") == (1.0, 1.0)            # unknown niche
+
+
+def test_update_arm_niche_seeds_fresh_arm():
+    main._arm_stats.pop("fit_user", None)
+    main._creator_niche.pop("fit_user", None)
+    asyncio.run(main._update_arm("fit_user", "hook_signal:contrarian", 0.5, niche="fitness"))
+    s = main._arm_stats["fit_user"]["hook_signal:contrarian"]
+    assert s["prior_alpha"] > s["prior_beta"]                       # niche-optimistic
+    assert abs(s["alpha"] - (s["prior_alpha"] + s["sum_y"])) < 1e-9  # alpha = prior + observed
+    assert abs(s["beta"] - (s["prior_beta"] + (s["n"] - s["sum_y"]))) < 1e-9
+
+
+def test_update_arm_uses_remembered_niche():
+    main._arm_stats.pop("rem_user", None)
+    main._creator_niche["rem_user"] = "personal finance"           # remembered, not passed
+    asyncio.run(main._update_arm("rem_user", "format_id:listicle", 0.5))
+    assert main._arm_stats["rem_user"]["format_id:listicle"]["prior_alpha"] > 1.0
+    main._creator_niche.pop("rem_user", None)
+
+
+def test_thompson_sample_unseen_arm_niche_seeded_and_neutral_default():
+    # Unknown niche: unseen arms fall back to neutral (1,1) — unchanged behavior.
+    main._arm_stats.pop("ts_user", None)
+    scored = main._thompson_sample("ts_user", ["style:talking_head", "style:faceless"])
+    assert len(scored) == 2 and all(0.0 <= v <= 1.0 for _, v in scored)
+    # Known niche seeds the preferred arm's prior above the non-preferred one (mean check,
+    # not a sampled-value check, to stay deterministic).
+    a_pref, b_pref = main._niche_prior_for_arm("style:talking_head", "fitness")
+    a_neu, b_neu = main._niche_prior_for_arm("style:faceless", "fitness")
+    assert a_pref / (a_pref + b_pref) > a_neu / (a_neu + b_neu)
