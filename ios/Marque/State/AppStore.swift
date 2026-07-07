@@ -69,6 +69,16 @@ final class AppStore {
         }
         load()
         backend.editPrefs = editPrefs.asDictionary
+        #if DEBUG
+        // Deterministic Maestro/UI-audit entry: land straight on Home (all gates open),
+        // bypassing the live plan-build step. Mirrors DevJumpMenu.jumpToHome but as a
+        // launch arg so it doesn't depend on a flaky confirmationDialog tap.
+        if CommandLine.arguments.contains("-demoHome") {
+            hasOnboarded = true
+            auth.continueAsDemo()
+            subscription.devContinue()
+        }
+        #endif
     }
 
     // MARK: Onboarding

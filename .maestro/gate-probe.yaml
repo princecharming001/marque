@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+---
+# Does the paywall appear on its own (async gate flip) with NO interaction?
+- launchApp:
+    clearState: true
+    arguments:
+      "-demoHome": true
+    permissions:
+      all: allow
+- extendedWaitUntil:
+    visible: { id: home.voiceBubble }
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/probe-t0.png
+# Idle ~5s with no taps, then screenshot the state (this wait intentionally times out).
+- extendedWaitUntil:
+    visible: { text: "ZZZ_NONEXISTENT_ZZZ" }
+    timeout: 5000
+- takeScreenshot: /Users/home/Marque/.shots/probe-t5.png

@@ -1,0 +1,27 @@
+appId: com.getmarque.app
+---
+- launchApp:
+    clearState: true
+    arguments:
+      "-demoHome": true
+    permissions:
+      all: allow
+- extendedWaitUntil:
+    visible: { id: home.voiceBubble }
+    timeout: 8000
+- extendedWaitUntil:
+    visible: { id: tour.next }
+    timeout: 6000
+- takeScreenshot: /Users/home/Marque/.shots/audit-tour-1.png
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/audit-tour-2.png
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/audit-tour-3.png
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/audit-tour-4.png
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/audit-tour-5.png

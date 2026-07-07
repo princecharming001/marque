@@ -4,6 +4,7 @@ import SwiftUI
 struct MarqueApp: App {
     @State private var store = AppStore()
     @State private var router = AppRouter()
+    @State private var tour = TourManager()
 
     init() {
         // Dev/Maestro hook: launch with -reset to wipe to first-run.
@@ -30,6 +31,7 @@ struct MarqueApp: App {
             }
             .environment(store)
             .environment(router)
+            .environment(tour)
             .tint(Palette.accent)
             .preferredColorScheme(.light)
         }

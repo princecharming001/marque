@@ -1,0 +1,81 @@
+appId: com.getmarque.app
+---
+- launchApp:
+    clearState: true
+    permissions:
+      all: allow
+
+- assertVisible: "Get started"
+# Landing screen — UnicornHero mascot, mid-idle-loop. Two shots a beat apart prove motion.
+- takeScreenshot: /Users/home/Marque/.shots/mascot-landing-1.png
+- takeScreenshot: /Users/home/Marque/.shots/mascot-landing-2.png
+
+- tapOn: { id: onboard.start }
+- tapOn: { id: onboard.goal.audience }
+- tapOn: { id: onboard.blocker.time }
+- tapOn: { id: onboard.frequency.sometimes }
+- assertVisible: "Consistency beats virality"
+# Belief interstitial — UnicornThinking mascot
+- takeScreenshot: /Users/home/Marque/.shots/mascot-thinking.png
+- tapOn: { id: onboard.continue }
+- tapOn: { id: onboard.creatorName }
+- inputText: "Alex"
+- tapOn: { id: onboard.nameContinue }
+- tapOn: { id: onboard.niche }
+- inputText: "Fitness"
+- tapOn: { id: onboard.nicheContinue }
+- tapOn: { id: onboard.whatYouDo }
+- inputText: "I coach"
+- tapOn: { id: onboard.audience }
+- inputText: "pros"
+- tapOn: { id: onboard.aboutContinue }
+- tapOn: { id: onboard.knownFor }
+- inputText: "fitness"
+- tapOn: { id: onboard.knownForContinue }
+- tapOn: { id: onboard.platform.instagram }
+- tapOn: { id: onboard.connect.skip }
+- tapOn: { id: onboard.interview.skip }
+- tapOn: { id: onboard.voiceContinue }
+- tapOn: { id: onboard.emulate.skip }
+- tapOn: { id: onboard.comfort.natural }
+- tapOn: { id: onboard.stylesContinue }
+- tapOn: { id: onboard.pace.5 }
+- assertVisible: "Your brand, in a sentence"
+# Brand mirror — UnicornProud mascot
+- takeScreenshot: /Users/home/Marque/.shots/mascot-proud.png
+# Plan-building is a live backend call (script generation) that can hang with no
+# reachable backend in this sim session — unrelated to the mascot/tour work being
+# verified here. Use the sanctioned dev hook to jump straight past it to Home.
+- tapOn: { id: dev.jump }
+- tapOn: "Home"
+- assertVisible: { id: home.voiceBubble }
+
+# Tour should auto-start ~900ms after Home appears.
+- extendedWaitUntil:
+    visible: { id: tour.next }
+    timeout: 5000
+- takeScreenshot: /Users/home/Marque/.shots/tour-step1-voicebubble.png
+- tapOn: { id: tour.next }
+- assertVisible: "Prefer typing?"
+- takeScreenshot: /Users/home/Marque/.shots/tour-step2-chat.png
+- tapOn: { id: tour.next }
+- assertVisible: "Ready to record?"
+- takeScreenshot: /Users/home/Marque/.shots/tour-step3-film.png
+- tapOn: { id: tour.next }
+- assertVisible: "Your clips live here"
+- tapOn: { id: tour.next }
+- assertVisible: "Track what's working"
+- takeScreenshot: /Users/home/Marque/.shots/tour-step5-performance.png
+- tapOn: { id: tour.next }
+# Tour finished — overlay gone, plain Home again.
+- assertNotVisible: { id: tour.next }
+- takeScreenshot: /Users/home/Marque/.shots/tour-finished.png
+
+# Replay from Settings → should re-show step 1 even though the tour already completed once.
+- tapOn: { id: home.profile }
+- tapOn: { id: profile.settings }
+- tapOn: { id: settings.replayTour }
+- extendedWaitUntil:
+    visible: { id: tour.next }
+    timeout: 5000
+- takeScreenshot: /Users/home/Marque/.shots/tour-replayed.png

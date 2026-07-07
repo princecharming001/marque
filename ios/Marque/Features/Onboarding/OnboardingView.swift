@@ -208,7 +208,9 @@ struct OnboardingView: View {
         return scaffold("Consistency beats virality", line) {
             VStack(spacing: Space.lg) {
                 UnicornMascot(pose: .thinking, size: 170)
+                    .staggerReveal(0)
                 MethodStatCard()
+                    .staggerReveal(1, distance: 20)
             }
         } cta: {
             OnbPill(title: "Let's do it") { advance() }
@@ -610,31 +612,59 @@ private extension BrandGraph {
 /// trailing multiplier values, on a sunken track. Replaces the old floaty capsule
 /// pair; owns its own appear-animation state so the bars grow in on first render.
 private struct MethodStatCard: View {
-    @State private var grown = false
+    // Sequenced reveal: the weak "1×" row lands first, then a beat later the "4×" row
+    // punches in and fills — the contrast is the point, so it earns a dramatic pause
+    // rather than both bars racing at once.
+    @State private var grownViral = false
+    @State private var showYuni = false
+    @State private var grownYuni = false
+    @State private var showCaption = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            statRow(label: "Chasing viral hits", value: "1×", fraction: 0.22, filled: false)
-            MarqueHairline()
-            statRow(label: "Posting weekly with Yunicorn", value: "4×", fraction: 0.92, filled: true)
-            Text("Accounts that post 3×+ a week grow ~4× faster than accounts that post sporadically.")
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
+            statRow(label: "Chasing viral hits", value: "1×", fraction: 0.22,
+                    filled: false, grown: grownViral)
+
+            if showYuni {
+                MarqueHairline().transition(.opacity)
+                statRow(label: "Posting weekly with Yunicorn", value: "4×", fraction: 0.92,
+                        filled: true, grown: grownYuni)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
+
+            if showCaption {
+                Text("Accounts that post 3×+ a week grow ~4× faster than accounts that post sporadically.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .transition(.opacity)
+            }
         }
         .padding(Space.lg)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
-        .onAppear {
-            withAnimation(.spring(response: 0.6, dampingFraction: 0.8).delay(0.15)) {
-                grown = true
-            }
-        }
+        .animation(Motion.spring, value: showYuni)
+        .animation(Motion.calm, value: showCaption)
+        .task { await revealSequence() }
     }
 
-    private func statRow(label: String, value: String, fraction: CGFloat, filled: Bool) -> some View {
+    /// Drives the staged build. Kept as an async sequence (not chained delays) so the
+    /// beats are readable and easy to retune.
+    private func revealSequence() async {
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.85)) { grownViral = true }
+        try? await Task.sleep(nanoseconds: 650_000_000)   // the dramatic pause
+        showYuni = true
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        withAnimation(.spring(response: 0.55, dampingFraction: 0.75)) { grownYuni = true }
+        try? await Task.sleep(nanoseconds: 450_000_000)
+        showCaption = true
+    }
+
+    private func statRow(label: String, value: String, fraction: CGFloat,
+                         filled: Bool, grown: Bool) -> some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             HStack {
                 Text(label)

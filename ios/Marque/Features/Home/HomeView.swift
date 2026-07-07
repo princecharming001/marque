@@ -6,6 +6,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
+    @Environment(TourManager.self) private var tour
     @State private var showVoice = false
     @State private var feed = FeedStore()
     @State private var selectedReel: ReelItem?
@@ -16,6 +17,7 @@ struct HomeView: View {
                 topBar
                 greetingBlock.staggerReveal(0)
                 VoiceBubble { showVoice = true }
+                    .tourAnchor("tour.voiceBubble")
                     .staggerReveal(1)
                 picksSection.staggerReveal(2)
                 if let trend = feed.trend {
@@ -38,6 +40,12 @@ struct HomeView: View {
         .refreshable { await feed.refresh(store: store) }
         .navigationDestination(for: String.self) { dest in
             if dest == "profile" { ProfileView() }
+        }
+        .task {
+            // Let the staggered entrance settle before the tour dims the screen —
+            // starting mid-entrance would fight the reveal animation for attention.
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            tour.startIfNeeded(router: router)
         }
     }
 

@@ -5,6 +5,8 @@ import StoreKit
 // Account (email + sign out + delete), Data & Privacy, Support & About.
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
+    @Environment(AppRouter.self) private var router
+    @Environment(TourManager.self) private var tour
     @Environment(\.dismiss) private var dismiss
     @State private var showDeleteConfirm = false
     @State private var showSignOutConfirm = false
@@ -220,6 +222,17 @@ struct SettingsView: View {
 
                     // MARK: Support & About
                     settingsGroup("Support & About") {
+                        Button {
+                            dismiss()
+                            tour.start(router: router)
+                        } label: {
+                            row("Replay walkthrough", "sparkles")
+                                .padding(.horizontal, Space.md)
+                        }
+                        .accessibilityIdentifier("settings.replayTour")
+
+                        Divider().padding(.leading, Space.md)
+
                         Link(destination: LegalURLs.support) {
                             row("Support", "questionmark.circle")
                                 .padding(.horizontal, Space.md)

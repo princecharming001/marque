@@ -1,0 +1,126 @@
+appId: com.getmarque.app
+---
+# Showcase the design improvements: chat BG, coach picker, trends carousel, center button, mic removal
+
+- launchApp:
+    permissions:
+      all: true
+
+- assertVisible:
+    text: "Get started"
+
+- tapOn:
+    id: onboard.start
+
+# Quick onboarding skip to get to main app
+- tapOn:
+    id: onboard.goal.audience
+
+- tapOn:
+    id: onboard.blocker.time
+
+- tapOn:
+    id: onboard.frequency.sometimes
+
+- tapOn:
+    id: onboard.continue
+
+- tapOn:
+    id: onboard.creatorName
+
+- inputText: "Demo"
+
+- tapOn:
+    id: onboard.nameContinue
+
+- tapOn:
+    id: onboard.niche
+
+- inputText: "Demo"
+
+- tapOn:
+    id: onboard.nicheContinue
+
+- tapOn:
+    id: onboard.whatYouDo
+
+- inputText: "Demo"
+
+- tapOn:
+    id: onboard.audience
+
+- inputText: "Demo"
+
+- tapOn:
+    id: onboard.aboutContinue
+
+- tapOn:
+    id: onboard.knownFor
+
+- inputText: "Demo"
+
+- tapOn:
+    id: onboard.knownForContinue
+
+- tapOn:
+    id: onboard.platform.instagram
+
+- tapOn:
+    id: onboard.connect.skip
+
+- tapOn:
+    id: onboard.interview.skip
+
+- tapOn:
+    id: onboard.voiceContinue
+
+- tapOn:
+    id: onboard.emulate.skip
+
+- tapOn:
+    id: onboard.comfort.natural
+
+- tapOn:
+    id: onboard.stylesContinue
+
+- tapOn:
+    id: onboard.pace.5
+
+- tapOn:
+    id: onboard.buildPlan
+
+- tapOn:
+    id: onboard.finish
+
+- tapOn:
+    id: auth.demoContinue
+
+- extendedWaitUntil:
+    timeout: 5
+    condition:
+      visible:
+        id: home.voiceBubble
+
+# Take screenshot of Home (to see chat BG consistency, trends carousel, center + button)
+- takeScreenshot: /Users/home/Marque/.shots/DESIGN-01-home.png
+
+# Go to Chat
+- tapOn:
+    text: "Chat"
+
+
+# Screenshot Chat with new background color and mic removal
+- takeScreenshot: /Users/home/Marque/.shots/DESIGN-02-chat.png
+
+# Go to Performance
+- tapOn:
+    text: "Performance"
+
+- extendedWaitUntil:
+    timeout: 5
+    condition:
+      visible:
+        id: performance.platformToggle
+
+# Screenshot Performance with coach picker
+- takeScreenshot: /Users/home/Marque/.shots/DESIGN-03-coach-picker.png

@@ -3,6 +3,7 @@ import SwiftUI
 struct RootTabView: View {
     @Environment(AppRouter.self) private var router
     @Environment(AppStore.self) private var store
+    @Environment(TourManager.self) private var tour
 
     var body: some View {
         @Bindable var router = router
@@ -24,6 +25,11 @@ struct RootTabView: View {
             .background(Palette.surface.ignoresSafeArea())
             .sheet(isPresented: $store.showCelebration) { CelebrationView() }
             .fullScreenCover(isPresented: $router.showFilm) { NavigationStack { FilmView() } }
+            // Sits above the tab bar + all tab content — resolves every `.tourAnchor`
+            // tagged below (tab bar buttons, Home's voice bubble) into real screen rects.
+            .tourOverlay { rects in
+                TourOverlay(tour: tour, router: router, anchors: rects)
+            }
     }
 
     @ViewBuilder

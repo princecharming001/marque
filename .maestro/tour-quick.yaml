@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+---
+- launchApp:
+    clearState: true
+    arguments: { "-demoHome": true }
+    permissions: { all: allow }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 8000 }
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/final-step2.png
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/final-step3.png
+- tapOn: { id: tour.next }
+- extendedWaitUntil: { visible: { id: tour.next }, timeout: 4000 }
+- takeScreenshot: /Users/home/Marque/.shots/final-step4.png
+- tapOn: { id: tour.next }
+- takeScreenshot: /Users/home/Marque/.shots/final-step5.png

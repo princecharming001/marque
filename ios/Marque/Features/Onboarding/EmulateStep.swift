@@ -179,7 +179,7 @@ private struct PresetGlassCard: View {
                     .lineLimit(1).minimumScaleFactor(0.8)
             }
             .frame(maxWidth: .infinity)
-            .frame(height: 168)
+            .frame(height: 190)
             .background(LiquidGlassFill(radius: Radius.xl))
             .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
@@ -201,14 +201,17 @@ private struct PresetGlassCard: View {
         .animation(Motion.spring, value: selected)
     }
 
+    // The regenerated busts share identical framing (same shoulder crop + canvas), so a
+    // fixed-height scaledToFit renders them all at a consistent visual size — no more
+    // MrBeast-smaller-than-Hormozi. Bumped up from 76pt (they read as too small).
     @ViewBuilder private var bust: some View {
         if UIImage(named: iconName) != nil {
-            Image(iconName).resizable().scaledToFit().frame(width: 76, height: 76)
+            Image(iconName).resizable().scaledToFit().frame(width: 104, height: 104)
         } else {
             Image(systemName: "person.crop.circle")
-                .font(.system(size: 40, weight: .light))
+                .font(.system(size: 52, weight: .light))
                 .foregroundStyle(Palette.textSecondary)
-                .frame(width: 76, height: 76)
+                .frame(width: 104, height: 104)
         }
     }
 }

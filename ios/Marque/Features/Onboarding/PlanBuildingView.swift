@@ -69,30 +69,50 @@ struct PlanReadyView: View {
     @Environment(AppStore.self) private var store
     let onFinish: () -> Void
 
+    /// ≤6-word heading; fall back to the hook (one line) only if the model gave no title.
+    private func conciseTitle(_ s: Script) -> String {
+        s.title.isEmpty ? s.hook.text : s.title
+    }
+
+    /// A descriptor that actually differs per script — the one-line summary if present,
+    /// otherwise a "Format · 30s" label. Never the pillar name (identical across the three).
+    private func subtitle(_ s: Script) -> String {
+        if !s.summary.isEmpty { return s.summary }
+        return "\(Catalog.format(s.formatId).name) · \(s.targetSeconds)s"
+    }
+
     var body: some View {
         VStack(spacing: Space.xl) {
             UnicornMascot(pose: .celebrate, size: 150)
+                .staggerReveal(0)
 
             VStack(alignment: .leading, spacing: Space.md) {
-                ForEach(store.scripts.prefix(3)) { script in
+                ForEach(Array(store.scripts.prefix(3).enumerated()), id: \.element.id) { i, script in
                     HStack(spacing: Space.md) {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 20))
                             .foregroundStyle(Palette.textPrimary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(script.hook.text)
+                            // Concise heading (script.title is the ≤6-word label); fall back to
+                            // the hook only if the model didn't supply one, capped to one line.
+                            Text(conciseTitle(script))
                                 .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                                .lineLimit(2)
-                            Text(script.pillarName)
+                                .lineLimit(1)
+                            // Per-script descriptor, NOT the pillar name (which is identical for
+                            // all three) — summary if present, else a format · length label.
+                            Text(subtitle(script))
                                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                .lineLimit(1)
                         }
                     }
+                    .staggerReveal(i + 1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             OnbPill(title: "Enter Yunicorn") { onFinish() }
                 .accessibilityIdentifier("onboard.finish")
+                .staggerReveal(4)
         }
     }
 }

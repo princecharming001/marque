@@ -29,6 +29,18 @@ struct MarqueTabBar: View {
         (.performance, "Performance", "chart.bar"),
     ]
 
+    /// Tour anchor id for each tab, keyed by AppTab — matches TourManager.Step.id.
+    /// Home has no anchor here: its tour step points at the voice bubble inside
+    /// HomeView's own content, not at this tab-bar icon.
+    private func tourAnchorId(for tab: AppTab) -> String? {
+        switch tab {
+        case .home: return nil
+        case .chat: return "tour.chat"
+        case .library: return "tour.library"
+        case .performance: return "tour.performance"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             ForEach(leftItems, id: \.tab) { item in
@@ -50,6 +62,7 @@ struct MarqueTabBar: View {
             .accessibilityIdentifier("film.open")
             .sensoryFeedback(.impact(weight: .medium), trigger: createTaps)
             .padding(.horizontal, 10)
+            .tourAnchor("tour.film")
 
             ForEach(rightItems, id: \.tab) { item in
                 tabButton(item).frame(maxWidth: .infinity)
@@ -80,5 +93,6 @@ struct MarqueTabBar: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .modifier(OptionalTourAnchor(id: tourAnchorId(for: item.tab)))
     }
 }

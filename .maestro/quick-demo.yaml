@@ -1,0 +1,41 @@
+appId: com.getmarque.app
+---
+# Quick demo of design changes — assumes keyless/demo mode
+
+- launchApp:
+    clearKeychain: true
+    permissions:
+      all: true
+
+- tapOn:
+    id: auth.demoContinue
+
+- extendedWaitUntil:
+    timeout: 8
+    condition:
+      visible:
+        id: home.voiceBubble
+
+- takeScreenshot: /Users/home/Marque/.shots/demo-home.png
+
+- tapOn:
+    text: "Chat"
+
+- extendedWaitUntil:
+    timeout: 5
+    condition:
+      visible:
+        id: chat.composer
+
+- takeScreenshot: /Users/home/Marque/.shots/demo-chat.png
+
+- tapOn:
+    text: "Performance"
+
+- extendedWaitUntil:
+    timeout: 5
+    condition:
+      visible:
+        id: performance.platformToggle
+
+- takeScreenshot: /Users/home/Marque/.shots/demo-performance.png
