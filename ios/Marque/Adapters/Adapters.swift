@@ -45,7 +45,9 @@ extension ClipEngineProtocol {
 }
 
 protocol Publishing {
-    func schedule(_ post: ScheduledPost) async -> Bool
+    /// `accountIds` are the Post for Me account ids (spc_…) to publish to. Empty means
+    /// no OAuth-linked account for the chosen platforms → the backend degrades to mock.
+    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> Bool
 }
 
 protocol InsightsProviding {
@@ -385,7 +387,7 @@ struct MockClipEngine: ClipEngineProtocol {
 // MARK: - Mock publisher & insights
 
 struct MockPublisher: Publishing {
-    func schedule(_ post: ScheduledPost) async -> Bool {
+    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> Bool {
         try? await Task.sleep(nanoseconds: 300_000_000)
         return true
     }

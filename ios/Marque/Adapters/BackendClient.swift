@@ -250,6 +250,55 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                                 avatarUrl: r.avatarUrl ?? "", bio: r.bio ?? "")
     }
 
+    // MARK: Social account linking (Post for Me OAuth — real posting authority)
+
+    private struct AuthURLResp: Decodable { let url: String?; let platform: String?; let mode: String? }
+    private struct SocialAccountsResp: Decodable {
+        let accounts: [Acct]; let mode: String?
+        struct Acct: Decodable {
+            let id: String; let platform: String; let username: String?
+            let profile_photo_url: String?; let status: String?
+        }
+    }
+
+    /// Mint an OAuth URL for the user to connect one platform account. `externalId`
+    /// tags the account so we can look it up afterwards. Empty url => linking unavailable
+    /// (no key / mock backend).
+    func socialAuthURL(platform: String, externalId: String, redirectURL: String) async -> String? {
+        guard let data = await post("/v1/social/auth-url",
+                                    ["platform": platform, "external_id": externalId,
+                                     "redirect_url": redirectURL]),
+              let r = try? JSONDecoder().decode(AuthURLResp.self, from: data),
+              let url = r.url, !url.isEmpty else { return nil }
+        note(r.mode ?? "")
+        return url
+    }
+
+    /// Fetch the accounts connected under our `externalId` tag (post-OAuth). Returns the
+    /// ConnectedAccount(s) carrying the Post for Me `accountId` (spc_…) needed to publish.
+    func socialAccounts(externalId: String) async -> [ConnectedAccount] {
+        let q = externalId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? externalId
+        guard let data = await get("/v1/social/accounts?external_id=\(q)"),
+              let r = try? JSONDecoder().decode(SocialAccountsResp.self, from: data) else { return [] }
+        note(r.mode ?? "")
+        return r.accounts
+            .filter { $0.status == nil || $0.status == "connected" }
+            .map { a in
+                ConnectedAccount(platform: a.platform, handle: a.username ?? "",
+                                 displayName: a.username ?? "", avatarUrl: a.profile_photo_url ?? "",
+                                 accountId: a.id)
+            }
+    }
+
+    /// Revoke an OAuth-linked account on Post for Me (best-effort).
+    @discardableResult
+    func socialDisconnect(accountId: String) async -> Bool {
+        guard !accountId.isEmpty,
+              let data = await post("/v1/social/disconnect", ["account_id": accountId]),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return (json["ok"] as? Bool) ?? false
+    }
+
     // MARK: Emulate (analyze a linked creator's style — fire-and-forget from onboarding)
 
     private struct EmulateAnalyzeResp: Decodable {

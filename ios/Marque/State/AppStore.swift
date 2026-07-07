@@ -103,8 +103,61 @@ final class AppStore {
         save()
     }
     func removeConnectedAccount(_ a: ConnectedAccount) {
+        // OAuth-linked accounts also get revoked on Post for Me so we stop being billable
+        // for a dangling connection; fire-and-forget (local removal is the source of truth).
+        if a.canPublish { Task { await backend.socialDisconnect(accountId: a.accountId) } }
         brand.connectedAccounts.removeAll { $0.id == a.id }
         save()
+    }
+
+    // MARK: OAuth account linking (Post for Me — real posting authority)
+
+    /// Stable per-user tag Post for Me stores against the linked account so we can find it
+    /// again. One account per (user, platform); relinking the same platform replaces it.
+    func socialExternalId(platform: String) -> String {
+        "\(auth.state?.userId ?? "anon")_\(platform)"
+    }
+
+    /// The Post for Me account ids to publish `platforms` to (OAuth-linked accounts only).
+    func publishAccountIds(for platforms: [SocialPlatform]) -> [String] {
+        brand.connectedAccounts
+            .filter { acct in acct.canPublish && platforms.contains { $0.rawValue == acct.platform } }
+            .map(\.accountId)
+    }
+
+    /// Ask the backend for the OAuth URL to connect `platform`. nil => linking unavailable
+    /// (mock backend / no key). No redirect override is sent — Post for Me Quickstart uses
+    /// its own fixed success page, so we confirm the link by polling instead of a callback.
+    func socialAuthURL(platform: String) async -> URL? {
+        let s = await backend.socialAuthURL(platform: platform,
+                                            externalId: socialExternalId(platform: platform),
+                                            redirectURL: "")
+        return s.flatMap(URL.init(string:))
+    }
+
+    /// After the OAuth web flow closes, poll for the now-connected account (Post for Me can
+    /// take a moment to finalize the link). Stores the account carrying its spc_ id on first
+    /// hit. Returns true once linked.
+    @discardableResult
+    func refreshLinkedAccount(platform: String, retries: Int = 4) async -> Bool {
+        for attempt in 0..<max(1, retries) {
+            let linked = await backend.socialAccounts(externalId: socialExternalId(platform: platform))
+            if var acct = linked.first(where: { $0.platform == platform && $0.canPublish }) {
+                // Post for Me returns username + photo but no follower/bio — enrich from the
+                // public profile for display + voice learning, keeping the spc_ accountId.
+                if !acct.handle.isEmpty,
+                   let preview = await backend.connectPreview(handle: acct.handle, platform: platform) {
+                    acct.followers = preview.followers
+                    acct.bio = preview.bio
+                    if acct.avatarUrl.isEmpty { acct.avatarUrl = preview.avatarUrl }
+                    if acct.displayName.isEmpty { acct.displayName = preview.displayName }
+                }
+                addConnectedAccount(acct)
+                return true
+            }
+            if attempt < retries - 1 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
+        }
+        return false
     }
 
     /// "Analyze my page" — runs real inference to design pillars tailored to the creator.
@@ -536,7 +589,8 @@ final class AppStore {
         let post = ScheduledPost(clipId: clip.id, caption: caption ?? clip.caption,
                                  platforms: platforms, date: date, autoCaptions: autoCaptions,
                                  mediaURL: clip.remoteURL ?? clip.localVideoPath)
-        let ok = await publisher.schedule(post)
+        // Only OAuth-linked accounts (non-empty accountId) can actually be posted to.
+        let ok = await publisher.schedule(post, accountIds: publishAccountIds(for: platforms))
         if ok {
             schedule.append(post)
             if let idx = clips.firstIndex(where: { $0.id == clip.id }) { clips[idx].status = .scheduled }
@@ -723,12 +777,12 @@ final class AppStore {
                                   content: content, trigger: nil))
     }
 
-    /// Publish immediately (live via Ayrshare when keyed; mock otherwise) and mark posted.
+    /// Publish immediately (live via Post for Me when linked accounts exist; mock otherwise).
     func postNow(_ post: ScheduledPost) async {
         guard canPublish else { return }
         var p = post
         p.date = Date()
-        let ok = await publisher.schedule(p)
+        let ok = await publisher.schedule(p, accountIds: publishAccountIds(for: p.platforms))
         p.posted = ok
         if let idx = schedule.firstIndex(where: { $0.id == post.id }) { schedule[idx] = p }
         else { schedule.append(p) }

@@ -8,12 +8,13 @@ struct BackendPublisher: Publishing {
     private let client = BackendClient()
     private let fallback = MockPublisher()
 
-    func schedule(_ post: ScheduledPost) async -> Bool {
+    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> Bool {
         let platforms = post.platforms.map { $0 == .instagram ? "instagram" : "tiktok" }
         let iso = ISO8601DateFormatter().string(from: post.date)
         var body: [String: Any] = [
             "caption": post.caption,
-            "platforms": platforms,
+            "platforms": platforms,              // legacy hint (backend uses account ids)
+            "social_account_ids": accountIds,    // Post for Me spc_ids — the real targets
             "schedule_date": iso,
         ]
         if let media = post.mediaURL, media.hasPrefix("http") {
@@ -22,7 +23,7 @@ struct BackendPublisher: Publishing {
         guard let data = await client.post("/v1/publish", body),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let ok = json["ok"] as? Bool else {
-            return await fallback.schedule(post)
+            return await fallback.schedule(post, accountIds: accountIds)
         }
         return ok
     }

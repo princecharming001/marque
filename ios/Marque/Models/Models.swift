@@ -107,8 +107,13 @@ struct ConnectedAccount: Codable, Hashable, Identifiable {
     var avatarUrl: String = ""
     var bio: String = ""
     var linkedAt: Date = Date()
+    // Post for Me account id ("spc_…"). Empty for handle-only links (voice-learning,
+    // scraped public profile) — only accounts with a non-empty accountId can be posted to.
+    var accountId: String = ""
     var platformIcon: String { platform == "instagram" ? "camera.circle.fill" : "music.note" }
     var platformLabel: String { platform == "instagram" ? "Instagram" : "TikTok" }
+    /// True once this account is OAuth-linked through Post for Me and can publish.
+    var canPublish: Bool { !accountId.isEmpty }
 }
 
 struct Pillar: Codable, Hashable, Identifiable {
