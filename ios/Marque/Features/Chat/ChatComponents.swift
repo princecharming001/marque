@@ -334,9 +334,8 @@ struct MorphSendButton: View {
                         }
                         .transition(.scale.combined(with: .opacity))
                 case .empty:
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(Palette.onInk)
+                    Circle().fill(Palette.onInk.opacity(0.35))
+                        .frame(width: 6, height: 6)
                         .transition(.scale.combined(with: .opacity))
                 case .ready:
                     Image(systemName: "arrow.up")
