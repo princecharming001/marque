@@ -47,7 +47,8 @@ struct MarqueTabBar: View {
                 tabButton(item).frame(maxWidth: .infinity)
             }
 
-            // Center Film button — liquid glass circle with + icon
+            // Center Film button — solid blue circle with + icon (the one primary
+            // create action, so it pops against the neutral glass bar).
             Button {
                 createTaps += 1
                 onCreateTap()
@@ -55,7 +56,14 @@ struct MarqueTabBar: View {
                 Image(systemName: "plus")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(.white)
-                    .marqueGlassCircle(diameter: filmSize)
+                    .frame(width: filmSize, height: filmSize)
+                    .background(
+                        Circle().fill(
+                            LinearGradient(colors: [Palette.accent,
+                                                    Palette.accent.opacity(0.82)],
+                                           startPoint: .top, endPoint: .bottom)))
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
+                    .shadow(color: Palette.accent.opacity(0.42), radius: 10, y: 4)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Film")

@@ -40,8 +40,20 @@ struct VoiceSessionView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: Space.lg) {
-                        orb
+                        // The orb IS the mic — tap it to talk, tap again to stop.
+                        // (No separate mic button; the Siri visualization already
+                        // conveys idle/listening/thinking/speaking state.)
+                        Button(action: micTapped) { orb }
+                            .buttonStyle(.plain)
+                            .disabled(thinking)
+                            .opacity(thinking ? 0.55 : 1)
+                            .accessibilityIdentifier("voice.mic")
+                            .accessibilityLabel(speech.isListening ? "Stop listening" : "Tap to talk")
+                            .sensoryFeedback(.impact, trigger: micTaps)
                             .padding(.top, Space.lg)
+                        Text(speech.isListening ? "Listening… tap the orb to stop" : "Tap the orb to talk")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .animation(Motion.quick, value: speech.isListening)
                         if speech.isListening, !speech.transcript.isEmpty {
                             Text(speech.transcript)
                                 .font(AppFont.body).italic()
@@ -49,7 +61,6 @@ struct VoiceSessionView: View {
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, Space.xl)
                         }
-                        micButton
                         if !speech.isAvailable {
                             Text("Mic unavailable — type below")
                                 .font(AppFont.caption)
@@ -174,25 +185,7 @@ struct VoiceSessionView: View {
         .padding(.horizontal, -Space.screenH)
     }
 
-    // MARK: Mic (tap to talk / tap to stop — the typed composer stays as the fallback)
-
-    private var micButton: some View {
-        Button(action: micTapped) {
-            Image(systemName: speech.isListening ? "stop.fill" : "mic.fill")
-                .font(.system(size: 26, weight: .medium))
-                .foregroundStyle(Palette.onInk)
-                .frame(width: 72, height: 72)
-                .background(speech.isListening ? Palette.critical : Palette.ink)
-                .clipShape(Circle())
-                .shadow(color: Palette.shadowWarm.opacity(0.18), radius: 14, x: 0, y: 6)
-        }
-        .buttonStyle(.plain)
-        .disabled(thinking)
-        .opacity(thinking ? 0.45 : 1)
-        .accessibilityIdentifier("voice.mic")
-        .sensoryFeedback(.impact, trigger: micTaps)
-        .animation(Motion.quick, value: speech.isListening)
-    }
+    // MARK: Mic (tap the orb to talk / tap to stop — the typed composer stays as the fallback)
 
     private func micTapped() {
         micTaps += 1

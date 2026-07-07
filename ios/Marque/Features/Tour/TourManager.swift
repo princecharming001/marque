@@ -19,10 +19,10 @@ final class TourManager {
     static let steps: [Step] = [
         Step(id: "tour.voiceBubble", title: "Talk to Yuni",
              message: "Tap here anytime to talk out loud — scripts, ideas, or your whole day, planned.",
-             mascot: "UnicornTourWave"),
+             mascot: "UnicornTourTalk"),
         Step(id: "tour.chat", title: "Prefer typing?",
              message: "Chat has the same brain as the voice bubble — same Yuni, just text.",
-             mascot: "UnicornTourLean"),
+             mascot: "UnicornTourType"),
         Step(id: "tour.film", title: "Ready to record?",
              message: "Tap here to film. I'll turn your take into ready-to-post clips.",
              mascot: "UnicornTourPoint"),
