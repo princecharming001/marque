@@ -1838,6 +1838,39 @@ def _mock_words(script: dict) -> list[dict]:
     return out
 
 
+def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instructions: str = "") -> dict:
+    """Deterministic keyless edit brief (Loop F). filler/dead-air cut_regions come
+    ONLY from strip_fillers (never invented); the hook candidate is the opening kept
+    words; everything else is a sane talking-head default. Works with no script."""
+    from app.edl import strip_fillers, ms_to_frame
+    kept, drops = strip_fillers(words or [])
+    cut_regions = [{"start_frame": d.src_in, "end_frame": d.src_out,
+                    "reason": d.reason if d.reason in prompts.CUT_REASONS else "filler",
+                    "severity": "low", "quote": ""}
+                   for d in drops if d.src_out > d.src_in]
+    if kept:
+        head = kept[:8]
+        start_f = ms_to_frame(head[0].get("start_ms", 0))
+        end_f = ms_to_frame(head[-1].get("end_ms", head[-1].get("start_ms", 0) + 280))
+        quote = " ".join(w.get("word", "") for w in head).strip()
+    else:
+        start_f, end_f, quote = 0, 30, (transcript[:60].strip() or "Your opening line")
+    through = (transcript.split(".")[0].strip() if transcript else "") or "The main point of this video."
+    return {
+        "video_type": "scripted_talking_head", "is_scripted": bool(transcript),
+        "through_line": through[:160],
+        "hook_candidates": [{"start_frame": start_f, "end_frame": max(end_f, start_f + 1),
+                             "quote": quote[:120], "reason": "Opens on the core claim.",
+                             "signal": "curiosity"}],
+        "cut_regions": cut_regions,
+        "pacing": {"energy": "medium", "read": "Steady, conversational pacing."},
+        "broll_moments": [], "punch_in_moments": [],
+        "strategy": "trim_only", "restructure_order": [],
+        "inferred": {"style": "talking_head", "format_id": "myth-buster",
+                     "hook_signal": "curiosity", "pillar": ""},
+    }
+
+
 def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
     """Keyless tweak grammar (deterministic, first-match) so the demo/tests work
     without a key: returns (reply, ops)."""

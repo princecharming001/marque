@@ -1687,6 +1687,36 @@ def test_digest_reads_top_level_catchphrases_and_banned():
     assert "no swearing" in sreq.non_negotiables
 
 
+# ---------------------------------------------------------------------------
+# F-01 · Edit-brief deterministic mock: schema-shaped, filler/dead-air cuts come
+# ONLY from strip_fillers, works with no script.
+# ---------------------------------------------------------------------------
+
+def test_mock_edit_brief_shape_and_deterministic_cuts():
+    import prompts
+    words = [{"word": "So", "start_ms": 0, "end_ms": 200, "type": "filler"},
+             {"word": "here", "start_ms": 220, "end_ms": 500},
+             {"word": "is", "start_ms": 520, "end_ms": 700},
+             {"word": "the", "start_ms": 720, "end_ms": 900},
+             {"word": "point", "start_ms": 2000, "end_ms": 2300}]   # big gap → dead_air
+    b = main._mock_edit_brief(words, transcript="Here is the point. And more.")
+    for k in prompts.EDIT_BRIEF_SCHEMA["required"]:
+        assert k in b                                          # schema-shaped
+    assert b["strategy"] == "trim_only" and b["restructure_order"] == []
+    assert b["inferred"]["style"] in prompts.STYLES
+    assert b["inferred"]["format_id"] in prompts.FORMAT_IDS
+    assert b["hook_candidates"][0]["quote"]
+    reasons = {c["reason"] for c in b["cut_regions"]}
+    assert reasons <= set(prompts.CUT_REASONS)
+    assert "filler" in reasons and "dead_air" in reasons      # both deterministic cuts present
+
+
+def test_mock_edit_brief_works_without_script():
+    b = main._mock_edit_brief([], transcript="")
+    assert b["is_scripted"] is False and b["hook_candidates"][0]["quote"]
+    assert b["through_line"]                                   # never empty
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})

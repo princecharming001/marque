@@ -569,6 +569,64 @@ SCRIPT_SCHEMA = (
 
 _STR = {"type": "string"}
 _INT = {"type": "integer"}
+_BOOL = {"type": "boolean"}
+
+# ---------------------------------------------------------------------------
+# Analyze-first editing — the "edit brief" the LLM produces from a raw transcript
+# BEFORE any cutting (Loop F). Every claim is transcript-grounded (frames + a
+# verbatim quote). filler/dead_air cut_regions stay DETERMINISTIC (strip_fillers);
+# the model only ADDS flub/ramble/tangent and never invents filler/dead-air.
+# ---------------------------------------------------------------------------
+VIDEO_TYPES = ["scripted_talking_head", "freestyle_rant", "story", "listicle",
+               "tutorial", "reaction", "other"]
+CUT_REASONS = ["filler", "dead_air", "flub", "ramble", "tangent"]
+EDIT_STRATEGIES = ["trim_only", "restructure"]
+STYLE_KEYS = list(STYLES.keys())
+
+EDIT_BRIEF_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["video_type", "is_scripted", "through_line", "hook_candidates",
+                 "cut_regions", "pacing", "broll_moments", "punch_in_moments",
+                 "strategy", "restructure_order", "inferred"],
+    "properties": {
+        "video_type": {"type": "string", "enum": VIDEO_TYPES},
+        "is_scripted": _BOOL,
+        "through_line": _STR,
+        "hook_candidates": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["start_frame", "end_frame", "quote", "reason", "signal"],
+            "properties": {"start_frame": _INT, "end_frame": _INT, "quote": _STR,
+                           "reason": _STR, "signal": {"type": "string", "enum": SIGNAL_LIST}}}},
+        "cut_regions": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["start_frame", "end_frame", "reason", "severity", "quote"],
+            "properties": {"start_frame": _INT, "end_frame": _INT,
+                           "reason": {"type": "string", "enum": CUT_REASONS},
+                           "severity": {"type": "string", "enum": ["low", "med", "high"]},
+                           "quote": _STR}}},
+        "pacing": {"type": "object", "additionalProperties": False,
+                   "required": ["energy", "read"],
+                   "properties": {"energy": {"type": "string", "enum": ["low", "medium", "high"]},
+                                  "read": _STR}},
+        "broll_moments": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["start_frame", "end_frame", "cue"],
+            "properties": {"start_frame": _INT, "end_frame": _INT, "cue": _STR}}},
+        "punch_in_moments": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["frame", "reason"],
+            "properties": {"frame": _INT, "reason": _STR}}},
+        "strategy": {"type": "string", "enum": EDIT_STRATEGIES},
+        # empty list = keep source order (trim_only); a permutation = a restructure proposal.
+        "restructure_order": {"type": "array", "items": _INT},
+        "inferred": {"type": "object", "additionalProperties": False,
+                     "required": ["style", "format_id", "hook_signal", "pillar"],
+                     "properties": {"style": {"type": "string", "enum": STYLE_KEYS},
+                                    "format_id": {"type": "string", "enum": FORMAT_IDS},
+                                    "hook_signal": {"type": "string", "enum": SIGNAL_LIST},
+                                    "pillar": _STR}},
+    },
+}
 
 SCRIPT_JSON_ELEMENT = {
     "type": "object", "additionalProperties": False,
