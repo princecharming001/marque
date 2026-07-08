@@ -80,6 +80,10 @@ BEST_OF_N_HOOKS = os.environ.get("BEST_OF_N_HOOKS", "1") != "0"
 # ---------------------------------------------------------------------------
 
 _bg_tasks: set = set()
+# B-09: max seconds the DIRECT scrape endpoints (emulate/analyze, brand-scan/handle)
+# will block a request before degrading to mock — kept under typical proxy timeouts.
+# Background callers pass None to run unbounded.
+_SCRAPE_BUDGET_S = 25.0
 
 
 def _spawn(coro):
@@ -2616,10 +2620,16 @@ def _mock_emulation_profile(handle: str) -> dict:
 
 
 @app.post("/v1/emulate/analyze")
-async def emulate_analyze(req: EmulateAnalyzeRequest):
+async def emulate_analyze(req: EmulateAnalyzeRequest, _budget_s: float | None = _SCRAPE_BUDGET_S):
     """Kick off (and cache) style analysis for a custom emulation target. Called
     fire-and-forget from onboarding — the profile resolves lazily on the next
-    generation call via _resolve_emulation_profiles, so this never blocks the UI."""
+    generation call via _resolve_emulation_profiles, so this never blocks the UI.
+
+    B-09: the scrape+transcribe is bounded by _budget_s (default ~25s) so the DIRECT
+    endpoint always returns inside a proxy timeout instead of hanging up to ~5min; on
+    timeout it degrades to an un-cached mock the client can re-trigger (response shape
+    unchanged → no iOS coordination needed). Background callers (the digest) pass
+    _budget_s=None to run unbounded, since nothing is waiting on them."""
     handle = req.handle.lstrip("@").lower()
     if not handle:
         raise HTTPException(status_code=422, detail="handle required")
@@ -2631,8 +2641,16 @@ async def emulate_analyze(req: EmulateAnalyzeRequest):
             _emulation_cache[handle] = cached
             return {"mode": "cached", "ok": True}
 
-    posts = await scrape_posts(handle, req.platform)
-    posts = await _transcribe_top_posts(posts)
+    budget = None if _budget_s is None else max(1.0, min(float(_budget_s), 60.0))  # clamp client input
+    async def _scrape_and_transcribe():
+        p = await scrape_posts(handle, req.platform)
+        return await _transcribe_top_posts(p)
+    try:
+        posts = (await asyncio.wait_for(_scrape_and_transcribe(), timeout=budget)
+                 if budget else await _scrape_and_transcribe())
+    except asyncio.TimeoutError:
+        logging.warning("emulate scrape exceeded %ss budget for %s — degrading", _budget_s, handle)
+        posts = []                                # → un-cached mock below, client can re-trigger
     real = False                                  # True only for a genuine live analysis
     if not ANTHROPIC_KEY or not posts:
         profile = _mock_emulation_profile(handle)
@@ -2690,7 +2708,15 @@ async def _resolve_emulation_profiles(targets: list[dict]) -> list[dict]:
 
 @app.post("/v1/brand-scan/handle")
 async def brand_scan_handle(req: ScanRequest):
-    posts = req.posts or await scrape_posts(req.handle, req.platform)
+    if req.posts:
+        posts = req.posts
+    else:
+        try:                                       # B-09: bound the scrape (proxy-timeout safety)
+            posts = await asyncio.wait_for(scrape_posts(req.handle, req.platform),
+                                           timeout=_SCRAPE_BUDGET_S)
+        except asyncio.TimeoutError:
+            logging.warning("brand-scan scrape exceeded budget for %s — degrading", req.handle)
+            posts = []
     brand = req.d()
     if not ANTHROPIC_KEY or not posts:
         # No evidence (or no key) → niche-aware fallback so onboarding never dead-ends.
@@ -2810,7 +2836,8 @@ async def _run_digest(job_id: str) -> None:
             handle = (t.get("handle") or "").lstrip("@").lower()
             if t.get("source") == "custom" and handle and handle not in _emulation_cache:
                 try:
-                    await emulate_analyze(EmulateAnalyzeRequest(handle=handle, platform=t.get("platform", "instagram")))
+                    await emulate_analyze(EmulateAnalyzeRequest(handle=handle, platform=t.get("platform", "instagram")),
+                                          _budget_s=None)   # background: run unbounded, nothing waits
                 except Exception:
                     pass
         # Each derive stage degrades independently: a transient Anthropic 5xx here must

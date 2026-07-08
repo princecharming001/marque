@@ -1620,6 +1620,38 @@ def test_spawn_retains_then_discards_task():
     asyncio.run(_run())
 
 
+# ---------------------------------------------------------------------------
+# B-09 · Direct scrape endpoints are time-bounded — a slow Apify run degrades to
+# mock inside a proxy timeout instead of hanging for minutes.
+# ---------------------------------------------------------------------------
+
+def test_emulate_scrape_bounded_degrades_to_mock(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "_supabase_client", None)
+
+    async def slow_scrape(handle, platform):
+        await asyncio.sleep(5)                    # longer than our tiny test budget
+        return [{"caption": "late"}]
+    monkeypatch.setattr(main, "scrape_posts", slow_scrape)
+    main._emulation_cache.pop("slowcreator", None)
+    req = main.EmulateAnalyzeRequest(handle="slowcreator", platform="instagram")
+    r = asyncio.run(main.emulate_analyze(req, _budget_s=0.05))
+    assert r["mode"] == "mock"                    # timed out → mock
+    assert "slowcreator" not in main._emulation_cache   # not cached → retryable
+
+
+def test_brand_scan_scrape_bounded(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    monkeypatch.setattr(main, "_SCRAPE_BUDGET_S", 0.05)
+
+    async def slow_scrape(handle, platform):
+        await asyncio.sleep(5)
+        return [{"caption": "late"}]
+    monkeypatch.setattr(main, "scrape_posts", slow_scrape)
+    r = client.post("/v1/brand-scan/handle", json={"handle": "slowbrand", "platform": "instagram"}).json()
+    assert r["mode"] == "mock" and r["scanned_posts"] == 0   # degraded, didn't hang
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
