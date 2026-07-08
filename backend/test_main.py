@@ -1765,6 +1765,41 @@ def test_edit_brief_prompt_includes_custom_instructions():
     assert "[f0]" in usr                                      # frame-anchored transcript
 
 
+# ---------------------------------------------------------------------------
+# F-03 · Type→strategy guardrails.
+# ---------------------------------------------------------------------------
+
+def _brief(video_type, strategy="trim_only", order=None, hook_start=0):
+    return {"video_type": video_type, "strategy": strategy, "restructure_order": order or [],
+            "hook_candidates": [{"start_frame": hook_start, "end_frame": hook_start + 10,
+                                 "quote": "x", "reason": "y", "signal": "curiosity"}]}
+
+
+def test_strategy_listicle_never_restructures_even_if_asked():
+    b = main._resolve_strategy(_brief("listicle", "restructure", [2, 0, 1], hook_start=900), total_frames=1000)
+    assert b["strategy"] == "trim_only" and b["restructure_order"] == []
+    assert b["pull_hook_forward"] is False                    # sequential structure preserved
+
+
+def test_strategy_scripted_gets_hook_pull_forward_when_buried():
+    b = main._resolve_strategy(_brief("scripted_talking_head", hook_start=900), total_frames=1000)
+    assert b["strategy"] == "trim_only" and b["pull_hook_forward"] is True
+
+
+def test_strategy_freestyle_restructures_only_when_hook_buried():
+    buried = main._resolve_strategy(
+        _brief("freestyle_rant", "restructure", [2, 0, 1], hook_start=900), total_frames=1000)
+    assert buried["strategy"] == "restructure" and buried["restructure_order"] == [2, 0, 1]
+    early = main._resolve_strategy(
+        _brief("freestyle_rant", "restructure", [2, 0, 1], hook_start=50), total_frames=1000)
+    assert early["strategy"] == "trim_only"                   # hook already up front → no reorder
+
+
+def test_strategy_restructure_without_order_downgrades():
+    b = main._resolve_strategy(_brief("story", "restructure", [], hook_start=900), total_frames=1000)
+    assert b["strategy"] == "trim_only"                       # nothing to reorder
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})

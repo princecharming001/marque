@@ -1902,6 +1902,38 @@ async def _generate_edit_brief(words: list[dict], transcript: str = "",
     return data
 
 
+# Video types that must NEVER be reordered — their structure carries meaning (a
+# listicle/tutorial is sequential; a reaction tracks the source). scripted_talking_head
+# is trim-only too, but earns a limited hook-pull-forward when its hook is buried.
+_TRIM_ONLY_TYPES = {"scripted_talking_head", "listicle", "tutorial", "reaction"}
+_HOOK_BURIED_FRAC = 0.15
+
+
+def _resolve_strategy(brief: dict, total_frames: int) -> dict:
+    """Apply the deterministic type→strategy policy ON TOP of the LLM's proposal, so a
+    hallucinated 'restructure' can't scramble a listicle and a genuine buried hook in a
+    freestyle rant can be pulled forward. Adds a runtime pull_hook_forward flag (a
+    limited move for scripted takes that isn't a full reorder)."""
+    b = dict(brief)
+    vtype = b.get("video_type", "other")
+    order = [i for i in (b.get("restructure_order") or []) if isinstance(i, int)]
+    hooks = b.get("hook_candidates") or []
+    top_start = hooks[0].get("start_frame", 0) if hooks else 0
+    buried = total_frames > 0 and top_start > _HOOK_BURIED_FRAC * total_frames
+
+    if vtype in _TRIM_ONLY_TYPES:
+        b["strategy"], b["restructure_order"] = "trim_only", []
+        b["pull_hook_forward"] = (vtype == "scripted_talking_head") and buried
+    elif b.get("strategy") == "restructure" and order and buried:
+        # freestyle_rant / story with a genuinely buried hook → honor the reorder proposal
+        b["strategy"], b["restructure_order"] = "restructure", order
+        b["pull_hook_forward"] = False
+    else:
+        b["strategy"], b["restructure_order"] = "trim_only", []
+        b["pull_hook_forward"] = False
+    return b
+
+
 def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
     """Keyless tweak grammar (deterministic, first-match) so the demo/tests work
     without a key: returns (reply, ops)."""
