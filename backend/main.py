@@ -27,6 +27,7 @@ from contextlib import asynccontextmanager
 
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops)
+import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
 
@@ -3085,12 +3086,23 @@ async def ingest_metrics(req: MetricsIngestRequest):
     entry = _post_registry.get(req.post_id)
     if entry is None and _supabase_client:                # registered on another instance?
         try:
-            entry = await _supabase_client.load_post(req.post_id)
-            if entry:
-                _post_registry[req.post_id] = entry
-        except Exception as e:
+            loaded = await _supabase_client.load_post(req.post_id)
+        except Exception as e:                            # belt: the client shouldn't raise, but never guess
             logging.warning("supabase load_post failed: %s", e)
-    entry = entry or {}
+            loaded = sp.UNAVAILABLE
+        if loaded is sp.UNAVAILABLE:
+            # The DB couldn't answer — treating that as "unregistered" would silently
+            # discard the creator's confirmed reward. Tell the client to retry instead.
+            return {"mode": "live", "status": "retry_later", "post_id": req.post_id}
+        if loaded:
+            entry = loaded
+            _post_registry[req.post_id] = entry
+    if not entry:
+        # A post the system never registered: update zero arms, write zero rows, and
+        # say so — the old path fabricated a settled ghost row and answered "ingested"
+        # while the reward vanished (audit A-01/A7).
+        return {"mode": "live" if _supabase_client else "mock",
+                "status": "unregistered", "post_id": req.post_id}
     if entry.get("settled"):
         return {"mode": "mock", "status": "already_settled"}
     if req.reach < 20:

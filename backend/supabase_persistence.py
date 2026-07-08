@@ -29,6 +29,23 @@ _POST_COLS = ("creator_id", "platform", "scheduled_at", "pillar", "style", "form
 
 _BACKOFF = (0.5, 2.0, 8.0)
 
+# Sentinel returned by load_post when the DB COULDN'T ANSWER (transport failure,
+# non-200, unparseable body) — as opposed to None, which means the DB answered
+# and the row is genuinely absent. Callers that must not guess (e.g. the metrics
+# settle path, where treating a failed lookup as "unregistered" would silently
+# discard a creator's confirmed reward) check for this; everyone else can keep
+# treating any falsy result as a miss. Truthiness is False so legacy falsy checks
+# behave unchanged.
+class _Unavailable:
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "UNAVAILABLE"
+
+
+UNAVAILABLE = _Unavailable()
+
 
 class SupabaseClient:
     def __init__(self, url: str, key: str):
@@ -103,15 +120,18 @@ class SupabaseClient:
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
 
-    async def load_post(self, post_id: str) -> dict | None:
+    async def load_post(self, post_id: str) -> dict | None | _Unavailable:
+        """Row dict, None if the DB answered and the row is absent, or UNAVAILABLE
+        (falsy) if the DB couldn't answer — so the settle path never mistakes an
+        outage for an unregistered post."""
         r = await self._request("GET", "/post_registry",
                                 params={"post_id": f"eq.{post_id}", "select": "*"})
         if not (r and r.status_code == 200):
-            return None
+            return UNAVAILABLE
         try:
             rows = r.json()
         except Exception:
-            return None
+            return UNAVAILABLE
         return rows[0] if rows else None
 
     async def load_all_posts(self, creator_id: str = "") -> list[dict]:

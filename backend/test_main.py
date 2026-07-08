@@ -2012,3 +2012,74 @@ def test_ingest_uses_goal_niche_and_returns_attribution():
     s = main._arm_stats["b1_user"]["hook_signal:contrarian"]
     assert s["n"] == 1                          # the settled post moved the arm
     assert s["prior_alpha"] > 1.0               # and it was niche-seeded (contrarian is a fitness prior)
+
+
+# ---------------------------------------------------------------------------
+# A-01 · Unregistered-post ingest honesty: never fabricate a settled ghost row,
+# never claim "ingested" when zero arms moved, and never guess when the DB
+# couldn't answer (absent row != failed lookup).
+# ---------------------------------------------------------------------------
+
+def test_ingest_unregistered_post_updates_nothing(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._post_registry.pop("p_ghost", None)
+    main._arm_stats.pop("c_ghost", None)
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_ghost", "creator_id": "c_ghost", "reach": 500, "likes": 50,
+        "saves": 10, "shares": 5, "avg_watch_pct": 0.6, "follows_gained": 8})
+    body = r.json()
+    assert body["status"] == "unregistered"
+    assert "p_ghost" not in main._post_registry            # no ghost registry row
+    assert "c_ghost" not in main._arm_stats                # zero arm updates
+
+
+def test_ingest_distinguishes_db_absent_from_db_failure(monkeypatch):
+    from unittest.mock import AsyncMock
+    from supabase_persistence import UNAVAILABLE
+    fake = SupabaseClientStub()
+    fake.load_post = AsyncMock(return_value=None)          # DB answered: no such row
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry.pop("p_absent", None)
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_absent", "creator_id": "c_a01", "reach": 100})
+    assert r.json()["status"] == "unregistered"
+    fake.load_post = AsyncMock(return_value=UNAVAILABLE)   # DB could not answer
+    main._post_registry.pop("p_unavail", None)
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_unavail", "creator_id": "c_a01", "reach": 100})
+    assert r.json()["status"] == "retry_later"
+    assert "p_unavail" not in main._post_registry          # no state change on failure
+
+
+def test_ingest_db_exception_returns_retry_later(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_post = AsyncMock(side_effect=RuntimeError("boom"))
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry.pop("p_boom", None)
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_boom", "creator_id": "c_a01", "reach": 100})
+    assert r.json()["status"] == "retry_later"
+    assert "p_boom" not in main._post_registry
+
+
+def test_load_post_unavailable_vs_absent(monkeypatch):
+    """load_post's contract: UNAVAILABLE when the DB couldn't answer, None only
+    when the DB answered and the row is genuinely absent."""
+    from unittest.mock import AsyncMock
+    from supabase_persistence import SupabaseClient, UNAVAILABLE
+    c = SupabaseClient("https://x.supabase.co", "k")
+    c._request = AsyncMock(return_value=None)              # transport gave up
+    assert asyncio.run(c.load_post("p1")) is UNAVAILABLE
+
+    class _Absent:                                          # 200 with empty rows
+        status_code = 200
+        def json(self): return []
+    c._request = AsyncMock(return_value=_Absent())
+    assert asyncio.run(c.load_post("p1")) is None
+
+    class _Denied:                                          # 4xx — DB didn't answer the question
+        status_code = 401
+        def json(self): return {"message": "denied"}
+    c._request = AsyncMock(return_value=_Denied())
+    assert asyncio.run(c.load_post("p1")) is UNAVAILABLE
