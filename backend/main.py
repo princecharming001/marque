@@ -1144,18 +1144,24 @@ async def captions(req: CaptionRequest):
 
 @app.post("/v1/teardown")
 async def teardown(req: TeardownRequest):
-    score = req.clip.get("predictedScore", 70)
+    has_metrics = (req.clip.get("metrics") or {}).get("views", 0) > 0
     if not ANTHROPIC_KEY:
-        return {"mode": "mock", "headline": f"This beat {20 + score % 60}% of your posts",
-                "detail": "The hook landed in 2 seconds and the format kept a visual change every few seconds.",
-                "liftPercent": 20 + score % 60}
+        # No real per-post baseline exists → never fabricate a "beat N%" lift. Speak to
+        # the CONTENT; liftPercent stays null unless there are real metrics to ground it.
+        return {"mode": "mock",
+                "headline": "Solid clip — here's the read" if not has_metrics else "Strong performer",
+                "detail": "The hook lands in the first 2 seconds and the format keeps a visual change every few seconds.",
+                "liftPercent": None}
     try:
         sys, usr = prompts.teardown_prompt(req.clip)
         out = extract_json(await anthropic(sys, usr, OPUS, 500), array=False) or {}
+        lift = out.get("liftPercent")
+        if not has_metrics:
+            lift = None                        # discard any number the model invented without data
         return {"mode": "live", "headline": out.get("headline", ""), "detail": out.get("detail", ""),
-                "liftPercent": out.get("liftPercent", 30)}
+                "liftPercent": lift}
     except HTTPException:
-        return {"mode": "mock", "headline": "", "detail": "", "liftPercent": 30}
+        return {"mode": "mock", "headline": "", "detail": "", "liftPercent": None}
 
 
 @app.post("/v1/insights")
@@ -1222,7 +1228,8 @@ async def score(req: ScoreRequest):
         return {"mode": "mock", **_mock_score_script(req.hook, req.body)}
     try:
         sys, usr = prompts.score_script_prompt(req.hook, req.body, req.style)
-        out = extract_json(await anthropic(sys, usr, HAIKU, 400), array=False)
+        # temperature 0: the score is meant to be deterministic (same script → same read).
+        out = extract_json(await anthropic(sys, usr, HAIKU, 400, temperature=0.0), array=False)
         if out and out.get("hook") in _RATING_NUM:
             out["overall"] = (int(out["overall"]) if isinstance(out.get("overall"), (int, float))
                               else _score_overall(out.get("hook"), out.get("fluff"), out.get("satisfaction")))

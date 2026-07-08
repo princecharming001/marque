@@ -2740,3 +2740,43 @@ def test_performance_summary_filters_by_window(monkeypatch):
         "metrics": {"views": 9999, "likes": 1, "follows_gained": 0}, "format_id": "myth-buster"}
     b = client.get(f"/v1/performance/summary?creator_id={cid}&days=30&now=2026-07-07T00:00:00+00:00").json()
     assert b["totals"]["posts"] == 1 and b["totals"]["views"] == 100   # old post excluded
+
+
+# ---------------------------------------------------------------------------
+# A-13 · Number discipline residue: teardown never fabricates a lift without
+# real metrics; /v1/score is deterministic (temperature 0).
+# ---------------------------------------------------------------------------
+
+def test_teardown_no_metrics_makes_no_lift_claim(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    r = client.post("/v1/teardown", json={"clip": {"predictedScore": 88}}).json()
+    assert r["liftPercent"] is None                     # no data → no performance number
+    assert "%" not in r["headline"]                     # and no "beat N%" headline
+
+
+def test_teardown_prompt_forbids_claims_without_metrics():
+    import prompts
+    _, u = prompts.teardown_prompt({"predictedScore": 70})       # no metrics block
+    assert "null" in u.lower() and "no performance" in u.lower()
+
+
+def test_teardown_live_nulls_lift_without_metrics(monkeypatch):
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+        return '{"headline":"Strong hook","detail":"Tight open.","liftPercent":73}'
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "anthropic", fake)
+    r = client.post("/v1/teardown", json={"clip": {"predictedScore": 80}}).json()
+    assert r["liftPercent"] is None                     # model's fabricated 73 is discarded (no metrics)
+
+
+def test_score_pins_temperature_zero(monkeypatch):
+    cap = {}
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None):
+        cap["temperature"] = temperature
+        return ('{"hook":"High","fluff":"Low","satisfaction":"High","overall":80,'
+                '"strongest":"x","weakest":"y","fix":"z"}')
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "anthropic", fake)
+    client.post("/v1/score", json={"hook": "h", "body": "b"})
+    assert cap["temperature"] == 0.0

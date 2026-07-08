@@ -1032,17 +1032,25 @@ def teardown_prompt(clip: dict) -> tuple[str, str]:
         '"liftPercent": 12}'
     )
     metrics = clip.get("metrics", {}) or {}
-    metrics_line = ""
-    if metrics.get("views", 0) > 0:
+    has_metrics = metrics.get("views", 0) > 0
+    if has_metrics:
         metrics_line = (
             f"\nReal metrics: {metrics.get('views',0)} views, {metrics.get('likes',0)} likes, "
             f"{metrics.get('comments',0)} comments, {metrics.get('shares',0)} shares, "
             f"{metrics.get('saves',0)} saves, {metrics.get('avg_watch_pct',0)*100:.0f}% avg watch"
         )
+        claim_rule = 'Ground liftPercent ONLY in the real metrics above.'
+    else:
+        # No performance data yet: a "beat N% of your posts" line here would be pure
+        # fabrication. Critique the CONTENT and refuse a number.
+        metrics_line = "\nThis clip has NO performance data yet."
+        claim_rule = ('Make NO performance claim and NO comparison to other posts — there is no data. '
+                      'Critique the CONTENT only (hook, structure, pacing) and set liftPercent to null.')
     user = (
         f"Clip: format={clip.get('formatName','')}, caption=\"{clip.get('caption','')}\", "
-        f"predicted score={clip.get('predictedScore',0)}.{metrics_line}\n"
-        'Return ONLY: {"headline": str (≤12 words), "detail": str (2 tight sentences), "liftPercent": int}'
+        f"predicted score={clip.get('predictedScore',0)}.{metrics_line}\n{claim_rule}\n"
+        'Return ONLY: {"headline": str (≤12 words), "detail": str (2 tight sentences), '
+        '"liftPercent": int or null}'
     )
     return system, user
 
