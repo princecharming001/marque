@@ -732,6 +732,36 @@ def test_set_music_url_applies():
     assert res[0]["applied"] is True and new_edl["audio"]["music"]["url"] == "https://cdn/m.mp3"
 
 
+def test_split_segment_produces_valid_monotonic_edl():
+    # G-06: split a segment into two adjacent halves; segments stay monotonic.
+    from app.edl import apply_edl_ops, EDL
+    new_edl, res = apply_edl_ops(_base_edl(), [{"type": "split_segment", "index": 1, "at_frame": 150}])
+    assert res[0]["applied"] is True
+    segs = new_edl["segments"]
+    assert len(segs) == 4
+    assert (segs[1]["src_in"], segs[1]["src_out"]) == (100, 150)
+    assert (segs[2]["src_in"], segs[2]["src_out"]) == (150, 200)
+    EDL(**new_edl)                                       # monotonic + constructible
+
+
+def test_split_then_reorder_keeps_permutation():
+    from app.edl import apply_edl_ops, EDL
+    new_edl, res = apply_edl_ops(_base_edl(segment_order=[2, 0, 1]),
+                                 [{"type": "split_segment", "index": 0, "at_frame": 50}])
+    assert res[0]["applied"] is True
+    order = new_edl["segment_order"]
+    assert sorted(order) == list(range(4))               # still a valid permutation of 4
+    EDL(**new_edl)
+
+
+def test_split_segment_out_of_bounds_rejected():
+    from app.edl import apply_edl_ops
+    _, at_edge = apply_edl_ops(_base_edl(), [{"type": "split_segment", "index": 0, "at_frame": 0}])
+    assert at_edge[0]["applied"] is False                # at_frame == src_in is not strictly inside
+    _, bad_idx = apply_edl_ops(_base_edl(), [{"type": "split_segment", "index": 9, "at_frame": 50}])
+    assert bad_idx[0]["applied"] is False
+
+
 def test_mute_range_and_volume_replace_semantics():
     from app.edl import apply_edl_ops
     out, _ = apply_edl_ops(_base_edl(), [
@@ -1269,7 +1299,8 @@ def test_fuzz_random_op_sequences_preserve_invariants():
 
     OP_TYPES = ["trim_start", "trim_end", "cut_range", "restore_range",
                 "mute_range", "reorder_segments", "set_music",
-                "set_caption_style", "set_captions_enabled", "remove_overlays"]
+                "set_caption_style", "set_captions_enabled", "remove_overlays",
+                "split_segment"]
 
     for seed in range(50):
         rng = _random.Random(seed)
@@ -1306,6 +1337,12 @@ def test_fuzz_random_op_sequences_preserve_invariants():
                 ops.append({"type": t, "enabled": rng.choice([True, False])})
             elif t == "remove_overlays":
                 ops.append({"type": t})
+            elif t == "split_segment":
+                si = rng.randint(0, len(edl["segments"]) - 1)
+                s = edl["segments"][si]
+                ops.append({"type": t, "index": si,
+                            "at_frame": rng.randint(s["src_in"] + 1, s["src_out"] - 1)
+                            if s["src_out"] - s["src_in"] > 1 else s["src_in"]})
 
         out, results = apply_edl_ops(edl, ops)
         ctx = {"seed": seed, "ops": ops, "segments": out["segments"]}

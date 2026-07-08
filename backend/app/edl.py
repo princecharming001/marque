@@ -507,6 +507,7 @@ TWEAK_OP_TYPES = [
     "remove_overlays", "add_punch_in", "add_text_card", "add_broll",
     "remove_broll", "set_split_fraction", "trim_start", "trim_end", "undo",
     "reorder_segments", "set_music", "set_segment_volume", "mute_range",
+    "split_segment",
 ]
 
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
@@ -778,6 +779,32 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         edl["segment_order"] = new_order if new_order != identity else None
                     edl["segments"] = segs
                     segments = segs
+                    applied = True
+
+            elif t == "split_segment":
+                idx = op.get("index")
+                at = op.get("at_frame")
+                if not isinstance(idx, int) or not (0 <= idx < len(segments)):
+                    reason = "index out of range"
+                elif not isinstance(at, int) or not (segments[idx]["src_in"] < at < segments[idx]["src_out"]):
+                    reason = "at_frame must be strictly inside the segment"
+                else:
+                    seg = segments[idx]
+                    halves = [{"src_in": seg["src_in"], "src_out": at},
+                              {"src_in": at, "src_out": seg["src_out"]}]
+                    new_segs = segments[:idx] + halves + segments[idx + 1:]
+                    old_order = edl.get("segment_order")
+                    if old_order:
+                        # remap the permutation: indices after idx shift +1; the new half
+                        # (idx+1) plays right after its first half in the play order.
+                        new_order: list[int] = []
+                        for i in old_order:
+                            new_order.append(i if i <= idx else i + 1)
+                            if i == idx:
+                                new_order.append(idx + 1)
+                        edl["segment_order"] = new_order
+                    edl["segments"] = new_segs
+                    segments = new_segs
                     applied = True
 
             elif t == "reorder_segments":
