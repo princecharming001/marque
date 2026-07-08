@@ -448,6 +448,18 @@ async def coach_today(creator_id: str = "default"):
     last = await _coach_last_shown(creator_id)
     if last and (datetime.now(timezone.utc) - last).total_seconds() < 86400:
         return {"card": None}
+    # AF-7 (audit): claim the daily slot SYNCHRONOUSLY before any await — concurrent
+    # requests otherwise both pass the gate during the insight/LLM awaits and each get
+    # a card. Rolled back on the silent paths below.
+    prior = _coach_shown.get(creator_id)
+    _coach_shown[creator_id] = datetime.now(timezone.utc)
+
+    def _release_claim():
+        if prior is None:
+            _coach_shown.pop(creator_id, None)
+        else:
+            _coach_shown[creator_id] = prior
+
     insight = await _coach_insight(creator_id)
     if insight is None:
         settled = sum(1 for p in _post_registry.values()
@@ -459,6 +471,7 @@ async def coach_today(creator_id: str = "default"):
                              "body": "Once your first posts settle I can tell you what's "
                                      "actually moving your numbers — no guesses until then.",
                              "cta": "Record your first clip"}}
+        _release_claim()                         # silence spends no daily slot
         return {"card": None}                    # data exists but no honest claim → silence
     card = _coach_template_card(insight)
     mode = "mock"

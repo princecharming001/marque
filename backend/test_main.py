@@ -2173,6 +2173,38 @@ def test_attribution_overwrites_llm_numbers_with_computed_lift(monkeypatch):
     assert out["band"] == prompts.classify_arm_lift(int(real["lift_pct"]))
 
 
+def test_coach_today_concurrent_requests_get_one_card(monkeypatch):
+    """AF-7: the daily slot is claimed synchronously — parallel requests during the
+    insight awaits must not each get a card."""
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_race1", arm_sum_raw=12.0)
+
+    real_insight = main._coach_insight
+
+    async def yielding_insight(cid):
+        await asyncio.sleep(0)                              # force interleaving
+        return await real_insight(cid)
+    monkeypatch.setattr(main, "_coach_insight", yielding_insight)
+
+    async def both():
+        return await asyncio.gather(main.coach_today("c_race1"), main.coach_today("c_race1"))
+    a, b = asyncio.run(both())
+    assert sum(1 for r in (a, b) if r["card"]) == 1
+
+
+def test_coach_today_silence_does_not_burn_the_daily_slot(monkeypatch):
+    """AF-7: a no-claim (noise-only) day releases the claim — a real signal later the
+    same day can still produce the card."""
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_race2", arm_sum_raw=4.4)         # noise -> silence
+    assert client.get("/v1/coach/today", params={"creator_id": "c_race2"}).json()["card"] is None
+    assert "c_race2" not in main._coach_shown               # claim released
+
+
 def test_remove_broll_invalid_range_rejected_not_wipe_all():
     """AF-5: a provided-but-invalid range must not silently remove every b-roll cue."""
     from app.edl import apply_edl_ops
