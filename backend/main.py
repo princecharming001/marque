@@ -393,12 +393,19 @@ async def _coach_insight(creator_id: str) -> dict | None:
 _coach_shown: dict[str, datetime] = {}
 
 
+# OPT-6: creators whose durable coach_last_shown we've already looked up this process —
+# a never-shown creator otherwise costs one Supabase round-trip on EVERY coach poll.
+_coach_rehydrated: set[str] = set()
+
+
 async def _coach_last_shown(creator_id: str) -> datetime | None:
-    """In-memory first; on miss, best-effort rehydrate from creators.coach_last_shown.
-    Absent table/column/row (or keyless) just means 'never shown' — falsy degrade."""
+    """In-memory first; on miss, best-effort rehydrate from creators.coach_last_shown
+    (once per process — OPT-6). Absent table/column/row (or keyless) just means
+    'never shown' — falsy degrade."""
     ts = _coach_shown.get(creator_id)
-    if ts is not None or not _supabase_client:
+    if ts is not None or not _supabase_client or creator_id in _coach_rehydrated:
         return ts
+    _coach_rehydrated.add(creator_id)
     try:
         row = await _supabase_client.load_creator(creator_id) or {}
         raw = row.get("coach_last_shown")
@@ -1014,8 +1021,22 @@ def mock_trends(niche: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
-    """Reject generic pillars; regenerate 2 candidates in parallel and pick the better one."""
-    avoid: list[str] = []
+    """Reject generic pillars. OPT-1: the INPUT set is judged first (one cheap HAIKU
+    call) and returned when it passes — the common case. The 2-candidate OPUS
+    regeneration only runs on failure; previously EVERY call burned two extra OPUS
+    generations and never judged the input at all (~3× cost + a serial round-trip
+    of onboarding latency for nothing)."""
+    async def _judge_failures(candidate: list[dict]) -> list[str]:
+        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), candidate)
+        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 800), array=True) or []
+        return [candidate[v["index"]].get("name", "")
+                for v in verdicts
+                if isinstance(v, dict) and not v.get("pass", True)
+                and 0 <= v.get("index", -1) < len(candidate)]
+
+    avoid = await _judge_failures(pillars)
+    if not avoid:
+        return pillars                               # first draft passed — no regen spend
     for _ in range(2):
         # Generate 2 candidate sets in parallel, steering away from names the judge
         # already rejected this round (else the retry can reproduce them — audit B-10/F10).
@@ -1034,22 +1055,13 @@ async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[di
                     candidate_sets.append(p)
         if not candidate_sets:
             return pillars
-        # Judge the first candidate set
         all_to_judge = candidate_sets[0]
-        jsys, jusr = prompts.pillar_judge_prompt(brand.get("niche", ""), all_to_judge)
-        verdicts = extract_json(await anthropic(jsys, jusr, HAIKU, 800), array=True) or []
-        failed = [all_to_judge[v["index"]].get("name", "")
-                  for v in verdicts
-                  if isinstance(v, dict) and not v.get("pass", True) and 0 <= v.get("index", -1) < len(all_to_judge)]
+        failed = await _judge_failures(all_to_judge)
         if not failed:
             return all_to_judge
         # Try the second candidate set if we have one
         if len(candidate_sets) > 1:
-            jsys2, jusr2 = prompts.pillar_judge_prompt(brand.get("niche", ""), candidate_sets[1])
-            verdicts2 = extract_json(await anthropic(jsys2, jusr2, HAIKU, 800), array=True) or []
-            failed2 = [candidate_sets[1][v["index"]].get("name", "")
-                       for v in verdicts2
-                       if isinstance(v, dict) and not v.get("pass", True) and 0 <= v.get("index", -1) < len(candidate_sets[1])]
+            failed2 = await _judge_failures(candidate_sets[1])
             if len(failed2) < len(failed):
                 return candidate_sets[1]
         pillars = all_to_judge
@@ -1522,7 +1534,14 @@ async def _persist_clip_job(job_id: str) -> None:
     if not job:
         return
     try:
-        await _supabase_client.upsert_clip_job(job_id, job)
+        # OPT-4: the durable copy carries only the last 5 undo states — the full
+        # 25-deep in-memory stack of full EDLs (each with per-word captions) pushed
+        # each tweak's fire-and-forget PATCH toward ~1MB. Post-restart undo depth
+        # drops to 5; in-process undo keeps all 25.
+        durable = job
+        if len(job.get("edl_history") or []) > 5:
+            durable = {**job, "edl_history": job["edl_history"][-5:]}
+        await _supabase_client.upsert_clip_job(job_id, durable)
     except Exception as e:
         logging.warning("supabase upsert_clip_job failed: %s", e)
 
@@ -4327,7 +4346,12 @@ async def converse(req: ConverseRequest):
     user = prompts.converse_user(req.brand, req.memory, req.messages, arm_stats=stats)
     envelope = None
     try:
-        model = SONNET if req.mode == "voice" else OPUS
+        # OPT-5: chat runs SONNET by default — voice mode already trusted it with the
+        # SAME envelope schema + intent contract, and chat is the chattiest endpoint
+        # (~40% price cut + lower latency per turn). CONVERSE_MODEL=opus restores the
+        # old behavior instantly via env (no deploy-coupled code change).
+        _converse_pick = os.environ.get("CONVERSE_MODEL", "sonnet").lower()
+        model = OPUS if (_converse_pick == "opus" and req.mode != "voice") else SONNET
         # Structured output guarantees a valid envelope + a valid intent enum, so the
         # old parse-fail-and-retry dance is unnecessary.
         envelope = await anthropic_json(system, user, prompts.CONVERSE_ENVELOPE_JSON_SCHEMA, model, 1600)
@@ -4903,7 +4927,10 @@ async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
 
     # Kick the full quality-gated set in the background so the SECOND fetch
     # (e.g. pull-to-refresh, or the app reopening) gets the upgraded page.
-    if key not in _feed_refreshing:
+    # OPT-2: page 0 only — deep-cursor pages are frequently fetched exactly once,
+    # and each proactive upgrade costs the full 4-6-call OPUS pipeline. Pages the
+    # user actually returns to still upgrade via the stale-while-revalidate branch.
+    if cursor == 0 and key not in _feed_refreshing:
         _feed_refreshing.add(key)
         _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
 
