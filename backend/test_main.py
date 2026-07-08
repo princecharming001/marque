@@ -2942,3 +2942,26 @@ def test_broll_match_tiebreak_resolves_by_position(monkeypatch):
                     json={"cue_text": "dog running", "corpus": corpus, "top_k": 3}).json()
     # chosen_index 1 = the SECOND top candidate (asset b), promoted to front
     assert r["matches"][0]["asset_id"] == "b"
+
+
+# ---------------------------------------------------------------------------
+# B-06 · Onboarding digest degrades per-stage: a transient LLM error must not
+# throw away a successful scrape+transcription.
+# ---------------------------------------------------------------------------
+
+def test_digest_degrades_on_llm_failure(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def boom(*a, **k):
+        raise main.HTTPException(status_code=502, detail="down")
+    monkeypatch.setattr(main, "anthropic", boom)
+
+    async def passthrough(posts):
+        return posts
+    monkeypatch.setattr(main, "_transcribe_top_posts", passthrough)
+    req = main.DigestRequest(posts=[{"caption": "a real post", "likes": 20}], niche="fitness")
+    main._digest_jobs["d_deg"] = {"req": req, "status": "running", "stage": "init"}
+    asyncio.run(main._run_digest("d_deg"))
+    job = main._digest_jobs["d_deg"]
+    assert job["status"] == "ready"                     # degraded, NOT failed
+    assert job["result"]["scan"]                        # mock-derived brand present

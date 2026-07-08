@@ -2792,17 +2792,27 @@ async def _run_digest(job_id: str) -> None:
                     await emulate_analyze(EmulateAnalyzeRequest(handle=handle, platform=t.get("platform", "instagram")))
                 except Exception:
                     pass
+        # Each derive stage degrades independently: a transient Anthropic 5xx here must
+        # NOT throw away a successful scrape+transcription (the onboarding centerpiece).
+        # scan → mock_derive, judge → keep unjudged pillars; scripts degrade inside
+        # _generate_scripts. (audit B-06/F5)
         scan: dict | None = None
-        if posts:
-            sys, usr = prompts.derive_from_posts_prompt(brand, posts)
-            scan = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False)
-        elif req.voice_transcript:
-            sys, usr = prompts.voice_finalize_prompt(brand, req.voice_transcript)
-            scan = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False)
+        try:
+            if posts:
+                sys, usr = prompts.derive_from_posts_prompt(brand, posts)
+                scan = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False)
+            elif req.voice_transcript:
+                sys, usr = prompts.voice_finalize_prompt(brand, req.voice_transcript)
+                scan = extract_json(await anthropic(sys, usr, OPUS, 2200), array=False)
+        except HTTPException:
+            scan = None                        # degrade to the deterministic brand below
         scan = scan or mock_derive(brand, posts)
         if scan.get("pillars"):
-            merged = {**brand, "niche": scan.get("niche", brand.get("niche", ""))}
-            scan["pillars"] = await judge_and_fix_pillars(merged, scan["pillars"], posts or None)
+            try:
+                merged = {**brand, "niche": scan.get("niche", brand.get("niche", ""))}
+                scan["pillars"] = await judge_and_fix_pillars(merged, scan["pillars"], posts or None)
+            except HTTPException:
+                pass                           # keep the unjudged pillars rather than fail the digest
 
         # 4) Starter scripts through the full quality gate.
         job["stage"] = "writing_scripts"
