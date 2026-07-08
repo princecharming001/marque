@@ -223,6 +223,23 @@ extension BackendClient {
         return try? JSONDecoder().decode(AnalyzeJobResponse.self, from: data)
     }
 
+    /// GET /v1/editor/capabilities → which optional edit ops each style can actually
+    /// render (G-04). The brief screen + manual editor hide toggles that would be
+    /// silent no-ops. nil on transport failure — callers show everything rather than
+    /// wrongly hiding a real capability.
+    func editorCapabilities() async -> [String: [String: Bool]]? {
+        guard let data = await get("/v1/editor/capabilities"),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let caps = dict["capabilities"] as? [String: Any] else { return nil }
+        var out: [String: [String: Bool]] = [:]
+        for (style, v) in caps {
+            if let m = v as? [String: Any] {
+                out[style] = m.compactMapValues { $0 as? Bool }
+            }
+        }
+        return out
+    }
+
     /// GET /v1/clips/{id} decoded for the analyze phase (status + edit_brief + toggles).
     func getBrief(jobId: String) async -> AnalyzeJobResponse? {
         guard let data = await get("/v1/clips/\(jobId)") else { return nil }

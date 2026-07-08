@@ -36,6 +36,8 @@ struct RecordView: View {
     @State private var briefToggles = EditToggles()
     @State private var customInstructions = ""
     @State private var importError: String? = nil
+    // Per-style edit capabilities (G-04) — gates which toggles the brief screen shows.
+    @State private var styleCaps: [String: [String: Bool]]? = nil
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -224,23 +226,107 @@ struct RecordView: View {
         }
     }
 
-    // H-02 placeholder (H-03 grows this into the full brief + toggles review screen).
+    // H-03: the brief + toggles review — what the editor UNDERSTOOD and PLANS before
+    // any render is spent. Toggles are hidden when the inferred style can't render
+    // them (GET /v1/editor/capabilities); captions + filler cuts are always-on and
+    // deliberately not toggles. No auto-reframe toggle by design.
     @ViewBuilder private var briefReview: some View {
-        VStack(spacing: Space.md) {
-            Text(brief?.throughLine.isEmpty == false ? brief!.throughLine
-                 : "Your edit plan is ready.")
-                .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
-                .multilineTextAlignment(.center)
-            Button { confirmBrief() } label: {
-                Text("Make my clip")
-                    .font(AppFont.headline).foregroundStyle(Palette.ink)
-                    .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
-                    .background(Palette.onInk)
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: Space.md) {
+                Text("YOUR EDIT PLAN")
+                    .font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                if let brief {
+                    HStack(spacing: Space.sm) {
+                        briefChip(brief.videoTypeLabel)
+                        briefChip(brief.strategy == "restructure" ? "Re-ordered for the hook" : "Tightened, not re-cut")
+                        if !brief.cutRegions.isEmpty { briefChip("\(brief.cutRegions.count) cuts") }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                    if !brief.throughLine.isEmpty {
+                        Text(brief.throughLine)
+                            .font(AppFont.callout).foregroundStyle(.white.opacity(0.9))
+                            .multilineTextAlignment(.leading)
+                    }
+                    if let hook = brief.hookCandidates.first, !hook.quote.isEmpty {
+                        VStack(alignment: .leading, spacing: Space.xs) {
+                            Text("OPENING ON").font(AppFont.micro).tracking(Track.label)
+                                .foregroundStyle(.white.opacity(0.5))
+                            Text("“\(hook.quote)”")
+                                .font(AppFont.body).foregroundStyle(Palette.accent)
+                        }
+                        .padding(Space.md)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    }
+                }
+
+                VStack(spacing: Space.xs) {
+                    if briefCapability("broll") {
+                        briefToggleRow("B-roll cutaways", isOn: $briefToggles.broll)
+                    }
+                    if briefCapability("punch_ins") {
+                        briefToggleRow("Punch-ins for emphasis", isOn: $briefToggles.punchIns)
+                    }
+                    briefToggleRow("Background music", isOn: $briefToggles.music)
+                }
+
+                TextField("Anything specific? (optional)", text: $customInstructions, axis: .vertical)
+                    .font(AppFont.callout).foregroundStyle(.white)
+                    .lineLimit(1...3)
+                    .padding(Space.md)
+                    .background(Color.white.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .accessibilityIdentifier("record.customInstructions")
+
+                Button { confirmBrief() } label: {
+                    Text("Make my clip")
+                        .font(AppFont.headline).foregroundStyle(Palette.ink)
+                        .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
+                        .background(Palette.onInk)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("record.makeMyClip")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("record.makeMyClip")
         }
+        .frame(maxHeight: 380)
+        .task { await loadCapabilities() }
+    }
+
+    private func briefChip(_ text: String) -> some View {
+        Text(text)
+            .font(AppFont.caption).foregroundStyle(.white)
+            .padding(.horizontal, Space.md).padding(.vertical, 6)
+            .background(Color.white.opacity(0.12))
+            .clipShape(Capsule())
+    }
+
+    private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
+        Toggle(label, isOn: isOn)
+            .font(AppFont.callout).foregroundStyle(.white)
+            .tint(Palette.accent)
+            .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
+            .background(Color.white.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+    }
+
+    /// Style-gated toggle visibility. Missing data (caps fetch failed / unknown
+    /// style) shows the toggle — never wrongly hide a real capability.
+    private func briefCapability(_ key: String) -> Bool {
+        guard let styleCaps else { return true }
+        let style = brief?.inferred?.style.isEmpty == false ? brief!.inferred!.style
+                                                            : liveScript.style
+        return styleCaps[style]?[key] ?? true
+    }
+
+    private func loadCapabilities() async {
+        guard styleCaps == nil else { return }
+        styleCaps = await BackendClient.shared.editorCapabilities()
     }
 
     private var speedControl: some View {
