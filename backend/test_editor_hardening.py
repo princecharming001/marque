@@ -108,6 +108,28 @@ def test_validate_source_url_skips_non_http():
     asyncio.run(main._validate_source_url("file:///tmp/x.mov"))  # no raise
 
 
+def test_tweak_render_failure_is_visible_on_the_clip(monkeypatch):
+    # G-05: a re-render failure that restores the previous URL must be visible on the
+    # clip via GET, not just buried in job['tweaks'] where the app can't see it (D6).
+    job_id = seed_clip_job(source_url="mock://source")
+    job = main._clip_jobs[job_id]
+    clip = job["clips"][0]
+    clip["render_url"] = "https://prev.example/v.mp4"
+    job["tweaks"].append({"instruction": "cut the intro"})
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        monkeypatch.setattr(main, k, "x")
+
+    async def exploding_submit(*a, **k):
+        raise RuntimeError("render crash")
+    monkeypatch.setattr(main, "_submit_remotion_render", exploding_submit)
+    my_gen = main._bump_render_gen(clip)
+    asyncio.run(main._rerender_clip(job_id, clip["clip_id"], my_gen))
+    got = client.get(f"/v1/clips/{job_id}").json()
+    c = got["clips"][0]
+    assert c["last_render_failed"] is True and c["last_render_error"]
+    assert c["render_url"] == "https://prev.example/v.mp4"   # previous good render restored
+
+
 def test_confirmed_edit_renders_exactly_once(monkeypatch):
     # F-07: analyze-first confirm produces ONE clip → _run_edit submits ONE render,
     # not N byte-identical renders per requested format.

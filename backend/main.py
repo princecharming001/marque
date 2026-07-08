@@ -1788,6 +1788,16 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
             "preview_requested": preview_requested}
 
 
+def _mark_tweak_render_failed(job: dict, clip: dict, err: str) -> None:
+    """Surface a tweak re-render failure on the CLIP (visible via GET), not just buried in
+    job['tweaks'][-1] — otherwise the app sees the old URL come back and thinks the edit
+    silently did nothing (audit D6)."""
+    clip["last_render_failed"] = True
+    clip["last_render_error"] = err[:200]
+    if job.get("tweaks"):
+        job["tweaks"][-1]["render_error"] = err[:200]
+
+
 async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: bool = False):
     """Re-render one clip after a tweak. NEVER strands the clip: on any failure the
     previous render_url is restored (status ready) — or, if there was never a good
@@ -1825,6 +1835,8 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip["render_url"] = render_url
             clip.pop("error", None)
             clip.pop("error_detail", None)
+            clip.pop("last_render_error", None)          # G-05: a good render clears the flag
+            clip["last_render_failed"] = False
             # A tweak (e.g. a fresh cut) can newly straddle an existing duet react
             # window, which build_render_plan then silently drops — this only
             # surfaces here (not in _run_pipeline's one-time check) since it's a
@@ -1834,15 +1846,13 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
     except PipelineError as e:
         if _is_current_render(clip, my_gen):
             clip["render_url"] = prev_url
-            if job["tweaks"]:
-                job["tweaks"][-1]["render_error"] = f"{e.code}: {e.detail}"[:200]
+            _mark_tweak_render_failed(job, clip, f"{e.code}: {e.detail}")   # G-05: visible on the clip
             if not prev_url:
                 _fail_clip(clip, e.code, e.detail)
     except Exception as e:
         if _is_current_render(clip, my_gen):
             clip["render_url"] = prev_url
-            if job["tweaks"]:
-                job["tweaks"][-1]["render_error"] = str(e)[:200]
+            _mark_tweak_render_failed(job, clip, str(e))
             if not prev_url:
                 _fail_clip(clip, "internal_error", str(e))
     finally:
