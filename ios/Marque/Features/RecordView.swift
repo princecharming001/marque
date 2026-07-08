@@ -66,9 +66,16 @@ struct RecordView: View {
         .onChange(of: pickedItem) { _, item in
             guard let item else { return }
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self) {
-                    footagePath = MediaStore.save(data, ext: "mov")
+                // H-04: a failed import used to jump to .recorded with NO footage —
+                // creating a doomed byte-less live job. Surface it and stay .ready.
+                guard let data = try? await item.loadTransferable(type: Data.self) else {
+                    importError = "Couldn't load that video — try a different one."
+                    pickedItem = nil
+                    phase = .ready
+                    return
                 }
+                importError = nil
+                footagePath = MediaStore.save(data, ext: "mov")
                 phase = .recorded
                 beginUpload()      // H-02: start the upload while the creator reviews
             }
@@ -120,6 +127,12 @@ struct RecordView: View {
             case .ready:
                 Text(camera.status == .unavailable ? "Camera access is off. Enable it in Settings, or upload a video below." : "Read it once. We'll cut the rest.")
                     .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                if let importError {
+                    Text(importError)
+                        .font(AppFont.caption).foregroundStyle(Palette.critical)
+                        .multilineTextAlignment(.center)
+                        .accessibilityIdentifier("record.importError")
+                }
                 if camera.status == .unavailable {
                     Button {
                         if let url = URL(string: "app-settings:") { openURL(url) }
