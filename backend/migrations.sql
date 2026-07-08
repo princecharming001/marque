@@ -83,6 +83,16 @@ CREATE TABLE IF NOT EXISTS clip_edit_sessions (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Schema-drift guards: the tables above may ALREADY exist in the target project from
+-- an earlier apply (CREATE TABLE IF NOT EXISTS silently skips new columns). Idempotent
+-- column adds keep an existing deployment in sync with the DDL above.
+ALTER TABLE arm_stats  ADD COLUMN IF NOT EXISTS sum_raw     FLOAT DEFAULT 0.0;
+ALTER TABLE arm_stats  ADD COLUMN IF NOT EXISTS n_raw       INT   DEFAULT 0;
+ALTER TABLE arm_stats  ADD COLUMN IF NOT EXISTS prior_alpha FLOAT DEFAULT 1.0;
+ALTER TABLE arm_stats  ADD COLUMN IF NOT EXISTS prior_beta  FLOAT DEFAULT 1.0;
+ALTER TABLE creators   ADD COLUMN IF NOT EXISTS coach_last_shown TIMESTAMPTZ;
+ALTER TABLE post_registry ADD COLUMN IF NOT EXISTS outcome_raw FLOAT;
+
 -- These tables are written ONLY by the backend using the Supabase service-role key,
 -- which bypasses RLS. Enabling RLS with no policies denies the anon/authenticated
 -- roles entirely — the correct, closed-by-default posture for internal learning state.
