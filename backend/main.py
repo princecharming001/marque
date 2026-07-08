@@ -920,7 +920,9 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
             alt = alts[bh - 1]
             if alt.get("text"):
                 sc["hook"] = alt["text"]
-                if alt.get("signal"):
+                # Only adopt the alt's signal if it's a real taxonomy value — an
+                # off-taxonomy signal would leak straight into the hook_signal arm.
+                if alt.get("signal") in prompts.SIGNAL_LIST:
                     sc["hookSignal"] = alt["signal"]
         # Re-ground the virality score on the critic, calibrated by real outcomes.
         sc["predictedScore"] = _final_score(creator_id, sc, v)
@@ -3180,13 +3182,29 @@ async def register_post(req: PostRegisterRequest):
         if existing and existing is not sp.UNAVAILABLE:
             _post_registry[req.post_id] = existing
             return {"mode": live_mode, "status": "already_registered", "post_id": req.post_id}
+    # Whitelist the enumerated dimensions before they can become permanent bandit arms:
+    # an off-taxonomy style/format/hook_signal (e.g. a client bug or a drifted LLM value)
+    # would otherwise seed a junk arm that pollutes learning_block forever. Invalid values
+    # are dropped to "" (that dim just doesn't update); pillar stays freeform by design.
+    dropped = []
+    style = req.style if req.style in STYLES else ""
+    if req.style and not style:
+        dropped.append("style")
+    format_id = req.format_id if req.format_id in FORMAT_IDS else ""
+    if req.format_id and not format_id:
+        dropped.append("format_id")
+    hook_signal = req.hook_signal if req.hook_signal in prompts.SIGNAL_LIST else ""
+    if req.hook_signal and not hook_signal:
+        dropped.append("hook_signal")
+    if dropped:
+        logging.warning("register_post dropped off-taxonomy dims %s for %s", dropped, req.post_id)
     # Omit the regressive outcome_y/metrics fields from the persisted row (settled
     # defaults FALSE in-schema); keep them in-memory so the settle path has its shape.
     post_data = {
         "creator_id": req.creator_id,
         "platform": req.platform, "scheduled_at": req.scheduled_at,
-        "pillar": req.pillar, "style": req.style,
-        "format_id": req.format_id, "hook_signal": req.hook_signal,
+        "pillar": req.pillar, "style": style,
+        "format_id": format_id, "hook_signal": hook_signal,
         "predicted_score": req.predicted_score,
         "settled": False,
     }
@@ -3200,7 +3218,10 @@ async def register_post(req: PostRegisterRequest):
                 logging.warning("supabase upsert_post wrote nothing: %s", req.post_id)
         except Exception as e:
             logging.warning("supabase upsert_post failed: %s", e)
-    return {"mode": live_mode, "status": "registered", "post_id": req.post_id}
+    resp = {"mode": live_mode, "status": "registered", "post_id": req.post_id}
+    if dropped:
+        resp["dropped"] = dropped
+    return resp
 
 
 @app.post("/v1/metrics/ingest")
@@ -3321,7 +3342,7 @@ async def get_recommendations(niche: str = "", creator_id: str = "default"):
         return {"mode": "mock", "arms": _cold_recommendations(niche)}
 
     mean_raw = _creator_mean_raw(creator_id)
-    styles = ["talking_head", "faceless", "split_three", "fast_cuts", "green_screen"]
+    styles = list(prompts.ACTIVE_STYLES)     # only recommend styles the app actually offers
     pillars = list(set(
         k.split(":", 1)[1] for k in stats if k.startswith("pillar:")
     )) or ["Myth-busting", "Teach the fundamentals", "Hot takes"]

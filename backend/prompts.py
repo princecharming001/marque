@@ -576,13 +576,15 @@ SCRIPT_JSON_ELEMENT = {
     "properties": {
         "title": _STR, "summary": _STR, "hook": _STR,
         "hookSignal": {"type": "string", "enum": SIGNAL_LIST},
-        "formatId": _STR, "body": _STR, "cta": _STR,
+        "formatId": {"type": "string", "enum": FORMAT_IDS},
+        "body": _STR, "cta": _STR,
         "shotPlan": {"type": "array", "items": _STR},
         "targetSeconds": _INT, "predictedScore": _INT,
         "altHooks": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["text", "signal", "strength"],
-            "properties": {"text": _STR, "signal": _STR, "strength": _INT}}},
+            "properties": {"text": _STR, "signal": {"type": "string", "enum": SIGNAL_LIST},
+                           "strength": _INT}}},
         "style": _STR,
     },
 }

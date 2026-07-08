@@ -2516,3 +2516,56 @@ def test_load_all_posts_paginates(monkeypatch):
     rows = asyncio.run(c.load_all_posts())
     assert [r["post_id"] for r in rows] == ["p1", "p2", "p3"]
     assert seen["offsets"] == ["0", "2"]                       # advanced by page size
+
+
+# ---------------------------------------------------------------------------
+# A-09 · Taxonomy validation at the bandit's doors: only valid dim values ever
+# become arms; the LLM schema constrains formatId/altHook signal.
+# ---------------------------------------------------------------------------
+
+def test_script_schema_constrains_format_and_alt_signal():
+    import prompts
+    props = prompts.SCRIPT_JSON_ELEMENT["properties"]
+    assert props["formatId"].get("enum") == prompts.FORMAT_IDS
+    assert props["altHooks"]["items"]["properties"]["signal"].get("enum") == prompts.SIGNAL_LIST
+
+
+def test_quality_scripts_rejects_offtaxonomy_alt_signal(monkeypatch):
+    # A revised main-hook that pulls an alt whose signal is junk must NOT poison hookSignal.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    # judge keeps the script but crowns altHook #1 (best_hook=1)
+    monkeypatch.setattr(main, "anthropic_json",
+                        AsyncMock(return_value=[{"index": 0, "verdict": "keep", "best_hook": 1,
+                                                 "overall": 80, "hook_strength": 8, "fluff": 2,
+                                                 "format_fit": 9, "voice_match": 9}]))
+    scr = [_script(hook="orig", alts=[{"text": "better opener", "signal": "not_a_signal", "strength": 9}])]
+    scr[0]["hookSignal"] = "contrarian"
+    out = asyncio.run(main.quality_scripts({}, "talking_head", scr))
+    assert out[0]["hook"] == "better opener"                # alt was adopted
+    assert out[0]["hookSignal"] in prompts.SIGNAL_LIST      # but its junk signal was rejected
+
+
+def test_register_post_drops_offtaxonomy_dims(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._post_registry.pop("p_tax", None)
+    r = client.post("/v1/posts/register", json={
+        "post_id": "p_tax", "creator_id": "c_tax", "style": "not_a_style",
+        "format_id": "bogus", "hook_signal": "nope", "pillar": "My Custom Pillar"}).json()
+    assert r["status"] == "registered"
+    entry = main._post_registry["p_tax"]
+    assert entry["style"] == "" and entry["format_id"] == "" and entry["hook_signal"] == ""
+    assert entry["pillar"] == "My Custom Pillar"           # pillar stays freeform
+    assert set(r.get("dropped", [])) == {"style", "format_id", "hook_signal"}
+
+
+def test_recommendations_candidate_styles_are_active(monkeypatch):
+    # a creator with data → recommendation styles must be drawn from ACTIVE_STYLES
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_recstyle"
+    main._arm_stats[cid] = {"pillar:Hot takes": {
+        "n": 5, "sum_raw": 6.0, "alpha": 4.0, "beta": 2.0, "confidence": "early_read"}}
+    main._arms_loaded.add(cid)
+    b = client.get(f"/v1/recommendations?creator_id={cid}").json()
+    for arm in b["arms"]:
+        assert arm["style"] in prompts.ACTIVE_STYLES
