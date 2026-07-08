@@ -762,6 +762,21 @@ def test_split_segment_out_of_bounds_rejected():
     assert bad_idx[0]["applied"] is False
 
 
+def test_edit_caption_edit_add_remove():
+    # G-07: word-level caption override — edit, add (frame-monotonic), remove (empty word).
+    from app.edl import apply_edl_ops, build_render_plan
+    edl = _base_edl(captions=[{"word": "hello", "frame": 50}])
+    e1, r1 = apply_edl_ops(edl, [{"type": "edit_caption", "frame": 50, "word": "HELLO"}])
+    assert r1[0]["applied"] and e1["captions"][0]["word"] == "HELLO"    # edit in place
+    e2, r2 = apply_edl_ops(e1, [{"type": "edit_caption", "frame": 10, "word": "hi"}])
+    assert r2[0]["applied"]
+    frames = [c["frame"] for c in e2["captions"]]
+    assert frames == sorted(frames) and frames[0] == 10                # added, kept monotonic
+    build_render_plan(e2)                                              # still remaps cleanly
+    e3, r3 = apply_edl_ops(e2, [{"type": "edit_caption", "frame": 10, "word": ""}])
+    assert r3[0]["applied"] and all(c["frame"] != 10 for c in e3["captions"])   # removed
+
+
 def test_mute_range_and_volume_replace_semantics():
     from app.edl import apply_edl_ops
     out, _ = apply_edl_ops(_base_edl(), [

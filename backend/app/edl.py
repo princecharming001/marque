@@ -507,7 +507,7 @@ TWEAK_OP_TYPES = [
     "remove_overlays", "add_punch_in", "add_text_card", "add_broll",
     "remove_broll", "set_split_fraction", "trim_start", "trim_end", "undo",
     "reorder_segments", "set_music", "set_segment_volume", "mute_range",
-    "split_segment",
+    "split_segment", "edit_caption",
 ]
 
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
@@ -806,6 +806,28 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     edl["segments"] = new_segs
                     segments = new_segs
                     applied = True
+
+            elif t == "edit_caption":
+                frame = op.get("frame")
+                word = op.get("word")
+                if not isinstance(frame, int):
+                    reason = "frame required"
+                else:
+                    caps = edl.setdefault("captions", [])
+                    existing = next((c for c in caps if c.get("frame") == frame), None)
+                    if word is None or (isinstance(word, str) and not word.strip()):
+                        if existing:                     # empty word → remove the caption
+                            caps.remove(existing)
+                            applied = True
+                        else:
+                            reason = "no caption at that frame to remove"
+                    elif existing:
+                        existing["word"] = word.strip()[:60]
+                        applied = True
+                    else:                                 # add, keep captions frame-monotonic
+                        caps.append({"word": word.strip()[:60], "frame": frame})
+                        caps.sort(key=lambda c: c["frame"])
+                        applied = True
 
             elif t == "reorder_segments":
                 order = op.get("order")
