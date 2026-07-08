@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS arm_stats (
     beta        FLOAT DEFAULT 1.0,
     effect      FLOAT DEFAULT 0.5,
     sum_raw     FLOAT DEFAULT 0.0,             -- A-05: accumulated raw engagement composite (honest lift)
+    n_raw       INT DEFAULT 0,                 -- AF-2: settles actually IN sum_raw (the honest lift denominator)
     prior_alpha FLOAT DEFAULT 1.0,             -- A-10: niche-seeded Beta prior (survives reload)
     prior_beta  FLOAT DEFAULT 1.0,
     confidence  TEXT CHECK (confidence IN ('insufficient', 'early_read', 'confirmed')),

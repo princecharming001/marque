@@ -243,13 +243,19 @@ def _invalidate_creator_mean(creator_id: str):
 
 def _arm_lift(stat: dict, mean_raw: float | None) -> tuple[int, bool]:
     """Percent lift of an arm vs the creator's baseline, and whether the claim is
-    grounded. (0, False) when there's no raw history (pre-migration arms / no settled
-    posts) — callers must then make NO performance claim rather than invent one."""
+    grounded. (0, False) when there's no raw history — callers must then make NO
+    performance claim rather than invent one.
+
+    AF-2 (audit): the denominator is n_raw — the count of settles that actually
+    accumulated into sum_raw — NOT n. A row whose sum_raw covers fewer settles than n
+    (sum_raw's DEFAULT 0.0 backfills history the composite never saw) would otherwise
+    divide a partial sum by the full count and report a large fake negative lift as
+    'grounded'. No n_raw → ungrounded, honestly."""
     sum_raw = stat.get("sum_raw")
-    n = stat.get("n", 0)
-    if sum_raw is None or not mean_raw or mean_raw <= 0 or n <= 0:
+    n_raw = stat.get("n_raw", 0)
+    if sum_raw is None or n_raw <= 0 or not mean_raw or mean_raw <= 0:
         return 0, False
-    arm_raw = (sum_raw + LIFT_KAPPA * mean_raw) / (n + LIFT_KAPPA)
+    arm_raw = (sum_raw + LIFT_KAPPA * mean_raw) / (n_raw + LIFT_KAPPA)
     return round((arm_raw / mean_raw - 1.0) * 100), True
 
 
@@ -275,6 +281,7 @@ async def _update_arm(creator_id: str, dim_value: str, y: float,
     s["sum_y"] += y
     if raw is not None:                          # accumulate the raw composite for honest lift
         s["sum_raw"] = s.get("sum_raw", 0.0) + raw
+        s["n_raw"] = s.get("n_raw", 0) + 1       # AF-2: honest denominator for _arm_lift
     s["effect"] = (s["sum_y"] + KAPPA * 0.5) / (s["n"] + KAPPA)
     s["alpha"] = pa + s["sum_y"]
     s["beta"] = pb + (s["n"] - s["sum_y"])

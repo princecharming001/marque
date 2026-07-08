@@ -960,7 +960,7 @@ def test_arms_lazy_load_from_supabase(monkeypatch):
     from unittest.mock import AsyncMock
     fake = SupabaseClientStub()
     fake.load_arm_stats = AsyncMock(return_value={
-        "style:faceless": {"n": 12, "sum_raw": 18.5, "effect": 0.75, "confidence": "confirmed"}})
+        "style:faceless": {"n": 12, "n_raw": 12, "sum_raw": 18.5, "effect": 0.75, "confidence": "confirmed"}})
     monkeypatch.setattr(main, "_supabase_client", fake)
     main._arm_stats.pop("c_lazy", None)                   # cache miss → must load
     main._arms_loaded.discard("c_lazy")
@@ -1131,9 +1131,9 @@ def test_arms_for_prompt_shapes_arms_so_learning_block_fires():
     main._arms_loaded.discard("learner")
     _seed_baseline("learner", mean=1.0)                # personal baseline 1.0
     main._arm_stats["learner"] = {
-        "style:talking_head": {"n": 10, "sum_raw": 16.6, "confidence": "confirmed"},   # +60%
-        "hook_signal:contrarian": {"n": 5, "sum_raw": 3.2, "confidence": "early_read"},  # -30%
-        "format_id:myth-buster": {"n": 2, "sum_raw": 4.0},   # too few samples → dropped
+        "style:talking_head": {"n": 10, "n_raw": 10, "sum_raw": 16.6, "confidence": "confirmed"},   # +60%
+        "hook_signal:contrarian": {"n": 5, "n_raw": 5, "sum_raw": 3.2, "confidence": "early_read"},  # -30%
+        "format_id:myth-buster": {"n": 2, "n_raw": 2, "sum_raw": 4.0},   # too few samples → dropped
     }
     arms = asyncio.run(main._arms_for_prompt("learner"))
     labels = [a["label"] for a in arms]
@@ -2011,7 +2011,7 @@ def _seed_coach_creator(cid, arm_key="hook_signal:contrarian", arm_sum_raw=12.0,
     for i in range(baseline_count):
         main._post_registry[f"{cid}-b{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": baseline_raw}
     main._invalidate_creator_mean(cid)
-    main._arm_stats[cid] = {arm_key: {"n": arm_n, "sum_raw": arm_sum_raw, "alpha": 3.0, "beta": 1.5,
+    main._arm_stats[cid] = {arm_key: {"n": arm_n, "n_raw": arm_n, "sum_raw": arm_sum_raw, "alpha": 3.0, "beta": 1.5,
                                       "confidence": "early_read" if arm_n < 8 else "confirmed"}}
     main._arms_loaded.add(cid)
 
@@ -2172,6 +2172,30 @@ def test_attribution_overwrites_llm_numbers_with_computed_lift(monkeypatch):
     assert out["band"] == prompts.classify_arm_lift(int(real["lift_pct"]))
 
 
+def test_arm_lift_partial_raw_history_is_ungrounded():
+    """AF-2: an arm whose sum_raw covers FEWER settles than n (legacy rows backfilled by
+    sum_raw's DEFAULT 0.0) must not divide a partial sum by the full n — that fabricated
+    large negative 'grounded' lifts. n_raw is the honest denominator."""
+    # 6 historic settles the composite never saw + 1 real settle exactly at the mean:
+    legacy = {"n": 7, "sum_raw": 1.0, "n_raw": 0, "confidence": "early_read"}
+    lift, grounded = main._arm_lift(legacy, 1.0)
+    assert not grounded and lift == 0                      # no n_raw → no claim
+    honest = {"n": 7, "sum_raw": 1.0, "n_raw": 1, "confidence": "early_read"}
+    lift, grounded = main._arm_lift(honest, 1.0)
+    assert grounded and lift == 0                          # 1 settle at the mean → 0%
+
+
+def test_update_arm_accumulates_n_raw(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_nraw"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    asyncio.run(main._update_arm(cid, "style:talking_head", 1.0, raw=2.0))
+    asyncio.run(main._update_arm(cid, "style:talking_head", 0.0, raw=None))  # no raw settle
+    s = main._arm_stats[cid]["style:talking_head"]
+    assert s["n"] == 2 and s["n_raw"] == 1 and s["sum_raw"] == 2.0
+
+
 def test_attribution_llm_none_never_echoes_raw_fields(monkeypatch):
     monkeypatch.setattr(main, "_supabase_client", None)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
@@ -2226,9 +2250,9 @@ def test_learned_insights_rank_by_lift_magnitude(monkeypatch):
     main._invalidate_creator_mean(cid)
     main._arm_stats[cid] = {
         # a weak winner (+~10%) and a strong error (-~60%): the error is the bigger insight
-        "style:talking_head": {"n": 6, "sum_raw": 6.6, "alpha": 3.0, "beta": 1.5,
+        "style:talking_head": {"n": 6, "n_raw": 6, "sum_raw": 6.6, "alpha": 3.0, "beta": 1.5,
                                "confidence": "early_read"},
-        "hook_signal:hype": {"n": 6, "sum_raw": 2.4, "alpha": 1.0, "beta": 3.0,
+        "hook_signal:hype": {"n": 6, "n_raw": 6, "sum_raw": 2.4, "alpha": 1.0, "beta": 3.0,
                              "confidence": "early_read"},
     }
     main._arms_loaded.add(cid)
@@ -3105,7 +3129,7 @@ def test_arms_for_prompt_lift_vs_creator_baseline_reaches_driver(monkeypatch):
     main._invalidate_creator_mean(cid)
     # the contrarian arm: 4 posts averaging raw 3.0 — a genuine outlier vs the 1.0 mean
     main._arm_stats[cid] = {"hook_signal:contrarian": {
-        "n": 4, "sum_y": 3.2, "sum_raw": 12.0, "alpha": 1, "beta": 1,
+        "n": 4, "sum_y": 3.2, "n_raw": 4, "sum_raw": 12.0, "alpha": 1, "beta": 1,
         "effect": 0.7, "confidence": "early_read"}}
     arms = asyncio.run(main._arms_for_prompt(cid))
     a = next(x for x in arms if x["value"] == "contrarian")
@@ -3145,7 +3169,7 @@ def test_insights_learned_no_negative_outperform_copy(monkeypatch):
     main._invalidate_creator_mean(cid)
     # an UNDERperforming arm: 4 posts all at raw 0.4 vs baseline 1.2
     main._arm_stats[cid] = {"style:faceless": {
-        "n": 4, "sum_y": 1.0, "sum_raw": 1.6, "alpha": 1, "beta": 1,
+        "n": 4, "sum_y": 1.0, "n_raw": 4, "sum_raw": 1.6, "alpha": 1, "beta": 1,
         "effect": 0.3, "confidence": "confirmed"}}
     b = client.get(f"/v1/insights/learned?creator_id={cid}").json()
     assert b["insights"] and b["insights"][0]["lift_pct"] < 0
@@ -3172,9 +3196,9 @@ def test_attribution_scoped_to_settled_post_dims(monkeypatch):
     main._invalidate_creator_mean(cid)
     # style:faceless is the creator's biggest driver, but THIS post is style:talking_head
     main._arm_stats[cid] = {
-        "style:faceless": {"n": 8, "sum_raw": 40.0, "confidence": "confirmed"},        # huge lift
-        "style:talking_head": {"n": 6, "sum_raw": 5.0, "confidence": "early_read"},     # this post's style
-        "hook_signal:contrarian": {"n": 6, "sum_raw": 6.6, "confidence": "early_read"}, # this post's hook
+        "style:faceless": {"n": 8, "n_raw": 8, "sum_raw": 40.0, "confidence": "confirmed"},        # huge lift
+        "style:talking_head": {"n": 6, "n_raw": 6, "sum_raw": 5.0, "confidence": "early_read"},     # this post's style
+        "hook_signal:contrarian": {"n": 6, "n_raw": 6, "sum_raw": 6.6, "confidence": "early_read"}, # this post's hook
     }
     post = {"pillar": "", "style": "talking_head", "format_id": "", "hook_signal": "contrarian"}
     attribution = asyncio.run(main._attribute_settled_post(cid, post))
@@ -3198,7 +3222,7 @@ def test_attribution_live_path_falls_back_to_deterministic(monkeypatch):
     for i in range(16):
         main._post_registry[f"{cid}-b{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": 1.0}
     main._invalidate_creator_mean(cid)
-    main._arm_stats[cid] = {"hook_signal:contrarian": {"n": 6, "sum_raw": 12.0, "confidence": "confirmed"}}
+    main._arm_stats[cid] = {"hook_signal:contrarian": {"n": 6, "n_raw": 6, "sum_raw": 12.0, "confidence": "confirmed"}}
     post = {"pillar": "", "style": "", "format_id": "", "hook_signal": "contrarian"}
     # LLM raises → deterministic attribution still returned (keyless-mock discipline)
     attribution = asyncio.run(main._attribute_settled_post(cid, post))
@@ -3333,7 +3357,7 @@ def test_recommendations_candidate_styles_are_active(monkeypatch):
     monkeypatch.setattr(main, "_supabase_client", None)
     cid = "c_recstyle"
     main._arm_stats[cid] = {"pillar:Hot takes": {
-        "n": 5, "sum_raw": 6.0, "alpha": 4.0, "beta": 2.0, "confidence": "early_read"}}
+        "n": 5, "n_raw": 5, "sum_raw": 6.0, "alpha": 4.0, "beta": 2.0, "confidence": "early_read"}}
     main._arms_loaded.add(cid)
     b = client.get(f"/v1/recommendations?creator_id={cid}").json()
     for arm in b["arms"]:
@@ -3428,7 +3452,7 @@ def test_fast_feed_passes_arm_stats(monkeypatch):
     main._arms_loaded.add(cid)
     _seed_baseline(cid, 1.0)
     main._arm_stats[cid] = {"style:talking_head": {
-        "n": 6, "sum_raw": 12.0, "alpha": 1, "beta": 1, "confidence": "early_read"}}
+        "n": 6, "n_raw": 6, "sum_raw": 12.0, "alpha": 1, "beta": 1, "confidence": "early_read"}}
     cap = {}
 
     def fake_scripts_prompt(brand, pillar, style, count, *a, **k):
