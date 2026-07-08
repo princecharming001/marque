@@ -507,7 +507,7 @@ TWEAK_OP_TYPES = [
     "remove_overlays", "add_punch_in", "add_text_card", "add_broll",
     "remove_broll", "set_split_fraction", "trim_start", "trim_end", "undo",
     "reorder_segments", "set_music", "set_segment_volume", "mute_range",
-    "split_segment", "edit_caption",
+    "split_segment", "edit_caption", "edit_overlay",
 ]
 
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
@@ -828,6 +828,31 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         caps.append({"word": word.strip()[:60], "frame": frame})
                         caps.sort(key=lambda c: c["frame"])
                         applied = True
+
+            elif t == "edit_overlay":
+                idx = op.get("index")
+                ovs = edl.get("overlays") or []
+                if not isinstance(idx, int) or not (0 <= idx < len(ovs)):
+                    reason = "index out of range"
+                else:
+                    ov = ovs[idx]
+                    changed = False
+                    if op.get("text") is not None:
+                        ov["text"] = str(op["text"])[:80]
+                        changed = True
+                    fi, fo = op.get("frame_in"), op.get("frame_out")
+                    if fi is not None or fo is not None:
+                        r = clamp_range(fi if fi is not None else ov["src_in"],
+                                        fo if fo is not None else ov["src_out"])
+                        if r is None:
+                            reason = "invalid overlay window"
+                        else:
+                            ov["src_in"], ov["src_out"] = r
+                            changed = True
+                    if changed:
+                        applied = True
+                    elif not reason:
+                        reason = "nothing to change"
 
             elif t == "reorder_segments":
                 order = op.get("order")

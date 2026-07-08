@@ -777,6 +777,26 @@ def test_edit_caption_edit_add_remove():
     assert r3[0]["applied"] and all(c["frame"] != 10 for c in e3["captions"])   # removed
 
 
+def test_edit_overlay_text_and_window():
+    # G-08: edit a text-card/punch-in overlay's text or move its window (clamped).
+    from app.edl import apply_edl_ops
+    edl = _base_edl(overlays=[{"type": "punch_in", "src_in": 100, "src_out": 150, "scale": 1.1, "text": ""}])
+    e1, r1 = apply_edl_ops(edl, [{"type": "edit_overlay", "index": 0, "text": "POP"}])
+    assert r1[0]["applied"] and e1["overlays"][0]["text"] == "POP"
+    e2, r2 = apply_edl_ops(e1, [{"type": "edit_overlay", "index": 0, "frame_in": 110, "frame_out": 140}])
+    assert r2[0]["applied"]
+    assert (e2["overlays"][0]["src_in"], e2["overlays"][0]["src_out"]) == (110, 140)
+
+
+def test_edit_overlay_invalid_rejected():
+    from app.edl import apply_edl_ops
+    edl = _base_edl(overlays=[{"type": "punch_in", "src_in": 100, "src_out": 150, "scale": 1.1, "text": ""}])
+    _, bad_win = apply_edl_ops(edl, [{"type": "edit_overlay", "index": 0, "frame_in": 140, "frame_out": 110}])
+    assert bad_win[0]["applied"] is False                # frame_out < frame_in
+    _, bad_idx = apply_edl_ops(edl, [{"type": "edit_overlay", "index": 5, "text": "x"}])
+    assert bad_idx[0]["applied"] is False
+
+
 def test_mute_range_and_volume_replace_semantics():
     from app.edl import apply_edl_ops
     out, _ = apply_edl_ops(_base_edl(), [
