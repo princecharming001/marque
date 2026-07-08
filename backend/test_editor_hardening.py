@@ -727,6 +727,25 @@ def test_reorder_remaps_captions_with_segment():
     assert plan["captions"][0]["frame"] == 50
 
 
+def test_tweak_envelope_schema_covers_reorder_music_volume():
+    # G-02: the chat editor's envelope must express the same ops as the manual editor.
+    import prompts
+    props = prompts.TWEAK_ENVELOPE_JSON_SCHEMA["properties"]["ops"]["items"]["properties"]
+    assert "order" in props and "url" in props and "volume" in props
+    sys, _ = prompts.tweak_prompt({"style": "talking_head"}, [], "put the ending first")
+    assert "reorder_segments" in sys and "set_music" in sys and "set_segment_volume" in sys
+
+
+def test_reorder_segments_op_roundtrips_through_apply():
+    # A reorder op (chat OR manual) applies to segment_order via the shared apply_edl_ops.
+    from app.edl import apply_edl_ops, EDL
+    edl = _base_edl()
+    new_edl, results = apply_edl_ops(edl, [{"type": "reorder_segments", "order": [2, 0, 1]}])
+    assert results[0]["applied"] is True
+    assert new_edl["segment_order"] == [2, 0, 1]
+    EDL(**new_edl)                                        # still a valid EDL (permutation invariant holds)
+
+
 def test_reorder_captions_emitted_ascending_by_output_frame():
     # G-01: with a reorder, captions must come out sorted by OUTPUT frame — else
     # Captions.tsx's early-break scan drops the first-played segment's captions.

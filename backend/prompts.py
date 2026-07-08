@@ -551,7 +551,8 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
         "ops": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["type", "style", "enabled", "start_frame", "end_frame",
-                         "scale", "text", "query", "value", "kind", "frames"],
+                         "scale", "text", "query", "value", "kind", "frames",
+                         "order", "url", "volume"],
             "properties": {
                 "type": {"type": "string", "enum": TWEAK_OP_TYPES},
                 "style": {"type": ["string", "null"]},
@@ -564,6 +565,11 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
                 "value": {"type": ["number", "null"]},
                 "kind": {"type": ["string", "null"]},
                 "frames": {"type": ["integer", "null"]},
+                # G-02: parity with the manual editor's op set — the chat could not
+                # express reorder/music-url/per-clip-volume before.
+                "order": {"type": ["array", "null"], "items": {"type": "integer"}},
+                "url": {"type": ["string", "null"]},
+                "volume": {"type": ["number", "null"]},
             },
         }},
     },
@@ -608,6 +614,10 @@ def tweak_prompt(edl: dict, transcript_words: list[dict], instruction: str,
         "- add_broll {start_frame, end_frame, query} (only broll_cutaway/faceless styles)\n"
         "- remove_broll {start_frame?, end_frame?}\n"
         "- set_split_fraction {value 0.3-0.75} (duet only)\n"
+        "- reorder_segments {order: [int,...]} — reorder the kept segments (a permutation of their indices)\n"
+        "- set_music {enabled, url? | query?} — background music (a url plays; a query is resolved server-side)\n"
+        "- set_segment_volume {start_frame, end_frame, volume 0.0-2.0} — per-clip volume\n"
+        "- mute_range {start_frame, end_frame} — silence a section\n"
         "- trim_start {frames} / trim_end {frames}\n"
         "- undo {} — revert the last tweak\n\n"
         "FRAME MATH: 30fps; frame = round(seconds * 30). The transcript below maps words to frames — "
