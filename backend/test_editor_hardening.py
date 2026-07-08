@@ -677,6 +677,22 @@ def test_set_music_requires_url_or_query():
     assert not res[0]["applied"]
 
 
+def test_set_music_query_only_rejected_with_reason():
+    # G-03: a search query with no url can't render (no server-side music search) →
+    # reject with a reason instead of storing intent that plays silently.
+    from app.edl import apply_edl_ops
+    new_edl, res = apply_edl_ops(_base_edl(), [{"type": "set_music", "enabled": True, "query": "upbeat"}])
+    assert res[0]["applied"] is False and res[0].get("reason")
+    assert not (new_edl.get("audio") or {}).get("music")
+
+
+def test_set_music_url_applies():
+    from app.edl import apply_edl_ops
+    new_edl, res = apply_edl_ops(_base_edl(),
+                                 [{"type": "set_music", "enabled": True, "url": "https://cdn/m.mp3", "volume": 0.2}])
+    assert res[0]["applied"] is True and new_edl["audio"]["music"]["url"] == "https://cdn/m.mp3"
+
+
 def test_mute_range_and_volume_replace_semantics():
     from app.edl import apply_edl_ops
     out, _ = apply_edl_ops(_base_edl(), [
@@ -693,12 +709,12 @@ def test_new_ops_roundtrip_through_edl_model():
     from app.edl import apply_edl_ops, EDL
     out, _ = apply_edl_ops(_base_edl(), [
         {"type": "reorder_segments", "order": [1, 0, 2]},
-        {"type": "set_music", "enabled": True, "query": "lofi", "volume": 0.2},
+        {"type": "set_music", "enabled": True, "url": "https://cdn/lofi.mp3", "volume": 0.2},
         {"type": "mute_range", "start_frame": 0, "end_frame": 30},
     ])
     validated = EDL(**out).model_dump()
     assert validated["segment_order"] == [1, 0, 2]
-    assert validated["audio"]["music"]["query"] == "lofi"
+    assert validated["audio"]["music"]["url"] == "https://cdn/lofi.mp3"   # url plays; query-only is rejected (G-03)
     assert validated["audio"]["volume_ranges"]
 
 

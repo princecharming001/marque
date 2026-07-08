@@ -786,14 +786,16 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         reason = "no music to remove"
                 elif enabled is True or op.get("url") or op.get("query"):
                     url = (op.get("url") or "").strip() or None
-                    query = (op.get("query") or "").strip() or None
-                    if not url and not query:
-                        reason = "music needs a url or a search query"
-                    else:
+                    if url:
                         volume = max(0.0, min(1.0, float(op.get("volume", 0.15))))
-                        audio["music"] = {"url": url, "query": query, "volume": volume,
+                        audio["music"] = {"url": url, "query": None, "volume": volume,
                                           "duck_voice": bool(op.get("duck_voice", True))}
                         applied = True
+                    else:
+                        # G-03: a search query with no url can't be rendered — there's no
+                        # server-side music search — so reject honestly instead of storing
+                        # intent that AudioMix silently plays as nothing (D3).
+                        reason = "pick a track to add music (a search term alone can't be played yet)"
                 else:
                     reason = "enabled must be true or false"
 
