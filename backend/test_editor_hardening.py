@@ -10,6 +10,7 @@ code runs end-to-end with injected failures. The core contract under test:
 import asyncio
 import json
 import time
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -21,18 +22,46 @@ client = TestClient(app)
 SCRIPT = {"hook": "Test hook", "body": "Body text here", "cta": "Follow", "formatId": "myth-buster"}
 
 
+def seed_clip_job(source_url="mock://source", script=None, style="talking_head",
+                  formats=("myth-buster",), edit_prefs=None, **extra):
+    """Seed a keyless MOCK-READY clip job directly (endpoint is analyze-first now; these
+    white-box tests drive tweak/rerender internals on a ready job). Mirrors the old
+    keyless create: edl from _mock_edl + prefs, words from _mock_words."""
+    script = script if script is not None else dict(SCRIPT)
+    edit_prefs = edit_prefs or {}
+    job_id = str(uuid.uuid4())
+    clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "ready",
+              "render_url": source_url} for f in formats]
+    job = {
+        "job_id": job_id, "source_id": "src1", "status": "mock_ready", "clips": clips,
+        "script": script, "style": style, "brand": {}, "media_context": "",
+        "source_url": source_url, "error": None, "edit_prefs": edit_prefs,
+        "react_source_url": "", "react_credit_label": "",
+        "edl": main._apply_edit_prefs(main._mock_edl(style, script), edit_prefs),
+        "words": main._mock_words(script), "edl_history": [], "tweaks": [],
+        "custom_instructions": "", "created_at": time.time(),
+    }
+    job.update(extra)
+    main._clip_jobs[job_id] = job
+    return job_id
+
+
 def _make_live_job(monkeypatch, **env):
-    """Create a clip job wired for the LIVE code path (keys faked), with the
-    external seams monkeypatched by each test. Returns job_id."""
+    """Bare live-path clip job (status 'queued', edl None) for driving _run_pipeline."""
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "test-key")
     for k, v in env.items():
         monkeypatch.setattr(main, k, v)
-    r = client.post("/v1/clips", json={
-        "source_id": "src1", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "https://example.com/video.mov",
-    })
-    assert r.status_code == 200
-    return r.json()["job_id"]
+    job_id = str(uuid.uuid4())
+    main._clip_jobs[job_id] = {
+        "job_id": job_id, "source_id": "src1", "status": "queued",
+        "clips": [{"clip_id": str(uuid.uuid4()), "format": "myth-buster", "status": "queued"}],
+        "script": dict(SCRIPT), "style": "talking_head", "brand": {}, "media_context": "",
+        "source_url": "https://example.com/video.mov", "edl": None, "error": None,
+        "edit_prefs": {}, "react_source_url": "", "react_credit_label": "",
+        "words": [], "edl_history": [], "tweaks": [], "custom_instructions": "",
+        "created_at": time.time(),
+    }
+    return job_id
 
 
 def _run_pipeline_sync(job_id):
@@ -307,10 +336,7 @@ def test_watchdog_fails_ancient_inflight_job():
 
 def test_rerender_never_strands(monkeypatch):
     # Mock job (keyless) → tweak → simulate render crash mid-flight.
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     job = main._clip_jobs[job_id]
     clip_id = job["clips"][0]["clip_id"]
     async def exploding_submit(*a, **k):
@@ -325,10 +351,7 @@ def test_rerender_never_strands(monkeypatch):
 
 
 def test_rerender_no_prev_url_fails_structured(monkeypatch):
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     job = main._clip_jobs[job_id]
     clip = job["clips"][0]
     clip["render_url"] = None
@@ -345,10 +368,7 @@ def test_stale_rerender_cannot_overwrite_a_newer_one(monkeypatch):
     # still in flight — e.g. after a watchdog marked it failed but the original
     # asyncio task keeps running to completion) must not overwrite the newer
     # attempt's result when it finally finishes.
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     job = main._clip_jobs[job_id]
     clip = job["clips"][0]
     clip_id = clip["clip_id"]
@@ -403,10 +423,7 @@ def test_retry_409_while_inflight():
 
 
 def test_retry_mock_job_noop():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     out = client.post(f"/v1/clips/{job_id}/retry").json()
     assert out["mode"] == "mock" and out["status"] == "mock_ready"
 
@@ -450,11 +467,8 @@ def test_retry_from_edl_stage(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_tweak_direct_ops_bypasses_llm():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     out = client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id,
         "ops": [{"type": "set_caption_style", "style": "karaoke"}],
@@ -466,11 +480,8 @@ def test_tweak_direct_ops_bypasses_llm():
 
 
 def test_tweak_direct_ops_unknown_skipped():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     out = client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id,
         "ops": [{"type": "definitely_not_an_op"}],
@@ -481,20 +492,14 @@ def test_tweak_direct_ops_unknown_skipped():
 
 
 def test_tweak_requires_instruction_or_ops():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     assert client.post(f"/v1/clips/{job_id}/tweak",
                        json={"clip_id": clip_id}).status_code == 422
 
 
 def test_get_clip_job_include_words():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     without = client.get(f"/v1/clips/{job_id}").json()
     assert "words" not in without
     with_words = client.get(f"/v1/clips/{job_id}?include_words=1").json()
@@ -765,11 +770,8 @@ def test_plan_audio_music_passthrough():
 # ---------------------------------------------------------------------------
 
 def test_endpoint_direct_reorder_and_music():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     # The mock EDL is single-segment; reorder needs several — split it in place.
     job = main._clip_jobs[job_id]
     extent = job["edl"]["segments"][0]["src_out"]
@@ -806,11 +808,8 @@ def test_endpoint_direct_reorder_and_music():
 # ---- F8: undo restores the full EDL triple; depth 25; undo_available exposed ----
 
 def test_undo_restores_segment_order_audio_captions_together():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     job = main._clip_jobs[job_id]
     extent = job["edl"]["segments"][0]["src_out"]
     third = max(1, extent // 3)
@@ -833,11 +832,8 @@ def test_undo_restores_segment_order_audio_captions_together():
 
 
 def test_undo_depth_is_25():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     for i in range(30):
         client.post(f"/v1/clips/{job_id}/tweak", json={
             "clip_id": clip_id,
@@ -846,11 +842,8 @@ def test_undo_depth_is_25():
 
 
 def test_get_clip_exposes_undo_available():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     assert client.get(f"/v1/clips/{job_id}").json()["undo_available"] is False
     client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]})
@@ -866,10 +859,7 @@ def test_never_existed_job_returns_404():
 
 
 def test_swept_job_returns_410_job_expired(monkeypatch):
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     # Force it past the TTL, then trigger the lazy sweep via a GET.
     main._clip_jobs[job_id]["created_at"] = time.time() - main._JOB_TTL_S - 10
     r2 = client.get(f"/v1/clips/{job_id}")
@@ -926,12 +916,8 @@ def test_manual_captions_off_survives_a_retry():
     # (main.py _run_pipeline) — a retry re-runs _render_all_clips only, which never
     # calls _apply_edit_prefs again, so a manual tweak can't be silently reverted
     # by stale edit_prefs on retry.
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source",
-        "edit_prefs": {"auto_captions": True}})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source", edit_prefs={"auto_captions": True})
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id, "ops": [{"type": "set_captions_enabled", "enabled": False}]})
     assert client.get(f"/v1/clips/{job_id}").json()["edl"]["captions"] == []
@@ -963,11 +949,8 @@ def test_safe_default_fallback_warns_the_clip(monkeypatch):
 
 
 def test_tweak_flags_degraded_when_live_llm_falls_back_to_mock(monkeypatch):
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "test-key")
     async def failing_llm(*a, **k):
         raise main.HTTPException(status_code=502, detail="down")
@@ -979,11 +962,8 @@ def test_tweak_flags_degraded_when_live_llm_falls_back_to_mock(monkeypatch):
 
 
 def test_tweak_not_degraded_on_direct_ops():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     out = client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]}).json()
     assert out["degraded"] is False
@@ -1059,11 +1039,7 @@ def test_react_window_not_dropped_no_warning():
 def test_run_pipeline_warns_clip_on_react_window_desync(monkeypatch):
     # End-to-end: the desync-drop case above must actually reach the clip's
     # warnings[] through _run_pipeline, not just build_render_plan's return value.
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "duet_split",
-        "formats": ["myth-buster"], "source_url": "https://example.com/video.mov",
-        "react_source_url": "https://example.com/react.mp4"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="https://example.com/video.mov", style="duet_split", react_source_url="https://example.com/react.mp4")
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "test-key")
     async def ok_probe(url): pass
     monkeypatch.setattr(main, "_validate_source_url", ok_probe)
@@ -1117,11 +1093,8 @@ def _wait_until(predicate, timeout_s=2.0):
 def test_tweak_persists_to_supabase_when_configured(monkeypatch):
     fake = _FakeSupabase()
     monkeypatch.setattr(main, "_supabase_client", fake)
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "karaoke"}]})
     assert _wait_until(lambda: job_id in fake.jobs)
@@ -1131,11 +1104,8 @@ def test_tweak_persists_to_supabase_when_configured(monkeypatch):
 def test_get_clip_restores_from_supabase_on_in_memory_miss(monkeypatch):
     fake = _FakeSupabase()
     monkeypatch.setattr(main, "_supabase_client", fake)
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "bold-word"}]})
     assert _wait_until(lambda: job_id in fake.jobs)
@@ -1152,11 +1122,8 @@ def test_get_clip_restores_from_supabase_on_in_memory_miss(monkeypatch):
 def test_tweak_restores_from_supabase_on_in_memory_miss(monkeypatch):
     fake = _FakeSupabase()
     monkeypatch.setattr(main, "_supabase_client", fake)
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     client.post(f"/v1/clips/{job_id}/tweak", json={
         "clip_id": clip_id, "ops": [{"type": "set_caption_style", "style": "clean"}]})
     assert _wait_until(lambda: job_id in fake.jobs)
@@ -1556,10 +1523,7 @@ def test_submit_passes_preview_flag_to_the_bridge(monkeypatch):
 
 
 def test_preview_rerender_never_touches_render_url_or_status(monkeypatch):
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     job = main._clip_jobs[job_id]
     clip = job["clips"][0]
     clip["render_url"] = "https://real.example/committed.mp4"
@@ -1581,10 +1545,7 @@ def test_preview_rerender_never_touches_render_url_or_status(monkeypatch):
 
 
 def test_preview_rerender_failure_never_touches_committed_state(monkeypatch):
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="mock://source")
     job = main._clip_jobs[job_id]
     clip = job["clips"][0]
     clip["render_url"] = "https://real.example/committed.mp4"
@@ -1605,11 +1566,8 @@ def test_preview_rerender_failure_never_touches_committed_state(monkeypatch):
 def test_tweak_preview_flag_triggers_preview_not_full_render(monkeypatch):
     # A mock (keyless-source) job already has a valid EDL from creation; only
     # the REMOTION_* capability flags need faking so can_render is true.
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "mock://source"})
-    job_id = r.json()["job_id"]
-    clip_id = r.json()["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="mock://source")
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
     # needs_render/preview both gate on status=="ready" (a completed LIVE job) —
     # a mock job starts "mock_ready" by design (no real render to trigger), so
     # override it here purely to exercise this branch; the EDL is already valid.
@@ -1683,10 +1641,7 @@ def test_ios_canonical_op_order_end_to_end():
 # rough-cut preview can play the original footage ----
 
 def test_get_clip_exposes_source_url():
-    r = client.post("/v1/clips", json={
-        "source_id": "s", "script": SCRIPT, "style": "talking_head",
-        "formats": ["myth-buster"], "source_url": "https://cdn.example/take.mov"})
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="https://cdn.example/take.mov")
     assert client.get(f"/v1/clips/{job_id}").json()["source_url"] == "https://cdn.example/take.mov"
 
 

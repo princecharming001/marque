@@ -1466,7 +1466,14 @@ def _apply_edit_prefs(edl: dict, prefs: dict) -> dict:
 
 @app.post("/v1/clips")
 async def create_clip_job(req: ClipJobRequest):
-    """Create a clip editing job. Returns immediately with job_id; pipeline runs async."""
+    """Create a clip editing job (analyze-first). Returns immediately; analysis runs async."""
+    # Cutover: the old single-shot flow (pick a format up front → immediate render) is
+    # gone. A request without analyze_first is a stale client — fail loud and clear so it
+    # shows an update prompt instead of a silent 500 (user decision: cut over immediately).
+    if not req.analyze_first:
+        raise HTTPException(status_code=426, detail={
+            "error": "update_required",
+            "message": "Please update Yunicorn — the editor now analyzes your video first."})
     job_id = str(uuid.uuid4())
     clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "queued"}
              for f in (req.formats or ["myth-buster"])]
@@ -1498,21 +1505,10 @@ async def create_clip_job(req: ClipJobRequest):
             job["status"] = "brief_ready"
             return {"mode": "mock", "job_id": job_id, "status": "brief_ready",
                     "edit_brief": job["edit_brief"], "toggles": _default_toggles(job["edit_brief"])}
-        job["status"] = "analyzing"
-        _spawn(_run_analysis(job_id))
-        _spawn(_persist_clip_job(job_id))
-        return {"mode": "live", "job_id": job_id, "status": "analyzing"}
-
-    if not ASSEMBLY_KEY:
-        job["status"] = "mock_ready"
-        for c in clips: c["status"] = "ready"
-        job["edl"] = _apply_edit_prefs(_mock_edl(req.style, req.script), job["edit_prefs"])
-        # Deterministic transcript so caption-rebuild tweaks work in keyless demo.
-        job["words"] = _mock_words(req.script)
-        return {"mode": "mock", "job_id": job_id, "clips": clips}
-    _spawn(_run_pipeline(job_id))
-    _spawn(_persist_clip_job(job_id))   # F15: durable from creation
-    return {"mode": "live", "job_id": job_id, "clips": clips}
+    job["status"] = "analyzing"
+    _spawn(_run_analysis(job_id))
+    _spawn(_persist_clip_job(job_id))
+    return {"mode": "live", "job_id": job_id, "status": "analyzing"}
 
 
 @app.get("/v1/clips/{job_id}")

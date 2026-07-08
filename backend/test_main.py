@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 
 from fastapi.testclient import TestClient
 
@@ -8,6 +9,31 @@ import prompts
 from main import app
 
 client = TestClient(app)
+
+
+def seed_clip_job(source_url="https://example.com/video.mov", script=None, style="talking_head",
+                  formats=("myth-buster",), edit_prefs=None, **extra):
+    """Seed a keyless MOCK-READY clip job directly (the /v1/clips endpoint is analyze-first
+    now; these tweak/edit-prefs tests exercise the editor on a ready job). Mirrors the
+    old keyless create: edl built from _mock_edl + prefs, words from _mock_words."""
+    script = script if script is not None else {"hook": "Test hook", "body": "Body text here",
+                                                "cta": "Follow", "formatId": "myth-buster"}
+    edit_prefs = edit_prefs or {}
+    job_id = str(uuid.uuid4())
+    clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "ready",
+              "render_url": source_url} for f in formats]
+    job = {
+        "job_id": job_id, "source_id": "src1", "status": "mock_ready", "clips": clips,
+        "script": script, "style": style, "brand": {}, "media_context": "",
+        "source_url": source_url, "error": None, "edit_prefs": edit_prefs,
+        "react_source_url": "", "react_credit_label": "",
+        "edl": main._apply_edit_prefs(main._mock_edl(style, script), edit_prefs),
+        "words": main._mock_words(script), "edl_history": [], "tweaks": [],
+        "custom_instructions": "", "created_at": time.time(),
+    }
+    job.update(extra)
+    main._clip_jobs[job_id] = job
+    return job_id
 
 
 class SupabaseClientStub:
@@ -180,33 +206,30 @@ def test_readyz_reports_storage_status():
     assert b["storage"] in ("live", "mock")
 
 
-def test_create_clip_job():
+def test_create_clip_job_analyze_first():
     r = client.post("/v1/clips", json={
-        "source_url": "https://example.com/footage.mov",
-        "source_id": "test-123",
-        "formats": ["myth-buster"],
-        "style": "talking_head",
+        "source_url": "https://example.com/footage.mov", "source_id": "test-123",
+        "analyze_first": True,
         "script": {"hook": "Stop doing this", "body": "Here is why.", "cta": "Follow me.", "formatId": "myth-buster"},
     })
     assert r.status_code == 200
     b = r.json()
-    assert "job_id" in b
-    assert "clips" in b
-    assert b["mode"] in ("live", "mock")
-    assert len(b["clips"]) == 1
-    assert b["clips"][0]["format"] == "myth-buster"
+    assert "job_id" in b and b["status"] == "brief_ready" and b["mode"] == "mock"
+    assert "edit_brief" in b
+
+
+def test_old_shape_clip_request_requires_update():
+    # Cutover: a stale client (no analyze_first) must get a clear 426, not a 500.
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/footage.mov", "formats": ["myth-buster"],
+        "style": "talking_head", "script": {"hook": "x", "body": "y", "cta": "z"}})
+    assert r.status_code == 426
+    assert r.json()["detail"]["error"] == "update_required"
 
 
 def test_get_clip_job():
     # Create a job first
-    r = client.post("/v1/clips", json={
-        "source_url": "https://example.com/footage.mov",
-        "source_id": "test-456",
-        "formats": ["listicle"],
-        "style": "fast_cuts",
-        "script": {"hook": "Three tips", "body": "Tip 1. Tip 2. Tip 3.", "cta": "Save this.", "formatId": "listicle"},
-    })
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="https://example.com/footage.mov", style="fast_cuts", formats=["listicle"])
     r2 = client.get(f"/v1/clips/{job_id}")
     assert r2.status_code == 200
     b = r2.json()
@@ -462,12 +485,7 @@ def test_performance_summary_real_aggregation():
 
 
 def test_edit_prefs_threading():
-    r = client.post("/v1/clips", json={
-        "source_url": "https://example.com/f.mov", "formats": ["myth-buster"], "style": "talking_head",
-        "script": {"hook": "Stop doing this", "body": "Here is why.", "cta": "Follow.", "formatId": "myth-buster"},
-        "edit_prefs": {"auto_captions": False, "filler_trim": "off", "caption_style": "karaoke"},
-    })
-    job_id = r.json()["job_id"]
+    job_id = seed_clip_job(source_url="https://example.com/f.mov", edit_prefs={"auto_captions": False, "filler_trim": "off", "caption_style": "karaoke"})
     job = client.get(f"/v1/clips/{job_id}").json()
     edl = job["edl"]
     assert edl["captions"] == []          # captions off honored
@@ -475,12 +493,10 @@ def test_edit_prefs_threading():
 
 
 def test_edit_prefs_defaults_preserved():
-    r = client.post("/v1/clips", json={
-        "source_url": "https://example.com/f.mov", "formats": ["myth-buster"], "style": "talking_head",
-        "script": {"hook": "Stop doing this now friends", "body": "Here is why.", "cta": "Follow.",
-                   "formatId": "myth-buster"},
-    })
-    edl = client.get(f"/v1/clips/{r.json()['job_id']}").json()["edl"]
+    job_id = seed_clip_job(source_url="https://example.com/f.mov",
+                           script={"hook": "Stop doing this now friends", "body": "Here is why.",
+                                   "cta": "Follow.", "formatId": "myth-buster"})
+    edl = client.get(f"/v1/clips/{job_id}").json()["edl"]
     assert edl["captions"]                # defaults keep captions
     assert edl["drops"]                   # defaults keep filler trimming
 
@@ -1292,14 +1308,10 @@ def test_apply_ops_overlays_broll_split_trims():
 
 
 def _make_mock_job():
-    r = client.post("/v1/clips", json={
-        "source_url": "https://example.com/take.mov", "source_id": "tw-1",
-        "formats": ["myth-buster"], "style": "talking_head",
-        "script": {"hook": "Stop overthinking", "body": "Do the simple thing daily.",
-                   "cta": "Follow.", "formatId": "myth-buster"},
-    })
-    b = r.json()
-    return b["job_id"], b["clips"][0]["clip_id"]
+    job_id = seed_clip_job(source_url="https://example.com/take.mov",
+                           script={"hook": "Stop overthinking", "body": "Do the simple thing daily.",
+                                   "cta": "Follow.", "formatId": "myth-buster"})
+    return job_id, main._clip_jobs[job_id]["clips"][0]["clip_id"]
 
 
 def test_tweak_endpoint_mock_caption_style_and_undo():
