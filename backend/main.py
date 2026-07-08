@@ -633,6 +633,9 @@ class ClipJobRequest(BaseModel):
     # video/image URL — the app supplies it via paste-URL/upload/screenshot).
     react_source_url: str = ""
     react_credit_label: str = ""
+    # Loop F analyze-first flow: analyze the raw take → edit brief BEFORE editing.
+    analyze_first: bool = False
+    custom_instructions: str = ""       # free-text editing instructions from the creator
     # Per-creator editing preferences (Settings → threaded into every edit)
     edit_prefs: dict = {}      # {auto_captions: bool, caption_style: clean|bold-word|karaoke, filler_trim: off|standard|aggressive}
 
@@ -1475,7 +1478,26 @@ async def create_clip_job(req: ClipJobRequest):
         "words": [], "edl_history": [], "tweaks": [],
         "created_at": time.time(),
     }
+    job["custom_instructions"] = req.custom_instructions
     _clip_jobs[job_id] = job
+
+    # Analyze-first (Loop F): analyze the raw take → edit brief, STOP at brief_ready.
+    # The creator reviews the brief + toggles, then calls /confirm to edit + render.
+    if req.analyze_first:
+        if not ASSEMBLY_KEY:
+            job["words"] = _mock_words(req.script or {})
+            total_f = ms_to_frame(max((w["end_ms"] for w in job["words"]), default=0))
+            brief = _mock_edit_brief(job["words"], " ".join(w["word"] for w in job["words"]),
+                                     req.custom_instructions)
+            job["edit_brief"] = _resolve_strategy(brief, total_f)
+            job["status"] = "brief_ready"
+            return {"mode": "mock", "job_id": job_id, "status": "brief_ready",
+                    "edit_brief": job["edit_brief"], "toggles": _default_toggles(job["edit_brief"])}
+        job["status"] = "analyzing"
+        _spawn(_run_analysis(job_id))
+        _spawn(_persist_clip_job(job_id))
+        return {"mode": "live", "job_id": job_id, "status": "analyzing"}
+
     if not ASSEMBLY_KEY:
         job["status"] = "mock_ready"
         for c in clips: c["status"] = "ready"
@@ -1510,6 +1532,9 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         # to get it from this endpoint at all.
         "source_url": job.get("source_url"),
     }
+    if job.get("edit_brief"):                     # analyze-first: surface the brief + toggles
+        out["edit_brief"] = job["edit_brief"]
+        out["toggles"] = job.get("toggles") or _default_toggles(job["edit_brief"])
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint
         # is polled every 5s; the manual editor is the only caller that needs them.
@@ -1871,6 +1896,17 @@ def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instruction
     }
 
 
+def _default_toggles(brief: dict) -> dict:
+    """Sensible per-type defaults for the editable toggles (captions + filler/dead-air/
+    flub cuts are always-on and not toggles). The creator can flip any of these."""
+    vtype = brief.get("video_type", "other")
+    return {
+        "broll": vtype in ("story", "listicle", "tutorial", "freestyle_rant"),
+        "punch_ins": vtype in ("scripted_talking_head", "freestyle_rant", "reaction", "story"),
+        "music": False,
+    }
+
+
 async def _generate_edit_brief(words: list[dict], transcript: str = "",
                                custom_instructions: str = "", brand: dict | None = None) -> dict:
     """Live edit brief (SONNET) with the deterministic mock as the keyless path AND the
@@ -2071,20 +2107,52 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
             _fail_job(job, "render_stalled", "job exceeded the pipeline watchdog")
 
 
+async def _transcribe_job(job_id: str) -> list[dict]:
+    """Transcribe the job's source into word-frames (shared by the full pipeline and the
+    analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights."""
+    job = _clip_jobs[job_id]
+    job["status"] = "transcribing"
+    for c in job["clips"]:
+        c["status"] = "transcribing"
+    await _validate_source_url(job["source_url"])
+    transcript_id = await _submit_transcription(job["source_url"])
+    if not transcript_id:
+        raise PipelineError("transcribe_submit_failed", "AssemblyAI rejected the submission", "transcribe")
+    transcript = await _poll_transcription(transcript_id)
+    job["words"] = transcript["words"]     # kept for conversational tweaks + the edit brief
+    job["_auto_highlights"] = transcript.get("auto_highlights")
+    return transcript["words"]
+
+
+async def _run_analysis(job_id: str) -> None:
+    """Analyze-first phase 1: transcribe → edit brief → stop at 'brief_ready' (no EDL
+    or render yet). ALWAYS leaves the job terminal-or-brief_ready."""
+    job = _clip_jobs[job_id]
+    try:
+        words = await _transcribe_job(job_id)
+        job["status"] = "analyzing"
+        for c in job["clips"]:
+            c["status"] = "analyzing"
+        transcript_text = " ".join(w.get("word", "") for w in words)
+        brief = await _generate_edit_brief(words, transcript_text,
+                                           job.get("custom_instructions", ""), job.get("brand") or {})
+        total_f = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=0))
+        job["edit_brief"] = _resolve_strategy(brief, total_f)
+        job["status"] = "brief_ready"
+    except PipelineError as e:
+        _fail_job(job, e.code, e.detail, e.stage)
+    except Exception as e:
+        _fail_job(job, "internal_error", str(e))
+    finally:
+        _spawn(_persist_clip_job(job_id))
+
+
 async def _run_pipeline(job_id: str):
     """Background pipeline: transcribe → edit → render. Contract: this function
     ALWAYS leaves the job and every clip in a terminal state."""
     job = _clip_jobs[job_id]
     try:
-        job["status"] = "transcribing"
-        for c in job["clips"]: c["status"] = "transcribing"
-        await _validate_source_url(job["source_url"])
-        transcript_id = await _submit_transcription(job["source_url"])
-        if not transcript_id:
-            raise PipelineError("transcribe_submit_failed", "AssemblyAI rejected the submission", "transcribe")
-        transcript = await _poll_transcription(transcript_id)
-        words = transcript["words"]
-        job["words"] = words          # kept for conversational tweaks (re-editing needs the transcript)
+        words = await _transcribe_job(job_id)
 
         job["status"] = "editing"
         for c in job["clips"]: c["status"] = "editing"
@@ -2094,7 +2162,7 @@ async def _run_pipeline(job_id: str):
         # truth for cuts) and emphasis regions for punch-in placement.
         _clean_words, filler_drops = strip_fillers(words)
         disfluency_spans = [(d.src_in, d.src_out) for d in filler_drops if d.reason == "filler"]
-        emphasis_spans = _extract_emphasis_regions(words, transcript.get("auto_highlights"))
+        emphasis_spans = _extract_emphasis_regions(words, job.get("_auto_highlights"))
         system, user = prompts.edl_prompt(style, words, script, job["brand"], job["media_context"],
                                           disfluency_spans=disfluency_spans,
                                           emphasis_spans=emphasis_spans)

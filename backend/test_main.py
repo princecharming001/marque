@@ -1800,6 +1800,28 @@ def test_strategy_restructure_without_order_downgrades():
     assert b["strategy"] == "trim_only"                       # nothing to reorder
 
 
+# ---------------------------------------------------------------------------
+# F-04 · Two-phase clip job: analyze-first → brief_ready (keyless E2E).
+# ---------------------------------------------------------------------------
+
+def test_analyze_first_clip_reaches_brief_ready_keyless():
+    r = client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True,
+        "custom_instructions": "keep it high energy",
+        "script": {"hook": "You're wrong about protein", "body": "Here's why.", "cta": "Follow."}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "brief_ready" and body["mode"] == "mock"
+    brief = body["edit_brief"]
+    for k in prompts.EDIT_BRIEF_SCHEMA["required"]:
+        assert k in brief
+    assert body["toggles"].keys() >= {"broll", "punch_ins", "music"}
+    # and the GET returns the same brief
+    got = client.get(f"/v1/clips/{body['job_id']}").json()
+    assert got["status"] == "brief_ready" and got["edit_brief"]["strategy"] == "trim_only"
+    assert "toggles" in got
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
