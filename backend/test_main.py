@@ -2150,6 +2150,41 @@ def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# P-06 · Completeness sweep nits.
+# ---------------------------------------------------------------------------
+
+def test_digest_swept_job_is_410_not_404():
+    main._expired_job_ids["digest-swept-1"] = time.time()
+    assert client.get("/v1/onboarding/digest/digest-swept-1").status_code == 410
+    assert client.get("/v1/onboarding/digest/digest-never-existed").status_code == 404
+
+
+def test_creator_from_bearer_dead_code_removed():
+    assert not hasattr(main, "_creator_from_bearer")
+
+
+def test_learned_insights_rank_by_lift_magnitude(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_maglift"
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    for i in range(16):
+        main._post_registry[f"{cid}-b{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": 1.0}
+    main._invalidate_creator_mean(cid)
+    main._arm_stats[cid] = {
+        # a weak winner (+~10%) and a strong error (-~60%): the error is the bigger insight
+        "style:talking_head": {"n": 6, "sum_raw": 6.6, "alpha": 3.0, "beta": 1.5,
+                               "confidence": "early_read"},
+        "hook_signal:hype": {"n": 6, "sum_raw": 2.4, "alpha": 1.0, "beta": 3.0,
+                             "confidence": "early_read"},
+    }
+    main._arms_loaded.add(cid)
+    ins = client.get(f"/v1/insights/learned?creator_id={cid}").json()["insights"]
+    assert ins and ins[0]["lift_pct"] < 0                   # the -60% error ranks first
+
+
+# ---------------------------------------------------------------------------
 # P-05 · GET /v1/clips/{id}/suggested-edits — one-tap chips, style-gated, honest.
 # ---------------------------------------------------------------------------
 

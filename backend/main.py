@@ -1560,6 +1560,12 @@ async def mint_upload_url(req: UploadMintRequest):
         # creating a live job whose source can never be fetched.
         key = f"mock/{uuid.uuid4()}/{req.filename}"
         return {"mode": "mock", "upload_url": "", "key": key, "public_url": ""}
+    # P-06 NOTE (removal-or-fix): this hand-rolled AWS4 presigner below is DEAD in
+    # practice — R2 was never provisioned (R2_ACCESS_KEY unset everywhere; Supabase
+    # Storage above is the real path) and it has never been exercised against a live
+    # bucket. If R2 is ever provisioned, replace this with boto3/aws4 presigning and
+    # verify content-type-signed PUTs end-to-end; until then prefer deleting it over
+    # trusting it. Kept only because removing the env-gated branch changes no behavior.
     import hmac, hashlib, datetime
     key = f"uploads/{uuid.uuid4()}/{req.filename}"
     public_url = f"{R2_PUBLIC_BASE}/{key}"
@@ -3258,7 +3264,9 @@ async def create_digest_job(req: DigestRequest):
 async def get_digest_job(job_id: str):
     _sweep_ttl_jobs(_digest_jobs)
     if job_id not in _digest_jobs:
-        raise HTTPException(status_code=404, detail="job not found")
+        # P-06: same 410-expired vs 404-never-existed split the clip endpoints give —
+        # the app treats "session expired, regenerate locally" and "bad id" differently.
+        _raise_job_not_found(job_id)
     return _digest_public(_digest_jobs[job_id])
 
 
@@ -4006,7 +4014,9 @@ async def get_learned_insights(creator_id: str = "default"):
         lift, grounded = _arm_lift(v, mean_raw)
         if grounded:
             scored.append((k, v, lift))
-    scored.sort(key=lambda x: x[2], reverse=True)
+    # P-06: magnitude, not raw value — a -60% error arm is a bigger insight than a
+    # +10% winner, and sorting by raw lift buried every error below weak positives.
+    scored.sort(key=lambda x: abs(x[2]), reverse=True)
 
     insights = []
     for k, v, lift in scored[:5]:
@@ -4359,22 +4369,6 @@ async def tts(req: TTSRequest):
 # Auth (light) — derive creator_id from an optional bearer token.
 # Real enforcement lands with Supabase RLS; for now the sub claim just scopes state.
 # ---------------------------------------------------------------------------
-
-def _creator_from_bearer(authorization: str | None, fallback: str) -> str:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        return fallback
-    token = authorization.split(" ", 1)[1].strip()
-    parts = token.split(".")
-    if len(parts) != 3:
-        return fallback
-    try:
-        import base64
-        payload = parts[1] + "=" * (-len(parts[1]) % 4)
-        claims = json.loads(base64.urlsafe_b64decode(payload))
-        return claims.get("sub") or fallback
-    except Exception:
-        return fallback
-
 
 # ---------------------------------------------------------------------------
 # Reels feed — influencer reels to mimic (mock corpus now; Apify/BrightData later)
