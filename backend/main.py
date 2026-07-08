@@ -1530,8 +1530,11 @@ async def _restore_clip_job(job_id: str) -> dict | None:
         return None
     if not state:
         return None
-    _clip_jobs[job_id] = state
-    return state
+    # AF-3 (audit): setdefault, not assignment — two concurrent restorers (a tweak and
+    # the 5s poll both missing memory after a restart) otherwise get two DIFFERENT dict
+    # objects, and whichever assigned last silently discarded the other's mutations
+    # (an applied tweak vanished from memory AND its trailing persist).
+    return _clip_jobs.setdefault(job_id, state)
 
 
 async def _mint_supabase_upload(filename: str) -> dict | None:
@@ -1729,6 +1732,12 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
     job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
     if job is None:
         _raise_job_not_found(job_id)
+    # AF-4 (audit): same in-progress guard retry/tweak have — a double-tapped or
+    # timeout-retried confirm otherwise spawned a SECOND _run_edit racing the first
+    # on the same job dict (double LLM + double Lambda spend, render-gen thrash).
+    if job["status"] in ("transcribing", "analyzing", "editing", "rendering") \
+            or any(c.get("status") == "rendering" for c in job.get("clips") or []):
+        raise HTTPException(status_code=409, detail="confirm_in_progress")
     brief = job.get("edit_brief") or {}
     if not brief:
         raise HTTPException(status_code=409, detail="no edit brief — analyze the video first")

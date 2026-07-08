@@ -2172,6 +2172,37 @@ def test_attribution_overwrites_llm_numbers_with_computed_lift(monkeypatch):
     assert out["band"] == prompts.classify_arm_lift(int(real["lift_pct"]))
 
 
+def test_restore_clip_job_concurrent_restorers_share_one_dict(monkeypatch):
+    """AF-3: two coroutines both missing memory must end up mutating ONE job dict."""
+    state1, state2 = {"job_id": "j-af3", "status": "ready", "clips": []}, \
+                     {"job_id": "j-af3", "status": "ready", "clips": []}
+    served = [state1, state2]
+
+    class FakeSB:
+        async def load_clip_job(self, jid):
+            await asyncio.sleep(0)          # yield → interleave the two restorers
+            return served.pop(0)
+    monkeypatch.setattr(main, "_supabase_client", FakeSB())
+    main._clip_jobs.pop("j-af3", None)
+
+    async def both():
+        return await asyncio.gather(main._restore_clip_job("j-af3"),
+                                    main._restore_clip_job("j-af3"))
+    a, b = asyncio.run(both())
+    assert a is b and main._clip_jobs["j-af3"] is a
+
+
+def test_confirm_409_while_editing():
+    """AF-4: a second confirm during an in-flight edit is rejected, not double-run."""
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT)
+    job = main._clip_jobs[job_id]
+    job["edit_brief"] = {"video_type": "scripted_talking_head", "inferred": {}}
+    job["status"] = "editing"
+    r = client.post(f"/v1/clips/{job_id}/confirm", json={"toggles": {}})
+    assert r.status_code == 409 and r.json()["detail"] == "confirm_in_progress"
+    job["status"] = "mock_ready"
+
+
 def test_arm_lift_partial_raw_history_is_ungrounded():
     """AF-2: an arm whose sum_raw covers FEWER settles than n (legacy rows backfilled by
     sum_raw's DEFAULT 0.0) must not divide a partial sum by the full n — that fabricated
