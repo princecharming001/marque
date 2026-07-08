@@ -633,11 +633,16 @@ class ClipJobRequest(BaseModel):
     # video/image URL — the app supplies it via paste-URL/upload/screenshot).
     react_source_url: str = ""
     react_credit_label: str = ""
+    # Per-creator editing preferences (Settings → threaded into every edit)
+    edit_prefs: dict = {}      # {auto_captions: bool, caption_style: clean|bold-word|karaoke, filler_trim: off|standard|aggressive}
     # Loop F analyze-first flow: analyze the raw take → edit brief BEFORE editing.
     analyze_first: bool = False
     custom_instructions: str = ""       # free-text editing instructions from the creator
-    # Per-creator editing preferences (Settings → threaded into every edit)
-    edit_prefs: dict = {}      # {auto_captions: bool, caption_style: clean|bold-word|karaoke, filler_trim: off|standard|aggressive}
+
+
+class ConfirmRequest(BaseModel):
+    toggles: dict = {}                  # broll/punch_ins/music (captions + cuts are always-on)
+    custom_instructions: str = ""
 
 
 class TweakRequest(BaseModel):
@@ -1542,6 +1547,46 @@ async def get_clip_job(job_id: str, include_words: int = 0):
     return out
 
 
+@app.post("/v1/clips/{job_id}/confirm")
+async def confirm_clip_job(job_id: str, req: ConfirmRequest):
+    """Analyze-first phase 2: the creator reviewed the brief + toggles → edit + render.
+    Strategy/cuts come from the brief; style/format from brief.inferred; toggles →
+    edit prefs. Renders ONCE (no per-format fan-out)."""
+    job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
+    if job is None:
+        _raise_job_not_found(job_id)
+    brief = job.get("edit_brief") or {}
+    if not brief:
+        raise HTTPException(status_code=409, detail="no edit brief — analyze the video first")
+
+    toggles = req.toggles or job.get("toggles") or _default_toggles(brief)
+    job["toggles"] = toggles
+    if req.custom_instructions:
+        job["custom_instructions"] = req.custom_instructions
+    inf = brief.get("inferred") or {}
+    job["style"] = inf.get("style") if inf.get("style") in STYLES else (job.get("style") or "talking_head")
+    fmt = inf.get("format_id") if inf.get("format_id") in FORMAT_IDS else "myth-buster"
+    job.setdefault("script", {})
+    if isinstance(job["script"], dict):
+        job["script"].setdefault("formatId", fmt)
+    prefs = dict(job.get("edit_prefs") or {})
+    prefs.update({"broll": bool(toggles.get("broll")), "punch_ins": bool(toggles.get("punch_ins")),
+                  "music": bool(toggles.get("music"))})
+    job["edit_prefs"] = prefs
+    # ONE render per confirmed edit — no N-format fan-out (audit D5).
+    job["clips"] = [{"clip_id": str(uuid.uuid4()), "format": fmt, "status": "queued"}]
+
+    if not ASSEMBLY_KEY:
+        job["status"] = "mock_ready"
+        job["clips"][0]["status"] = "ready"
+        job["edl"] = _apply_edit_prefs(_mock_edl(job["style"], job.get("script") or {}), prefs)
+        job["words"] = job.get("words") or _mock_words(job.get("script") or {})
+        return {"mode": "mock", "job_id": job_id, "status": "mock_ready", "clips": job["clips"]}
+    _spawn(_run_edit(job_id, job.get("words") or []))
+    _spawn(_persist_clip_job(job_id))
+    return {"mode": "live", "job_id": job_id, "status": "editing", "clips": job["clips"]}
+
+
 @app.post("/v1/clips/{job_id}/retry")
 async def retry_clip_job(job_id: str):
     """Recover a failed job. If an EDL exists, only the render stage re-runs (the
@@ -2148,12 +2193,26 @@ async def _run_analysis(job_id: str) -> None:
 
 
 async def _run_pipeline(job_id: str):
-    """Background pipeline: transcribe → edit → render. Contract: this function
-    ALWAYS leaves the job and every clip in a terminal state."""
+    """Full pipeline: transcribe → edit → render. Always terminal on exit."""
     job = _clip_jobs[job_id]
     try:
         words = await _transcribe_job(job_id)
+    except PipelineError as e:
+        _fail_job(job, e.code, e.detail, e.stage)
+        _spawn(_persist_clip_job(job_id))
+        return
+    except Exception as e:
+        _fail_job(job, "internal_error", str(e))
+        _spawn(_persist_clip_job(job_id))
+        return
+    await _run_edit(job_id, words)
 
+
+async def _run_edit(job_id: str, words: list[dict]):
+    """Edit + render from an already-transcribed job. Shared by the full pipeline and
+    the analyze-first /confirm stage. Always leaves the job + clips terminal."""
+    job = _clip_jobs[job_id]
+    try:
         job["status"] = "editing"
         for c in job["clips"]: c["status"] = "editing"
         style = job["style"]
@@ -2213,6 +2272,16 @@ async def _run_pipeline(job_id: str):
                 c.setdefault("warnings", []).append(
                     "ai_edit_unavailable: used a safe default cut (full take, fillers stripped)")
 
+        # Analyze-first: fold the edit brief's editorial cut_regions (flub/ramble/
+        # tangent — filler/dead-air are already deterministic) into the drops before
+        # the merge, so the confirmed edit reflects what the analysis found.
+        brief = job.get("edit_brief")
+        if brief:
+            for cr in brief.get("cut_regions", []):
+                if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
+                    reason = "false_start" if cr["reason"] == "flub" else "off_topic"
+                    edl_data.setdefault("drops", []).append(
+                        {"src_in": cr["start_frame"], "src_out": cr["end_frame"], "reason": reason})
         # Merge the deterministic filler drops in as source of truth (unless the
         # creator turned trimming off), then self-verify + repair the EDL once.
         if prefs.get("filler_trim") != "off":

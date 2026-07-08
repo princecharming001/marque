@@ -1822,6 +1822,48 @@ def test_analyze_first_clip_reaches_brief_ready_keyless():
     assert "toggles" in got
 
 
+# ---------------------------------------------------------------------------
+# F-06 · Confirm stage → edit (keyless E2E) + brief cuts fold into drops.
+# ---------------------------------------------------------------------------
+
+def test_analyze_confirm_reaches_mock_ready_and_uses_inferred_format():
+    created = client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True,
+        "script": {"hook": "Big claim", "body": "Proof here.", "cta": "Follow."}}).json()
+    job_id = created["job_id"]
+    r = client.post(f"/v1/clips/{job_id}/confirm",
+                    json={"toggles": {"broll": False, "punch_ins": True, "music": False}}).json()
+    assert r["status"] == "mock_ready" and len(r["clips"]) == 1        # ONE render, not N formats
+    assert r["clips"][0]["format"] in prompts.FORMAT_IDS
+    assert main._clip_jobs[job_id]["style"] in prompts.STYLES         # from brief.inferred
+
+
+def test_confirm_without_brief_409():
+    # a job that never analyzed can't be confirmed
+    main._clip_jobs["no_brief_job"] = {"job_id": "no_brief_job", "status": "transcribing",
+                                       "clips": [], "created_at": 0.0}
+    r = client.post("/v1/clips/no_brief_job/confirm", json={"toggles": {}})
+    assert r.status_code == 409
+
+
+def test_run_edit_folds_brief_flub_cut_into_drops(monkeypatch):
+    # A brief flub cut_region must become a drop in the confirmed EDL.
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")     # safe-default edl path
+    words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
+             for i, w in enumerate("one two three four five six".split())]
+    job = {"job_id": "edit1", "status": "editing", "style": "talking_head",
+           "script": {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"},
+           "brand": {}, "media_context": "", "source_url": "mock://x", "edit_prefs": {},
+           "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "queued"}],
+           "words": words, "edl_history": [], "tweaks": [], "created_at": 0.0,
+           "edit_brief": {"cut_regions": [{"start_frame": 15, "end_frame": 22, "reason": "flub",
+                                           "severity": "high", "quote": "oops"}]}}
+    main._clip_jobs["edit1"] = job
+    asyncio.run(main._run_edit("edit1", words))
+    drops = main._clip_jobs["edit1"]["edl"]["drops"]
+    assert any(d["src_in"] == 15 and d["src_out"] == 22 for d in drops)   # flub cut applied
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
