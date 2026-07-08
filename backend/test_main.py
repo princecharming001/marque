@@ -2242,3 +2242,41 @@ def test_upsert_post_ignore_duplicates_header():
     c._request = AsyncMock(return_value=_Ok())
     asyncio.run(c.upsert_post("p1", {"creator_id": "c"}, resolution="ignore-duplicates"))
     assert "resolution=ignore-duplicates" in c._request.await_args[1]["headers"]["Prefer"]
+
+
+# ---------------------------------------------------------------------------
+# A-04 · Arm lazy-load before create-on-miss: a fresh instance must MERGE the
+# creator's DB arm history before incrementing, never clobber it with n=1.
+# ---------------------------------------------------------------------------
+
+def test_ensure_arms_loaded_loads_despite_local_entry(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_arm_stats = AsyncMock(return_value={"format_id:myth-buster": {"n": 3}})
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._arm_stats["c_local"] = {"style:faceless": {"n": 1}}   # a local arm already present
+    main._arms_loaded.discard("c_local")
+    asyncio.run(main._ensure_arms_loaded("c_local"))
+    fake.load_arm_stats.assert_awaited_once()                    # loaded DESPITE local presence
+    assert main._arm_stats["c_local"]["format_id:myth-buster"]["n"] == 3   # DB merged in
+    assert main._arm_stats["c_local"]["style:faceless"]["n"] == 1          # local preserved
+    fake.load_arm_stats.reset_mock()
+    asyncio.run(main._ensure_arms_loaded("c_local"))
+    fake.load_arm_stats.assert_not_awaited()                     # loaded once, then cached
+
+
+def test_update_arm_merges_db_history_before_incrementing(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_arm_stats = AsyncMock(return_value={
+        "style:talking_head": {"n": 6, "sum_y": 4.2, "alpha": 5.2, "beta": 2.8,
+                               "effect": 0.7, "confidence": "early_read"}})
+    fake.upsert_arm_stat = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._arm_stats.pop("c_merge", None)
+    main._arms_loaded.discard("c_merge")
+    asyncio.run(main._update_arm("c_merge", "style:talking_head", 0.8))
+    s = main._arm_stats["c_merge"]["style:talking_head"]
+    assert s["n"] == 7                        # 6 loaded + 1, NOT a clobbering n=1
+    _, _, stat = fake.upsert_arm_stat.await_args[0]
+    assert stat["n"] == 7                      # write-through carries the merged count

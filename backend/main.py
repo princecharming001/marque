@@ -79,6 +79,12 @@ BEST_OF_N_HOOKS = os.environ.get("BEST_OF_N_HOOKS", "1") != "0"
 # ---------------------------------------------------------------------------
 
 _arm_stats: dict[str, dict] = {}
+# Creators whose durable arm history has been fetched from Supabase at least once this
+# process. Distinct from `creator_id in _arm_stats` because _update_arm creates a local
+# arm dict on cache-miss — keying "already loaded?" on _arm_stats presence let that
+# optimistic n=1 arm suppress the real DB load and then clobber the creator's history
+# on write-through (audit A-04). This set is the honest "loaded" signal.
+_arms_loaded: set[str] = set()
 _post_registry: dict[str, dict] = {}
 # creator_id -> freeform niche, learned opportunistically (recommendations query,
 # post register) so the bandit can seed cold arms from a niche prior. In-memory only,
@@ -105,6 +111,7 @@ async def _load_learning_state():
             arms = await _supabase_client.load_arm_stats(cid)
             if arms:
                 _arm_stats[cid] = arms
+            _arms_loaded.add(cid)                          # booted → don't re-load on first update
         logging.info("learning state loaded: %d posts, %d creators", len(_post_registry), len(_arm_stats))
     except Exception as e:
         logging.warning("startup learning-state load failed: %s", e)
@@ -161,6 +168,10 @@ def _compute_y(m: dict, goal: str = "grow") -> float:
 
 
 async def _update_arm(creator_id: str, dim_value: str, y: float, niche: str = ""):
+    # Merge this creator's durable arm history in BEFORE we create-on-miss, so a fresh
+    # Render instance increments the real DB counts instead of resetting them to n=1
+    # and then overwriting the row (audit A-04).
+    await _ensure_arms_loaded(creator_id)
     if creator_id not in _arm_stats:
         _arm_stats[creator_id] = {}
     stats = _arm_stats[creator_id]
@@ -187,16 +198,21 @@ async def _update_arm(creator_id: str, dim_value: str, y: float, niche: str = ""
 
 
 async def _ensure_arms_loaded(creator_id: str):
-    """Lazy-load a creator's arms from Supabase on cache miss (e.g. this Render
-    instance never saw them). No-op keyless or when already cached."""
-    if creator_id in _arm_stats or not _supabase_client:
+    """Lazy-load a creator's arms from Supabase the first time this process touches
+    them, MERGING durable history under any optimistic local arms (local wins per key).
+    Keyed on _arms_loaded, not _arm_stats presence, so create-on-miss can't suppress
+    the load. No-op keyless or once loaded."""
+    if creator_id in _arms_loaded or not _supabase_client:
         return
     try:
         arms = await _supabase_client.load_arm_stats(creator_id)
-        if arms:
-            _arm_stats[creator_id] = arms
     except Exception as e:
         logging.warning("lazy load_arm_stats failed: %s", e)
+        return                                            # not marked loaded → retried later
+    local = _arm_stats.setdefault(creator_id, {})
+    for key, stat in arms.items():
+        local.setdefault(key, stat)                       # DB fills gaps; local edits win
+    _arms_loaded.add(creator_id)
 
 
 async def _arms_for_prompt(creator_id: str) -> list[dict]:
