@@ -35,6 +35,9 @@ struct LibraryView: View {
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
+        // H-07: a tweak that outlived its poll window (or an app relaunch mid-render)
+        // resolves here instead of spinning forever locally.
+        .task { store.repollRenderingClips() }
     }
 }
 

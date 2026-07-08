@@ -552,6 +552,57 @@ final class AppStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
 
+    // H-07: jobIds with a re-poll loop already in flight — Library appears often;
+    // never stack duplicate pollers on the same job.
+    private var activeRepolls: Set<String> = []
+
+    /// H-07: called on Library appear. Any clip stuck in .rendering (its original
+    /// poll window expired — a tweak that outlived EditorView's loop, or an app
+    /// relaunch mid-render) gets its job re-polled until it resolves, so nothing
+    /// spins forever locally while the backend finished long ago.
+    func repollRenderingClips() {
+        let stuck = clips.filter { $0.status == .rendering && $0.jobId != nil }
+        for (jobId, group) in Dictionary(grouping: stuck, by: { $0.jobId! })
+        where !activeRepolls.contains(jobId) {
+            activeRepolls.insert(jobId)
+            let ids = group.map { $0.id }
+            Task {
+                await pollClipStatuses(jobId: jobId, clipIds: ids)
+                activeRepolls.remove(jobId)
+            }
+        }
+    }
+
+    /// Per-CLIP poll loop: exits when every tracked clip left .rendering (job-level
+    /// status can't be trusted here — it stays "ready" during a tweak re-render).
+    func pollClipStatuses(jobId: String, clipIds: [UUID]) async {
+        for _ in 0..<60 {
+            if Task.isCancelled { return }
+            if let result = await backend.pollClipJob(jobId: jobId),
+               let jobClips = result["clips"] as? [[String: Any]] {
+                for jobClip in jobClips {
+                    let clipStatus = jobClip["status"] as? String ?? ""
+                    guard let backendId = UUID(uuidString: jobClip["clip_id"] as? String ?? ""),
+                          let idx = clips.firstIndex(where: { $0.id == backendId }) else { continue }
+                    clips[idx].status = clipStatus == "ready" ? .ready
+                                      : clipStatus == "failed" ? .failed : .rendering
+                    if let url = jobClip["render_url"] as? String { clips[idx].remoteURL = url }
+                    clips[idx].lastError = clipStatus == "failed"
+                        ? (jobClip["error"] as? String ?? result["error"] as? String) : nil
+                    clips[idx].lastErrorDetail = clipStatus == "failed"
+                        ? (jobClip["error_detail"] as? String ?? result["error_detail"] as? String) : nil
+                    let warnings = jobClip["warnings"] as? [String]
+                    clips[idx].warnings = (warnings?.isEmpty ?? true) ? nil : warnings
+                }
+                save()
+                if !clips.contains(where: { clipIds.contains($0.id) && $0.status == .rendering }) {
+                    return                              // every tracked clip resolved
+                }
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+        }
+    }
+
     func pollJob(jobId: String, clipIds: [UUID]) async {
         var done = false
         var attempts = 0
