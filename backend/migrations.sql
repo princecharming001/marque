@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS arm_stats (
 
 CREATE TABLE IF NOT EXISTS post_registry (
     post_id         TEXT PRIMARY KEY,
-    creator_id      TEXT,
+    creator_id      TEXT,                      -- A-12: should be NOT NULL once legacy rows are backfilled
+    clip_id         TEXT,                      -- A-12: join back to the app clip that produced this post
+    permalink       TEXT,                      -- A-12/B2: live post URL for public-metric scraping
     platform        TEXT,
     scheduled_at    TEXT,
     pillar          TEXT,
@@ -33,6 +35,7 @@ CREATE TABLE IF NOT EXISTS post_registry (
     outcome_y       FLOAT,
     outcome_raw     FLOAT,                     -- A-05: raw engagement composite → per-creator baseline
     settled         BOOLEAN DEFAULT FALSE,
+    settled_at      TIMESTAMPTZ,               -- A-12: when metrics settled (performance-window filter)
     metrics         JSONB,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()

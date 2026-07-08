@@ -2694,3 +2694,49 @@ def test_mimic_and_analyze_prompts_accept_arm_stats():
     _, u1 = prompts.mimic_prompt({"caption": "x"}, {"niche": "beauty"}, arm_stats=[])
     _, u2 = prompts.analyze_video_prompt("http://x", "transcript", {"niche": "beauty"}, arm_stats=[])
     assert "NICHE BASELINE" in u1 and "NICHE BASELINE" in u2
+
+
+# ---------------------------------------------------------------------------
+# A-12 · Registry forward schema: clip_id/permalink persist, settled_at stamped,
+# performance summary filters by settled_at within the window.
+# ---------------------------------------------------------------------------
+
+def test_register_persists_clip_id_and_permalink(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._post_registry.pop("p_link", None)
+    client.post("/v1/posts/register", json={
+        "post_id": "p_link", "creator_id": "c_link", "clip_id": "clip-9",
+        "permalink": "https://instagram.com/reel/abc", "style": "talking_head",
+        "format_id": "myth-buster", "hook_signal": "contrarian"})
+    e = main._post_registry["p_link"]
+    assert e["clip_id"] == "clip-9" and e["permalink"] == "https://instagram.com/reel/abc"
+    import supabase_persistence as sp_mod
+    assert {"clip_id", "permalink", "settled_at"} <= set(sp_mod._POST_COLS)
+
+
+def test_ingest_stamps_settled_at(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._post_registry.pop("p_sa", None)
+    main._arm_stats.pop("c_sa", None)
+    client.post("/v1/posts/register", json={
+        "post_id": "p_sa", "creator_id": "c_sa", "style": "talking_head"})
+    client.post("/v1/metrics/ingest", json={
+        "post_id": "p_sa", "creator_id": "c_sa", "reach": 500, "avg_watch_pct": 0.6, "saves": 10})
+    assert main._post_registry["p_sa"].get("settled_at")     # ISO timestamp stamped on settle
+
+
+def test_performance_summary_filters_by_window(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_perf_win"
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    # one recent settled post, one settled 100 days ago → only the recent one counts in a 30d window
+    main._post_registry[f"{cid}-new"] = {
+        "creator_id": cid, "settled": True, "settled_at": "2026-07-05T00:00:00+00:00",
+        "metrics": {"views": 100, "likes": 10, "follows_gained": 2}, "format_id": "listicle"}
+    main._post_registry[f"{cid}-old"] = {
+        "creator_id": cid, "settled": True, "settled_at": "2026-03-01T00:00:00+00:00",
+        "metrics": {"views": 9999, "likes": 1, "follows_gained": 0}, "format_id": "myth-buster"}
+    b = client.get(f"/v1/performance/summary?creator_id={cid}&days=30&now=2026-07-07T00:00:00+00:00").json()
+    assert b["totals"]["posts"] == 1 and b["totals"]["views"] == 100   # old post excluded

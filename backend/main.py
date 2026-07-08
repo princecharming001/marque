@@ -16,6 +16,7 @@ import hashlib
 import asyncio
 import random
 import logging
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -677,6 +678,7 @@ def _raise_job_not_found(job_id: str) -> None:
 class PostRegisterRequest(BaseModel):
     post_id: str
     clip_id: str = ""
+    permalink: str = ""             # live post URL (B2: public-metric scrape join key)
     platform: str = "instagram"
     scheduled_at: str = ""
     pillar: str = ""
@@ -3233,7 +3235,7 @@ async def register_post(req: PostRegisterRequest):
     # Omit the regressive outcome_y/metrics fields from the persisted row (settled
     # defaults FALSE in-schema); keep them in-memory so the settle path has its shape.
     post_data = {
-        "creator_id": req.creator_id,
+        "creator_id": req.creator_id, "clip_id": req.clip_id, "permalink": req.permalink,
         "platform": req.platform, "scheduled_at": req.scheduled_at,
         "pillar": req.pillar, "style": style,
         "format_id": format_id, "hook_signal": hook_signal,
@@ -3298,6 +3300,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
     # check above and this set — the second coroutine sees settled=True and bails
     # before touching an arm. Restored below if we don't actually win the settle.
     entry["settled"] = True
+    entry["settled_at"] = datetime.now(timezone.utc).isoformat()
     entry["outcome_y"] = y
     entry["outcome_raw"] = raw
     entry["metrics"] = m
@@ -3314,6 +3317,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
             won = sp.UNAVAILABLE
         if won is sp.UNAVAILABLE:                 # couldn't decide — restore + let client retry
             entry["settled"] = False
+            entry["settled_at"] = None
             entry["outcome_y"] = None
             entry["outcome_raw"] = None
             entry["metrics"] = None
@@ -4391,11 +4395,30 @@ async def brand_summary(req: BrandSummaryRequest):
 # Performance summary — last-30-days aggregates for the Performance tab
 # ---------------------------------------------------------------------------
 
+def _within_window(settled_at: str | None, cutoff: datetime) -> bool:
+    """True if a post settled on/after the cutoff. Posts with no settled_at (legacy
+    rows from before A-12) are INCLUDED — we'd rather over-count history than hide a
+    real post behind a missing timestamp."""
+    if not settled_at:
+        return True
+    try:
+        return datetime.fromisoformat(settled_at) >= cutoff
+    except (ValueError, TypeError):
+        return True
+
+
 @app.get("/v1/performance/summary")
-async def performance_summary(creator_id: str = "default", days: int = 30):
+async def performance_summary(creator_id: str = "default", days: int = 30, now: str = ""):
     days = max(7, min(90, days))
+    try:
+        now_dt = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
+    except ValueError:
+        now_dt = datetime.now(timezone.utc)
+    from datetime import timedelta
+    cutoff = now_dt - timedelta(days=days)
     settled = [(pid, p) for pid, p in _post_registry.items()
-               if p.get("creator_id") == creator_id and p.get("settled") and p.get("metrics")]
+               if p.get("creator_id") == creator_id and p.get("settled") and p.get("metrics")
+               and _within_window(p.get("settled_at"), cutoff)]
     if settled:
         totals = {"views": 0, "likes": 0, "follows_gained": 0, "posts": len(settled)}
         platforms: dict[str, dict] = {}

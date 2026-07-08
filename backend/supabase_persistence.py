@@ -25,8 +25,9 @@ import httpx
 # key (e.g. a shaped arm's lift_pct/label) can't break a PostgREST insert.
 _ARM_COLS = ("n", "sum_y", "sum_raw", "alpha", "beta", "effect", "confidence",
              "prior_alpha", "prior_beta")
-_POST_COLS = ("creator_id", "platform", "scheduled_at", "pillar", "style", "format_id",
-              "hook_signal", "predicted_score", "outcome_y", "outcome_raw", "settled", "metrics")
+_POST_COLS = ("creator_id", "clip_id", "permalink", "platform", "scheduled_at", "pillar",
+              "style", "format_id", "hook_signal", "predicted_score", "outcome_y",
+              "outcome_raw", "settled", "settled_at", "metrics")
 _CREATOR_COLS = ("niche", "goal", "coach_last_shown")
 
 _BACKOFF = (0.5, 2.0, 8.0)
