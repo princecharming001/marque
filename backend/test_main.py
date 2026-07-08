@@ -1876,6 +1876,40 @@ def test_run_edit_folds_brief_flub_cut_into_drops(monkeypatch):
     assert any(d["src_in"] == 15 and d["src_out"] == 22 for d in drops)   # flub cut applied
 
 
+# ---------------------------------------------------------------------------
+# F-08 · edl_prompt honors custom instructions + the brief; judge checks reorders.
+# ---------------------------------------------------------------------------
+
+def test_edl_prompt_includes_custom_instructions_and_brief():
+    import prompts
+    brief = {"hook_candidates": [{"quote": "open on THIS line", "start_frame": 100, "end_frame": 120,
+                                  "reason": "x", "signal": "curiosity"}],
+             "cut_regions": [{"start_frame": 50, "end_frame": 60, "reason": "flub",
+                              "severity": "high", "quote": "oops"}],
+             "strategy": "trim_only", "restructure_order": []}
+    _, usr = prompts.edl_prompt("talking_head", [{"word": "hi", "start_ms": 0, "end_ms": 200}],
+                                {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"},
+                                {}, custom_instructions="cut all the ums and speed it up", brief=brief)
+    assert "cut all the ums and speed it up" in usr
+    assert "open on THIS line" in usr                        # hook to open on
+    assert "50-60 (flub)" in usr                             # editorial cut surfaced
+
+
+def test_edl_prompt_restructure_instruction_when_strategy_restructure():
+    import prompts
+    brief = {"hook_candidates": [{"quote": "q", "start_frame": 0, "end_frame": 5, "reason": "r",
+                                  "signal": "curiosity"}],
+             "cut_regions": [], "strategy": "restructure", "restructure_order": [2, 0, 1]}
+    _, usr = prompts.edl_prompt("talking_head", [], {"formatId": "myth-buster"}, {}, brief=brief)
+    assert "segment_order" in usr and "[2, 0, 1]" in usr
+
+
+def test_edl_verify_prompt_has_reorder_coherence_check():
+    import prompts
+    sys, _ = prompts.edl_verify_prompt("talking_head", {"segments": []}, [])
+    assert "through-line" in sys and "segment_order" in sys
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})

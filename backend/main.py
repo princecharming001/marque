@@ -2220,7 +2220,9 @@ async def _run_edit(job_id: str, words: list[dict]):
         emphasis_spans = _extract_emphasis_regions(words, job.get("_auto_highlights"))
         system, user = prompts.edl_prompt(style, words, script, job["brand"], job["media_context"],
                                           disfluency_spans=disfluency_spans,
-                                          emphasis_spans=emphasis_spans)
+                                          emphasis_spans=emphasis_spans,
+                                          custom_instructions=job.get("custom_instructions", ""),
+                                          brief=job.get("edit_brief"))
         prefs = job.get("edit_prefs") or {}
         if prefs:
             hints = []

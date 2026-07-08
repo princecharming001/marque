@@ -347,8 +347,11 @@ def _span_lines(spans: list | None, limit: int = 40) -> str:
 def edl_prompt(style: str, transcript_words: list[dict], script: dict, brand: dict,
                media_context: str = "",
                disfluency_spans: list | None = None,
-               emphasis_spans: list | None = None) -> tuple[str, str]:
-    """Return (system, user) for the per-style EDL generation call."""
+               emphasis_spans: list | None = None,
+               custom_instructions: str = "", brief: dict | None = None) -> tuple[str, str]:
+    """Return (system, user) for the per-style EDL generation call. When an analyze-
+    first `brief` is present, the edit is steered by it (open on the chosen hook, make
+    the editorial cuts, honor the strategy); custom_instructions are honored verbatim."""
     rubric = EDIT_RUBRICS.get(style, EDIT_RUBRICS["talking_head"])
     exemplar = EDL_EXEMPLARS.get(style, "")
     shot_plan = script.get("shotPlan", [])
@@ -383,6 +386,26 @@ GROUNDED SIGNALS (from the transcript — trust these over your own guesses):
 - FILLER/DISFLUENCY frames already detected (put these in `drops` as reason="filler"; do NOT keep them): {_span_lines(disfluency_spans)}
 - HIGH-EMPHASIS frames (the creator's own stressed words + auto-detected key phrases — place `punch_in` overlays HERE, not on flat delivery): {_span_lines(emphasis_spans)}"""
 
+    brief_line = ""
+    if brief:
+        hooks = brief.get("hook_candidates") or []
+        hookq = hooks[0].get("quote", "") if hooks else ""
+        cuts = [f'{c["start_frame"]}-{c["end_frame"]} ({c["reason"]})'
+                for c in (brief.get("cut_regions") or [])
+                if c.get("reason") in ("flub", "ramble", "tangent")]
+        strategy = brief.get("strategy", "trim_only")
+        restructure = ""
+        if strategy == "restructure" and brief.get("restructure_order"):
+            restructure = f"\n- Restructure: reorder segments to {brief['restructure_order']} to pull the strongest moment forward (set segment_order)."
+        elif brief.get("pull_hook_forward"):
+            restructure = "\n- Pull the hook forward: open on the hook moment above even though it's later in the take."
+        brief_line = f"""
+EDIT BRIEF (from the analysis — act on it):
+- Open on this moment: "{hookq}"
+- Editorial cuts to make (frame ranges, beyond fillers): {', '.join(cuts) or 'none'}
+- Strategy: {strategy}{restructure}"""
+    custom_line = f"\nCREATOR'S CUSTOM EDITING INSTRUCTIONS (honor these verbatim): {custom_instructions}\n" if custom_instructions else ""
+
     user = f"""Script:
 Hook: {hook}
 Body: {body}
@@ -395,7 +418,7 @@ Word-level transcript (30fps, frame = round(start_ms/1000*30)):
 {json.dumps(transcript_words[:200])}
 
 Media context: {media_context or "none"}
-{grounding}
+{grounding}{brief_line}{custom_line}
 
 Generate the EDL for this {style} edit. Output JSON only."""
 
@@ -477,7 +500,10 @@ def edl_verify_prompt(style: str, edl_json: dict, transcript_words: list[dict],
         "- a punch_in overlay sits on flat delivery instead of a high-emphasis region;\n"
         "- total kept duration is implausibly short (<3s) or the whole take is one static shot with no "
         "emphasis punch-ins despite emphasis regions existing;\n"
-        "- react_source/react_schedule present for a non-duet style, or panel_boundaries missing for split_three.\n"
+        "- react_source/react_schedule present for a non-duet style, or panel_boundaries missing for split_three;\n"
+        "- segment_order REORDERS segments in a way that breaks the through-line — e.g. an answer plays before "
+        "its question, a payoff before its setup, or a 'first/second/third' sequence lands out of order. A "
+        "reorder must still read as ONE coherent thought; if it doesn't, flag it and fix by restoring source order.\n"
         "Be precise and terse. verdict='pass' only if there are zero hard issues."
     )
     user = (
