@@ -22,8 +22,16 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # Node deps + build the Lambda submit/poll bridge (dist/lambda-render.js) —
 # main.py invokes this compiled file, not the TS source.
-COPY render/package.json render/tsconfig.bridge.json ./render/
-RUN cd render && npm install
+#
+# CRITICAL: use the LOCKFILE (npm ci), not `npm install`. The deployed Remotion
+# Lambda function is version-pinned in its name (remotion-render-4-0-484-…), and
+# @remotion/lambda's client MUST match that version exactly. package.json carries
+# caret ranges (^4.0.0), so a fresh `npm install` here pulled whatever 4.0.x was
+# newest at build time (e.g. 4.0.486) → client/function skew → renderMediaOnLambda
+# hung and every clip failed with "bridge timed out". The lockfile pins 4.0.484,
+# so `npm ci` reproduces exactly the version the function was deployed with.
+COPY render/package.json render/package-lock.json render/tsconfig.bridge.json ./render/
+RUN cd render && npm ci
 COPY render/src ./render/src
 RUN cd render && npm run build:bridge
 

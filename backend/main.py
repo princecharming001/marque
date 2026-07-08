@@ -2905,7 +2905,20 @@ async def _run_render_bridge(*args: str, timeout_s: float | None = None) -> dict
             proc.communicate(), timeout=timeout_s or BRIDGE_CALL_TIMEOUT_S)
     except asyncio.TimeoutError:
         proc.kill()
-        return {"_error": f"bridge timed out after {timeout_s or BRIDGE_CALL_TIMEOUT_S:.0f}s"}
+        # Drain whatever the node process buffered before the kill — otherwise a hang
+        # (e.g. a Remotion client/function version skew) surfaces only as an opaque
+        # "timed out" with zero AWS detail, which is exactly what hid the 4.0.486-vs-484
+        # bug. Bounded so a truly-wedged process can't block this path too.
+        tail = ""
+        try:
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=5)
+            tail = ((err.decode(errors="replace") or out.decode(errors="replace")) or "")[:300].strip()
+        except Exception:
+            pass
+        t = timeout_s or BRIDGE_CALL_TIMEOUT_S
+        msg = f"bridge timed out after {t:.0f}s" + (f" — {tail}" if tail else "")
+        logging.warning("remotion bridge TIMEOUT (cmd=%s): %s", args[0] if args else "?", msg)
+        return {"_error": msg}
     if proc.returncode != 0:
         raw = stderr.decode(errors="replace")[:500]
         logging.warning("remotion bridge failed: %s", raw)
