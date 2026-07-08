@@ -1976,6 +1976,28 @@ def test_analyze_video_fetch_failure_falls_back_to_structure(monkeypatch):
     assert r["mode"] == "live_structure"                 # fetch failed → NOT fake 'live'
 
 
+# ---------------------------------------------------------------------------
+# F-10 · EXIT GATE — full analyze-first walk + inferred dims are registerable.
+# ---------------------------------------------------------------------------
+
+def test_analyze_first_end_to_end_and_inferred_dims_register():
+    # create → brief_ready → confirm → mock_ready
+    created = client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True,
+        "script": {"hook": "You're wrong about X", "body": "Here's the truth.", "cta": "Follow."}}).json()
+    job_id = created["job_id"]
+    brief = created["edit_brief"]
+    confirmed = client.post(f"/v1/clips/{job_id}/confirm", json={"toggles": {}}).json()
+    assert confirmed["status"] == "mock_ready"
+    # the inferred dims are valid taxonomy values → registerable into the bandit
+    inf = brief["inferred"]
+    r = client.post("/v1/posts/register", json={
+        "post_id": "f10-post", "creator_id": "f10", "style": inf["style"],
+        "format_id": inf["format_id"], "hook_signal": inf["hook_signal"], "pillar": "P"}).json()
+    assert r["status"] == "registered" and not r.get("dropped")   # nothing rejected as off-taxonomy
+    main._post_registry.pop("f10-post", None)
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
