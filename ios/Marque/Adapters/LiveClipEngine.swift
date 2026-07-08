@@ -135,7 +135,21 @@ enum MediaCompressor {
     private static let maxUploadBytes = 48_000_000   // safety margin under the ~50MB cap
 
     static func forUpload(_ source: URL) async -> URL? {
-        for preset in [AVAssetExportPreset1280x720, AVAssetExportPreset960x540] {
+        // OPT-7: skip re-encoding entirely when the source already fits — short takes
+        // upload as-is instead of paying a full export on the critical path.
+        let srcSize = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int
+        if let srcSize, srcSize <= maxUploadBytes { return nil }   // caller uploads the original
+
+        // OPT-7: pick the preset up front from a duration × bitrate estimate — a long
+        // take that will obviously blow the cap at 720p (~2.5Mbps) goes straight to
+        // 540p instead of paying a full wasted 720p export first. The retry ladder
+        // stays as the safety net for estimate misses.
+        var presets = [AVAssetExportPreset1280x720, AVAssetExportPreset960x540]
+        let seconds = CMTimeGetSeconds(AVURLAsset(url: source).duration)
+        if seconds.isFinite, seconds * 2_500_000 / 8 > Double(maxUploadBytes) {
+            presets = [AVAssetExportPreset960x540]
+        }
+        for preset in presets {
             guard let out = await export(source, preset: preset) else { continue }
             let size = (try? FileManager.default.attributesOfItem(atPath: out.path))?[.size] as? Int
             if let size, size <= maxUploadBytes { return out }
@@ -168,6 +182,8 @@ enum MediaCompressor {
 
 extension BackendClient {
     static let shared = BackendClient()
+    // OPT-8: session cache for GET /v1/editor/capabilities (static per backend build).
+    static var cachedEditorCaps: [String: [String: Bool]]? = nil
 
     func mintUploadURL(filename: String) async -> [String: Any]? {
         guard let data = await post("/v1/uploads/mint",
@@ -232,6 +248,9 @@ extension BackendClient {
     /// silent no-ops. nil on transport failure — callers show everything rather than
     /// wrongly hiding a real capability.
     func editorCapabilities() async -> [String: [String: Bool]]? {
+        // OPT-8: version-stable per backend process — fetch once per app session
+        // instead of on every RecordView/EditorView instance.
+        if let cached = BackendClient.cachedEditorCaps { return cached }
         guard let data = await get("/v1/editor/capabilities"),
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let caps = dict["capabilities"] as? [String: Any] else { return nil }
@@ -241,6 +260,7 @@ extension BackendClient {
                 out[style] = m.compactMapValues { $0 as? Bool }
             }
         }
+        BackendClient.cachedEditorCaps = out
         return out
     }
 

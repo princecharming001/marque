@@ -252,6 +252,9 @@ struct RecordView: View {
     // them (GET /v1/editor/capabilities); captions + filler cuts are always-on and
     // deliberately not toggles. No auto-reframe toggle by design.
     @ViewBuilder private var briefReview: some View {
+        // The confirm CTA stays PINNED below the scrollable plan — it must never
+        // need a scroll to reach (it's also what the E2E flow taps).
+        VStack(spacing: Space.md) {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: Space.md) {
                 Text("YOUR EDIT PLAN")
@@ -305,19 +308,20 @@ struct RecordView: View {
                     .background(Color.white.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                     .accessibilityIdentifier("record.customInstructions")
-
-                Button { confirmBrief() } label: {
-                    Text("Make my clip")
-                        .font(AppFont.headline).foregroundStyle(Palette.ink)
-                        .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
-                        .background(Palette.onInk)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("record.makeMyClip")
             }
         }
-        .frame(maxHeight: 380)
+        .frame(maxHeight: 320)
+
+        Button { confirmBrief() } label: {
+            Text("Make my clip")
+                .font(AppFont.headline).foregroundStyle(Palette.ink)
+                .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
+                .background(Palette.onInk)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("record.makeMyClip")
+        }
         .task { await loadCapabilities() }
     }
 

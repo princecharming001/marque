@@ -4,6 +4,10 @@ name: Marque — full core loop
 - launchApp:
     arguments:
       reset: "true"
+      # Drive the LOCAL keyless backend (scripts/dev.sh test expects one on :8000) —
+      # the Debug plist points at prod Render, which would mock-fallback past the
+      # analyze-first brief screen this flow asserts.
+      backend.url: "http://127.0.0.1:8000"
 
 # Landing (cream, unicorn hero)
 - assertVisible: "Get started"
@@ -117,8 +121,11 @@ name: Marque — full core loop
     visible: "Enter Yunicorn"
     timeout: 120000
 - takeScreenshot: /Users/home/Marque/.shots/live-aha
-- tapOn:
-    id: "onboard.finish"
+# The pill staggers in (staggerReveal) — let the animation settle or the tap's
+# hierarchy snapshot misses the still-moving element.
+- waitForAnimationToEnd:
+    timeout: 5000
+- tapOn: "Enter Yunicorn"
 
 # Gate 1 (REORDERED): hard subscription wall first. The tap is optional:
 # a real/leftover StoreKit entitlement in the simulator legitimately skips
@@ -143,6 +150,12 @@ name: Marque — full core loop
       id: "home.voiceBubble"
     timeout: 6000
 - takeScreenshot: /Users/home/Marque/.shots/v3-home
+
+# First-run feature tour overlays the whole screen on a fresh install — skip it
+# (optional: absent when the app has run before on this sim).
+- tapOn:
+    id: "tour.skip"
+    optional: true
 
 # Film flow: FAB → readied script (seeded by onboarding) → reader → record
 - tapOn:
@@ -177,6 +190,16 @@ name: Marque — full core loop
     timeout: 8000
 - tapOn:
     id: "record.makeClips"
+
+# H-02/H-03 analyze-first: the editor's plan (brief + toggles) appears — keyless
+# backend returns it immediately; confirm to actually make the clip.
+- extendedWaitUntil:
+    visible: "YOUR EDIT PLAN"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/flow-brief
+# The confirm CTA is pinned below the scrollable plan — directly tappable.
+- tapOn:
+    id: "record.makeMyClip"
 
 # Session celebration (streak), then clips in Library
 - extendedWaitUntil:
