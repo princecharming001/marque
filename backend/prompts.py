@@ -1513,6 +1513,29 @@ def attribution_prompt(settled_post: dict, arms: list[dict]) -> tuple[str, str]:
     return system, user
 
 
+def coach_card_prompt(insight: dict) -> tuple[str, str]:
+    """Phrase the Today-coach card from ONE pre-computed insight. Same number
+    discipline as attribution_prompt: the lift is used verbatim or the caller
+    rejects the output and falls back to the deterministic template."""
+    system = (
+        "You write the single daily coach card for a short-form creator, from ONE "
+        "pre-computed performance insight.\n"
+        "HARD RULES:\n"
+        "- Use the provided lift number VERBATIM (keep its sign and % suffix). NEVER "
+        "estimate, round, combine, or add any other number.\n"
+        "- Honest and actionable, never hype. One concrete next action.\n"
+        '- Return JSON only: {"headline": "<max 8 words>", "body": "<1-2 sentences citing '
+        'the lift verbatim>", "cta": "<max 8 words, imperative>"}'
+    )
+    user = (
+        f"Insight: the creator's '{insight['value']}' {insight['dimension']} runs "
+        f"{insight['lift_pct']:+d}% vs their average over {insight['n']} settled posts "
+        f"(band={insight['band']}, confidence={insight['confidence']}).\n"
+        "Write the card."
+    )
+    return system, user
+
+
 # ---------------------------------------------------------------------------
 # Cold-start niche priors — what tends to over-index in a niche BEFORE a creator
 # has any performance data of their own. Rendered by niche_prior_block() ONLY when

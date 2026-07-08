@@ -2040,6 +2040,68 @@ def test_coach_insight_none_when_too_few_settled(monkeypatch):
     assert asyncio.run(main._coach_insight("c_coach3")) is None
 
 
+# ---------------------------------------------------------------------------
+# P-02 · GET /v1/coach/today — ≤1 honest card/day, LLM phrases handed numbers only.
+# ---------------------------------------------------------------------------
+
+def test_coach_today_keyless_driver_card_cites_real_lift(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_coach4", arm_sum_raw=12.0)
+    card = client.get("/v1/coach/today", params={"creator_id": "c_coach4"}).json()["card"]
+    assert card and card["kind"] == "insight" and card["mode"] == "mock"
+    ins = card["insight"]
+    assert prompts.classify_arm_lift(ins["lift_pct"]) == "driver"
+    assert f"{ins['lift_pct']:+d}%" in card["body"]        # the REAL lift, verbatim
+    assert "contrarian" in (card["headline"] + card["body"]).lower()
+
+
+def test_coach_today_second_call_same_day_gated(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_coach5", arm_sum_raw=12.0)
+    assert client.get("/v1/coach/today", params={"creator_id": "c_coach5"}).json()["card"]
+    assert client.get("/v1/coach/today", params={"creator_id": "c_coach5"}).json()["card"] is None
+
+
+def test_coach_today_zero_settled_setup_nudge_no_numbers(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    for k in list(main._post_registry):                    # a truly cold creator
+        if k.startswith("c_coach_cold"):
+            main._post_registry.pop(k)
+    main._arm_stats.pop("c_coach_cold", None)
+    main._arms_loaded.add("c_coach_cold")
+    card = client.get("/v1/coach/today", params={"creator_id": "c_coach_cold"}).json()["card"]
+    assert card and card["kind"] == "setup"
+    assert "%" not in card["body"] and not any(ch.isdigit() for ch in card["body"])
+
+
+def test_coach_today_some_settled_but_no_signal_is_null(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_coach6", arm_sum_raw=4.4)       # noise band → silence, not a nudge
+    assert client.get("/v1/coach/today", params={"creator_id": "c_coach6"}).json()["card"] is None
+
+
+def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_coach7", arm_sum_raw=12.0)
+
+    async def boom(*a, **k):
+        raise main.HTTPException(502, "llm down")
+    monkeypatch.setattr(main, "anthropic", boom)
+    card = client.get("/v1/coach/today", params={"creator_id": "c_coach7"}).json()["card"]
+    assert card and card["kind"] == "insight" and card["mode"] == "mock"
+    assert f"{card['insight']['lift_pct']:+d}%" in card["body"]
+
+
 def test_editor_capabilities_endpoint():
     caps = client.get("/v1/editor/capabilities").json()["capabilities"]
     assert caps["talking_head"]["punch_ins"] is True and caps["fast_cuts"]["punch_ins"] is False

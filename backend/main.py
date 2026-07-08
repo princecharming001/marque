@@ -362,6 +362,69 @@ async def _coach_insight(creator_id: str) -> dict | None:
     return None
 
 
+# creator_id -> when the Today card was last shown (UTC). ≤1 card/day gate; P-03 backs
+# this with creators.coach_last_shown so a restart doesn't re-show the same card.
+_coach_shown: dict[str, datetime] = {}
+
+_COACH_DIM_WORD = {"style": "style", "format_id": "format",
+                   "hook_signal": "hook", "pillar": "pillar"}
+
+
+def _coach_template_card(insight: dict) -> dict:
+    """Deterministic phrasing — the keyless mock AND the LLM-degrade fallback. Every
+    number comes verbatim from the insight; this function cannot fabricate a stat."""
+    val = insight["value"].replace("_", " ")
+    word = _COACH_DIM_WORD.get(insight["dimension"], insight["dimension"])
+    conf = insight["confidence"].replace("_", " ")
+    body = (f"Your {val} {word} runs {insight['lift_pct']:+d}% vs your average over "
+            f"{insight['n']} settled posts ({conf}).")
+    if insight["lift_pct"] >= 0:
+        return {"headline": f"{val.title()} is carrying you",
+                "body": body, "cta": f"Lean into {val} on your next post."}
+    return {"headline": f"{val.title()} is dragging you down",
+            "body": body, "cta": f"Try a different {word} on your next post."}
+
+
+@app.get("/v1/coach/today")
+async def coach_today(creator_id: str = "default"):
+    """The Today coach: at most ONE card per day, and only when Python found a real,
+    grounded, non-noise signal (_coach_insight) — the LLM only phrases the handed
+    numbers. Zero-settled creators get a setup nudge with NO performance claim.
+    Silence ({"card": null}) is the common, correct output."""
+    last = _coach_shown.get(creator_id)
+    if last and (datetime.now(timezone.utc) - last).total_seconds() < 86400:
+        return {"card": None}
+    insight = await _coach_insight(creator_id)
+    if insight is None:
+        settled = sum(1 for p in _post_registry.values()
+                      if p.get("creator_id") == creator_id and p.get("settled"))
+        if settled == 0:
+            _coach_shown[creator_id] = datetime.now(timezone.utc)
+            return {"card": {"kind": "setup", "mode": "mock",
+                             "headline": "Post one to start learning",
+                             "body": "Once your first posts settle I can tell you what's "
+                                     "actually moving your numbers — no guesses until then.",
+                             "cta": "Record your first clip"}}
+        return {"card": None}                    # data exists but no honest claim → silence
+    card = _coach_template_card(insight)
+    mode = "mock"
+    if ANTHROPIC_KEY and AI_QUALITY:
+        try:
+            sys, usr = prompts.coach_card_prompt(insight)
+            data = extract_json(await anthropic(sys, usr, HAIKU, 300), array=False) or {}
+            # Accept the LLM's phrasing only if it kept the real lift verbatim — a
+            # drifted or invented number falls back to the deterministic template.
+            if (data.get("headline") and data.get("body")
+                    and f"{insight['lift_pct']:+d}%" in str(data.get("body"))):
+                card = {"headline": str(data["headline"])[:80], "body": str(data["body"])[:280],
+                        "cta": str(data.get("cta", card["cta"]))[:80]}
+                mode = "live"
+        except HTTPException:
+            pass
+    _coach_shown[creator_id] = datetime.now(timezone.utc)
+    return {"card": {**card, "kind": "insight", "mode": mode, "insight": insight}}
+
+
 async def _arms_for_prompt(creator_id: str) -> list[dict]:
     """Shape raw bandit arms into the {lift_pct, label, confidence} form that
     prompts.learning_block() actually reads. Without this the raw arm dicts lack
