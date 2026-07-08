@@ -1248,12 +1248,13 @@ def media_analyze_prompt(filename: str, kind: str = "photo") -> tuple[str, str]:
 def broll_match_prompt(cue_text: str, candidates: list[dict]) -> tuple[str, str]:
     """Return (system, user) for Haiku tie-break among B-roll candidates."""
     system = (
-        "You select the best B-roll clip for a video beat. Given a shot description and candidates, "
-        'return ONLY: {"chosen_index": int, "reason": str (≤10 words why this clip fits the beat)}'
+        "You select the best B-roll clip for a video beat. Each candidate has a candidate_index. "
+        'return ONLY: {"chosen_index": int (the candidate_index you pick), '
+        '"reason": str (≤10 words why this clip fits the beat)}'
     )
     user = (f"Beat: \"{cue_text}\"\n\n"
             f"Candidates:\n{json.dumps(candidates, indent=2)}\n\n"
-            "Which candidate index best matches the beat? Return JSON only.")
+            "Return the candidate_index that best matches the beat. JSON only.")
     return system, user
 
 

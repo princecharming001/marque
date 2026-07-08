@@ -2909,3 +2909,36 @@ def test_media_analyze_malformed_not_cached(monkeypatch):
     r = client.post("/v1/media/analyze",
                     json={"content_hash": "h_bad", "public_url": "http://x", "kind": "image"}).json()
     assert r["mode"] == "mock" and "h_bad" not in main._media_cache
+
+
+# ---------------------------------------------------------------------------
+# B-04 · /v1/broll/match: Pexels fetch guarded; tie-break resolves by candidate
+# position, not the ambiguous corpus index.
+# ---------------------------------------------------------------------------
+
+def test_fetch_pexels_guarded(monkeypatch):
+    import httpx
+    monkeypatch.setattr(main, "PEXELS_KEY", "k")
+
+    class _C:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **k): raise httpx.ReadError("mid-stream")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _C())
+    assert asyncio.run(main._fetch_pexels("dog")) is None      # guarded — no raise, no 500
+
+
+def test_broll_match_tiebreak_resolves_by_position(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def fake(system, user, model=main.HAIKU, max_tokens=100, temperature=None):
+        return '{"chosen_index": 1, "reason": "fits"}'
+    monkeypatch.setattr(main, "anthropic", fake)
+    corpus = [
+        {"asset_id": "a", "description": "dog running", "tags": ["dog"], "broll_suitability": 80},
+        {"asset_id": "b", "description": "dog running", "tags": ["dog"], "broll_suitability": 80},
+    ]
+    r = client.post("/v1/broll/match",
+                    json={"cue_text": "dog running", "corpus": corpus, "top_k": 3}).json()
+    # chosen_index 1 = the SECOND top candidate (asset b), promoted to front
+    assert r["matches"][0]["asset_id"] == "b"

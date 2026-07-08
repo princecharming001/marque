@@ -3125,14 +3125,18 @@ async def match_broll(req: BRollMatchRequest):
     scored.sort(key=lambda x: x["score"], reverse=True)
     top = scored[:req.top_k]
 
-    # Haiku tie-break when scores are close and we have a key
+    # Haiku tie-break when scores are close and we have a key. Present candidates with a
+    # clean positional candidate_index (NOT the corpus index the model would otherwise
+    # echo into the score-sorted list, picking the wrong asset — audit B-04/F12/F14).
     if ANTHROPIC_KEY and len(top) >= 2 and top[0]["score"] - top[1]["score"] < 0.05:
-        system, user = prompts.broll_match_prompt(req.cue_text, top[:3])
+        cands = [{"candidate_index": j, "asset_id": t["asset_id"], "description": t["description"]}
+                 for j, t in enumerate(top[:3])]
+        system, user = prompts.broll_match_prompt(req.cue_text, cands)
         try:
-            text = await anthropic(system, user, model=HAIKU, max_tokens=100)
-            pick = extract_json(text, array=False)
-            if pick and "chosen_index" in pick:
-                chosen = scored[pick["chosen_index"]]
+            pick = extract_json(await anthropic(system, user, model=HAIKU, max_tokens=100), array=False)
+            ci = pick.get("chosen_index") if isinstance(pick, dict) else None
+            if isinstance(ci, int) and 0 <= ci < len(cands):
+                chosen = top[ci]
                 top = [chosen] + [t for t in top if t["asset_id"] != chosen["asset_id"]]
         except Exception:
             pass
@@ -3149,13 +3153,17 @@ async def match_broll(req: BRollMatchRequest):
 async def _fetch_pexels(query: str) -> str | None:
     if not PEXELS_KEY:
         return None
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get("https://api.pexels.com/videos/search",
-                             headers={"Authorization": PEXELS_KEY},
-                             params={"query": query, "per_page": 1, "orientation": "portrait"})
-    if r.status_code != 200:
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://api.pexels.com/videos/search",
+                                 headers={"Authorization": PEXELS_KEY},
+                                 params={"query": query, "per_page": 1, "orientation": "portrait"})
+        if r.status_code != 200:
+            return None
+        videos = r.json().get("videos", [])
+    except (httpx.HTTPError, ValueError) as e:      # transport error / malformed body → no b-roll
+        logging.warning("pexels fetch failed: %s", e)
         return None
-    videos = r.json().get("videos", [])
     if not videos:
         return None
     files = videos[0].get("video_files", [])
