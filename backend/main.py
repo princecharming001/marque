@@ -3104,7 +3104,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
         return {"mode": "live" if _supabase_client else "mock",
                 "status": "unregistered", "post_id": req.post_id}
     if entry.get("settled"):
-        return {"mode": "mock", "status": "already_settled"}
+        return {"mode": "live" if _supabase_client else "mock", "status": "already_settled"}
     if req.reach < 20:
         return {"mode": "mock", "status": "below_min_reach", "reach": req.reach}
 
@@ -3116,27 +3116,44 @@ async def ingest_metrics(req: MetricsIngestRequest):
         _creator_niche[creator_id] = req.niche
     niche = req.niche or _creator_niche.get(creator_id, "")
 
+    # In-memory latch FIRST, synchronously, before any await: on a single instance
+    # asyncio is cooperative, so no concurrent ingest can slip between the settled
+    # check above and this set — the second coroutine sees settled=True and bails
+    # before touching an arm. Restored below if we don't actually win the settle.
+    entry["settled"] = True
+    entry["outcome_y"] = y
+    entry["metrics"] = m
+    _post_registry[req.post_id] = entry
+
+    # Cross-instance latch: one atomic conditional PATCH decides the single winner.
+    # Arms are updated ONLY by the winner, so a retry or a second Render instance
+    # holding a stale unsettled copy can never double-count the reward.
+    if _supabase_client:
+        try:
+            won = await _supabase_client.settle_post_conditional(req.post_id, entry)
+        except Exception as e:
+            logging.warning("supabase settle_post_conditional failed: %s", e)
+            won = sp.UNAVAILABLE
+        if won is sp.UNAVAILABLE:                 # couldn't decide — restore + let client retry
+            entry["settled"] = False
+            entry["outcome_y"] = None
+            entry["metrics"] = None
+            _post_registry[req.post_id] = entry
+            return {"mode": "live", "status": "retry_later", "post_id": req.post_id}
+        if not won:                               # another instance already settled it
+            return {"mode": "live", "status": "already_settled", "post_id": req.post_id}
+
     for dim in DIMENSIONS:
         val = entry.get(dim, "")
         if val:
             await _update_arm(creator_id, f"{dim}:{val}", y, niche)
-
-    entry["outcome_y"] = y
-    entry["settled"] = True
-    entry["metrics"] = m
-    _post_registry[req.post_id] = entry
-    if _supabase_client:
-        try:
-            await _supabase_client.upsert_post(req.post_id, entry)
-        except Exception as e:
-            logging.warning("supabase upsert_post (settled) failed: %s", e)
 
     # Attribute the just-settled post from the creator's own arms so the app can show
     # what drove it. Honest by construction (attribute_from_arms only speaks driver/
     # error bands it can ground in the data; else "none").
     attribution = prompts.attribute_from_arms(await _arms_for_prompt(creator_id))
 
-    return {"mode": "live" if SUPABASE_URL else "mock", "status": "ingested",
+    return {"mode": "live" if _supabase_client else "mock", "status": "ingested",
             "outcome_y": round(y, 3), "goal": goal, "attribution": attribution,
             "post_id": req.post_id}
 

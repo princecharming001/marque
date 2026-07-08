@@ -120,6 +120,27 @@ class SupabaseClient:
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
 
+    async def settle_post_conditional(self, post_id: str, payload: dict) -> bool | _Unavailable:
+        """Atomically flip a post's settled flag false→true and write its settled
+        payload in ONE conditional PATCH (WHERE settled=false). Returns True if THIS
+        call won the latch (a row came back), False if the post was already settled
+        (0 rows), or UNAVAILABLE if the DB couldn't answer. This is the cross-instance
+        idempotency latch for the bandit: arms are updated only by the winner, so a
+        concurrent/retried settle can never double-count the reward."""
+        row = {k: payload[k] for k in _POST_COLS if k in payload}
+        row["settled"] = True
+        r = await self._request(
+            "PATCH", "/post_registry",
+            params={"post_id": f"eq.{post_id}", "settled": "eq.false"}, json=row,
+            headers={"Prefer": "return=representation"})
+        if not (r and r.status_code < 300):
+            return UNAVAILABLE
+        try:
+            rows = r.json()
+        except Exception:
+            return UNAVAILABLE
+        return bool(rows)
+
     async def load_post(self, post_id: str) -> dict | None | _Unavailable:
         """Row dict, None if the DB answered and the row is absent, or UNAVAILABLE
         (falsy) if the DB couldn't answer — so the settle path never mistakes an

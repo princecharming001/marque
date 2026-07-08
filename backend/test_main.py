@@ -17,6 +17,7 @@ class SupabaseClientStub:
     async def upsert_post(self, *a, **k): return True
     async def load_post(self, *a, **k): return None
     async def load_all_posts(self, *a, **k): return []
+    async def settle_post_conditional(self, *a, **k): return True
 
 
 def test_healthz():
@@ -2083,3 +2084,112 @@ def test_load_post_unavailable_vs_absent(monkeypatch):
         def json(self): return {"message": "denied"}
     c._request = AsyncMock(return_value=_Denied())
     assert asyncio.run(c.load_post("p1")) is UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# A-02 · Settle idempotency + race: a post settles exactly once, arms move once,
+# even under concurrent or cross-instance ingests.
+# ---------------------------------------------------------------------------
+
+def _register_and_body(pid, cid, client_obj=None):
+    if client_obj is None:
+        client.post("/v1/posts/register", json={
+            "post_id": pid, "creator_id": cid, "style": "talking_head",
+            "format_id": "myth-buster", "hook_signal": "contrarian", "pillar": "Hot takes"})
+    return {"post_id": pid, "creator_id": cid, "reach": 500, "likes": 50, "saves": 10,
+            "shares": 5, "avg_watch_pct": 0.6, "follows_gained": 8}
+
+
+def test_ingest_sequential_double_settle_is_idempotent(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    main._post_registry.pop("p_seq", None)
+    main._arm_stats.pop("c_seq", None)
+    body = _register_and_body("p_seq", "c_seq")
+    assert client.post("/v1/metrics/ingest", json=body).json()["status"] == "ingested"
+    assert client.post("/v1/metrics/ingest", json=body).json()["status"] == "already_settled"
+    assert main._arm_stats["c_seq"]["style:talking_head"]["n"] == 1   # moved exactly once
+
+
+def test_ingest_concurrent_settles_arms_once(monkeypatch):
+    """Two ingests interleaving across the DB-latch await must not double-count."""
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    won = {"n": 0}
+
+    async def _latch(post_id, payload):
+        await asyncio.sleep(0)                 # force a real suspension point (interleave)
+        won["n"] += 1
+        return won["n"] == 1                    # first caller wins, rest lose
+    fake.settle_post_conditional = AsyncMock(side_effect=_latch)
+    fake.upsert_post = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry["p_cc"] = {"creator_id": "c_cc", "style": "talking_head",
+                                    "format_id": "myth-buster", "hook_signal": "contrarian",
+                                    "pillar": "Hot takes", "settled": False}
+    main._arm_stats.pop("c_cc", None)
+    req = main.MetricsIngestRequest(post_id="p_cc", creator_id="c_cc", reach=500, likes=50,
+                                    saves=10, shares=5, avg_watch_pct=0.6, follows_gained=8)
+
+    async def _both():
+        return await asyncio.gather(main.ingest_metrics(req), main.ingest_metrics(req))
+    results = asyncio.run(_both())
+    assert sorted(r["status"] for r in results) == ["already_settled", "ingested"]
+    assert main._arm_stats["c_cc"]["style:talking_head"]["n"] == 1
+
+
+def test_ingest_lost_latch_does_not_update_arms(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.settle_post_conditional = AsyncMock(return_value=False)   # another instance won
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry["p_lost"] = {"creator_id": "c_lost", "style": "talking_head",
+                                     "format_id": "myth-buster", "hook_signal": "contrarian",
+                                     "pillar": "Hot takes", "settled": False}
+    main._arm_stats.pop("c_lost", None)
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_lost", "creator_id": "c_lost", "reach": 500, "avg_watch_pct": 0.6}).json()
+    assert r["status"] == "already_settled"
+    assert "c_lost" not in main._arm_stats            # lost the latch → arms untouched
+
+
+def test_ingest_latch_unavailable_returns_retry_and_restores(monkeypatch):
+    from unittest.mock import AsyncMock
+    from supabase_persistence import UNAVAILABLE
+    fake = SupabaseClientStub()
+    fake.settle_post_conditional = AsyncMock(return_value=UNAVAILABLE)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry["p_un"] = {"creator_id": "c_un", "style": "talking_head",
+                                   "format_id": "myth-buster", "hook_signal": "contrarian",
+                                   "pillar": "Hot takes", "settled": False}
+    main._arm_stats.pop("c_un", None)
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_un", "creator_id": "c_un", "reach": 500, "avg_watch_pct": 0.6}).json()
+    assert r["status"] == "retry_later"
+    assert main._post_registry["p_un"]["settled"] is False   # latch restored, retryable
+    assert "c_un" not in main._arm_stats
+
+
+def test_settle_post_conditional_builds_guarded_patch():
+    from unittest.mock import AsyncMock
+    from supabase_persistence import SupabaseClient, UNAVAILABLE
+    c = SupabaseClient("https://x.supabase.co", "k")
+
+    class _Won:
+        status_code = 200
+        def json(self): return [{"post_id": "p1", "settled": True}]
+    c._request = AsyncMock(return_value=_Won())
+    assert asyncio.run(c.settle_post_conditional("p1", {
+        "creator_id": "c1", "outcome_y": 0.7, "metrics": {}, "settled": True})) is True
+    method, path = c._request.await_args[0][0], c._request.await_args[0][1]
+    kw = c._request.await_args[1]
+    assert method == "PATCH" and path == "/post_registry"
+    assert kw["params"]["post_id"] == "eq.p1" and kw["params"]["settled"] == "eq.false"
+    assert "return=representation" in kw["headers"]["Prefer"]
+
+    class _Lost:
+        status_code = 200
+        def json(self): return []                 # 0 rows matched settled=false → lost
+    c._request = AsyncMock(return_value=_Lost())
+    assert asyncio.run(c.settle_post_conditional("p1", {"settled": True})) is False
+    c._request = AsyncMock(return_value=None)      # transport gave up
+    assert asyncio.run(c.settle_post_conditional("p1", {"settled": True})) is UNAVAILABLE
