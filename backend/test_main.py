@@ -2153,6 +2153,21 @@ def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
 # P-06 · Completeness sweep nits.
 # ---------------------------------------------------------------------------
 
+def test_every_route_survives_keyless(monkeypatch):
+    """P-07 exit gate: every /v1 route answers keyless without a 500 — a missing
+    keyless-mock fallback is a bug by contract (PLAN §0)."""
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    for route in main.app.routes:
+        path = getattr(route, "path", "")
+        methods = getattr(route, "methods", set()) or set()
+        if not path.startswith(("/v1", "/healthz", "/readyz")):
+            continue
+        url = path.replace("{job_id}", "sweep-nonexistent")
+        for m in methods & {"GET", "POST"}:
+            r = client.get(url) if m == "GET" else client.post(url, json={})
+            assert r.status_code < 500, f"{m} {path} -> {r.status_code} keyless"
+
+
 def test_digest_swept_job_is_410_not_404():
     main._expired_job_ids["digest-swept-1"] = time.time()
     assert client.get("/v1/onboarding/digest/digest-swept-1").status_code == 410
