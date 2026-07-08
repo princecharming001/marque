@@ -27,7 +27,8 @@ from prompts import OPUS, HAIKU, SONNET, STYLES, FORMAT_IDS
 from contextlib import asynccontextmanager
 
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
-                     ms_to_frame, build_render_plan, apply_edl_ops)
+                     ms_to_frame, build_render_plan, apply_edl_ops,
+                     style_capabilities, TWEAK_OP_TYPES)
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -1778,6 +1779,73 @@ async def _retry_render(job_id: str) -> None:
         _fail_job(job, "internal_error", str(e))
     finally:
         _spawn(_persist_clip_job(job_id))   # F15: durable after retry
+
+
+@app.get("/v1/clips/{job_id}/suggested-edits")
+async def suggested_edits(job_id: str):
+    """2-4 one-tap edit chips the manual editor can apply straight through /tweak
+    (mode=direct). Fully deterministic from the job's own edl + words — computed,
+    never invented — and style-gated so a chip is never a silent no-op. An already-
+    applied suggestion is not re-offered."""
+    job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
+    if job is None:
+        _raise_job_not_found(job_id)
+    edl, words = job.get("edl"), job.get("words") or []
+    if not edl:
+        return {"chips": []}                                # analyze not confirmed yet
+    chips: list[dict] = []
+    existing = edl.get("drops") or []
+
+    def _already_cut(s: int, e: int) -> bool:
+        return any(d["src_in"] <= s and d["src_out"] >= e for d in existing)
+
+    # 1) Remove-fluff: the biggest cluster of filler/dead-air (drops within ~0.5s
+    #    merge into one region — that run of "um, so, basically" IS the fluff).
+    _, drops = strip_fillers(words)
+    clusters: list[list[int]] = []                          # [start, end, dropped_frames]
+    for d in sorted(drops, key=lambda d: d.src_in):
+        if d.src_out <= d.src_in:
+            continue
+        if clusters and d.src_in - clusters[-1][1] <= 15:
+            clusters[-1][1] = max(clusters[-1][1], d.src_out)
+            clusters[-1][2] += d.src_out - d.src_in
+        else:
+            clusters.append([d.src_in, d.src_out, d.src_out - d.src_in])
+    clusters = [c for c in clusters if not _already_cut(c[0], c[1])]
+    if clusters:
+        s, e, _n = max(clusters, key=lambda c: c[2])
+        chips.append({"kind": "remove_fluff", "label": "Remove the fluff",
+                      "ops": [{"type": "cut_range", "start_frame": s, "end_frame": e}]})
+
+    # 2) Tighten: silent lead-in / tail margins outside the spoken words.
+    if words and edl.get("segments"):
+        seg_in = min(s["src_in"] for s in edl["segments"])
+        seg_out = max(s["src_out"] for s in edl["segments"])
+        lead = ms_to_frame(words[0].get("start_ms", 0)) - seg_in
+        tail = seg_out - ms_to_frame(words[-1].get("end_ms", 0))
+        ops = ([{"type": "trim_start", "frames": lead}] if lead > 15 else []) + \
+              ([{"type": "trim_end", "frames": tail}] if tail > 15 else [])
+        if ops:
+            chips.append({"kind": "tighten", "label": "Tighten the ends", "ops": ops})
+
+    # 3) Punch-in on an emphasis region — only for styles whose comps render it (G-04),
+    #    and never stacked on an existing punch-in.
+    if style_capabilities(edl.get("style", ""))["punch_ins"] and words:
+        emph = next((w for w in words if w.get("is_emphasized")), None)
+        if emph:
+            s = ms_to_frame(emph.get("start_ms", 0))
+            e = ms_to_frame(emph.get("end_ms", emph.get("start_ms", 0) + 280)) + 15
+        else:                                               # no ASR emphasis → the hook
+            head = words[:8]
+            s = ms_to_frame(head[0].get("start_ms", 0))
+            e = ms_to_frame(head[-1].get("end_ms", 0))
+        overlaps = any(o.get("type") == "punch_in" and o["src_in"] < e and o["src_out"] > s
+                       for o in edl.get("overlays") or [])
+        if e > s and not overlaps:
+            chips.append({"kind": "punch_in", "label": "Punch in on the hook",
+                          "ops": [{"type": "add_punch_in", "start_frame": s,
+                                   "end_frame": e, "scale": 1.08}]})
+    return {"chips": chips[:4]}
 
 
 @app.post("/v1/clips/{job_id}/tweak")

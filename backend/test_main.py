@@ -2150,6 +2150,52 @@ def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# P-05 · GET /v1/clips/{id}/suggested-edits — one-tap chips, style-gated, honest.
+# ---------------------------------------------------------------------------
+
+_FLUFFY_SCRIPT = {"hook": "Um so basically stop overthinking",
+                  "body": "Um you know do the like simple thing daily",
+                  "cta": "Follow", "formatId": "myth-buster"}
+
+
+def test_suggested_edits_chips_for_talking_head():
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT)
+    chips = client.get(f"/v1/clips/{job_id}/suggested-edits").json()["chips"]
+    assert 2 <= len(chips) <= 4
+    kinds = {c["kind"] for c in chips}
+    assert "remove_fluff" in kinds and "punch_in" in kinds
+    for c in chips:
+        assert c["label"] and c["ops"] and all(o["type"] in main.TWEAK_OP_TYPES for o in c["ops"])
+
+
+def test_suggested_edits_no_punch_in_chip_for_fast_cuts():
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT, style="fast_cuts")
+    chips = client.get(f"/v1/clips/{job_id}/suggested-edits").json()["chips"]
+    kinds = {c["kind"] for c in chips}
+    assert "punch_in" not in kinds                          # style can't render it
+    assert "remove_fluff" in kinds                          # style-agnostic chip survives
+
+
+def test_suggested_edit_chip_round_trips_and_is_not_reoffered():
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT)
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
+    chip = next(c for c in client.get(f"/v1/clips/{job_id}/suggested-edits").json()["chips"]
+                if c["kind"] == "remove_fluff")
+    r = client.post(f"/v1/clips/{job_id}/tweak",
+                    json={"clip_id": clip_id, "instruction": "", "ops": chip["ops"]})
+    assert r.status_code == 200 and r.json()["changed"] is True
+    assert not r.json()["skipped"]                          # every chip op applied cleanly
+    chips2 = client.get(f"/v1/clips/{job_id}/suggested-edits").json()["chips"]
+    assert all(c["ops"] != chip["ops"] for c in chips2)     # applied chip isn't re-offered
+
+
+def test_suggested_edits_unknown_job_404_and_no_edl_empty():
+    assert client.get("/v1/clips/nope/suggested-edits").status_code == 404
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT, edl=None)
+    assert client.get(f"/v1/clips/{job_id}/suggested-edits").json()["chips"] == []
+
+
+# ---------------------------------------------------------------------------
 # P-04 · GET /v1/suggestions/next-idea — one idea brief, grounded or niche-framed.
 # ---------------------------------------------------------------------------
 
