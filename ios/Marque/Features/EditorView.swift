@@ -422,7 +422,8 @@ struct EditorView: View {
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         return VStack(spacing: 3) {
             Text(label)
-                .font(AppFont.micro).lineLimit(1)
+                .font(AppFont.micro)
+                .lineLimit(1)
                 .foregroundStyle(isCut ? Palette.textTertiary : Palette.textPrimary)
                 .strikethrough(isCut)
             Text(String(format: "%.1fs", seg.seconds))
@@ -466,10 +467,12 @@ struct EditorView: View {
         let boundary: Int = candidates.min { a, b in abs(a - mid) < abs(b - mid) } ?? mid
         phase = .loading
         Task {
+            // AF-6: defer_render COMMITS the split without spending a render (a pure
+            // structural change renders pixel-identically; preview=1 no longer commits).
             let resp = await store.backend.tweakClipOps(
                 jobId: jobId, clipId: clip.id.uuidString,
                 ops: [["type": "split_segment", "index": segIdx, "at_frame": boundary]],
-                preview: true)
+                deferRender: true)
             if resp["error"] as? Bool == true {
                 transientMessage = resp["reply"] as? String ?? "Couldn't split that segment."
             }
@@ -831,7 +834,11 @@ struct EditorView: View {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
             return (a, b)
         }
-        func msToFrame(_ ms: Double) -> Int { Int((ms * 30.0 / 1000.0).rounded()) }
+        // AF-I5: banker's rounding to MATCH Python's round() in app/edl.py — plain
+        // .rounded() (ties away from zero) put e.g. start_ms=150 at frame 5 while the
+        // backend keyed its caption at frame 4, so edit_caption appended a duplicate
+        // instead of editing, and caption deletes silently missed.
+        func msToFrame(_ ms: Double) -> Int { Int((ms * 30.0 / 1000.0).rounded(.toNearestOrEven)) }
         let wordEntries: [WordEntry] = rawWords.compactMap { w in
             guard let text = w["word"] as? String, !text.isEmpty else { return nil }
             let startMs = (w["start_ms"] as? Double) ?? Double(w["start_ms"] as? Int ?? 0)
@@ -1054,7 +1061,11 @@ struct EditorView: View {
         for _ in 0..<60 {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             if Task.isCancelled { return (false, nil) }
-            guard let result = await store.backend.pollClipJob(jobId: jobId),
+            let (maybeResult, httpStatus) = await store.backend.pollClipJobWithStatus(jobId: jobId)
+            if httpStatus == 404 || httpStatus == 410 {
+                return (false, "This edit session has expired — re-record to keep editing.")
+            }
+            guard let result = maybeResult,
                   let jobClips = result["clips"] as? [[String: Any]],
                   // UUID-compare (backend ids are lowercase, uuidString is uppercase)
                   let mine = jobClips.first(where: {

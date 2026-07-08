@@ -202,13 +202,17 @@ extension BackendClient {
     /// POST /v1/clips with analyze_first — returns immediately with either a ready
     /// brief (keyless mock) or status "analyzing" (poll getBrief until brief_ready).
     func createAnalyzeJob(sourceURL: String, script: Script?,
-                          customInstructions: String = "") async -> AnalyzeJobResponse? {
+                          customInstructions: String = "",
+                          reactSourceURL: String = "") async -> AnalyzeJobResponse? {
         var body: [String: Any] = [
             "analyze_first": true,
             "source_url": sourceURL,
             "custom_instructions": customInstructions,
             "edit_prefs": editPrefs,
         ]
+        // AF-I2 (audit): the duet react source was silently dropped on the whole
+        // analyze path — the rendered duet had no react panel with zero errors.
+        if !reactSourceURL.isEmpty { body["react_source_url"] = reactSourceURL }
         if let script {
             body["source_id"] = script.id.uuidString
             body["style"] = script.style
@@ -265,6 +269,18 @@ extension BackendClient {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
+    /// AF-I4: poll variant that surfaces the status code — 404/410 mean the job is
+    /// permanently gone (restart with no durable copy / TTL-swept) and the poller
+    /// must fail its clips instead of spinning "rendering" forever.
+    func pollClipJobWithStatus(jobId: String) async -> (result: [String: Any]?, status: Int) {
+        let (data, status) = await getWithStatus("/v1/clips/\(jobId)")
+        guard let data,
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return (nil, status)
+        }
+        return (dict, status)
+    }
+
     /// Re-run a failed clip job's render (backend keeps the source + EDL). Returns
     /// true on 200; 404/409 are treated as no-op (nothing to retry / already running).
     @discardableResult
@@ -277,9 +293,13 @@ extension BackendClient {
     /// and go straight to deterministic application + a single re-render.
     /// H11: preview=true asks the backend for the G9 cheap proof render
     /// instead of committing to the full one — never overwrites render_url.
-    func tweakClipOps(jobId: String, clipId: String, ops: [[String: Any]], preview: Bool = false) async -> [String: Any] {
+    /// AF-6: deferRender commits the ops but spends no render (split's structural
+    /// no-op case); preview renders a candidate WITHOUT committing (HD preview).
+    func tweakClipOps(jobId: String, clipId: String, ops: [[String: Any]],
+                      preview: Bool = false, deferRender: Bool = false) async -> [String: Any] {
         let body: [String: Any] = ["clip_id": clipId, "ops": ops]
-        let path = "/v1/clips/\(jobId)/tweak" + (preview ? "?preview=1" : "")
+        let path = "/v1/clips/\(jobId)/tweak"
+            + (preview ? "?preview=1" : (deferRender ? "?defer_render=1" : ""))
         let (data, status) = await postWithStatus(path, body)
         if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
         // H5: F9 added a structured 410 (a job that genuinely existed but was

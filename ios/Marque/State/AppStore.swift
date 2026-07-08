@@ -449,9 +449,13 @@ final class AppStore {
     }
 
     func makeClips(from script: Script, formats: [String], footagePath: String? = nil,
-                   reactSourceURL: String = "") async {
-        let made = await clipEngine.makeClips(from: script, formats: formats,
-                                              reactSourceURL: reactSourceURL, footagePath: footagePath)
+                   reactSourceURL: String = "", useMockEngine: Bool = false) async {
+        // AF-I6: the analyze-flow fallback goes straight to the mock engine — the live
+        // engine would re-compress + re-upload the whole take (tens of MB, possibly
+        // cellular) just to hit the analyze-first 426 cutover and mock anyway.
+        let engine: ClipEngineProtocol = useMockEngine ? MockClipEngine() : clipEngine
+        let made = await engine.makeClips(from: script, formats: formats,
+                                          reactSourceURL: reactSourceURL, footagePath: footagePath)
         let tagged = made.map { c -> Clip in
             var c = c
             c.title = script.title.isEmpty ? script.hook.text : script.title
@@ -492,10 +496,12 @@ final class AppStore {
     /// mint+upload so it runs while the creator reviews the take). nil → the caller
     /// falls back to the local mock pipeline; the creator is never stranded.
     func startAnalyzeJob(script: Script, publicURL: String?,
-                         customInstructions: String = "") async -> AnalyzeJobResponse? {
+                         customInstructions: String = "",
+                         reactSourceURL: String = "") async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
         return await backend.createAnalyzeJob(sourceURL: publicURL, script: script,
-                                              customInstructions: customInstructions)
+                                              customInstructions: customInstructions,
+                                              reactSourceURL: reactSourceURL)
     }
 
     /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min
@@ -573,12 +579,30 @@ final class AppStore {
         }
     }
 
+    /// AF-I4: a permanently-gone job (404 never-existed / 410 swept) fails its clips
+    /// with the expired-session error — the alternative was an infinite spinner plus
+    /// a futile 5-minute poll loop on every Library visit.
+    private func failClipsForDeadJob(_ clipIds: [UUID]) {
+        for id in clipIds {
+            guard let idx = clips.firstIndex(where: { $0.id == id }),
+                  clips[idx].status == .rendering else { continue }
+            clips[idx].status = .failed
+            clips[idx].lastError = "job_expired"
+        }
+        save()
+    }
+
     /// Per-CLIP poll loop: exits when every tracked clip left .rendering (job-level
     /// status can't be trusted here — it stays "ready" during a tweak re-render).
     func pollClipStatuses(jobId: String, clipIds: [UUID]) async {
         for _ in 0..<60 {
             if Task.isCancelled { return }
-            if let result = await backend.pollClipJob(jobId: jobId),
+            let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
+            if httpStatus == 404 || httpStatus == 410 {
+                failClipsForDeadJob(clipIds)               // AF-I4: gone for good
+                return
+            }
+            if let result = maybeResult,
                let jobClips = result["clips"] as? [[String: Any]] {
                 for jobClip in jobClips {
                     let clipStatus = jobClip["status"] as? String ?? ""
@@ -613,7 +637,12 @@ final class AppStore {
         while !done && attempts < 60 && !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5s
             attempts += 1
-            guard let result = await backend.pollClipJob(jobId: jobId),
+            let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
+            if httpStatus == 404 || httpStatus == 410 {
+                failClipsForDeadJob(clipIds)                   // AF-I4: gone for good
+                return
+            }
+            guard let result = maybeResult,
                   let jobClips = result["clips"] as? [[String: Any]] else { continue }
             let status = result["status"] as? String ?? ""
             let jobError = result["error"] as? String

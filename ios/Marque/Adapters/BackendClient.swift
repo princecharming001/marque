@@ -36,6 +36,18 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return data
     }
 
+    /// AF-I4: like get(), but surfaces the HTTP status so poll loops can distinguish
+    /// "transient miss, keep polling" from a permanently-gone job (404 never existed /
+    /// structured 410 swept). Returns (nil, 0) on transport failure.
+    func getWithStatus(_ path: String) async -> (Data?, Int) {
+        guard let url = URL(string: AppConfig.backendBaseURL + path) else { return (nil, 0) }
+        var req = URLRequest(url: url); req.timeoutInterval = 30
+        if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse else { return (nil, 0) }
+        return (data, http.statusCode)
+    }
+
     /// Like post(), but surfaces the HTTP status code so callers can distinguish
     /// meaningful non-200s (the tweak endpoint uses 404/409 as part of its contract).
     /// Returns (nil, 0) on transport failure.

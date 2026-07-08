@@ -30,6 +30,10 @@ struct RecordView: View {
     // Analyze-first (H-02): mint+upload starts the moment a take lands (runs while the
     // creator reviews), so the public URL usually exists before "Submit for editing".
     @State private var uploadTask: Task<String?, Never>? = nil
+    // AF-I3: the submit/analyze task is tracked so dismissal cancels it — an orphaned
+    // task otherwise inserted clips, bumped the streak, and yanked navigation minutes
+    // after the user left this screen.
+    @State private var submitTask: Task<Void, Never>? = nil
     @State private var analyzeJobId: String? = nil
     @State private var brief: EditBrief? = nil
     @State private var briefToggles = EditToggles()
@@ -59,7 +63,11 @@ struct RecordView: View {
             .padding(Space.lg)
         }
         .onAppear { camera.configure() }
-        .onDisappear { camera.teardown() }
+        .onDisappear {
+            camera.teardown()
+            submitTask?.cancel()      // AF-I3
+            submitTask = nil
+        }
         .onChange(of: pickedItem) { _, item in
             guard let item else { return }
             Task {
@@ -73,6 +81,9 @@ struct RecordView: View {
                 }
                 importError = nil
                 footagePath = MediaStore.save(data, ext: "mov")
+                // AF-I7: reset so re-picking the SAME video after Re-record fires
+                // onChange again (equal PhotosPickerItems don't).
+                pickedItem = nil
                 phase = .recorded
                 beginUpload()      // H-02: start the upload while the creator reviews
             }
@@ -252,7 +263,9 @@ struct RecordView: View {
                     HStack(spacing: Space.sm) {
                         briefChip(brief.videoTypeLabel)
                         briefChip(brief.strategy == "restructure" ? "Re-ordered for the hook" : "Tightened, not re-cut")
-                        if !brief.cutRegions.isEmpty { briefChip("\(brief.cutRegions.count) cuts") }
+                        if !brief.cutRegions.isEmpty {
+                            briefChip(brief.cutRegions.count == 1 ? "1 cut" : "\(brief.cutRegions.count) cuts")
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
 
@@ -491,6 +504,7 @@ struct RecordView: View {
     /// show the brief (immediately keyless; after a short poll live). Any failure
     /// falls back to the legacy local mock pipeline — the creator is never stranded.
     private func makeClips() {
+        guard submitTask == nil else { return }               // AF-I3: no double-submit
         phase = .analyzing
         // Keep the raw take in the Library so it can be re-cut later.
         if let footagePath {
@@ -498,12 +512,15 @@ struct RecordView: View {
                              title: script.title.isEmpty ? script.hook.text : script.title,
                              seconds: script.targetSeconds)
         }
-        Task {
+        submitTask = Task {
+            defer { submitTask = nil }
             if uploadTask == nil { beginUpload() }            // sim/no-footage path
             let publicURL = await uploadTask?.value
+            guard !Task.isCancelled else { return }           // AF-I3: dismissed mid-submit
             guard let resp = await store.startAnalyzeJob(
                     script: liveScript, publicURL: publicURL,
-                    customInstructions: customInstructions) else {
+                    customInstructions: customInstructions,
+                    reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 await fallbackToMock()
                 return
             }
@@ -514,6 +531,7 @@ struct RecordView: View {
                 phase = .brief
             } else if let polled = await store.pollForBrief(jobId: resp.jobId),
                       let b = polled.editBrief {
+                guard !Task.isCancelled else { return }
                 brief = b
                 briefToggles = polled.toggles ?? EditToggles()
                 phase = .brief
@@ -536,12 +554,18 @@ struct RecordView: View {
         }
     }
 
-    /// Legacy local pipeline — mock clips via the old engine path (also the
-    /// offline/demo path when the backend is unreachable).
+    /// Legacy local pipeline — mock clips via the mock engine directly (also the
+    /// offline/demo path when the backend is unreachable). AF-I3: a cancelled submit
+    /// (user dismissed mid-analyze) must not insert clips, bump the streak, or yank
+    /// navigation minutes later. AF-I6: the mock engine directly — the live engine
+    /// would re-compress + re-upload the whole take just to hit the 426 cutover.
     private func fallbackToMock() async {
+        guard !Task.isCancelled else { return }
         await store.makeClips(from: liveScript, formats: [liveScript.formatId],
                               footagePath: footagePath,
-                              reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines))
+                              reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                              useMockEngine: true)
+        guard !Task.isCancelled else { return }
         dismiss()
         router.selectedTab = .library
         router.showFilm = false
