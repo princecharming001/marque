@@ -974,24 +974,44 @@ def mock_pillars(b: dict) -> list[dict]:
 
 
 def mock_scripts(req: ScriptRequest) -> list[dict]:
+    """Deterministic fallback ONLY when live generation is unavailable/slow. Kept
+    believable (no "[Talking-Head] open on the hook" meta-instructions that read as a
+    broken app) and niche-interpolated, but the real feed path is AI — this is a net."""
     s = STYLES.get(req.style, STYLES["talking_head"])
-    niche = req.niche or "your craft"
+    niche = (req.niche or "your craft").strip()
+    # A few distinct angle templates so three picks don't read identically.
+    angles = [
+        ("contrarian",
+         f"Most {niche} advice is backwards. Here's what the top 1% actually do.",
+         f"Everyone tells you to do more. The people winning at {niche} do the opposite — "
+         f"they cut the noise and go deep on one thing. Here's the one move that changed it for me, "
+         f"and the exact way to start it this week."),
+        ("specificity",
+         f"I tracked my {niche} for 90 days. One number explains everything.",
+         f"90 days, one spreadsheet, one surprising result. The thing I thought mattered most in "
+         f"{niche} barely moved the needle — this other habit did. Here's the number and how to copy it."),
+        ("authority",
+         f"After years in {niche}, this is the part nobody warns you about.",
+         f"I've made every mistake in {niche} so you don't have to. The one that cost me the most "
+         f"wasn't effort — it was chasing the wrong signal. Here's how to spot it early and fix it fast."),
+    ]
     out = []
     for i in range(max(1, req.count)):
         fmt = s["formats"][i % len(s["formats"])]
+        signal, hook, body = angles[i % len(angles)]
         topic = (req.example_topics[i % len(req.example_topics)] if req.example_topics
-                 else f"the {niche} mistake #{i + 1}")
-        title = topic[:48]
-        title = title[:1].upper() + title[1:] if title else title  # sentence-case for display
+                 else None)
+        title = (topic or hook)[:48]
+        title = title[:1].upper() + title[1:] if title else title
         out.append({
             "title": title,
             "summary": f"A {s['label'].lower()} on {niche}.",
-            "hook": f"Stop overthinking {niche}. Here's what actually works.",
-            "hookSignal": "contrarian", "formatId": fmt,
-            "body": f"[{s['label']}] Open on the hook. Give the core idea about {niche}, back it with one specific, land the lesson.",
-            "cta": "Follow for more — I post this every week.",
-            "shotPlan": s["exemplar"] and ["Hook on frame 1", "One punch-in", "CTA"],
-            "targetSeconds": 24, "predictedScore": 80,
+            "hook": hook,
+            "hookSignal": signal, "formatId": fmt,
+            "body": body,
+            "cta": "Follow for more — I break this down every week.",
+            "shotPlan": s["exemplar"] and ["Hook on frame 1", "One punch-in on the key number", "Direct CTA"],
+            "targetSeconds": 26, "predictedScore": 78,
             "altHooks": [], "style": req.style,
         })
     return out
@@ -1823,6 +1843,12 @@ async def retry_clip_job(job_id: str):
             c.pop("error", None)
             c.pop("error_detail", None)
             c["status"] = "queued"
+
+    # A retry is a FRESH pipeline run — reset the job clock so the job-level watchdog
+    # (created_at * 2) measures from now, not the original creation. Without this,
+    # retrying any job older than the watchdog window (RENDER_WATCHDOG_S*2) instantly
+    # re-failed as "job exceeded the pipeline watchdog" before the render even ran.
+    job["created_at"] = time.time()
 
     if job.get("edl"):
         job["status"] = "rendering"
@@ -4859,7 +4885,11 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
         out = await asyncio.wait_for(
             anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                            SONNET, 2200, array_key="scripts"),
-            timeout=12,
+            # A single SONNET structured call lands in ~10-18s; 12s clipped the slow
+            # tail and dropped first paint to the mock template ("Today's picks" read
+            # as hardcoded). 22s lets real AI win the first paint; the background
+            # full-quality pass still upgrades it further.
+            timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "22")),
         )
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(sreq)}
