@@ -952,13 +952,18 @@ def hook_judge_prompt(topic: str, hooks: list[dict]) -> tuple[str, str]:
     return system, user
 
 
-def steer_prompt(brand: dict, script: dict, instruction: str) -> tuple[str, str]:
+def steer_prompt(brand: dict, script: dict, instruction: str,
+                 arm_stats: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You revise a short-form script per an instruction while preserving the creator's voice and the "
         "structure of its video style. Reply with ONLY a JSON object."
     )
+    learn = learning_block(arm_stats or [])
+    if not learn:                                    # cold start → niche baseline
+        learn = niche_prior_block(brand.get("niche", ""))
+    learn_section = f"\n{learn}\n" if learn else ""
     user = (
-        f"{brand_block(brand)}\nStyle: {script.get('style','talking_head')}\n"
+        f"{brand_block(brand)}\nStyle: {script.get('style','talking_head')}\n{learn_section}"
         f"Current script:\n- hook: {script.get('hook','')}\n- body: {script.get('body','')}\n- cta: {script.get('cta','')}\n"
         f"Instruction: {instruction}\nReturn ONLY one JSON object. {SCRIPT_SCHEMA}"
     )
@@ -1719,7 +1724,8 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
 # Mimic — rewrite an influencer reel as THIS creator (skeleton stays, substance swaps)
 # ---------------------------------------------------------------------------
 
-def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None) -> tuple[str, str]:
+def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None,
+                 arm_stats: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's mimic engine. You take a proven viral reel and rewrite it AS a different creator — "
         "keeping the STRUCTURAL SKELETON that made it work (hook shape, beat order, pacing, loop structure, "
@@ -1741,8 +1747,12 @@ def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None) -> tuple[s
         "Reply with ONLY one JSON object, no prose."
     )
     mem = memory_block(memory) if memory else ""
+    learn = learning_block(arm_stats or [])
+    if not learn:
+        learn = niche_prior_block(brand.get("niche", ""))
+    learn = f"\n{learn}\n" if learn else ""
     user = (
-        f"{brand_block(brand)}\n{mem}\n\n"
+        f"{brand_block(brand)}\n{mem}\n{learn}\n"
         "ORIGINAL REEL TO MIMIC:\n"
         f"- creator: @{reel.get('creator_handle','unknown')} ({reel.get('platform','tiktok')})\n"
         f"- title: {reel.get('title','')}\n"
@@ -1759,7 +1769,8 @@ def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None) -> tuple[s
 # Video-link analysis — pasted URL → what makes it work → your version
 # ---------------------------------------------------------------------------
 
-def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | None = None) -> tuple[str, str]:
+def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | None = None,
+                         arm_stats: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's video analyst. Given a short-form video's transcript, produce a tight teardown of "
         "why it works and a version rewritten for a specific creator.\n\n"
@@ -1774,8 +1785,12 @@ def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | 
         "for this creator's niche and voice."
     )
     mem = memory_block(memory) if memory else ""
+    learn = learning_block(arm_stats or [])
+    if not learn:
+        learn = niche_prior_block(brand.get("niche", ""))
+    learn = f"\n{learn}\n" if learn else ""
     user = (
-        f"{brand_block(brand)}\n{mem}\n\n"
+        f"{brand_block(brand)}\n{mem}\n{learn}\n"
         f"VIDEO: {url}\n"
         f"TRANSCRIPT:\n{transcript[:4000]}\n\n"
         "Analyze it and write this creator's version. JSON only."
@@ -1810,6 +1825,8 @@ def converse_user(brand: dict, memory: dict | None, messages: list[dict],
     """User content for /v1/converse: brand + memory + performance + recent transcript."""
     parts = [brand_block(brand), "", memory_block(memory)]
     learn = learning_block(arm_stats or [])
+    if not learn:                                    # cold start → niche baseline (parity w/ scripts/hooks)
+        learn = niche_prior_block(brand.get("niche", ""))
     if learn:
         parts += ["", learn]
     if trends:

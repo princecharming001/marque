@@ -2629,3 +2629,68 @@ def test_upsert_creator_and_load_creator_shape():
     assert asyncio.run(c.upsert_creator("c1", {"niche": "food", "goal": "grow"})) is True
     row = c._request.await_args[1]["json"]
     assert row["creator_id"] == "c1" and row["niche"] == "food"
+
+
+# ---------------------------------------------------------------------------
+# A-11 · Moat wiring: learning/memory/emulation/niche reach every generation surface.
+# ---------------------------------------------------------------------------
+
+def test_best_hooks_threads_memory_and_emulation(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "BEST_OF_N_HOOKS", True)
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    cap = {}
+
+    def fake_hooks_prompt(brand, topic, style, arm_stats=None, memory=None, emulation=None):
+        cap["memory"], cap["emulation"] = memory, emulation
+        return ("sys", "usr")
+    monkeypatch.setattr(main.prompts, "hooks_prompt", fake_hooks_prompt)
+    monkeypatch.setattr(main, "anthropic_json", AsyncMock(return_value=[]))
+    monkeypatch.setattr(main, "quality_hooks", AsyncMock(return_value=[]))
+    asyncio.run(main.best_hooks({}, "topic", "talking_head", "c_bh",
+                                memory={"facts": ["x"]}, emulation=[{"handle": "@x"}]))
+    assert cap["memory"] == {"facts": ["x"]} and cap["emulation"] == [{"handle": "@x"}]
+
+
+def test_fast_feed_passes_arm_stats(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_ff"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    _seed_baseline(cid, 1.0)
+    main._arm_stats[cid] = {"style:talking_head": {
+        "n": 6, "sum_raw": 12.0, "alpha": 1, "beta": 1, "confidence": "early_read"}}
+    cap = {}
+
+    def fake_scripts_prompt(brand, pillar, style, count, *a, **k):
+        cap["arm_stats"] = k.get("arm_stats")
+        return ("sys", "usr")
+    monkeypatch.setattr(main.prompts, "scripts_prompt", fake_scripts_prompt)
+    monkeypatch.setattr(main, "anthropic_json", AsyncMock(return_value=[_script()]))
+    sreq = main.ScriptRequest(creator_id=cid, pillar="Hot takes", style="talking_head", count=2)
+    asyncio.run(main._fast_feed_scripts(sreq))
+    assert cap["arm_stats"]                      # data-rich creator's fast feed is learning-aware
+
+
+def test_steer_prompt_accepts_learning_block():
+    import prompts
+    sys, usr = prompts.steer_prompt({"niche": "fitness"}, {"hook": "h", "body": "b", "cta": "c"},
+                                    "make it punchier", arm_stats=[])
+    assert "NICHE BASELINE" in usr               # cold-start niche baseline reaches steer
+
+
+def test_converse_user_niche_fallback_when_no_arms():
+    import prompts
+    usr = prompts.converse_user({"niche": "finance"}, None, [{"role": "user", "content": "hi"}],
+                                arm_stats=[])
+    assert "NICHE BASELINE" in usr
+
+
+def test_mimic_and_analyze_prompts_accept_arm_stats():
+    import prompts
+    _, u1 = prompts.mimic_prompt({"caption": "x"}, {"niche": "beauty"}, arm_stats=[])
+    _, u2 = prompts.analyze_video_prompt("http://x", "transcript", {"niche": "beauty"}, arm_stats=[])
+    assert "NICHE BASELINE" in u1 and "NICHE BASELINE" in u2

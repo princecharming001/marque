@@ -548,6 +548,7 @@ class HooksRequest(Brand):
 class SteerRequest(Brand):
     script: dict = {}
     instruction: str = ""
+    creator_id: str = "default"
 
 
 class CaptionRequest(BaseModel):
@@ -1003,7 +1004,8 @@ async def quality_hooks(topic: str, hooks: list[dict]) -> list[dict]:
 
 
 async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
-                     n: int = 2, memory: dict | None = None) -> list[dict]:
+                     n: int = 2, memory: dict | None = None,
+                     emulation: list[dict] | None = None) -> list[dict]:
     """Best-of-N hooks: generate a diverse pool at temp 1.0, judge + drop slop via
     quality_hooks, and return the top n. These become MANDATED script openers — the
     body is written around a vetted hook instead of the model's first-draft guess.
@@ -1012,7 +1014,8 @@ async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
         return []
     try:
         stats = await _arms_for_prompt(creator_id)
-        hsys, husr = prompts.hooks_prompt(brand, topic, style, arm_stats=stats, memory=memory)
+        hsys, husr = prompts.hooks_prompt(brand, topic, style, arm_stats=stats,
+                                          memory=memory, emulation=emulation)
         pool = await anthropic_json(hsys, husr, _array_schema("hooks", prompts.HOOK_JSON_ELEMENT),
                                     OPUS, 1200, temperature=1.0, array_key="hooks")
     except HTTPException:
@@ -1067,7 +1070,8 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         emulation = await _resolve_emulation_profiles(req.emulation_targets)
         # Best-of-N: pre-select the strongest openers, then write bodies around them.
         topic = req.pillar or req.niche or "your next post"
-        mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count))
+        mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count),
+                                    memory=req.memory or None, emulation=emulation or None)
         sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
                                           req.media_context, req.posts or None,
                                           arm_stats=stats, memory=req.memory or None,
@@ -1105,7 +1109,8 @@ async def steer(req: SteerRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "script": req.script}
     try:
-        sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction)
+        stats = await _arms_for_prompt(req.creator_id)
+        sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction, arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, SONNET, 1500), array=False)
         return {"mode": "live", "script": out or req.script}
     except HTTPException:
@@ -4158,8 +4163,10 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
     pillar = {"name": sreq.pillar, "summary": sreq.pillar_summary,
               "angle": sreq.pillar_angle, "exampleTopics": sreq.example_topics}
     try:
+        stats = await _arms_for_prompt(sreq.creator_id)   # data-rich creators get real learning,
         sys, usr = prompts.scripts_prompt(sreq.d(), pillar, sreq.style, sreq.count,
-                                          sreq.media_context, sreq.posts or None)
+                                          sreq.media_context, sreq.posts or None,
+                                          arm_stats=stats, memory=sreq.memory or None)
         out = await asyncio.wait_for(
             anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                            SONNET, 2200, array_key="scripts"),
@@ -4286,7 +4293,8 @@ async def mimic(req: MimicRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
     try:
-        sys, usr = prompts.mimic_prompt(req.reel, req.brand, req.memory)
+        stats = await _arms_for_prompt(req.creator_id)
+        sys, usr = prompts.mimic_prompt(req.reel, req.brand, req.memory, arm_stats=stats)
         out = extract_json(await anthropic(sys, usr, OPUS, 2000), array=False)
         if not out:
             return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
@@ -4324,7 +4332,9 @@ async def analyze_video(req: AnalyzeVideoRequest):
     niche = req.brand.get("niche") or "your niche"
     if ANTHROPIC_KEY:
         try:
-            sys, usr = prompts.analyze_video_prompt(req.url, transcript, req.brand, req.memory)
+            stats = await _arms_for_prompt(req.creator_id)
+            sys, usr = prompts.analyze_video_prompt(req.url, transcript, req.brand, req.memory,
+                                                    arm_stats=stats)
             out = extract_json(await anthropic(sys, usr, OPUS, 2600), array=False)
             if out and out.get("your_version"):
                 return {"mode": "live" if APIFY_KEY else "live_structure", "platform": platform,
