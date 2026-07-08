@@ -72,10 +72,24 @@ class SupabaseClient:
                     r = await client.request(method, f"{self.base}{path}",
                                              params=params, json=json, headers=merged)
                 if r.status_code < 500:
+                    if r.status_code >= 300:
+                        # A 4xx never retries (not our to fix) but MUST be visible — a
+                        # rotated key / dropped table / CHECK violation otherwise fails
+                        # 100% of writes silently while endpoints still report "live".
+                        body = ""
+                        try:
+                            body = r.text[:200]
+                        except Exception:
+                            pass
+                        logging.warning("supabase %s %s -> %d: %s", method, path, r.status_code, body)
                     return r
                 if delay is None:
+                    logging.warning("supabase %s %s -> %d after retries", method, path, r.status_code)
                     return r
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+            # httpx.HTTPError is the transport base (Timeout/Connect/Read/RemoteProtocol/
+            # Pool...). Catching only Timeout/Connect let a mid-stream ReadError propagate
+            # and break the "never raises into the hot path" contract.
+            except httpx.HTTPError as e:
                 if delay is None:
                     logging.warning("supabase %s %s failed after retries: %s", method, path, e)
                     return None

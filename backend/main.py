@@ -242,7 +242,8 @@ async def _update_arm(creator_id: str, dim_value: str, y: float,
     s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
     if _supabase_client:                                  # write-through (best-effort)
         try:
-            await _supabase_client.upsert_arm_stat(creator_id, dim_value, s)
+            if not await _supabase_client.upsert_arm_stat(creator_id, dim_value, s):
+                logging.warning("supabase upsert_arm_stat wrote nothing: %s %s", creator_id, dim_value)
         except Exception as e:
             logging.warning("supabase upsert_arm_stat failed: %s", e)
 
@@ -3194,8 +3195,9 @@ async def register_post(req: PostRegisterRequest):
         try:
             # ignore-duplicates: if a racing settle already created/settled the row,
             # this insert is a no-op rather than a clobber.
-            await _supabase_client.upsert_post(req.post_id, post_data,
-                                               resolution="ignore-duplicates")
+            if not await _supabase_client.upsert_post(req.post_id, post_data,
+                                                      resolution="ignore-duplicates"):
+                logging.warning("supabase upsert_post wrote nothing: %s", req.post_id)
         except Exception as e:
             logging.warning("supabase upsert_post failed: %s", e)
     return {"mode": live_mode, "status": "registered", "post_id": req.post_id}
@@ -3390,7 +3392,7 @@ async def get_learned_insights(creator_id: str = "default"):
         winning = f"{val.replace('_', ' ').title()} content outperforms your average by {lift}%"
 
     target = 15
-    return {"mode": "live" if SUPABASE_URL else "mock",
+    return {"mode": "live" if _supabase_client else "mock",
             "insights": insights, "posts_learned": total_posts,
             "winning_formula": winning, "learning_progress": min(1.0, total_posts / target)}
 

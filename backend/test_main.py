@@ -2434,3 +2434,59 @@ def test_attribution_live_path_falls_back_to_deterministic(monkeypatch):
     # LLM raises → deterministic attribution still returned (keyless-mock discipline)
     attribution = asyncio.run(main._attribute_settled_post(cid, post))
     assert attribution["dimension"] == "hook_signal" and attribution["arm_value"] == "contrarian"
+
+
+# ---------------------------------------------------------------------------
+# A-07 · Persistence hardening: never raise into the hot path (catch the httpx
+# base error), log non-2xx once, and report mode from the client, not env vars.
+# ---------------------------------------------------------------------------
+
+def test_request_catches_httpx_base_error(monkeypatch):
+    import httpx
+    from supabase_persistence import SupabaseClient
+    c = SupabaseClient("https://x.supabase.co", "k")
+
+    class _Boom:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def request(self, *a, **k):
+            raise httpx.ReadError("mid-stream reset")   # NOT Timeout/ConnectError
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Boom())
+
+    async def _fast_sleep(_):
+        return None
+    monkeypatch.setattr("supabase_persistence.asyncio.sleep", _fast_sleep)   # skip backoff waits
+    # must return None after retries, never propagate
+    assert asyncio.run(c._request("GET", "/arm_stats")) is None
+
+
+def test_request_logs_non_2xx(monkeypatch, caplog):
+    import httpx
+    from supabase_persistence import SupabaseClient
+    c = SupabaseClient("https://x.supabase.co", "k")
+
+    class _Resp:
+        status_code = 401
+        text = '{"message":"JWT expired"}'
+        def json(self): return {"message": "JWT expired"}
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def request(self, *a, **k): return _Resp()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _Client())
+    with caplog.at_level("WARNING"):
+        r = asyncio.run(c._request("GET", "/arm_stats"))
+    assert r is not None and r.status_code == 401
+    assert any("401" in rec.message for rec in caplog.records)
+
+
+def test_learning_endpoints_mode_follows_client_not_env(monkeypatch):
+    # URL set but NO key → no client → every learning response must say mock, not live
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://x.supabase.co")
+    main._arm_stats.pop("c_mode", None)
+    for i in range(5):
+        asyncio.run(main._update_arm("c_mode", "style:talking_head", 0.8, 1.5))
+    assert client.get("/v1/insights/learned?creator_id=c_mode").json()["mode"] == "mock"
+    assert client.get("/v1/recommendations?creator_id=c_mode").json()["mode"] == "mock"
