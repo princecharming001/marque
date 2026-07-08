@@ -1084,6 +1084,14 @@ def readyz():
             "tts": _tts_provider()}
 
 
+@app.get("/v1/editor/capabilities")
+def editor_capabilities():
+    """Per-style edit-op capability map so the iOS editor hides toggles that would be
+    silent no-ops in the current style (audit D4)."""
+    from app.edl import style_capabilities
+    return {"mode": "live", "capabilities": {s: style_capabilities(s) for s in STYLES}}
+
+
 @app.post("/v1/pillars")
 async def pillars(req: PillarRequest):
     mode, p = await generate_pillars(req.d(), req.posts or None)

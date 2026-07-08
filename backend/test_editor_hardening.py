@@ -677,6 +677,23 @@ def test_set_music_requires_url_or_query():
     assert not res[0]["applied"]
 
 
+def test_punch_in_and_text_card_gated_by_style():
+    # G-04: overlays only apply in styles whose comp draws them — else applied:false+reason
+    # (a silent no-op re-render otherwise).
+    from app.edl import apply_edl_ops
+    _, ok = apply_edl_ops(_base_edl(), [{"type": "add_punch_in", "start_frame": 10, "end_frame": 50, "scale": 1.1}])
+    assert ok[0]["applied"] is True                      # talking_head draws punch-ins
+    _, no = apply_edl_ops({**_base_edl(), "style": "fast_cuts"},
+                          [{"type": "add_punch_in", "start_frame": 10, "end_frame": 50, "scale": 1.1}])
+    assert no[0]["applied"] is False and no[0].get("reason")
+    _, tc_ok = apply_edl_ops({**_base_edl(), "style": "green_screen"},
+                             [{"type": "add_text_card", "start_frame": 10, "end_frame": 50, "text": "hi"}])
+    assert tc_ok[0]["applied"] is True                   # green_screen draws text cards
+    _, tc_no = apply_edl_ops(_base_edl(),
+                             [{"type": "add_text_card", "start_frame": 10, "end_frame": 50, "text": "hi"}])
+    assert tc_no[0]["applied"] is False                  # talking_head does not
+
+
 def test_set_music_query_only_rejected_with_reason():
     # G-03: a search query with no url can't render (no server-side music search) →
     # reject with a reason instead of storing intent that plays silently.

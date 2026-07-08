@@ -1998,6 +1998,18 @@ def test_analyze_first_end_to_end_and_inferred_dims_register():
     main._post_registry.pop("f10-post", None)
 
 
+# ---------------------------------------------------------------------------
+# G-04 · Per-style capability map endpoint.
+# ---------------------------------------------------------------------------
+
+def test_editor_capabilities_endpoint():
+    caps = client.get("/v1/editor/capabilities").json()["capabilities"]
+    assert caps["talking_head"]["punch_ins"] is True and caps["fast_cuts"]["punch_ins"] is False
+    assert caps["broll_cutaway"]["broll"] is True and caps["talking_head"]["broll"] is False
+    assert caps["green_screen"]["text_cards"] is True
+    assert all(c["music"] and c["captions"] for c in caps.values())   # style-agnostic ops
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})

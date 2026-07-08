@@ -511,7 +511,23 @@ TWEAK_OP_TYPES = [
 
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
 _BROLL_STYLES = {"broll_cutaway", "faceless"}
+# G-04: only these styles' Remotion comps actually DRAW punch-in / text-card overlays;
+# an op for any other style spends a re-render for a pixel-identical video, so gate it.
+_PUNCH_STYLES = {"talking_head", "duet_split"}
+_TEXTCARD_STYLES = {"green_screen", "duet_split"}
 _MIN_DURATION_FRAMES = 60   # never let trims/cuts leave less than ~2s of footage
+
+
+def style_capabilities(style: str) -> dict:
+    """Which optional edit ops a style can actually render — the iOS editor queries this
+    to hide toggles that would be silent no-ops (audit D4)."""
+    return {
+        "broll": style in _BROLL_STYLES,
+        "punch_ins": style in _PUNCH_STYLES,
+        "text_cards": style in _TEXTCARD_STYLES,
+        # music/captions/volume/trim/cut/reorder are style-agnostic
+        "music": True, "captions": True, "volume": True,
+    }
 
 
 def _coalesce_drops(drops: list[dict]) -> list[dict]:
@@ -652,7 +668,9 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
 
             elif t == "add_punch_in":
                 r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
-                if r is None:
+                if edl.get("style") not in _PUNCH_STYLES:
+                    reason = "punch-ins aren't rendered in this video style"
+                elif r is None:
                     reason = "invalid or out-of-bounds range"
                 else:
                     scale = op.get("scale") or 1.08
@@ -664,7 +682,9 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
             elif t == "add_text_card":
                 r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
                 text = (op.get("text") or "").strip()
-                if r is None:
+                if edl.get("style") not in _TEXTCARD_STYLES:
+                    reason = "text cards aren't rendered in this video style"
+                elif r is None:
                     reason = "invalid or out-of-bounds range"
                 elif not text:
                     reason = "text card needs text"
