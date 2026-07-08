@@ -402,6 +402,65 @@ Generate the EDL for this {style} edit. Output JSON only."""
     return system, user
 
 
+def _frame_anchored_transcript(words: list[dict], phrase_len: int = 8) -> str:
+    """Render the transcript as frame-anchored phrases ('[f120] the exact words ...')
+    so the model can cite real frame ranges for hooks/cuts instead of guessing."""
+    lines, phrase, start_f = [], [], None
+    for w in words:
+        if start_f is None:
+            start_f = ms_to_frame(w.get("start_ms", 0))
+        phrase.append(w.get("word", ""))
+        if len(phrase) >= phrase_len:
+            lines.append(f"[f{start_f}] " + " ".join(phrase))
+            phrase, start_f = [], None
+    if phrase:
+        lines.append(f"[f{start_f}] " + " ".join(phrase))
+    return "\n".join(lines) or "(no transcript available)"
+
+
+def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
+                      brand: dict | None = None) -> tuple[str, str]:
+    """Analyze a raw talking-head transcript BEFORE editing → a grounded edit brief
+    (Loop F). Adapted to Yunicorn's short-form talking-head ICP from Palo's creative-
+    review doctrine: every claim is grounded in a real frame anchor + a verbatim quote,
+    absence is valid (never force a cut/b-roll), no audience-psychology mind-reading,
+    and the trim-vs-restructure call is an explicit asymmetry judgment. Transcript-only
+    (no vision) — never describe visuals you can't see."""
+    brand = brand or {}
+    total_f = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=0)) if words else 0
+    system = (
+        "You are Yunicorn's edit analyst. You read the TRANSCRIPT of a creator's raw short-form "
+        "talking-head take (which may be tightly scripted OR completely off-the-cuff) and produce an "
+        "edit brief the editor will act on. This video will be cut for IG Reels / TikTok.\n\n"
+        "GROUNDING (a fabricated detail destroys trust):\n"
+        "- Cite frames only from the [fN] anchors in the transcript, and quote the creator's VERBATIM words.\n"
+        "- ABSENCE IS VALID. If there are no flubs, no rambles, no b-roll moments — return empty arrays. "
+        "Forced findings are worse than none.\n"
+        "- TRANSCRIPT ONLY: never mention visuals, framing, or on-screen text — you cannot see the video.\n"
+        "- No audience psychology ('creates curiosity'); describe the MECHANIC ('the payoff is withheld until fN').\n\n"
+        "HOOK: the best opening moment is the line that promises a payoff the viewer must keep watching to see "
+        "(all_scores rubric). Pick 1-3 hook_candidates; the strongest may be BURIED later in the take.\n"
+        "CUTS: do NOT list filler words or dead-air pauses — those are removed deterministically. Only add "
+        "cut_regions for flubs/false-starts (reason 'flub'), rambling (reason 'ramble'), and off-point "
+        "tangents (reason 'tangent').\n"
+        "STRATEGY: choose 'trim_only' when the take already flows in order; choose 'restructure' ONLY when the "
+        "strongest moment is buried and pulling it forward (via restructure_order, a permutation of the "
+        "sentence/segment order) would materially improve the through-line. A listicle/tutorial/reaction is "
+        "almost always trim_only.\n"
+        "INFERRED: infer the style/format_id/hook_signal/pillar that best fit THIS take, from the allowed "
+        "taxonomies — these feed the creator's learning loop.\n\n"
+        "Reply with ONLY the JSON object for the schema. No prose, no code fences."
+    )
+    custom_line = f"\nCREATOR'S CUSTOM EDITING INSTRUCTIONS (honor these): {custom_instructions}\n" if custom_instructions else ""
+    user = (
+        f"{brand_block(brand)}{custom_line}\n"
+        f"Total frames: {total_f} (30fps).\n"
+        f"TRANSCRIPT (frame-anchored):\n{_frame_anchored_transcript(words)}\n\n"
+        "Produce the edit brief JSON."
+    )
+    return system, user
+
+
 def edl_verify_prompt(style: str, edl_json: dict, transcript_words: list[dict],
                       emphasis_spans: list | None = None) -> tuple[str, str]:
     """A strict, cheap invariant check on a generated EDL — the renderer can't

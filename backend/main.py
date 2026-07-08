@@ -1871,6 +1871,37 @@ def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instruction
     }
 
 
+async def _generate_edit_brief(words: list[dict], transcript: str = "",
+                               custom_instructions: str = "", brand: dict | None = None) -> dict:
+    """Live edit brief (SONNET) with the deterministic mock as the keyless path AND the
+    degrade fallback. Re-grounds two things the LLM must NOT own: (1) inferred dims are
+    validated against the taxonomies; (2) filler/dead-air cut_regions are re-merged from
+    strip_fillers (the model only contributes flub/ramble/tangent)."""
+    mock = _mock_edit_brief(words, transcript, custom_instructions)
+    if not (ANTHROPIC_KEY and AI_QUALITY):
+        return mock
+    try:
+        sys, usr = prompts.edit_brief_prompt(words, custom_instructions, brand or {})
+        data = await anthropic_json(sys, usr, prompts.EDIT_BRIEF_SCHEMA, SONNET, 1600)
+    except HTTPException:
+        return mock
+    if not isinstance(data, dict) or not data.get("inferred"):
+        return mock
+    inf = dict(data.get("inferred") or {})
+    if inf.get("style") not in STYLES:
+        inf["style"] = "talking_head"
+    if inf.get("format_id") not in FORMAT_IDS:
+        inf["format_id"] = "myth-buster"
+    if inf.get("hook_signal") not in prompts.SIGNAL_LIST:
+        inf["hook_signal"] = "curiosity"
+    data["inferred"] = {**mock["inferred"], **inf}
+    # Deterministic filler/dead-air always wins; keep only the model's editorial cuts.
+    det = [c for c in mock["cut_regions"] if c["reason"] in ("filler", "dead_air")]
+    llm = [c for c in (data.get("cut_regions") or []) if c.get("reason") in ("flub", "ramble", "tangent")]
+    data["cut_regions"] = det + llm
+    return data
+
+
 def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
     """Keyless tweak grammar (deterministic, first-match) so the demo/tests work
     without a key: returns (reply, ops)."""

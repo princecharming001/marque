@@ -1717,6 +1717,54 @@ def test_mock_edit_brief_works_without_script():
     assert b["through_line"]                                   # never empty
 
 
+# ---------------------------------------------------------------------------
+# F-02 · Edit-brief LLM prompt + live helper (validate inferred, re-merge cuts).
+# ---------------------------------------------------------------------------
+
+def test_generate_edit_brief_keyless_returns_mock(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    b = asyncio.run(main._generate_edit_brief(
+        [{"word": "hi", "start_ms": 0, "end_ms": 200}], transcript="Hi there."))
+    assert b["strategy"] == "trim_only" and b["inferred"]["style"] == "talking_head"
+
+
+def test_generate_edit_brief_validates_inferred(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    bad = {**main._mock_edit_brief([], ""),
+           "inferred": {"style": "junk", "format_id": "junk", "hook_signal": "junk", "pillar": "P"}}
+    monkeypatch.setattr(main, "anthropic_json", AsyncMock(return_value=bad))
+    b = asyncio.run(main._generate_edit_brief([], transcript="x"))
+    assert b["inferred"]["style"] in prompts.STYLES
+    assert b["inferred"]["format_id"] in prompts.FORMAT_IDS
+    assert b["inferred"]["hook_signal"] in prompts.SIGNAL_LIST
+    assert b["inferred"]["pillar"] == "P"                     # valid field preserved
+
+
+def test_generate_edit_brief_remerges_deterministic_cuts(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    words = [{"word": "So", "start_ms": 0, "end_ms": 200, "type": "filler"},
+             {"word": "go", "start_ms": 220, "end_ms": 400}]
+    llm_brief = {**main._mock_edit_brief(words, ""),
+                 "cut_regions": [{"start_frame": 100, "end_frame": 110, "reason": "flub",
+                                  "severity": "med", "quote": "oops"}]}
+    monkeypatch.setattr(main, "anthropic_json", AsyncMock(return_value=llm_brief))
+    b = asyncio.run(main._generate_edit_brief(words, transcript="x"))
+    reasons = {c["reason"] for c in b["cut_regions"]}
+    assert "filler" in reasons                                # deterministic re-merged
+    assert "flub" in reasons                                  # LLM's editorial cut kept
+
+
+def test_edit_brief_prompt_includes_custom_instructions():
+    import prompts
+    _, usr = prompts.edit_brief_prompt([{"word": "hi", "start_ms": 0, "end_ms": 200}],
+                                       custom_instructions="make it punchy and funny",
+                                       brand={"niche": "fitness"})
+    assert "make it punchy and funny" in usr
+    assert "[f0]" in usr                                      # frame-anchored transcript
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
