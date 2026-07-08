@@ -9,6 +9,7 @@ Every prompt builder returns (system, user) strings. The design principles:
 from __future__ import annotations
 import json
 import logging
+import re
 
 from app.edl import ms_to_frame, TWEAK_OP_TYPES
 
@@ -1470,20 +1471,24 @@ NICHE_PRIORS: dict[str, dict] = {
 # (keyword substrings -> canonical niche slug). First match wins, so order the more
 # specific entries before the generic ones. Freeform onboarding niche text is matched
 # case-insensitively against these.
+# Matching is LEFT-word-boundary + prefix by default (so a stem like "invest" still
+# matches "investing" but "run" no longer matches "b<run>ch" and "hair" no longer
+# matches "wheelc<hair>"). A trailing "$" forces a whole-word match, for short
+# ambiguous tokens where prefix would over-fire ("ai" must not match "airbnb").
 _NICHE_ALIASES: list[tuple[tuple[str, ...], str]] = [
     (("fitness", "gym", "workout", "lifting", "bodybuild", "personal train", "calisthenic", "crossfit", "run"), "fitness"),
-    (("finance", "money", "invest", "stock", "wealth", "budget", "personal finance", "fire ", "crypto", "trading"), "finance"),
+    (("finance", "money", "invest", "stock", "wealth", "budget", "personal finance", "fire$", "crypto", "trading"), "finance"),
     (("business", "entrepreneur", "startup", "founder", "ecommerce", "e-commerce", "dropship", "saas", "small business"), "business"),
     (("marketing", "agency", "social media", "copywrit", "seo", "paid ads", "growth marketing", "branding"), "marketing"),
     (("food", "cook", "recipe", "baking", "chef", "kitchen", "meal prep", "barista"), "food"),
     (("beauty", "skincare", "makeup", "cosmetic", "esthet", "derm", "hair", "nails"), "beauty"),
-    (("fashion", "style", "outfit", "streetwear", "thrift", "wardrobe"), "fashion"),
-    (("tech", "ai ", " ai", "artificial intel", "software", "coding", "developer", "programming", "gadget", "no-code", "cybersec"), "tech"),
+    (("fashion", "style$", "outfit", "streetwear", "thrift", "wardrobe"), "fashion"),
+    (("tech", "ai$", "artificial intel", "software", "coding", "developer", "programming", "gadget", "no-code", "cybersec"), "tech"),
     (("study", "student", "education", "teacher", "exam", "language learning", "academ", "college", "medical school"), "education"),
     (("mindset", "self-improve", "self improvement", "motivation", "discipline", "productivity", "stoic", "spiritual", "manifest"), "mindset"),
     (("real estate", "realtor", "property", "mortgage", "airbnb", "landlord"), "real_estate"),
-    (("health", "wellness", "nutrition", "diet", "gut ", "hormone", "sleep", "biohack", "therapist", "mental health"), "health"),
-    (("parent", "mom", "dad", "toddler", "newborn", "family", "motherhood"), "parenting"),
+    (("health", "wellness", "nutrition", "diet", "gut$", "hormone", "sleep", "biohack", "therapist", "mental health"), "health"),
+    (("parent", "mom$", "dad$", "toddler", "newborn", "family", "motherhood"), "parenting"),
     (("travel", "digital nomad", "backpack", "destination", "van life"), "travel"),
     (("comedy", "skit", "entertain", "funny", "prank", "meme"), "comedy"),
     (("career", "corporate", "9-5", "9 to 5", "resume", "job interview", "salary", "consulting"), "career"),
@@ -1491,13 +1496,20 @@ _NICHE_ALIASES: list[tuple[tuple[str, ...], str]] = [
 ]
 
 
+def _niche_key_matches(key: str, text: str) -> bool:
+    if key.endswith("$"):                       # whole-word: \bkey\b
+        return re.search(r"\b" + re.escape(key[:-1]) + r"\b", text) is not None
+    return re.search(r"\b" + re.escape(key), text) is not None   # left boundary + prefix
+
+
 def match_niche(niche: str) -> str:
-    """Map freeform niche text to a canonical NICHE_PRIORS slug ('default' if none)."""
+    """Map freeform niche text to a canonical NICHE_PRIORS slug ('default' if none).
+    Word-boundary aware so substrings buried inside unrelated words don't misfire."""
     n = (niche or "").strip().lower()
     if not n:
         return "default"
     for keys, slug in _NICHE_ALIASES:
-        if any(k in n for k in keys):
+        if any(_niche_key_matches(k, n) for k in keys):
             return slug
     return "default"
 

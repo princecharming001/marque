@@ -23,9 +23,11 @@ import httpx
 
 # Columns we own on each table — filter dict payloads to these so a stray in-memory
 # key (e.g. a shaped arm's lift_pct/label) can't break a PostgREST insert.
-_ARM_COLS = ("n", "sum_y", "sum_raw", "alpha", "beta", "effect", "confidence")
+_ARM_COLS = ("n", "sum_y", "sum_raw", "alpha", "beta", "effect", "confidence",
+             "prior_alpha", "prior_beta")
 _POST_COLS = ("creator_id", "platform", "scheduled_at", "pillar", "style", "format_id",
               "hook_signal", "predicted_score", "outcome_y", "outcome_raw", "settled", "metrics")
+_CREATOR_COLS = ("niche", "goal", "coach_last_shown")
 
 _BACKOFF = (0.5, 2.0, 8.0)
 _PAGE_SIZE = 1000            # PostgREST default row cap; load_all_posts pages past it
@@ -197,6 +199,39 @@ class SupabaseClient:
                 break
             offset += _PAGE_SIZE
         return out
+
+    # --- creators (durable per-creator brand facts) --------------------------
+    # niche (cold-arm seeding survives a deploy), goal (reward weighting), and the
+    # coach's last-shown timestamp (≤1 nudge/day). Best-effort; absent table => falsy.
+
+    async def upsert_creator(self, creator_id: str, fields: dict) -> bool:
+        row = {"creator_id": creator_id, **{k: fields[k] for k in _CREATOR_COLS if k in fields}}
+        r = await self._request(
+            "POST", "/creators", params={"on_conflict": "creator_id"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_creator(self, creator_id: str) -> dict | None:
+        r = await self._request("GET", "/creators",
+                                params={"creator_id": f"eq.{creator_id}",
+                                        "select": "creator_id," + ",".join(_CREATOR_COLS)})
+        if not (r and r.status_code == 200):
+            return None
+        try:
+            rows = r.json()
+        except Exception:
+            return None
+        return rows[0] if rows else None
+
+    async def load_all_creators(self) -> list[dict]:
+        r = await self._request("GET", "/creators",
+                                params={"select": "creator_id," + ",".join(_CREATOR_COLS)})
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            return r.json()
+        except Exception:
+            return []
 
     # --- emulation_profiles ---------------------------------------------------
     # Analyzed style-DNA for a creator someone wants to emulate — keyed by

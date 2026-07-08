@@ -96,12 +96,31 @@ _supabase_client: SupabaseClient | None = (
 )
 
 
+async def _persist_creator(creator_id: str, **fields):
+    """Best-effort durable write of per-creator brand facts (niche/goal). Absent
+    `creators` table or any error is swallowed — this is opportunistic."""
+    fields = {k: v for k, v in fields.items() if v}
+    if not (_supabase_client and fields):
+        return
+    try:
+        await _supabase_client.upsert_creator(creator_id, fields)
+    except Exception as e:
+        logging.warning("supabase upsert_creator failed: %s", e)
+
+
 async def _load_learning_state():
     """Rehydrate the bandit + post registry from Supabase so a restart / new Render
     instance doesn't start cold. No-op keyless. Never blocks startup on failure."""
     if not _supabase_client:
         return
     try:
+        try:
+            for c in await _supabase_client.load_all_creators():   # rehydrate niches (A-10)
+                cid, niche = c.get("creator_id"), c.get("niche")
+                if cid and niche:
+                    _creator_niche[cid] = niche
+        except Exception as e:
+            logging.warning("startup creators load failed: %s", e)
         posts = await _supabase_client.load_all_posts()
         for p in posts:
             pid = p.get("post_id")
@@ -263,6 +282,13 @@ async def _ensure_arms_loaded(creator_id: str):
     local = _arm_stats.setdefault(creator_id, {})
     for key, stat in arms.items():
         local.setdefault(key, stat)                       # DB fills gaps; local edits win
+    if creator_id not in _creator_niche:                  # rehydrate niche for cold-arm seeding
+        try:
+            row = await _supabase_client.load_creator(creator_id)
+            if row and row.get("niche"):
+                _creator_niche[creator_id] = row["niche"]
+        except Exception as e:
+            logging.warning("lazy load_creator failed: %s", e)
     _arms_loaded.add(creator_id)
 
 
@@ -3167,6 +3193,7 @@ async def register_post(req: PostRegisterRequest):
     """Register a scheduled post as a learning experiment."""
     if req.niche:
         _creator_niche[req.creator_id] = req.niche      # remember for cold-arm Beta seeding
+        await _persist_creator(req.creator_id, niche=req.niche)
     live_mode = "live" if _supabase_client else "mock"
     if req.post_id in _post_registry:
         return {"mode": live_mode, "status": "already_registered", "post_id": req.post_id}
@@ -3290,6 +3317,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
         if not won:                               # another instance already settled it
             return {"mode": "live", "status": "already_settled", "post_id": req.post_id}
 
+    await _persist_creator(creator_id, niche=req.niche, goal=goal)   # durable niche/goal (A-10)
     _invalidate_creator_mean(creator_id)          # this settle shifts the personal baseline
     for dim in DIMENSIONS:
         val = entry.get(dim, "")

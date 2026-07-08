@@ -18,6 +18,9 @@ class SupabaseClientStub:
     async def load_post(self, *a, **k): return None
     async def load_all_posts(self, *a, **k): return []
     async def settle_post_conditional(self, *a, **k): return True
+    async def upsert_creator(self, *a, **k): return True
+    async def load_creator(self, *a, **k): return None
+    async def load_all_creators(self, *a, **k): return []
 
 
 def test_healthz():
@@ -2569,3 +2572,60 @@ def test_recommendations_candidate_styles_are_active(monkeypatch):
     b = client.get(f"/v1/recommendations?creator_id={cid}").json()
     for arm in b["arms"]:
         assert arm["style"] in prompts.ACTIVE_STYLES
+
+
+# ---------------------------------------------------------------------------
+# A-10 · Niche integrity: token-boundary matching, persisted priors + niche.
+# ---------------------------------------------------------------------------
+
+def test_match_niche_uses_token_boundaries():
+    import prompts
+    assert prompts.match_niche("brunch recipes") == "food"       # NOT fitness via 'run'
+    assert prompts.match_niche("lifestyle vlogs") != "fashion"   # 'style' inside 'lifestyle'
+    assert prompts.match_niche("wheelchair basketball") != "beauty"   # 'hair' inside 'wheelchair'
+    assert prompts.match_niche("ai tools for creators") == "tech"     # bare 'ai' whole word
+    assert prompts.match_niche("airbnb hosting") == "real_estate"     # NOT tech via 'ai'
+    assert prompts.match_niche("running coach") == "fitness"     # stem prefix still matches
+    assert prompts.match_niche("investing for beginners") == "finance"
+
+
+def test_arm_cols_persist_priors():
+    import supabase_persistence as sp_mod
+    assert "prior_alpha" in sp_mod._ARM_COLS and "prior_beta" in sp_mod._ARM_COLS
+
+
+def test_register_persists_creator_niche(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.upsert_creator = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry.pop("p_cn", None)
+    client.post("/v1/posts/register", json={
+        "post_id": "p_cn", "creator_id": "c_cn", "niche": "fitness coaching",
+        "style": "talking_head", "format_id": "myth-buster", "hook_signal": "contrarian"})
+    fake.upsert_creator.assert_awaited()
+    assert fake.upsert_creator.await_args[0][0] == "c_cn"
+
+
+def test_load_learning_state_rehydrates_niche(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_all_posts = AsyncMock(return_value=[])
+    fake.load_all_creators = AsyncMock(return_value=[{"creator_id": "c_reh", "niche": "finance"}])
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._creator_niche.pop("c_reh", None)
+    asyncio.run(main._load_learning_state())
+    assert main._creator_niche.get("c_reh") == "finance"
+
+
+def test_upsert_creator_and_load_creator_shape():
+    from unittest.mock import AsyncMock
+    from supabase_persistence import SupabaseClient
+
+    class _Ok:
+        status_code = 201
+    c = SupabaseClient("https://x.supabase.co", "k")
+    c._request = AsyncMock(return_value=_Ok())
+    assert asyncio.run(c.upsert_creator("c1", {"niche": "food", "goal": "grow"})) is True
+    row = c._request.await_args[1]["json"]
+    assert row["creator_id"] == "c1" and row["niche"] == "food"

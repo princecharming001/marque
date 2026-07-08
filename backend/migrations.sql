@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS arm_stats (
     beta        FLOAT DEFAULT 1.0,
     effect      FLOAT DEFAULT 0.5,
     sum_raw     FLOAT DEFAULT 0.0,             -- A-05: accumulated raw engagement composite (honest lift)
+    prior_alpha FLOAT DEFAULT 1.0,             -- A-10: niche-seeded Beta prior (survives reload)
+    prior_beta  FLOAT DEFAULT 1.0,
     confidence  TEXT CHECK (confidence IN ('insufficient', 'early_read', 'confirmed')),
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     updated_at  TIMESTAMPTZ DEFAULT NOW(),
@@ -34,6 +36,18 @@ CREATE TABLE IF NOT EXISTS post_registry (
     metrics         JSONB,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- A-10: durable per-creator brand facts. niche keeps cold-arm seeding alive across a
+-- deploy; goal drives reward weighting; coach_last_shown enforces the ≤1-nudge/day
+-- Today-coach gate. Written best-effort by the backend; the code tolerates its absence.
+CREATE TABLE IF NOT EXISTS creators (
+    creator_id       TEXT PRIMARY KEY,
+    niche            TEXT,
+    goal             TEXT,
+    coach_last_shown TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_arm_stats_creator     ON arm_stats(creator_id);
@@ -72,3 +86,4 @@ ALTER TABLE arm_stats           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE post_registry       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE emulation_profiles  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE clip_edit_sessions  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE creators            ENABLE ROW LEVEL SECURITY;
