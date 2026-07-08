@@ -1910,6 +1910,72 @@ def test_edl_verify_prompt_has_reorder_coherence_check():
     assert "through-line" in sys and "segment_order" in sys
 
 
+# ---------------------------------------------------------------------------
+# F-09 · Real analyze-video: 'live' ONLY when the real video was transcribed;
+# otherwise 'live_structure' (honest pattern analysis), never a fake 'live'.
+# ---------------------------------------------------------------------------
+
+_YOUR_VERSION_JSON = ('{"hook_analysis":"a","structure_beats":["b"],"why_it_works":"c",'
+                      '"suggestions":["d"],"your_version":{"title":"t","summary":"s","hook":"h",'
+                      '"hookSignal":"curiosity","formatId":"myth-buster","body":"b","cta":"Follow.",'
+                      '"shotPlan":[],"targetSeconds":30,"predictedScore":80}}')
+
+
+def test_analyze_video_no_apify_is_live_structure(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "APIFY_KEY", "")           # can't fetch the real video
+
+    async def fake(*a, **k):
+        return _YOUR_VERSION_JSON
+    monkeypatch.setattr(main, "anthropic", fake)
+    r = client.post("/v1/analyze-video", json={"url": "https://tiktok.com/@x/video/1"}).json()
+    assert r["mode"] == "live_structure"                 # honest: not this exact video
+
+
+def test_analyze_video_real_transcript_is_live(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "APIFY_KEY", "ak")
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "sk")
+
+    async def resolve(url):
+        return "https://cdn/media.mp4"
+
+    async def submit(u):
+        return "tid"
+
+    async def poll(tid, max_wait_s=None):
+        return {"words": [{"word": "real", "start_ms": 0, "end_ms": 200},
+                          {"word": "transcript", "start_ms": 220, "end_ms": 500}]}
+    monkeypatch.setattr(main, "_resolve_post_media", resolve)
+    monkeypatch.setattr(main, "_submit_transcription", submit)
+    monkeypatch.setattr(main, "_poll_transcription", poll)
+    cap = {}
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        cap["user"] = user
+        return _YOUR_VERSION_JSON
+    monkeypatch.setattr(main, "anthropic", fake)
+    r = client.post("/v1/analyze-video", json={"url": "https://tiktok.com/@x/video/1"}).json()
+    assert r["mode"] == "live"                            # real video was transcribed
+    assert "real transcript" in cap["user"]              # analyzed the ACTUAL transcript
+
+
+def test_analyze_video_fetch_failure_falls_back_to_structure(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "APIFY_KEY", "ak")
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "sk")
+
+    async def resolve(url):
+        return None                                       # couldn't resolve the media
+    monkeypatch.setattr(main, "_resolve_post_media", resolve)
+
+    async def fake(*a, **k):
+        return _YOUR_VERSION_JSON
+    monkeypatch.setattr(main, "anthropic", fake)
+    r = client.post("/v1/analyze-video", json={"url": "https://instagram.com/reel/abc"}).json()
+    assert r["mode"] == "live_structure"                 # fetch failed → NOT fake 'live'
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})

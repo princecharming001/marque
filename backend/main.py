@@ -4671,11 +4671,60 @@ _MOCK_VIDEO_TRANSCRIPT = (
 )
 
 
+async def _resolve_post_media(url: str) -> str | None:
+    """Resolve a pasted IG/TikTok/YT post URL to a downloadable media URL via Apify.
+    Net-new (scrape_posts is handle-based). Returns None keyless / on failure."""
+    if not APIFY_KEY or not url:
+        return None
+    platform = _platform_from_url(url)
+    if platform == "tiktok":
+        actor, payload = "clockworks~tiktok-scraper", {"postURLs": [url], "shouldDownloadVideos": False}
+    else:
+        actor, payload = "apify~instagram-scraper", {"directUrls": [url], "resultsType": "posts", "resultsLimit": 1}
+    try:
+        items = await _run_apify_actor(actor, payload)
+    except Exception as e:
+        logging.warning("post-media resolve failed: %s", e)
+        return None
+    for it in items or []:
+        if isinstance(it, dict):
+            media = (it.get("videoUrl") or it.get("video_url") or it.get("mediaUrl")
+                     or it.get("downloadAddr") or it.get("videoUrlNoWaterMark"))
+            if media:
+                return media
+    return None
+
+
+async def _transcribe_post_url(url: str) -> str | None:
+    """Resolve a pasted post URL to its media and transcribe it for real. Returns the
+    transcript text, or None if we can't (keyless, unsupported URL, scrape/transcribe
+    failure) — the caller then labels the analysis 'live_structure', never 'live'."""
+    if not (APIFY_KEY and ASSEMBLY_KEY):
+        return None
+    try:
+        media = await _resolve_post_media(url)
+        if not media:
+            return None
+        tid = await _submit_transcription(media)
+        if not tid:
+            return None
+        transcript = await _poll_transcription(tid)
+        text = " ".join(w.get("word", "") for w in (transcript.get("words") or [])).strip()
+        return text or None
+    except Exception as e:
+        logging.warning("analyze-video transcribe failed: %s", e)
+        return None
+
+
 @app.post("/v1/analyze-video")
 async def analyze_video(req: AnalyzeVideoRequest):
     platform = _platform_from_url(req.url)
-    # Real path: scraper (APIFY_KEY) fetches media → AssemblyAI transcribes. Keyless: canned structure.
-    transcript = _MOCK_VIDEO_TRANSCRIPT
+    # Real path: resolve the pasted link → media → AssemblyAI transcript. If we can't get
+    # the REAL transcript, we analyze a canned structure and label it honestly
+    # 'live_structure' (a pattern read, not this exact video) — never a fake 'live'.
+    real_transcript = await _transcribe_post_url(req.url)
+    transcript = real_transcript or _MOCK_VIDEO_TRANSCRIPT
+    is_real = real_transcript is not None
     niche = req.brand.get("niche") or "your niche"
     if ANTHROPIC_KEY:
         try:
@@ -4684,7 +4733,7 @@ async def analyze_video(req: AnalyzeVideoRequest):
                                                     arm_stats=stats)
             out = extract_json(await anthropic(sys, usr, OPUS, 2600), array=False)
             if out and out.get("your_version"):
-                return {"mode": "live" if APIFY_KEY else "live_structure", "platform": platform,
+                return {"mode": "live" if is_real else "live_structure", "platform": platform,
                         "transcript": transcript, **out}
         except HTTPException:
             pass
