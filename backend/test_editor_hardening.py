@@ -1788,7 +1788,7 @@ def test_tweak_preview_flag_triggers_preview_not_full_render(monkeypatch):
     monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
 
-    async def fake_preview(jid, cid): pass
+    async def fake_preview(jid, cid, edl_override=None): pass
     async def fake_full(jid, cid, gen, resolve_broll=False): pass
     monkeypatch.setattr(main, "_preview_rerender_clip", fake_preview)
     monkeypatch.setattr(main, "_rerender_clip", fake_full)

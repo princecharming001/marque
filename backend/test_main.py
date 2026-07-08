@@ -1,4 +1,5 @@
 import json
+import copy
 import time
 import uuid
 
@@ -2170,6 +2171,45 @@ def test_attribution_overwrites_llm_numbers_with_computed_lift(monkeypatch):
     assert out["lift_pct"] == int(real["lift_pct"]) != 999   # Python owns the number
     assert "999" not in out["verdict"]                        # drifted verdict replaced
     assert out["band"] == prompts.classify_arm_lift(int(real["lift_pct"]))
+
+
+def test_preview_tweak_does_not_commit_the_edl(monkeypatch):
+    """AF-6: preview=1 renders the CANDIDATE, never installs it — Preview-then-Apply
+    used to apply everything twice, and Cancel-after-preview silently kept the edits."""
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT)
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
+    before = copy.deepcopy(main._clip_jobs[job_id]["edl"])
+    r = client.post(f"/v1/clips/{job_id}/tweak?preview=1",
+                    json={"clip_id": clip_id,
+                          "ops": [{"type": "trim_start", "frames": 30}]}).json()
+    assert r["changed"] is True                            # the preview has content...
+    assert main._clip_jobs[job_id]["edl"] == before        # ...but NOTHING committed
+    assert main._clip_jobs[job_id]["tweaks"] == []         # and no history pollution
+    # the same ops applied for real afterwards land exactly once
+    r2 = client.post(f"/v1/clips/{job_id}/tweak",
+                     json={"clip_id": clip_id,
+                           "ops": [{"type": "trim_start", "frames": 30}]}).json()
+    assert r2["changed"] is True
+    assert main._clip_jobs[job_id]["edl"]["segments"][0]["src_in"] == before["segments"][0]["src_in"] + 30
+
+
+def test_defer_render_commits_without_render(monkeypatch):
+    """AF-6: defer_render=1 (the editor's split) commits the EDL but spends no render."""
+    job_id = seed_clip_job(script=_FLUFFY_SCRIPT)
+    clip_id = main._clip_jobs[job_id]["clips"][0]["clip_id"]
+    main._clip_jobs[job_id]["status"] = "ready"
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+    seg0 = main._clip_jobs[job_id]["edl"]["segments"][0]
+    mid = (seg0["src_in"] + seg0["src_out"]) // 2
+    r = client.post(f"/v1/clips/{job_id}/tweak?defer_render=1",
+                    json={"clip_id": clip_id,
+                          "ops": [{"type": "split_segment", "index": 0, "at_frame": mid}]}).json()
+    assert r["changed"] is True and r["needs_render"] is False
+    assert len(main._clip_jobs[job_id]["edl"]["segments"]) == 2   # committed
+    assert main._clip_jobs[job_id]["clips"][0]["status"] == "ready"  # no render started
+    main._clip_jobs[job_id]["status"] = "mock_ready"
 
 
 def test_restore_clip_job_concurrent_restorers_share_one_dict(monkeypatch):

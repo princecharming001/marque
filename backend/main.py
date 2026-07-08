@@ -1889,7 +1889,7 @@ async def suggested_edits(job_id: str):
 
 
 @app.post("/v1/clips/{job_id}/tweak")
-async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
+async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_render: int = 0):
     """One conversational tweak turn: interpret the instruction into typed ops
     (LLM live / keyword grammar keyless), apply them deterministically to the
     stored EDL, and re-render just the targeted clip.
@@ -1954,7 +1954,12 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
     edit_ops = []
     for o in ops:
         if o.get("type") == "undo":
-            if job["edl_history"]:
+            if preview:
+                # AF-6: preview turns are look-don't-commit — an undo pops committed
+                # history, which is a commit. Reject rather than silently mutate.
+                skipped.append({"type": "undo", "applied": False,
+                                "reason": "undo can't be previewed"})
+            elif job["edl_history"]:
                 job["edl"] = job["edl_history"].pop()
                 applied.append({"type": "undo", "applied": True, "reason": ""})
                 changed = True
@@ -1963,7 +1968,12 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
         else:
             edit_ops.append(o)
 
-    # 3) Deterministic application + validation round-trip
+    # 3) Deterministic application + validation round-trip.
+    #    AF-6: under preview=1 the candidate EDL is NEVER installed on the job —
+    #    previously a preview committed the ops and only skipped the render, so
+    #    "Preview" then "Apply" applied everything TWICE (double trims, duplicate
+    #    overlays), and Cancel-after-preview silently kept the edits.
+    candidate_edl: dict | None = None
     if edit_ops:
         new_edl, results = apply_edl_ops(job["edl"], edit_ops, job.get("words") or [])
         ok = [r for r in results if r["applied"]]
@@ -1979,21 +1989,26 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
                         r.update(applied=False, reason="change failed validation")
                 ok = []
         if ok:
-            job["edl_history"].append(copy.deepcopy(job["edl"]))
-            del job["edl_history"][:-25]                 # cap the undo stack (F8: 10→25)
-            job["edl"] = new_edl
+            if preview:
+                candidate_edl = new_edl                  # staged only — job untouched
+            else:
+                job["edl_history"].append(copy.deepcopy(job["edl"]))
+                del job["edl_history"][:-25]             # cap the undo stack (F8: 10→25)
+                job["edl"] = new_edl
+                resolve_broll_needed = any(r["type"] == "add_broll" for r in ok)
             changed = True
-            resolve_broll_needed = any(r["type"] == "add_broll" for r in ok)
         applied.extend(r for r in results if r["applied"])
         skipped.extend(r for r in results if not r["applied"])
 
-    # 4) History entry (feeds the next turn's prompt context)
-    job["tweaks"].append({
-        "instruction": req.instruction or "manual edit", "reply": reply,
-        "summary": ", ".join(r["type"] for r in applied) or "no changes",
-        "applied": applied, "skipped": skipped,
-    })
-    del job["tweaks"][:-20]
+    # 4) History entry (feeds the next turn's prompt context). Preview turns stay out —
+    #    they committed nothing and must not pollute the next turn's LLM context.
+    if not preview:
+        job["tweaks"].append({
+            "instruction": req.instruction or "manual edit", "reply": reply,
+            "summary": ", ".join(r["type"] for r in applied) or "no changes",
+            "applied": applied, "skipped": skipped,
+        })
+        del job["tweaks"][:-20]
 
     # 5) Re-render just this clip (real renderer only; keyless/mock jobs keep
     #    their clip ready — the EDL still updates, visible via GET).
@@ -2005,13 +2020,17 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
     preview_requested = False
     needs_render = changed and job["status"] == "ready" and can_render
     if preview and changed and can_render:
-        # G9: preview=1 asks for a cheap proof render instead of committing to
-        # the full one — never touches render_url/status/render_gen, so it
-        # can't race with a real render. Fire-and-forget; doesn't block the
-        # tweak response the way _rerender_clip's completion doesn't either.
+        # G9: preview=1 asks for a cheap proof render of the CANDIDATE edl (AF-6:
+        # nothing was committed above) — never touches render_url/status/render_gen,
+        # so it can't race with a real render. Fire-and-forget.
         needs_render = False
         preview_requested = True
-        _spawn(_preview_rerender_clip(job_id, req.clip_id))
+        _spawn(_preview_rerender_clip(job_id, req.clip_id, edl_override=candidate_edl))
+    elif defer_render and needs_render:
+        # AF-6: commit-without-render (the manual editor's split uses this — a pure
+        # structural change renders pixel-identically; the NEXT apply's render picks
+        # the committed EDL up). Honest tradeoff: render_url is stale until then.
+        needs_render = False
     elif needs_render:
         if clip.get("status") == "rendering":
             # Someone else's re-render is in flight; our EDL change is saved and
@@ -2027,7 +2046,8 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
             _spawn(_rerender_clip(job_id, req.clip_id, my_gen,
                                                resolve_broll=resolve_broll_needed))
 
-    _spawn(_persist_clip_job(job_id))   # F15: durable after every tweak
+    if not preview:                     # AF-6: a preview committed nothing to persist
+        _spawn(_persist_clip_job(job_id))   # F15: durable after every tweak
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
             "undo_available": bool(job["edl_history"]), "degraded": degraded,
@@ -2108,13 +2128,18 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             _spawn(_persist_clip_job(job_id))   # F15: durable after re-render
 
 
-async def _preview_rerender_clip(job_id: str, clip_id: str) -> None:
+async def _preview_rerender_clip(job_id: str, clip_id: str,
+                                 edl_override: dict | None = None) -> None:
     """G9: a cheap, non-committing low-res proof render triggered by the manual
     editor's "HD preview" button. Deliberately separate from _rerender_clip:
     writes ONLY clip["preview_status"]/["preview_url"], never touches
     render_url/status/render_gen — a preview must never race with or overwrite
     the clip's real, committed render. Still goes through _render_semaphore
-    (G7) since it's a genuine Lambda invocation and competes for the same cap."""
+    (G7) since it's a genuine Lambda invocation and competes for the same cap.
+
+    AF-6: edl_override is the CANDIDATE edl from a preview=1 tweak — previews
+    render the staged (uncommitted) state, since preview tweaks no longer
+    install their ops on the job."""
     job = _clip_jobs.get(job_id)
     if not job:
         return
@@ -2127,7 +2152,8 @@ async def _preview_rerender_clip(job_id: str, clip_id: str) -> None:
     try:
         async with _render_semaphore:
             submission = await _submit_remotion_render(
-                job["source_url"], job["edl"], clip["format"], job["style"], preview=True)
+                job["source_url"], edl_override or job["edl"], clip["format"], job["style"],
+                preview=True)
             if not submission:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
             preview_url = await _poll_remotion_render(
