@@ -71,6 +71,20 @@ struct EditorView: View {
     // caption/music/overlay changes, shown inline before committing to Apply.
     @State private var hdPreviewPhase: HDPreviewPhase = .idle
     @State private var hdPreviewPollTask: Task<Void, Never>?
+    // H-08: staged caption-text edits (caption frame → new word; empty = delete)…
+    @State private var captionEdits: [Int: String] = [:]
+    // …staged text edits on existing overlays (original edl index → new text)…
+    @State private var overlayTextEdits: [Int: String] = [:]
+    // …staged overlay additions (become add_punch_in / add_text_card on Apply)…
+    @State private var addedOverlays: [OverlayRow] = []
+    // …and the per-style capability map (G-04) gating the add affordances.
+    @State private var editorCaps: [String: Bool]? = nil
+    @State private var clipStyle = ""
+    // Text-edit alert plumbing (caption word or overlay card text).
+    @State private var editingCaptionFrame: Int? = nil
+    @State private var editingOverlayIndex: Int? = nil
+    @State private var showTextCardAlert = false
+    @State private var editDraft = ""
 
     enum HDPreviewPhase: Equatable {
         case idle, requesting, rendering, ready(String), failed(String)
@@ -82,6 +96,8 @@ struct EditorView: View {
         let srcIn: Int
         let srcOut: Int
         let text: String
+        // H-08: position in edl.overlays (edit_overlay targets by index); -1 = staged add.
+        var index: Int = -1
     }
 
     enum Phase: Equatable { case loading, editing, applying, rendering, failed(String) }
@@ -202,6 +218,50 @@ struct EditorView: View {
                 RoughCutPreviewSheet(sourceURL: url, intervals: keptIntervalsSeconds)
             }
         }
+        // H-08: caption-word text edit (empty text deletes that caption)
+        .alert("Edit caption", isPresented: Binding(
+            get: { editingCaptionFrame != nil },
+            set: { if !$0 { editingCaptionFrame = nil } })) {
+            TextField("Caption text", text: $editDraft)
+            Button("Save") {
+                if let f = editingCaptionFrame {
+                    captionEdits[f] = editDraft.trimmingCharacters(in: .whitespaces)
+                }
+                editingCaptionFrame = nil
+            }
+            Button("Cancel", role: .cancel) { editingCaptionFrame = nil }
+        } message: {
+            Text("Fix the caption's text — leave it empty to remove it.")
+        }
+        // H-08: text-card copy edit (existing overlay, by original index)
+        .alert("Edit text card", isPresented: Binding(
+            get: { editingOverlayIndex != nil },
+            set: { if !$0 { editingOverlayIndex = nil } })) {
+            TextField("Card text", text: $editDraft)
+            Button("Save") {
+                if let i = editingOverlayIndex, !editDraft.trimmingCharacters(in: .whitespaces).isEmpty {
+                    overlayTextEdits[i] = String(editDraft.trimmingCharacters(in: .whitespaces).prefix(80))
+                }
+                editingOverlayIndex = nil
+            }
+            Button("Cancel", role: .cancel) { editingOverlayIndex = nil }
+        }
+        // H-08: stage a new text card over the opening seconds
+        .alert("New text card", isPresented: $showTextCardAlert) {
+            TextField("Card text", text: $editDraft)
+            Button("Add") {
+                let text = editDraft.trimmingCharacters(in: .whitespaces)
+                if !text.isEmpty, let firstIdx = order.first(where: { !cut.contains($0) }) {
+                    let seg = segments[firstIdx]
+                    let end = min(seg.srcIn + 75, seg.srcOut)
+                    if end > seg.srcIn {
+                        addedOverlays.append(OverlayRow(type: "text_card", srcIn: seg.srcIn,
+                                                        srcOut: end, text: String(text.prefix(80))))
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 
     private var editor: some View {
@@ -225,8 +285,8 @@ struct EditorView: View {
                 }
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: Space.xs) {
-                        SectionLabel(text: "Segments", accent: Palette.accent)
-                        Text("Tap to cut a line, reorder with the arrows, or mute a section.")
+                        SectionLabel(text: "Timeline", accent: Palette.accent)
+                        Text("Tap a block to cut it; use a row's tools to split, reorder, or mute.")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     }
                     Spacer(minLength: Space.md)
@@ -242,6 +302,9 @@ struct EditorView: View {
                         .accessibilityIdentifier("editor.previewCuts")
                     }
                 }
+
+                timelineStrip
+
                 VStack(spacing: Space.sm) {
                     ForEach(Array(order.enumerated()), id: \.offset) { pos, segIdx in
                         segmentRow(segIdx: segIdx, position: pos)
@@ -337,6 +400,83 @@ struct EditorView: View {
         }
     }
 
+    // H-08: the horizontal timeline — every segment as a proportional block in PLAY
+    // order (reorder/cuts reflected live). CapCut-basic: a glanceable map of the cut,
+    // not a scrubber; the rows below stay the precision tools.
+    private var timelineStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(Array(order.enumerated()), id: \.offset) { _, segIdx in
+                    timelineBlock(segIdx)
+                }
+            }
+        }
+    }
+
+    private func timelineBlock(_ segIdx: Int) -> some View {
+        let seg = segments[segIdx]
+        let isCut = cut.contains(segIdx)
+        let width: CGFloat = max(44, min(160, CGFloat(seg.seconds) * 16))
+        let label: String = seg.words.first?.text
+            ?? seg.preview.components(separatedBy: " ").first ?? "•"
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+        return VStack(spacing: 3) {
+            Text(label)
+                .font(AppFont.micro).lineLimit(1)
+                .foregroundStyle(isCut ? Palette.textTertiary : Palette.textPrimary)
+                .strikethrough(isCut)
+            Text(String(format: "%.1fs", seg.seconds))
+                .font(AppFont.micro).foregroundStyle(Palette.textTertiary).monospacedDigit()
+            if muted.contains(segIdx) {
+                Image(systemName: "speaker.slash.fill")
+                    .font(.system(size: 8)).foregroundStyle(Palette.critical)
+            }
+        }
+        .frame(width: width, height: 52)
+        .background(isCut ? Palette.surfaceSunken : Palette.surfaceRaised)
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(isCut ? Palette.hairline : Palette.accent.opacity(0.45), lineWidth: 1))
+        .contentShape(Rectangle())
+        .onTapGesture { toggle(&cut, segIdx) }
+        .accessibilityIdentifier("editor.timeline.\(segIdx)")
+    }
+
+    /// H-08: split a segment at the word boundary nearest its midpoint — applied
+    /// immediately as ONE direct op (staged diffs are index-based and would go stale),
+    /// via preview=1 so it never spends a full commit render on a structurally
+    /// identical cut. Requires a clean slate: staged edits survive a split badly.
+    private func splitSegment(_ segIdx: Int) {
+        guard let jobId = clip.jobId else { return }
+        guard !hasChanges else {
+            transientMessage = "Apply your changes first, then split."
+            return
+        }
+        let seg = segments[segIdx]
+        guard seg.srcOut - seg.srcIn >= 90 else {
+            transientMessage = "That segment is too short to split."
+            return
+        }
+        let mid: Int = (seg.srcIn + seg.srcOut) / 2
+        let lo: Int = seg.srcIn + 30
+        let hi: Int = seg.srcOut - 30
+        var candidates: [Int] = []
+        for w in seg.words where w.startFrame > lo && w.startFrame < hi {
+            candidates.append(w.startFrame)
+        }
+        let boundary: Int = candidates.min { a, b in abs(a - mid) < abs(b - mid) } ?? mid
+        phase = .loading
+        Task {
+            let resp = await store.backend.tweakClipOps(
+                jobId: jobId, clipId: clip.id.uuidString,
+                ops: [["type": "split_segment", "index": segIdx, "at_frame": boundary]],
+                preview: true)
+            if resp["error"] as? Bool == true {
+                transientMessage = resp["reply"] as? String ?? "Couldn't split that segment."
+            }
+            await load()
+        }
+    }
+
     private var trimSection: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             SectionLabel(text: "Trim", accent: Palette.accent)
@@ -370,33 +510,93 @@ struct EditorView: View {
         .accessibilityIdentifier("editor.trim.\(id)")
     }
 
+    // H-08: which optional overlay ops this clip's style can actually render (G-04).
+    // nil caps (fetch failed) hides the ADD affordances — a staged add whose ops all
+    // get skipped server-side would silently discard the creator's intent.
+    private func styleCan(_ key: String) -> Bool { editorCaps?[key] ?? false }
+
     @ViewBuilder private var overlaysSection: some View {
-        if !overlays.isEmpty {
+        let canAdd = styleCan("punch_ins") || styleCan("text_cards")
+        if !overlays.isEmpty || !addedOverlays.isEmpty || canAdd {
             VStack(alignment: .leading, spacing: Space.sm) {
                 SectionLabel(text: "Overlays", accent: Palette.accent)
                 ForEach(overlays) { o in
-                    HStack {
-                        Image(systemName: o.type == "punch_in" ? "plus.magnifyingglass" : "textformat")
-                            .foregroundStyle(Palette.textSecondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(o.type == "punch_in" ? "Zoom" : "Card: “\(o.text)”")
-                                .font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                            Text(String(format: "%.1fs – %.1fs", Double(o.srcIn) / 30.0, Double(o.srcOut) / 30.0))
-                                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                    overlayRow(o, staged: false)
+                }
+                ForEach(addedOverlays) { o in
+                    overlayRow(o, staged: true)
+                }
+                if canAdd {
+                    HStack(spacing: Space.sm) {
+                        if styleCan("punch_ins"), !hasStagedPunchIn {
+                            GhostButton(title: "Zoom on the hook", systemImage: "plus.magnifyingglass") {
+                                addPunchInOnHook()
+                            }
+                            .accessibilityIdentifier("editor.addPunchIn")
                         }
-                        Spacer()
-                        Button { overlays.removeAll { $0.id == o.id } } label: {
-                            Image(systemName: "trash").font(.system(size: 13))
-                                .foregroundStyle(Palette.textTertiary)
+                        if styleCan("text_cards") {
+                            GhostButton(title: "Text card", systemImage: "textformat") {
+                                editDraft = ""
+                                showTextCardAlert = true
+                            }
+                            .accessibilityIdentifier("editor.addTextCard")
                         }
-                        .accessibilityIdentifier("editor.deleteOverlay")
                     }
-                    .padding(Space.md)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 }
             }
         }
+    }
+
+    private func overlayRow(_ o: OverlayRow, staged: Bool) -> some View {
+        let displayText = o.index >= 0 ? (overlayTextEdits[o.index] ?? o.text) : o.text
+        return HStack {
+            Image(systemName: o.type == "punch_in" ? "plus.magnifyingglass" : "textformat")
+                .foregroundStyle(staged ? Palette.accent : Palette.textSecondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(o.type == "punch_in" ? "Zoom" : "Card: “\(displayText)”")
+                    .font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(String(format: "%.1fs – %.1fs%@", Double(o.srcIn) / 30.0, Double(o.srcOut) / 30.0,
+                            staged ? " · new" : ""))
+                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+            }
+            Spacer()
+            // H-08: edit a text card's copy (edit_overlay by original index)
+            if o.type == "text_card", o.index >= 0 {
+                Button {
+                    editDraft = displayText
+                    editingOverlayIndex = o.index
+                } label: {
+                    Image(systemName: "pencil").font(.system(size: 13))
+                        .foregroundStyle(Palette.textTertiary)
+                }
+                .accessibilityIdentifier("editor.editOverlay")
+            }
+            Button {
+                if staged { addedOverlays.removeAll { $0.id == o.id } }
+                else { overlays.removeAll { $0.id == o.id } }
+            } label: {
+                Image(systemName: "trash").font(.system(size: 13))
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            .accessibilityIdentifier("editor.deleteOverlay")
+        }
+        .padding(Space.md)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+    }
+
+    private var hasStagedPunchIn: Bool {
+        addedOverlays.contains { $0.type == "punch_in" }
+    }
+
+    /// H-08: stage a punch-in over the opening hook (first ~2s of the first PLAYED,
+    /// un-cut segment) — mirrors the backend's suggested-edit chip semantics.
+    private func addPunchInOnHook() {
+        guard let firstIdx = order.first(where: { !cut.contains($0) }) else { return }
+        let seg = segments[firstIdx]
+        let end = min(seg.srcIn + 60, seg.srcOut)
+        guard end > seg.srcIn else { return }
+        addedOverlays.append(OverlayRow(type: "punch_in", srcIn: seg.srcIn, srcOut: end, text: ""))
     }
 
     private var audioSection: some View {
@@ -467,6 +667,12 @@ struct EditorView: View {
                     .accessibilityIdentifier("editor.segment.\(segIdx).moveDown")
             }
             .font(.system(size: 12)).foregroundStyle(Palette.textSecondary)
+            // H-08: split at the midpoint word boundary (immediate direct op)
+            Button { splitSegment(segIdx) } label: {
+                Image(systemName: "square.split.2x1")
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            .accessibilityIdentifier("editor.split")
             // Mute
             Button { toggle(&muted, segIdx) } label: {
                 Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2")
@@ -506,13 +712,22 @@ struct EditorView: View {
                     Button {
                         wordOverrides[w.startFrame] = !effectivelyCut
                     } label: {
-                        Text(w.text)
+                        // H-08: show the staged caption edit where one exists
+                        Text(captionEdits[w.startFrame] ?? w.text)
                             .font(AppFont.callout)
                             .foregroundStyle(effectivelyCut ? Palette.textTertiary : Palette.textPrimary)
                             .strikethrough(effectivelyCut)
+                            .underline(captionEdits[w.startFrame] != nil, color: Palette.accent)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editor.word.\(w.startFrame)")
+                    // H-08: long-press → fix the caption's text (typos, casing)
+                    .contextMenu {
+                        Button {
+                            editDraft = captionEdits[w.startFrame] ?? w.text
+                            editingCaptionFrame = w.startFrame
+                        } label: { Label("Edit caption text", systemImage: "pencil") }
+                    }
                 }
             }
         }
@@ -551,6 +766,7 @@ struct EditorView: View {
                                  || musicVolume != baseMusic.volume
                                  || duckVoice != baseMusic.duck))
             || !meaningfulWordOverrides.isEmpty
+            || !captionEdits.isEmpty || !overlayTextEdits.isEmpty || !addedOverlays.isEmpty
     }
 
     /// H11: specifically caption/music/overlay changes — the ones the H7
@@ -565,6 +781,7 @@ struct EditorView: View {
             || (musicEnabled && (musicURL != baseMusic.url
                                  || musicVolume != baseMusic.volume
                                  || duckVoice != baseMusic.duck))
+            || !captionEdits.isEmpty || !overlayTextEdits.isEmpty || !addedOverlays.isEmpty
     }
 
     /// H7: the DRAFT edit's kept intervals (source seconds, PLAY order) for the
@@ -638,6 +855,15 @@ struct EditorView: View {
         }
         segments = built
         wordOverrides = [:]
+        // H-08: reset staged edit state (load() also runs after split/undo reloads)
+        captionEdits = [:]
+        overlayTextEdits = [:]
+        addedOverlays = []
+        clipStyle = (edl["style"] as? String) ?? ""
+        if editorCaps == nil {
+            let allCaps = await store.backend.editorCapabilities()
+            editorCaps = allCaps?[clipStyle]
+        }
         // H2: honor an existing segment_order rather than always resetting to
         // identity — validated as a genuine permutation of the CURRENT segment
         // count (defensive: a stale/malformed order from an old shape must
@@ -650,10 +876,11 @@ struct EditorView: View {
             order = Array(built.indices)
         }
         baseOrder = order
-        overlays = ((edl["overlays"] as? [[String: Any]]) ?? []).compactMap { o in
+        overlays = ((edl["overlays"] as? [[String: Any]]) ?? []).enumerated().compactMap { i, o in
             guard let a = o["src_in"] as? Int, let b = o["src_out"] as? Int else { return nil }
             return OverlayRow(type: (o["type"] as? String) ?? "punch_in",
-                              srcIn: a, srcOut: b, text: (o["text"] as? String) ?? "")
+                              srcIn: a, srcOut: b, text: (o["text"] as? String) ?? "",
+                              index: i)   // H-08: edit_overlay addresses this position
         }
         baseOverlays = overlays
         if let audio = edl["audio"] as? [String: Any],
@@ -702,9 +929,28 @@ struct EditorView: View {
         if captionsEnabled && captionStyle != baseCaptionStyle {
             ops.append(["type": "set_caption_style", "style": captionStyle])
         }
+        // H-08: caption-text fixes (frame-addressed; empty word deletes the caption)
+        for (frame, word) in captionEdits.sorted(by: { $0.key < $1.key }) {
+            ops.append(["type": "edit_caption", "frame": frame, "word": word])
+        }
+        // H-08: overlay text edits BEFORE removals — edit_overlay addresses the
+        // ORIGINAL edl index, which removals would invalidate.
+        for (idx, text) in overlayTextEdits.sorted(by: { $0.key < $1.key }) {
+            ops.append(["type": "edit_overlay", "index": idx, "text": text])
+        }
         for o in baseOverlays where !overlays.contains(o) {
             ops.append(["type": "remove_overlays", "kind": o.type,
                         "start_frame": o.srcIn, "end_frame": o.srcOut])
+        }
+        // H-08: staged overlay additions (already style-gated by the add affordances)
+        for o in addedOverlays {
+            if o.type == "punch_in" {
+                ops.append(["type": "add_punch_in", "start_frame": o.srcIn,
+                            "end_frame": o.srcOut, "scale": 1.08])
+            } else {
+                ops.append(["type": "add_text_card", "start_frame": o.srcIn,
+                            "end_frame": o.srcOut, "text": o.text])
+            }
         }
         if musicEnabled != baseMusic.enabled
             || (musicEnabled && (musicURL != baseMusic.url
