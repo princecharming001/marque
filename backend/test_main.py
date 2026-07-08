@@ -2780,3 +2780,60 @@ def test_score_pins_temperature_zero(monkeypatch):
     monkeypatch.setattr(main, "anthropic", fake)
     client.post("/v1/score", json={"hook": "h", "body": "b"})
     assert cap["temperature"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# B-01 · Live-mode transport hygiene: a mid-stream httpx.ReadError (NOT Timeout/
+# Connect) must surface as HTTPException and every AI route must degrade, not 500.
+# ---------------------------------------------------------------------------
+
+def test_anthropic_read_error_becomes_httpexception(monkeypatch):
+    import httpx
+    import pytest
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def _fast_sleep(_):
+        return None
+    monkeypatch.setattr(main.asyncio, "sleep", _fast_sleep)
+
+    class _Client:
+        async def post(self, *a, **k):
+            raise httpx.ReadError("mid-stream reset")
+    monkeypatch.setattr(main, "_get_anthropic_client", lambda: _Client())
+    with pytest.raises(main.HTTPException):
+        asyncio.run(main.anthropic("s", "u"))
+
+
+def test_ai_route_degrades_on_read_error_not_500(monkeypatch):
+    import httpx
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def _fast_sleep(_):
+        return None
+    monkeypatch.setattr(main.asyncio, "sleep", _fast_sleep)
+
+    class _Client:
+        async def post(self, *a, **k):
+            raise httpx.ReadError("mid-stream reset")
+    monkeypatch.setattr(main, "_get_anthropic_client", lambda: _Client())
+    r = client.post("/v1/captions", json={"hook": "h", "body": "b"})
+    assert r.status_code == 200 and r.json()["mode"] == "mock"
+
+
+def test_anthropic_guards_malformed_200_body(monkeypatch):
+    import pytest
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+
+    async def _fast_sleep(_):
+        return None
+    monkeypatch.setattr(main.asyncio, "sleep", _fast_sleep)
+
+    class _Resp:
+        status_code = 200
+        def json(self): raise ValueError("not json")
+
+    class _Client:
+        async def post(self, *a, **k): return _Resp()
+    monkeypatch.setattr(main, "_get_anthropic_client", lambda: _Client())
+    with pytest.raises(main.HTTPException):        # malformed 200 → degradeable, not a raw ValueError
+        asyncio.run(main.anthropic("s", "u"))

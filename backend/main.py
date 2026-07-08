@@ -418,7 +418,12 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                 json=body,
             )
             if r.status_code == 200:
-                return "".join(b.get("text", "") for b in r.json().get("content", []))
+                try:
+                    return "".join(b.get("text", "") for b in r.json().get("content", []))
+                except (ValueError, KeyError, TypeError) as e:
+                    # A malformed 200 body must be degradeable (HTTPException), not a raw
+                    # ValueError that escapes every route's `except HTTPException`.
+                    raise HTTPException(status_code=502, detail=f"upstream malformed body: {e}")
             if r.status_code in (429, 500, 502, 503, 529):
                 last_err = f"upstream {r.status_code}"
                 if delay is not None:
@@ -427,7 +432,9 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                     await asyncio.sleep(delay + jitter)
                     continue
             raise HTTPException(status_code=502, detail=f"upstream {r.status_code}")
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
+        # httpx.HTTPError is the transport base (Timeout/Connect/Read/RemoteProtocol/Pool);
+        # catching only Timeout/Connect let a mid-stream ReadError escape the route degrades.
+        except httpx.HTTPError as e:
             last_err = str(e)
             if delay is not None:
                 logging.warning("anthropic: attempt %d network error %s, retrying in %.1fs", attempt, last_err, delay)
@@ -3776,7 +3783,7 @@ async def tts(req: TTSRequest):
             _tts_cache[key] = audio
             _cap_evict(_tts_cache, 256)
             return Response(content=audio, media_type="audio/mpeg")
-    except (httpx.TimeoutException, httpx.ConnectError) as e:
+    except httpx.HTTPError as e:                  # transport base, incl. mid-stream ReadError
         logging.warning("tts: network error %s", e)
     return JSONResponse({"mode": "mock"})
 
