@@ -3064,36 +3064,43 @@ async def analyze_media(req: MediaAnalyzeRequest):
     if req.content_hash in _media_cache:
         return {"mode": "cached", **_media_cache[req.content_hash]}
 
+    mock = {
+        "description": f"A {req.kind} asset suitable for B-roll use.",
+        "scene": "indoor", "subjects": ["person", "environment"], "has_face": False,
+        "on_screen_text": "", "motion": "slow", "quality": "high",
+        "dominant_colors": ["warm white", "natural", "neutral"],
+        "broll_suitability": 72, "broll_suitability_reason": "Good framing for B-roll.",
+        "usable_as": "broll", "suggested_kind": req.kind,
+        "tags": [req.kind, "interior", "natural light", "close-up", "lifestyle"],
+    }
     if not ANTHROPIC_KEY or not req.public_url:
-        mock = {
-            "description": f"A {req.kind} asset suitable for B-roll use.",
-            "scene": "indoor", "subjects": ["person", "environment"], "has_face": False,
-            "on_screen_text": "", "motion": "slow", "quality": "high",
-            "dominant_colors": ["warm white", "natural", "neutral"],
-            "broll_suitability": 72, "broll_suitability_reason": "Good framing for B-roll.",
-            "usable_as": "broll", "suggested_kind": req.kind,
-            "tags": [req.kind, "interior", "natural light", "close-up", "lifestyle"],
-        }
         _media_cache[req.content_hash] = mock
         _cap_evict(_media_cache, 256)
         return {"mode": "mock", **mock}
 
     system, user_text = prompts.media_analyze_prompt(req.filename, req.kind)
-    async with httpx.AsyncClient(timeout=60) as client:
-        r = await client.post(
-            ANTHROPIC_URL,
-            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": HAIKU, "max_tokens": 1000, "system": system,
-                  "messages": [{"role": "user", "content": [
-                      {"type": "image", "source": {"type": "url", "url": req.public_url}},
-                      {"type": "text", "text": user_text},
-                  ]}]},
-        )
-    if r.status_code != 200:
-        return {"mode": "mock", "error": f"vision {r.status_code}"}
-    text = "".join(b.get("text", "") for b in r.json().get("content", []))
-    result = extract_json(text, array=False) or {}
+    try:
+        async with httpx.AsyncClient(timeout=60) as vclient:
+            r = await vclient.post(
+                ANTHROPIC_URL,
+                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                         "content-type": "application/json"},
+                json={"model": HAIKU, "max_tokens": 1000, "system": system,
+                      "messages": [{"role": "user", "content": [
+                          {"type": "image", "source": {"type": "url", "url": req.public_url}},
+                          {"type": "text", "text": user_text},
+                      ]}]},
+            )
+        result = extract_json("".join(b.get("text", "") for b in r.json().get("content", [])),
+                              array=False) if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+        logging.warning("media vision failed: %s", e)
+        result = None
+    # Only cache a REAL analysis (has the shape fields). A transport error, non-200, or
+    # malformed reply degrades to the full mock and is NOT cached — so a transient blip
+    # can't poison this content_hash forever (audit B-03/F2/F15).
+    if not (result and "broll_suitability" in result):
+        return {"mode": "mock", **mock}
     _media_cache[req.content_hash] = result
     _cap_evict(_media_cache, 256)
     return {"mode": "live", **result}

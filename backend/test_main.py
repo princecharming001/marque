@@ -2869,3 +2869,43 @@ def test_insights_live_degrade_is_populated(monkeypatch):
     monkeypatch.setattr(main, "anthropic", _raise_httpexc())
     r = client.post("/v1/insights", json={"niche": "fitness", "summary": "x"}).json()
     assert r["mode"] == "mock" and r["coaching"]
+
+
+# ---------------------------------------------------------------------------
+# B-03 · /v1/media/analyze: vision failure degrades to the full mock, never 500;
+# a failed/malformed analysis is never cached.
+# ---------------------------------------------------------------------------
+
+def test_media_analyze_vision_error_degrades_to_full_mock(monkeypatch):
+    import httpx
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    main._media_cache.pop("h_err", None)
+
+    class _C:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): raise httpx.ReadError("mid-stream")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _C())
+    r = client.post("/v1/media/analyze",
+                    json={"content_hash": "h_err", "public_url": "http://x", "kind": "image"}).json()
+    assert r["mode"] == "mock" and r.get("broll_suitability")   # full analysis shape
+    assert "h_err" not in main._media_cache                     # failure NOT cached
+
+
+def test_media_analyze_malformed_not_cached(monkeypatch):
+    import httpx
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    main._media_cache.pop("h_bad", None)
+
+    class _Resp:
+        status_code = 200
+        def json(self): return {"content": [{"text": "not json at all"}]}
+
+    class _C:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k): return _Resp()
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _C())
+    r = client.post("/v1/media/analyze",
+                    json={"content_hash": "h_bad", "public_url": "http://x", "kind": "image"}).json()
+    assert r["mode"] == "mock" and "h_bad" not in main._media_cache
