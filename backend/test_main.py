@@ -2149,6 +2149,57 @@ def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
     assert f"{card['insight']['lift_pct']:+d}%" in card["body"]
 
 
+# ---------------------------------------------------------------------------
+# P-04 · GET /v1/suggestions/next-idea — one idea brief, grounded or niche-framed.
+# ---------------------------------------------------------------------------
+
+def test_next_idea_keyless_is_shaped(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    idea = client.get("/v1/suggestions/next-idea",
+                      params={"creator_id": "c_idea1", "niche": "fitness"}).json()["idea"]
+    assert idea["title"] and idea["hook"] and len(idea["beats"]) >= 3
+    assert idea["mode"] == "mock" and idea["grounding"]
+
+
+def test_next_idea_cites_grounded_driver_verbatim(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    _seed_coach_creator("c_idea2", arm_sum_raw=12.0)
+    idea = client.get("/v1/suggestions/next-idea",
+                      params={"creator_id": "c_idea2"}).json()["idea"]
+    ins = asyncio.run(main._coach_insight("c_idea2"))
+    assert "contrarian" in idea["grounding"].lower()       # references the real strength...
+    assert f"{ins['lift_pct']:+d}%" in idea["grounding"]   # ...with the REAL lift, verbatim
+
+
+def test_next_idea_cold_creator_uses_niche_framing_no_perf_claim(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._arm_stats.pop("c_idea3", None)
+    main._arms_loaded.add("c_idea3")
+    idea = client.get("/v1/suggestions/next-idea",
+                      params={"creator_id": "c_idea3", "niche": "finance"}).json()["idea"]
+    assert "niche" in idea["grounding"].lower()            # framed as a prior, not their data
+    assert "vs your average" not in idea["grounding"]      # no fabricated personal claim
+
+
+def test_next_idea_llm_keeps_deterministic_grounding(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    _seed_coach_creator("c_idea4", arm_sum_raw=12.0)
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        return json.dumps({"title": "LLM title", "hook": "LLM hook",
+                           "beats": ["b1", "b2", "b3"],
+                           "grounding": "your posts run +900% (invented)"})
+    monkeypatch.setattr(main, "anthropic", fake)
+    idea = client.get("/v1/suggestions/next-idea",
+                      params={"creator_id": "c_idea4"}).json()["idea"]
+    assert idea["mode"] == "live" and idea["title"] == "LLM title"
+    assert "+900%" not in idea["grounding"]                # LLM cannot rewrite the grounding
+
+
 def test_editor_capabilities_endpoint():
     caps = client.get("/v1/editor/capabilities").json()["capabilities"]
     assert caps["talking_head"]["punch_ins"] is True and caps["fast_cuts"]["punch_ins"] is False

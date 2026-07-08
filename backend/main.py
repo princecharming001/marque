@@ -453,6 +453,33 @@ async def coach_today(creator_id: str = "default"):
     return {"card": {**card, "kind": "insight", "mode": mode, "insight": insight}}
 
 
+@app.get("/v1/suggestions/next-idea")
+async def next_idea(creator_id: str = "default", niche: str = ""):
+    """One next-video idea brief (title + hook + beats). Grounded in the creator's own
+    strongest arm when one exists (via _coach_insight — same NO-INSIGHT honesty gate),
+    else niche-prior framing. The grounding line is ALWAYS deterministic Python — the
+    LLM may shape the idea but can never make the performance claim."""
+    await _ensure_arms_loaded(creator_id)
+    if niche:
+        _creator_niche[creator_id] = niche
+    niche = niche or _creator_niche.get(creator_id, "")
+    insight = await _coach_insight(creator_id)
+    idea = prompts.mock_next_idea(niche, insight)
+    mode = "mock"
+    if ANTHROPIC_KEY and AI_QUALITY:
+        try:
+            sys, usr = prompts.next_idea_prompt(niche, insight)
+            data = extract_json(await anthropic(sys, usr, HAIKU, 700), array=False) or {}
+            beats = [str(b)[:200] for b in (data.get("beats") or []) if str(b).strip()][:5]
+            if data.get("title") and data.get("hook") and len(beats) >= 3:
+                idea = {"title": str(data["title"])[:120], "hook": str(data["hook"])[:200],
+                        "beats": beats, "grounding": idea["grounding"]}
+                mode = "live"
+        except HTTPException:
+            pass
+    return {"idea": {**idea, "mode": mode}}
+
+
 async def _arms_for_prompt(creator_id: str) -> list[dict]:
     """Shape raw bandit arms into the {lift_pct, label, confidence} form that
     prompts.learning_block() actually reads. Without this the raw arm dicts lack

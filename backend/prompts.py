@@ -1513,6 +1513,80 @@ def attribution_prompt(settled_post: dict, arms: list[dict]) -> tuple[str, str]:
     return system, user
 
 
+# Deterministic hook openers by hook_signal — the keyless next-idea mock leans on the
+# same signal vocabulary the bandit tracks, so mock and live speak the same language.
+_SIGNAL_HOOK_TEMPLATES = {
+    "contrarian": "Most advice about this is backwards — here's what actually works.",
+    "authority": "I've done this long enough to tell you the part everyone skips.",
+    "specificity": "The exact numbers behind this, in thirty seconds.",
+    "stakes": "Ignoring this is quietly costing you every week.",
+    "curiosity": "Nobody explains why this works — so I will.",
+    "patternInterrupt": "Stop scrolling — this changes how you do it.",
+    "narrative": "The moment I realized I'd been doing this wrong.",
+}
+
+
+def mock_next_idea(niche: str, insight: dict | None) -> dict:
+    """Deterministic next-video idea — the keyless mock AND the LLM-degrade fallback.
+    Grounding is honest by construction: the creator's own arm label (which carries the
+    real lift) when one is grounded, else an explicit niche-prior framing. Never a
+    fabricated performance claim."""
+    p = niche_priors_for(niche)
+    if insight:
+        val = insight["value"].replace("_", " ")
+        signal = insight["value"] if insight["dimension"] == "hook_signal" else p["signals"][0]
+        hook = _SIGNAL_HOOK_TEMPLATES.get(signal, _SIGNAL_HOOK_TEMPLATES["curiosity"])
+        return {
+            "title": f"Run it back: another {val} take",
+            "hook": hook,
+            "beats": [
+                f"Open on the {val} angle inside the first two seconds — it's your strongest signal.",
+                "Make ONE specific, provable claim in the middle (a number, a receipt, a demo).",
+                "Land a direct CTA: tell the viewer the exact next step in one sentence.",
+            ],
+            "grounding": f"Built on your own data: {insight['label']} "
+                         f"({insight['n']} settled posts, {insight['confidence'].replace('_', ' ')}).",
+        }
+    slug = match_niche(niche)
+    signal, fmt = p["signals"][0], p["formats"][0]
+    where = slug.replace("_", " ") if slug != "default" else "short-form"
+    return {
+        "title": f"A {fmt.replace('-', ' ')} to open your data loop",
+        "hook": _SIGNAL_HOOK_TEMPLATES.get(signal, _SIGNAL_HOOK_TEMPLATES["curiosity"]),
+        "beats": [
+            f"Open with a {signal} hook — it tends to over-index in {where}.",
+            f"Structure it as a {fmt.replace('-', ' ')}: {p['note'].split(';')[0]}.",
+            "Close with a direct CTA so the post settles with a clean signal.",
+        ],
+        "grounding": f"Niche baseline ({where}) — no settled performance data yet; "
+                     "your own results take over as soon as they land.",
+    }
+
+
+def next_idea_prompt(niche: str, insight: dict | None) -> tuple[str, str]:
+    """Talking-head next-video ideation (adapted from Palo's ideate/video-to-brief
+    doctrine): one idea, concrete beats, hook-first. Same number discipline as the
+    coach — the model may reference the provided strength but NEVER invents a stat;
+    the caller keeps the deterministic grounding line regardless."""
+    system = (
+        "You suggest exactly ONE next talking-head short-form video idea for a creator.\n"
+        "HARD RULES:\n"
+        "- Concrete and filmable today: a specific angle, not a theme.\n"
+        "- The hook must stop the scroll in the first 3 seconds.\n"
+        "- If a performance strength is provided, build the idea AROUND it, citing it "
+        "qualitatively only — do NOT invent, estimate, or repeat any number.\n"
+        "- 3-5 beats, each one actionable sentence.\n"
+        'Return JSON only: {"title": str, "hook": str, "beats": [str, ...]}'
+    )
+    if insight:
+        strength = (f"Their grounded strength: '{insight['value']}' {insight['dimension']} "
+                    f"(band={insight['band']}, {insight['confidence']}).")
+    else:
+        strength = f"No settled performance data yet.\n{niche_prior_block(niche)}"
+    user = f"Creator niche: {niche or 'general'}.\n{strength}\nSuggest the one idea."
+    return system, user
+
+
 def coach_card_prompt(insight: dict) -> tuple[str, str]:
     """Phrase the Today-coach card from ONE pre-computed insight. Same number
     discipline as attribution_prompt: the lift is used verbatim or the caller
