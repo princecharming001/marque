@@ -79,6 +79,20 @@ BEST_OF_N_HOOKS = os.environ.get("BEST_OF_N_HOOKS", "1") != "0"
 # Learning loop — in-memory bandit (Supabase arm_stats in production)
 # ---------------------------------------------------------------------------
 
+_bg_tasks: set = set()
+
+
+def _spawn(coro):
+    """asyncio.create_task that keeps a STRONG reference to the task. The event loop
+    only holds a weak reference, so an un-referenced fire-and-forget task can be
+    garbage-collected mid-flight — stranding a clip job or leaving a _refreshing key
+    stuck forever (audit B-08/F12). Auto-discards on completion."""
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
 _arm_stats: dict[str, dict] = {}
 # Creators whose durable arm history has been fetched from Supabase at least once this
 # process. Distinct from `creator_id in _arm_stats` because _update_arm creates a local
@@ -1462,8 +1476,8 @@ async def create_clip_job(req: ClipJobRequest):
         # Deterministic transcript so caption-rebuild tweaks work in keyless demo.
         job["words"] = _mock_words(req.script)
         return {"mode": "mock", "job_id": job_id, "clips": clips}
-    asyncio.create_task(_run_pipeline(job_id))
-    asyncio.create_task(_persist_clip_job(job_id))   # F15: durable from creation
+    _spawn(_run_pipeline(job_id))
+    _spawn(_persist_clip_job(job_id))   # F15: durable from creation
     return {"mode": "live", "job_id": job_id, "clips": clips}
 
 
@@ -1520,10 +1534,10 @@ async def retry_clip_job(job_id: str):
 
     if job.get("edl"):
         job["status"] = "rendering"
-        asyncio.create_task(_retry_render(job_id))
+        _spawn(_retry_render(job_id))
     else:
         job["status"] = "transcribing"
-        asyncio.create_task(_run_pipeline(job_id))
+        _spawn(_run_pipeline(job_id))
     return {"mode": "live", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
 
 
@@ -1544,7 +1558,7 @@ async def _retry_render(job_id: str) -> None:
     except Exception as e:
         _fail_job(job, "internal_error", str(e))
     finally:
-        asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after retry
+        _spawn(_persist_clip_job(job_id))   # F15: durable after retry
 
 
 @app.post("/v1/clips/{job_id}/tweak")
@@ -1670,7 +1684,7 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
         # tweak response the way _rerender_clip's completion doesn't either.
         needs_render = False
         preview_requested = True
-        asyncio.create_task(_preview_rerender_clip(job_id, req.clip_id))
+        _spawn(_preview_rerender_clip(job_id, req.clip_id))
     elif needs_render:
         if clip.get("status") == "rendering":
             # Someone else's re-render is in flight; our EDL change is saved and
@@ -1683,10 +1697,10 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0):
             clip["status"] = "rendering"
             clip["render_started_at"] = time.time()
             my_gen = _bump_render_gen(clip)
-            asyncio.create_task(_rerender_clip(job_id, req.clip_id, my_gen,
+            _spawn(_rerender_clip(job_id, req.clip_id, my_gen,
                                                resolve_broll=resolve_broll_needed))
 
-    asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after every tweak
+    _spawn(_persist_clip_job(job_id))   # F15: durable after every tweak
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
             "undo_available": bool(job["edl_history"]), "degraded": degraded,
@@ -1754,7 +1768,7 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
         if _is_current_render(clip, my_gen):
             if clip.get("status") != "failed":
                 clip["status"] = "ready" if clip.get("render_url") else "failed"
-            asyncio.create_task(_persist_clip_job(job_id))   # F15: durable after re-render
+            _spawn(_persist_clip_job(job_id))   # F15: durable after re-render
 
 
 async def _preview_rerender_clip(job_id: str, clip_id: str) -> None:
@@ -2086,7 +2100,7 @@ async def _run_pipeline(job_id: str):
     except Exception as e:
         _fail_job(job, "internal_error", str(e))
     finally:
-        asyncio.create_task(_persist_clip_job(job_id))   # F15: durable at terminal state
+        _spawn(_persist_clip_job(job_id))   # F15: durable at terminal state
 
 
 async def _render_all_clips(job_id: str) -> None:
@@ -2738,7 +2752,7 @@ async def create_digest_job(req: DigestRequest):
                            "pillar": sreq.pillar, "scanned_posts": len(req.posts),
                            "transcribed": 0})
         return {"mode": "mock", "job_id": job_id, "status": "ready"}
-    asyncio.create_task(_run_digest(job_id))
+    _spawn(_run_digest(job_id))
     return {"mode": "live", "job_id": job_id, "status": "running"}
 
 
@@ -4119,7 +4133,7 @@ def _watched_real_reels(parsed: list[tuple[str, str]]) -> list[dict]:
         stale = not entry or (now - entry["ts"]) > _WATCHED_REELS_TTL_S
         if stale and APIFY_KEY and key not in _reels_refreshing:
             _reels_refreshing.add(key)
-            asyncio.create_task(_refresh_watched_creator(platform, handle))
+            _spawn(_refresh_watched_creator(platform, handle))
     return out
 
 
@@ -4132,7 +4146,7 @@ def _niche_real_reels(niche: str) -> list[dict]:
     stale = not entry or (time.time() - entry["ts"]) > _NICHE_REELS_TTL_S
     if stale and APIFY_KEY and key not in _reels_refreshing:
         _reels_refreshing.add(key)
-        asyncio.create_task(_refresh_niche_reels(niche))
+        _spawn(_refresh_niche_reels(niche))
     return out
 
 
@@ -4153,7 +4167,7 @@ async def reels_warm(req: ReelsWarmRequest):
     cached = key in _watched_reels_cache
     if APIFY_KEY and key not in _reels_refreshing:
         _reels_refreshing.add(key)
-        asyncio.create_task(_refresh_watched_creator(platform, handle))
+        _spawn(_refresh_watched_creator(platform, handle))
     return {"ok": True, "mode": "live" if APIFY_KEY else "mock", "cached": cached}
 
 
@@ -4301,7 +4315,7 @@ async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
         # in the background for next time.
         if key not in _feed_refreshing:
             _feed_refreshing.add(key)
-            asyncio.create_task(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+            _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
     # No cache yet (first-ever fetch) — fast single-call path so the client
@@ -4316,7 +4330,7 @@ async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
     # (e.g. pull-to-refresh, or the app reopening) gets the upgraded page.
     if key not in _feed_refreshing:
         _feed_refreshing.add(key)
-        asyncio.create_task(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+        _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
 
     return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
 

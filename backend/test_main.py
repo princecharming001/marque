@@ -1604,6 +1604,22 @@ def test_emulate_failed_live_not_cached_or_persisted(monkeypatch):
     fake.upsert_emulation_profile.assert_not_awaited()         # no durable poison
 
 
+# ---------------------------------------------------------------------------
+# B-08 · Background tasks keep a strong reference (no GC-mid-flight).
+# ---------------------------------------------------------------------------
+
+def test_spawn_retains_then_discards_task():
+    async def _run():
+        async def work():
+            return 42
+        t = main._spawn(work())
+        assert t in main._bg_tasks              # strongly referenced while in flight
+        await t
+        await asyncio.sleep(0)                   # let the done-callback run
+        assert t not in main._bg_tasks           # discarded on completion
+    asyncio.run(_run())
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
