@@ -23,9 +23,9 @@ import httpx
 
 # Columns we own on each table — filter dict payloads to these so a stray in-memory
 # key (e.g. a shaped arm's lift_pct/label) can't break a PostgREST insert.
-_ARM_COLS = ("n", "sum_y", "alpha", "beta", "effect", "confidence")
+_ARM_COLS = ("n", "sum_y", "sum_raw", "alpha", "beta", "effect", "confidence")
 _POST_COLS = ("creator_id", "platform", "scheduled_at", "pillar", "style", "format_id",
-              "hook_signal", "predicted_score", "outcome_y", "settled", "metrics")
+              "hook_signal", "predicted_score", "outcome_y", "outcome_raw", "settled", "metrics")
 
 _BACKOFF = (0.5, 2.0, 8.0)
 

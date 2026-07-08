@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS arm_stats (
     alpha       FLOAT DEFAULT 1.0,
     beta        FLOAT DEFAULT 1.0,
     effect      FLOAT DEFAULT 0.5,
+    sum_raw     FLOAT DEFAULT 0.0,             -- A-05: accumulated raw engagement composite (honest lift)
     confidence  TEXT CHECK (confidence IN ('insufficient', 'early_read', 'confirmed')),
     created_at  TIMESTAMPTZ DEFAULT NOW(),
     updated_at  TIMESTAMPTZ DEFAULT NOW(),
@@ -28,6 +29,7 @@ CREATE TABLE IF NOT EXISTS post_registry (
     hook_signal     TEXT,
     predicted_score INT,
     outcome_y       FLOAT,
+    outcome_raw     FLOAT,                     -- A-05: raw engagement composite → per-creator baseline
     settled         BOOLEAN DEFAULT FALSE,
     metrics         JSONB,
     created_at      TIMESTAMPTZ DEFAULT NOW(),

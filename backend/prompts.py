@@ -1243,9 +1243,11 @@ def broll_match_prompt(cue_text: str, candidates: list[dict]) -> tuple[str, str]
 
 def classify_arm_lift(lift_pct: int) -> str:
     """Palo's channel-analysis-v2 performance bands, mapped onto our lift scale.
-    lift_pct = (effect - 0.5) * 200, so the performance multiplier vs a 0.5 baseline
-    is (1 + lift_pct/100). DRIVER ≥ 1.8× (lift ≥ +80), ERROR ≤ 0.65× (lift ≤ -35),
-    everything in between is noise (don't over-read it)."""
+    lift_pct is the arm's raw engagement composite vs the CREATOR'S OWN mean
+    (see main._arm_lift), so the multiplier is (1 + lift_pct/100). DRIVER ≥ 1.8×
+    (lift ≥ +80), ERROR ≤ 0.65× (lift ≤ -35), everything between is noise. The
+    per-creator baseline is what makes these bands reachable — a fixed 0.5 baseline
+    on the sigmoid reward saturated every arm and no band ever fired."""
     mult = 1.0 + lift_pct / 100.0
     if mult >= 1.8:
         return "driver"

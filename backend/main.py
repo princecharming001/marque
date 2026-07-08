@@ -146,8 +146,12 @@ def _niche_prior_for_arm(dim_value: str, niche: str) -> tuple[float, float]:
     return (1.0 + _PRIOR_PSEUDO * e, 1.0 + _PRIOR_PSEUDO * (1.0 - e))
 
 
-def _compute_y(m: dict, goal: str = "grow") -> float:
-    import math
+def _compute_raw(m: dict, goal: str = "grow") -> float:
+    """The pre-sigmoid, goal-weighted engagement composite (0..~10). This is the
+    scale on which lift is measured against the creator's own mean — the sigmoid y
+    below squashes it into a bounded Beta-update signal, which is great for the
+    bandit but useless for 'how much better than my average' (everything saturates).
+    Keeping raw lets the learning UI make an honest relative claim."""
     reach = max(m.get("reach", 1), 1)
     save_rate = m.get("saves", 0) / reach
     share_rate = m.get("shares", 0) / reach
@@ -163,11 +167,55 @@ def _compute_y(m: dict, goal: str = "grow") -> float:
     }.get(goal, {"follow_rate": 0.35, "share_rate": 0.25, "save_rate": 0.20, "watch_pct": 0.20})
     rates = {"follow_rate": follow_rate, "share_rate": share_rate, "save_rate": save_rate,
              "watch_pct": watch_pct, "like_rate": like_rate, "comment_rate": comment_rate}
-    raw = sum(w * rates.get(k, 0) * 100 for k, w in weights.items())
-    return 1 / (1 + math.exp(-0.5 * (raw - 2.0)))
+    return sum(w * rates.get(k, 0) * 100 for k, w in weights.items())
 
 
-async def _update_arm(creator_id: str, dim_value: str, y: float, niche: str = ""):
+def _compute_y(m: dict, goal: str = "grow") -> float:
+    import math
+    return 1 / (1 + math.exp(-0.5 * (_compute_raw(m, goal) - 2.0)))
+
+
+# Shrinkage for the DISPLAYED lift (distinct from KAPPA, which shrinks the sigmoid
+# `effect` toward 0.5 for calibration). An arm's raw mean is pulled toward the
+# creator's own mean by LIFT_KAPPA pseudo-observations: 1.0 means a single fluke at
+# n=1 reads halfway to the mean, while a genuine 2× arm crosses the DRIVER band
+# (1.8×) exactly when it first qualifies at n≥4. Small, because arms already need
+# n≥4 to surface, so the data:prior ratio is ≥4:1.
+LIFT_KAPPA = 1.0
+_creator_mean_raw_cache: dict[str, float | None] = {}
+
+
+def _creator_mean_raw(creator_id: str) -> float | None:
+    """Mean raw-composite over the creator's settled posts (their personal baseline),
+    or None if they have none yet. Cached; invalidated on each settle."""
+    if creator_id in _creator_mean_raw_cache:
+        return _creator_mean_raw_cache[creator_id]
+    vals = [p["outcome_raw"] for p in _post_registry.values()
+            if p.get("creator_id") == creator_id and p.get("settled")
+            and isinstance(p.get("outcome_raw"), (int, float))]
+    mean = (sum(vals) / len(vals)) if vals else None
+    _creator_mean_raw_cache[creator_id] = mean
+    return mean
+
+
+def _invalidate_creator_mean(creator_id: str):
+    _creator_mean_raw_cache.pop(creator_id, None)
+
+
+def _arm_lift(stat: dict, mean_raw: float | None) -> tuple[int, bool]:
+    """Percent lift of an arm vs the creator's baseline, and whether the claim is
+    grounded. (0, False) when there's no raw history (pre-migration arms / no settled
+    posts) — callers must then make NO performance claim rather than invent one."""
+    sum_raw = stat.get("sum_raw")
+    n = stat.get("n", 0)
+    if sum_raw is None or not mean_raw or mean_raw <= 0 or n <= 0:
+        return 0, False
+    arm_raw = (sum_raw + LIFT_KAPPA * mean_raw) / (n + LIFT_KAPPA)
+    return round((arm_raw / mean_raw - 1.0) * 100), True
+
+
+async def _update_arm(creator_id: str, dim_value: str, y: float,
+                      raw: float | None = None, niche: str = ""):
     # Merge this creator's durable arm history in BEFORE we create-on-miss, so a fresh
     # Render instance increments the real DB counts instead of resetting them to n=1
     # and then overwriting the row (audit A-04).
@@ -186,6 +234,8 @@ async def _update_arm(creator_id: str, dim_value: str, y: float, niche: str = ""
     pa, pb = s.get("prior_alpha", 1.0), s.get("prior_beta", 1.0)
     s["n"] += 1
     s["sum_y"] += y
+    if raw is not None:                          # accumulate the raw composite for honest lift
+        s["sum_raw"] = s.get("sum_raw", 0.0) + raw
     s["effect"] = (s["sum_y"] + KAPPA * 0.5) / (s["n"] + KAPPA)
     s["alpha"] = pa + s["sum_y"]
     s["beta"] = pb + (s["n"] - s["sum_y"])
@@ -222,6 +272,7 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
     never reaches script/hook/converse generation — the loop is cosmetic. Emit
     only arms with an early read (n>=4), strongest signals first."""
     await _ensure_arms_loaded(creator_id)
+    mean_raw = _creator_mean_raw(creator_id)
     _dim_word = {"style": "style", "format_id": "format",
                  "hook_signal": "hook", "pillar": "pillar"}
     out = []
@@ -229,11 +280,16 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
         if s.get("n", 0) < 4 or ":" not in key:
             continue
         dim, val = key.split(":", 1)
-        lift = round((s.get("effect", 0.5) - 0.5) * 200)
-        sign = "+" if lift >= 0 else ""
-        label = f"{val.replace('_', ' ')} {_dim_word.get(dim, dim)}: {sign}{lift}% vs your average"
+        lift, grounded = _arm_lift(s, mean_raw)
+        word = _dim_word.get(dim, dim)
+        if grounded:
+            sign = "+" if lift >= 0 else ""
+            label = f"{val.replace('_', ' ')} {word}: {sign}{lift}% vs your average"
+        else:
+            # No raw baseline yet — make NO performance claim (audit A-05/A2).
+            label = f"{val.replace('_', ' ')} {word}: seen in {s.get('n', 0)} settled posts"
         out.append({**s, "dimension": dim, "value": val, "lift_pct": lift, "label": label,
-                    "confidence": s.get("confidence", "early_read")})
+                    "has_lift": grounded, "confidence": s.get("confidence", "early_read")})
     out.sort(key=lambda a: abs(a["lift_pct"]), reverse=True)
     return out
 
@@ -3145,6 +3201,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
     m = req.model_dump()
     goal = req.goal if req.goal in ("grow", "authority", "clients", "monetize") else "grow"
     y = _compute_y(m, goal)                      # score on the creator's OWN objective, not always "grow"
+    raw = _compute_raw(m, goal)                  # the un-squashed composite for honest lift
     creator_id = req.creator_id
     if req.niche:
         _creator_niche[creator_id] = req.niche
@@ -3156,6 +3213,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
     # before touching an arm. Restored below if we don't actually win the settle.
     entry["settled"] = True
     entry["outcome_y"] = y
+    entry["outcome_raw"] = raw
     entry["metrics"] = m
     _post_registry[req.post_id] = entry
 
@@ -3171,16 +3229,18 @@ async def ingest_metrics(req: MetricsIngestRequest):
         if won is sp.UNAVAILABLE:                 # couldn't decide — restore + let client retry
             entry["settled"] = False
             entry["outcome_y"] = None
+            entry["outcome_raw"] = None
             entry["metrics"] = None
             _post_registry[req.post_id] = entry
             return {"mode": "live", "status": "retry_later", "post_id": req.post_id}
         if not won:                               # another instance already settled it
             return {"mode": "live", "status": "already_settled", "post_id": req.post_id}
 
+    _invalidate_creator_mean(creator_id)          # this settle shifts the personal baseline
     for dim in DIMENSIONS:
         val = entry.get(dim, "")
         if val:
-            await _update_arm(creator_id, f"{dim}:{val}", y, niche)
+            await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche)
 
     # Attribute the just-settled post from the creator's own arms so the app can show
     # what drove it. Honest by construction (attribute_from_arms only speaks driver/
@@ -3227,6 +3287,7 @@ async def get_recommendations(niche: str = "", creator_id: str = "default"):
     if not stats:
         return {"mode": "mock", "arms": _cold_recommendations(niche)}
 
+    mean_raw = _creator_mean_raw(creator_id)
     styles = ["talking_head", "faceless", "split_three", "fast_cuts", "green_screen"]
     pillars = list(set(
         k.split(":", 1)[1] for k in stats if k.startswith("pillar:")
@@ -3242,14 +3303,17 @@ async def get_recommendations(niche: str = "", creator_id: str = "default"):
         pillar = pillar_key.replace("pillar:", "")
         style = style_key.replace("style:", "")
         style_stats = stats.get(style_key, {})
-        effect = style_stats.get("effect", 0.5)
-        lift = round((effect - 0.5) * 200)
-        reason = (f"{style.replace('_', ' ').title()} {'outperforms' if lift > 0 else 'tracks'} "
-                  f"your average by {abs(lift)}% ({style_stats.get('confidence', 'early read')})")
+        lift, grounded = _arm_lift(style_stats, mean_raw)
+        conf = style_stats.get("confidence", "early read")
+        if grounded and abs(lift) >= 5:
+            verb = "outperforms" if lift > 0 else "underperforms"
+            reason = f"{style.replace('_', ' ').title()} {verb} your average by {abs(lift)}% ({conf})"
+        else:
+            reason = f"{style.replace('_', ' ').title()} — exploring where your data is still thin"
         arms.append({"pillar": pillar, "style": style, "score": round(pillar_score + style_score, 3),
                      "reason": reason})
 
-    return {"mode": "live" if SUPABASE_URL else "mock", "arms": arms}
+    return {"mode": "live" if _supabase_client else "mock", "arms": arms}
 
 
 @app.get("/v1/insights/learned")
@@ -3262,31 +3326,36 @@ async def get_learned_insights(creator_id: str = "default"):
                 "winning_formula": None, "learning_progress": 0}
 
     total_posts = max(s.get("n", 0) for s in stats.values()) if stats else 0
+    mean_raw = _creator_mean_raw(creator_id)
 
-    confirmed = [(k, v) for k, v in stats.items()
-                 if v.get("confidence") in ("confirmed", "early_read")]
-    confirmed.sort(key=lambda x: x[1].get("effect", 0), reverse=True)
+    # Rank by grounded lift magnitude; arms without a raw baseline make no claim.
+    scored = []
+    for k, v in stats.items():
+        if v.get("confidence") not in ("confirmed", "early_read") or ":" not in k:
+            continue
+        lift, grounded = _arm_lift(v, mean_raw)
+        if grounded:
+            scored.append((k, v, lift))
+    scored.sort(key=lambda x: x[2], reverse=True)
 
     insights = []
-    for k, v in confirmed[:5]:
-        dim, val = k.split(":", 1) if ":" in k else ("", k)
-        effect = v.get("effect", 0.5)
-        lift = round((effect - 0.5) * 200)
-        n = v.get("n", 0)
-        confidence = v.get("confidence", "early_read")
+    for k, v, lift in scored[:5]:
+        dim, val = k.split(":", 1)
         if abs(lift) >= 5:
+            verb = "+" if lift > 0 else ""
             insights.append({
                 "dimension": dim, "value": val,
-                "lift_pct": lift, "n_posts": n, "confidence": confidence,
+                "lift_pct": lift, "n_posts": v.get("n", 0),
+                "confidence": v.get("confidence", "early_read"),
                 "band": prompts.classify_arm_lift(lift),
-                "label": f"{val.replace('_', ' ').title()}: {'+' if lift>0 else ''}{lift}% vs your average",
+                "label": f"{val.replace('_', ' ').title()}: {verb}{lift}% vs your average",
             })
 
     winning = None
-    if confirmed:
-        top = confirmed[0]
-        dim, val = top[0].split(":", 1) if ":" in top[0] else ("", top[0])
-        lift = round((top[1].get("effect", 0.5) - 0.5) * 200)
+    positives = [(k, v, lift) for k, v, lift in scored if lift > 0]
+    if positives:
+        k, v, lift = positives[0]
+        val = k.split(":", 1)[1]
         winning = f"{val.replace('_', ' ').title()} content outperforms your average by {lift}%"
 
     target = 15

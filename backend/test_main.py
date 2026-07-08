@@ -941,13 +941,15 @@ def test_arms_lazy_load_from_supabase(monkeypatch):
     from unittest.mock import AsyncMock
     fake = SupabaseClientStub()
     fake.load_arm_stats = AsyncMock(return_value={
-        "style:faceless": {"n": 12, "effect": 0.75, "confidence": "confirmed"}})
+        "style:faceless": {"n": 12, "sum_raw": 18.5, "effect": 0.75, "confidence": "confirmed"}})
     monkeypatch.setattr(main, "_supabase_client", fake)
     main._arm_stats.pop("c_lazy", None)                   # cache miss → must load
+    main._arms_loaded.discard("c_lazy")
+    _seed_baseline("c_lazy", mean=1.0)                    # personal baseline 1.0
     arms = asyncio.run(main._arms_for_prompt("c_lazy"))
     fake.load_arm_stats.assert_awaited_once_with("c_lazy")
     assert main._arm_stats["c_lazy"]["style:faceless"]["n"] == 12
-    assert arms and arms[0]["lift_pct"] == 50             # (0.75-0.5)*200
+    assert arms and arms[0]["lift_pct"] == 50             # (18.5+1)/13 = 1.5× the 1.0 mean
 
 
 def test_supabase_client_disabled_when_no_key():
@@ -1107,10 +1109,12 @@ def test_all_json_schemas_are_structured_output_legal():
 
 def test_arms_for_prompt_shapes_arms_so_learning_block_fires():
     import prompts
+    main._arms_loaded.discard("learner")
+    _seed_baseline("learner", mean=1.0)                # personal baseline 1.0
     main._arm_stats["learner"] = {
-        "style:talking_head": {"n": 10, "effect": 0.80, "confidence": "confirmed"},   # +60%
-        "hook_signal:contrarian": {"n": 5, "effect": 0.35, "confidence": "early_read"},  # -30%
-        "format_id:myth-buster": {"n": 2, "effect": 0.9},   # too few samples → dropped
+        "style:talking_head": {"n": 10, "sum_raw": 16.6, "confidence": "confirmed"},   # +60%
+        "hook_signal:contrarian": {"n": 5, "sum_raw": 3.2, "confidence": "early_read"},  # -30%
+        "format_id:myth-buster": {"n": 2, "sum_raw": 4.0},   # too few samples → dropped
     }
     arms = asyncio.run(main._arms_for_prompt("learner"))
     labels = [a["label"] for a in arms]
@@ -1955,11 +1959,14 @@ def test_settled_arm_reaches_learning_block_end_to_end():
     # is shaped and actually reaches the generation context block.
     main._arm_stats.pop("loop_user", None)
     main._creator_niche.pop("loop_user", None)
-    for _ in range(5):
-        asyncio.run(main._update_arm("loop_user", "hook_signal:contrarian", 0.9))
+    main._arms_loaded.discard("loop_user")
+    _seed_baseline("loop_user", mean=1.0)               # personal baseline 1.0
+    for _ in range(5):                                   # 5 settled contrarian posts at raw 2.4
+        asyncio.run(main._update_arm("loop_user", "hook_signal:contrarian", 0.9, 2.4))
     shaped = asyncio.run(main._arms_for_prompt("loop_user"))
     assert shaped and shaped[0]["dimension"] == "hook_signal" and shaped[0]["value"] == "contrarian"
     assert shaped[0]["confidence"] in ("early_read", "confirmed") and shaped[0]["n"] == 5
+    assert shaped[0]["has_lift"] is True                 # grounded in the raw baseline
     blk = prompts.learning_block(shaped)
     assert "contrarian hook" in blk and "n=5 settled" in blk
 
@@ -1978,8 +1985,10 @@ def test_attribute_from_arms_picks_driver_or_none():
 def test_insights_learned_carries_band():
     main._arm_stats.pop("band_user", None)
     main._creator_niche.pop("band_user", None)
-    for _ in range(5):
-        asyncio.run(main._update_arm("band_user", "format_id:listicle", 0.9))
+    main._arms_loaded.discard("band_user")
+    _seed_baseline("band_user", mean=1.0)               # personal baseline 1.0
+    for _ in range(5):                                   # listicle far above baseline → a driver
+        asyncio.run(main._update_arm("band_user", "format_id:listicle", 0.9, 2.4))
     b = client.get("/v1/insights/learned", params={"creator_id": "band_user"}).json()
     assert b["insights"] and all("band" in ins for ins in b["insights"])
 
@@ -2280,3 +2289,97 @@ def test_update_arm_merges_db_history_before_incrementing(monkeypatch):
     assert s["n"] == 7                        # 6 loaded + 1, NOT a clobbering n=1
     _, _, stat = fake.upsert_arm_stat.await_args[0]
     assert stat["n"] == 7                      # write-through carries the merged count
+
+
+# ---------------------------------------------------------------------------
+# A-05 · Honest lift scale: lift/labels/bands measure an arm against the
+# creator's OWN mean (raw engagement composite), not a fixed 0.5 prior — so
+# DRIVER/ERROR bands are finally reachable and "vs your average" is truthful.
+# ---------------------------------------------------------------------------
+
+def _seed_baseline(cid, mean=1.0, count=12):
+    """Give a creator `count` settled posts all at raw==mean, so their personal
+    baseline is exactly `mean` — lets a directly-seeded arm's lift be computed."""
+    for k in list(main._post_registry):
+        if k.startswith(f"__base_{cid}"):
+            main._post_registry.pop(k)
+    for i in range(count):
+        main._post_registry[f"__base_{cid}_{i}"] = {
+            "creator_id": cid, "settled": True, "outcome_raw": mean}
+    main._invalidate_creator_mean(cid)
+
+
+def test_compute_y_is_sigmoid_of_compute_raw():
+    m = {"reach": 1000, "saves": 40, "shares": 20, "follows_gained": 8, "avg_watch_pct": 0.5}
+    import math
+    raw = main._compute_raw(m, "grow")
+    assert abs(main._compute_y(m, "grow") - 1 / (1 + math.exp(-0.5 * (raw - 2.0)))) < 1e-9
+    # raw rises with engagement (monotone) and differs by goal
+    hotter = {**m, "follows_gained": 40}
+    assert main._compute_raw(hotter, "grow") > raw
+
+
+def test_arms_for_prompt_lift_vs_creator_baseline_reaches_driver(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_base"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    # 8 settled posts, overall mean raw = 1.0
+    for i, r in enumerate([0.5, 0.5, 0.5, 0.5, 2.0, 2.0, 2.0, 2.0]):
+        main._post_registry[f"{cid}-p{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": r}
+    # baseline of 16 ordinary posts at raw 1.0 → personal mean 1.0
+    for i, r in enumerate([1.0] * 16):
+        main._post_registry[f"{cid}-p{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": r}
+    main._invalidate_creator_mean(cid)
+    # the contrarian arm: 4 posts averaging raw 3.0 — a genuine outlier vs the 1.0 mean
+    main._arm_stats[cid] = {"hook_signal:contrarian": {
+        "n": 4, "sum_y": 3.2, "sum_raw": 12.0, "alpha": 1, "beta": 1,
+        "effect": 0.7, "confidence": "early_read"}}
+    arms = asyncio.run(main._arms_for_prompt(cid))
+    a = next(x for x in arms if x["value"] == "contrarian")
+    assert a["lift_pct"] >= 80                               # DRIVER band is reachable now
+    assert prompts.classify_arm_lift(a["lift_pct"]) == "driver"
+    assert "vs your average" in a["label"] and a["has_lift"] is True
+
+
+def test_arms_for_prompt_no_raw_makes_no_lift_claim(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_noraw"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    main._invalidate_creator_mean(cid)
+    # arm has samples but NO sum_raw (pre-migration) and no baseline => no % claim
+    main._arm_stats[cid] = {"style:faceless": {
+        "n": 6, "sum_y": 4.0, "effect": 0.72, "confidence": "early_read"}}
+    arms = asyncio.run(main._arms_for_prompt(cid))
+    a = arms[0]
+    assert a["lift_pct"] == 0 and a.get("has_lift") is False
+    assert "%" not in a["label"]              # never fabricate performance without data
+
+
+def test_insights_learned_no_negative_outperform_copy(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_under"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    for i, r in enumerate([2.0, 2.0, 2.0, 2.0, 0.4, 0.4, 0.4, 0.4]):
+        main._post_registry[f"{cid}-p{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": r}
+    main._invalidate_creator_mean(cid)
+    # an UNDERperforming arm: 4 posts all at raw 0.4 vs baseline 1.2
+    main._arm_stats[cid] = {"style:faceless": {
+        "n": 4, "sum_y": 1.0, "sum_raw": 1.6, "alpha": 1, "beta": 1,
+        "effect": 0.3, "confidence": "confirmed"}}
+    b = client.get(f"/v1/insights/learned?creator_id={cid}").json()
+    assert b["insights"] and b["insights"][0]["lift_pct"] < 0
+    # winning_formula must not claim a negative number "outperforms"
+    if b["winning_formula"]:
+        assert "outperforms your average by -" not in b["winning_formula"]
