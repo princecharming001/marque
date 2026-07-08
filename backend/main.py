@@ -3061,23 +3061,41 @@ async def register_post(req: PostRegisterRequest):
     """Register a scheduled post as a learning experiment."""
     if req.niche:
         _creator_niche[req.creator_id] = req.niche      # remember for cold-arm Beta seeding
+    live_mode = "live" if _supabase_client else "mock"
     if req.post_id in _post_registry:
-        return {"mode": "mock", "status": "already_registered"}
+        return {"mode": live_mode, "status": "already_registered", "post_id": req.post_id}
+    # Registered on another instance / before a deploy? Check the DB before treating it
+    # as new — a blind insert would merge-overwrite a possibly-SETTLED row back to
+    # unsettled and re-open it for a second reward (audit A-03/A5).
+    if _supabase_client:
+        try:
+            existing = await _supabase_client.load_post(req.post_id)
+        except Exception as e:
+            logging.warning("supabase load_post (register) failed: %s", e)
+            existing = sp.UNAVAILABLE
+        if existing and existing is not sp.UNAVAILABLE:
+            _post_registry[req.post_id] = existing
+            return {"mode": live_mode, "status": "already_registered", "post_id": req.post_id}
+    # Omit the regressive outcome_y/metrics fields from the persisted row (settled
+    # defaults FALSE in-schema); keep them in-memory so the settle path has its shape.
     post_data = {
         "creator_id": req.creator_id,
         "platform": req.platform, "scheduled_at": req.scheduled_at,
         "pillar": req.pillar, "style": req.style,
         "format_id": req.format_id, "hook_signal": req.hook_signal,
         "predicted_score": req.predicted_score,
-        "outcome_y": None, "settled": False, "metrics": None,
+        "settled": False,
     }
-    _post_registry[req.post_id] = post_data
+    _post_registry[req.post_id] = {**post_data, "outcome_y": None, "metrics": None}
     if _supabase_client:
         try:
-            await _supabase_client.upsert_post(req.post_id, post_data)
+            # ignore-duplicates: if a racing settle already created/settled the row,
+            # this insert is a no-op rather than a clobber.
+            await _supabase_client.upsert_post(req.post_id, post_data,
+                                               resolution="ignore-duplicates")
         except Exception as e:
             logging.warning("supabase upsert_post failed: %s", e)
-    return {"mode": "live" if SUPABASE_URL else "mock", "status": "registered", "post_id": req.post_id}
+    return {"mode": live_mode, "status": "registered", "post_id": req.post_id}
 
 
 @app.post("/v1/metrics/ingest")

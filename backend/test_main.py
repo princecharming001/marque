@@ -2193,3 +2193,52 @@ def test_settle_post_conditional_builds_guarded_patch():
     assert asyncio.run(c.settle_post_conditional("p1", {"settled": True})) is False
     c._request = AsyncMock(return_value=None)      # transport gave up
     assert asyncio.run(c.settle_post_conditional("p1", {"settled": True})) is UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# A-03 · register_post replay must never un-settle a post already settled in the DB.
+# ---------------------------------------------------------------------------
+
+def test_register_replay_does_not_unsettle_db(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_post = AsyncMock(return_value={
+        "creator_id": "c_re", "style": "talking_head", "settled": True, "outcome_y": 0.8})
+    fake.upsert_post = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry.pop("p_re", None)
+    r = client.post("/v1/posts/register", json={
+        "post_id": "p_re", "creator_id": "c_re", "style": "talking_head",
+        "format_id": "myth-buster", "hook_signal": "contrarian", "pillar": "X"}).json()
+    assert r["status"] == "already_registered"
+    fake.upsert_post.assert_not_awaited()                   # no regressive write at all
+    assert main._post_registry["p_re"]["settled"] is True   # cached the real settled row
+
+
+def test_register_fresh_insert_ignores_duplicates(monkeypatch):
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.load_post = AsyncMock(return_value=None)           # DB says genuinely absent
+    fake.upsert_post = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    main._post_registry.pop("p_fresh", None)
+    r = client.post("/v1/posts/register", json={
+        "post_id": "p_fresh", "creator_id": "c_fresh", "style": "talking_head",
+        "format_id": "myth-buster", "hook_signal": "contrarian", "pillar": "X"}).json()
+    assert r["status"] == "registered"
+    # defense-in-depth: never overwrite an existing row (a racing settle) on insert
+    assert fake.upsert_post.await_args.kwargs.get("resolution") == "ignore-duplicates"
+    sent = fake.upsert_post.await_args[0][1]
+    assert "outcome_y" not in sent and "metrics" not in sent   # no regressive fields
+
+
+def test_upsert_post_ignore_duplicates_header():
+    from unittest.mock import AsyncMock
+    from supabase_persistence import SupabaseClient
+
+    class _Ok:
+        status_code = 201
+    c = SupabaseClient("https://x.supabase.co", "k")
+    c._request = AsyncMock(return_value=_Ok())
+    asyncio.run(c.upsert_post("p1", {"creator_id": "c"}, resolution="ignore-duplicates"))
+    assert "resolution=ignore-duplicates" in c._request.await_args[1]["headers"]["Prefer"]

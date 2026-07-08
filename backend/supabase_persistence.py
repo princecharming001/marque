@@ -113,11 +113,15 @@ class SupabaseClient:
 
     # --- post_registry -------------------------------------------------------
 
-    async def upsert_post(self, post_id: str, post: dict) -> bool:
+    async def upsert_post(self, post_id: str, post: dict,
+                          resolution: str = "merge-duplicates") -> bool:
+        """Insert/merge a post row. Register uses resolution='ignore-duplicates' so a
+        replayed/concurrent registration can never overwrite (and un-settle) an
+        existing row; settle writes go through settle_post_conditional, not here."""
         row = {"post_id": post_id, **{k: post[k] for k in _POST_COLS if k in post}}
         r = await self._request(
-            "POST", "/post_registry", json=row,
-            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+            "POST", "/post_registry", params={"on_conflict": "post_id"}, json=row,
+            headers={"Prefer": f"resolution={resolution},return=minimal"})
         return bool(r and r.status_code < 300)
 
     async def settle_post_conditional(self, post_id: str, payload: dict) -> bool | _Unavailable:
