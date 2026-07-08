@@ -738,6 +738,16 @@ struct EditorView: View {
                 return
             }
         }
+        // H-06: a live undo re-renders — poll THIS clip (job status stays "ready")
+        // so the reverted cut is actually live before reloading the editor state.
+        if resp["needs_render"] as? Bool == true {
+            phase = .rendering
+            renderStartedAt = Date()
+            store.setClipRendering(clip.id)
+            let (_, message) = await pollClipUntilDone(jobId: jobId)
+            guard !Task.isCancelled else { return }
+            if let message { transientMessage = message }
+        }
         phase = .loading
         await load()
     }
@@ -788,6 +798,41 @@ struct EditorView: View {
         }
     }
 
+    /// H-06 (audit D7): watch THIS clip until its re-render lands. AppStore.pollJob
+    /// watches the JOB status — which stays "ready" during a tweak re-render — so its
+    /// loop exited on the first poll while the clip was still rendering, and the clip
+    /// showed "AI is editing…" forever. Mirrors TweakChatSheet.startPolling, and also
+    /// surfaces a failed re-render (clip "failed" OR last_render_failed on a "ready"
+    /// clip whose old cut survived).
+    private func pollClipUntilDone(jobId: String) async -> (ready: Bool, message: String?) {
+        for _ in 0..<60 {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if Task.isCancelled { return (false, nil) }
+            guard let result = await store.backend.pollClipJob(jobId: jobId),
+                  let jobClips = result["clips"] as? [[String: Any]],
+                  // UUID-compare (backend ids are lowercase, uuidString is uppercase)
+                  let mine = jobClips.first(where: {
+                      UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id
+                  }) else { continue }
+            let status = mine["status"] as? String ?? ""
+            if status == "ready" {
+                store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String)
+                if mine["last_render_failed"] as? Bool == true {
+                    // G-05: the re-render failed but the previous cut is still live.
+                    let err = (mine["last_render_error"] as? String)?.trimmingCharacters(in: .whitespaces)
+                    return (false, (err?.isEmpty == false ? err! : "That edit's render failed — your previous cut is untouched."))
+                }
+                return (true, nil)
+            }
+            if status == "failed" {
+                let code = mine["error"] as? String
+                let detail = mine["error_detail"] as? String
+                return (false, store.friendlyRenderError(code, detail: detail))
+            }
+        }
+        return (false, "Still working — check back in the Library in a bit.")
+    }
+
     private func apply() async {
         let ops = computeOps()
         guard !ops.isEmpty, let jobId = clip.jobId else { dismiss(); return }
@@ -814,13 +859,13 @@ struct EditorView: View {
             phase = .rendering
             renderStartedAt = Date()
             store.setClipRendering(clip.id)
-            await store.pollJob(jobId: jobId, clipIds: [clip.id])
+            // H-06: per-CLIP poll (job status stays "ready" during a tweak re-render).
+            let (ready, message) = await pollClipUntilDone(jobId: jobId)
             guard !Task.isCancelled else { return }   // H1: dismissed mid-poll — onDisappear owns cleanup now
-            let finalClip = store.clips.first { $0.id == clip.id }
-            if finalClip?.status == .failed {
-                phase = .failed(store.friendlyRenderError(finalClip?.lastError, detail: finalClip?.lastErrorDetail))
-            } else {
+            if ready {
                 dismiss()
+            } else {
+                phase = .failed(message ?? "Couldn't finish that render.")
             }
         } else {
             dismiss()   // keyless/mock path: applied in place, no render needed
