@@ -2002,6 +2002,44 @@ def test_analyze_first_end_to_end_and_inferred_dims_register():
 # G-04 · Per-style capability map endpoint.
 # ---------------------------------------------------------------------------
 
+def _seed_coach_creator(cid, arm_key="hook_signal:contrarian", arm_sum_raw=12.0, arm_n=4,
+                        baseline_raw=1.0, baseline_count=16):
+    """Baseline settled posts + one arm — the shape _coach_insight reads."""
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    for i in range(baseline_count):
+        main._post_registry[f"{cid}-b{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": baseline_raw}
+    main._invalidate_creator_mean(cid)
+    main._arm_stats[cid] = {arm_key: {"n": arm_n, "sum_raw": arm_sum_raw, "alpha": 3.0, "beta": 1.5,
+                                      "confidence": "early_read" if arm_n < 8 else "confirmed"}}
+    main._arms_loaded.add(cid)
+
+
+# ---------------------------------------------------------------------------
+# P-01 · Coach insight: strongest grounded non-noise arm, else None (NO-INSIGHT gate).
+# ---------------------------------------------------------------------------
+
+def test_coach_insight_returns_driver(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    _seed_coach_creator("c_coach1", arm_sum_raw=12.0)     # 4 posts avg raw 3.0 vs baseline 1.0 → driver
+    ins = asyncio.run(main._coach_insight("c_coach1"))
+    assert ins and prompts.classify_arm_lift(ins["lift_pct"]) == "driver"
+    assert ins["value"] == "contrarian"
+
+
+def test_coach_insight_none_when_noise(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    _seed_coach_creator("c_coach2", arm_sum_raw=4.4)      # avg ~1.1 vs baseline 1.0 → noise band
+    assert asyncio.run(main._coach_insight("c_coach2")) is None
+
+
+def test_coach_insight_none_when_too_few_settled(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    _seed_coach_creator("c_coach3", baseline_count=1)     # only 1 settled post < COACH_MIN_SETTLED
+    assert asyncio.run(main._coach_insight("c_coach3")) is None
+
+
 def test_editor_capabilities_endpoint():
     caps = client.get("/v1/editor/capabilities").json()["capabilities"]
     assert caps["talking_head"]["punch_ins"] is True and caps["fast_cuts"]["punch_ins"] is False

@@ -342,6 +342,26 @@ async def _attribute_settled_post(creator_id: str, post: dict) -> dict:
             "verdict": str(data.get("verdict", ""))[:160]}
 
 
+COACH_MIN_SETTLED = 4          # need a real read before the coach speaks
+
+
+async def _coach_insight(creator_id: str) -> dict | None:
+    """The single strongest GROUNDED, non-noise arm for the Today coach — or None (the
+    NO-INSIGHT gate). Deterministic: Python finds the insight from the honest per-creator
+    bands (Loop A); the LLM later only phrases it. Silence is a valid, common output."""
+    settled = sum(1 for p in _post_registry.values()
+                  if p.get("creator_id") == creator_id and p.get("settled"))
+    if settled < COACH_MIN_SETTLED:
+        return None
+    for a in await _arms_for_prompt(creator_id):        # already sorted by |lift|, grounded flagged
+        if a.get("has_lift") and prompts.classify_arm_lift(a["lift_pct"]) != "noise":
+            return {"dimension": a["dimension"], "value": a["value"], "lift_pct": a["lift_pct"],
+                    "band": prompts.classify_arm_lift(a["lift_pct"]),
+                    "confidence": a.get("confidence", "early_read"), "label": a["label"],
+                    "n": a.get("n", 0)}
+    return None
+
+
 async def _arms_for_prompt(creator_id: str) -> list[dict]:
     """Shape raw bandit arms into the {lift_pct, label, confidence} form that
     prompts.learning_block() actually reads. Without this the raw arm dicts lack
