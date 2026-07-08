@@ -362,9 +362,37 @@ async def _coach_insight(creator_id: str) -> dict | None:
     return None
 
 
-# creator_id -> when the Today card was last shown (UTC). ≤1 card/day gate; P-03 backs
-# this with creators.coach_last_shown so a restart doesn't re-show the same card.
+# creator_id -> when the Today card was last shown (UTC). ≤1 card/day gate, backed by
+# creators.coach_last_shown so a restart / new instance doesn't re-show the same card.
 _coach_shown: dict[str, datetime] = {}
+
+
+async def _coach_last_shown(creator_id: str) -> datetime | None:
+    """In-memory first; on miss, best-effort rehydrate from creators.coach_last_shown.
+    Absent table/column/row (or keyless) just means 'never shown' — falsy degrade."""
+    ts = _coach_shown.get(creator_id)
+    if ts is not None or not _supabase_client:
+        return ts
+    try:
+        row = await _supabase_client.load_creator(creator_id) or {}
+        raw = row.get("coach_last_shown")
+        if raw:
+            ts = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            _coach_shown[creator_id] = ts
+            return ts
+    except Exception as e:
+        logging.warning("coach_last_shown rehydrate failed: %s", e)
+    return None
+
+
+async def _coach_mark_shown(creator_id: str) -> None:
+    """Stamp the daily gate: in-memory (authoritative this process) + best-effort
+    durable write so tomorrow's instance still honors ≤1/day."""
+    now = datetime.now(timezone.utc)
+    _coach_shown[creator_id] = now
+    await _persist_creator(creator_id, coach_last_shown=now.isoformat())
 
 _COACH_DIM_WORD = {"style": "style", "format_id": "format",
                    "hook_signal": "hook", "pillar": "pillar"}
@@ -391,7 +419,7 @@ async def coach_today(creator_id: str = "default"):
     grounded, non-noise signal (_coach_insight) — the LLM only phrases the handed
     numbers. Zero-settled creators get a setup nudge with NO performance claim.
     Silence ({"card": null}) is the common, correct output."""
-    last = _coach_shown.get(creator_id)
+    last = await _coach_last_shown(creator_id)
     if last and (datetime.now(timezone.utc) - last).total_seconds() < 86400:
         return {"card": None}
     insight = await _coach_insight(creator_id)
@@ -399,7 +427,7 @@ async def coach_today(creator_id: str = "default"):
         settled = sum(1 for p in _post_registry.values()
                       if p.get("creator_id") == creator_id and p.get("settled"))
         if settled == 0:
-            _coach_shown[creator_id] = datetime.now(timezone.utc)
+            await _coach_mark_shown(creator_id)
             return {"card": {"kind": "setup", "mode": "mock",
                              "headline": "Post one to start learning",
                              "body": "Once your first posts settle I can tell you what's "
@@ -421,7 +449,7 @@ async def coach_today(creator_id: str = "default"):
                 mode = "live"
         except HTTPException:
             pass
-    _coach_shown[creator_id] = datetime.now(timezone.utc)
+    await _coach_mark_shown(creator_id)
     return {"card": {**card, "kind": "insight", "mode": mode, "insight": insight}}
 
 

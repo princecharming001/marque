@@ -2088,6 +2088,53 @@ def test_coach_today_some_settled_but_no_signal_is_null(monkeypatch):
     assert client.get("/v1/coach/today", params={"creator_id": "c_coach6"}).json()["card"] is None
 
 
+# ---------------------------------------------------------------------------
+# P-03 · coach_last_shown persistence: mark → gate; stale stamp re-opens; DB rehydrate.
+# ---------------------------------------------------------------------------
+
+def test_coach_mark_shown_persists_and_gates(monkeypatch):
+    from datetime import datetime, timezone
+    calls = []
+
+    class FakeSB:
+        async def upsert_creator(self, cid, fields):
+            calls.append((cid, dict(fields)))
+            return True
+    monkeypatch.setattr(main, "_supabase_client", FakeSB())
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    asyncio.run(main._coach_mark_shown("c_coach8"))
+    assert calls and "coach_last_shown" in calls[0][1]     # best-effort durable stamp
+    assert client.get("/v1/coach/today", params={"creator_id": "c_coach8"}).json()["card"] is None
+
+
+def test_coach_stale_stamp_reopens_card(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()
+    _seed_coach_creator("c_coach9", arm_sum_raw=12.0)
+    main._coach_shown["c_coach9"] = datetime.now(timezone.utc) - timedelta(hours=25)
+    assert client.get("/v1/coach/today", params={"creator_id": "c_coach9"}).json()["card"]
+
+
+def test_coach_gate_rehydrates_from_db_on_memory_miss(monkeypatch):
+    from datetime import datetime, timezone
+
+    class FakeSB:
+        async def load_creator(self, cid):
+            return {"creator_id": cid,
+                    "coach_last_shown": datetime.now(timezone.utc).isoformat()}
+
+        async def upsert_creator(self, cid, fields):
+            return True
+    monkeypatch.setattr(main, "_supabase_client", FakeSB())
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._coach_shown.clear()                              # fresh process, DB has the stamp
+    assert client.get("/v1/coach/today", params={"creator_id": "c_coach10"}).json()["card"] is None
+    assert "c_coach10" in main._coach_shown                # rehydrated into memory
+
+
 def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
     monkeypatch.setattr(main, "_supabase_client", None)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
