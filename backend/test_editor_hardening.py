@@ -108,6 +108,29 @@ def test_validate_source_url_skips_non_http():
     asyncio.run(main._validate_source_url("file:///tmp/x.mov"))  # no raise
 
 
+def test_preview_watchdog_fails_stranded_preview():
+    # G-09: a preview stuck in "rendering" (task died / restart) is failed by the watchdog.
+    job_id = seed_clip_job(source_url="mock://source")
+    clip = main._clip_jobs[job_id]["clips"][0]
+    clip["preview_status"] = "rendering"
+    clip["preview_started_at"] = time.time() - 100000
+    main._sweep_stuck_renders(main._clip_jobs, max_render_s=1)
+    assert clip["preview_status"] == "failed" and clip.get("preview_error")
+
+
+def test_watchdog_bumps_render_gen_so_stale_success_is_discarded():
+    # G-09/D8: a clip failed by the watchdog bumps render_gen so a late render write
+    # from the still-running stale task is discarded (no contradictory ready+error).
+    job_id = seed_clip_job(source_url="mock://source")
+    clip = main._clip_jobs[job_id]["clips"][0]
+    clip["status"] = "rendering"
+    clip["render_started_at"] = time.time() - 100000
+    stale_gen = clip.get("render_gen", 0)
+    main._sweep_stuck_renders(main._clip_jobs, max_render_s=1)
+    assert clip["status"] == "failed"
+    assert not main._is_current_render(clip, stale_gen)   # gen bumped → stale write discarded
+
+
 def test_tweak_render_failure_is_visible_on_the_clip(monkeypatch):
     # G-05: a re-render failure that restores the previous URL must be visible on the
     # clip via GET, not just buried in job['tweaks'] where the app can't see it (D6).

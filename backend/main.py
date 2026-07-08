@@ -1876,6 +1876,8 @@ async def _preview_rerender_clip(job_id: str, clip_id: str) -> None:
     if not clip:
         return
     clip["preview_status"] = "rendering"
+    clip["preview_started_at"] = time.time()          # G-09: watchdog can now fail a stranded preview
+    my_gen = clip["preview_gen"] = clip.get("preview_gen", 0) + 1   # guard: newest preview wins
     try:
         async with _render_semaphore:
             submission = await _submit_remotion_render(
@@ -1884,14 +1886,17 @@ async def _preview_rerender_clip(job_id: str, clip_id: str) -> None:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
             preview_url = await _poll_remotion_render(
                 submission["render_id"], submission["bucket_name"])
-        clip["preview_url"] = preview_url
-        clip["preview_status"] = "ready"
+        if clip.get("preview_gen") == my_gen:         # a newer preview / watchdog didn't supersede us
+            clip["preview_url"] = preview_url
+            clip["preview_status"] = "ready"
     except PipelineError as e:
-        clip["preview_status"] = "failed"
-        clip["preview_error"] = f"{e.code}: {e.detail}"[:200]
+        if clip.get("preview_gen") == my_gen:
+            clip["preview_status"] = "failed"
+            clip["preview_error"] = f"{e.code}: {e.detail}"[:200]
     except Exception as e:
-        clip["preview_status"] = "failed"
-        clip["preview_error"] = str(e)[:200]
+        if clip.get("preview_gen") == my_gen:
+            clip["preview_status"] = "failed"
+            clip["preview_error"] = str(e)[:200]
 
 
 def _mock_edl(style: str, script: dict) -> dict:
@@ -2160,7 +2165,16 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     for job in jobs.values():
         for c in job.get("clips", []):
             if c.get("status") == "rendering" and now - c.get("render_started_at", now) > budget:
+                # Bump the render generation so the still-running task's late write is
+                # discarded (_is_current_render fails) — else it could flip the clip back
+                # to ready with contradictory state (audit D8).
+                _bump_render_gen(c)
                 _fail_clip(c, "render_stalled", f"render exceeded {int(budget)}s watchdog")
+            if c.get("preview_status") == "rendering" \
+                    and now - c.get("preview_started_at", now) > budget:
+                c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
+                c["preview_status"] = "failed"
+                c["preview_error"] = f"preview exceeded {int(budget)}s watchdog"
         if job.get("status") in ("transcribing", "editing", "rendering") \
                 and now - job.get("created_at", now) > budget * 2:
             _fail_job(job, "render_stalled", "job exceeded the pipeline watchdog")
