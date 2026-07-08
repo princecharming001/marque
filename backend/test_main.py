@@ -2150,6 +2150,43 @@ def test_coach_today_llm_failure_degrades_to_template(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# AF (audit fixes) · numbers shown to creators are computed, never LLM-invented.
+# ---------------------------------------------------------------------------
+
+def test_attribution_overwrites_llm_numbers_with_computed_lift(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    _seed_coach_creator("c_attr1", arm_sum_raw=12.0)      # real computed driver
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        return json.dumps({"dimension": "hook_signal", "arm_value": "contrarian",
+                           "lift_pct": 999, "band": "driver", "confidence": "confirmed",
+                           "verdict": "Contrarian ran +999% above your average."})
+    monkeypatch.setattr(main, "anthropic", fake)
+    out = asyncio.run(main._attribute_settled_post("c_attr1", {"hook_signal": "contrarian"}))
+    real = next(a for a in asyncio.run(main._arms_for_prompt("c_attr1"))
+                if a["value"] == "contrarian")
+    assert out["lift_pct"] == int(real["lift_pct"]) != 999   # Python owns the number
+    assert "999" not in out["verdict"]                        # drifted verdict replaced
+    assert out["band"] == prompts.classify_arm_lift(int(real["lift_pct"]))
+
+
+def test_attribution_llm_none_never_echoes_raw_fields(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    _seed_coach_creator("c_attr2", arm_sum_raw=12.0)
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        return json.dumps({"dimension": "none", "arm_value": "", "lift_pct": 777,
+                           "band": "driver", "verdict": "hmm", "extra_key": "leak"})
+    monkeypatch.setattr(main, "anthropic", fake)
+    out = asyncio.run(main._attribute_settled_post("c_attr2", {"hook_signal": "contrarian"}))
+    assert out["lift_pct"] == 0 and out["band"] == "noise" and "extra_key" not in out
+
+
+# ---------------------------------------------------------------------------
 # P-06 · Completeness sweep nits.
 # ---------------------------------------------------------------------------
 

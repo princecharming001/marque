@@ -334,13 +334,31 @@ async def _attribute_settled_post(creator_id: str, post: dict) -> dict:
     # The model may only name a dimension THIS post used (or 'none'); anything else is
     # drift → trust the deterministic result rather than a hallucinated cause.
     if dim == "none":
-        return deterministic if deterministic["dimension"] == "none" else data | {"band": "noise"}
+        if deterministic["dimension"] == "none":
+            return deterministic
+        # Model demurred where the data has a signal — return an honest none-shape;
+        # never echo unvalidated LLM fields (numbers included) back to the client.
+        return {"dimension": "none", "arm_value": "", "lift_pct": 0, "band": "noise",
+                "confidence": "insufficient",
+                "verdict": str(data.get("verdict", ""))[:160] or deterministic["verdict"]}
     if dim not in DIMENSIONS or f"{dim}:{data.get('arm_value', '')}" not in own_keys:
         return deterministic
+    # AF-1 (audit): the model PHRASES, Python owns the NUMBERS — lift/band/confidence
+    # come from the computed arm, and a verdict that doesn't cite the real lift
+    # verbatim is drift → deterministic phrasing (mirrors the coach card guard).
+    arm = next((a for a in scoped
+                if a["dimension"] == dim and a["value"] == data.get("arm_value")), None)
+    if arm is None:
+        return deterministic
+    real_lift = int(arm["lift_pct"])
+    band = prompts.classify_arm_lift(real_lift)
+    verdict = str(data.get("verdict", ""))[:160]
+    if f"{real_lift}%" not in verdict:
+        verdict = f"{arm.get('label', 'This dimension')} — a {band} in your data."
     return {"dimension": dim, "arm_value": data.get("arm_value", ""),
-            "lift_pct": int(data.get("lift_pct", 0)), "band": data.get("band", "noise"),
-            "confidence": data.get("confidence", "early_read"),
-            "verdict": str(data.get("verdict", ""))[:160]}
+            "lift_pct": real_lift, "band": band,
+            "confidence": arm.get("confidence", "early_read"),
+            "verdict": verdict}
 
 
 COACH_MIN_SETTLED = 4          # need a real read before the coach speaks
