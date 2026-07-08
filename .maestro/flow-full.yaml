@@ -94,18 +94,11 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.emulate.skip"
 
-# Camera comfort (auto-advance; Natural pre-seeds talking-head)
+# Camera comfort (auto-advance). H-05: no styles step follows — the server
+# infers style from the take now, straight to pace.
 - assertVisible: "How do you feel on camera?"
 - tapOn:
     id: "onboard.comfort.natural"
-
-# Styles — talking-head arrives PRE-SELECTED from comfort seeding; tapping it
-# would toggle it OFF and disable Continue. Just continue.
-- extendedWaitUntil:
-    visible: "Pick your video styles"
-    timeout: 4000
-- tapOn:
-    id: "onboard.stylesContinue"
 
 # Pace (auto-advance)
 - assertVisible: "Pick your weekly pace"

@@ -64,11 +64,6 @@ name: Marque — gate screenshots (paywall→auth order QA)
     id: "onboard.emulate.skip"
 - tapOn:
     id: "onboard.comfort.natural"
-- extendedWaitUntil:
-    visible: "Pick your video styles"
-    timeout: 4000
-- tapOn:
-    id: "onboard.stylesContinue"
 - tapOn:
     id: "onboard.pace.5"
 - extendedWaitUntil:

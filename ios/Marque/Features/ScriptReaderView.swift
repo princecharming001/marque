@@ -5,7 +5,6 @@ struct ScriptReaderView: View {
     @Environment(AppRouter.self) private var router
     let script: Script
     @State private var showHookLab = false
-    @State private var showFormatSheet = false
     @State private var showRecord = false
     @State private var steering = false
     @State private var editingBody = false
@@ -48,13 +47,10 @@ struct ScriptReaderView: View {
 
                 MarqueHairline()
 
-                // Format chip + swap
+                // Format chip (H-05: no swap — the server infers style from the take)
                 HStack {
                     FormatTag(formatId: live.formatId)
                     Spacer()
-                    Button("Swap format") { showFormatSheet = true }
-                        .font(AppFont.callout).foregroundStyle(Palette.goldDeep)
-                        .accessibilityIdentifier("script.swapFormat")
                 }
 
                 // Body + shot plan
@@ -79,7 +75,6 @@ struct ScriptReaderView: View {
         .onAppear { router.hideTabBar = true }
         .onDisappear { router.hideTabBar = false }
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }
-        .sheet(isPresented: $showFormatSheet) { FormatSwapSheet(script: live) }
         .fullScreenCover(isPresented: $showRecord) { RecordView(script: live) }
     }
 
@@ -244,34 +239,3 @@ struct HookLabSheet: View {
     }
 }
 
-// MARK: - Format swap
-
-struct FormatSwapSheet: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let script: Script
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: Space.md) {
-                    ForEach(Catalog.formats) { f in
-                        Button {
-                            store.swapFormat(script, to: f.id); dismiss()
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack { FormatTag(formatId: f.id); Spacer(); Text("\(f.targetSeconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary) }
-                                Text(f.blurb).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                                    .multilineTextAlignment(.leading)
-                            }
-                            .marqueCard()
-                        }.buttonStyle(.plain)
-                    }
-                }
-                .screenPadding().padding(.vertical, Space.lg)
-            }
-            .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Choose a format")
-            .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-}

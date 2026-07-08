@@ -19,7 +19,6 @@ struct RecordView: View {
     @State private var recordStart: Date?
     @State private var footagePath: String?
     @State private var pickedItem: PhotosPickerItem?
-    @State private var selectedFormats: Set<String>
     // duet_split only: the clip the creator is reacting to (pasted URL).
     @State private var reactSourceURL: String = ""
     // Mutable copy so inline teleprompter edits flow through without modifying the store mid-take.
@@ -44,8 +43,6 @@ struct RecordView: View {
     init(script: Script) {
         self.script = script
         _liveScript = State(initialValue: script)
-        // Default to just the script's own format — the creator opts INTO extra cuts, we don't pre-check them.
-        _selectedFormats = State(initialValue: Set([script.formatId]))
     }
 
     var body: some View {
@@ -204,13 +201,15 @@ struct RecordView: View {
                 ProgressView().tint(Palette.accent)
                 Text("Stitching your takes…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
             case .recorded:
-                Text("Nice take. Choose the formats to cut it into.").font(AppFont.callout).foregroundStyle(.white.opacity(0.85)).multilineTextAlignment(.center)
+                // H-05: no format picker — the editor infers the right style/format
+                // from the take itself and shows its plan on the brief screen next.
+                Text("Nice take. Your editor will study it and show you the plan.")
+                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.85)).multilineTextAlignment(.center)
                 Button { reRecord() } label: {
                     Label("Re-record", systemImage: "arrow.counterclockwise")
                         .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
                 }
                 .accessibilityIdentifier("record.reRecord")
-                formatPicker
                 if liveScript.style == VideoStyle.duetSplit.rawValue {
                     reactSourceField
                 }
@@ -221,8 +220,6 @@ struct RecordView: View {
                         .background(Palette.onInk).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(selectedFormats.isEmpty)
-                .opacity(selectedFormats.isEmpty ? 0.5 : 1)
                 .accessibilityIdentifier("record.makeClips")
                 GhostButton(title: "Save as draft") { saveDraftAndClose() }
                     .accessibilityIdentifier("record.saveDraft")
@@ -542,7 +539,7 @@ struct RecordView: View {
     /// Legacy local pipeline — mock clips via the old engine path (also the
     /// offline/demo path when the backend is unreachable).
     private func fallbackToMock() async {
-        await store.makeClips(from: liveScript, formats: Array(selectedFormats),
+        await store.makeClips(from: liveScript, formats: [liveScript.formatId],
                               footagePath: footagePath,
                               reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines))
         dismiss()
@@ -564,31 +561,6 @@ struct RecordView: View {
                 .accessibilityIdentifier("record.reactSource")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var formatPicker: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.sm) {
-                ForEach(Catalog.formats) { f in
-                    Button {
-                        if selectedFormats.contains(f.id) { selectedFormats.remove(f.id) }
-                        else { selectedFormats.insert(f.id) }
-                    } label: {
-                        Group {
-                            if selectedFormats.contains(f.id) {
-                                Text(f.name).font(AppFont.callout).foregroundStyle(Palette.ink)
-                                    .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-                                    .background(Palette.onInk).clipShape(Capsule())
-                            } else {
-                                Text(f.name).font(AppFont.callout).foregroundStyle(.white)
-                                    .padding(.horizontal, Space.md)
-                                    .marqueGlassCapsule(height: 36)
-                            }
-                        }
-                    }.buttonStyle(.plain)
-                }
-            }
-        }
     }
 
     private func recordButton(active: Bool = false, _ action: @escaping () -> Void) -> some View {

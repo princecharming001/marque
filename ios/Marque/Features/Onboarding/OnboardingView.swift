@@ -9,9 +9,10 @@ struct OnboardingView: View {
     @Environment(AppStore.self) private var store
 
     enum Step: Int, CaseIterable {
+        // H-05: no styles step — the server infers style from the take now.
         case landing, goal, blocker, frequency, method, name, niche, about,
              knownFor, platform, connectAccounts, voiceInterview, voiceSliders,
-             emulate, cameraComfort, styles, pace, mirror, building
+             emulate, cameraComfort, pace, mirror, building
 
         /// Quiz-progress dashes cover everything between landing and building.
         var quizIndex: Int? {
@@ -61,7 +62,6 @@ struct OnboardingView: View {
             case .voiceSliders:    voiceSlidersStep
             case .emulate:         emulateStep
             case .cameraComfort:   cameraComfortStep
-            case .styles:        stylesStep
             case .pace:          paceStep
             case .mirror:        mirrorStep
             case .building:      buildingStep
@@ -482,44 +482,13 @@ struct OnboardingView: View {
     }
 
     private func comfortCard(_ c: CameraComfort, _ icon: String, _ sf: String, _ idKey: String) -> some View {
+        // H-05: comfort no longer seeds preferredStyles — the server infers the
+        // right style from the actual take (analyze-first), not a quiz answer.
         OptionCard(icon: icon, sfFallback: sf, title: c.rawValue,
                    selected: store.brand.cameraComfort == c) {
-            selectAndAdvance {
-                store.brand.cameraComfort = c
-                seedStyles(for: c)
-            }
+            selectAndAdvance { store.brand.cameraComfort = c }
         }
         .accessibilityIdentifier("onboard.comfort.\(idKey)")
-    }
-
-    private func seedStyles(for comfort: CameraComfort) {
-        switch comfort {
-        case .natural:
-            if !store.brand.preferredStyles.contains(.talkingHead) {
-                store.brand.preferredStyles.append(.talkingHead)
-            }
-        case .preferOff:
-            if !store.brand.preferredStyles.contains(.faceless) {
-                store.brand.preferredStyles.append(.faceless)
-            }
-        case .gettingThere:
-            if !store.brand.preferredStyles.contains(.talkingHead) {
-                store.brand.preferredStyles.append(.talkingHead)
-            }
-            if !store.brand.preferredStyles.contains(.faceless) {
-                store.brand.preferredStyles.append(.faceless)
-            }
-        }
-    }
-
-    private var stylesStep: some View {
-        @Bindable var store = store
-        return scaffold("Pick your video styles", "Each gets its own kind of script.") {
-            StyleSelectionView(selected: $store.brand.preferredStyles)
-        } cta: {
-            OnbPill(title: "Continue", enabled: !store.brand.preferredStyles.isEmpty) { advance() }
-                .accessibilityIdentifier("onboard.stylesContinue")
-        }
     }
 
     private var paceStep: some View {

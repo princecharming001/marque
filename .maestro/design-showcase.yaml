@@ -81,9 +81,6 @@ appId: com.getmarque.app
     id: onboard.comfort.natural
 
 - tapOn:
-    id: onboard.stylesContinue
-
-- tapOn:
     id: onboard.pace.5
 
 - tapOn:

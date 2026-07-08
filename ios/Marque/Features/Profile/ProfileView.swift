@@ -9,7 +9,6 @@ struct ProfileView: View {
     @State private var showBrandEditor = false
     @State private var showVoiceEditor = false
     @State private var showPillarsEditor = false
-    @State private var showStyleEditor = false
     @State private var isRefreshingSummary = false
 
     private var account: ConnectedAccount? { store.brand.connectedAccounts.first }
@@ -55,8 +54,8 @@ struct ProfileView: View {
                     profileRow(icon: "waveform", label: "Voice & tone") { showVoiceEditor = true }
                     MarqueHairline().padding(.leading, 56)
                     profileRow(icon: "square.grid.2x2", label: "Content pillars") { showPillarsEditor = true }
-                    MarqueHairline().padding(.leading, 56)
-                    profileRow(icon: "play.rectangle", label: "Your formats") { showStyleEditor = true }
+                    // H-05: "Your formats" editor removed — the server infers style
+                    // per take now; there is no preferred-styles knob to set.
                     if !store.pillars.isEmpty {
                         pillarsStrip
                             .padding(.top, Space.sm)
@@ -103,7 +102,6 @@ struct ProfileView: View {
         .sheet(isPresented: $showBrandEditor) { BrandEditorSheet(store: store) }
         .sheet(isPresented: $showVoiceEditor) { VoiceEditorSheet(store: store) }
         .sheet(isPresented: $showPillarsEditor) { PillarsEditorSheet(store: store) }
-        .sheet(isPresented: $showStyleEditor) { StyleEditorSheet(store: store) }
         .task {
             if store.brandSummary == nil { await refreshSummary() }
         }
@@ -676,27 +674,3 @@ private struct PillarEditRow: View {
     }
 }
 
-struct StyleEditorSheet: View {
-    let store: AppStore
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        NavigationStack {
-            @Bindable var store = store
-            ScrollView {
-                VStack(alignment: .leading, spacing: Space.md) {
-                    Text("Only these formats are suggested across the app — your feed, your scripts, your mimics.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    StyleSelectionView(selected: $store.brand.preferredStyles)
-                }
-                .screenPadding().padding(.vertical, Space.lg)
-            }
-            .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Your formats")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") { store.save(); dismiss() }
-            }}
-        }
-    }
-}
