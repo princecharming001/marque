@@ -79,6 +79,29 @@ def test_validate_source_url_skips_non_http():
     asyncio.run(main._validate_source_url("file:///tmp/x.mov"))  # no raise
 
 
+def test_pipeline_broll_resolve_failure_is_a_warning_not_a_failure(monkeypatch):
+    # B-05: a b-roll resolve blow-up must degrade to a warning, never fail the clip job.
+    job_id = _renderable_job(monkeypatch)
+
+    async def boom(edl):
+        raise RuntimeError("pexels exploded")
+    monkeypatch.setattr(main, "_resolve_broll", boom)
+
+    async def bridge(*args, timeout_s=None):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_):
+        return None
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+
+    _run_pipeline_sync(job_id)
+    job = main._clip_jobs[job_id]
+    assert job["status"] == "ready"                       # NOT failed by the b-roll blow-up
+    assert any("broll_unresolved" in w for c in job["clips"] for w in c.get("warnings", []))
+
+
 # ---------------------------------------------------------------------------
 # Transcription failures — loud and structured, never silently empty
 # ---------------------------------------------------------------------------

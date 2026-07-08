@@ -2038,12 +2038,17 @@ async def _run_pipeline(job_id: str):
 
         edl_data = _apply_edit_prefs(edl_data, prefs)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
-        # source — both must happen before the render plan is built.
-        edl_data = await _resolve_broll(edl_data)
-        # Unresolved stock b-roll is a WARNING, not a failure — but no longer silent.
-        unresolved = [b.get("broll_query") or b.get("cue_text", "")
-                      for b in (edl_data.get("broll") or [])
-                      if b.get("source") != "own_media" and not b.get("resolved_url")]
+        # source — both must happen before the render plan is built. B-roll resolution
+        # is a NICETY: a failure here must degrade to a warning, never fail the whole
+        # clip job (the tweak path already guards this the same way — audit B-05/F4).
+        try:
+            edl_data = await _resolve_broll(edl_data)
+            unresolved = [b.get("broll_query") or b.get("cue_text", "")
+                          for b in (edl_data.get("broll") or [])
+                          if b.get("source") != "own_media" and not b.get("resolved_url")]
+        except Exception as e:
+            logging.warning("pipeline b-roll resolve failed: %s", e)
+            unresolved = ["resolve failed"]
         if unresolved:
             for c in job["clips"]:
                 c.setdefault("warnings", []).extend(f"broll_unresolved: {q}"[:120] for q in unresolved)
