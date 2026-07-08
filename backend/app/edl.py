@@ -712,17 +712,23 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         applied = True
 
             elif t == "remove_broll":
-                r = None
-                if op.get("start_frame") is not None and op.get("end_frame") is not None:
-                    r = clamp_range(op["start_frame"], op["end_frame"])
-                before = edl.get("broll") or []
-                after = [b for b in before
-                         if r and (b["src_out"] <= r[0] or b["src_in"] >= r[1])]
-                if len(after) < len(before):
-                    edl["broll"] = after
-                    applied = True
+                ranged = op.get("start_frame") is not None and op.get("end_frame") is not None
+                r = clamp_range(op["start_frame"], op["end_frame"]) if ranged else None
+                if ranged and r is None:
+                    # AF-5 (audit): a PROVIDED-but-invalid range made the filter below
+                    # falsy for every cue — a targeted removal silently wiped ALL
+                    # b-roll and reported applied=True. Reject it like remove_overlays.
+                    reason = "invalid or out-of-bounds range"
                 else:
-                    reason = "no b-roll found" + (" in that range" if r else "")
+                    before = edl.get("broll") or []
+                    # No range → remove all; ranged → remove only overlapping cues.
+                    after = [] if r is None else \
+                        [b for b in before if b["src_out"] <= r[0] or b["src_in"] >= r[1]]
+                    if len(after) < len(before):
+                        edl["broll"] = after
+                        applied = True
+                    else:
+                        reason = "no b-roll found" + (" in that range" if r else "")
 
             elif t == "set_split_fraction":
                 if edl.get("style") != "duet_split":

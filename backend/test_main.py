@@ -2173,6 +2173,23 @@ def test_attribution_overwrites_llm_numbers_with_computed_lift(monkeypatch):
     assert out["band"] == prompts.classify_arm_lift(int(real["lift_pct"]))
 
 
+def test_remove_broll_invalid_range_rejected_not_wipe_all():
+    """AF-5: a provided-but-invalid range must not silently remove every b-roll cue."""
+    from app.edl import apply_edl_ops
+    edl = {"style": "broll_cutaway", "format_id": "myth-buster",
+           "segments": [{"src_in": 0, "src_out": 720}], "drops": [], "captions": [],
+           "overlays": [], "layout": {"style": "broll_cutaway"},
+           "broll": [{"src_in": 10, "src_out": 40, "query": "gym"},
+                     {"src_in": 300, "src_out": 360, "query": "meal"}]}
+    out, res = apply_edl_ops(edl, [{"type": "remove_broll",
+                                    "start_frame": 500, "end_frame": 100}], [])
+    assert not res[0]["applied"] and "range" in res[0]["reason"]
+    assert len(out["broll"]) == 2                          # nothing was wiped
+    # the no-range form still removes all (unchanged semantics)
+    out2, res2 = apply_edl_ops(edl, [{"type": "remove_broll"}], [])
+    assert res2[0]["applied"] and out2["broll"] == []
+
+
 def test_preview_tweak_does_not_commit_the_edl(monkeypatch):
     """AF-6: preview=1 renders the CANDIDATE, never installs it — Preview-then-Apply
     used to apply everything twice, and Cancel-after-preview silently kept the edits."""
