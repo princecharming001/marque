@@ -669,3 +669,154 @@ enum Catalog {
     // Calm, distinct per-pillar hues (used only as small accents + the active-card gradient).
     static let pillarColors: [UInt] = [0x2C6BED, 0x2F9E60, 0x9A6A55, 0x8A6FA0, 0xB5791C, 0x4C6E91]
 }
+
+// MARK: - Analyze-first edit brief (Loop H)
+// Tolerant Codable mirrors of the backend's edit_brief + toggles. Every field is
+// optional-with-default so a newer backend can add keys without breaking decode.
+
+struct BriefHookCandidate: Codable, Hashable {
+    var quote: String = ""
+    var reason: String = ""
+    var signal: String = ""
+    var startFrame: Int = 0
+    var endFrame: Int = 0
+
+    enum CodingKeys: String, CodingKey {
+        case quote, reason, signal, startFrame = "start_frame", endFrame = "end_frame"
+    }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        quote = (try? c.decodeIfPresent(String.self, forKey: .quote)) ?? ""
+        reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? ""
+        signal = (try? c.decodeIfPresent(String.self, forKey: .signal)) ?? ""
+        startFrame = (try? c.decodeIfPresent(Int.self, forKey: .startFrame)) ?? 0
+        endFrame = (try? c.decodeIfPresent(Int.self, forKey: .endFrame)) ?? 0
+    }
+}
+
+struct BriefCutRegion: Codable, Hashable {
+    var startFrame: Int = 0
+    var endFrame: Int = 0
+    var reason: String = "filler"
+    var severity: String = "low"
+    var quote: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case startFrame = "start_frame", endFrame = "end_frame", reason, severity, quote
+    }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        startFrame = (try? c.decodeIfPresent(Int.self, forKey: .startFrame)) ?? 0
+        endFrame = (try? c.decodeIfPresent(Int.self, forKey: .endFrame)) ?? 0
+        reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? "filler"
+        severity = (try? c.decodeIfPresent(String.self, forKey: .severity)) ?? "low"
+        quote = (try? c.decodeIfPresent(String.self, forKey: .quote)) ?? ""
+    }
+}
+
+struct BriefPacing: Codable, Hashable {
+    var energy: String = "medium"
+    var read: String = ""
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        energy = (try? c.decodeIfPresent(String.self, forKey: .energy)) ?? "medium"
+        read = (try? c.decodeIfPresent(String.self, forKey: .read)) ?? ""
+    }
+}
+
+struct BriefInferred: Codable, Hashable {
+    var style: String = ""
+    var formatId: String = ""
+
+    enum CodingKeys: String, CodingKey { case style, formatId = "format_id" }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        style = (try? c.decodeIfPresent(String.self, forKey: .style)) ?? ""
+        formatId = (try? c.decodeIfPresent(String.self, forKey: .formatId)) ?? ""
+    }
+}
+
+struct EditBrief: Codable, Hashable {
+    var videoType: String = "other"
+    var throughLine: String = ""
+    var strategy: String = "trim_only"
+    var isScripted: Bool = false
+    var hookCandidates: [BriefHookCandidate] = []
+    var cutRegions: [BriefCutRegion] = []
+    var pacing: BriefPacing? = nil
+    var inferred: BriefInferred? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case videoType = "video_type", throughLine = "through_line", strategy
+        case isScripted = "is_scripted", hookCandidates = "hook_candidates"
+        case cutRegions = "cut_regions", pacing, inferred
+    }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        videoType = (try? c.decodeIfPresent(String.self, forKey: .videoType)) ?? "other"
+        throughLine = (try? c.decodeIfPresent(String.self, forKey: .throughLine)) ?? ""
+        strategy = (try? c.decodeIfPresent(String.self, forKey: .strategy)) ?? "trim_only"
+        isScripted = (try? c.decodeIfPresent(Bool.self, forKey: .isScripted)) ?? false
+        hookCandidates = (try? c.decodeIfPresent([BriefHookCandidate].self, forKey: .hookCandidates)) ?? []
+        cutRegions = (try? c.decodeIfPresent([BriefCutRegion].self, forKey: .cutRegions)) ?? []
+        pacing = try? c.decodeIfPresent(BriefPacing.self, forKey: .pacing)
+        inferred = try? c.decodeIfPresent(BriefInferred.self, forKey: .inferred)
+    }
+
+    /// Human-readable video type ("scripted_talking_head" → "Scripted talking head").
+    var videoTypeLabel: String {
+        videoType.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+}
+
+/// The three creator-editable edit toggles (captions + filler cuts are always-on).
+struct EditToggles: Codable, Hashable {
+    var broll: Bool = false
+    var punchIns: Bool = true
+    var music: Bool = false
+
+    enum CodingKeys: String, CodingKey { case broll, punchIns = "punch_ins", music }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        broll = (try? c.decodeIfPresent(Bool.self, forKey: .broll)) ?? false
+        punchIns = (try? c.decodeIfPresent(Bool.self, forKey: .punchIns)) ?? true
+        music = (try? c.decodeIfPresent(Bool.self, forKey: .music)) ?? false
+    }
+}
+
+/// Decoded response for the analyze-first pair (POST /v1/clips + GET /v1/clips/{id}).
+struct AnalyzeJobResponse: Codable {
+    var jobId: String = ""
+    var status: String = ""
+    var mode: String = "mock"
+    var editBrief: EditBrief? = nil
+    var toggles: EditToggles? = nil
+    var error: String? = nil
+
+    enum CodingKeys: String, CodingKey {
+        case jobId = "job_id", status, mode, editBrief = "edit_brief", toggles, error
+    }
+
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        jobId = (try? c.decodeIfPresent(String.self, forKey: .jobId)) ?? ""
+        status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? ""
+        mode = (try? c.decodeIfPresent(String.self, forKey: .mode)) ?? "mock"
+        editBrief = try? c.decodeIfPresent(EditBrief.self, forKey: .editBrief)
+        toggles = try? c.decodeIfPresent(EditToggles.self, forKey: .toggles)
+        error = try? c.decodeIfPresent(String.self, forKey: .error)
+    }
+}

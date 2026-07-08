@@ -173,6 +173,52 @@ extension BackendClient {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
+    // MARK: Analyze-first pair (Loop H) — the server analyzes the raw take into an
+    // edit brief FIRST; the creator reviews brief + toggles, then /confirm edits+renders.
+
+    /// POST /v1/clips with analyze_first — returns immediately with either a ready
+    /// brief (keyless mock) or status "analyzing" (poll getBrief until brief_ready).
+    func createAnalyzeJob(sourceURL: String, script: Script?,
+                          customInstructions: String = "") async -> AnalyzeJobResponse? {
+        var body: [String: Any] = [
+            "analyze_first": true,
+            "source_url": sourceURL,
+            "custom_instructions": customInstructions,
+            "edit_prefs": editPrefs,
+        ]
+        if let script {
+            body["source_id"] = script.id.uuidString
+            body["style"] = script.style
+            body["script"] = [
+                "hook": script.hook.text,
+                "body": script.body,
+                "cta": script.cta,
+                "formatId": script.formatId,
+            ]
+        }
+        guard let data = await post("/v1/clips", body) else { return nil }
+        return try? JSONDecoder().decode(AnalyzeJobResponse.self, from: data)
+    }
+
+    /// GET /v1/clips/{id} decoded for the analyze phase (status + edit_brief + toggles).
+    func getBrief(jobId: String) async -> AnalyzeJobResponse? {
+        guard let data = await get("/v1/clips/\(jobId)") else { return nil }
+        return try? JSONDecoder().decode(AnalyzeJobResponse.self, from: data)
+    }
+
+    /// POST /v1/clips/{id}/confirm — the reviewed brief + toggles → edit + ONE render.
+    /// Returns the raw response (job_id/status/clips) or nil on transport failure.
+    func confirmClip(jobId: String, toggles: EditToggles,
+                     customInstructions: String = "") async -> [String: Any]? {
+        var body: [String: Any] = [
+            "toggles": ["broll": toggles.broll, "punch_ins": toggles.punchIns,
+                        "music": toggles.music],
+        ]
+        if !customInstructions.isEmpty { body["custom_instructions"] = customInstructions }
+        guard let data = await post("/v1/clips/\(jobId)/confirm", body) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
     func pollClipJob(jobId: String, includeWords: Bool = false) async -> [String: Any]? {
         let path = "/v1/clips/\(jobId)" + (includeWords ? "?include_words=1" : "")
         guard let data = await get(path) else { return nil }
