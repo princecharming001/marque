@@ -2619,22 +2619,29 @@ async def emulate_analyze(req: EmulateAnalyzeRequest):
 
     posts = await scrape_posts(handle, req.platform)
     posts = await _transcribe_top_posts(posts)
+    real = False                                  # True only for a genuine live analysis
     if not ANTHROPIC_KEY or not posts:
         profile = _mock_emulation_profile(handle)
         mode = "mock"
     else:
         try:
             sys, usr = prompts.derive_emulation_prompt(handle, posts)
-            profile = extract_json(await anthropic(sys, usr, HAIKU, 900), array=False) \
-                or _mock_emulation_profile(handle)
-            mode = "live"
+            parsed = extract_json(await anthropic(sys, usr, HAIKU, 900), array=False)
+            profile = parsed or _mock_emulation_profile(handle)
+            mode, real = "live", bool(parsed)
         except HTTPException:
             profile = _mock_emulation_profile(handle)
             mode = "mock"
 
-    _emulation_cache[handle] = profile
-    _cap_evict(_emulation_cache, _EMULATION_CACHE_CAP)
-    if _supabase_client:
+    # Cache a REAL analysis, or a pure-keyless mock (deterministic demo, nothing to
+    # retry). Do NOT cache/persist a live-attempt that fell back to mock (empty scrape
+    # / LLM error) — persisting the generic mock durably poisons this handle so every
+    # future call short-circuits at "cached" and never re-analyzes (audit B-07/F7).
+    keyless = not ANTHROPIC_KEY
+    if real or keyless:
+        _emulation_cache[handle] = profile
+        _cap_evict(_emulation_cache, _EMULATION_CACHE_CAP)
+    if real and _supabase_client:
         await _supabase_client.upsert_emulation_profile(handle, req.platform, profile)
     return {"mode": mode, "ok": True}
 

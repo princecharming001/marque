@@ -1575,6 +1575,35 @@ def test_emulate_analyze_requires_handle():
     assert r.status_code == 422
 
 
+def test_emulate_failed_live_not_cached_or_persisted(monkeypatch):
+    # B-07: a live attempt that falls back to mock (empty scrape / LLM error) must NOT
+    # be cached or persisted — else a transient failure poisons the handle forever.
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    fake = SupabaseClientStub()
+    fake.load_emulation_profile = AsyncMock(return_value=None)
+    fake.upsert_emulation_profile = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+
+    async def some_posts(h, p):
+        return [{"caption": "a post"}]
+
+    async def passthrough(posts):
+        return posts
+    monkeypatch.setattr(main, "scrape_posts", some_posts)
+    monkeypatch.setattr(main, "_transcribe_top_posts", passthrough)
+
+    async def boom(*a, **k):
+        raise main.HTTPException(status_code=502, detail="down")
+    monkeypatch.setattr(main, "anthropic", boom)
+    main._emulation_cache.pop("failedcreator", None)
+    r = client.post("/v1/emulate/analyze",
+                    json={"handle": "failedcreator", "platform": "instagram"}).json()
+    assert r["mode"] == "mock"
+    assert "failedcreator" not in main._emulation_cache        # retryable, not poisoned
+    fake.upsert_emulation_profile.assert_not_awaited()         # no durable poison
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
