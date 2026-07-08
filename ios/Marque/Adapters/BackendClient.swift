@@ -595,6 +595,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     struct FeedPage {
         let entries: [FeedEntry]
         let nextCursor: Int?
+        // "mock" = instant first-paint fallback; the server upgrades it to real AI
+        // in the background, so the client re-fetches once to swap it in.
+        var mode: String? = nil
     }
 
     private struct ReelDTO: Decodable {
@@ -672,7 +675,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             default: return nil
             }
         }
-        return FeedPage(entries: entries, nextCursor: r.next_cursor)
+        return FeedPage(entries: entries, nextCursor: r.next_cursor, mode: r.mode)
     }
 
     func fetchReels(brand: BrandGraph, cursor: Int) async -> (reels: [ReelItem], nextCursor: Int?)? {

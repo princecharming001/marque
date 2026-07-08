@@ -22,6 +22,8 @@ final class FeedStore {
     var feedCursor: Int = 0               // mixed-feed pagination (scripts + trend)
     var reelCursor: Int = 1               // reels-only pagination; page 0's reels came in the feed
     var loadedOnce = false
+    // One-shot poller that swaps mock first-paint picks for the real AI ones when ready.
+    private var aiUpgradeTask: Task<Void, Never>? = nil
 
     // MARK: Initial load
 
@@ -38,6 +40,28 @@ final class FeedStore {
         ingest(page.entries, includeReels: true)
         feedCursor = page.nextCursor ?? -1
         reelCursor = 1                    // page 0's reels arrived inside the feed
+
+        // First paint can be the instant "mock" fallback while the server generates the
+        // real AI picks in the background (~60-90s). Silently re-fetch a couple times to
+        // swap in the AI version the moment it's ready — so "Today's picks" never sits on
+        // template copy without the creator having to pull-to-refresh.
+        if page.mode == "mock" { scheduleAIUpgrade(store: store) }
+    }
+
+    private func scheduleAIUpgrade(store: AppStore) {
+        aiUpgradeTask?.cancel()
+        aiUpgradeTask = Task { [weak self] in
+            for delay in [45, 40, 40] {           // ~45s, ~85s, ~125s after first paint
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                guard let page = await store.backend.fetchFeed(brand: store.brand, cursor: 0),
+                      page.mode == "live" else { continue }
+                // Real AI landed — swap the script picks in place (keep reels/trend/cursors).
+                self.ingestScriptsOnly(page.entries)
+                return
+            }
+        }
     }
 
     // MARK: Load more scripts (mixed-feed cursor; reels in these pages are ignored —
@@ -93,6 +117,16 @@ final class FeedStore {
                 if trend == nil { trend = t }
             }
         }
+    }
+
+    /// Replace ONLY the script picks (the AI upgrade) while leaving reels/trend/cursors
+    /// intact — used when the background AI version of "Today's picks" arrives.
+    private func ingestScriptsOnly(_ entries: [BackendClient.FeedEntry]) {
+        let fresh = entries.compactMap { e -> Script? in
+            if case .script(let s) = e { return s } else { return nil }
+        }
+        guard !fresh.isEmpty else { return }
+        scriptItems = fresh
     }
 
     private func appendScript(_ s: Script) {
