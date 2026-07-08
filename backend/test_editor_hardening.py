@@ -727,6 +727,20 @@ def test_reorder_remaps_captions_with_segment():
     assert plan["captions"][0]["frame"] == 50
 
 
+def test_reorder_captions_emitted_ascending_by_output_frame():
+    # G-01: with a reorder, captions must come out sorted by OUTPUT frame — else
+    # Captions.tsx's early-break scan drops the first-played segment's captions.
+    from app.edl import build_render_plan
+    # word A at src 50 (segment 0), word B at src 150 (segment 1). Order [1,0,2]
+    # plays segment 1 first → B's output frame (50) < A's output frame (150).
+    edl = _base_edl(captions=[{"word": "A", "frame": 50}, {"word": "B", "frame": 150}],
+                    segment_order=[1, 0, 2])
+    plan = build_render_plan(edl)
+    frames = [c["frame"] for c in plan["captions"]]
+    assert frames == sorted(frames)                      # ascending output order
+    assert plan["captions"][0]["word"] == "B"            # first-played segment's caption present, first
+
+
 def test_reorder_overlay_travels_and_does_not_smear():
     from app.edl import build_render_plan
     # Overlay spans source 90-120: 10 frames in segment 0 (ends at out 100 in

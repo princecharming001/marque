@@ -387,6 +387,11 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         of = map_point(c["frame"])
         if of is not None:
             captions.append({"word": c["word"], "frame": of})
+    # Sort by OUTPUT frame (D1): captions are emitted in source-list order, but under a
+    # reorder_segments the played order differs — and Captions.tsx scans with an early
+    # `break` that assumes ascending frames, so an unsorted list drops the first-played
+    # segment's captions. Identity order is already ascending, so this is contract-neutral.
+    captions.sort(key=lambda c: c["frame"])
 
     # Overlays/b-roll use map_range_all (every MERGED piece), not map_range
     # (longest-only) — under a reorder a single source range can land in TWO
@@ -401,6 +406,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
                 "frame_in": lo, "frame_out": hi,
                 "scale": o.get("scale", 1.08), "text": o.get("text", ""),
             })
+    overlays.sort(key=lambda o: o["frame_in"])       # ascending output order (D1, same reorder hazard)
 
     broll = []
     for b in edl.get("broll") or []:
