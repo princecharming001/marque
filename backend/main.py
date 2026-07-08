@@ -830,10 +830,12 @@ def mock_trends(niche: str) -> list[dict]:
 
 async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[dict] | None) -> list[dict]:
     """Reject generic pillars; regenerate 2 candidates in parallel and pick the better one."""
+    avoid: list[str] = []
     for _ in range(2):
-        # Generate 2 candidate sets in parallel
-        sys1, usr1 = prompts.pillars_prompt(brand, posts)
-        sys2, usr2 = prompts.pillars_prompt(brand, posts)
+        # Generate 2 candidate sets in parallel, steering away from names the judge
+        # already rejected this round (else the retry can reproduce them — audit B-10/F10).
+        sys1, usr1 = prompts.pillars_prompt(brand, posts, avoid=avoid or None)
+        sys2, usr2 = prompts.pillars_prompt(brand, posts, avoid=avoid or None)
         results = await asyncio.gather(
             anthropic(sys1, usr1, OPUS, 1800),
             anthropic(sys2, usr2, OPUS, 1800),
@@ -866,6 +868,7 @@ async def judge_and_fix_pillars(brand: dict, pillars: list[dict], posts: list[di
             if len(failed2) < len(failed):
                 return candidate_sets[1]
         pillars = all_to_judge
+        avoid = failed                # next regeneration avoids the rejected names
     return pillars
 
 
@@ -2796,11 +2799,16 @@ def _digest_script_request(req: DigestRequest, scan: dict) -> ScriptRequest:
     pillars = scan.get("pillars") or []
     first = pillars[0] if pillars else {}
     voice = scan.get("voice") or req.voice or {}
-    catchphrases = (scan.get("voice") or {}).get("catchphrases") or req.catchphrases
+    # DERIVE_SCHEMA puts catchphrases + bannedWords at the TOP LEVEL of the scan (voice
+    # holds only the tone sliders) — reading scan["voice"]["catchphrases"] always missed
+    # the derived phrases. Also fold derived bannedWords into non_negotiables so the
+    # script engine actually honors them (audit B-10/F13/F15).
+    catchphrases = scan.get("catchphrases") or req.catchphrases
+    non_negotiables = list(req.non_negotiables or []) + list(scan.get("bannedWords") or [])
     return ScriptRequest(
         niche=scan.get("niche") or req.niche,
         audience=req.audience, known_for=req.known_for, what_you_do=req.what_you_do,
-        goal=req.goal, voice=voice, non_negotiables=req.non_negotiables,
+        goal=req.goal, voice=voice, non_negotiables=non_negotiables,
         catchphrases=catchphrases,
         pillar=first.get("name", ""), pillar_summary=first.get("summary", ""),
         pillar_angle=first.get("angle", ""),
@@ -2886,9 +2894,11 @@ async def voice_session(req: VoiceSessionRequest):
     if not (agent_id and el_key):
         return {"mode": "mock", "agent_system": prompts.VOICE_AGENT_SYSTEM,
                 "conversation_token": "", "agent_id": "", "session_id": uuid.uuid4().hex}
-    # Real token mint (ElevenLabs get-signed-url) is the single integration point here.
-    return {"mode": "live", "agent_id": agent_id, "conversation_token": "",
-            "session_id": uuid.uuid4().hex}
+    # The real token mint (ElevenLabs get-signed-url) isn't implemented yet, so we
+    # cannot return a usable session — report mode:"mock" (not "live") rather than hand
+    # the client an empty token it can't start a session with (audit B-10/F19).
+    return {"mode": "mock", "agent_system": prompts.VOICE_AGENT_SYSTEM,
+            "agent_id": agent_id, "conversation_token": "", "session_id": uuid.uuid4().hex}
 
 
 @app.post("/v1/voice-onboarding/finalize")
@@ -3759,8 +3769,10 @@ async def converse(req: ConverseRequest):
 
     stats = await _arms_for_prompt(req.creator_id)
     system = prompts.converse_system(req.mode, persona=req.persona, response_length=req.response_length)
-    user = prompts.converse_user(req.brand, req.memory, req.messages,
-                                 arm_stats=stats, trends=mock_trends(req.brand.get("niche", "")))
+    # No trends passed: mock_trends is hand-authored filler, and injecting it as
+    # "Trending right now" into a LIVE strategist makes the model relay invented trend
+    # claims as fact. Omit until a real trend source exists (audit B-10/F16).
+    user = prompts.converse_user(req.brand, req.memory, req.messages, arm_stats=stats)
     envelope = None
     try:
         model = SONNET if req.mode == "voice" else OPUS

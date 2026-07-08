@@ -1652,6 +1652,41 @@ def test_brand_scan_scrape_bounded(monkeypatch):
     assert r["mode"] == "mock" and r["scanned_posts"] == 0   # degraded, didn't hang
 
 
+# ---------------------------------------------------------------------------
+# B-10 · Voice-session + trends + digest honesty.
+# ---------------------------------------------------------------------------
+
+def test_voice_session_reports_mock_without_real_mint(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_AGENT_ID", "agent-1")
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")
+    r = client.post("/v1/voice-onboarding/session", json={}).json()
+    # keys present but the get-signed-url mint isn't implemented → must NOT claim live
+    assert r["mode"] == "mock" and r["conversation_token"] == ""
+
+
+def test_converse_live_omits_fabricated_trends(monkeypatch):
+    cap = {}
+
+    async def fake(system, user, model=main.OPUS, max_tokens=3000, temperature=None, schema=None):
+        cap["user"] = user
+        return '{"reply":"hi","memory_updates":[],"intent":"none","chips":[]}'
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "anthropic", fake)
+    client.post("/v1/converse", json={"messages": [{"role": "user", "content": "hey"}],
+                                      "brand": {"niche": "fitness"}})
+    assert "Trending in their niche right now" not in cap.get("user", "")
+
+
+def test_digest_reads_top_level_catchphrases_and_banned():
+    scan = {"pillars": [{"name": "P"}], "voice": {"tone": 0.5},
+            "catchphrases": ["let's get into it"], "bannedWords": ["literally"], "niche": "fitness"}
+    req = main.DigestRequest(non_negotiables=["no swearing"])
+    sreq = main._digest_script_request(req, scan)
+    assert "let's get into it" in sreq.catchphrases           # top-level, not voice.catchphrases
+    assert "literally" in sreq.non_negotiables                # bannedWords folded in
+    assert "no swearing" in sreq.non_negotiables
+
+
 def test_emulate_analyze_second_call_hits_cache():
     client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
     r = client.post("/v1/emulate/analyze", json={"handle": "cachedcreator", "platform": "tiktok"})
