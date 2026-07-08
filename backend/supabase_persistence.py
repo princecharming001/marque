@@ -28,6 +28,7 @@ _POST_COLS = ("creator_id", "platform", "scheduled_at", "pillar", "style", "form
               "hook_signal", "predicted_score", "outcome_y", "outcome_raw", "settled", "metrics")
 
 _BACKOFF = (0.5, 2.0, 8.0)
+_PAGE_SIZE = 1000            # PostgREST default row cap; load_all_posts pages past it
 
 # Sentinel returned by load_post when the DB COULDN'T ANSWER (transport failure,
 # non-200, unparseable body) — as opposed to None, which means the DB answered
@@ -174,16 +175,28 @@ class SupabaseClient:
         return rows[0] if rows else None
 
     async def load_all_posts(self, creator_id: str = "") -> list[dict]:
-        params = {"select": "*"}
-        if creator_id:
-            params["creator_id"] = f"eq.{creator_id}"
-        r = await self._request("GET", "/post_registry", params=params)
-        if not (r and r.status_code == 200):
-            return []
-        try:
-            return r.json()
-        except Exception:
-            return []
+        """All posts (optionally for one creator), PAGINATED so boot rehydration isn't
+        silently truncated at PostgREST's default 1000-row cap. Stops on the first
+        short/failed page and returns what it has (boot must never block on this)."""
+        out: list[dict] = []
+        offset = 0
+        while True:
+            params = {"select": "*", "order": "created_at.asc",
+                      "limit": str(_PAGE_SIZE), "offset": str(offset)}
+            if creator_id:
+                params["creator_id"] = f"eq.{creator_id}"
+            r = await self._request("GET", "/post_registry", params=params)
+            if not (r and r.status_code == 200):
+                break
+            try:
+                rows = r.json()
+            except Exception:
+                break
+            out.extend(rows)
+            if len(rows) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+        return out
 
     # --- emulation_profiles ---------------------------------------------------
     # Analyzed style-DNA for a creator someone wants to emulate — keyed by

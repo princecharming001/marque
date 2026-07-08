@@ -2490,3 +2490,29 @@ def test_learning_endpoints_mode_follows_client_not_env(monkeypatch):
         asyncio.run(main._update_arm("c_mode", "style:talking_head", 0.8, 1.5))
     assert client.get("/v1/insights/learned?creator_id=c_mode").json()["mode"] == "mock"
     assert client.get("/v1/recommendations?creator_id=c_mode").json()["mode"] == "mock"
+
+
+# ---------------------------------------------------------------------------
+# A-08 · load_all_posts paginates — no silent 1000-row truncation on boot.
+# ---------------------------------------------------------------------------
+
+def test_load_all_posts_paginates(monkeypatch):
+    import supabase_persistence as sp_mod
+    from supabase_persistence import SupabaseClient
+    monkeypatch.setattr(sp_mod, "_PAGE_SIZE", 2)
+    c = SupabaseClient("https://x.supabase.co", "k")
+
+    class _Resp:
+        def __init__(self, rows): self._rows, self.status_code = rows, 200
+        def json(self): return self._rows
+    pages = [_Resp([{"post_id": "p1"}, {"post_id": "p2"}]),   # full page → keep paging
+             _Resp([{"post_id": "p3"}])]                       # short page → stop
+    seen = {"offsets": []}
+
+    async def _req(method, path, *, params=None, **k):
+        seen["offsets"].append(params.get("offset"))
+        return pages[len(seen["offsets"]) - 1]
+    c._request = _req
+    rows = asyncio.run(c.load_all_posts())
+    assert [r["post_id"] for r in rows] == ["p1", "p2", "p3"]
+    assert seen["offsets"] == ["0", "2"]                       # advanced by page size
