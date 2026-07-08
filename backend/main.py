@@ -265,6 +265,37 @@ async def _ensure_arms_loaded(creator_id: str):
     _arms_loaded.add(creator_id)
 
 
+async def _attribute_settled_post(creator_id: str, post: dict) -> dict:
+    """Attribute a just-settled post to the single dimension that most drove it —
+    scoped to THIS post's own four dim:value arms, never the creator's globally
+    strongest arm (a talking_head post must never be 'explained' by style:faceless).
+    Deterministic by default; the live path (ANTHROPIC_KEY) lets the model phrase the
+    verdict but only from the same pre-computed lifts, and any failure/keyless falls
+    back to the deterministic result — standard keyless-mock discipline."""
+    all_arms = await _arms_for_prompt(creator_id)
+    own_keys = {f"{d}:{post.get(d, '')}" for d in DIMENSIONS if post.get(d)}
+    scoped = [a for a in all_arms if f"{a['dimension']}:{a['value']}" in own_keys]
+    deterministic = prompts.attribute_from_arms(scoped)
+    if not (ANTHROPIC_KEY and AI_QUALITY and scoped):
+        return deterministic
+    try:
+        sys, usr = prompts.attribution_prompt(post, scoped)
+        data = extract_json(await anthropic(sys, usr, HAIKU, 300), array=False) or {}
+    except HTTPException:
+        return deterministic
+    dim = data.get("dimension", "")
+    # The model may only name a dimension THIS post used (or 'none'); anything else is
+    # drift → trust the deterministic result rather than a hallucinated cause.
+    if dim == "none":
+        return deterministic if deterministic["dimension"] == "none" else data | {"band": "noise"}
+    if dim not in DIMENSIONS or f"{dim}:{data.get('arm_value', '')}" not in own_keys:
+        return deterministic
+    return {"dimension": dim, "arm_value": data.get("arm_value", ""),
+            "lift_pct": int(data.get("lift_pct", 0)), "band": data.get("band", "noise"),
+            "confidence": data.get("confidence", "early_read"),
+            "verdict": str(data.get("verdict", ""))[:160]}
+
+
 async def _arms_for_prompt(creator_id: str) -> list[dict]:
     """Shape raw bandit arms into the {lift_pct, label, confidence} form that
     prompts.learning_block() actually reads. Without this the raw arm dicts lack
@@ -3242,10 +3273,10 @@ async def ingest_metrics(req: MetricsIngestRequest):
         if val:
             await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche)
 
-    # Attribute the just-settled post from the creator's own arms so the app can show
-    # what drove it. Honest by construction (attribute_from_arms only speaks driver/
-    # error bands it can ground in the data; else "none").
-    attribution = prompts.attribute_from_arms(await _arms_for_prompt(creator_id))
+    # Attribute the just-settled post to ITS OWN driving dimension (not the creator's
+    # globally strongest arm). Honest by construction — only driver/error bands it can
+    # ground in the data, else "none".
+    attribution = await _attribute_settled_post(creator_id, entry)
 
     return {"mode": "live" if _supabase_client else "mock", "status": "ingested",
             "outcome_y": round(y, 3), "goal": goal, "attribution": attribution,

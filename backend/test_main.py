@@ -2383,3 +2383,54 @@ def test_insights_learned_no_negative_outperform_copy(monkeypatch):
     # winning_formula must not claim a negative number "outperforms"
     if b["winning_formula"]:
         assert "outperforms your average by -" not in b["winning_formula"]
+
+
+# ---------------------------------------------------------------------------
+# A-06 · Attribution is scoped to the SETTLED POST'S OWN dimensions, never the
+# creator's globally-strongest arm.
+# ---------------------------------------------------------------------------
+
+def test_attribution_scoped_to_settled_post_dims(monkeypatch):
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_attr"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    for i in range(16):
+        main._post_registry[f"{cid}-b{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": 1.0}
+    main._invalidate_creator_mean(cid)
+    # style:faceless is the creator's biggest driver, but THIS post is style:talking_head
+    main._arm_stats[cid] = {
+        "style:faceless": {"n": 8, "sum_raw": 40.0, "confidence": "confirmed"},        # huge lift
+        "style:talking_head": {"n": 6, "sum_raw": 5.0, "confidence": "early_read"},     # this post's style
+        "hook_signal:contrarian": {"n": 6, "sum_raw": 6.6, "confidence": "early_read"}, # this post's hook
+    }
+    post = {"pillar": "", "style": "talking_head", "format_id": "", "hook_signal": "contrarian"}
+    attribution = asyncio.run(main._attribute_settled_post(cid, post))
+    assert attribution["dimension"] in ("style", "hook_signal", "none")
+    assert attribution["arm_value"] != "faceless"          # never attribute to a dim the post didn't use
+
+
+def test_attribution_live_path_falls_back_to_deterministic(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk-test")
+
+    async def boom(*a, **k):
+        raise main.HTTPException(status_code=502, detail="down")
+    monkeypatch.setattr(main, "anthropic", boom)
+    monkeypatch.setattr(main, "_supabase_client", None)
+    cid = "c_attr_live"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    for k in list(main._post_registry):
+        if k.startswith(cid):
+            main._post_registry.pop(k)
+    for i in range(16):
+        main._post_registry[f"{cid}-b{i}"] = {"creator_id": cid, "settled": True, "outcome_raw": 1.0}
+    main._invalidate_creator_mean(cid)
+    main._arm_stats[cid] = {"hook_signal:contrarian": {"n": 6, "sum_raw": 12.0, "confidence": "confirmed"}}
+    post = {"pillar": "", "style": "", "format_id": "", "hook_signal": "contrarian"}
+    # LLM raises → deterministic attribution still returned (keyless-mock discipline)
+    attribution = asyncio.run(main._attribute_settled_post(cid, post))
+    assert attribution["dimension"] == "hook_signal" and attribution["arm_value"] == "contrarian"
