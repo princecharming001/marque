@@ -2837,3 +2837,35 @@ def test_anthropic_guards_malformed_200_body(monkeypatch):
     monkeypatch.setattr(main, "_get_anthropic_client", lambda: _Client())
     with pytest.raises(main.HTTPException):        # malformed 200 → degradeable, not a raw ValueError
         asyncio.run(main.anthropic("s", "u"))
+
+
+# ---------------------------------------------------------------------------
+# B-02 · Live-degrade payloads are populated, not blank — only live users during
+# a vendor blip hit these branches; a blank screen there is the bug.
+# ---------------------------------------------------------------------------
+
+def _raise_httpexc(*a, **k):
+    async def _boom(*a, **k):
+        raise main.HTTPException(status_code=502, detail="down")
+    return _boom
+
+
+def test_hooks_live_degrade_is_populated(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "anthropic_json", _raise_httpexc())
+    r = client.post("/v1/hooks", json={"topic": "protein", "creator_id": "c_h"}).json()
+    assert r["mode"] == "mock" and r["hooks"] and r["hooks"][0]["text"]
+
+
+def test_teardown_live_degrade_is_populated(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "anthropic", _raise_httpexc())
+    r = client.post("/v1/teardown", json={"clip": {"predictedScore": 70}}).json()
+    assert r["mode"] == "mock" and r["headline"] and r["detail"]
+
+
+def test_insights_live_degrade_is_populated(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "anthropic", _raise_httpexc())
+    r = client.post("/v1/insights", json={"niche": "fitness", "summary": "x"}).json()
+    assert r["mode"] == "mock" and r["coaching"]

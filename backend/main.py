@@ -1110,7 +1110,9 @@ async def hooks(req: HooksRequest):
         out = await quality_hooks(req.topic, out)
         return {"mode": "live", "hooks": out}
     except HTTPException:
-        return {"mode": "mock", "hooks": []}
+        # Live blip → the SAME populated shape the keyless mock returns, never a blank grid.
+        return {"mode": "mock", "hooks": [{"text": f"The {req.topic} mistake nobody warns you about",
+                                           "signal": "curiosity", "strength": 82}]}
 
 
 @app.post("/v1/steer")
@@ -1168,19 +1170,25 @@ async def teardown(req: TeardownRequest):
         return {"mode": "live", "headline": out.get("headline", ""), "detail": out.get("detail", ""),
                 "liftPercent": lift}
     except HTTPException:
-        return {"mode": "mock", "headline": "", "detail": "", "liftPercent": None}
+        return {"mode": "mock",
+                "headline": "Solid clip — here's the read" if not has_metrics else "Strong performer",
+                "detail": "The hook lands in the first 2 seconds and the format keeps a visual change every few seconds.",
+                "liftPercent": None}
+
+
+_MOCK_COACHING = "Your contrarian hooks are outperforming. Make two more in whichever format spiked."
 
 
 @app.post("/v1/insights")
 async def insights(req: InsightsRequest):
     if not ANTHROPIC_KEY:
-        return {"mode": "mock", "coaching": "Your contrarian hooks are outperforming. Make two more in whichever format spiked."}
+        return {"mode": "mock", "coaching": _MOCK_COACHING}
     try:
         sys, usr = prompts.insights_prompt(req.d(), req.summary)
         txt = (await anthropic(sys, usr, HAIKU, 250)).strip()
-        return {"mode": "live", "coaching": txt}
+        return {"mode": "live", "coaching": txt or _MOCK_COACHING}
     except HTTPException:
-        return {"mode": "mock", "coaching": ""}
+        return {"mode": "mock", "coaching": _MOCK_COACHING}
 
 
 class ScoreRequest(BaseModel):
