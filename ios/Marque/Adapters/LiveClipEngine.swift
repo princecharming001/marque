@@ -33,7 +33,7 @@ struct LiveClipEngine: ClipEngineProtocol {
             let original = MediaStore.url(for: footagePath)
             let compressed = await MediaCompressor.forUpload(original)
             let toUpload = compressed ?? original
-            let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
+            let ok = await Self.uploadFootage(to: uploadURLString, fileURL: toUpload)
             if let compressed { try? FileManager.default.removeItem(at: compressed) }
             guard ok else { return await fallback.makeClips(from: script, formats: formats) }
         }
@@ -77,12 +77,35 @@ struct LiveClipEngine: ClipEngineProtocol {
         }
     }
 
+    /// H-02: mint + compress + upload as ONE hoisted step, so RecordView can start
+    /// the upload the moment a take lands (while the creator reviews) and the public
+    /// URL already exists when the analyze job is created. Returns the public read
+    /// URL ("" on the keyless/mock backend — no storage, mock brief still works),
+    /// or nil on a hard failure (backend unreachable / upload failed) so the caller
+    /// falls back to the local mock pipeline instead of creating a doomed live job.
+    static func mintAndUpload(footagePath: String?) async -> String? {
+        guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else {
+            return nil                                        // backend unreachable
+        }
+        let uploadURLString = mintData["upload_url"] as? String ?? ""
+        let publicURL = mintData["public_url"] as? String ?? ""
+        guard let footagePath, !footagePath.isEmpty, !uploadURLString.isEmpty else {
+            return publicURL                                  // mock mint or no footage: no bytes to move
+        }
+        let original = MediaStore.url(for: footagePath)
+        let compressed = await MediaCompressor.forUpload(original)
+        let toUpload = compressed ?? original
+        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
+        if let compressed { try? FileManager.default.removeItem(at: compressed) }
+        return ok ? publicURL : nil
+    }
+
     /// PUT the recorded take to the minted signed-upload URL. Streams from the file
     /// on disk (a full talking-head take is tens/hundreds of MB — never load it all
     /// into memory). Content-Type matches what the mint request declared. Returns
     /// true only on a 2xx; any transport/HTTP failure returns false so makeClips
     /// falls back instead of creating a job with an empty source object.
-    private func uploadFootage(to uploadURLString: String, fileURL: URL) async -> Bool {
+    private static func uploadFootage(to uploadURLString: String, fileURL: URL) async -> Bool {
         guard let url = URL(string: uploadURLString),
               FileManager.default.fileExists(atPath: fileURL.path) else { return false }
         var req = URLRequest(url: url)

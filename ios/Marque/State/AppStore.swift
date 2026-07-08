@@ -486,6 +486,72 @@ final class AppStore {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
 
+    // MARK: Analyze-first flow (Loop H)
+
+    /// Create the analyze job against an already-uploaded public URL (RecordView hoists
+    /// mint+upload so it runs while the creator reviews the take). nil → the caller
+    /// falls back to the local mock pipeline; the creator is never stranded.
+    func startAnalyzeJob(script: Script, publicURL: String?,
+                         customInstructions: String = "") async -> AnalyzeJobResponse? {
+        guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
+        return await backend.createAnalyzeJob(sourceURL: publicURL, script: script,
+                                              customInstructions: customInstructions)
+    }
+
+    /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min
+    /// cap. Returns the response carrying the brief, a failed status, or nil on timeout.
+    func pollForBrief(jobId: String) async -> AnalyzeJobResponse? {
+        var attempts = 0
+        while attempts < 60 && !Task.isCancelled {
+            if let r = await backend.getBrief(jobId: jobId) {
+                if r.editBrief != nil { return r }
+                if r.status == "failed" { return r }
+            }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            attempts += 1
+        }
+        return nil
+    }
+
+    /// Analyze-first phase 2: confirm the reviewed brief + toggles → ONE render.
+    /// Inserts the tracked clips and polls exactly like the old makeClips tail; a
+    /// transport failure degrades to the local mock pipeline.
+    func confirmClips(jobId: String, script: Script, toggles: EditToggles,
+                      customInstructions: String, footagePath: String?) async {
+        guard let resp = await backend.confirmClip(jobId: jobId, toggles: toggles,
+                                                   customInstructions: customInstructions),
+              let clipDicts = resp["clips"] as? [[String: Any]], !clipDicts.isEmpty else {
+            await makeClips(from: script, formats: [script.formatId], footagePath: footagePath)
+            return
+        }
+        let tagged = clipDicts.map { d -> Clip in
+            let clipId = UUID(uuidString: d["clip_id"] as? String ?? "") ?? UUID()
+            let formatId = d["format"] as? String ?? script.formatId
+            let ready = (d["status"] as? String) == "ready"
+            var c = Clip(id: clipId, scriptId: script.id, formatId: formatId,
+                         formatName: Catalog.format(formatId).name,
+                         title: script.title.isEmpty ? script.hook.text : script.title,
+                         caption: script.cta,
+                         predictedScore: script.predictedScore,
+                         status: ready ? .ready : .rendering,
+                         seconds: Catalog.format(formatId).targetSeconds,
+                         jobId: jobId)
+            c.localVideoPath = footagePath
+            return c
+        }
+        clips.insert(contentsOf: tagged, at: 0)
+        readiedScripts.removeAll { $0.script.id == script.id }
+        save()
+        if tagged.contains(where: { $0.status == .rendering }) {
+            Task { await pollJob(jobId: jobId, clipIds: tagged.map { $0.id }) }
+        } else {
+            notifyClipsReady(count: tagged.filter { $0.status == .ready }.count)
+        }
+        streak += 1
+        save()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
+    }
+
     func pollJob(jobId: String, clipIds: [UUID]) async {
         var done = false
         var attempts = 0

@@ -28,8 +28,16 @@ struct RecordView: View {
     // continuous clip on-device (so the backend still gets a single source_url).
     @State private var segments: [URL] = []
     @State private var takeElapsed: TimeInterval = 0   // accumulated across finished segments
+    // Analyze-first (H-02): mint+upload starts the moment a take lands (runs while the
+    // creator reviews), so the public URL usually exists before "Submit for editing".
+    @State private var uploadTask: Task<String?, Never>? = nil
+    @State private var analyzeJobId: String? = nil
+    @State private var brief: EditBrief? = nil
+    @State private var briefToggles = EditToggles()
+    @State private var customInstructions = ""
+    @State private var importError: String? = nil
 
-    enum Phase { case ready, recording, paused, stitching, recorded, making }
+    enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
     init(script: Script) {
         self.script = script
@@ -60,6 +68,7 @@ struct RecordView: View {
                     footagePath = MediaStore.save(data, ext: "mov")
                 }
                 phase = .recorded
+                beginUpload()      // H-02: start the upload while the creator reviews
             }
         }
     }
@@ -202,10 +211,35 @@ struct RecordView: View {
                 .accessibilityIdentifier("record.makeClips")
                 GhostButton(title: "Save as draft") { saveDraftAndClose() }
                     .accessibilityIdentifier("record.saveDraft")
+            case .analyzing:
+                ProgressView().tint(Palette.accent)
+                Text("Studying your take — cuts, hook, pacing…")
+                    .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+            case .brief:
+                briefReview
             case .making:
                 ProgressView().tint(Palette.accent)
                 Text("Sending to your editor…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
             }
+        }
+    }
+
+    // H-02 placeholder (H-03 grows this into the full brief + toggles review screen).
+    @ViewBuilder private var briefReview: some View {
+        VStack(spacing: Space.md) {
+            Text(brief?.throughLine.isEmpty == false ? brief!.throughLine
+                 : "Your edit plan is ready.")
+                .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                .multilineTextAlignment(.center)
+            Button { confirmBrief() } label: {
+                Text("Make my clip")
+                    .font(AppFont.headline).foregroundStyle(Palette.ink)
+                    .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
+                    .background(Palette.onInk)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("record.makeMyClip")
         }
     }
 
@@ -312,6 +346,7 @@ struct RecordView: View {
                 footagePath = MediaStore.save(data, ext: "mov")
             }
             phase = .recorded
+            beginUpload()      // H-02: upload runs while the creator reviews the take
             return
         }
         phase = .stitching
@@ -322,10 +357,15 @@ struct RecordView: View {
                 footagePath = MediaStore.save(data, ext: "mov")
             }
             phase = .recorded
+            beginUpload()
         }
     }
 
     private func reRecord() {
+        uploadTask?.cancel()   // H-02: stale footage — restart the hoisted upload fresh
+        uploadTask = nil
+        analyzeJobId = nil
+        brief = nil
         footagePath = nil
         recordStart = nil
         segments = []
@@ -343,8 +383,19 @@ struct RecordView: View {
         router.showFilm = false
     }
 
+    /// H-02: start mint+upload as soon as footage exists — by the time the creator
+    /// taps "Submit for editing" the public URL is usually already minted+uploaded.
+    private func beginUpload() {
+        guard uploadTask == nil else { return }
+        let path = footagePath
+        uploadTask = Task { await LiveClipEngine.mintAndUpload(footagePath: path) }
+    }
+
+    /// H-02 analyze-first submit: await the hoisted upload → create the analyze job →
+    /// show the brief (immediately keyless; after a short poll live). Any failure
+    /// falls back to the legacy local mock pipeline — the creator is never stranded.
     private func makeClips() {
-        phase = .making
+        phase = .analyzing
         // Keep the raw take in the Library so it can be re-cut later.
         if let footagePath {
             store.addFootage(path: footagePath, scriptId: script.id,
@@ -352,14 +403,52 @@ struct RecordView: View {
                              seconds: script.targetSeconds)
         }
         Task {
-            // Use liveScript so any inline teleprompter edits are reflected in the generated clips.
-            await store.makeClips(from: liveScript, formats: Array(selectedFormats),
-                                  footagePath: footagePath,
-                                  reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines))
+            if uploadTask == nil { beginUpload() }            // sim/no-footage path
+            let publicURL = await uploadTask?.value
+            guard let resp = await store.startAnalyzeJob(
+                    script: liveScript, publicURL: publicURL,
+                    customInstructions: customInstructions) else {
+                await fallbackToMock()
+                return
+            }
+            analyzeJobId = resp.jobId
+            if let b = resp.editBrief {                       // keyless: brief is immediate
+                brief = b
+                briefToggles = resp.toggles ?? EditToggles()
+                phase = .brief
+            } else if let polled = await store.pollForBrief(jobId: resp.jobId),
+                      let b = polled.editBrief {
+                brief = b
+                briefToggles = polled.toggles ?? EditToggles()
+                phase = .brief
+            } else {
+                await fallbackToMock()                        // analysis failed/timed out
+            }
+        }
+    }
+
+    private func confirmBrief() {
+        guard let jobId = analyzeJobId else { return }
+        phase = .making
+        Task {
+            await store.confirmClips(jobId: jobId, script: liveScript, toggles: briefToggles,
+                                     customInstructions: customInstructions,
+                                     footagePath: footagePath)
             dismiss()
             router.selectedTab = .library
             router.showFilm = false
         }
+    }
+
+    /// Legacy local pipeline — mock clips via the old engine path (also the
+    /// offline/demo path when the backend is unreachable).
+    private func fallbackToMock() async {
+        await store.makeClips(from: liveScript, formats: Array(selectedFormats),
+                              footagePath: footagePath,
+                              reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines))
+        dismiss()
+        router.selectedTab = .library
+        router.showFilm = false
     }
 
     // Paste the reacted-to clip for a duet/react split (top panel of the render).
