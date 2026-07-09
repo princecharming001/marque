@@ -185,6 +185,49 @@ def test_insights_persona_in_prompt():
     assert "PERSONA" in sysp2
 
 
+def test_mock_converse_has_no_trailing_offers():
+    # B-4: chat replies must not end with "Want me to…"-style offers (chips carry follow-ups).
+    prompts_pool = ["update my brand angle to harder takes", "I have an idea about morning routines",
+                    "write me a script about protein", "just noting I trained today", "what should I post today"]
+    for length in ("concise", "medium", "detailed"):
+        for persona in ("machine", "closer", "sergeant"):
+            for text in prompts_pool:
+                r = client.post("/v1/converse", json={
+                    "mode": "chat", "persona": persona, "response_length": length,
+                    "messages": [{"role": "user", "content": text}], "brand": {"niche": "fitness"}}).json()
+                assert "want me to" not in r["reply"].lower(), (length, persona, text, r["reply"])
+
+
+def test_converse_chat_style_forbids_trailing_offers():
+    import prompts
+    sysp = prompts.converse_system(mode="chat", persona="closer", response_length="detailed")
+    assert "DO NOT end with an offer to continue" in sysp
+    assert "LEAD WITH THE ANSWER" in sysp
+
+
+def test_mock_scripts_bodies_have_paragraph_breaks():
+    # B-3: keyless/demo bodies must not be a single wall of text.
+    from main import ScriptRequest
+    scripts = main.mock_scripts(ScriptRequest(niche="fitness", style="talking_head", count=3))
+    assert all("\n\n" in s["body"] for s in scripts)
+
+
+def test_scripts_prompt_has_body_format_rule():
+    import prompts
+    sysp, _ = prompts.scripts_prompt({"niche": "fitness"}, {"name": "Teach"}, "talking_head", 3)
+    assert "BODY FORMATTING" in sysp and "\\n\\n" in sysp
+
+
+def test_eval_flags_wall_of_text():
+    from eval.invariants import _flag_wall_of_text
+    wall = {"body": " ".join(["word"] * 60)}
+    broken = {"body": "First beat here.\n\n" + " ".join(["word"] * 60)}
+    short = {"body": "Just a short line."}
+    assert _flag_wall_of_text(wall, {}) is not None
+    assert _flag_wall_of_text(broken, {}) is None
+    assert _flag_wall_of_text(short, {}) is None
+
+
 def test_eval_flags_ungrounded_receipt():
     from eval.invariants import _flag_ungrounded_receipt
     bad = {"hook": "I made $4,200 in three weeks doing this.", "body": "here's how"}
@@ -802,13 +845,50 @@ def test_performance_summary_real_aggregation():
     client.post("/v1/posts/register", json={"post_id": "perf-1", "creator_id": "perf-tester",
                                             "platform": "tiktok", "format_id": "listicle"})
     client.post("/v1/metrics/ingest", json={"post_id": "perf-1", "creator_id": "perf-tester",
-                                            "views": 9000, "likes": 700, "reach": 8000,
-                                            "avg_watch_pct": 0.6, "follows_gained": 45})
+                                            "views": 9000, "likes": 700, "comments": 50, "shares": 30,
+                                            "reach": 8000, "avg_watch_pct": 0.6, "follows_gained": 45})
     b = client.get("/v1/performance/summary", params={"creator_id": "perf-tester"}).json()
     assert b["mode"] == "live"
     assert b["totals"]["views"] == 9000
     assert b["platforms"]["tiktok"]["posts"] == 1
     assert b["best_post"]["views"] == 9000
+    # B-1: live mode now emits a real daily series (was always []) with dated points.
+    assert len(b["daily"]) == b["days"]
+    assert all("date" in d for d in b["daily"])
+    assert sum(d["views"] for d in b["daily"]) == 9000     # the settled post's views land on its day
+    # B-2: engagement unified to (likes+comments+shares)/views; comments/shares surfaced.
+    assert b["totals"]["comments"] == 50 and b["totals"]["shares"] == 30
+    assert b["totals"]["engagement_rate"] == round((700 + 50 + 30) / 9000 * 100, 1)
+
+
+def test_performance_summary_configured_zero_settled_is_honest(monkeypatch):
+    # B-1: a CONFIGURED backend (has an AI key) with zero settled posts must return
+    # honest zeros + no_data — NEVER the seeded fabricated series (that showed a fresh
+    # account "37.7k views"). The fabricated branch is keyless-only.
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk-test-key")
+    b = client.get("/v1/performance/summary", params={"creator_id": "brand-new-configured"}).json()
+    assert b["mode"] == "live" and b["no_data"] is True
+    assert b["totals"]["views"] == 0 and b["totals"]["likes"] == 0 and b["totals"]["follows_gained"] == 0
+    assert b["daily"] == []
+    assert b["best_post"]["views"] == 0     # zeroed dict, not null (build-11 decode safety)
+
+
+def test_within_window_uses_scheduled_at_fallback(monkeypatch):
+    # B-2: a post with no settled_at falls back to scheduled_at for the window; a post
+    # scheduled outside the window is excluded (was always included).
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk-test-key")
+    cid = "window-tester"
+    for pid, sched in [("win-in", "2026-07-05T12:00:00+00:00"), ("win-out", "2026-01-01T12:00:00+00:00")]:
+        client.post("/v1/posts/register", json={"post_id": pid, "creator_id": cid,
+                                                "platform": "tiktok", "format_id": "listicle",
+                                                "scheduled_at": sched})
+        client.post("/v1/metrics/ingest", json={"post_id": pid, "creator_id": cid,
+                                                "views": 1000, "likes": 80, "reach": 900,
+                                                "avg_watch_pct": 0.5})
+        # null out settled_at so the window must fall back to scheduled_at
+        main._post_registry[pid]["settled_at"] = None
+    b = client.get(f"/v1/performance/summary?creator_id={cid}&days=30&now=2026-07-07T00:00:00+00:00").json()
+    assert b["totals"]["posts"] == 1        # only win-in counted
 
 
 def test_edit_prefs_threading():

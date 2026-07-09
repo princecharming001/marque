@@ -994,19 +994,24 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
     # A few distinct angle templates so three picks don't read identically.
     # W3: audience-facing + bracketed fill-ins — the keyless demo must not put invented
     # personal history ("I tracked my X for 90 days") in the creator's mouth either.
+    # B-3: bodies are broken into short paragraphs (\n\n) — one beat each — so the reader/
+    # teleprompter shows structure, not a wall of text (mirrors the live BODY_FORMAT_RULE).
     angles = [
         ("contrarian",
          f"Most {niche} advice is backwards. Here's what the top 1% actually do.",
-         f"Everyone tells you to do more. The people winning at {niche} do the opposite — "
-         f"they cut the noise and go deep on one thing. Here's the one move to start this week."),
+         f"Everyone tells you to do more.\n\n"
+         f"The people winning at {niche} do the opposite — they cut the noise and go deep on one thing.\n\n"
+         f"Here's the one move to start this week."),
         ("specificity",
          f"One number decides most of your progress in {niche} — and you're probably not tracking it.",
-         f"Track it for one week — one note, [your number] at the end. The thing most people in "
-         f"{niche} obsess over barely moves it; this other habit does. Here's how to run the test yourself."),
+         f"Track it for one week — one note, [your number] at the end.\n\n"
+         f"The thing most people in {niche} obsess over barely moves it. This other habit does.\n\n"
+         f"Here's how to run the test yourself."),
         ("authority",
          f"The part of {niche} nobody warns beginners about.",
-         f"Almost everyone's first months in {niche} stall for the same reason — chasing the wrong "
-         f"signal. Here's how to spot it early, and the fix that costs nothing but attention."),
+         f"Almost everyone's first months in {niche} stall for the same reason — chasing the wrong signal.\n\n"
+         f"Here's how to spot it early.\n\n"
+         f"And the fix that costs nothing but attention."),
     ]
     out = []
     for i in range(max(1, req.count)):
@@ -4345,14 +4350,13 @@ def mock_converse(req: ConverseRequest) -> dict:
     elif any(k in low for k in ("my angle", "brand angle", "direction", "positioning", "reposition")):
         intent = "update_brand_angle"
         updates.append({"op": "set", "field": "angle", "value": last[:280]})
-        reply = ("Noted — that's a sharper lane and I've locked it into your brand memory. "
-                 "Everything I write from here leans that way. Want a script that plants the flag?")
+        reply = ("Locked that sharper lane into your brand memory — everything I write from here leans that way.")
         chips = ["Write the flag-planting script", "What does this change?", "Build my day"]
     elif any(k in low for k in ("idea", "thinking about", "what if i", "i want to make")):
         intent = "save_idea"
         updates.append({"op": "add", "field": "ideas", "value": last[:280]})
-        reply = ("That's worth keeping — saved to your idea bank. "
-                 "The specific version of that idea beats the general one; want me to script it?")
+        reply = ("Saved to your idea bank. The specific version of that idea beats the general one — "
+                 "sharpen it to one concrete moment and it films itself.")
         chips = ["Script this idea", "Poke holes in it", "Save and move on"]
     elif any(k in low for k in ("i think", "i believe", "my take", "honestly")):
         updates.append({"op": "add", "field": "perspective", "value": last[:280]})
@@ -4368,8 +4372,8 @@ def mock_converse(req: ConverseRequest) -> dict:
                  "I'll remember what matters and turn the good stuff into content.")
     else:
         updates.append({"op": "add", "field": "facts", "value": last[:280]})
-        reply = ("Got it — noted. The more you tell me like this, the sharper your scripts get. "
-                 "Anything you want me to turn into a post?")
+        reply = ("Noted. The more you tell me like this, the sharper your scripts get — "
+                 "the details you just gave me are exactly what makes a post sound like you.")
 
     if voice:
         reply = reply.split("\n")[0]
@@ -4382,15 +4386,18 @@ def mock_converse(req: ConverseRequest) -> dict:
 # gets this from converse_system's persona/length instructions instead). Keeps the
 # deterministic reply logic above untouched — this just re-flavors the final string so
 # the coach picker is visibly real even fully offline.
+# B-4: short, non-greeting connectors (the de-filler rule forbids openers like "Let's GO"),
+# tuned to the current personas — Strategist (calm/plan), Hype Coach (momentum), Straight
+# Shooter (blunt). Mock-only flavor so the coach picker is visibly real offline.
 _PERSONA_OPENERS = {
     "machine": [
-        "Let's GO. ", "Big number energy: ", "Here's the play — ", "No cap, ",
+        "Here's the play — ", "The move that matters: ", "",
     ],
     "closer": [
-        "Here's the move: ", "Straight talk — ", "ROI first: ", "Cut to it: ",
+        "Big one — ", "This is the rep: ", "",
     ],
     "sergeant": [
-        "Listen up. ", "No excuses. ", "Here's your order: ", "Discipline first: ",
+        "Straight up — ", "No fluff: ", "",
     ],
 }
 
@@ -4402,8 +4409,8 @@ def _apply_persona_voice(reply: str, persona: str, length: str) -> str:
         reply = random.choice(openers) + reply[0].lower() + reply[1:]
     if length == "concise":
         reply = reply.split(". ")[0].rstrip(".") + "."
-    elif length == "detailed" and not reply.endswith(("chips", "?")):
-        reply = reply + " Want me to go deeper on any part of that?"
+    # B-4: no trailing "want me to go deeper" append — the chips already carry follow-ups,
+    # and a mandatory offer reads as filler.
     return reply
 
 
@@ -5523,16 +5530,22 @@ async def brand_summary(req: BrandSummaryRequest):
 # Performance summary — last-30-days aggregates for the Performance tab
 # ---------------------------------------------------------------------------
 
-def _within_window(settled_at: str | None, cutoff: datetime) -> bool:
-    """True if a post settled on/after the cutoff. Posts with no settled_at (legacy
-    rows from before A-12) are INCLUDED — we'd rather over-count history than hide a
-    real post behind a missing timestamp."""
-    if not settled_at:
-        return True
+def _post_effective_date(post: dict) -> str | None:
+    """The timestamp a post is bucketed/windowed by: when it settled, else when it was
+    scheduled. B-2: legacy rows with neither are excluded (were silently included, which
+    over-counted history into every window)."""
+    return post.get("settled_at") or post.get("scheduled_at")
+
+
+def _within_window(post: dict, cutoff: datetime) -> bool:
+    """True if the post's effective date is on/after the cutoff. No effective date → excluded."""
+    eff = _post_effective_date(post)
+    if not eff:
+        return False
     try:
-        return datetime.fromisoformat(settled_at) >= cutoff
+        return datetime.fromisoformat(eff) >= cutoff
     except (ValueError, TypeError):
-        return True
+        return False
 
 
 @app.get("/v1/performance/summary")
@@ -5546,30 +5559,56 @@ async def performance_summary(creator_id: str = "default", days: int = 30, now: 
     cutoff = now_dt - timedelta(days=days)
     settled = [(pid, p) for pid, p in _post_registry.items()
                if p.get("creator_id") == creator_id and p.get("settled") and p.get("metrics")
-               and _within_window(p.get("settled_at"), cutoff)]
-    if settled:
-        totals = {"views": 0, "likes": 0, "follows_gained": 0, "posts": len(settled)}
+               and _within_window(p, cutoff)]
+    # B-1: a CONFIGURED backend (AI key or a real DB) NEVER fabricates — with zero settled
+    # posts it returns honest zeros + no_data. Only a truly keyless dev/demo build charts
+    # the seeded placeholder series below.
+    _configured = bool(ANTHROPIC_KEY or _supabase_client)
+    if settled or _configured:
+        totals = {"views": 0, "likes": 0, "comments": 0, "shares": 0,
+                  "follows_gained": 0, "posts": len(settled)}
         platforms: dict[str, dict] = {}
         best = None
         fmt_mix: dict[str, int] = {}
+        # B-1: dense, zero-filled daily buckets by the post's effective date, so the graph
+        # renders a real series for real creators (live mode used to return []). Bucket 0 is
+        # the oldest day in the window (cutoff+1); bucket days-1 is today (now_dt).
+        day0 = (cutoff + timedelta(days=1)).date()
+        daily_views = [0] * days
+        daily_likes = [0] * days
         for pid, p in settled:
             m = p["metrics"]
-            totals["views"] += m.get("views", 0)
-            totals["likes"] += m.get("likes", 0)
+            v, lk = m.get("views", 0), m.get("likes", 0)
+            cm, sh = m.get("comments", 0), m.get("shares", 0)
+            totals["views"] += v; totals["likes"] += lk
+            totals["comments"] += cm; totals["shares"] += sh
             totals["follows_gained"] += m.get("follows_gained", 0)
             plat = p.get("platform", "instagram")
-            ps = platforms.setdefault(plat, {"views": 0, "likes": 0, "follows_gained": 0, "posts": 0})
-            ps["views"] += m.get("views", 0); ps["likes"] += m.get("likes", 0)
+            ps = platforms.setdefault(plat, {"views": 0, "likes": 0, "comments": 0, "shares": 0,
+                                             "follows_gained": 0, "posts": 0})
+            ps["views"] += v; ps["likes"] += lk; ps["comments"] += cm; ps["shares"] += sh
             ps["follows_gained"] += m.get("follows_gained", 0); ps["posts"] += 1
             fmt = p.get("format_id") or "other"
             fmt_mix[fmt] = fmt_mix.get(fmt, 0) + 1
-            if best is None or m.get("views", 0) > best["views"]:
-                best = {"post_id": pid, "views": m.get("views", 0), "likes": m.get("likes", 0),
-                        "format_id": fmt, "platform": plat}
-        eng = round((totals["likes"] / max(totals["views"], 1)) * 100, 1)
+            if best is None or v > best["views"]:
+                best = {"post_id": pid, "views": v, "likes": lk, "format_id": fmt, "platform": plat}
+            eff = _post_effective_date(p)
+            try:
+                idx = (datetime.fromisoformat(eff).date() - day0).days if eff else None
+            except (ValueError, TypeError):
+                idx = None
+            if idx is not None and 0 <= idx < days:
+                daily_views[idx] += v; daily_likes[idx] += lk
+        # B-2: engagement unified to (likes+comments+shares)/views (matches the iOS model).
+        eng_num = totals["likes"] + totals["comments"] + totals["shares"]
+        eng = round((eng_num / max(totals["views"], 1)) * 100, 1)
+        # Honest empty: a configured backend with nothing settled charts NO series (not a
+        # flat fake line); real creators get the dense dated series.
+        daily = ([] if not settled else
+                 [{"day": i, "date": (day0 + timedelta(days=i)).isoformat(),
+                   "views": daily_views[i], "likes": daily_likes[i]} for i in range(days)])
         # C-11: the creator's actual best posting hour — mode hour weighted by views, gated
-        # on enough evidence (N>=4). Below the gate the field is omitted (client keeps its
-        # honest "guidance, not measured" copy).
+        # on enough evidence (N>=4). Below the gate the field is omitted.
         hour_views: dict[int, int] = {}
         for _pid, p in settled:
             sa = p.get("scheduled_at") or p.get("settled_at")
@@ -5581,11 +5620,16 @@ async def performance_summary(creator_id: str = "default", days: int = 30, now: 
                 hour_views[hr] = hour_views.get(hr, 0) + p["metrics"].get("views", 0)
         best_hour = max(hour_views, key=hour_views.get) if len(settled) >= 4 and hour_views else None
         out = {"mode": "live", "days": days, "totals": {**totals, "engagement_rate": eng},
-               "platforms": platforms, "daily": [],
-               "best_post": best, "format_mix": [{"format": k, "count": v} for k, v in
-                                                 sorted(fmt_mix.items(), key=lambda x: -x[1])]}
+               "platforms": platforms, "daily": daily,
+               # zeroed dict (never null) so build-10/11 clients decode best_post safely
+               "best_post": best or {"post_id": "", "views": 0, "likes": 0,
+                                     "format_id": "", "platform": ""},
+               "format_mix": [{"format": k, "count": v} for k, v in
+                              sorted(fmt_mix.items(), key=lambda x: -x[1])]}
         if best_hour is not None:
             out["best_hour"] = best_hour
+        if not settled:
+            out["no_data"] = True      # configured but nothing measured yet — honest empty
         return out
     # Deterministic mock series (seeded by creator_id) so the UI charts something believable
     rng = random.Random(creator_id)

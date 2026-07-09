@@ -121,7 +121,17 @@ def _flag_ungrounded_receipt(sc, brand):
     return None
 
 
-QUALITY_FLAGS = [_flag_slop, _flag_question_opener, _flag_stacked_cta, _flag_ungrounded_receipt]
+def _flag_wall_of_text(sc, brand):
+    """B-3: a long body with no paragraph break reads as an unfilmable wall of text.
+    Flag bodies over ~40 words that contain no blank-line separator."""
+    body = _s(sc, "body")
+    if len(body.split()) > 40 and "\n\n" not in body and "\n" not in body:
+        return "wall of text (no paragraph breaks)"
+    return None
+
+
+QUALITY_FLAGS = [_flag_slop, _flag_question_opener, _flag_stacked_cta, _flag_ungrounded_receipt,
+                 _flag_wall_of_text]
 
 
 def evaluate_script(script: dict, brand: dict | None = None) -> dict:

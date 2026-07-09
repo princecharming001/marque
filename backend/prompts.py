@@ -934,6 +934,7 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
         f"\n\n{VIRALITY_BLOCK}\n\n"
         f"{GROUNDING_BLOCK}\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
+        f"{BODY_FORMAT_RULE}\n\n"
         f"A correctly-structured example for this style (match the STRUCTURE, not the content):\n{s['exemplar']}"
         f"{voice_section}\n\n"
         "Reply with ONLY valid JSON, no prose, no code fences."
@@ -1061,6 +1062,7 @@ def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
         "If the critic flagged a FABRICATED receipt, replace it with the creator's real material, a bracketed "
         "fill-in ('[your result]'), or audience-facing framing — never a different invented specific.\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
+        f"{BODY_FORMAT_RULE}\n\n"
         f"Keep \"style\":\"{style}\" and a valid formatId on each. "
         "Return ONLY a JSON array, same length and order as the input. " + SCRIPT_SCHEMA
     )
@@ -1897,6 +1899,20 @@ VIRALITY_BLOCK = (
 )
 
 
+# B-3: body formatting. Scripts render in a teleprompter/reader — a single wall of text is hard
+# to read on camera and hides the structure. The `body` string must be broken into short beats
+# separated by a blank line (a literal \n\n inside the JSON string). This OVERRIDES the spacing
+# of any example above (examples show voice + structure, not line breaks).
+BODY_FORMAT_RULE = (
+    "BODY FORMATTING (required): write `body` as 2–4 SHORT paragraphs separated by a blank line — "
+    "put a literal \\n\\n between beats inside the JSON string. One idea per paragraph: the hook's "
+    "follow-through, then the meat, then the landing. Never return one unbroken wall of text. "
+    "For labeled or numbered structures (the 3 split segments, the fast-cut lines, claim/proof/do-this), "
+    "put EACH segment or line on its own line (\\n between them). This overrides how the example above "
+    "is spaced."
+)
+
+
 # W3: injected into every script/hook/mimic/analyze prompt. Stops the model from putting words
 # in the creator's mouth — a fabricated personal fact (a client story, an experiment, a dollar
 # figure) is the fastest way to destroy their trust, because THEY have to say it on camera.
@@ -1980,9 +1996,8 @@ CONVERSE_ENVELOPE_EXEMPLAR = (
     'User said: "I\'ve been thinking my content is too soft. I want to take harder stances on training myths. '
     'Also had an idea about debunking the anabolic window."\n'
     "Correct envelope:\n"
-    '{"reply": "Love this direction — harder stances is exactly where your authority shows. The anabolic-window '
-    'debunk is a perfect first swing: it\'s a myth half your audience still believes, and you can bring receipts. '
-    'Want me to write it up as a script?", '
+    '{"reply": "Harder stances is exactly where your authority shows. The anabolic-window debunk is a perfect '
+    'first swing — a myth half your audience still believes, and you can bring receipts.", '
     '"memory_updates": ['
     '{"op": "set", "field": "angle", "value": "Taking harder, evidence-backed stances against training myths"}, '
     '{"op": "add", "field": "ideas", "value": "Debunk the anabolic window myth (with receipts)"}], '
@@ -2014,7 +2029,8 @@ _PERSONA_VOICES = {
 _LENGTH_STYLES = {
     "concise": "Keep it to ONE short sentence. No exceptions.",
     "medium": "Two or three sentences — enough to be useful, no more.",
-    "detailed": "Go deeper: several sentences with specifics, and end by offering to go further.",
+    "detailed": "Go deeper with specifics and examples. Depth means more substance, not a longer "
+                "wind-up — and NEVER a trailing offer to continue.",
 }
 
 
@@ -2026,8 +2042,15 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "just natural speech, warm and direct, like a sharp friend who happens to be a content strategist."
     )
     chat_style = (
-        "This is a TEXT chat. Keep replies tight (under ~120 words unless asked for depth). Markdown is fine "
-        "(bold for emphasis, short lists when genuinely useful). Never pad; never repeat their message back."
+        "This is a TEXT chat. LEAD WITH THE ANSWER — the first sentence carries the point; no runway. "
+        "Keep replies tight (under ~120 words unless asked for depth). Markdown is fine (bold for emphasis, "
+        "short lists when genuinely useful).\n"
+        "NO FILLER: no greetings or openers ('Great question', 'Love this', 'Absolutely'), no restating or "
+        "summarizing their message back, no sign-off praise.\n"
+        "DO NOT end with an offer to continue ('Want me to…', 'Should I…', 'Let me know if…', 'Happy to…'). "
+        "The app already shows tappable follow-up chips after every reply, so a trailing offer is a duplicate "
+        "that reads as padding. End on the substance. Ask a question ONLY when you genuinely cannot proceed "
+        "without their decision."
     )
     style = voice_style if mode == "voice" else chat_style
     persona_block = _PERSONA_VOICES.get(persona, _PERSONA_VOICES["closer"])
@@ -2051,7 +2074,8 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "JSON-ENCODED STRING of the object described (e.g. \"{\\\"topic\\\": \\\"...\\\", \\\"count\\\": 1}\"); use \"{}\" when empty.\n"
         "- generate_scripts: they want a script/scripts written now. args: {\"topic\": str, "
         "\"style\": one of [talking_head, green_screen, broll_cutaway, split_three, duet_split, faceless] or \"\", \"count\": 1-3}. "
-        "Your reply should tee up the scripts conversationally (they are generated and attached automatically).\n"
+        "The scripts are generated and attached automatically — your reply is ONE tight sentence teeing them up, "
+        "no preamble and no trailing offer.\n"
         "- day_plan: they want their day/content day built out. args: {\"plan\": {\"blocks\": "
         "[{\"time\": str (e.g. \"9:00\"), \"action\": str (≤6 words), \"detail\": str (one sentence)}]}} — "
         "build a realistic filming/posting day from their weekly target, blockers, and active ideas (4-6 blocks).\n"
