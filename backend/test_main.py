@@ -430,6 +430,23 @@ def test_demo_editor_job_synthesized_keyless():
     assert r2.status_code == 200 and len(r2.json()["edl"]["segments"]) == 3
 
 
+def test_demo_editor_save_roundtrips_with_arbitrary_clip_id():
+    """The editor's Save posts ops with the iOS clip's random UUID — which the
+    backend never issued for the synthesized demo job. A keyless demo job must
+    adopt that clip_id and apply the ops (defer_render) rather than 404."""
+    client.get("/v1/clips/demo-editor-save?include_words=1")   # synthesize
+    ios_clip_id = "DEADBEEF-0000-0000-0000-000000000001"       # not issued by the backend
+    r = client.post("/v1/clips/demo-editor-save/tweak?defer_render=1",
+                    json={"clip_id": ios_clip_id,
+                          "ops": [{"type": "split_segment", "index": 0, "at_frame": 120}]})
+    assert r.status_code == 200
+    b = r.json()
+    assert b.get("error") is not True
+    assert b["changed"] is True and b["needs_render"] is False
+    # the split landed: 3 segments → 4
+    assert len(main._clip_jobs["demo-editor-save"]["edl"]["segments"]) == 4
+
+
 def test_media_analyze():
     r = client.post("/v1/media/analyze", json={
         "content_hash": "abc123", "filename": "test.jpg", "kind": "photo", "public_url": ""

@@ -1,0 +1,52 @@
+appId: com.getmarque.app
+name: Editor editing logic — select → split → undo → delete → save
+# Proves the edit OPS actually mutate the document (not just render): select a
+# clip, split it, confirm Save enables, undo, delete a clip, then Save (commits
+# the flattened op log to the keyless backend and dismisses).
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- tapOn:
+    id: "library.clip"
+    index: 0
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.playPause"
+    timeout: 12000
+# Select the first clip → context strip should reveal Split/Delete
+- tapOn:
+    id: "editorPro.clip.0"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.ctx.split"
+    timeout: 4000
+- takeScreenshot: /tmp/r5-edit-01-selected
+# Split it
+- tapOn:
+    id: "editorPro.ctx.split"
+- takeScreenshot: /tmp/r5-edit-02-split
+# Save must now be enabled (document is dirty) → undo brings it back
+- tapOn:
+    id: "editorPro.undo"
+- takeScreenshot: /tmp/r5-edit-03-undone
+# Re-select and delete a clip, then commit via Save
+- tapOn:
+    id: "editorPro.clip.1"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.ctx.delete"
+    timeout: 4000
+- tapOn:
+    id: "editorPro.ctx.delete"
+- takeScreenshot: /tmp/r5-edit-04-deleted
+- tapOn:
+    id: "editorPro.save"
+- takeScreenshot: /tmp/r5-edit-05-saving

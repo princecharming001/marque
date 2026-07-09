@@ -1983,15 +1983,26 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
     roughly what changed before they commit to the full-quality re-render.
     Writes to clip["preview_url"], never render_url — see _preview_rerender_clip."""
     job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
+    _is_demo = not ANTHROPIC_KEY and job_id.startswith(("demo-", "sim-"))
     if job is None:
         # In-memory job store — a backend restart orphans old jobs (F15: unless a
         # durable Supabase copy exists, tried above via _restore_clip_job).
-        _raise_job_not_found(job_id)
+        if _is_demo:                       # keyless sim: re-synthesize the demo job
+            job = _synthesize_demo_clip_job(job_id)
+        else:
+            _raise_job_not_found(job_id)
     # Case-insensitive: iOS UUID.uuidString is uppercase, uuid4() is lowercase.
     want = req.clip_id.lower()
     clip = next((c for c in job["clips"] if c["clip_id"].lower() == want), None)
     if clip is None:
-        raise HTTPException(status_code=404, detail="clip_not_found")
+        # The demo clip is seeded on the iOS side with a random UUID the backend
+        # never issued — for a keyless demo/sim job, adopt the requested id onto
+        # the synthetic clip so the editor's Save round-trips in the sim.
+        if _is_demo and job["clips"]:
+            clip = job["clips"][0]
+            clip["clip_id"] = req.clip_id
+        else:
+            raise HTTPException(status_code=404, detail="clip_not_found")
     if not req.instruction.strip() and not req.ops:
         raise HTTPException(status_code=422, detail="empty_instruction")
     # Concurrency guard: asyncio is single-threaded, so status checks + the
@@ -2300,7 +2311,8 @@ def _synthesize_demo_clip_job(job_id: str) -> dict:
     style = "talking_head"
     job = {
         "status": "mock_ready", "style": style, "script": script,
-        "source_url": None, "clips": [{"clip_id": f"{job_id}-c0", "format": "myth-buster"}],
+        "source_url": None,
+        "clips": [{"clip_id": f"{job_id}-c0", "format": "myth-buster", "status": "ready"}],
         "edl": _apply_edit_prefs(_demo_editor_edl(style, script), {}),
         "words": _mock_words(script), "edl_history": [], "tweaks": [],
         "created_at": time.time(),
