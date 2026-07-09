@@ -3198,7 +3198,7 @@ async def scrape_posts(handle: str, platform: str, limit: int = 10) -> list[dict
     if platform == "tiktok":
         actor = "clockworks~tiktok-scraper"
         payload: dict = {"profiles": [handle], "resultsPerPage": limit,
-                         "shouldDownloadVideos": False, "profileScrapeSections": ["videos"]}
+                         "shouldDownloadVideos": True, "profileScrapeSections": ["videos"]}
     else:
         actor = "apify~instagram-scraper"
         payload = {"directUrls": [f"https://www.instagram.com/{handle}/"],
@@ -3241,7 +3241,7 @@ async def scrape_niche_posts(niche: str, limit: int = 20) -> list[dict]:
     async def _tt() -> list[dict]:
         items = await _run_apify_actor("clockworks~tiktok-scraper",
                                        {"searchQueries": [niche], "resultsPerPage": limit,
-                                        "shouldDownloadVideos": False})
+                                        "shouldDownloadVideos": True})
         out = [_normalize_apify_post(i, "tiktok") for i in items if isinstance(i, dict)]
         for p in out:
             if p:
@@ -5414,7 +5414,7 @@ async def _resolve_post_media(url: str) -> str | None:
         return None
     platform = _platform_from_url(url)
     if platform == "tiktok":
-        actor, payload = "clockworks~tiktok-scraper", {"postURLs": [url], "shouldDownloadVideos": False}
+        actor, payload = "clockworks~tiktok-scraper", {"postURLs": [url], "shouldDownloadVideos": True}
     else:
         actor, payload = "apify~instagram-scraper", {"directUrls": [url], "resultsType": "posts", "resultsLimit": 1}
     try:

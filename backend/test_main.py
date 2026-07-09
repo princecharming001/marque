@@ -223,6 +223,25 @@ def test_refresh_niche_reels_transcribes_before_mapping(monkeypatch):
     assert captured["top_n"] == main._REEL_TRANSCRIBE_TOP_N
 
 
+def test_tiktok_scrapes_request_video_downloads(monkeypatch):
+    """Actor-schema drift: with shouldDownloadVideos:false the TikTok scraper now
+    returns NO direct video URL at all (downloadAddr gone, mediaUrls empty) — which
+    silently killed reel previews AND transcription (both need a fetchable URL).
+    Every TikTok actor call must request downloads (KV-store mp4s are public)."""
+    calls = []
+    async def fake_actor(actor, payload):
+        calls.append((actor, payload))
+        return []
+    monkeypatch.setattr(main, "_run_apify_actor", fake_actor)
+    monkeypatch.setattr(main, "APIFY_KEY", "k")
+    asyncio.run(main.scrape_niche_posts("fitness"))
+    asyncio.run(main.scrape_posts("somehandle", "tiktok"))
+    asyncio.run(main._resolve_post_media("https://www.tiktok.com/@x/video/123"))
+    tiktok_calls = [p for a, p in calls if "tiktok" in a]
+    assert tiktok_calls, "expected TikTok actor calls"
+    assert all(p.get("shouldDownloadVideos") is True for p in tiktok_calls)
+
+
 def test_clamp_title_word_boundary():
     """Pick-card titles must be short enough to render un-truncated: ≤42 chars,
     cut at a word boundary, no trailing punctuation fragments."""
