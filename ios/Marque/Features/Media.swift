@@ -4,6 +4,7 @@ import AVKit
 import AVFoundation
 import PhotosUI
 import UniformTypeIdentifiers
+import CryptoKit
 
 // MARK: - Local media helpers (thumbnails, playback, bulk import to the app container)
 
@@ -40,13 +41,22 @@ enum MediaStore {
 }
 
 /// Bulk-import picked photos/videos into the app container as MediaAssets.
+/// I-5: stamps a real contentHash (so lazy analysis can run later) and pre-generates a
+/// video poster at import — but does NOT upload or analyze here (that's deferred until needed).
 func importPickedMedia(_ items: [PhotosPickerItem]) async -> [MediaAsset] {
     var out: [MediaAsset] = []
     for item in items {
         let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
         guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
         let path = MediaStore.save(data, ext: isVideo ? "mov" : "jpg")
-        out.append(MediaAsset(localPath: path, kind: isVideo ? .clip : .selfie, isVideo: isVideo))
+        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        var asset = MediaAsset(localPath: path, kind: isVideo ? .clip : .selfie, isVideo: isVideo)
+        asset.contentHash = hash
+        if isVideo, let poster = MediaStore.poster(for: MediaStore.url(for: path)),
+           let jpg = poster.jpegData(compressionQuality: 0.7) {
+            asset.thumbnailPath = MediaStore.save(jpg, ext: "jpg")
+        }
+        out.append(asset)
     }
     return out
 }

@@ -324,6 +324,9 @@ struct Clip: Codable, Hashable, Identifiable {
     // the clip could be "ready" and playable while quietly missing a feature
     // the creator asked for, with zero visibility. Optional — Snapshot-safe.
     var warnings: [String]? = nil
+    // I-6: "imported" for clips brought in from Photos (schedulable without filming on
+    // Yunicorn). Optional-with-default → Snapshot-safe both directions.
+    var source: String? = nil
     var createdAt: Date = Date()
 }
 

@@ -677,6 +677,18 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         ])
     }
 
+    /// I-8: end-of-voice-session memory distill. Returns extracted updates (empty on keyless,
+    /// short session, 404, or transport failure — all treated as "nothing to add").
+    func distillMemory(transcript: [[String: String]], memory: CreatorMemory, brand: BrandGraph) async -> [MemoryUpdate] {
+        guard let data = await post("/v1/memory/distill", [
+            "creator_id": creatorId, "transcript": transcript,
+            "memory": memory.asDictionary, "brand": brandBody(brand),
+        ]) else { return [] }
+        struct Resp: Decodable { let memory_updates: [MU]?; struct MU: Decodable { let op: String; let field: String; let value: String } }
+        guard let r = try? JSONDecoder().decode(Resp.self, from: data) else { return [] }
+        return (r.memory_updates ?? []).map { MemoryUpdate(op: $0.op, field: $0.field, value: $0.value) }
+    }
+
     func fetchFeed(brand: BrandGraph, memory: CreatorMemory, cursor: Int) async -> FeedPage? {
         let styles = brand.preferredStyles.map { $0.rawValue }.joined(separator: ",")
         // I-8: POST so the creator's memory (yap-session context) personalizes picks. Falls

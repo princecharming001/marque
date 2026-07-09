@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import UserNotifications
+import AVFoundation
 
 @MainActor
 @Observable
@@ -460,10 +461,29 @@ final class AppStore {
     func addMedia(_ assets: [MediaAsset]) {
         media.insert(contentsOf: assets, at: 0)
         save()
-        for asset in assets { analyzeMedia(asset) }
+        // I-5: analysis is LAZY — no eager upload/analyze on import. It runs only when needed
+        // (the asset is opened, the user taps Analyze, or a b-roll render is about to use the corpus).
     }
 
-    /// Trigger async analysis of a media asset after upload. Fills aiDescription, aiTags, brollSuitability.
+    /// I-5: analyze this asset if it hasn't been yet ("only if needed" entry point). Idempotent —
+    /// skips assets already analyzing/done. Called from MediaEditSheet.onAppear, a manual button,
+    /// and primeBrollCorpus() before a b-roll render.
+    func ensureMediaAnalyzed(_ asset: MediaAsset) {
+        guard let idx = media.firstIndex(where: { $0.id == asset.id }) else { return }
+        let status = media[idx].analysisStatus
+        guard status == .none || status == .failed else { return }
+        analyzeMedia(media[idx])
+    }
+
+    /// I-5: when a b-roll render is about to run, warm analysis on the most recent un-analyzed
+    /// corpus so /v1/broll/match has something to work with. Fire-and-forget; never blocks.
+    func primeBrollCorpus(limit: Int = 12) {
+        for asset in media.filter({ $0.analysisStatus == .none }).prefix(limit) {
+            ensureMediaAnalyzed(asset)
+        }
+    }
+
+    /// Trigger async analysis of a media asset. Fills aiDescription, aiTags, brollSuitability.
     func analyzeMedia(_ asset: MediaAsset) {
         guard !asset.contentHash.isEmpty || !asset.remoteURL.isEmpty else { return }
         let hash = asset.contentHash.isEmpty ? asset.id.uuidString : asset.contentHash
@@ -476,6 +496,7 @@ final class AppStore {
                 kind: asset.kind.rawValue, publicURL: asset.remoteURL
             )
             if let idx = media.firstIndex(where: { $0.id == asset.id }) {
+                guard !result.isEmpty else { media[idx].analysisStatus = .failed; save(); return }
                 media[idx].aiDescription = result["description"] as? String ?? ""
                 media[idx].aiTags = result["tags"] as? [String] ?? []
                 media[idx].brollSuitability = result["broll_suitability"] as? Int ?? 0
@@ -599,6 +620,7 @@ final class AppStore {
     /// transport failure degrades to the local mock pipeline.
     func confirmClips(jobId: String, script: Script, toggles: EditToggles,
                       customInstructions: String, footagePath: String?) async {
+        if toggles.broll { primeBrollCorpus() }   // I-5: warm corpus analysis for b-roll matching
         guard let resp = await backend.confirmClip(jobId: jobId, toggles: toggles,
                                                    customInstructions: customInstructions),
               let clipDicts = resp["clips"] as? [[String: Any]], !clipDicts.isEmpty else {
@@ -1296,6 +1318,35 @@ final class AppStore {
     func removeReadiedScript(_ saved: SavedScript) {
         readiedScripts.removeAll { $0.id == saved.id }
         save()
+    }
+
+    // MARK: Import an external clip (I-6) — schedule a video you didn't film on Yunicorn.
+
+    @discardableResult
+    func importExternalClip(data: Data, title: String) async -> Clip {
+        let path = MediaStore.save(data, ext: "mov")
+        let url = MediaStore.url(for: path)
+        let poster = MediaStore.poster(for: url)
+        let thumbPath = poster.flatMap { $0.jpegData(compressionQuality: 0.7) }.map { MediaStore.save($0, ext: "jpg") }
+        let seconds = Int(CMTimeGetSeconds(AVURLAsset(url: url).duration).rounded())
+        let style = brand.preferredStyles.first ?? .talkingHead
+        var clip = Clip(scriptId: UUID(), formatId: style.formats.first ?? "myth-buster",
+                        formatName: "Imported", caption: "",
+                        predictedScore: 0, status: .ready, seconds: max(1, seconds))
+        clip.title = title
+        clip.localVideoPath = path
+        clip.thumbnailPath = thumbPath
+        clip.source = "imported"
+        clips.insert(clip, at: 0)
+        save()
+        // Upload in the background so it's postable (real publishing needs a remote URL).
+        let cid = clip.id
+        Task {
+            if let remote = await LiveClipEngine.mintAndUpload(footagePath: path), !remote.isEmpty {
+                if let idx = clips.firstIndex(where: { $0.id == cid }) { clips[idx].remoteURL = remote; save() }
+            }
+        }
+        return clip
     }
 
     // MARK: Today's-picks feedback (I-2)

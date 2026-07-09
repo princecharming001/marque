@@ -113,6 +113,7 @@ struct VoiceSessionView: View {
             sessionLive = false
             playback.stopSpeaking()
             _ = speech.stop()
+            distillSessionMemory()      // I-8: pull anything the per-turn extraction missed
         }
     }
 
@@ -273,6 +274,20 @@ struct VoiceSessionView: View {
             logToVoiceNotes(user: userMsg, reply: reply)
             // Phase 6: speak every assistant reply (speak() stops any current playback first).
             if sessionLive { Task { await playback.speak(result.reply) } }
+        }
+    }
+
+    /// I-8: a "yap session" is captured only per-turn while talking; on close, ask the backend
+    /// to re-read the whole transcript and pull any durable memory the turn extraction missed.
+    /// Fire-and-forget, 404-tolerant, and a no-op for short sessions.
+    private func distillSessionMemory() {
+        let userTurns = exchanges.filter { $0.role == .user }
+        guard userTurns.count >= 4 else { return }
+        let transcript = exchanges.map { ["role": $0.role == .user ? "user" : "assistant", "text": $0.content] }
+        let mem = store.memory, brand = store.brand
+        Task {
+            let updates = await store.backend.distillMemory(transcript: transcript, memory: mem, brand: brand)
+            if !updates.isEmpty { await MainActor.run { store.applyMemoryUpdates(updates) } }
         }
     }
 

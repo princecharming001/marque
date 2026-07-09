@@ -460,6 +460,9 @@ struct MediaEditSheet: View {
         _kind = State(initialValue: asset.kind)
         _note = State(initialValue: asset.note)
     }
+    /// I-5: the live asset from the store so analysis results appear reactively (the passed
+    /// `asset` is a value snapshot that never updates).
+    private var live: MediaAsset { store.media.first { $0.id == asset.id } ?? asset }
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -477,19 +480,19 @@ struct MediaEditSheet: View {
                     }
                     SectionLabel(text: "Tag (optional)")
                     TextField("e.g. gym, office, on stage", text: $note).marqueField()
-                    // AI Analysis section
-                    if asset.analysisStatus == .analyzing {
+                    // AI Analysis section (I-5: reads the LIVE asset so results appear reactively)
+                    if live.analysisStatus == .analyzing {
                         HStack(spacing: Space.sm) {
                             ProgressView().scaleEffect(0.8)
                             Text("Analyzing…").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                         }
-                    } else if asset.analysisStatus == .done {
+                    } else if live.analysisStatus == .done {
                         VStack(alignment: .leading, spacing: Space.sm) {
                             SectionLabel(text: "AI description", accent: Palette.accent)
-                            Text(asset.aiDescription).font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                            if !asset.onScreenText.isEmpty {
+                            Text(live.aiDescription).font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                            if !live.onScreenText.isEmpty {
                                 SectionLabel(text: "On-screen text", accent: Palette.accent)
-                                Text(asset.onScreenText).font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                                Text(live.onScreenText).font(AppFont.body).foregroundStyle(Palette.textSecondary)
                             }
                             SectionLabel(text: "B-roll fit", accent: Palette.accent)
                             HStack(spacing: Space.sm) {
@@ -497,26 +500,37 @@ struct MediaEditSheet: View {
                                     ZStack(alignment: .leading) {
                                         Capsule().fill(Palette.hairline).frame(height: 6)
                                         Capsule()
-                                            .fill(asset.brollSuitability > 60 ? Palette.accent : Palette.gold)
-                                            .frame(width: geo.size.width * CGFloat(asset.brollSuitability) / 100, height: 6)
+                                            .fill(live.brollSuitability > 60 ? Palette.accent : Palette.gold)
+                                            .frame(width: geo.size.width * CGFloat(live.brollSuitability) / 100, height: 6)
                                     }
                                 }.frame(height: 6)
-                                Text("\(asset.brollSuitability)%").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                Text("\(live.brollSuitability)%").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                             }
-                            if !asset.brollSuitabilityReason.isEmpty {
-                                Text(asset.brollSuitabilityReason).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                            if !live.brollSuitabilityReason.isEmpty {
+                                Text(live.brollSuitabilityReason).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                             }
-                            if !asset.aiTags.isEmpty {
+                            if !live.aiTags.isEmpty {
                                 SectionLabel(text: "Auto-tags", accent: Palette.accent)
                                 ScrollView(.horizontal, showsIndicators: false) {
                                     HStack(spacing: Space.sm) {
-                                        ForEach(asset.aiTags, id: \.self) { tag in
-                                            Chip(text: tag)
-                                        }
+                                        ForEach(live.aiTags, id: \.self) { tag in Chip(text: tag) }
                                     }
                                 }
                             }
                         }
+                    } else {
+                        // .none / .failed — offer a manual analyze (retry on failed).
+                        Button { store.ensureMediaAnalyzed(live) } label: {
+                            Label(live.analysisStatus == .failed ? "Analysis failed — retry" : "Analyze with AI",
+                                  systemImage: "sparkles")
+                                .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
+                                .frame(maxWidth: .infinity).frame(height: 44)
+                                .background(Palette.surfaceRaised)
+                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                        }
+                        .buttonStyle(PressableStyle()).accessibilityIdentifier("media.analyzeNow")
                     }
                     Button(role: .destructive) { store.removeMedia(asset); dismiss() } label: {
                         Text("Remove from library").font(AppFont.callout).foregroundStyle(Palette.critical)
@@ -527,6 +541,7 @@ struct MediaEditSheet: View {
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Media").navigationBarTitleDisplayMode(.inline)
+            .onAppear { store.ensureMediaAnalyzed(asset) }   // I-5: lazy — analyze on first open
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {

@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 // Shared scheduling components used by the Performance tab's queue section
 // (formerly the Calendar tab): DayRow/PostRow cards, the month grid, and the
@@ -211,6 +212,8 @@ struct SchedulePickerSheet: View {
     @State private var platforms: Set<SocialPlatform> = [.instagram, .tiktok]
     @State private var time: Date
     @State private var autoCaptions = true
+    @State private var importPick: PhotosPickerItem? = nil       // I-6
+    @State private var importing = false
 
     init(day: Date, preselectClipId: UUID? = nil) {
         self.day = day
@@ -250,8 +253,35 @@ struct SchedulePickerSheet: View {
                     }.tint(Palette.accent)
 
                     SectionLabel(text: "Pick a clip")
+                    // I-6: schedule a video you didn't film on Yunicorn.
+                    if preselectClipId == nil {
+                        PhotosPicker(selection: $importPick, matching: .videos) {
+                            HStack(spacing: Space.sm) {
+                                if importing { ProgressView().tint(Palette.textSecondary) }
+                                else { Image(systemName: "plus").font(.system(size: 13, weight: .medium)) }
+                                Text(importing ? "Importing…" : "Import a video").font(AppFont.callout)
+                            }
+                            .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 46)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                .strokeBorder(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                        }
+                        .accessibilityIdentifier("schedule.importClip")
+                        .onChange(of: importPick) { _, item in
+                            guard let item else { return }
+                            importing = true
+                            Task {
+                                if let data = try? await item.loadTransferable(type: Data.self) {
+                                    await store.importExternalClip(data: data, title: "Imported clip")
+                                }
+                                importPick = nil; importing = false
+                            }
+                        }
+                    }
                     if ready.isEmpty {
-                        EmptyStateView(icon: "rectangle.stack", title: "No ready clips", message: "Render some clips first.")
+                        EmptyStateView(icon: "rectangle.stack", title: "No ready clips",
+                                       message: "Render a clip, or import a video above.")
                     } else {
                         ForEach(ready) { c in
                             Button { schedule(c) } label: { ClipCell(clip: c) }
