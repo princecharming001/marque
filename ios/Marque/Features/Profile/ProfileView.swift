@@ -46,14 +46,15 @@ struct ProfileView: View {
 
                 MarqueHairline()
 
-                // Brand group
+                // Brand group — editorial rows: serif label on a hairline, no icon
+                // squares (the tinted-square-plus-chevron pattern reads as template UI).
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader("Brand")
-                    profileRow(icon: "pencil", label: "Brand identity") { showBrandEditor = true }
-                    MarqueHairline().padding(.leading, 56)
-                    profileRow(icon: "waveform", label: "Voice & tone") { showVoiceEditor = true }
-                    MarqueHairline().padding(.leading, 56)
-                    profileRow(icon: "square.grid.2x2", label: "Content pillars") { showPillarsEditor = true }
+                    profileRow(label: "Brand identity") { showBrandEditor = true }
+                    MarqueHairline()
+                    profileRow(label: "Voice & tone") { showVoiceEditor = true }
+                    MarqueHairline()
+                    profileRow(label: "Content pillars") { showPillarsEditor = true }
                     // H-05: "Your formats" editor removed — the server infers style
                     // per take now; there is no preferred-styles knob to set.
                     if !store.pillars.isEmpty {
@@ -140,19 +141,31 @@ struct ProfileView: View {
                     .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                 if !card.traits.isEmpty {
+                    // Quiet hairline chips — the blue-tinted pills read as tag soup.
                     FlowWrap(spacing: 6) {
                         ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
-                            Chip(text: trait, tint: Palette.accent)
+                            Text(trait)
+                                .font(Typeface.sans(11, .medium)).tracking(0.2)
+                                .foregroundStyle(Palette.textSecondary)
+                                .padding(.horizontal, 10).padding(.vertical, 4)
+                                .background(Capsule().fill(Palette.surfaceRaised))
+                                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
                         }
                     }
                     .padding(.top, 2)
                 }
                 if !card.workingOn.isEmpty {
-                    Text("Working on: \(card.workingOn)")
-                        .font(AppFont.caption).italic()
-                        .foregroundStyle(Palette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("WORKING ON")
+                            .font(AppFont.micro).tracking(Track.label)
+                            .foregroundStyle(Palette.textTertiary)
+                        Text(card.workingOn)
+                            .font(AppFont.caption)
+                            .foregroundStyle(Palette.textSecondary)
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, Space.xs)
                 }
             } else {
                 // Skeleton paragraph while the first summary is being written
@@ -253,27 +266,21 @@ struct ProfileView: View {
             .padding(.top, Space.lg).padding(.bottom, Space.sm)
     }
 
-    private func profileRow(icon: String, label: String, accent: Bool = false, action: @escaping () -> Void) -> some View {
+    private func profileRow(label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: Space.md) {
-                Image(systemName: icon)
-                    .font(.system(size: 15))
-                    .foregroundStyle(accent ? Palette.gold : Palette.accent)
-                    .frame(width: 32, height: 32)
-                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill((accent ? Palette.gold : Palette.accent).opacity(0.10)))
+            HStack {
                 Text(label)
-                    .font(AppFont.bodyL)
-                    .foregroundStyle(accent ? Palette.gold : Palette.textPrimary)
+                    .font(Typeface.display(18, .medium)).tracking(Track.title)
+                    .foregroundStyle(Palette.textPrimary)
                 Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 12))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Palette.textTertiary)
             }
-            .padding(.vertical, Space.sm)
+            .padding(.vertical, 15)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.6))
     }
 }
 
@@ -303,17 +310,12 @@ private struct WatchedCreatorSlot: View {
 
     private func savedRow(_ creator: WatchedCreator) -> some View {
         HStack(spacing: Space.md) {
-            Image(systemName: creator.platform == .instagram ? "camera.circle.fill" : "music.note")
-                .font(.system(size: 15))
-                .foregroundStyle(Palette.accent)
-                .frame(width: 32, height: 32)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Palette.accent.opacity(0.10)))
             VStack(alignment: .leading, spacing: 1) {
                 Text("@\(creator.handle)")
                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                Text(creator.platform.label)
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                Text(creator.platform.label.uppercased())
+                    .font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(Palette.textTertiary)
             }
             Spacer(minLength: 0)
             Button { withAnimation(Motion.quick) { clear() } } label: {

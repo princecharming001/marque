@@ -1,0 +1,28 @@
+appId: com.getmarque.app
+name: Trend ticker — swipe advances with slide animation
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "feed.pick"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "feed.trend"
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 50
+- takeScreenshot: /tmp/r5-ticker-before
+- swipe:
+    from:
+      id: "feed.trend"
+    direction: LEFT
+- takeScreenshot: /tmp/r5-ticker-after
+- tapOn:
+    id: "feed.trend"
+- takeScreenshot: /tmp/r5-ticker-expanded

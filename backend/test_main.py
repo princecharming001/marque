@@ -176,9 +176,13 @@ def test_perf_summary_no_data_flag():
 
 
 def test_insights_persona_in_prompt():
-    # C-09: coach persona threads into the prompt voice.
+    # C-09: coach persona threads into the prompt voice. The "sergeant" wire key
+    # now maps to The Straight Shooter persona (2026-07 rename; keys frozen).
     sysp, _ = prompts.insights_prompt({"niche": "fitness"}, "great week", persona="sergeant")
-    assert "Sergeant" in sysp or "sergeant" in sysp.lower()
+    assert "Straight Shooter" in sysp
+    # unknown persona falls back to the default voice, never a KeyError
+    sysp2, _ = prompts.insights_prompt({"niche": "fitness"}, "great week", persona="nope")
+    assert "PERSONA" in sysp2
 
 
 def test_eval_flags_ungrounded_receipt():

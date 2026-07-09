@@ -398,14 +398,19 @@ struct MediaSection: View {
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
             }
 
+            // A hairline ghost, not a hero button — importing reference media is a
+            // secondary action; the big ink slab overpowered the whole section.
             PhotosPicker(selection: $picked, maxSelectionCount: 40, matching: .any(of: [.images, .videos])) {
                 HStack(spacing: Space.sm) {
-                    if importing { ProgressView().tint(Palette.onInk) } else { Image(systemName: "plus") }
-                    Text(importing ? "Importing…" : "Import media").font(AppFont.headline)
+                    if importing { ProgressView().tint(Palette.textSecondary) }
+                    else { Image(systemName: "plus").font(.system(size: 13, weight: .medium)) }
+                    Text(importing ? "Importing…" : "Import media").font(AppFont.callout)
                 }
-                .foregroundStyle(Palette.onInk).frame(maxWidth: .infinity).frame(height: 54)
-                .background(Palette.ink)
+                .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 48)
+                .background(Palette.surfaceRaised)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .strokeBorder(Palette.hairline, lineWidth: 1))
             }
             .accessibilityIdentifier("library.importMedia")
             .onChange(of: picked) { _, items in

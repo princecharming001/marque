@@ -655,34 +655,38 @@ struct EditPrefs: Codable, Hashable {
 
 /// Coach voice for the conversation engine — original archetypes (not real people),
 /// in the same high-energy/blunt-hustle/tough-discipline vein the user asked for.
+// Coach personas — the three modes a creator actually reaches for: a calm
+// game-planner, an energy source, and someone who just tells them the truth.
+// Case rawValues are FROZEN (persisted in Snapshot + sent to the backend as
+// prompt-voice keys) — only the presentation evolves.
 enum ChatPersona: String, CaseIterable, Codable, Identifiable {
     case machine, closer, sergeant
     var id: String { rawValue }
     var label: String {
         switch self {
-        case .machine: return "The Machine"
-        case .closer: return "The Closer"
-        case .sergeant: return "The Sergeant"
+        case .machine: return "The Strategist"
+        case .closer: return "The Hype Coach"
+        case .sergeant: return "The Straight Shooter"
         }
     }
     var tagline: String {
         switch self {
-        case .machine: return "big energy, bigger numbers"
-        case .closer: return "blunt, ROI-first hustle"
-        case .sergeant: return "no-excuses discipline"
+        case .machine: return "calm, data-first game plans"
+        case .closer: return "all gas — momentum and wins"
+        case .sergeant: return "the blunt truth, zero fluff"
         }
     }
     var icon: String {
         switch self {
-        case .machine: return "bolt.fill"
-        case .closer: return "chart.line.uptrend.xyaxis"
-        case .sergeant: return "shield.fill"
+        case .machine: return "target"
+        case .closer: return "flame.fill"
+        case .sergeant: return "scope"
         }
     }
     var glow: UInt {
         switch self {
-        case .machine: return 0xFF6B35
-        case .closer: return 0x3B82F6
+        case .machine: return 0x3B82F6
+        case .closer: return 0xFF6B35
         case .sergeant: return 0xB08D57
         }
     }

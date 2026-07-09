@@ -196,11 +196,15 @@ struct InsightsSection: View {
     private var learningTeaser: some View {
         VStack(spacing: Space.md) {
             Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(.system(size: 26)).foregroundStyle(Palette.accent)
-            Text("Unlock your winning formula").font(AppFont.title).foregroundStyle(Palette.textPrimary)
+                .font(.system(size: 19, weight: .light)).foregroundStyle(Palette.textTertiary)
+            Text("Unlock your winning formula")
+                .font(Typeface.display(21, .semibold)).tracking(Track.title)
+                .foregroundStyle(Palette.textPrimary)
             Text("Post \(learningTarget) clips and Yunicorn learns what actually works for you — the hooks, formats, and topics ranked by real results.")
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .frame(maxWidth: 300)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(spacing: Space.xs) {

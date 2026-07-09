@@ -1,0 +1,31 @@
+appId: com.getmarque.app
+name: Design-polish verification screenshots
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "home.voiceBubble"
+    timeout: 15000
+- extendedWaitUntil:
+    visible:
+      id: "feed.pick"
+    timeout: 30000
+- takeScreenshot: /tmp/r5-polish-home
+- scrollUntilVisible:
+    element:
+      id: "feed.trend"
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 50
+- takeScreenshot: /tmp/r5-polish-ticker
+- tapOn:
+    id: "home.profile"
+- extendedWaitUntil:
+    visible: "Brand identity"
+    timeout: 8000
+- takeScreenshot: /tmp/r5-polish-profile

@@ -304,49 +304,50 @@ struct PillarNode: View {
     }
 }
 
+// Editorial empty state: a hairline-weight glyph, serif display title, quiet
+// capped-width message. (The old 72pt 3D-render graphics read as clip-art —
+// the `graphic` param is kept for call-site compatibility but intentionally
+// ignored; restraint over ornament.)
 struct EmptyStateView: View {
     let icon: String
     let title: String
     let message: String
-    /// Optional generated 3D-render asset name (e.g. "ClipsIcon") — replaces the SF Symbol
-    /// when set, for the empty states that warrant a bit more visual weight.
     var graphic: String? = nil
     var body: some View {
-        VStack(spacing: Space.md) {
-            if let graphic {
-                Image(graphic).resizable().scaledToFit().frame(width: 72, height: 72)
-            } else {
-                Image(systemName: icon).font(.system(size: 28)).foregroundStyle(Palette.textTertiary)
-            }
-            Text(title).font(AppFont.title).foregroundStyle(Palette.textPrimary)
-            Text(message).font(AppFont.body).foregroundStyle(Palette.textSecondary)
+        VStack(spacing: Space.sm) {
+            Image(systemName: icon)
+                .font(.system(size: 19, weight: .light))
+                .foregroundStyle(Palette.textTertiary)
+                .padding(.bottom, Space.xs)
+            Text(title)
+                .font(Typeface.display(21, .semibold)).tracking(Track.title)
+                .foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.center)
+            Text(message)
+                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .frame(maxWidth: 300)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, Space.huge)
     }
 }
 
+// Format classification mark (Myth-Buster, POV/Story, …) — letterpress caps on
+// liquid glass. No icon, no capsule: a small continuous-corner glass tag reads
+// as a quiet editorial label instead of a UI chip.
 struct FormatTag: View {
     let formatId: String
     var body: some View {
-        let f = Catalog.format(formatId)
-        HStack(spacing: 4) {
-            Image(systemName: icon(f.faceMode)).font(.system(size: 11))
-            Text(f.name).font(AppFont.caption)
-        }
-        .foregroundStyle(Palette.textSecondary)
-        .padding(.horizontal, Space.sm).padding(.vertical, 5)
-        .background(Palette.surfaceSunken)
-        .clipShape(Capsule())
-    }
-    private func icon(_ m: VideoFormat.FaceMode) -> String {
-        switch m {
-        case .face: return "person.fill"
-        case .faceless: return "sparkles"
-        case .split: return "rectangle.split.2x1"
-        case .greenScreen: return "photo.fill"
-        }
+        Text(Catalog.format(formatId).name.uppercased())
+            .font(Typeface.sans(10, .semibold)).tracking(1.2)
+            .foregroundStyle(Palette.textSecondary)
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(.ultraThinMaterial,
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 0.75))
     }
 }
 

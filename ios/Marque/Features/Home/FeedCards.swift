@@ -31,9 +31,13 @@ struct ScriptFeedCard: View {
                 .font(AppFont.serifM).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-            Text("\u{201C}\(script.hook.text)\u{201D}")
-                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                .lineLimit(2)
+            // The hook quote earns its slot only when it says something the title
+            // doesn't — a no-title card already leads with the hook.
+            if !script.title.isEmpty, !script.hook.text.hasPrefix(String(script.title.prefix(24))) {
+                Text("\u{201C}\(script.hook.text)\u{201D}")
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .lineLimit(2)
+            }
             Spacer(minLength: 0)
             HStack(spacing: Space.sm) {
                 Button(action: onFilm) {
@@ -115,7 +119,12 @@ struct ReelCard: View {
                     }
                 }
                 if imageLoaded {
-                    LinearGradient(colors: [.black.opacity(0.28), .black.opacity(0.62)],
+                    // With no text overlay the thumbnail can breathe — just enough
+                    // scrim at the edges for the handle (top) and views (bottom).
+                    LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
+                                           .init(color: .clear, location: 0.22),
+                                           .init(color: .clear, location: 0.72),
+                                           .init(color: .black.opacity(0.45), location: 1)],
                                    startPoint: .top, endPoint: .bottom)
                 }
             }
@@ -146,14 +155,18 @@ struct ReelCard: View {
 
             Spacer(minLength: 0)
 
-            // The hook carries the card — big serif over the middle
-            Text(reel.hookText)
-                .font(Typeface.display(17))
-                .tracking(Track.tight)
-                .foregroundStyle(overImage ? Color.white : Palette.textPrimary)
-                .lineLimit(4)
-                .multilineTextAlignment(.leading)
-                .fixedSize(horizontal: false, vertical: true)
+            // Typographic ground only: the hook carries the card when there's no
+            // footage. Over a real thumbnail the video IS the content — text on
+            // top just fights it (the idea lives in the detail sheet).
+            if !overImage {
+                Text(reel.hookText)
+                    .font(Typeface.display(17))
+                    .tracking(Track.tight)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(4)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Spacer(minLength: 0)
 
@@ -181,9 +194,17 @@ struct TrendTicker: View {
     @State private var allTrends: [TrendItem] = []
     @State private var expanded = false
     @State private var pulse = false
-    @State private var rotation: CGFloat = 0
+    @State private var slideFromTrailing = true    // last advance direction → transition edges
 
-    private var displayTrend: TrendItem { allTrends.isEmpty ? trend : allTrends[currentIndex % allTrends.count] }
+    private var displayTrend: TrendItem { allTrends.isEmpty ? trend : allTrends[currentIndex % max(1, allTrends.count)] }
+
+    /// Direction-aware slide: forward swipes push in from the trailing edge,
+    /// backward swipes from the leading edge — the ticker reads as a carousel.
+    private var slide: AnyTransition {
+        .asymmetric(
+            insertion: .move(edge: slideFromTrailing ? .trailing : .leading).combined(with: .opacity),
+            removal: .move(edge: slideFromTrailing ? .leading : .trailing).combined(with: .opacity))
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -199,15 +220,20 @@ struct TrendTicker: View {
                     Text("TRENDING")
                         .font(AppFont.micro).tracking(Track.label)
                         .foregroundStyle(Palette.textTertiary)
-                    Text(displayTrend.title)
-                        .font(AppFont.callout)
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(1)
-                    Spacer(minLength: Space.sm)
+                    ZStack(alignment: .leading) {
+                        Text(displayTrend.title)
+                            .font(AppFont.callout)
+                            .foregroundStyle(Palette.textPrimary)
+                            .lineLimit(1)
+                            .id("trend-title-\(currentIndex)")
+                            .transition(slide)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .clipped()
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(Palette.textTertiary)
-                        .rotationEffect(.degrees(rotation))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
                 }
                 .padding(.vertical, Space.md)
                 .contentShape(Rectangle())
@@ -216,40 +242,55 @@ struct TrendTicker: View {
             .accessibilityIdentifier("feed.trend")
 
             if expanded {
-                Text(displayTrend.why)
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 14)
-                    .padding(.bottom, Space.md)
-                    .transition(.opacity)
+                ZStack(alignment: .topLeading) {
+                    Text(displayTrend.why)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .lineSpacing(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .id("trend-why-\(currentIndex)")
+                        .transition(slide)
+                }
+                .clipped()
+                .padding(.leading, 14)
+                .padding(.bottom, Space.md)
             }
             MarqueHairline()
         }
+        .contentShape(Rectangle())
+        // Swipe to move between trends — works collapsed or expanded. HIGH priority
+        // so the drag beats the expand button's tap recognition; minimumDistance
+        // keeps plain taps flowing through to the button (a sub-24pt touch fails
+        // the drag and falls back to the tap).
+        .highPriorityGesture(DragGesture(minimumDistance: 24).onEnded { v in
+            guard allTrends.count > 1, abs(v.translation.width) > abs(v.translation.height) else { return }
+            if v.translation.width < 0 { advance(1) } else { advance(-1) }
+        })
         .onAppear {
             withAnimation(Motion.breath) { pulse = true }
-            // W1: seed with the full list when present so scheduleRotation actually cycles.
             allTrends = all.count > 1 ? all : [trend]
-            scheduleRotation()
         }
         .onChange(of: all) { _, new in
             allTrends = new.count > 1 ? new : [trend]
             currentIndex = 0
-            scheduleRotation()
+        }
+        // Auto-advance every 30s while collapsed; reading an expanded trend never
+        // yanks it away — the cycle resumes on collapse. Task cancels itself on
+        // expand/list change, so there are no stray timers.
+        .task(id: "\(expanded)-\(allTrends.count)") {
+            guard !expanded, allTrends.count > 1 else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                guard !Task.isCancelled else { return }
+                advance(1)
+            }
         }
     }
 
-    private func scheduleRotation() {
-        guard allTrends.count > 1 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
-            withAnimation(Motion.quick) {
-                currentIndex += 1
-                rotation = 90
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                rotation = 0
-                scheduleRotation()
-            }
+    private func advance(_ step: Int) {
+        guard !allTrends.isEmpty else { return }
+        slideFromTrailing = step > 0
+        withAnimation(Motion.quick) {
+            currentIndex = (currentIndex + step + allTrends.count) % allTrends.count
         }
     }
 }
