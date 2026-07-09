@@ -376,7 +376,7 @@ struct ClipDetailSheet: View {
                              : "This removes the clip and any times it's scheduled. This can't be undone.")
             }
             .sheet(isPresented: $showTweak) { TweakChatSheet(clip: clip) }
-            .sheet(isPresented: $showEditor) { EditorView(clip: clip) }
+            .fullScreenCover(isPresented: $showEditor) { ProEditorView(clip: clip) }
         }
     }
 }
