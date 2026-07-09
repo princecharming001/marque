@@ -15,6 +15,8 @@ struct ChatView: View {
     @State private var showAttach = false
     @State private var showClipPicker = false        // W5: PhotosPicker for "edit my clips"
     @State private var pickedClips: [PhotosPickerItem] = []
+    @State private var speech = SpeechRecognizer()    // C-10: chat dictation
+    @State private var dictating = false
     @FocusState private var composerFocused: Bool
 
     private static let bottomAnchor = "chat.bottomAnchor"
@@ -76,6 +78,15 @@ struct ChatView: View {
         .onChange(of: draft) { _, newValue in
             if !newValue.isEmpty { chat.chips = [] }   // chips dismiss when the user types
         }
+        // C-10: stream the live transcript into the draft while dictating; clear the
+        // flag when the recognizer auto-stops (silence timeout / final result).
+        .onChange(of: speech.transcript) { _, t in
+            if dictating, !t.isEmpty { draft = t }
+        }
+        .onChange(of: speech.isListening) { _, listening in
+            if !listening { dictating = false }
+        }
+        .onDisappear { if dictating { speech.stop(); dictating = false } }
         .onChange(of: composerFocused) { _, focused in
             // The persistent tab bar (with its floating Film FAB) sits in a safeAreaInset
             // outside this view's own keyboard avoidance, so it doesn't yield to the
@@ -254,7 +265,7 @@ struct ChatView: View {
             MorphSendButton(state: sendState) {
                 switch sendState {
                 case .streaming: chat.cancel()
-                case .empty: composerFocused = true   // voice affordance: focus for now
+                case .empty: toggleDictation()        // C-10: mic → live dictation into the draft
                 case .ready: sendDraft()
                 }
             }
@@ -278,10 +289,27 @@ struct ChatView: View {
     // MARK: Actions
 
     private func sendDraft() {
+        if dictating { speech.stop(); dictating = false }
         let text = trimmedDraft
         guard !text.isEmpty else { return }
         draft = ""
         chat.send(text, store: store)
+    }
+
+    // MARK: Dictation (C-10)
+
+    /// Mic tap toggles live speech-to-text into the draft. Auto-stops on silence
+    /// (SpeechRecognizer finalizes) or when the user taps send. No-op with a quiet
+    /// notice if the mic/recognizer isn't available (e.g. simulator).
+    private func toggleDictation() {
+        if dictating { speech.stop(); dictating = false; return }
+        Task {
+            guard await speech.requestAuthorization() else { return }
+            speech.start()
+            if speech.isAvailable {
+                dictating = true
+            }
+        }
     }
 
     private func pasteVideoLink() {
