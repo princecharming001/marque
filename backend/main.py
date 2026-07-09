@@ -991,20 +991,21 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
     s = STYLES.get(req.style, STYLES["talking_head"])
     niche = (req.niche or "your craft").strip()
     # A few distinct angle templates so three picks don't read identically.
+    # W3: audience-facing + bracketed fill-ins — the keyless demo must not put invented
+    # personal history ("I tracked my X for 90 days") in the creator's mouth either.
     angles = [
         ("contrarian",
          f"Most {niche} advice is backwards. Here's what the top 1% actually do.",
          f"Everyone tells you to do more. The people winning at {niche} do the opposite — "
-         f"they cut the noise and go deep on one thing. Here's the one move that changed it for me, "
-         f"and the exact way to start it this week."),
+         f"they cut the noise and go deep on one thing. Here's the one move to start this week."),
         ("specificity",
-         f"I tracked my {niche} for 90 days. One number explains everything.",
-         f"90 days, one spreadsheet, one surprising result. The thing I thought mattered most in "
-         f"{niche} barely moved the needle — this other habit did. Here's the number and how to copy it."),
+         f"One number decides most of your progress in {niche} — and you're probably not tracking it.",
+         f"Track it for one week — one note, [your number] at the end. The thing most people in "
+         f"{niche} obsess over barely moves it; this other habit does. Here's how to run the test yourself."),
         ("authority",
-         f"After years in {niche}, this is the part nobody warns you about.",
-         f"I've made every mistake in {niche} so you don't have to. The one that cost me the most "
-         f"wasn't effort — it was chasing the wrong signal. Here's how to spot it early and fix it fast."),
+         f"The part of {niche} nobody warns beginners about.",
+         f"Almost everyone's first months in {niche} stall for the same reason — chasing the wrong "
+         f"signal. Here's how to spot it early, and the fix that costs nothing but attention."),
     ]
     out = []
     for i in range(max(1, req.count)):
@@ -1124,6 +1125,8 @@ def _blend_score(v: dict) -> int:
              + 0.10 * float(v.get("voice_match", 0)))
         if v.get("slop"):
             s -= 12
+        if v.get("fabricated"):          # W3: a fabricated personal receipt is worse than slop
+            s -= 15
         return max(0, min(100, round(s)))
     except (TypeError, ValueError):
         return 0
@@ -1167,7 +1170,8 @@ def _final_score(creator_id: str, script: dict, verdict: dict) -> int:
 async def quality_scripts(brand: dict, style: str, scripts: list[dict],
                           posts: list[dict] | None = None,
                           creator_id: str = "default",
-                          mandated_hooks: list[dict] | None = None) -> list[dict]:
+                          mandated_hooks: list[dict] | None = None,
+                          memory: dict | None = None) -> list[dict]:
     """Generate -> judge -> targeted self-repair for scripts. A strict HAIKU critic
     scores each draft; we swap in the strongest alt-hook, rewrite only the weak
     ones with OPUS, and re-ground predictedScore on the critic's axes calibrated
@@ -1176,7 +1180,8 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
     if not (AI_QUALITY and scripts):
         return scripts
     try:
-        jsys, jusr = prompts.script_judge_prompt(scripts, style)
+        # W3: give the judge the creator context so it can flag fabricated personal facts.
+        jsys, jusr = prompts.script_judge_prompt(scripts, style, brand=brand, posts=posts, memory=memory)
         verdicts = await anthropic_json(jsys, jusr,
                                         _array_schema("verdicts", prompts.SCRIPT_JUDGE_JSON_ELEMENT),
                                         HAIKU, 1400, array_key="verdicts")
@@ -1347,7 +1352,8 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
         out = await quality_scripts(req.d(), req.style, out, req.posts or None,
-                                    creator_id=req.creator_id, mandated_hooks=mandated or None)
+                                    creator_id=req.creator_id, mandated_hooks=mandated or None,
+                                    memory=req.memory or None)
         return {"mode": "live", "scripts": out}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}

@@ -753,10 +753,11 @@ HOOK_JSON_ELEMENT = {
 SCRIPT_JUDGE_JSON_ELEMENT = {
     "type": "object", "additionalProperties": False,
     "required": ["index", "hook_strength", "specificity", "format_fit", "voice_match",
-                 "slop", "best_hook", "verdict", "weakest", "note"],
+                 "slop", "fabricated", "best_hook", "verdict", "weakest", "note"],
     "properties": {
         "index": _INT, "hook_strength": _INT, "specificity": _INT, "format_fit": _INT,
-        "voice_match": _INT, "slop": {"type": "boolean"}, "best_hook": _INT,
+        "voice_match": _INT, "slop": {"type": "boolean"}, "fabricated": {"type": "boolean"},
+        "best_hook": _INT,
         "verdict": {"type": "string", "enum": ["keep", "revise"]},
         "weakest": _STR, "note": _STR,
     },
@@ -931,6 +932,7 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
         "Write in the creator's EXACT voice — match their tone sliders, echo their real phrasing, and NEVER use "
         "a banned phrase. The hook must stop the scroll in the first 3 seconds. "
         f"\n\n{VIRALITY_BLOCK}\n\n"
+        f"{GROUNDING_BLOCK}\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
         f"A correctly-structured example for this style (match the STRUCTURE, not the content):\n{s['exemplar']}"
         f"{voice_section}\n\n"
@@ -983,33 +985,41 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
 SCRIPT_JUDGE_SCHEMA = (
     'Reply with ONLY a JSON array, one object per script in order: '
     '{"index": int, "hook_strength": int 0-100, "specificity": int 0-100, '
-    '"format_fit": int 0-100, "voice_match": int 0-100, "slop": bool, '
+    '"format_fit": int 0-100, "voice_match": int 0-100, "slop": bool, "fabricated": bool, '
     '"best_hook": int (0 = keep main hook, or the 1-based altHook that would out-hook it), '
     '"verdict": "keep" | "revise", "weakest": str (the axis to fix), "note": str (one concrete fix)}'
 )
 
 
-def script_judge_prompt(scripts: list[dict], style: str) -> tuple[str, str]:
+def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = None,
+                        posts: list[dict] | None = None, memory: dict | None = None) -> tuple[str, str]:
     """A strict independent critic that scores each draft on the axes that
-    actually drive short-form performance and flags the ones worth rewriting."""
+    actually drive short-form performance and flags the ones worth rewriting.
+    W3: it also receives the CREATOR CONTEXT so it can flag fabricated personal facts —
+    it can't judge groundedness blind."""
     s = STYLES.get(style, STYLES["talking_head"])
     system = (
         "You are Marque's harshest short-form editor, grading draft scripts a JUNIOR wrote. "
         "You did not write these — be adversarial, not generous. Score each on four axes 0-100:\n"
         "- hook_strength: does the first line stop the scroll in 1.5s? A concrete claim/number mid-thought "
         "scores high; a greeting, a set-up, a question-opener, or a vague promise scores low.\n"
-        "- specificity: is there at least ONE ownable, concrete detail (a number, a name, a dollar figure, a "
-        "timeframe)? Generic advice that fits any creator scores low.\n"
+        "- specificity: is there at least ONE ownable, concrete detail (a number, a name, a mechanism, a "
+        "timeframe) that is GROUNDED — supported by the CREATOR CONTEXT below, a general verifiable niche "
+        "fact, or an explicit bracketed fill-in like '[your result]'? Generic advice that fits any creator "
+        "scores low; an INVENTED personal receipt scores LOWER than vagueness.\n"
         "- format_fit: does it obey this style's structure? "
         f"STYLE = {s['label']}: {s['rubric']}\n"
         "- voice_match: does it sound like THIS creator (their sliders, phrasing, no banned words) and not like "
         "generic AI copy?\n"
         "Set slop=true if the hook uses an AI-tell opener ('In today's video', 'Let me tell you', 'Here's the "
         "thing', 'Ever wondered', 'Picture this', 'Buckle up') or reads like filler. "
+        "Set fabricated=true if any hook/body/cta asserts a first-person personal fact, credential, client "
+        "story, testimonial, or specific personal number that is NOT supported by the CREATOR CONTEXT below "
+        "and is not a bracketed fill-in — the creator would have to say a lie on camera. "
         "Then compare the main hook against the altHooks and set best_hook to the index of the strongest "
         "(0 = main hook is already best; otherwise the 1-based position in altHooks). "
-        "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR slop is true; else 'keep'. "
-        "Be decisive and consistent.\n\n"
+        "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR slop is true OR fabricated "
+        "is true; else 'keep'. Be decisive and consistent.\n\n"
         f"{VIRALITY_BLOCK}\n\n" + SCRIPT_JUDGE_SCHEMA
     )
     items = []
@@ -1025,7 +1035,13 @@ def script_judge_prompt(scripts: list[dict], style: str) -> tuple[str, str]:
             f"  body: {sc.get('body','')}\n"
             f"  cta: {sc.get('cta','')}"
         )
-    user = "Judge each draft. Return the array in the same order.\n\n" + "\n\n".join(items)
+    context = ""
+    if brand is not None:
+        mem = memory_block(memory) if memory else ""
+        context = ("CREATOR CONTEXT (the ONLY things true about this creator — anything else in a "
+                   "first-person claim is fabricated):\n" + brand_block(brand, posts)
+                   + (f"\n{mem}" if mem else "") + "\n\n")
+    user = "Judge each draft. Return the array in the same order.\n\n" + context + "\n\n".join(items)
     return system, user
 
 
@@ -1041,6 +1057,9 @@ def script_revise_prompt(brand: dict, style: str, flagged: list[dict],
         "sharper and more specific, not safer. The hook must land in the first 1.5 seconds with a concrete "
         "claim; never open with a greeting, set-up, question, or AI-tell phrase.\n\n"
         f"{VIRALITY_BLOCK}\n\n"
+        f"{GROUNDING_BLOCK}\n\n"
+        "If the critic flagged a FABRICATED receipt, replace it with the creator's real material, a bracketed "
+        "fill-in ('[your result]'), or audience-facing framing — never a different invented specific.\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
         f"Keep \"style\":\"{style}\" and a valid formatId on each. "
         "Return ONLY a JSON array, same length and order as the input. " + SCRIPT_SCHEMA
@@ -1073,10 +1092,11 @@ def hooks_prompt(brand: dict, topic: str, style: str = "talking_head",
         "across the 8 signal types. Each hook must be DIFFERENT in structure and signal — no two hooks "
         "should have the same opening pattern. Ranked strongest first.\n\n"
         f"{VIRALITY_BLOCK}\n\n"
+        f"{GROUNDING_BLOCK}\n\n"
         "Example output for a fitness creator on 'protein intake':\n"
         '[\n'
         '  {"text": "You\'re eating enough protein. You\'re just eating it wrong.", "signal": "contrarian", "strength": 91},\n'
-        '  {"text": "I tracked every gram for 90 days. Here\'s what actually moved the needle.", "signal": "authority", "strength": 88},\n'
+        '  {"text": "The protein mistake I see most isn\'t the amount — it\'s the timing.", "signal": "authority", "strength": 88},\n'
         '  {"text": "The protein timing window is a myth — here\'s what isn\'t.", "signal": "curiosity", "strength": 85}\n'
         "]\n\nReply with ONLY a JSON array, no prose."
     )
@@ -1832,11 +1852,15 @@ VIRALITY_BLOCK = (
     "- Retention mechanics: change something visually every 2–4 seconds (cut, punch-in, caption card, prop). "
     "Open a loop in the hook ('the third one changed everything') and close it only at the end. Use pattern "
     "interrupts at the 30% and 70% marks where drop-off spikes.\n"
-    "- Specificity converts: '42 days', '$3,180', 'the 6am rule' outperform vague claims every time. One "
-    "concrete number in the hook is worth three adjectives.\n"
+    "- Specificity converts — but ONLY when it's TRUE for this creator. A concrete number or named "
+    "mechanism ('42 days', 'the 6am rule') outperforms vague claims, so pull real specifics from the "
+    "creator's own data, a verifiable fact about the niche, or a bracketed fill-in ('[your result]') they "
+    "complete before filming. An INVENTED specific is worse than a vague line — the creator has to say it "
+    "out loud.\n"
     "- Hooks that work: contrarian reversal ('everyone says X — it's backwards'), stakes ('this mistake costs "
-    "you followers daily'), authority-with-receipts ('I posted 90 days straight; here's the data'), curiosity "
-    "gap with a payoff you actually deliver. Question-openers underperform statements.\n"
+    "you followers daily'), authority-with-receipts (using ONLY receipts the creator actually has, or a "
+    "bracketed fill-in), curiosity gap with a payoff you actually deliver. Question-openers underperform "
+    "statements.\n"
     "- CTA norms: one CTA max, spoken in the last 2 seconds, matched to the goal (follows → 'follow for the "
     "next one', saves → 'save this for your next X', comments → a one-word prompt). Never stack CTAs.\n"
     "- Platform notes: TikTok rewards raw, native-feeling, trend-aware content with on-screen text from frame "
@@ -1844,6 +1868,28 @@ VIRALITY_BLOCK = (
     "keyword-loaded (search is real), IG = a hook line then whitespace then substance.\n"
     "- Cadence compounds: 3–7 posts/week beats bursts. Consistency + iteration on what the data says beats "
     "chasing every trend. Trend-jack only when the creator can add their OWN take within 48h of the wave."
+)
+
+
+# W3: injected into every script/hook/mimic/analyze prompt. Stops the model from putting words
+# in the creator's mouth — a fabricated personal fact (a client story, an experiment, a dollar
+# figure) is the fastest way to destroy their trust, because THEY have to say it on camera.
+GROUNDING_BLOCK = (
+    "GROUNDING (do not put words in the creator's mouth — they film this themselves):\n"
+    "- You may present as the creator's OWN experience only what appears in THIS prompt: the Creator brand "
+    "block (niche, what they do, audience, known-for, catchphrases, non-negotiables), CREATOR MEMORY "
+    "(facts / perspective / ideas / preferences / angle), and their REAL posts quoted above. Nothing else "
+    "about their life, history, clients, or results exists.\n"
+    "- NEVER invent personal history, credentials, client stories, testimonials, experiments they ran, or "
+    "specific numbers / dollar figures / timeframes presented as lived experience.\n"
+    "- When a beat needs a receipt you don't have, do ONE of these instead:\n"
+    "  (a) a bracketed fill-in the creator completes before filming — '[your result]', '[how long it took "
+    "you]', '[number of clients]';\n"
+    "  (b) audience-facing framing — 'you're doing X', 'most people get Y wrong' — which needs no personal "
+    "receipt;\n"
+    "  (c) a general, verifiable fact about the niche, attributed to the niche, not to the creator.\n"
+    "- A bracketed placeholder is a FEATURE, not a failure: one honest '[your number]' beats a fabricated "
+    "'$3,180' every time. Make the STRUCTURE specific; pull real specifics only from the sources above."
 )
 
 
@@ -2000,10 +2046,15 @@ def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None,
         "keeping the STRUCTURAL SKELETON that made it work (hook shape, beat order, pacing, loop structure, "
         "where the payoff lands) while swapping ALL substance for this creator's niche, facts, and voice.\n\n"
         f"{VIRALITY_BLOCK}\n\n"
+        f"{GROUNDING_BLOCK}\n\n"
         "HARD RULES:\n"
-        "- NO plagiarism: never reuse the original's sentences, examples, numbers, or catchphrases. If the "
-        "original said 'I tested 5 diets for 30 days', the mimic might be 'I ran 5 cold-outreach scripts for "
-        "2 weeks' — same skeleton, entirely different substance.\n"
+        "- NO plagiarism: never reuse the original's sentences, examples, numbers, or catchphrases. Keep the "
+        "skeleton; swap the substance for THIS creator's real material (brand, memory, posts) — or, when the "
+        "skeleton demands a personal receipt they don't have, a bracketed fill-in ('[your result]') or an "
+        "audience-facing reframe. Never assign them the original's experiences in disguise: if the original "
+        "said 'I tested 5 diets for 30 days', do NOT write 'I ran 5 cold-outreach scripts for 2 weeks' unless "
+        "the creator's memory or posts say they actually did — reframe it audience-facing instead ('most "
+        "people quit their outreach in week one — here's the fix').\n"
         "- The creator's voice sliders, catchphrases, and banned words are law.\n"
         "- Match the original's energy and length, not its topic.\n"
         "- Set style/formatId appropriate to how THIS creator films.\n\n"
@@ -2044,6 +2095,7 @@ def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | 
         "You are Marque's video analyst. Given a short-form video's transcript, produce a tight teardown of "
         "why it works and a version rewritten for a specific creator.\n\n"
         f"{VIRALITY_BLOCK}\n\n"
+        f"{GROUNDING_BLOCK}\n\n"
         "Reply with ONLY valid JSON matching:\n"
         '{"hook_analysis": str (1-2 sentences on the hook mechanic and why it stops the scroll), '
         '"structure_beats": [str] (3-6 beats naming the structural moves in order), '

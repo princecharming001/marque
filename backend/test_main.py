@@ -156,6 +156,47 @@ def test_publish_mock_when_no_target_accounts():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+def test_grounding_block_in_generation_prompts():
+    # W3: no-fabrication rule injected into scripts/hooks/mimic/revise/analyze systems.
+    assert "GROUNDING" in prompts.scripts_prompt({"niche": "fitness"}, {"name": "P"}, "talking_head", 2)[0]
+    assert "[your result]" in prompts.scripts_prompt({"niche": "fitness"}, {"name": "P"}, "talking_head", 2)[0]
+    assert "GROUNDING" in prompts.hooks_prompt({"niche": "fitness"}, "protein")[0]
+    assert "GROUNDING" in prompts.mimic_prompt({"hook_text": "h", "transcript": "t"}, {"niche": "fitness"})[0]
+
+
+def test_virality_and_hooks_example_not_fabricated():
+    # W3-2: the "$3,180" invented-specific reward and the fabricated hooks example are gone.
+    assert "$3,180" not in prompts.VIRALITY_BLOCK
+    hooks_sys = prompts.hooks_prompt({"niche": "fitness"}, "protein")[0]
+    assert "tracked every gram for 90 days" not in hooks_sys
+
+
+def test_judge_schema_has_fabricated():
+    # W3-3: fabricated flag in both the prose schema and the structured-output element.
+    assert "fabricated" in prompts.SCRIPT_JUDGE_SCHEMA
+    assert "fabricated" in prompts.SCRIPT_JUDGE_JSON_ELEMENT["required"]
+    assert "fabricated" in prompts.SCRIPT_JUDGE_JSON_ELEMENT["properties"]
+    # judge gets creator context when a brand is passed
+    sysp, usr = prompts.script_judge_prompt([{"hook": "h", "body": "b", "cta": "c"}], "talking_head",
+                                            brand={"niche": "fitness", "known_for": "form checks"})
+    assert "CREATOR CONTEXT" in usr and "fitness" in usr
+
+
+def test_blend_score_fabricated_penalty():
+    base = {"hook_strength": 80, "specificity": 70, "format_fit": 70, "voice_match": 70}
+    clean = main._blend_score(base)
+    dirty = main._blend_score({**base, "fabricated": True})
+    assert clean - dirty == 15
+
+
+def test_mock_scripts_no_invented_receipts():
+    from types import SimpleNamespace
+    req = main.ScriptRequest(niche="fitness coaching", style="talking_head", count=3)
+    for s in main.mock_scripts(req):
+        blob = (s["hook"] + " " + s["body"]).lower()
+        assert "i tracked my" not in blob and "after years in" not in blob
+
+
 def test_publish_honest_posted_flag(monkeypatch):
     # C-01: additive posted/reason so the client stops showing "Posted" for nothing.
     # ok semantics are FROZEN (build 9 reads only ok) — mock stays ok:true.
