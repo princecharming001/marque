@@ -185,6 +185,126 @@ def test_insights_persona_in_prompt():
     assert "PERSONA" in sysp2
 
 
+def test_reels_progressive_serve_writes_before_enrichment(monkeypatch):
+    # B-9: the cache is populated from scraped posts BEFORE the slow transcription/rehost
+    # runs, so "Steal these" fills in ~30-60s instead of 2-4 min.
+    import main, asyncio as _a
+    niche = "progressive-niche"
+    key = main._niche_cache_key(niche)
+    main._niche_reels_cache.pop(key, None)
+    posts = [{"author": "a", "platform": "instagram", "views": 50000, "likes": 3000,
+              "caption": "great tip", "video_url": "https://cdn/x.mp4", "thumbnail_url": "https://cdn/x.jpg",
+              "id": f"p{i}"} for i in range(3)]
+
+    async def fake_scrape(n, limit=20):
+        return posts
+
+    seen = {}
+    async def fake_transcribe(ps, top_n=4):
+        seen["cache_ready_at_enrich"] = key in main._niche_reels_cache
+        seen["partial_at_enrich"] = main._niche_reels_cache.get(key, {}).get("partial")
+        return ps
+
+    async def fake_rehost(ps):
+        return None
+
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", fake_transcribe)
+    monkeypatch.setattr(main, "_rehost_reel_media", fake_rehost)
+    _a.get_event_loop_policy().new_event_loop().run_until_complete(main._refresh_niche_reels(niche))
+
+    assert seen["cache_ready_at_enrich"] is True      # phase 1 wrote before transcription
+    assert seen["partial_at_enrich"] is True          # ...as a partial entry
+    final = main._niche_reels_cache[key]
+    assert final["partial"] is False and len(final["reels"]) == 3   # phase 2 overwrote
+
+
+def test_warm_reels_on_boot_keyless_noop():
+    import main, asyncio as _a
+    # keyless → no crash, no work
+    _a.get_event_loop_policy().new_event_loop().run_until_complete(main._warm_reels_on_boot())
+
+
+def test_memory_distill_keyless_and_short_session_noop():
+    # B-8: keyless (or <4 user turns) → deterministic empty, no model call.
+    r = client.post("/v1/memory/distill", json={
+        "creator_id": "c_distill", "transcript": [
+            {"role": "user", "text": "hey"}, {"role": "assistant", "text": "hi"}]}).json()
+    assert r["memory_updates"] == []
+
+
+def test_memory_distill_prompt_shape():
+    import prompts
+    sysp, usr = prompts.memory_distill_prompt(
+        [{"role": "user", "text": "I coach night-shift nurses on meal timing"}],
+        {"facts": []}, {"niche": "fitness"})
+    assert "memory distiller" in sysp.lower() and "memory_updates" in sysp
+    assert "night-shift nurses" in usr
+
+
+def test_feed_get_and_empty_memory_post_share_cache():
+    # B-6: an empty-memory POST must produce a byte-identical cache key to the GET,
+    # so they share the same cached page (no personalization → no cache split).
+    import main
+    k_get = main._feed_cache_key("c", "fitness", "", "", "g", "", "", 0, None)
+    k_post_empty = main._feed_cache_key("c", "fitness", "", "", "g", "", "", 0, {})
+    k_post_mem = main._feed_cache_key("c", "fitness", "", "", "g", "", "", 0, {"facts": ["x"]})
+    assert k_get == k_post_empty
+    assert k_post_mem != k_get and k_post_mem.startswith(k_get)
+
+
+def test_feed_post_with_memory_returns_items():
+    r = client.post("/v1/feed", json={"creator_id": "c_feedmem", "niche": "fitness",
+                                      "memory": {"facts": ["trains busy parents at 5am"]}})
+    assert r.status_code == 200
+    b = r.json()
+    assert any(it["type"] == "script" for it in b["items"])
+    assert "next_cursor" in b
+
+
+def test_feed_prefetches_next_page(monkeypatch):
+    # B-5: fetching a page schedules a prefetch of cursor+1 so "Load more" is instant.
+    import main
+    spawned = []
+    monkeypatch.setattr(main, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+    main._feed_cache.clear(); main._feed_refreshing.clear()
+    client.get("/v1/feed", params={"creator_id": "c_prefetch", "niche": "fitness", "cursor": 0})
+    # cursor 0 spawns the page-0 upgrade AND the cursor-1 prefetch → the prefetch key exists
+    assert any("c_prefetch" in k for k in main._feed_refreshing)
+
+
+def test_feed_feedback_like_updates_arms_without_polluting_honest_stats():
+    import main
+    cid = "c_fb_like"
+    main._arm_stats.pop(cid, None)
+    r = client.post("/v1/feed/feedback", json={
+        "creator_id": cid, "verdict": "like", "niche": "fitness",
+        "script": {"title": "t1", "hook": "h1", "pillar": "Teach", "style": "talking_head",
+                   "formatId": "myth-buster", "hookSignal": "contrarian"}})
+    b = r.json()
+    assert b["status"] == "recorded" and b["arms_updated"] == 4 and b["dismissed"] is False
+    arm = main._arm_stats[cid]["style:talking_head"]
+    assert arm["fb_n"] > 0 and arm["alpha"] > arm["prior_alpha"]   # bandit felt the like
+    assert arm["n"] == 0 and "sum_raw" not in arm                  # honest stats untouched
+    # idempotent: same fingerprint doesn't double-count
+    r2 = client.post("/v1/feed/feedback", json={
+        "creator_id": cid, "verdict": "like", "niche": "fitness",
+        "script": {"title": "t1", "hook": "h1", "style": "talking_head"}}).json()
+    assert r2["status"] == "duplicate"
+
+
+def test_feed_feedback_dislike_records_dismissal():
+    import main
+    cid = "c_fb_dislike"
+    main._feed_dismissed.pop(cid, None)
+    sc = {"title": "boring take", "hook": "meh hook", "style": "faceless", "formatId": "faceless"}
+    r = client.post("/v1/feed/feedback", json={"creator_id": cid, "verdict": "dislike",
+                                               "niche": "fitness", "script": sc}).json()
+    assert r["dismissed"] is True
+    fp = main._script_fingerprint(sc)
+    assert fp in main._feed_dismissed[cid]
+
+
 def test_mock_converse_has_no_trailing_offers():
     # B-4: chat replies must not end with "Want me to…"-style offers (chips carry follow-ups).
     prompts_pool = ["update my brand angle to harder takes", "I have an idea about morning routines",

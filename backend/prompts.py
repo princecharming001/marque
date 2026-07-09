@@ -1942,6 +1942,44 @@ GROUNDING_BLOCK = (
 MEMORY_FIELDS = ["facts", "perspective", "ideas", "preferences"]  # list fields; "angle" is a single string
 
 
+# B-8: element schema for a memory update op (shared by converse envelopes + the distiller).
+MEMORY_UPDATE_ELEMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["op", "field", "value"],
+    "properties": {
+        "op": {"type": "string", "enum": ["add", "remove", "set"]},
+        "field": {"type": "string", "enum": MEMORY_FIELDS + ["angle"]},
+        "value": {"type": "string"},
+    },
+}
+
+
+def memory_distill_prompt(transcript: list[dict], memory: dict | None, brand: dict) -> tuple[str, str]:
+    """B-8: end-of-voice-session safety net. A long 'yap session' is captured only
+    per-turn during the chat; this second pass re-reads the whole transcript and pulls
+    any durable memory the turn-by-turn extraction missed. Dedupes against what's already
+    stored; an empty list is a perfectly good answer."""
+    system = (
+        "You are Marque's memory distiller. The creator just had a spoken 'yap session' — thinking out "
+        "loud about their life, work, audience, and ideas. Re-read the WHOLE transcript and extract the "
+        "durable, reusable facts that should inform their future content, as memory_updates.\n\n"
+        "Capture: stable facts about them/their life ('facts'), how they see the world or position "
+        "themselves ('perspective'), content ideas worth keeping ('ideas'), workflow/format preferences "
+        "('preferences'), and 'angle' (op=set) only if their brand direction clearly shifted. Write each "
+        "value as ONE crisp, self-contained sentence in the third person.\n\n"
+        "RULES: Do NOT duplicate anything already in CURRENT MEMORY below. Do NOT store small talk, "
+        "questions, or transient mood. Prefer specific, script-usable details ('coaches shift-working "
+        "nurses', not 'helps people'). Up to 10 updates; an EMPTY list is correct when nothing durable "
+        "was said.\n\n"
+        f"OUTPUT: Reply with ONLY a JSON object: {{\"memory_updates\": [{{\"op\":\"add|set\",\"field\":\"facts|"
+        "perspective|ideas|preferences|angle\",\"value\":str}}]}}. No prose, no code fences."
+    )
+    mem = memory_block(memory) if memory else "CURRENT MEMORY: (empty)"
+    lines = "\n".join(f"{m.get('role','user')}: {m.get('text') or m.get('content','')}" for m in transcript)
+    user = f"{brand_block(brand)}\n\n{mem}\n\nTRANSCRIPT:\n{lines}"
+    return system, user
+
+
 def memory_block(memory: dict | None) -> str:
     """Format the client-held creator memory for prompt injection."""
     if not memory:

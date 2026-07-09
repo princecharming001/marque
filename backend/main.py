@@ -36,6 +36,7 @@ from supabase_persistence import SupabaseClient
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await _load_learning_state()
+    _spawn(_warm_reels_on_boot())      # B-11: pre-warm known niches' reels (non-blocking)
     yield
     if _anthropic_client is not None:
         await _anthropic_client.aclose()
@@ -283,8 +284,11 @@ async def _update_arm(creator_id: str, dim_value: str, y: float,
         s["sum_raw"] = s.get("sum_raw", 0.0) + raw
         s["n_raw"] = s.get("n_raw", 0) + 1       # AF-2: honest denominator for _arm_lift
     s["effect"] = (s["sum_y"] + KAPPA * 0.5) / (s["n"] + KAPPA)
-    s["alpha"] = pa + s["sum_y"]
-    s["beta"] = pb + (s["n"] - s["sum_y"])
+    # B-7: α/β include the decoupled feedback accumulators (fb_*) so a like/dislike shifts
+    # Thompson sampling immediately, while n / sum_raw / confidence stay settled-posts-only
+    # (honest "+N% lift" + "seen in N posts" claims never count free taps).
+    s["alpha"] = pa + s["sum_y"] + s.get("fb_sum_y", 0.0)
+    s["beta"] = pb + (s["n"] - s["sum_y"]) + (s.get("fb_n", 0.0) - s.get("fb_sum_y", 0.0))
     s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
     if _supabase_client:                                  # write-through (best-effort)
         try:
@@ -292,6 +296,37 @@ async def _update_arm(creator_id: str, dim_value: str, y: float,
                 logging.warning("supabase upsert_arm_stat wrote nothing: %s %s", creator_id, dim_value)
         except Exception as e:
             logging.warning("supabase upsert_arm_stat failed: %s", e)
+
+
+# B-7: like/dislike reward values (env-tunable). Asymmetric around the 0.5 neutral point —
+# a dislike is an active rejection (−0.40), a like is a weak pre-outcome signal (+0.15) —
+# and quarter-weighted because taps are free while a settled post carries real reach/watch.
+FEEDBACK_LIKE_Y = float(os.environ.get("FEEDBACK_LIKE_Y", "0.65"))
+FEEDBACK_DISLIKE_Y = float(os.environ.get("FEEDBACK_DISLIKE_Y", "0.10"))
+FEEDBACK_WEIGHT = float(os.environ.get("FEEDBACK_WEIGHT", "0.25"))
+
+
+async def _update_arm_feedback(creator_id: str, dim_value: str, y: float, niche: str = ""):
+    """B-7: fold a feed like/dislike into an arm's Thompson α/β via SEPARATE fb_n / fb_sum_y
+    accumulators (weighted), leaving n / sum_raw / n_raw / confidence untouched so honest
+    performance claims stay grounded in real settled posts. Mirrors _update_arm's arm setup."""
+    await _ensure_arms_loaded(creator_id)
+    stats = _arm_stats.setdefault(creator_id, {})
+    if dim_value not in stats:
+        pa, pb = _niche_prior_for_arm(dim_value, niche or _creator_niche.get(creator_id, ""))
+        stats[dim_value] = {"n": 0, "sum_y": 0.0, "prior_alpha": pa, "prior_beta": pb,
+                            "alpha": pa, "beta": pb}
+    s = stats[dim_value]
+    pa, pb = s.get("prior_alpha", 1.0), s.get("prior_beta", 1.0)
+    s["fb_n"] = s.get("fb_n", 0.0) + FEEDBACK_WEIGHT
+    s["fb_sum_y"] = s.get("fb_sum_y", 0.0) + FEEDBACK_WEIGHT * y
+    s["alpha"] = pa + s.get("sum_y", 0.0) + s["fb_sum_y"]
+    s["beta"] = pb + (s.get("n", 0) - s.get("sum_y", 0.0)) + (s["fb_n"] - s["fb_sum_y"])
+    if _supabase_client:
+        try:
+            await _supabase_client.upsert_arm_stat(creator_id, dim_value, s)
+        except Exception as e:
+            logging.warning("supabase upsert_arm_stat (feedback) failed: %s", e)
 
 
 async def _ensure_arms_loaded(creator_id: str):
@@ -757,6 +792,38 @@ class ScriptRequest(Brand):
     posts: list[dict] = []
     creator_id: str = "default"
     memory: dict = {}                  # client-held creator memory (facts/angle/ideas/...)
+
+
+class FeedRequest(BaseModel):
+    """B-6: POST /v1/feed — same params as the GET plus the creator's memory, so Today's
+    picks are personalized by what they told the orb in a yap session."""
+    creator_id: str = "default"
+    niche: str = ""
+    audience: str = ""
+    known_for: str = ""
+    goal: str = "Grow my audience"
+    styles: str = ""
+    watched: str = ""
+    cursor: int = 0
+    fresh: int = 0
+    memory: dict = {}
+
+
+class FeedFeedbackRequest(BaseModel):
+    """B-7: a Today's-picks like/dislike. `script` carries the bandit dims (pillar/style/
+    formatId/hookSignal) + title/hook for fingerprinting."""
+    creator_id: str = "default"
+    verdict: str = "like"              # "like" | "dislike"
+    niche: str = ""
+    script: dict = {}
+
+
+class MemoryDistillRequest(BaseModel):
+    """B-8: end-of-voice-session memory safety net."""
+    creator_id: str = "default"
+    transcript: list[dict] = []        # [{role, text}] of the session
+    memory: dict = {}
+    brand: dict = {}
 
 
 class HooksRequest(Brand):
@@ -4277,10 +4344,10 @@ _VALID_MEMORY_FIELDS = set(prompts.MEMORY_FIELDS) | {"angle"}
 _VALID_INTENTS = {"none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle", "edit_video"}
 
 
-def _sanitize_memory_updates(raw) -> list[dict]:
+def _sanitize_memory_updates(raw, limit: int = 6) -> list[dict]:
     """Keep only well-formed ops so a sloppy envelope can't corrupt client memory."""
     out = []
-    for u in (raw or [])[:6]:
+    for u in (raw or [])[:limit]:
         if not isinstance(u, dict):
             continue
         op, field = u.get("op"), u.get("field")
@@ -4522,6 +4589,25 @@ async def converse(req: ConverseRequest):
     return {"mode": "live", "reply": envelope["reply"],
             "memory_updates": _sanitize_memory_updates(envelope.get("memory_updates")),
             "intent": intent, "payload": payload, "suggested_chips": chips}
+
+
+@app.post("/v1/memory/distill")
+async def memory_distill(req: MemoryDistillRequest):
+    """B-8: re-read a whole voice-session transcript and pull durable memory the per-turn
+    extraction missed. Keyless or a too-short session → no-op (empty). Additive: iOS treats
+    a 404/empty response as "nothing to add"."""
+    user_turns = [m for m in req.transcript if (m.get("role") or "user") == "user"
+                  and (m.get("text") or m.get("content"))]
+    if not ANTHROPIC_KEY or len(user_turns) < 4:
+        return {"mode": "mock", "memory_updates": []}
+    try:
+        sys_p, usr_p = prompts.memory_distill_prompt(req.transcript, req.memory, req.brand)
+        out = await anthropic_json(
+            sys_p, usr_p, _array_schema("memory_updates", prompts.MEMORY_UPDATE_ELEMENT),
+            HAIKU, 900, array_key="memory_updates")
+    except HTTPException:
+        out = None
+    return {"mode": "live", "memory_updates": _sanitize_memory_updates(out, limit=10)}
 
 
 # ---------------------------------------------------------------------------
@@ -4944,11 +5030,56 @@ async def _prev_reels_entry(cache: dict, key: str) -> dict | None:
     return None
 
 
+def _reels_from_posts(posts: list[dict]) -> list[dict]:
+    return [_reel_from_post(p, p.get("author") or "creator",
+                            p.get("platform", "instagram"), i, False)
+            for i, p in enumerate(posts)]
+
+
+async def _write_niche_reels(key: str, posts: list[dict], partial: bool) -> None:
+    entry = {"reels": _reels_from_posts(posts), "ts": time.time(), "partial": partial}
+    _niche_reels_cache[key] = entry
+    _cap_evict(_niche_reels_cache, _NICHE_CACHE_CAP)
+    if _supabase_client:                        # durability: survive the next deploy
+        try:
+            await _supabase_client.upsert_reels_cache(key, entry)
+        except Exception as e:
+            logging.warning("niche reels upsert failed for %s: %s", key, e)
+
+
+async def _rehost_reel_media(posts: list[dict]) -> None:
+    """B-10: re-host the top reels' video + all thumbnails to stable Supabase URLs, in
+    PARALLEL with a small concurrency cap (was a serial loop — the long tail of the cold
+    refresh). Per-post failures are isolated; the CDN URL is kept on failure."""
+    sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else None
+    def _durable(u: str) -> bool:
+        return bool(sb_base and u and u.startswith(sb_base))
+    sem = asyncio.Semaphore(int(os.environ.get("REEL_REHOST_CONCURRENCY", "4")))
+
+    async def _one(i: int, p: dict) -> None:
+        async with sem:
+            stem = _reel_storage_stem(p)
+            try:
+                if p.get("thumbnail_url") and not _durable(p["thumbnail_url"]):
+                    d = await _rehost_media(p["thumbnail_url"], f"reels/{stem}.jpg", "image/jpeg", 2_000_000)
+                    if d:
+                        p["thumbnail_url"] = d
+                if i < _REEL_REHOST_TOP_N and p.get("video_url") and not _durable(p["video_url"]):
+                    d = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4", 60_000_000)
+                    if d:
+                        p["video_url"] = d
+            except Exception as e:
+                logging.warning("rehost worker failed (%s): %s", stem, e)
+
+    await asyncio.gather(*(_one(i, p) for i, p in enumerate(posts)), return_exceptions=True)
+
+
 async def _refresh_niche_reels(niche: str) -> None:
-    """Background: scrape trending niche posts → real reels in cache. W2: transcribe the top
-    few (real spoken transcript, not caption) and re-host their media to Supabase Storage so
-    the "Steal these" preview actually plays. The finished entry is mirrored to Supabase so
-    deploys never lose this work, and prior transcripts/durable URLs are carried forward."""
+    """Background: scrape trending niche posts → real reels in cache. B-9: PROGRESSIVE serve
+    — write the scraped+annotated reels (caption transcript + CDN URLs) to cache IMMEDIATELY
+    (partial), so "Steal these" fills in ~30-60s instead of waiting 2-4 min for transcription
+    + rehost; then enrich (real transcripts + durable Supabase media) and overwrite. Prior
+    transcripts/durable URLs are carried forward so coverage accumulates across cycles."""
     key = _niche_cache_key(niche)
     try:
         posts = await scrape_niche_posts(niche, limit=20)
@@ -4956,33 +5087,19 @@ async def _refresh_niche_reels(niche: str) -> None:
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
         posts = posts[:18]
         # Carry forward transcripts + durable media from the previous cycle first,
-        # so the expensive steps below only run for posts that still need them.
+        # so the enrichment below only runs for posts that still need it.
         prev = await _prev_reels_entry(_niche_reels_cache, key)
         _merge_prev_reel_work(posts, (prev or {}).get("reels") or [])
-        # W2-1: real spoken transcript for the top reels (before mapping, so hook extraction benefits).
+
+        # PHASE 1 — serve now. Renderable reels (caption fallback + CDN URLs).
+        if posts:
+            await _write_niche_reels(key, posts, partial=True)
+
+        # PHASE 2 — enrich: real spoken transcript for the top reels, then durable media.
         posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
-        # W2-3: re-host the top reels' video + all thumbnails to stable Supabase URLs.
-        sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else None
-        def _durable(u: str) -> bool:
-            return bool(sb_base and u.startswith(sb_base))
-        for i, p in enumerate(posts):
-            stem = _reel_storage_stem(p)
-            if p.get("thumbnail_url") and not _durable(p["thumbnail_url"]):
-                durable = await _rehost_media(p["thumbnail_url"], f"reels/{stem}.jpg", "image/jpeg", 2_000_000)
-                if durable:
-                    p["thumbnail_url"] = durable
-            if i < _REEL_REHOST_TOP_N and p.get("video_url") and not _durable(p["video_url"]):
-                durable = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4", 60_000_000)
-                if durable:
-                    p["video_url"] = durable
-        reels = [_reel_from_post(p, p.get("author") or "creator",
-                                 p.get("platform", "instagram"), i, False)
-                 for i, p in enumerate(posts)]
-        entry = {"reels": reels, "ts": time.time()}
-        _niche_reels_cache[key] = entry
-        _cap_evict(_niche_reels_cache, _NICHE_CACHE_CAP)
-        if _supabase_client:                    # durability: survive the next deploy
-            await _supabase_client.upsert_reels_cache(key, entry)
+        await _rehost_reel_media(posts)
+        if posts:
+            await _write_niche_reels(key, posts, partial=False)
     except Exception as e:
         logging.warning("niche-reel refresh failed for %s: %s", key, e)
     finally:
@@ -5156,6 +5273,27 @@ async def _hydrate_reels_caches(niche: str, parsed: list[tuple[str, str]]) -> No
         pass
 
 
+async def _warm_reels_on_boot() -> None:
+    """B-11: after a deploy, proactively hydrate the niches real creators actually use
+    (from the durable creators table, loaded by _load_learning_state) and kick a background
+    re-scrape for any that are missing or stale — so the FIRST creator to open Home after a
+    release doesn't hit a 2-4 min cold scrape. Non-blocking, best-effort, keyless no-op."""
+    if not (_supabase_client and APIFY_KEY):
+        return
+    try:
+        niches = [n for n in {v.strip() for v in _creator_niche.values() if v and v.strip()}][:8]
+        for niche in niches:
+            await _hydrate_reels_caches(niche, [])       # pull durable copy if present
+            key = _niche_cache_key(niche)
+            entry = _niche_reels_cache.get(key)
+            stale = not entry or (time.time() - entry.get("ts", 0)) > _NICHE_REELS_TTL_S
+            if stale and key not in _reels_refreshing:
+                _reels_refreshing.add(key)
+                _spawn(_refresh_niche_reels(niche))
+    except Exception as e:
+        logging.warning("boot reels warm failed: %s", e)
+
+
 @app.get("/v1/reels")
 async def reels(niche: str = "", creator_id: str = "default", watched: str = "", cursor: int = 0):
     cursor = max(0, min(cursor, 50))
@@ -5190,7 +5328,30 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
 # the full quality-gated set for every subsequent fetch.
 # ---------------------------------------------------------------------------
 
-_FEED_MAX_PAGES = 5
+_FEED_MAX_PAGES = 8      # B-5: more pages before exhaustion so "Load more" keeps producing
+
+# B-7: per-creator dismissed-script fingerprints (content hash of title|hook), capped so a
+# disliked pick doesn't reappear when a near-identical script regenerates. In-memory only —
+# the durable signal is the bandit penalty; this is a serve-time cosmetic filter.
+_feed_dismissed: dict[str, "collections.deque"] = {}
+_feed_feedback_seen: dict[str, set] = {}       # per-creator fingerprints already scored (idempotency)
+_FEED_DISMISS_CAP = 100
+
+
+def _script_fingerprint(script: dict) -> str:
+    return hashlib.sha1(
+        (str(script.get("title", "")) + "|" + str(script.get("hook", ""))).lower().encode()
+    ).hexdigest()[:16]
+
+
+def _record_dismissal(creator_id: str, fingerprint: str) -> None:
+    import collections
+    dq = _feed_dismissed.get(creator_id)
+    if dq is None:
+        dq = collections.deque(maxlen=_FEED_DISMISS_CAP)
+        _feed_dismissed[creator_id] = dq
+    if fingerprint not in dq:
+        dq.append(fingerprint)
 _FEED_CACHE_TTL_S = 6 * 3600
 _FEED_CACHE_CAP = 512
 
@@ -5209,12 +5370,26 @@ def _feed_topics(niche: str, cursor: int) -> str:
     return topics[cursor % len(topics)]
 
 
+def _memory_digest(memory: dict | None) -> str:
+    """B-6: a short stable hash of the creator memory so personalized pages don't collide
+    with (or get served from) the non-personalized cache. Empty memory → "" so a GET and an
+    empty-memory POST produce BYTE-IDENTICAL cache keys and share the same entry."""
+    if not memory:
+        return ""
+    try:
+        return hashlib.sha1(json.dumps(memory, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    except (TypeError, ValueError):
+        return ""
+
+
 def _feed_cache_key(creator_id: str, niche: str, audience: str, known_for: str,
-                    goal: str, styles: str, watched: str, cursor: int) -> str:
+                    goal: str, styles: str, watched: str, cursor: int,
+                    memory: dict | None = None) -> str:
     # Param-signature sub-key: a niche/style change invalidates the cached page
     # instead of serving stale content for a brand the creator just edited.
     sig = "|".join([niche, audience, known_for, goal, styles, watched, str(cursor)])
-    return f"{creator_id}::{sig}"
+    mem = _memory_digest(memory)
+    return f"{creator_id}::{sig}" + (f"::m{mem}" if mem else "")
 
 
 async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
@@ -5263,9 +5438,13 @@ def _clamp_title(title: str, limit: int = 42) -> str:
 async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
                               watched: str, cursor: int) -> tuple[list[dict], int | None]:
     """Shared item-composition body — the fast path, the cached path, and the
-    background full-quality refresh all emit byte-identical FeedResp shapes."""
+    background full-quality refresh all emit byte-identical FeedResp shapes.
+    B-7: scripts whose fingerprint the creator dismissed are dropped here (serve-time)."""
+    dismissed = _feed_dismissed.get(creator_id)
     items = []
     for s in script_result.get("scripts", [])[:3]:
+        if isinstance(s, dict) and dismissed and _script_fingerprint(s) in dismissed:
+            continue                          # creator disliked a near-identical pick
         if isinstance(s, dict) and s.get("title"):
             s = {**s, "title": _clamp_title(str(s["title"]))}
         items.append({"type": "script", "script": s})
@@ -5281,6 +5460,17 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
     reels_more = reel_result.get("next_cursor") is not None
     next_cursor = cursor + 1 if (cursor + 1 < _FEED_MAX_PAGES or reels_more) else None
     return items, next_cursor
+
+
+def _feed_sreq(niche: str, audience: str, known_for: str, goal: str, styles: str,
+               cursor: int, creator_id: str, memory: dict | None) -> "ScriptRequest":
+    allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
+    return ScriptRequest(
+        niche=niche, audience=audience, known_for=known_for, goal=goal,
+        pillar=_feed_topics(niche, cursor), pillar_summary="Daily feed suggestion",
+        style=allowed[cursor % len(allowed)], count=3, creator_id=creator_id,
+        memory=memory or {},                  # B-6: picks personalized by yap-session memory
+    )
 
 
 async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
@@ -5299,53 +5489,136 @@ async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creato
         _feed_refreshing.discard(key)
 
 
-@app.get("/v1/feed")
-async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
-               known_for: str = "", goal: str = "Grow my audience",
-               styles: str = "", watched: str = "", cursor: int = 0, fresh: int = 0):
+async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
+                              watched: str, cursor: int) -> None:
+    """B-5: warm the NEXT page (fast single-call path) so "Load more" is a cache hit
+    instead of a ~10-18s live generation. Re-checks freshness inside the task so it never
+    clobbers a fresher entry (e.g. a background Opus upgrade that landed meanwhile)."""
+    try:
+        existing = _feed_cache.get(key)
+        if existing and (time.time() - existing["ts"]) < _FEED_CACHE_TTL_S:
+            return                            # already warm (a real fetch beat us here)
+        script_result = await _fast_feed_scripts(sreq)
+        items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
+        if key not in _feed_cache:            # don't overwrite a fresher/higher-quality entry
+            _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
+                                "mode": script_result.get("mode", "mock"), "ts": time.time()}
+            _cap_evict(_feed_cache, _FEED_CACHE_CAP)
+    except Exception as e:
+        logging.warning("feed prefetch failed for %s: %s", key, e)
+    finally:
+        _feed_refreshing.discard(key)
+
+
+def _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
+                         cursor, memory, next_cursor) -> None:
+    """Spawn a prefetch of cursor+1 so the next "Load more" is instant. Guarded by
+    _feed_refreshing (single writer per key; the current page holds cursor, prefetch
+    holds cursor+1 — disjoint). No-op when the next page is already cached/exhausted."""
+    if next_cursor is None:
+        return
+    nkey = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched,
+                           next_cursor, memory)
+    if nkey in _feed_cache or nkey in _feed_refreshing:
+        return
+    _feed_refreshing.add(nkey)
+    nsreq = _feed_sreq(niche, audience, known_for, goal, styles, next_cursor, creator_id, memory)
+    _spawn(_prefetch_feed_page(nkey, nsreq, niche, creator_id, watched, next_cursor))
+
+
+async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str, goal: str,
+                     styles: str, watched: str, cursor: int, fresh: int,
+                     memory: dict | None) -> dict:
+    """Shared feed body for GET (no memory) and POST (memory-personalized)."""
     cursor = max(0, min(cursor, 50))
-    allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
-    style = allowed[cursor % len(allowed)]
-    key = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched, cursor)
+    key = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched, cursor, memory)
 
     cached = _feed_cache.get(key)
     fresh_enough = cached and (time.time() - cached["ts"]) < _FEED_CACHE_TTL_S
     if cached and fresh_enough and not fresh:
+        _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
+                             cursor, memory, cached["next_cursor"])
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
-    sreq = ScriptRequest(
-        niche=niche, audience=audience, known_for=known_for, goal=goal,
-        pillar=_feed_topics(niche, cursor),
-        pillar_summary="Daily feed suggestion",
-        style=style, count=3, creator_id=creator_id,
-    )
+    sreq = _feed_sreq(niche, audience, known_for, goal, styles, cursor, creator_id, memory)
 
     if cached and not fresh:
-        # Stale-while-revalidate: serve the last good page instantly, upgrade
-        # in the background for next time.
+        # Stale-while-revalidate: serve the last good page instantly, upgrade in the background.
         if key not in _feed_refreshing:
             _feed_refreshing.add(key)
             _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+        _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
+                             cursor, memory, cached["next_cursor"])
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
-    # No cache yet (first-ever fetch) — fast single-call path so the client
-    # never waits on the full 4-6-call quality gate for its very first paint.
+    # No cache yet (first-ever fetch) — fast single-call path so the client never waits
+    # on the full 4-6-call quality gate for its very first paint.
     script_result = await _fast_feed_scripts(sreq)
     items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
     _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
                         "mode": script_result.get("mode", "mock"), "ts": time.time()}
     _cap_evict(_feed_cache, _FEED_CACHE_CAP)
 
-    # Kick the full quality-gated set in the background so the SECOND fetch
-    # (e.g. pull-to-refresh, or the app reopening) gets the upgraded page.
-    # OPT-2: page 0 only — deep-cursor pages are frequently fetched exactly once,
-    # and each proactive upgrade costs the full 4-6-call OPUS pipeline. Pages the
-    # user actually returns to still upgrade via the stale-while-revalidate branch.
+    # page 0 → background full-quality OPUS upgrade for the SECOND fetch.
     if cursor == 0 and key not in _feed_refreshing:
         _feed_refreshing.add(key)
         _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+    # B-5: always warm the next page so "Load more" is instant at any depth.
+    _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
+                         cursor, memory, next_cursor)
 
     return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
+
+
+@app.get("/v1/feed")
+async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
+               known_for: str = "", goal: str = "Grow my audience",
+               styles: str = "", watched: str = "", cursor: int = 0, fresh: int = 0):
+    return await _feed_impl(creator_id, niche, audience, known_for, goal, styles, watched,
+                            cursor, fresh, None)
+
+
+@app.post("/v1/feed")
+async def feed_post(req: FeedRequest):
+    """B-6: memory-personalized feed. Same response shape as GET; the creator's yap-session
+    memory feeds the script prompt so Today's picks reflect what they told the orb."""
+    return await _feed_impl(req.creator_id, req.niche, req.audience, req.known_for, req.goal,
+                            req.styles, req.watched, req.cursor, req.fresh, req.memory)
+
+
+@app.post("/v1/feed/feedback")
+async def feed_feedback(req: FeedFeedbackRequest):
+    """B-7: a Today's-picks like/dislike. Folds a small reward into the creator's bandit
+    arms (decoupled from real-post stats) and, on dislike, records the pick's fingerprint
+    so a near-identical script doesn't reappear. Idempotent per fingerprint."""
+    verdict = req.verdict if req.verdict in ("like", "dislike") else "like"
+    fp = _script_fingerprint(req.script)
+    seen = _feed_feedback_seen.setdefault(req.creator_id, set())
+    if fp in seen:
+        return {"mode": "live" if _supabase_client else "mock", "status": "duplicate",
+                "arms_updated": 0, "dismissed": verdict == "dislike"}
+    if len(seen) < 400:                        # bound the idempotency set
+        seen.add(fp)
+    y = FEEDBACK_LIKE_Y if verdict == "like" else FEEDBACK_DISLIKE_Y
+    niche = req.niche or _creator_niche.get(req.creator_id, "")
+    sc = req.script
+    # Map each bandit dimension to the script's field(s) — mirrors /v1/metrics/ingest's dims.
+    dim_values = {
+        "pillar": sc.get("pillar") or sc.get("pillarName"),
+        "style": sc.get("style"),
+        "format_id": sc.get("format_id") or sc.get("formatId"),
+        "hook_signal": sc.get("hook_signal") or sc.get("hookSignal"),
+    }
+    updated = 0
+    for dim in DIMENSIONS:
+        val = dim_values.get(dim)
+        if val:
+            await _update_arm_feedback(req.creator_id, f"{dim}:{val}", y, niche)
+            updated += 1
+    if verdict == "dislike":
+        _record_dismissal(req.creator_id, fp)
+    return {"mode": "live" if _supabase_client else "mock", "status": "recorded",
+            "arms_updated": updated, "dismissed": verdict == "dislike"}
 
 
 # ---------------------------------------------------------------------------

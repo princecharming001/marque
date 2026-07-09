@@ -113,3 +113,9 @@ CREATE TABLE IF NOT EXISTS reels_cache (
     updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 ALTER TABLE reels_cache ENABLE ROW LEVEL SECURITY;
+
+-- R6-7: decoupled feedback accumulators. Feed like/dislike taps fold into the
+-- Thompson alpha/beta via these columns ONLY, leaving n / sum_raw / n_raw (which
+-- ground honest "+N% lift" + "seen in N settled posts" claims) untouched.
+ALTER TABLE arm_stats ADD COLUMN IF NOT EXISTS fb_n       DOUBLE PRECISION DEFAULT 0;
+ALTER TABLE arm_stats ADD COLUMN IF NOT EXISTS fb_sum_y   DOUBLE PRECISION DEFAULT 0;
