@@ -30,6 +30,7 @@ struct ProEditorView: View {
     @State var showTextCardAlert = false
     @State var editDraft = ""
     @State var editingCaptionFrame: Int?
+    @State var hapticTick = 0                    // I-7: .sensoryFeedback trigger
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -58,6 +59,7 @@ struct ProEditorView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
+        .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)   // I-7 haptics
         .task { await load() }
         .onDisappear { applyTask?.cancel(); player?.teardown() }
     }
@@ -93,6 +95,7 @@ struct ProEditorView: View {
             playerSurface                       // flexes to fill; keeps the toolbar pinned bottom
             if let t = transient { transientBar(t) }
             timelinePane
+            if mode == .text, !words.isEmpty { wordStrip }   // I-7: per-word caption editing
             contextStrip
             modeDrawer
             modeToolbar
@@ -225,6 +228,43 @@ struct ProEditorView: View {
         return d.captions.last(where: { $0.frame <= srcFrame })?.word
     }
 
+    // I-7: the transcript as tappable word chips — tap a word to fix its caption. The chip
+    // nearest the playhead is highlighted so the creator knows where they are.
+    private var playheadSourceFrame: Int {
+        guard let d = session?.draft else { return 0 }
+        return secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
+    }
+    private var wordStrip: some View {
+        let cur = playheadSourceFrame
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(words.enumerated()), id: \.offset) { i, w in
+                        let active = cur >= w.startFrame && cur < w.endFrame
+                        Button { beginCaptionEdit(frame: w.startFrame, current: w.text); bumpHaptic() } label: {
+                            Text(w.text)
+                                .font(.system(size: 13, weight: active ? .semibold : .regular))
+                                .foregroundStyle(active ? Palette.night : .white)
+                                .padding(.horizontal, 9).padding(.vertical, 6)
+                                .background(Capsule().fill(active ? Palette.accent : Color.white.opacity(0.12)))
+                        }
+                        .buttonStyle(.plain)
+                        .id(i)
+                        .accessibilityIdentifier("editorPro.word.\(i)")
+                    }
+                }
+                .padding(.horizontal, Space.md)
+            }
+            .frame(height: 40)
+            .accessibilityIdentifier("editorPro.wordStrip")
+            .onChange(of: cur) { _, _ in
+                if let idx = words.firstIndex(where: { cur >= $0.startFrame && cur < $0.endFrame }) {
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(idx, anchor: .center) }
+                }
+            }
+        }
+    }
+
     // MARK: timeline
 
     private var timelinePane: some View {
@@ -246,13 +286,20 @@ struct ProEditorView: View {
     @ViewBuilder private var contextStrip: some View {
         HStack(spacing: Space.lg) {
             if let seg = selectedSeg {
-                contextButton("Split", "square.split.2x1") { splitSelected(seg) }
-                contextButton("Delete", "trash") { deleteSelected(seg) }
+                contextButton("Split", "square.split.2x1") { splitSelected(seg); bumpHaptic() }
+                contextButton("Delete", "trash") { deleteSelected(seg); bumpHaptic() }
+                // I-7: explicit reorder (drag-to-reorder fights the timeline's other gestures).
+                contextButton("Move ◀", "arrow.left") { moveSelected(by: -1); bumpHaptic() }
+                    .disabled(!canMoveSelected(by: -1)).opacity(canMoveSelected(by: -1) ? 1 : 0.35)
+                    .accessibilityIdentifier("editorPro.moveLeft")
+                contextButton("Move ▶", "arrow.right") { moveSelected(by: 1); bumpHaptic() }
+                    .disabled(!canMoveSelected(by: 1)).opacity(canMoveSelected(by: 1) ? 1 : 0.35)
+                    .accessibilityIdentifier("editorPro.moveRight")
                 if mode == .sound {
-                    contextButton(mutedState(seg) ? "Unmute" : "Mute", "speaker.slash") { toggleMute(seg) }
+                    contextButton(mutedState(seg) ? "Unmute" : "Mute", "speaker.slash") { toggleMute(seg); bumpHaptic() }
                 }
             } else {
-                Text("Tap a clip to trim, split, or delete").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                Text("Tap a clip · Split / Delete / Move from here").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
             }
             Spacer()
         }

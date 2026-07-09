@@ -70,18 +70,19 @@ struct EditorTimeline: View {
     @ViewBuilder private func clipCell(pos: Int, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
         let w = max(30, width(srcOut - srcIn))
         let selected = selectedSeg == segIdx
+        // I-7: dim the other clips when one is selected so the target is unmistakable.
+        let dimmed = selectedSeg != nil && !selected
         ZStack {
             FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w)
                 .frame(width: w, height: 56).clipped()
             RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Palette.accent : .white.opacity(0.15),
-                                                           lineWidth: selected ? 2 : 1)
-            if reordering { Image(systemName: "line.3.horizontal").foregroundStyle(.white).font(.system(size: 12)) }
+                                                           lineWidth: selected ? 2.5 : 1)
         }
         .frame(width: w, height: 56)
+        .opacity(dimmed ? 0.55 : 1)
         .overlay(alignment: .leading) { if selected { trimHandle(.leading, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .overlay(alignment: .trailing) { if selected { trimHandle(.trailing, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
-        .onTapGesture { selectedSeg = (selectedSeg == segIdx) ? nil : segIdx }
-        .onLongPressGesture { withAnimation { reordering.toggle() } }
+        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { selectedSeg = (selectedSeg == segIdx) ? nil : segIdx } }
         .accessibilityIdentifier("editorPro.clip.\(pos)")
     }
 

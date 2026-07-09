@@ -92,6 +92,28 @@ extension ProEditorView {
 
     func reorder(_ order: [Int]) { mutate([.reorder(order)]) }
 
+    // I-7: move the selected clip one slot left/right in play order (explicit, reliable
+    // reorder — the timeline can't host a drag without fighting scrub/trim/zoom gestures).
+    private func currentOrder() -> [Int] {
+        session?.draft.segmentOrder ?? Array(session?.draft.segments.indices ?? (0..<0))
+    }
+    func canMoveSelected(by delta: Int) -> Bool {
+        guard let seg = selectedSeg else { return false }
+        let order = currentOrder()
+        guard let pos = order.firstIndex(of: seg) else { return false }
+        let np = pos + delta
+        return np >= 0 && np < order.count
+    }
+    func moveSelected(by delta: Int) {
+        guard canMoveSelected(by: delta), let seg = selectedSeg else { return }
+        var order = currentOrder()
+        guard let pos = order.firstIndex(of: seg) else { return }
+        order.swapAt(pos, pos + delta)
+        reorder(order)
+    }
+
+    func bumpHaptic() { hapticTick += 1 }
+
     // MARK: Sound-mode actions
 
     func mutedState(_ segIdx: Int) -> Bool {

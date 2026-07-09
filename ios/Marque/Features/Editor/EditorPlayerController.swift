@@ -20,6 +20,7 @@ final class EditorPlayerController {
     private var intervals: [(srcIn: Int, srcOut: Int)] = []
     private var timeObserver: Any?
     private var boundaryObserver: Any?
+    private var placeholderClock: Timer?         // I-7: synthetic playhead for keyless mode
     private var pendingSeek = false
     private var queuedSeekTarget: Double?
 
@@ -45,7 +46,23 @@ final class EditorPlayerController {
     func togglePlay() { isPlaying ? pause() : play() }
 
     func play() {
-        guard !placeholder, !intervals.isEmpty else { return }
+        // I-7: keyless/mock clips have no source video — drive the playhead with a synthetic
+        // clock so Play still animates the timeline (and Maestro can verify playback).
+        if placeholder {
+            guard !isPlaying, totalOutputTime > 0 else { return }
+            isPlaying = true
+            placeholderClock?.invalidate()
+            placeholderClock = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                guard let self, self.isPlaying else { return }
+                self.currentOutputTime += 1.0 / 30.0
+                if self.currentOutputTime >= self.totalOutputTime {
+                    self.currentOutputTime = 0
+                    self.pause()
+                }
+            }
+            return
+        }
+        guard !intervals.isEmpty else { return }
         isPlaying = true
         seek(toOutput: currentOutputTime) { [weak self] in self?.player.play() }
         installBoundaryObserver()
@@ -53,6 +70,7 @@ final class EditorPlayerController {
 
     func pause() {
         isPlaying = false
+        placeholderClock?.invalidate(); placeholderClock = nil
         player.pause()
     }
 
@@ -144,6 +162,7 @@ final class EditorPlayerController {
     func teardown() {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver) }
+        placeholderClock?.invalidate(); placeholderClock = nil
         player.pause()
     }
 }
