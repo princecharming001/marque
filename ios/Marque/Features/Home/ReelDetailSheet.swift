@@ -1,4 +1,5 @@
 import SwiftUI
+import AVKit
 
 // The reel teardown sheet: watch (or read) a proven reel, see why it's working and how
 // it's built, then "Mimic in my voice" — the backend rewrites the *structure* with the
@@ -17,6 +18,7 @@ struct ReelDetailSheet: View {
         case failed                      // mimic() returned nil
     }
     @State private var phase: Phase = .detail
+    @State private var playbackFailed = false      // W2-4: 403/expired CDN URL → fall back to the hook panel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -114,8 +116,8 @@ struct ReelDetailSheet: View {
     }
 
     @ViewBuilder private var media: some View {
-        if !reel.videoURL.isEmpty {
-            LocalVideoPlayer(path: nil, remoteURL: reel.videoURL)
+        if !reel.videoURL.isEmpty && !playbackFailed, let url = URL(string: reel.videoURL) {
+            FailableVideoPlayer(url: url) { playbackFailed = true }
                 .aspectRatio(9.0 / 16.0, contentMode: .fit)
                 .frame(height: 340)
                 .frame(maxWidth: .infinity)
@@ -278,6 +280,35 @@ struct ReelDetailSheet: View {
                 } else {
                     phase = .failed
                 }
+            }
+        }
+    }
+}
+
+// W2-4: an AVPlayer wrapper that reports playback failure (a 403/expired scraped CDN URL)
+// so the caller can fall back to the hook panel instead of showing a dead black player.
+private struct FailableVideoPlayer: UIViewControllerRepresentable {
+    let url: URL
+    let onFailure: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onFailure: onFailure) }
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let item = AVPlayerItem(url: url)
+        context.coordinator.observe(item)
+        let vc = AVPlayerViewController()
+        vc.player = AVPlayer(playerItem: item)
+        return vc
+    }
+    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {}
+
+    final class Coordinator: NSObject {
+        let onFailure: () -> Void
+        private var obs: NSKeyValueObservation?
+        init(onFailure: @escaping () -> Void) { self.onFailure = onFailure }
+        func observe(_ item: AVPlayerItem) {
+            obs = item.observe(\.status) { [weak self] it, _ in
+                if it.status == .failed { DispatchQueue.main.async { self?.onFailure() } }
             }
         }
     }

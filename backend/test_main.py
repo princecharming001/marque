@@ -156,6 +156,40 @@ def test_publish_mock_when_no_target_accounts():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+def test_rehost_media_keyless_noop(monkeypatch):
+    # W2-2: no Supabase config → returns None (keeps CDN url), suite stays keyless-green.
+    monkeypatch.setattr(main, "SUPABASE_URL", "")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "")
+    r = asyncio.run(main._rehost_media("https://cdn/x.mp4", "reels/a.mp4", "video/mp4", 60_000_000))
+    assert r is None
+
+
+def test_reel_storage_stem_deterministic():
+    p = {"platform": "instagram", "author": "coach", "timestamp": "2026-01-01"}
+    assert main._reel_storage_stem(p) == main._reel_storage_stem(p)   # stable → overwrite, not accumulate
+
+
+def test_refresh_niche_reels_transcribes_before_mapping(monkeypatch):
+    # W2-1: _transcribe_top_posts runs before _reel_from_post so the reel carries the spoken transcript.
+    async def fake_scrape(niche, limit=20):
+        return [{"author": "c", "platform": "instagram", "views": 50000, "likes": 100,
+                 "caption": "cap", "video_url": "https://cdn/v.mp4", "timestamp": "t"}]
+    captured = {}
+    async def fake_transcribe(posts, top_n=4):
+        captured["top_n"] = top_n
+        for p in posts: p["transcript"] = "the real spoken words"
+        return posts
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", fake_transcribe)
+    monkeypatch.setattr(main, "SUPABASE_URL", "")   # skip rehost
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    asyncio.run(main._refresh_niche_reels("fitness"))
+    key = main._niche_cache_key("fitness")
+    reels = main._niche_reels_cache[key]["reels"]
+    assert reels and reels[0]["transcript"] == "the real spoken words"
+    assert captured["top_n"] == main._REEL_TRANSCRIBE_TOP_N
+
+
 def test_trends_mock_rotates_by_bucket(monkeypatch):
     # W1-2: the mock trend list rotates by the 6h time bucket so the ticker isn't frozen.
     monkeypatch.setattr(main, "_niche_trends_cache", {})

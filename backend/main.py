@@ -4766,14 +4766,68 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
         _reels_refreshing.discard(key)
 
 
+_REEL_TRANSCRIBE_TOP_N = int(os.environ.get("REEL_TRANSCRIBE_TOP_N", "4"))
+_REEL_REHOST_TOP_N = int(os.environ.get("REEL_REHOST_TOP_N", "6"))
+
+
+async def _rehost_media(url: str, key: str, content_type: str, max_bytes: int) -> str | None:
+    """W2: download a scraped CDN asset and re-upload it to the PUBLIC Supabase bucket so the
+    app can play it reliably (IG/TikTok CDN URLs 403/expire). Deterministic keys (overwrite,
+    never accumulate). Returns the durable public URL, or None (keyless/unconfigured/oversize/
+    any failure) — the caller then keeps the original CDN url and the client falls back."""
+    if not (SUPABASE_URL and SUPABASE_KEY and url and url.startswith("http")):
+        return None
+    base = SUPABASE_URL.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
+            async with c.stream("GET", url) as r:
+                if r.status_code != 200:
+                    return None
+                buf = bytearray()
+                async for chunk in r.aiter_bytes():
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        return None
+            up = await c.post(
+                f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
+                headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
+                         "Content-Type": content_type, "x-upsert": "true"},
+                content=bytes(buf))
+            if 200 <= up.status_code < 300:
+                return f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
+    except Exception as e:
+        logging.warning("rehost media failed for %s: %s", key[:40], e)
+    return None
+
+
+def _reel_storage_stem(post: dict) -> str:
+    raw = f"{post.get('platform','ig')}:{post.get('author','x')}:{post.get('timestamp', post.get('id',''))}"
+    return hashlib.sha1(raw.encode()).hexdigest()[:16]
+
+
 async def _refresh_niche_reels(niche: str) -> None:
-    """Background: scrape trending niche posts → real reels in cache."""
+    """Background: scrape trending niche posts → real reels in cache. W2: transcribe the top
+    few (real spoken transcript, not caption) and re-host their media to Supabase Storage so
+    the "Steal these" preview actually plays."""
     key = _niche_cache_key(niche)
     try:
         posts = await scrape_niche_posts(niche, limit=20)
         posts = [p for p in posts if p.get("views", 0) >= 10_000]
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
         posts = posts[:18]
+        # W2-1: real spoken transcript for the top reels (before mapping, so hook extraction benefits).
+        posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
+        # W2-3: re-host the top reels' video + all thumbnails to stable Supabase URLs.
+        for i, p in enumerate(posts):
+            stem = _reel_storage_stem(p)
+            if p.get("thumbnail_url"):
+                durable = await _rehost_media(p["thumbnail_url"], f"reels/{stem}.jpg", "image/jpeg", 2_000_000)
+                if durable:
+                    p["thumbnail_url"] = durable
+            if i < _REEL_REHOST_TOP_N and p.get("video_url"):
+                durable = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4", 60_000_000)
+                if durable:
+                    p["video_url"] = durable
         reels = [_reel_from_post(p, p.get("author") or "creator",
                                  p.get("platform", "instagram"), i, False)
                  for i, p in enumerate(posts)]
