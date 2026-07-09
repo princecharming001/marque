@@ -1,0 +1,34 @@
+appId: com.getmarque.app
+name: Editor UX research round — dirty close confirm, selection lifecycle, park at end
+---
+- launchApp:
+    arguments: { demoClip: 1, backend.url: "http://127.0.0.1:8001" }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+# make an edit → dirty
+- tapOn: { id: "editorPro.clip.0" }
+- tapOn: { id: "editorPro.ctx.split" }
+# UX-8: split keeps first half selected → Split still enabled immediately
+- takeScreenshot: /tmp/r6-ux3-01-after-split
+# UX-8: undo clears selection
+- tapOn: { id: "editorPro.undo" }
+- takeScreenshot: /tmp/r6-ux3-02-after-undo
+# make it dirty again for the close test
+- tapOn: { id: "editorPro.clip.1" }
+- tapOn: { id: "editorPro.ctx.delete" }
+# UX-7: X on dirty session → confirm dialog appears
+- tapOn: { id: "editorPro.close" }
+- extendedWaitUntil:
+    visible: "Discard your edits?"
+    timeout: 4000
+- takeScreenshot: /tmp/r6-ux3-03-discard-confirm
+- tapOn: "Keep editing"
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 4000

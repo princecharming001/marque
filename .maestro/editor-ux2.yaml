@@ -1,0 +1,22 @@
+appId: com.getmarque.app
+name: Editor UX round — coach, always-visible tools, duration labels, split-at-playhead
+---
+- launchApp:
+    arguments: { demoClip: 1, backend.url: "http://127.0.0.1:8001" }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+# coach overlay (first run) — dismiss if present
+- takeScreenshot: /tmp/r6-ux-01-coach
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+# always-visible (disabled) tool strip + duration labels
+- takeScreenshot: /tmp/r6-ux-02-idle
+# select + split (playhead at 0 → falls into clip? playhead=0 is boundary → middle fallback ok)
+- tapOn: { id: "editorPro.clip.0" }
+- takeScreenshot: /tmp/r6-ux-03-selected
+- tapOn: { id: "editorPro.ctx.split" }
+- takeScreenshot: /tmp/r6-ux-04-split

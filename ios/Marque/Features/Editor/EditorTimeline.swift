@@ -15,8 +15,13 @@ struct EditorTimeline: View {
     let onReorder: ([Int]) -> Void
 
     @State private var dragBaseOffset: CGFloat?
-    @State private var reordering = false
     @GestureState private var pinch: CGFloat = 1
+    // Live trim rubber-band: the in-flight drag's effect, applied to the selected cell's
+    // width + a floating duration badge, committed as ONE op on release.
+    @State private var trimPreview: (segIdx: Int, edge: TrimEdge, deltaFrames: Int)?
+    // Scrub snapping: haptic tick when the playhead locks onto a clip boundary.
+    @State private var snapTick = 0
+    @State private var lastSnapIndex: Int? = nil
 
     // Play-order clips = (sourceSegmentIndex, kept source interval). Only un-fully-dropped segs show.
     private var clips: [(segIdx: Int, srcIn: Int, srcOut: Int)] {
@@ -36,7 +41,8 @@ struct EditorTimeline: View {
             let mid = geo.size.width / 2
             let playheadOffset = CGFloat(player?.currentOutputTime ?? 0) * pointsPerSecond
             ZStack(alignment: .leading) {
-                // Time ruler
+                // UX-9: the ruler and the clips scroll TOGETHER under the fixed playhead —
+                // the ruler used to stay pinned, so its tick marks lied about position.
                 VStack(spacing: 2) {
                     ruler(width: geo.size.width)
                     HStack(spacing: 3) {
@@ -44,9 +50,9 @@ struct EditorTimeline: View {
                             clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut)
                         }
                     }
-                    .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
-                    .offset(x: mid - playheadOffset - mid)   // content scrolls under the fixed playhead
                 }
+                .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
+                .offset(x: -playheadOffset)    // content scrolls under the fixed playhead
                 // Fixed center playhead
                 Rectangle().fill(Palette.accent).frame(width: 2)
                     .frame(maxHeight: .infinity).offset(x: mid - 1)
@@ -55,6 +61,12 @@ struct EditorTimeline: View {
             .gesture(scrubGesture(mid: mid))
             .gesture(MagnificationGesture().updating($pinch) { v, s, _ in s = v }
                 .onChanged { v in pointsPerSecond = max(8, min(60, pointsPerSecond * v / max(pinch, 0.01))) })
+            // Double-tap the timeline background → reset zoom to the default scale.
+            .onTapGesture(count: 2) { withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 } }
+            // UX-8: tapping empty timeline space clears the selection (clip cells' own
+            // tap gestures win when a clip is hit).
+            .onTapGesture { if selectedSeg != nil { withAnimation(.easeOut(duration: 0.15)) { selectedSeg = nil } } }
+            .sensoryFeedback(.selection, trigger: snapTick)
         }
     }
 
@@ -67,8 +79,31 @@ struct EditorTimeline: View {
         }.frame(height: 12)
     }
 
+    /// How far this clip's edge can GROW outward (restore previously-trimmed footage):
+    /// the extent of the drop that abuts the edge; 0 when nothing was trimmed there.
+    private func restorableFrames(edge: TrimEdge, srcIn: Int, srcOut: Int) -> Int {
+        for d in document.drops {
+            if edge == .leading, d.srcOut == srcIn { return d.srcOut - d.srcIn }
+            if edge == .trailing, d.srcIn == srcOut { return d.srcOut - d.srcIn }
+        }
+        return 0
+    }
+
+    /// The clip's frame count with any in-flight trim drag applied — the rubber-band is
+    /// HONEST: it clamps to exactly what the commit will produce (min 30 frames of clip;
+    /// outward growth capped at the abutting trimmed footage, 0 when there's none).
+    private func previewFrames(segIdx: Int, srcIn: Int, srcOut: Int) -> Int {
+        let base = srcOut - srcIn
+        guard let t = trimPreview, t.segIdx == segIdx else { return base }
+        let adjusted = t.edge == .leading ? base - t.deltaFrames : base + t.deltaFrames
+        let maxGrow = base + restorableFrames(edge: t.edge, srcIn: srcIn, srcOut: srcOut)
+        return min(maxGrow, max(30, adjusted))
+    }
+
     @ViewBuilder private func clipCell(pos: Int, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
-        let w = max(30, width(srcOut - srcIn))
+        let frames = previewFrames(segIdx: segIdx, srcIn: srcIn, srcOut: srcOut)
+        let trimming = trimPreview?.segIdx == segIdx
+        let w = max(30, width(frames))
         let selected = selectedSeg == segIdx
         // I-7: dim the other clips when one is selected so the target is unmistakable.
         let dimmed = selectedSeg != nil && !selected
@@ -80,10 +115,36 @@ struct EditorTimeline: View {
         }
         .frame(width: w, height: 56)
         .opacity(dimmed ? 0.55 : 1)
+        // Duration label — every editor shows clip lengths; hide on slivers.
+        .overlay(alignment: .bottomTrailing) {
+            if w >= 44 {
+                Text(String(format: "%.1fs", Double(frames) / 30.0))
+                    .font(.system(size: 8, weight: .semibold)).monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.9))
+                    .padding(.horizontal, 4).padding(.vertical, 1.5)
+                    .background(Color.black.opacity(0.45)).clipShape(Capsule())
+                    .padding(3)
+            }
+        }
+        // Floating duration badge while trimming — the live feedback that was missing.
+        .overlay(alignment: edgeAlignment) {
+            if trimming {
+                Text(String(format: "%.1fs", Double(frames) / 30.0))
+                    .font(.system(size: 11, weight: .bold)).monospacedDigit()
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Palette.accent).clipShape(Capsule())
+                    .offset(y: -40)
+            }
+        }
         .overlay(alignment: .leading) { if selected { trimHandle(.leading, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .overlay(alignment: .trailing) { if selected { trimHandle(.trailing, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { selectedSeg = (selectedSeg == segIdx) ? nil : segIdx } }
         .accessibilityIdentifier("editorPro.clip.\(pos)")
+    }
+
+    private var edgeAlignment: Alignment {
+        (trimPreview?.edge == .leading) ? .topLeading : .topTrailing
     }
 
     private func trimHandle(_ edge: TrimEdge, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
@@ -93,13 +154,38 @@ struct EditorTimeline: View {
             .contentShape(Rectangle().inset(by: -14))     // 44pt-ish hit target
             .highPriorityGesture(
                 DragGesture()
+                    .onChanged { g in
+                        // Live rubber-band: the cell resizes + shows its new duration as you
+                        // drag; nothing commits until release.
+                        let deltaFrames = secondsToFrame(Double(g.translation.width / pointsPerSecond))
+                        trimPreview = (segIdx, edge, deltaFrames)
+                        // UX-5: the PICTURE follows the trim edge (independent of the playhead)
+                        // so you see the exact frame you're cutting on — the trim feedback for
+                        // talking-head content.
+                        let candidate = edge == .leading ? srcIn + deltaFrames : srcOut + deltaFrames
+                        player?.previewSourceSeconds(framesToSeconds(max(0, candidate)))
+                    }
                     .onEnded { g in
+                        trimPreview = nil
                         let deltaFrames = secondsToFrame(Double(g.translation.width / pointsPerSecond))
                         let newFrame = edge == .leading ? srcIn + deltaFrames : srcOut + deltaFrames
                         onTrim(segIdx, edge, newFrame)
+                        // Snap the picture back to the composition playhead.
+                        if let p = player { p.seek(toOutput: p.currentOutputTime) }
                     }
             )
             .accessibilityIdentifier("editorPro.trimHandle.\(edge == .leading ? "left" : "right")")
+    }
+
+    /// Output-timeline positions of every clip boundary (cut points) — snap targets.
+    private var boundarySeconds: [Double] {
+        var acc = 0.0
+        var out: [Double] = [0]
+        for c in clips {
+            acc += framesToSeconds(c.srcOut - c.srcIn)
+            out.append(acc)
+        }
+        return out
     }
 
     private func scrubGesture(mid: CGFloat) -> some Gesture {
@@ -109,9 +195,21 @@ struct EditorTimeline: View {
                 if dragBaseOffset == nil { dragBaseOffset = CGFloat(player.currentOutputTime) * pointsPerSecond; player.pause() }
                 let base = dragBaseOffset ?? 0
                 let newOffset = base - g.translation.width
-                player.seek(toOutput: Double(newOffset / pointsPerSecond))
+                var target = Double(newOffset / pointsPerSecond)
+                // Magnetic boundaries: within ~8pt of a cut point the playhead locks on,
+                // with a selection tick the first time it engages (CapCut behavior — makes
+                // split/trim at exact cut points effortless).
+                let threshold = Double(8 / pointsPerSecond)
+                if let (i, b) = boundarySeconds.enumerated().min(by: { abs($0.1 - target) < abs($1.1 - target) }),
+                   abs(b - target) < threshold {
+                    target = b
+                    if lastSnapIndex != i { lastSnapIndex = i; snapTick += 1 }
+                } else {
+                    lastSnapIndex = nil
+                }
+                player.seek(toOutput: target)
             }
-            .onEnded { _ in dragBaseOffset = nil }
+            .onEnded { _ in dragBaseOffset = nil; lastSnapIndex = nil }
     }
 }
 

@@ -31,6 +31,14 @@ struct ProEditorView: View {
     @State var editDraft = ""
     @State var editingCaptionFrame: Int?
     @State var hapticTick = 0                    // I-7: .sensoryFeedback trigger
+    // One-time first-run coach: three lines of orientation, dismissed forever after.
+    @AppStorage("editorPro.coachShown") private var coachShown = false
+    @State private var showCoach = false
+    // UX-4: slider drafts — the op commits once, on gesture end.
+    @State private var musicVolDraft: Double = 0.15
+    @State private var clipVolDraft: Double = 1.0
+    // UX-7: X on a dirty session confirms before discarding.
+    @State private var confirmDiscard = false
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -51,6 +59,7 @@ struct ProEditorView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showCoach { coachOverlay }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
@@ -61,21 +70,76 @@ struct ProEditorView: View {
         .preferredColorScheme(.dark)
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)   // I-7 haptics
         .task { await load() }
+        .onChange(of: phase) { _, p in
+            if p == .editing, !coachShown { showCoach = true }
+        }
         .onDisappear { applyTask?.cancel(); player?.teardown() }
+    }
+
+    /// First-open orientation — three lines, one button, never again.
+    private var coachOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+            VStack(alignment: .leading, spacing: Space.md) {
+                Text("Your editor")
+                    .font(Typeface.display(22, .semibold)).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    coachRow("hand.tap", "Tap a clip to select it — trim with the edge handles")
+                    coachRow("square.split.2x1", "Split cuts at the playhead — scrub to the exact moment first")
+                    coachRow("textformat", "Text mode: tap any word to fix its caption")
+                }
+                Button {
+                    coachShown = true
+                    withAnimation(.easeOut(duration: 0.2)) { showCoach = false }
+                } label: {
+                    Text("Got it").font(AppFont.headline).foregroundStyle(Palette.night)
+                        .frame(maxWidth: .infinity).frame(height: 46)
+                        .background(Color.white).clipShape(Capsule())
+                }
+                .buttonStyle(PressableStyle())
+                .accessibilityIdentifier("editorPro.coachDismiss")
+            }
+            .padding(Space.xl)
+            .background(Palette.ink)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            .padding(Space.xl)
+        }
+    }
+
+    private func coachRow(_ icon: String, _ text: String) -> some View {
+        HStack(alignment: .top, spacing: Space.sm) {
+            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Palette.accent)
+                .frame(width: 22)
+            Text(text).font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: toolbar
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            Button { dismiss() } label: { Image(systemName: "xmark") }.tint(.white)
+            // UX-7: X on unsaved edits asks first — silently discarding a session of work
+            // is the single most rage-inducing mistake an editor can make.
+            Button {
+                if phase == .editing, session?.isDirty == true { confirmDiscard = true } else { dismiss() }
+            } label: { Image(systemName: "xmark") }.tint(.white)
                 .accessibilityIdentifier("editorPro.close")
+                .confirmationDialog("Discard your edits?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+                    Button("Discard edits", role: .destructive) { dismiss() }
+                    Button("Keep editing", role: .cancel) {}
+                } message: {
+                    Text("You have unsaved changes. Save re-cuts the clip; discarding loses them.")
+                }
         }
         ToolbarItemGroup(placement: .principal) {
             if phase == .editing, let session {
-                Button { session.undo(); refreshPlayer() } label: { Image(systemName: "arrow.uturn.backward") }
+                // UX-8: undo/redo can change segment indices — clear a stale selection.
+                Button { session.undo(); selectedSeg = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.backward") }
                     .tint(.white).disabled(!session.canUndo).accessibilityIdentifier("editorPro.undo")
-                Button { session.redo(); refreshPlayer() } label: { Image(systemName: "arrow.uturn.forward") }
+                Button { session.redo(); selectedSeg = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.forward") }
                     .tint(.white).disabled(!session.canRedo).accessibilityIdentifier("editorPro.redo")
             }
         }
@@ -108,7 +172,7 @@ struct ProEditorView: View {
             HStack(spacing: Space.md) {
                 switch mode {
                 case .edit:
-                    Text("Trim with the handles · tap Split/Delete · long-press a clip to reorder")
+                    Text("Trim with the handles · Split cuts at the playhead · Move ◀ ▶ reorders")
                         .font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
                 case .sound:
                     drawerButton(session?.draft.music == nil ? "Add sound" : "Change sound", "music.note") { showMusicSheet = true }
@@ -116,15 +180,24 @@ struct ProEditorView: View {
                     if session?.draft.music != nil {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Music volume").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
-                            Slider(value: Binding(get: { session?.draft.music?.volume ?? 0.15 },
-                                                  set: { setMusicVolume($0) }), in: 0.0...0.5).frame(width: 120).tint(Palette.accent)
+                            // UX-4: one op per DRAG (EditorSession's one-gesture-one-undo-step
+                            // invariant) — the draft value tracks the thumb; the op commits on release.
+                            Slider(value: $musicVolDraft, in: 0.0...0.5, onEditingChanged: { editing in
+                                if editing { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
+                                else { setMusicVolume(musicVolDraft) }
+                            }).frame(width: 120).tint(Palette.accent)
+                                .onAppear { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                         }
                     }
                     if let seg = selectedSeg {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Clip volume").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
-                            Slider(value: Binding(get: { clipVolume(seg) }, set: { setClipVolume(seg, $0) }), in: 0.0...2.0)
-                                .frame(width: 120).tint(Palette.accent).accessibilityIdentifier("editorPro.clipVolume")
+                            Slider(value: $clipVolDraft, in: 0.0...2.0, onEditingChanged: { editing in
+                                if editing { clipVolDraft = clipVolume(seg) }
+                                else { setClipVolume(seg, clipVolDraft) }
+                            }).frame(width: 120).tint(Palette.accent)
+                                .accessibilityIdentifier("editorPro.clipVolume")
+                                .onAppear { clipVolDraft = clipVolume(seg) }
                         }
                     }
                 case .text:
@@ -167,15 +240,20 @@ struct ProEditorView: View {
 
     private var playerSurface: some View {
         ZStack {
-            if let player, !player.placeholder {
-                PlayerLayerView(player: player.player)
-            } else {
-                // Placeholder mode (keyless mock clip has no source video) — still fully editable.
-                Rectangle().fill(Palette.ink.opacity(0.85))
-                    .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.white.opacity(0.3)))
+            // Video + captions scale together during a punch-in window (L1 preview of the
+            // rendered zoom); the play/time controls below stay unscaled.
+            ZStack {
+                if let player, !player.placeholder {
+                    PlayerLayerView(player: player.player)
+                } else {
+                    // Placeholder mode (keyless mock clip has no source video) — still fully editable.
+                    Rectangle().fill(Palette.ink.opacity(0.85))
+                        .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.white.opacity(0.3)))
+                }
+                captionSimOverlay
             }
-            captionSimOverlay
-            punchInSimOverlay
+            .scaleEffect(currentPunchScale)
+            .animation(.easeInOut(duration: 0.25), value: currentPunchScale)
             VStack {
                 Spacer()
                 HStack {
@@ -219,18 +297,30 @@ struct ProEditorView: View {
         }
     }
 
-    @ViewBuilder private var punchInSimOverlay: some View {
-        EmptyView()   // scaleEffect handled on the player surface below when in a punch-in window
+    /// The active punch-in overlay's zoom at the playhead (1.0 outside any window) —
+    /// drives the L1 scale preview on the player surface.
+    private var currentPunchScale: Double {
+        guard let d = session?.draft else { return 1.0 }
+        let f = playheadSourceFrame
+        return d.overlays.first { $0.type == "punch_in" && $0.srcIn <= f && f < $0.srcOut }?.scale ?? 1.0
     }
 
     private func currentCaptionWord(_ d: EditorDocument) -> String? {
         let srcFrame = secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
-        return d.captions.last(where: { $0.frame <= srcFrame })?.word
+        guard let cap = d.captions.last(where: { $0.frame <= srcFrame }) else { return nil }
+        // UX-3: bound the word's display window with the transcript so the last word
+        // doesn't burn on screen through every silence.
+        if let span = words.first(where: { $0.startFrame == cap.frame }) ?? words.last(where: { $0.startFrame <= cap.frame }),
+           srcFrame > span.endFrame + 15 {
+            return nil
+        }
+        return cap.word
     }
 
     // I-7: the transcript as tappable word chips — tap a word to fix its caption. The chip
     // nearest the playhead is highlighted so the creator knows where they are.
-    private var playheadSourceFrame: Int {
+    // (internal: +Actions' split-at-playhead reads it too)
+    var playheadSourceFrame: Int {
         guard let d = session?.draft else { return 0 }
         return secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
     }
@@ -284,24 +374,28 @@ struct ProEditorView: View {
     // MARK: context strip (selection actions)
 
     @ViewBuilder private var contextStrip: some View {
+        // Tools are ALWAYS visible (CapCut pattern) — disabled until a clip is selected, so
+        // the creator discovers what's possible instead of staring at a hint sentence.
+        let seg = selectedSeg
         HStack(spacing: Space.lg) {
-            if let seg = selectedSeg {
-                contextButton("Split", "square.split.2x1") { splitSelected(seg); bumpHaptic() }
-                contextButton("Delete", "trash") { deleteSelected(seg); bumpHaptic() }
-                // I-7: explicit reorder (drag-to-reorder fights the timeline's other gestures).
-                contextButton("Move ◀", "arrow.left") { moveSelected(by: -1); bumpHaptic() }
-                    .disabled(!canMoveSelected(by: -1)).opacity(canMoveSelected(by: -1) ? 1 : 0.35)
-                    .accessibilityIdentifier("editorPro.moveLeft")
-                contextButton("Move ▶", "arrow.right") { moveSelected(by: 1); bumpHaptic() }
-                    .disabled(!canMoveSelected(by: 1)).opacity(canMoveSelected(by: 1) ? 1 : 0.35)
-                    .accessibilityIdentifier("editorPro.moveRight")
-                if mode == .sound {
-                    contextButton(mutedState(seg) ? "Unmute" : "Mute", "speaker.slash") { toggleMute(seg); bumpHaptic() }
-                }
-            } else {
-                Text("Tap a clip · Split / Delete / Move from here").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+            contextButton("Split", "square.split.2x1") { if let s = seg { splitSelected(s); bumpHaptic() } }
+                .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
+            contextButton("Delete", "trash") { if let s = seg { deleteSelected(s); bumpHaptic() } }
+                .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
+            // I-7: explicit reorder (drag-to-reorder fights the timeline's other gestures).
+            contextButton("Move ◀", "arrow.left") { moveSelected(by: -1); bumpHaptic() }
+                .disabled(!canMoveSelected(by: -1)).opacity(canMoveSelected(by: -1) ? 1 : 0.35)
+                .accessibilityIdentifier("editorPro.moveLeft")
+            contextButton("Move ▶", "arrow.right") { moveSelected(by: 1); bumpHaptic() }
+                .disabled(!canMoveSelected(by: 1)).opacity(canMoveSelected(by: 1) ? 1 : 0.35)
+                .accessibilityIdentifier("editorPro.moveRight")
+            if mode == .sound, let s = seg {
+                contextButton(mutedState(s) ? "Unmute" : "Mute", "speaker.slash") { toggleMute(s); bumpHaptic() }
             }
             Spacer()
+            if seg == nil {
+                Text("Tap a clip").font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
+            }
         }
         .frame(height: 44).padding(.horizontal, Space.md)
         .background(Palette.ink.opacity(0.4))

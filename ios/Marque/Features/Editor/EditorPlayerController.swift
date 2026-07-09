@@ -23,6 +23,15 @@ final class EditorPlayerController {
     private var placeholderClock: Timer?         // I-7: synthetic playhead for keyless mode
     private var pendingSeek = false
     private var queuedSeekTarget: Double?
+    // UX-3: audio parity — the preview honors mute/clip-volume and plays the picked music
+    // (with voice ducking) instead of lying at full volume until the server render.
+    private var volumeRanges: [EditorVolumeRange] = []
+    private var speechFrames: [Int] = []
+    private var musicPlayer: AVPlayer?
+    private var musicURL: String?
+    private var musicVolume: Double = 0.15
+    private var musicDucks = true
+    private var musicLoop: NSObjectProtocol?
 
     init(sourceURL: URL?) {
         if let sourceURL {
@@ -40,12 +49,61 @@ final class EditorPlayerController {
         intervals = document.keptIntervals
         totalOutputTime = document.outputSeconds
         currentOutputTime = min(currentOutputTime, totalOutputTime)
+        // UX-3: preview honors the draft's audio — mute/volume ranges + the picked music.
+        volumeRanges = document.volumeRanges
+        speechFrames = document.speechFrames
+        syncMusicPlayer(document.music)
+        applyVolume(atSourceFrame: secondsToFrame(sourceSeconds(forOutput: currentOutputTime) ?? 0))
         if isPlaying { pause() }
+    }
+
+    // MARK: UX-3 audio parity
+
+    /// Set the main player's volume from the draft's volume ranges at a source frame.
+    /// (AVPlayer caps at 1.0 — a >1 boost stays render-only, which is honest enough.)
+    private func applyVolume(atSourceFrame f: Int) {
+        let v = volumeRanges.first { $0.srcIn <= f && f < $0.srcOut }?.volume ?? 1.0
+        player.volume = Float(min(1.0, max(0.0, v)))
+        // Music ducks under speech: drop to 40% of its set volume near any speech frame.
+        if let mp = musicPlayer {
+            let nearSpeech = musicDucks && speechFrames.contains { abs($0 - f) < 15 }
+            mp.volume = Float(min(1.0, musicVolume * (nearSpeech ? 0.4 : 1.0)))
+        }
+    }
+
+    /// Create/replace/remove the looping preview player for the draft's music track.
+    private func syncMusicPlayer(_ music: EditorMusic?) {
+        guard !placeholder else { return }
+        guard let music, let url = URL(string: music.url) else {
+            musicPlayer?.pause(); musicPlayer = nil; musicURL = nil
+            if let musicLoop { NotificationCenter.default.removeObserver(musicLoop); self.musicLoop = nil }
+            return
+        }
+        musicVolume = music.volume
+        musicDucks = music.duckVoice
+        if musicURL != music.url {
+            musicURL = music.url
+            if let musicLoop { NotificationCenter.default.removeObserver(musicLoop) }
+            let item = AVPlayerItem(url: url)
+            let mp = AVPlayer(playerItem: item)
+            mp.volume = Float(music.volume)
+            musicLoop = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak mp] _ in
+                    mp?.seek(to: .zero); mp?.play()
+                }
+            musicPlayer = mp
+            if isPlaying { mp.play() }
+        } else {
+            musicPlayer?.volume = Float(music.volume)
+        }
     }
 
     func togglePlay() { isPlaying ? pause() : play() }
 
     func play() {
+        // UX-6: playing from the end restarts from the top; mid-timeline just resumes.
+        // (The playhead PARKS at the end after a play-through — it no longer yanks to 0:00.)
+        if currentOutputTime >= totalOutputTime - 0.03 { currentOutputTime = 0 }
         // I-7: keyless/mock clips have no source video — drive the playhead with a synthetic
         // clock so Play still animates the timeline (and Maestro can verify playback).
         if placeholder {
@@ -56,7 +114,7 @@ final class EditorPlayerController {
                 guard let self, self.isPlaying else { return }
                 self.currentOutputTime += 1.0 / 30.0
                 if self.currentOutputTime >= self.totalOutputTime {
-                    self.currentOutputTime = 0
+                    self.currentOutputTime = self.totalOutputTime   // park, don't reset
                     self.pause()
                 }
             }
@@ -65,6 +123,7 @@ final class EditorPlayerController {
         guard !intervals.isEmpty else { return }
         isPlaying = true
         seek(toOutput: currentOutputTime) { [weak self] in self?.player.play() }
+        musicPlayer?.play()
         installBoundaryObserver()
     }
 
@@ -72,6 +131,20 @@ final class EditorPlayerController {
         isPlaying = false
         placeholderClock?.invalidate(); placeholderClock = nil
         player.pause()
+        musicPlayer?.pause()
+    }
+
+    /// UX-5: show a source frame on the picture WITHOUT moving the composition playhead —
+    /// used while dragging a trim handle so the creator sees the exact frame they're cutting
+    /// on while the timeline stays put under their finger. Coalesced like seek().
+    func previewSourceSeconds(_ srcSec: Double) {
+        guard !placeholder else { return }
+        if pendingSeek { queuedSeekTarget = nil; return }   // drop stale preview targets
+        pendingSeek = true
+        player.seek(to: CMTime(seconds: max(0, srcSec), preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            self?.pendingSeek = false
+        }
     }
 
     /// Seek to an OUTPUT-timeline position (coalesced so drags never queue-pile).
@@ -79,6 +152,7 @@ final class EditorPlayerController {
         currentOutputTime = max(0, min(outputSec, totalOutputTime))
         guard !placeholder else { completion?(); return }
         guard let srcSec = sourceSeconds(forOutput: currentOutputTime) else { completion?(); return }
+        applyVolume(atSourceFrame: secondsToFrame(srcSec))    // UX-3: audio state tracks scrubs too
         if pendingSeek { queuedSeekTarget = currentOutputTime; return }
         pendingSeek = true
         player.seek(to: CMTime(seconds: srcSec, preferredTimescale: 600),
@@ -124,12 +198,14 @@ final class EditorPlayerController {
             let srcSec = time.seconds
             // If we've run past the current kept interval, jump to the next one.
             let srcFrame = secondsToFrame(srcSec)
+            self.applyVolume(atSourceFrame: srcFrame)      // UX-3: live mute/volume/duck
             if let iv = self.currentInterval(srcFrame: srcFrame), srcFrame >= iv.srcOut - 1 {
                 self.advanceToNextInterval(after: iv)
                 return
             }
             self.currentOutputTime = self.outputSeconds(forSource: srcSec)
-            if self.currentOutputTime >= self.totalOutputTime - 0.03 { self.pause(); self.currentOutputTime = 0 }
+            // UX-6: park at the end (don't yank the playhead back to 0:00).
+            if self.currentOutputTime >= self.totalOutputTime - 0.03 { self.pause() }
         }
     }
 
@@ -155,7 +231,7 @@ final class EditorPlayerController {
             player.seek(to: CMTime(seconds: framesToSeconds(next.srcIn), preferredTimescale: 600),
                         toleranceBefore: .zero, toleranceAfter: .zero)
         } else {
-            pause(); currentOutputTime = 0
+            pause(); currentOutputTime = totalOutputTime   // UX-6: park at the end
         }
     }
 
@@ -163,6 +239,8 @@ final class EditorPlayerController {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let boundaryObserver { player.removeTimeObserver(boundaryObserver) }
         placeholderClock?.invalidate(); placeholderClock = nil
+        if let musicLoop { NotificationCenter.default.removeObserver(musicLoop) }
+        musicPlayer?.pause(); musicPlayer = nil
         player.pause()
     }
 }
