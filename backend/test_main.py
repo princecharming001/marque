@@ -156,6 +156,30 @@ def test_publish_mock_when_no_target_accounts():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+def test_publish_honest_posted_flag(monkeypatch):
+    # C-01: additive posted/reason so the client stops showing "Posted" for nothing.
+    # ok semantics are FROZEN (build 9 reads only ok) — mock stays ok:true.
+    monkeypatch.setattr(main, "POSTFORME_KEY", "")
+    b = client.post("/v1/publish", json={"caption": "hi", "social_account_ids": ["acc1"]}).json()
+    assert b["ok"] is True and b["mode"] == "mock"          # frozen
+    assert b["posted"] is False and b["reason"] == "no_key"
+
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    b2 = client.post("/v1/publish", json={"caption": "hi", "social_account_ids": []}).json()
+    assert b2["ok"] is True and b2["posted"] is False and b2["reason"] == "no_accounts"
+
+
+def test_publish_live_posted_true(monkeypatch):
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+
+    async def fake_pfm(method, path, json_body=None):
+        return 201, {"id": "pfm_1", "status": "scheduled"}
+    monkeypatch.setattr(main, "_pfm_request", fake_pfm)
+    b = client.post("/v1/publish", json={"caption": "hi", "media_url": "https://x/y.mp4",
+                                         "social_account_ids": ["acc1"]}).json()
+    assert b["ok"] is True and b["posted"] is True and b["reason"] is None and b["mode"] == "live"
+
+
 def test_social_auth_url_mock_returns_empty_url():
     # Keyless: the client must be able to detect "linking unavailable" (empty url).
     b = client.post("/v1/social/auth-url", json={"platform": "instagram",

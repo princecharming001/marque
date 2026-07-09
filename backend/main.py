@@ -3728,8 +3728,11 @@ class PublishRequest(BaseModel):
 @app.post("/v1/publish")
 async def publish(req: PublishRequest):
     # No key, or no linked accounts to target => mock (nothing is actually posted).
+    # C-01: `posted`/`reason` are ADDITIVE and honest — the app must not show "Posted"
+    # for a mock. `ok` semantics are FROZEN (shipped build 9 reads only `ok`).
     if not POSTFORME_KEY or not req.social_account_ids:
-        return {"ok": True, "mode": "mock", "id": f"post_{uuid.uuid4().hex[:10]}"}
+        return {"ok": True, "mode": "mock", "id": f"post_{uuid.uuid4().hex[:10]}",
+                "posted": False, "reason": "no_key" if not POSTFORME_KEY else "no_accounts"}
     body: dict = {"caption": req.caption, "social_accounts": req.social_account_ids}
     if req.media_url.startswith("http"):
         body["media"] = [{"url": req.media_url}]
@@ -3740,9 +3743,12 @@ async def publish(req: PublishRequest):
     try:
         code, data = await _pfm_request("POST", "/social-posts", json_body=body)
     except httpx.HTTPError:
-        return {"ok": False, "mode": "live", "error": "network"}
-    return {"ok": 200 <= code < 300, "mode": "live", "id": data.get("id", ""),
+        return {"ok": False, "mode": "live", "error": "network",
+                "posted": False, "reason": "network"}
+    ok = 200 <= code < 300
+    return {"ok": ok, "mode": "live", "id": data.get("id", ""),
             "status": data.get("status", ""), "http": code,
+            "posted": ok, "reason": None if ok else "upstream",
             **({"error": data.get("message")} if code >= 300 else {})}
 
 
