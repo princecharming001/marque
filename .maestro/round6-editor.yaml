@@ -1,0 +1,35 @@
+appId: com.getmarque.app
+name: R6 editor — reorder button, placeholder playback, word strip
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- takeScreenshot: /tmp/r6-ed-01-open
+# placeholder playback: timeReadout should advance
+- tapOn: { id: "editorPro.playPause" }
+- takeScreenshot: /tmp/r6-ed-02-playing
+# select a clip → Move ▶ appears
+- tapOn: { id: "editorPro.clip.0" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.moveRight" }
+    timeout: 4000
+- tapOn: { id: "editorPro.moveRight" }
+- takeScreenshot: /tmp/r6-ed-03-reordered
+# word strip in Text mode
+- tapOn: { id: "editorPro.mode.text" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.wordStrip" }
+    timeout: 4000
+- tapOn: { id: "editorPro.word.0" }
+- extendedWaitUntil:
+    visible: "Edit caption"
+    timeout: 4000
+- takeScreenshot: /tmp/r6-ed-04-wordedit
