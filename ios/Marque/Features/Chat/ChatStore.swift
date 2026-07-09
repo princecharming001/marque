@@ -1,5 +1,7 @@
 import Foundation
 import Observation
+import SwiftUI
+import PhotosUI
 
 // Chat-tab session state. Conversations themselves live in AppStore (persisted);
 // this owns which thread is open, the in-flight request, and the reply chrome
@@ -53,6 +55,115 @@ final class ChatStore {
             } else {
                 await runConverse(convoId: convoId, store: store)
             }
+        }
+    }
+
+    // MARK: Send attached clips for editing (W5)
+
+    /// The user attached video(s) + (optionally) an instruction and wants them
+    /// edited. Appends the user turn + a live ClipEditCard, then runs the
+    /// stitch → upload → analyze → edit pipeline, updating the card in place.
+    func sendClips(_ items: [PhotosPickerItem], instruction raw: String, store: AppStore) {
+        guard !items.isEmpty, !isStreaming else { return }
+        let instruction = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        chips = []
+        typewriterMessageId = nil
+
+        let n = min(items.count, 4)
+        let firstLine = instruction.isEmpty ? "Edit my \(n) clip\(n == 1 ? "" : "s")" : instruction
+        let convoId = ensureConversation(in: store, firstMessage: firstLine)
+        let userText = instruction.isEmpty
+            ? "📎 Attached \(n) clip\(n == 1 ? "" : "s") to edit"
+            : "\(instruction)\n📎 \(n) clip\(n == 1 ? "" : "s") attached"
+        append(ChatMessage(role: .user, content: userText), to: convoId, in: store)
+
+        var card = ChatMessage(role: .assistant, content: "")
+        card.kind = .clipEdit
+        card.clipEdit = ClipEditState(stage: .stitching, clipCount: n)
+        append(card, to: convoId, in: store)
+        store.save()
+
+        isStreaming = true
+        streamingConversationId = convoId
+        let picked = Array(items.prefix(4))
+        inFlight = Task {
+            await runEditClips(items: picked, instruction: instruction,
+                               cardId: card.id, convoId: convoId, store: store)
+        }
+    }
+
+    private func updateCard(_ cardId: UUID, in convoId: UUID, store: AppStore,
+                            _ mutate: (inout ClipEditState) -> Void) {
+        guard let ci = store.conversations.firstIndex(where: { $0.id == convoId }),
+              let mi = store.conversations[ci].messages.firstIndex(where: { $0.id == cardId }),
+              var state = store.conversations[ci].messages[mi].clipEdit else { return }
+        mutate(&state)
+        store.conversations[ci].messages[mi].clipEdit = state
+        store.save()
+    }
+
+    private func runEditClips(items: [PhotosPickerItem], instruction: String,
+                              cardId: UUID, convoId: UUID, store: AppStore) async {
+        defer { isStreaming = false; streamingConversationId = nil }
+        func fail(_ why: String) {
+            updateCard(cardId, in: convoId, store: store) { $0.stage = .failed; $0.detail = why }
+        }
+
+        // 1) Import the picked videos into the app container.
+        let assets = await importPickedMedia(items).filter { $0.isVideo }
+        guard !assets.isEmpty else { return fail("Those didn't come through as videos.") }
+        guard !Task.isCancelled else { return }
+
+        // 2) Stitch multiple takes into one source (single take → use as-is).
+        var footagePath = assets[0].localPath
+        if assets.count > 1 {
+            let urls = assets.map { MediaStore.url(for: $0.localPath) }
+            if let stitched = await VideoStitcher.stitch(urls),
+               let data = try? Data(contentsOf: stitched) {
+                footagePath = MediaStore.save(data, ext: "mov")
+            }   // stitch failure → fall back to the first clip rather than stranding the turn
+        }
+        guard !Task.isCancelled else { return }
+
+        // 3) Upload the source.
+        updateCard(cardId, in: convoId, store: store) { $0.stage = .uploading }
+        guard let sourceURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath) else {
+            return fail("Couldn't upload your clips — check your connection and try again.")
+        }
+        guard !Task.isCancelled else { return }
+
+        // 4) A minimal script carries the user's instruction into the edit.
+        let style = store.brand.preferredStyles.first ?? .talkingHead
+        let script = Script(
+            pillarName: "Your clips", title: instruction.isEmpty ? "Your edit" : String(instruction.prefix(40)),
+            summary: "Edited from your footage", style: style.rawValue,
+            formatId: style.formats.first ?? "myth-buster",
+            hook: Hook(text: instruction.isEmpty ? "Your clips" : instruction, signal: .narrative, strength: 70),
+            altHooks: [], body: instruction, cta: "",
+            shotPlan: [], targetSeconds: 30, predictedScore: 70)
+
+        // 5) Analyze → brief.
+        updateCard(cardId, in: convoId, store: store) { $0.stage = .analyzing }
+        guard let job = await store.backend.createAnalyzeJob(
+                sourceURL: sourceURL, script: script, customInstructions: instruction),
+              !job.jobId.isEmpty else {
+            return fail("Couldn't start the edit — try again in a moment.")
+        }
+        let brief = await store.pollForBrief(jobId: job.jobId)
+        guard !Task.isCancelled else { return }
+        if brief?.status == "failed" { return fail("The edit couldn't be planned from that footage.") }
+
+        // 6) Confirm → render (confirmClips inserts the tracked clip + polls + streak).
+        updateCard(cardId, in: convoId, store: store) { $0.stage = .editing }
+        let toggles = brief?.toggles ?? job.toggles ?? EditToggles()
+        let before = Set(store.clips.map { $0.id })
+        await store.confirmClips(jobId: job.jobId, script: script, toggles: toggles,
+                                 customInstructions: instruction, footagePath: footagePath)
+        guard !Task.isCancelled else { return }
+        let newClipId = store.clips.first(where: { !before.contains($0.id) })?.id
+        updateCard(cardId, in: convoId, store: store) {
+            $0.stage = .ready
+            $0.resultClipId = newClipId
         }
     }
 

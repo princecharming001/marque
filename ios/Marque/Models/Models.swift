@@ -461,7 +461,18 @@ enum ChatRole: String, Codable { case user, assistant }
 
 /// Rich message kinds: plain text, or a card payload attached by an intent.
 enum ChatMessageKind: String, Codable {
-    case text, scriptCard, videoAnalysis, dayPlan
+    case text, scriptCard, videoAnalysis, dayPlan, clipEdit
+}
+
+/// W5: progress state for a "edit my clips" chat turn — the user attached
+/// video(s) + an instruction and we run stitch → upload → analyze → edit → ready.
+/// Persisted with the message so a relaunch mid-edit shows the last known stage.
+struct ClipEditState: Codable, Hashable {
+    enum Stage: String, Codable { case stitching, uploading, analyzing, editing, ready, failed }
+    var stage: Stage = .stitching
+    var clipCount: Int = 1
+    var resultClipId: UUID? = nil           // set when stage == .ready
+    var detail: String = ""                 // honest failure reason when stage == .failed
 }
 
 struct ChatMessage: Codable, Hashable, Identifiable {
@@ -472,6 +483,7 @@ struct ChatMessage: Codable, Hashable, Identifiable {
     var scripts: [Script]? = nil            // kind == .scriptCard
     var analysis: VideoAnalysis? = nil      // kind == .videoAnalysis
     var plan: DayPlan? = nil                // kind == .dayPlan
+    var clipEdit: ClipEditState? = nil      // kind == .clipEdit
     var createdAt: Date = Date()
 }
 

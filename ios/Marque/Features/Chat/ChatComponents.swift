@@ -85,6 +85,7 @@ struct ChatAssistantMessage: View {
         message.plan != nil
             || (message.scripts?.isEmpty == false)
             || message.analysis != nil
+            || message.clipEdit != nil
     }
 
     @ViewBuilder private var cards: some View {
@@ -94,6 +95,7 @@ struct ChatAssistantMessage: View {
                 ForEach(scripts) { ChatScriptCard(script: $0) }
             }
             if let analysis = message.analysis { ChatVideoAnalysisCard(analysis: analysis) }
+            if let edit = message.clipEdit { ClipEditCard(state: edit) }
         }
     }
 
@@ -220,6 +222,91 @@ struct ChatScriptCardContent: View {
             }
             .padding(.top, 2)
         }
+    }
+}
+
+// MARK: - Clip-edit progress card (W5)
+
+struct ClipEditCard: View {
+    let state: ClipEditState
+    @Environment(AppRouter.self) private var router
+
+    private var isTerminal: Bool { state.stage == .ready || state.stage == .failed }
+
+    private var stageLabel: String {
+        switch state.stage {
+        case .stitching:  return state.clipCount > 1 ? "Stitching your clips…" : "Preparing your clip…"
+        case .uploading:  return "Uploading your footage…"
+        case .analyzing:  return "Reading the footage…"
+        case .editing:    return "Cutting your edit…"
+        case .ready:      return "Your edit is ready"
+        case .failed:     return "Couldn't finish this edit"
+        }
+    }
+
+    // The ordered pipeline for the little step tracker.
+    private static let steps: [ClipEditState.Stage] = [.stitching, .uploading, .analyzing, .editing]
+    private func stepDone(_ s: ClipEditState.Stage) -> Bool {
+        if state.stage == .ready { return true }
+        if state.stage == .failed { return false }
+        let order: [ClipEditState.Stage] = Self.steps
+        guard let cur = order.firstIndex(of: state.stage), let idx = order.firstIndex(of: s) else { return false }
+        return idx < cur
+    }
+    private func stepActive(_ s: ClipEditState.Stage) -> Bool { state.stage == s }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(spacing: Space.sm) {
+                if !isTerminal { ProgressView().controlSize(.small).tint(Palette.accent) }
+                else {
+                    Image(systemName: state.stage == .ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        .foregroundStyle(state.stage == .ready ? Palette.accent : Palette.textTertiary)
+                }
+                Text(stageLabel).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+            }
+
+            if !isTerminal {
+                HStack(spacing: 6) {
+                    ForEach(Self.steps, id: \.self) { s in
+                        Capsule()
+                            .fill(stepDone(s) || stepActive(s) ? Palette.accent : Palette.hairline)
+                            .frame(height: 3)
+                            .opacity(stepActive(s) ? 0.7 : 1)
+                    }
+                }
+            }
+
+            if state.stage == .failed, !state.detail.isEmpty {
+                Text(state.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if state.stage == .ready {
+                Button {
+                    router.selectedTab = .library
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo.stack")
+                        Text("View in Library").font(AppFont.callout.weight(.semibold))
+                    }
+                    .foregroundStyle(Palette.textPrimary)
+                    .padding(.horizontal, 14).frame(height: 40)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(PressableStyle(dim: 0.7))
+                .accessibilityIdentifier("chat.clipEdit.viewInLibrary")
+            }
+        }
+        .padding(Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .accessibilityIdentifier("chat.clipEdit.card")
     }
 }
 

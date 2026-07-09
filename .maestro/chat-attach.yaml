@@ -1,0 +1,26 @@
+appId: com.getmarque.app
+name: W5 — chat "Edit my clips" attach entry
+# The full stitch→upload→analyze→edit pipeline is covered by backend tests +
+# the analyze-first flow; this proves the chat entry point is wired: the attach
+# menu offers "Edit my clips" and it opens the system video picker.
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Chat"
+- extendedWaitUntil:
+    visible:
+      id: "chat.composer"
+    timeout: 8000
+- tapOn:
+    id: "chat.attach"
+- extendedWaitUntil:
+    visible: "Edit my clips"
+    timeout: 4000
+- takeScreenshot: /tmp/r5-chat-attach
+- tapOn: "Edit my clips"
+- takeScreenshot: /tmp/r5-chat-picker

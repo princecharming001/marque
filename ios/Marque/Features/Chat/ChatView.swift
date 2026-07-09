@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 
 // Chat tab — the maxapp chat-alpha port: custom header over a hairline, gray user
 // bubbles vs full-width assistant text with a typewriter reveal, intent cards
@@ -12,6 +13,8 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var showDrawer = false
     @State private var showAttach = false
+    @State private var showClipPicker = false        // W5: PhotosPicker for "edit my clips"
+    @State private var pickedClips: [PhotosPickerItem] = []
     @FocusState private var composerFocused: Bool
 
     private static let bottomAnchor = "chat.bottomAnchor"
@@ -55,8 +58,20 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         .confirmationDialog("Add to chat", isPresented: $showAttach, titleVisibility: .hidden) {
+            Button("Edit my clips") { showClipPicker = true }
             Button("Paste video link") { pasteVideoLink() }
             Button("Cancel", role: .cancel) {}
+        }
+        // W5: attach up to 4 videos → edit them from chat with the current draft as
+        // the instruction. Selection completing kicks off the edit pipeline.
+        .photosPicker(isPresented: $showClipPicker, selection: $pickedClips,
+                      maxSelectionCount: 4, matching: .videos)
+        .onChange(of: pickedClips) { _, items in
+            guard !items.isEmpty else { return }
+            let instruction = trimmedDraft
+            draft = ""
+            chat.sendClips(items, instruction: instruction, store: store)
+            pickedClips = []
         }
         .onChange(of: draft) { _, newValue in
             if !newValue.isEmpty { chat.chips = [] }   // chips dismiss when the user types
