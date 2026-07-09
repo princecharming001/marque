@@ -412,6 +412,24 @@ def test_get_clip_job_not_found():
     assert r.status_code == 404
 
 
+def test_demo_editor_job_synthesized_keyless():
+    """E-12: a `demo-` job id is synthesized keyless with a 3-segment EDL so the
+    manual editor is drivable in the sim without running the record→makeClips
+    flow. A non-demo unknown id still 404s (test_get_clip_job_not_found)."""
+    r = client.get("/v1/clips/demo-clip-job?include_words=1")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["mode"] == "mock"
+    edl = b["edl"]
+    assert edl is not None
+    assert len(edl["segments"]) == 3          # sim-drivable reorder needs ≥2
+    assert b["source_url"] is None            # keyless ⇒ placeholder player
+    assert len(b["words"]) > 0                # word editor has content
+    # idempotent: polling again returns the same job, still 3 segments
+    r2 = client.get("/v1/clips/demo-clip-job")
+    assert r2.status_code == 200 and len(r2.json()["edl"]["segments"]) == 3
+
+
 def test_media_analyze():
     r = client.post("/v1/media/analyze", json={
         "content_hash": "abc123", "filename": "test.jpg", "kind": "photo", "public_url": ""

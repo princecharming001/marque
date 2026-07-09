@@ -1769,7 +1769,13 @@ async def get_clip_job(job_id: str, include_words: int = 0):
     _sweep_ttl_jobs(_clip_jobs)
     _sweep_stuck_renders(_clip_jobs)
     if job_id not in _clip_jobs and not await _restore_clip_job(job_id):
-        _raise_job_not_found(job_id)
+        # Keyless dev/sim affordance: a `demo-`/`sim-` prefixed id synthesizes a
+        # 3-segment mock job so the manual editor is drivable without the record
+        # flow. Real unknown ids still 404 (test_get_clip_job_not_found).
+        if not ANTHROPIC_KEY and job_id.startswith(("demo-", "sim-")):
+            _synthesize_demo_clip_job(job_id)
+        else:
+            _raise_job_not_found(job_id)
     job = _clip_jobs[job_id]
     out = {
         "mode": "mock" if job["status"] == "mock_ready" else "live",
@@ -2262,6 +2268,45 @@ def _mock_edl(style: str, script: dict) -> dict:
                                 "panel_boundaries": [240, 480] if style == "split_three" else []},
         "audio": {"lufs_target": -14.0},
     }
+
+
+def _demo_editor_edl(style: str, script: dict) -> dict:
+    """A 3-segment mock EDL used ONLY to make the manual editor sim-drivable
+    (reorder needs ≥2 segments). Kept separate from _mock_edl so the create/
+    confirm flow's single-segment contract — which many tests assert on — is
+    untouched. Three ~8s segments across a 720-frame (24s @30fps) source."""
+    hook = (script.get("hook") or "Great hook here").split()[:9]
+    return {
+        "style": style, "format_id": script.get("formatId", "myth-buster"),
+        "segments": [{"src_in": 0, "src_out": 240},
+                     {"src_in": 240, "src_out": 480},
+                     {"src_in": 480, "src_out": 720}],
+        "drops": [{"src_in": 300, "src_out": 312, "reason": "filler"}],
+        "captions": [{"word": w, "frame": i * 22} for i, w in enumerate(hook)],
+        "overlays": [{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}],
+        "broll": [], "layout": {"style": style, "panels": 1, "panel_boundaries": []},
+        "audio": {"lufs_target": -14.0},
+    }
+
+
+def _synthesize_demo_clip_job(job_id: str) -> dict:
+    """Keyless-only: build an in-memory mock_ready clip job for a `demo-`/`sim-`
+    prefixed job id so the editor loads without the full record flow. No source
+    video (placeholder player). Deterministic — safe to call repeatedly."""
+    script = {"hook": "Stop overthinking your content.",
+              "body": "Here is the one system that actually works. Pick one idea, "
+                      "film it in a single take, and ship it. Follow for more.",
+              "cta": "Follow for more", "formatId": "myth-buster"}
+    style = "talking_head"
+    job = {
+        "status": "mock_ready", "style": style, "script": script,
+        "source_url": None, "clips": [{"clip_id": f"{job_id}-c0", "format": "myth-buster"}],
+        "edl": _apply_edit_prefs(_demo_editor_edl(style, script), {}),
+        "words": _mock_words(script), "edl_history": [], "tweaks": [],
+        "created_at": time.time(),
+    }
+    _clip_jobs[job_id] = job
+    return job
 
 
 def _mock_words(script: dict) -> list[dict]:
