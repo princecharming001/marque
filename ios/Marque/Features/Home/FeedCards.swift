@@ -244,30 +244,78 @@ struct TrendTicker: View {
 
 // MARK: Skeletons (initial load)
 
-/// Pulsing placeholder for a script pick card.
-struct FeedSkeletonCard: View {
-    @State private var dim = false
+// MARK: - Skeleton loading placeholders
+
+/// A single shimmering placeholder block. The base is deliberately a touch darker
+/// than the Home canvas (which is near-identical to `surfaceSunken`) so the shape
+/// is legible, and a highlight band sweeps across so it clearly reads as *loading*
+/// rather than empty/broken.
+struct SkeletonBlock: View {
+    var cornerRadius: CGFloat = Radius.sm
+    @State private var travel = false
+
+    private static let base = Color(hex: 0xE6E5E2)       // darker than canvas 0xF1F1EF → visible
+    private static let highlight = Color(hex: 0xF7F7F5)
+
     var body: some View {
-        RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .fill(Palette.surfaceSunken)
-            .frame(width: 260, height: 190)
-            .opacity(dim ? 0.55 : 1)
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        shape
+            .fill(Self.base)
+            .overlay(
+                GeometryReader { geo in
+                    let w = geo.size.width
+                    LinearGradient(
+                        colors: [.clear, Self.highlight.opacity(0.9), .clear],
+                        startPoint: .leading, endPoint: .trailing)
+                        .frame(width: w * 0.6)
+                        // sweep from just off the left edge to just off the right edge
+                        .offset(x: travel ? w * 1.1 : -w * 0.7)
+                }
+            )
+            .clipShape(shape)
             .onAppear {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
+                withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) {
+                    travel = true
+                }
             }
     }
 }
 
-/// Pulsing 9:16 placeholder for a reel grid cell.
-struct ReelSkeletonCard: View {
-    @State private var dim = false
+/// Shimmering placeholder for a script pick card — mirrors ScriptFeedCard's shape
+/// (title lines, hook block, a CTA pill) so the load reads as "a card is coming".
+struct FeedSkeletonCard: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .fill(Palette.surfaceSunken)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SkeletonBlock(cornerRadius: Radius.sm).frame(width: 70, height: 12)   // pillar tag
+            SkeletonBlock(cornerRadius: Radius.sm).frame(height: 16)              // title line 1
+            SkeletonBlock(cornerRadius: Radius.sm).frame(width: 150, height: 16)  // title line 2
+            Spacer(minLength: 0)
+            SkeletonBlock(cornerRadius: Radius.sm).frame(height: 13)              // hook line
+            SkeletonBlock(cornerRadius: Radius.sm).frame(width: 120, height: 13)
+            Spacer(minLength: 0)
+            SkeletonBlock(cornerRadius: Radius.pill).frame(width: 96, height: 30) // CTA pill
+        }
+        .padding(Space.lg)
+        .frame(width: 260, height: 190, alignment: .topLeading)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+}
+
+/// Shimmering 9:16 placeholder for a reel grid cell, with a caption bar so it
+/// reads as a reel thumbnail loading.
+struct ReelSkeletonCard: View {
+    var body: some View {
+        SkeletonBlock(cornerRadius: Radius.lg)
             .aspectRatio(9.0 / 16.0, contentMode: .fit)
-            .opacity(dim ? 0.55 : 1)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { dim = true }
+            .overlay(alignment: .bottomLeading) {
+                VStack(alignment: .leading, spacing: 6) {
+                    SkeletonBlock(cornerRadius: Radius.sm).frame(width: 90, height: 10)
+                    SkeletonBlock(cornerRadius: Radius.sm).frame(width: 60, height: 10)
+                }
+                .padding(Space.md)
             }
     }
 }

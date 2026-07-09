@@ -1,0 +1,15 @@
+appId: com.getmarque.app
+name: Capture Home loading skeletons (hanging backend keeps isLoading true)
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://10.255.255.1:8000"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "home.voiceBubble"
+    timeout: 8000
+- takeScreenshot: /tmp/r5-skeleton-home
