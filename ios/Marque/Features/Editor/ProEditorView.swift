@@ -22,6 +22,8 @@ struct ProEditorView: View {
     @State var caps: [String: Bool]? = nil
     @State var mode: Mode = .edit
     @State var selectedSeg: Int? = nil          // index into segments (source index)
+    @State var selectedOverlay: Int? = nil      // index into draft.overlays (chip lane)
+    @State var editingOverlayIndex: Int? = nil  // text-card text edit in flight
     @State var pointsPerSecond: CGFloat = 18
     @State var applyTask: Task<Void, Never>?
     @State var renderStartedAt: Date?
@@ -136,10 +138,10 @@ struct ProEditorView: View {
         }
         ToolbarItemGroup(placement: .principal) {
             if phase == .editing, let session {
-                // UX-8: undo/redo can change segment indices — clear a stale selection.
-                Button { session.undo(); selectedSeg = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.backward") }
+                // UX-8: undo/redo can change segment/overlay indices — clear stale selections.
+                Button { session.undo(); selectedSeg = nil; selectedOverlay = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.backward") }
                     .tint(.white).disabled(!session.canUndo).accessibilityIdentifier("editorPro.undo")
-                Button { session.redo(); selectedSeg = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.forward") }
+                Button { session.redo(); selectedSeg = nil; selectedOverlay = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.forward") }
                     .tint(.white).disabled(!session.canRedo).accessibilityIdentifier("editorPro.redo")
             }
         }
@@ -251,6 +253,7 @@ struct ProEditorView: View {
                         .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.white.opacity(0.3)))
                 }
                 captionSimOverlay
+                textCardSimOverlay
             }
             .scaleEffect(currentPunchScale)
             .animation(.easeInOut(duration: 0.25), value: currentPunchScale)
@@ -303,6 +306,26 @@ struct ProEditorView: View {
         guard let d = session?.draft else { return 1.0 }
         let f = playheadSourceFrame
         return d.overlays.first { $0.type == "punch_in" && $0.srcIn <= f && f < $0.srcOut }?.scale ?? 1.0
+    }
+
+    /// L1 sim of a text card: a centered slab over a dim layer while the playhead is inside
+    /// its window — so the card is visible before the server render.
+    @ViewBuilder private var textCardSimOverlay: some View {
+        if let d = session?.draft {
+            let f = playheadSourceFrame
+            if let card = d.overlays.first(where: { $0.type == "text_card" && $0.srcIn <= f && f < $0.srcOut }),
+               !card.text.isEmpty {
+                ZStack {
+                    Color.black.opacity(0.35)
+                    Text(card.text)
+                        .font(.system(size: 22, weight: .heavy))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, Space.xl)
+                        .shadow(radius: 6)
+                }
+            }
+        }
     }
 
     private func currentCaptionWord(_ d: EditorDocument) -> String? {
@@ -364,16 +387,38 @@ struct ProEditorView: View {
             filmstrip: filmstrip,
             pointsPerSecond: $pointsPerSecond,
             selectedSeg: $selectedSeg,
+            selectedOverlay: $selectedOverlay,
             onTrim: { segIdx, edge, newFrame in trim(segIdx: segIdx, edge: edge, to: newFrame) },
             onReorder: { order in reorder(order) }
         )
-        .frame(height: 132)
+        .frame(height: 152)
         .background(Palette.ink.opacity(0.6))
     }
 
     // MARK: context strip (selection actions)
 
     @ViewBuilder private var contextStrip: some View {
+        if let ov = selectedOverlay, let overlay = session?.draft.overlays[safe: ov] {
+            // Overlay selected (chip lane): the strip swaps to overlay ops.
+            HStack(spacing: Space.lg) {
+                contextButton("Delete", "trash") { deleteOverlay(ov); bumpHaptic() }
+                    .accessibilityIdentifier("editorPro.ctx.deleteOverlay")
+                if overlay.type == "text_card" {
+                    contextButton("Edit text", "pencil") { beginOverlayTextEdit(ov); bumpHaptic() }
+                        .accessibilityIdentifier("editorPro.ctx.editOverlayText")
+                }
+                Spacer()
+                Text(overlay.type == "punch_in" ? "Zoom ×\(String(format: "%.2f", overlay.scale))" : "Text card")
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
+            }
+            .frame(height: 44).padding(.horizontal, Space.md)
+            .background(Palette.ink.opacity(0.4))
+        } else {
+            segContextStrip
+        }
+    }
+
+    @ViewBuilder private var segContextStrip: some View {
         // Tools are ALWAYS visible (CapCut pattern) — disabled until a clip is selected, so
         // the creator discovers what's possible instead of staring at a hint sentence.
         let seg = selectedSeg
@@ -438,6 +483,12 @@ struct ProEditorView: View {
             TextField("Word", text: $editDraft)
             Button("Save") { commitCaptionEdit() }
             Button("Cancel", role: .cancel) { editingCaptionFrame = nil }
+        }
+        .alert("Edit text card", isPresented: Binding(get: { editingOverlayIndex != nil },
+                                                      set: { if !$0 { editingOverlayIndex = nil } })) {
+            TextField("Text", text: $editDraft)
+            Button("Save") { commitOverlayTextEdit() }
+            Button("Cancel", role: .cancel) { editingOverlayIndex = nil }
         }
     }
 

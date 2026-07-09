@@ -198,6 +198,30 @@ extension ProEditorView {
         mutate([.addBroll(a, b, query: query)], rejectMsg: "B-roll isn't supported for this style.")
     }
 
+    // MARK: Overlay chip-lane actions
+
+    /// Delete exactly this overlay (remove_overlays scoped to its kind + exact frames —
+    /// an overlapping sibling of the same kind at the same span would go too; acceptable).
+    func deleteOverlay(_ idx: Int) {
+        guard let o = session?.draft.overlays[safe: idx] else { return }
+        mutate([.removeOverlay(kind: o.type, o.srcIn, o.srcOut)])
+        selectedOverlay = nil
+    }
+
+    func beginOverlayTextEdit(_ idx: Int) {
+        guard let o = session?.draft.overlays[safe: idx], o.type == "text_card" else { return }
+        editDraft = o.text
+        editingOverlayIndex = idx
+    }
+
+    func commitOverlayTextEdit() {
+        if let idx = editingOverlayIndex {
+            let t = editDraft.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { mutate([.editOverlayText(index: idx, text: t)]) }
+        }
+        editingOverlayIndex = nil
+    }
+
     // MARK: Save (flatten op log → one tweak POST → per-clip poll → reload)
 
     func save() {

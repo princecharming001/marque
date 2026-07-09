@@ -11,6 +11,7 @@ struct EditorTimeline: View {
     let filmstrip: FilmstripCache?
     @Binding var pointsPerSecond: CGFloat
     @Binding var selectedSeg: Int?
+    @Binding var selectedOverlay: Int?     // chip-lane selection (mutually exclusive with selectedSeg)
     let onTrim: (Int, TrimEdge, Int) -> Void
     let onReorder: ([Int]) -> Void
 
@@ -50,6 +51,7 @@ struct EditorTimeline: View {
                             clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut)
                         }
                     }
+                    if !document.overlays.isEmpty { overlayLane }   // punch-ins/text cards as objects
                 }
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
                 .offset(x: -playheadOffset)    // content scrolls under the fixed playhead
@@ -65,7 +67,11 @@ struct EditorTimeline: View {
             .onTapGesture(count: 2) { withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 } }
             // UX-8: tapping empty timeline space clears the selection (clip cells' own
             // tap gestures win when a clip is hit).
-            .onTapGesture { if selectedSeg != nil { withAnimation(.easeOut(duration: 0.15)) { selectedSeg = nil } } }
+            .onTapGesture {
+                if selectedSeg != nil || selectedOverlay != nil {
+                    withAnimation(.easeOut(duration: 0.15)) { selectedSeg = nil; selectedOverlay = nil }
+                }
+            }
             .sensoryFeedback(.selection, trigger: snapTick)
         }
     }
@@ -139,12 +145,64 @@ struct EditorTimeline: View {
         }
         .overlay(alignment: .leading) { if selected { trimHandle(.leading, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .overlay(alignment: .trailing) { if selected { trimHandle(.trailing, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
-        .onTapGesture { withAnimation(.easeOut(duration: 0.15)) { selectedSeg = (selectedSeg == segIdx) ? nil : segIdx } }
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.15)) {
+                selectedOverlay = nil
+                selectedSeg = (selectedSeg == segIdx) ? nil : segIdx
+            }
+        }
         .accessibilityIdentifier("editorPro.clip.\(pos)")
     }
 
     private var edgeAlignment: Alignment {
         (trimPreview?.edge == .leading) ? .topLeading : .topTrailing
+    }
+
+    // MARK: Overlay chip lane — punch-ins/text cards become visible, tappable objects.
+    // Chips sit at their OUTPUT-time position (mapped through kept intervals) so they stay
+    // glued to the footage they decorate through cuts and reorders; fully-dropped footage
+    // hides its chips.
+    private var overlayLane: some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear
+                .frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 20)
+            ForEach(Array(document.overlays.enumerated()), id: \.offset) { idx, o in
+                if let span = document.outputSpan(srcIn: o.srcIn, srcOut: o.srcOut) {
+                    overlayChip(idx: idx, overlay: o, span: span)
+                }
+            }
+        }
+        .frame(height: 20, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func overlayChip(idx: Int, overlay o: EditorOverlay, span: (start: Double, end: Double)) -> some View {
+        let w = max(26, CGFloat(span.end - span.start) * pointsPerSecond)
+        let selected = selectedOverlay == idx
+        return HStack(spacing: 3) {
+            Image(systemName: o.type == "punch_in" ? "plus.magnifyingglass" : "textformat")
+                .font(.system(size: 9, weight: .semibold))
+            if o.type == "text_card", w > 54 {
+                Text(String(o.text.prefix(8))).font(.system(size: 9, weight: .semibold)).lineLimit(1)
+            }
+        }
+        .foregroundStyle(selected ? Palette.night : (o.type == "punch_in" ? Palette.accent : .white))
+        .frame(width: w, height: 16)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(selected ? Palette.accent
+                               : (o.type == "punch_in" ? Palette.accent.opacity(0.22) : Color.white.opacity(0.16)))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 4)
+            .strokeBorder(selected ? Palette.accent : Color.white.opacity(0.2), lineWidth: selected ? 1.5 : 0.5))
+        .offset(x: CGFloat(span.start) * pointsPerSecond, y: 2)
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.15)) {
+                selectedSeg = nil
+                selectedOverlay = (selectedOverlay == idx) ? nil : idx
+            }
+        }
+        .accessibilityIdentifier("editorPro.overlay.\(idx)")
     }
 
     private func trimHandle(_ edge: TrimEdge, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {

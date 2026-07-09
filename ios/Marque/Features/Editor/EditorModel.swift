@@ -141,4 +141,29 @@ struct EditorDocument: Equatable {
         }
         return framesToSeconds(keptIntervals.last?.srcOut ?? 0)
     }
+
+    /// The first visible OUTPUT-time span (seconds) of a source range, clipped to the kept
+    /// intervals in play order — where an overlay's chip sits on the timeline. Contiguous
+    /// pieces merge; a discontiguous tail (a cut through the overlay's middle) is dropped in
+    /// favor of the first piece. nil when the range's footage is fully dropped.
+    func outputSpan(srcIn: Int, srcOut: Int) -> (start: Double, end: Double)? {
+        var acc = 0
+        var found: (Int, Int)? = nil
+        for iv in keptIntervals {
+            let a = max(iv.srcIn, srcIn), b = min(iv.srcOut, srcOut)
+            if b > a {
+                let start = acc + (a - iv.srcIn)
+                let end = start + (b - a)
+                if let f = found {
+                    if f.1 == start { found = (f.0, end) }   // contiguous in output — merge
+                    else { break }                            // discontiguous — first span wins
+                } else {
+                    found = (start, end)
+                }
+            }
+            acc += iv.srcOut - iv.srcIn
+        }
+        guard let f = found else { return nil }
+        return (framesToSeconds(f.0), framesToSeconds(f.1))
+    }
 }
