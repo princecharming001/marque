@@ -856,6 +856,16 @@ def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
         lines.append(f"- camera comfort: {comfort}" + (f" → {hint}" if hint else ""))
     if brand.get('weekly_target'):
         lines.append(f"- weekly post target: {brand['weekly_target']} posts (plan batch scripts to hit this)")
+    if brand.get('why_now'):
+        why_map = {
+            'serious': 'they just committed to taking content seriously — reward momentum, build identity',
+            'launch': 'they are launching something — tie scripts to their offer and urgency',
+            'inspired': 'they watched peers win and want their turn — lean into proof-it-works angles',
+            'income': 'they want content to become income — bias toward authority + monetizable topics',
+        }
+        why = brand['why_now']
+        hint = why_map.get(why, '')
+        lines.append(f"- why they started now: {why}" + (f" → {hint}" if hint else ""))
     return "\n".join(lines) + _post_lines(posts)
 
 

@@ -722,6 +722,17 @@ class Brand(BaseModel):
     voice: dict = {}
     non_negotiables: list[str] = []
     catchphrases: list[str] = []      # verbatim signature phrases (from brand-scan)
+    # Quiz context the prompts read via brand_block(). These MUST be declared:
+    # pydantic's default extra='ignore' silently dropped them for months, so the
+    # blocker/comfort/pace strategy hints never fired (same failure class as the
+    # EDL loose-key gotcha).
+    primary_platform: str = ""
+    stage: str = ""
+    posting_frequency: str = ""
+    biggest_blocker: str = ""
+    camera_comfort: str = ""
+    weekly_target: int = 0
+    why_now: str = ""                 # the creator's stated trigger for starting now
     # Creators whose style this creator wants scripts to channel — presets resolve
     # instantly (PRESET_EMULATION); custom links resolve from cache/Supabase/scrape.
     emulation_targets: list[dict] = []

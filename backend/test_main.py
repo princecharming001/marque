@@ -3875,3 +3875,31 @@ def test_digest_degrades_on_llm_failure(monkeypatch):
     job = main._digest_jobs["d_deg"]
     assert job["status"] == "ready"                     # degraded, NOT failed
     assert job["result"]["scan"]                        # mock-derived brand present
+
+
+# ---------------------------------------------------------------------------
+# Quiz-context fields must survive Brand validation. Pydantic's default
+# extra='ignore' silently dropped biggest_blocker / camera_comfort / stage /
+# posting_frequency / weekly_target / primary_platform / why_now for months,
+# so brand_block()'s strategy hints never fired in production.
+# ---------------------------------------------------------------------------
+
+def test_brand_keeps_quiz_context_fields():
+    b = main.Brand.model_validate({
+        "niche": "fitness",
+        "primary_platform": "instagram",
+        "stage": "1K–10K followers",
+        "posting_frequency": "2–3x a week",
+        "biggest_blocker": "ideas",
+        "camera_comfort": "prefer_off",
+        "weekly_target": 5,
+        "why_now": "launch",
+    }).d()
+    block = prompts.brand_block(b)
+    assert "generate hooks and topics generously" in block      # blocker hint fires
+    assert "faceless voiceover and fast-cuts preferred" in block  # comfort hint fires
+    assert "weekly post target: 5" in block
+    assert "2–3x a week" in block
+    assert "instagram" in block
+    assert "1K–10K followers" in block
+    assert "tie scripts to their offer" in block                # why_now hint fires

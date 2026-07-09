@@ -5,27 +5,15 @@ appId: com.getmarque.app
     permissions:
       all: allow
 
+# Connect now sits right after the method interstitial (before identity) so the
+# brand-scan can prefill the freeform steps.
 - assertVisible: "Get started"
 - tapOn: { id: onboard.start }
 - tapOn: { id: onboard.goal.audience }
 - tapOn: { id: onboard.blocker.time }
+- tapOn: { id: onboard.whyNow.serious }
 - tapOn: { id: onboard.frequency.sometimes }
 - tapOn: { id: onboard.continue }
-- tapOn: { id: onboard.creatorName }
-- inputText: "Alex"
-- tapOn: { id: onboard.nameContinue }
-- tapOn: { id: onboard.niche }
-- inputText: "Fitness"
-- tapOn: { id: onboard.nicheContinue }
-- tapOn: { id: onboard.whatYouDo }
-- inputText: "I coach"
-- tapOn: { id: onboard.audience }
-- inputText: "pros"
-- tapOn: { id: onboard.aboutContinue }
-- tapOn: { id: onboard.knownFor }
-- inputText: "fitness"
-- tapOn: { id: onboard.knownForContinue }
-- tapOn: { id: onboard.platform.instagram }
 - assertVisible: "Connect your accounts"
 - takeScreenshot: /Users/home/Marque/.shots/connect-new.png
 - tapOn: { id: connect.instagram }

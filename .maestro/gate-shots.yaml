@@ -14,6 +14,11 @@ name: Marque — gate screenshots (paywall→auth order QA)
 - tapOn:
     id: "onboard.blocker.time"
 - extendedWaitUntil:
+    visible: "Why now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.whyNow.serious"
+- extendedWaitUntil:
     visible: "How often do you post right now?"
     timeout: 4000
 - tapOn:
@@ -23,11 +28,21 @@ name: Marque — gate screenshots (paywall→auth order QA)
     timeout: 4000
 - tapOn:
     id: "onboard.continue"
+- extendedWaitUntil:
+    visible: "Connect your accounts"
+    timeout: 4000
+- tapOn:
+    id: "onboard.connect.skip"
 - tapOn:
     id: "onboard.creatorName"
 - inputText: "Alex"
 - tapOn:
     id: "onboard.nameContinue"
+- extendedWaitUntil:
+    visible: "Where are you today?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.stage.micro"
 - tapOn:
     id: "onboard.niche"
 - inputText: "Fitness coaching"
@@ -45,11 +60,6 @@ name: Marque — gate screenshots (paywall→auth order QA)
     id: "onboard.knownForSkip"
 - tapOn:
     id: "onboard.platform.instagram"
-- extendedWaitUntil:
-    visible: "Connect your accounts"
-    timeout: 4000
-- tapOn:
-    id: "onboard.connect.skip"
 - extendedWaitUntil:
     visible: "A few quick questions"
     timeout: 4000

@@ -110,6 +110,23 @@ final class AppStore {
         brand.connectedAccounts.removeAll { $0.platform == a.platform && $0.handle.lowercased() == a.handle.lowercased() }
         brand.connectedAccounts.append(a)
         if brand.pageHandle.isEmpty { brand.pageHandle = a.handle }
+        // Everything a real linked account already tells us, the quiz should never
+        // ask for: prefill name, derive the follower stage, and set the platform
+        // (two platforms connected → "both", i.e. nil primary).
+        if (brand.creatorName ?? "").isEmpty, !a.displayName.isEmpty {
+            brand.creatorName = a.displayName
+        }
+        if brand.stage == nil, a.followers > 0 {
+            brand.stage = .from(followers: a.followers)
+        }
+        if !hasOnboarded {
+            // Only during onboarding — the quiz auto-skips its platform step when
+            // accounts are linked. Post-onboarding, connecting a second account
+            // must not clobber an explicitly chosen primary platform.
+            let platforms = Set(brand.connectedAccounts.map(\.platform))
+            brand.primaryPlatform = platforms.count == 1
+                ? SocialPlatform(rawValue: platforms.first ?? "") : nil
+        }
         save()
     }
     func removeConnectedAccount(_ a: ConnectedAccount) {
@@ -186,6 +203,7 @@ final class AppStore {
                     pillars = result.pillars
                     brand.topThemes = result.topThemes
                     if let v = result.voiceUpdate { brand.voice = v }
+                    applyScanIdentity(result)
                     save()
                     return
                 }
@@ -203,6 +221,22 @@ final class AppStore {
         save()
     }
 
+    /// Prefill identity the scan derived from real posts — fill-only-if-empty, so a
+    /// user's own words are never clobbered by a guess. During onboarding this turns
+    /// the freeform identity steps into confirm-not-type.
+    private func applyScanIdentity(_ result: BackendClient.BrandScanResult) {
+        func fill(_ path: WritableKeyPath<BrandGraph, String>, _ guess: String) {
+            let g = guess.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !g.isEmpty,
+                  brand[keyPath: path].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return }
+            brand[keyPath: path] = g
+        }
+        fill(\.niche, result.nicheGuess)
+        fill(\.audience, result.audienceGuess)
+        fill(\.knownFor, result.knownForGuess)
+    }
+
     /// Apply a voice-onboarding finalize result (called after the conversational session).
     func applyVoiceScan(_ result: BackendClient.BrandScanResult) {
         if !result.pillars.isEmpty {
@@ -210,6 +244,7 @@ final class AppStore {
             brand.topThemes = result.topThemes
         }
         if let v = result.voiceUpdate { brand.voice = v }
+        applyScanIdentity(result)
         brand.analyzed = true
         save()
     }

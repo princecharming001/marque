@@ -17,6 +17,37 @@ enum CreatorStage: String, CaseIterable, Codable, Identifiable {
     case pro = "100K+ followers"
     var id: String { rawValue }
     var label: String { rawValue }
+
+    /// Derive the stage from a connected account's real follower count, so the
+    /// quiz can skip asking what we already know.
+    static func from(followers: Int) -> CreatorStage {
+        switch followers {
+        case ..<1_000: .nano
+        case ..<10_000: .micro
+        case ..<100_000: .established
+        default: .pro
+        }
+    }
+}
+
+/// The creator's stated trigger for starting now — the emotional "why now" that
+/// anchors the paywall and biases script strategy (backend `why_now` hint).
+enum WhyNow: String, CaseIterable, Codable, Identifiable {
+    case serious = "I'm ready to take content seriously"
+    case launch = "I'm launching something that needs an audience"
+    case inspired = "I keep watching people like me blow up"
+    case income = "I want content to become income"
+    var id: String { rawValue }
+    var label: String { rawValue }
+    /// Stable short key sent to the backend (prompt hint maps key on this).
+    var key: String {
+        switch self {
+        case .serious: "serious"
+        case .launch: "launch"
+        case .inspired: "inspired"
+        case .income: "income"
+        }
+    }
 }
 
 enum PostingFrequency: String, CaseIterable, Codable, Identifiable {
@@ -43,6 +74,16 @@ enum CreatorBlocker: String, CaseIterable, Codable, Identifiable {
         case .confidence: return "😬"
         }
     }
+    /// Stable short key sent to the backend — the prompt's blocker strategy map
+    /// is keyed on these, not the display label.
+    var key: String {
+        switch self {
+        case .ideas: return "ideas"
+        case .time: return "time"
+        case .editing: return "editing"
+        case .confidence: return "confidence"
+        }
+    }
 }
 
 enum CameraComfort: String, CaseIterable, Codable, Identifiable {
@@ -51,6 +92,15 @@ enum CameraComfort: String, CaseIterable, Codable, Identifiable {
     case preferOff = "Prefer off-camera or voiceover"
     var id: String { rawValue }
     var label: String { rawValue }
+    /// Stable short key sent to the backend — the prompt's comfort strategy map
+    /// is keyed on these, not the display label.
+    var key: String {
+        switch self {
+        case .natural: return "natural"
+        case .gettingThere: return "getting_there"
+        case .preferOff: return "prefer_off"
+        }
+    }
 }
 
 struct VoiceFingerprint: Codable, Hashable {
@@ -83,6 +133,7 @@ struct BrandGraph: Codable, Hashable {
     var watchedCreators: [WatchedCreator]? = nil   // ≤2 "creators to watch" (Profile)
     var creatorName: String? = nil                 // collected in the mascot-intro onboarding step
     var emulationTargets: [EmulationTarget]? = nil // whose style the creator wants scripts to borrow
+    var whyNow: WhyNow? = nil                      // the emotional trigger for starting (quiz)
 }
 
 /// A creator whose style the AI should study (preset or a custom linked page).

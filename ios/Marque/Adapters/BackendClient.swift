@@ -81,9 +81,12 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         if let p = b.primaryPlatform { body["primary_platform"] = p.rawValue }
         if let s = b.stage { body["stage"] = s.rawValue }
         if let f = b.postingFrequency { body["posting_frequency"] = f.rawValue }
-        if let bl = b.biggestBlocker { body["biggest_blocker"] = bl.rawValue }
-        if let c = b.cameraComfort { body["camera_comfort"] = c.rawValue }
+        // Short keys, not display labels — the backend's strategy-hint maps are
+        // keyed 'ideas'/'natural'/… and never matched the full label strings.
+        if let bl = b.biggestBlocker { body["biggest_blocker"] = bl.key }
+        if let c = b.cameraComfort { body["camera_comfort"] = c.key }
         if let wt = b.weeklyTarget { body["weekly_target"] = wt }
+        if let w = b.whyNow { body["why_now"] = w.key }
         if let targets = b.emulationTargets, !targets.isEmpty {
             body["emulation_targets"] = targets.map { t -> [String: Any] in
                 var d: [String: Any] = ["name": t.name, "source": t.source.rawValue]
@@ -333,6 +336,11 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let pillars: [Pillar]
         let voiceUpdate: VoiceFingerprint?
         let topThemes: [String]
+        // Identity the scan derived from the creator's REAL posts. Used to prefill
+        // the quiz's freeform steps (confirm-not-type) — empty when unknown.
+        var nicheGuess: String = ""
+        var audienceGuess: String = ""
+        var knownForGuess: String = ""
     }
 
     private struct BrandScanResp: Decodable {
@@ -342,6 +350,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             let pillars: [PillarDTO]?
             let voice: VoiceBlock?
             let top_themes: [String]?
+            let niche: String?
+            let audience: String?
+            let knownFor: String?
             struct VoiceBlock: Decodable {
                 let funnyToSerious: Double?
                 let polishedToRaw: Double?
@@ -375,7 +386,10 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                                      catchphrases: v.catchphrases ?? [])
         }
         return BrandScanResult(pillars: pillars, voiceUpdate: voice,
-                               topThemes: scan.top_themes ?? pillars.map { $0.name })
+                               topThemes: scan.top_themes ?? pillars.map { $0.name },
+                               nicheGuess: scan.niche ?? "",
+                               audienceGuess: scan.audience ?? "",
+                               knownForGuess: scan.knownFor ?? "")
     }
 
     // MARK: Onboarding brand digest (async job — clone of the clip-job pattern)
@@ -811,6 +825,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                                      catchphrases: v.catchphrases ?? [])
         }
         return BrandScanResult(pillars: pillars, voiceUpdate: voice,
-                               topThemes: scan.top_themes ?? pillars.map { $0.name })
+                               topThemes: scan.top_themes ?? pillars.map { $0.name },
+                               nicheGuess: scan.niche ?? "",
+                               audienceGuess: scan.audience ?? "",
+                               knownForGuess: scan.knownFor ?? "")
     }
 }

@@ -20,10 +20,16 @@ appId: com.getmarque.app
     id: onboard.blocker.time
 
 - tapOn:
+    id: onboard.whyNow.serious
+
+- tapOn:
     id: onboard.frequency.sometimes
 
 - tapOn:
     id: onboard.continue
+
+- tapOn:
+    id: onboard.connect.skip
 
 - tapOn:
     id: onboard.creatorName
@@ -32,6 +38,9 @@ appId: com.getmarque.app
 
 - tapOn:
     id: onboard.nameContinue
+
+- tapOn:
+    id: onboard.stage.micro
 
 - tapOn:
     id: onboard.niche
@@ -64,9 +73,6 @@ appId: com.getmarque.app
 
 - tapOn:
     id: onboard.platform.instagram
-
-- tapOn:
-    id: onboard.connect.skip
 
 - tapOn:
     id: onboard.interview.skip

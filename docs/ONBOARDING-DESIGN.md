@@ -133,29 +133,42 @@ MascotScene, ThoughtCloud, PulsingWaveformBadge) are deleted.
 | landing | Film once.\nPost every day. | Your AI content partner for short-form video. |
 | goal | What are you here to do? | This shapes every script I write for you. |
 | blocker | What gets in the way most? | I'll build your plan around fixing this. |
+| whyNow | Why now? | This is the moment we build everything around. |
 | frequency | How often do you post right now? | No judgment — this is the before picture. |
 | method (int. A) | Consistency beats virality | (personalized off frequency) |
+| connect | Connect your accounts | I'll read your posts, learn how you actually talk, and fill in the next steps for you. |
 | name | What should I call you? | The name you'd like to go by. |
-| niche | What's your niche? | Fitness, finance, cooking… whatever you make content about. |
+| stage | Where are you today? | So I calibrate for where you are — not where you're going. |
+| niche | What's your niche? | Fitness, finance, cooking… whatever you make content about. / (prefilled: "Pulled from your page — fix it if it's off.") |
 | about | Tell me about you | What you do, and who it's for. |
-| knownFor | What do you want to be known for? | The heart of your brand — one sentence. |
+| knownFor | What do you want to be known for? | The heart of your brand — one sentence. / (prefilled: "Here's what your page already says — make it yours.") |
 | platform | Where does your audience live? | Where your clips will land first. |
-| voiceTeach | Let me learn your voice | So every script sounds like you — not a template. |
-| voiceSliders | Fine-tune your voice | Slide until the preview sounds like you. |
+| voiceInterview | A few quick questions | Two minutes, typed — I listen for your real voice. / (analyzed: "I've studied your posts already — these sharpen what I learned…") |
+| voiceSliders | Fine-tune your voice | Slide until the preview sounds like you. (+ optional "never say" field) |
+| emulate | Who do you want to sound like? | Pick creators whose style you admire… |
 | cameraComfort | How do you feel on camera? | There's a format for every comfort level. |
-| styles | Pick your video styles | Each gets its own kind of script. |
 | pace | Pick your weekly pace | You can change this anytime. |
-| mirror (int. B) | Your brand, in a sentence | (the composed brand sentence, set in serif) |
+| mirror (int. B) | Your brand, in a sentence | (the composed brand sentence + the pace projection line) |
 | building | Building your content plan | Feel free to close the app — I'll notify you. |
 | ready | Your first 3 scripts are ready | Record when you've got a few minutes — I'll do the editing. |
 
 ## 8. Question order rationale (conversion)
 
-Pain first (goal→blocker→frequency) hooks motivation before asking for effort;
-interstitial A converts that pain into belief in the method; identity cluster
-(name→niche→about→knownFor) rides the commitment; platform + voiceTeach are the
-highest-effort asks and sit AFTER investment is built; voice sliders prefill from
-the reel scan when available; styles/pace are easy closers; the brand mirror
-(interstitial B) plays the answer back as proof-of-listening right before the
-plan builds. The `stage` (follower-count) question is CUT — lowest-signal, and
-asking "how small are you" early is a downer; the field stays editable in Profile.
+Pain first (goal→blocker→whyNow→frequency) hooks motivation before asking for
+effort — `whyNow` is the emotional commitment anchor (Noom-style "why now"
+questions are the documented conversion drivers, and the answer biases script
+strategy server-side via `why_now`). Interstitial A converts pain into belief in
+the method. **Connect comes immediately after** — before identity — because the
+brand-scan derives niche/audience/knownFor/voice from real posts: for connected
+users the entire freeform identity cluster becomes confirm-not-type (typed fields
+are the #1 completion killer; prefills are near-free). Steps whose answer a
+linked account already gave auto-skip entirely: `stage` (from the real follower
+count) and `platform` (from what they linked). On the no-connect path, `stage`
+IS asked — it was silently dropped by the backend for months (pydantic
+extra-ignore) but the prompt calibrates authority level on it; the copy asks
+"where are you today," not "how small are you." Voice interview/sliders sit
+after investment is built; sliders carry the optional "never say" guardrail
+(the backend's `non_negotiables` line finally has a collector). Easy closers
+(emulate/comfort/pace), then the brand mirror plays the answers back — now with
+the honest projection line ("5 posts a week — that's 260 in a year") as the
+pre-paywall commitment device — right before the plan builds.

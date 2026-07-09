@@ -24,6 +24,11 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.blocker.time"
 - extendedWaitUntil:
+    visible: "Why now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.whyNow.serious"
+- extendedWaitUntil:
     visible: "How often do you post right now?"
     timeout: 4000
 - tapOn:
@@ -36,6 +41,13 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.continue"
 
+# Connect accounts — now BEFORE identity so the scan can prefill it; fast path = skip
+- extendedWaitUntil:
+    visible: "Connect your accounts"
+    timeout: 4000
+- tapOn:
+    id: "onboard.connect.skip"
+
 # Identity cluster (freeform, Continue pills)
 - assertVisible: "What should I call you?"
 - tapOn:
@@ -44,7 +56,14 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.nameContinue"
 
-- assertVisible: "What's your niche?"
+# Stage (only shown when no account was connected)
+- assertVisible: "Where are you today?"
+- tapOn:
+    id: "onboard.stage.micro"
+
+- extendedWaitUntil:
+    visible: "What's your niche?"
+    timeout: 4000
 - tapOn:
     id: "onboard.niche"
 - inputText: "Fitness coaching"
@@ -68,18 +87,12 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.knownForContinue"
 
-# Platform (auto-advance)
+# Platform (auto-advance; only shown when no account was connected)
 - assertVisible: "Where does your audience live?"
 - tapOn:
     id: "onboard.platform.instagram"
 
-# Connect accounts + voice interview — now two consecutive steps; fast path = skip both
-- extendedWaitUntil:
-    visible: "Connect your accounts"
-    timeout: 4000
-- tapOn:
-    id: "onboard.connect.skip"
-
+# Voice interview — fast path = skip
 - extendedWaitUntil:
     visible: "A few quick questions"
     timeout: 4000

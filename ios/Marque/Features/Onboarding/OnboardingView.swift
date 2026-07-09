@@ -1,18 +1,24 @@
 import SwiftUI
 
 // Onboarding — Cal AI-clean rebuild (docs/ONBOARDING-DESIGN.md).
-// 17 screens on one universal scaffold: pain cluster → belief interstitial →
-// identity → platform → voice-teach (in flow) → format → brand mirror → async
-// plan-building aha. Single-select questions auto-advance (no "Next"); back is
-// always available and cancels a pending advance.
+// One universal scaffold: pain cluster (incl. "why now") → belief interstitial →
+// connect (scan prefills identity) → identity confirm → voice-teach → format →
+// brand mirror → async plan-building aha. Single-select questions auto-advance
+// (no "Next"); back is always available and cancels a pending advance. Steps
+// whose answer a linked account already gave (stage, platform) auto-skip.
 struct OnboardingView: View {
     @Environment(AppStore.self) private var store
 
     enum Step: Int, CaseIterable {
         // H-05: no styles step — the server infers style from the take now.
-        case landing, goal, blocker, frequency, method, name, niche, about,
-             knownFor, platform, connectAccounts, voiceInterview, voiceSliders,
-             emulate, cameraComfort, pace, mirror, building
+        // Connect comes BEFORE the identity cluster: the brand-scan derives
+        // niche/audience/knownFor from real posts, so identity becomes
+        // confirm-not-type for connected users (typing is the #1 completion
+        // killer; taps and prefills are near-free).
+        case landing, goal, blocker, whyNow, frequency, method,
+             connectAccounts, name, stage, niche, about, knownFor, platform,
+             voiceInterview, voiceSliders, emulate, cameraComfort, pace,
+             mirror, building
 
         /// Quiz-progress dashes cover everything between landing and building.
         var quizIndex: Int? {
@@ -32,6 +38,9 @@ struct OnboardingView: View {
     // Defaulted enums render unselected until touched (so every MCQ auto-advances
     // on a real choice, never on a default).
     @State private var goalTouched = false
+    // Distinguishes "stage answered in the quiz" from "stage derived from a linked
+    // account" — only the derived case auto-skips the step (incl. on back-nav).
+    @State private var stageTouched = false
     // Disambiguates "nil because unset" from "nil because user picked Both".
     @State private var platformBothChosen = false
 
@@ -50,14 +59,16 @@ struct OnboardingView: View {
                 )
             case .goal:          goalStep
             case .blocker:       blockerStep
+            case .whyNow:        whyNowStep
             case .frequency:     frequencyStep
             case .method:        methodStep
+            case .connectAccounts: connectAccountsStep
             case .name:          nameStep
+            case .stage:         stageStep
             case .niche:         nicheStep
             case .about:         aboutStep
             case .knownFor:      knownForStep
             case .platform:        platformStep
-            case .connectAccounts: connectAccountsStep
             case .voiceInterview:  voiceInterviewStep
             case .voiceSliders:    voiceSlidersStep
             case .emulate:         emulateStep
@@ -83,15 +94,29 @@ struct OnboardingView: View {
         withAnimation(Motion.enter) { step = target }
     }
 
+    /// Steps we already have the answer to (from a linked account) are never shown.
+    private func shouldSkip(_ s: Step) -> Bool {
+        switch s {
+        case .stage:    return store.brand.stage != nil && !stageTouched // derived from real follower count
+        case .platform: return !store.brand.connectedAccounts.isEmpty // derived from what they linked
+        default:        return false
+        }
+    }
+
     private func advance() {
-        guard let next = Step(rawValue: step.rawValue + 1) else { return }
+        var raw = step.rawValue + 1
+        while let next = Step(rawValue: raw), shouldSkip(next) { raw += 1 }
+        guard let next = Step(rawValue: raw) else { return }
         go(next)
     }
 
     private func retreat() {
         advanceTask?.cancel()
         advanceTask = nil
-        guard step != .landing, let prev = Step(rawValue: step.rawValue - 1) else { return }
+        guard step != .landing else { return }
+        var raw = step.rawValue - 1
+        while let prev = Step(rawValue: raw), shouldSkip(prev) { raw -= 1 }
+        guard let prev = Step(rawValue: raw) else { return }
         go(prev)
     }
 
@@ -173,6 +198,25 @@ struct OnboardingView: View {
         .accessibilityIdentifier("onboard.blocker.\(idKey)")
     }
 
+    private var whyNowStep: some View {
+        scaffold("Why now?", "This is the moment we build everything around.") {
+            VStack(spacing: Space.md) {
+                whyNowCard(.serious, "OnbIcon-why-serious", "flame")
+                whyNowCard(.launch, "OnbIcon-why-launch", "paperplane")
+                whyNowCard(.inspired, "OnbIcon-why-inspired", "chart.line.uptrend.xyaxis")
+                whyNowCard(.income, "OnbIcon-why-income", "banknote")
+            }
+        }
+    }
+
+    private func whyNowCard(_ w: WhyNow, _ icon: String, _ sf: String) -> some View {
+        OptionCard(icon: icon, sfFallback: sf, title: w.rawValue,
+                   selected: store.brand.whyNow == w) {
+            selectAndAdvance { store.brand.whyNow = w }
+        }
+        .accessibilityIdentifier("onboard.whyNow.\(w.key)")
+    }
+
     private var frequencyStep: some View {
         scaffold("How often do you post right now?", "No judgment — this is the before picture.") {
             VStack(spacing: Space.md) {
@@ -235,11 +279,38 @@ struct OnboardingView: View {
         .onAppear { nameFocused = true }
     }
 
+    // Only shown when no account was connected — a linked account's real follower
+    // count sets `stage` and this step auto-skips (see shouldSkip).
+    private var stageStep: some View {
+        scaffold("Where are you today?", "So I calibrate for where you are — not where you're going.") {
+            VStack(spacing: Space.md) {
+                stageCard(.nano, "OnbIcon-stage-nano", "person", "nano")
+                stageCard(.micro, "OnbIcon-stage-micro", "person.2", "micro")
+                stageCard(.established, "OnbIcon-stage-established", "person.3", "established")
+                stageCard(.pro, "OnbIcon-stage-pro", "crown", "pro")
+            }
+        }
+    }
+
+    private func stageCard(_ s: CreatorStage, _ icon: String, _ sf: String, _ idKey: String) -> some View {
+        OptionCard(icon: icon, sfFallback: sf, title: s.rawValue,
+                   selected: store.brand.stage == s) {
+            selectAndAdvance {
+                store.brand.stage = s
+                stageTouched = true
+            }
+        }
+        .accessibilityIdentifier("onboard.stage.\(idKey)")
+    }
+
     @FocusState private var nicheFocused: Bool
 
     private var nicheStep: some View {
         @Bindable var store = store
-        return scaffold("What's your niche?", "Fitness, finance, cooking… whatever you make content about.") {
+        let prefilled = store.brand.analyzed && !store.brand.niche.trimmingCharacters(in: .whitespaces).isEmpty
+        return scaffold("What's your niche?",
+                        prefilled ? "Pulled from your page — fix it if it's off."
+                                  : "Fitness, finance, cooking… whatever you make content about.") {
             FreeformField(placeholder: "Your niche", text: $store.brand.niche,
                           fontSize: 30, focused: $nicheFocused,
                           accessibilityID: "onboard.niche")
@@ -286,7 +357,10 @@ struct OnboardingView: View {
 
     private var knownForStep: some View {
         @Bindable var store = store
-        return scaffold("What do you want to be known for?", "The heart of your brand — one sentence.") {
+        let prefilled = store.brand.analyzed && !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty
+        return scaffold("What do you want to be known for?",
+                        prefilled ? "Here's what your page already says — make it yours."
+                                  : "The heart of your brand — one sentence.") {
             FreeformField(placeholder: "Known for…", text: $store.brand.knownFor,
                           fontSize: 26, focused: $knownForFocused,
                           accessibilityID: "onboard.knownFor")
@@ -352,7 +426,7 @@ struct OnboardingView: View {
     // MARK: - Voice teach (in flow, two consecutive steps — connect THEN interview)
 
     private var connectAccountsStep: some View {
-        scaffold("Connect your accounts", "I'll study your recent posts and learn how you actually talk.") {
+        scaffold("Connect your accounts", "I'll read your posts, learn how you actually talk, and fill in the next steps for you.") {
             ConnectAccountsView()
         } cta: {
             VStack(spacing: Space.md) {
@@ -380,7 +454,10 @@ struct OnboardingView: View {
     }
 
     private var voiceInterviewStep: some View {
-        scaffold("A few quick questions", "Two minutes, typed — I listen for your real voice.") {
+        scaffold("A few quick questions",
+                 store.brand.analyzed
+                    ? "I've studied your posts already — these sharpen what I learned. Skip if you're short on time."
+                    : "Two minutes, typed — I listen for your real voice.") {
             VoiceInterviewView { advance() }
         } cta: {
             Button {
@@ -416,12 +493,26 @@ struct OnboardingView: View {
                     .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+
+                // Optional guardrail — the backend's "never say" prompt line existed
+                // for months with nothing ever collecting it.
+                TextField("Words I should never use (optional)", text: $neverSayDraft)
+                    .marqueField()
+                    .accessibilityIdentifier("onboard.neverSay")
             }
         } cta: {
-            OnbPill(title: "Continue") { advance() }
-                .accessibilityIdentifier("onboard.voiceContinue")
+            OnbPill(title: "Continue") {
+                store.brand.nonNegotiables = neverSayDraft
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                advance()
+            }
+            .accessibilityIdentifier("onboard.voiceContinue")
         }
     }
+
+    @State private var neverSayDraft = ""
 
     private var voicePreviewLine: String {
         let funny = store.brand.voice.funnyToSerious
@@ -530,6 +621,11 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 Text("Every script I write points back to this.")
                     .font(AppFont.body).foregroundStyle(Palette.textTertiary)
+                if let pace = store.brand.weeklyTarget {
+                    Text("\(pace) posts a week — that's \(pace * 52) in a year, every one in your voice.")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
             }
         } cta: {
             OnbPill(title: "Build my plan") {

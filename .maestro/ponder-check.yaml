@@ -7,6 +7,7 @@ appId: com.getmarque.app
 - tapOn: { id: onboard.start }
 - tapOn: { id: onboard.goal.audience }
 - tapOn: { id: onboard.blocker.time }
+- tapOn: { id: onboard.whyNow.serious }
 - tapOn: { id: onboard.frequency.sometimes }
 - assertVisible: "Consistency beats virality"
 - takeScreenshot: /Users/home/Marque/.shots/ponder-live.png

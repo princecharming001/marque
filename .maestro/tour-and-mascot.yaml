@@ -13,14 +13,17 @@ appId: com.getmarque.app
 - tapOn: { id: onboard.start }
 - tapOn: { id: onboard.goal.audience }
 - tapOn: { id: onboard.blocker.time }
+- tapOn: { id: onboard.whyNow.serious }
 - tapOn: { id: onboard.frequency.sometimes }
 - assertVisible: "Consistency beats virality"
 # Belief interstitial — UnicornThinking mascot
 - takeScreenshot: /Users/home/Marque/.shots/mascot-thinking.png
 - tapOn: { id: onboard.continue }
+- tapOn: { id: onboard.connect.skip }
 - tapOn: { id: onboard.creatorName }
 - inputText: "Alex"
 - tapOn: { id: onboard.nameContinue }
+- tapOn: { id: onboard.stage.micro }
 - tapOn: { id: onboard.niche }
 - inputText: "Fitness"
 - tapOn: { id: onboard.nicheContinue }
@@ -33,12 +36,10 @@ appId: com.getmarque.app
 - inputText: "fitness"
 - tapOn: { id: onboard.knownForContinue }
 - tapOn: { id: onboard.platform.instagram }
-- tapOn: { id: onboard.connect.skip }
 - tapOn: { id: onboard.interview.skip }
 - tapOn: { id: onboard.voiceContinue }
 - tapOn: { id: onboard.emulate.skip }
 - tapOn: { id: onboard.comfort.natural }
-- tapOn: { id: onboard.stylesContinue }
 - tapOn: { id: onboard.pace.5 }
 - assertVisible: "Your brand, in a sentence"
 # Brand mirror — UnicornProud mascot
