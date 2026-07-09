@@ -80,6 +80,37 @@ final class AppStore {
             auth.continueAsDemo()
             subscription.devContinue()
         }
+        // Deterministic editor-verification entry: seed one READY clip with a
+        // placeholder jobId so Library → Edit manually → ProEditorView opens
+        // without driving the full record→makeClips flow. ProEditorView's
+        // placeholder mode handles the absent source video. This is the standing
+        // E-25 exit-gate harness (`.maestro/editor-pro-flow.yaml`).
+        if CommandLine.arguments.contains("-demoClip") {
+            hasOnboarded = true
+            auth.continueAsDemo()
+            subscription.devContinue()
+            let script = Script(
+                pillarName: "Your script",
+                title: "The one system that actually works",
+                summary: "Written by you",
+                style: VideoStyle.talkingHead.rawValue,
+                formatId: "myth-buster",
+                hook: Hook(text: "Stop overthinking your content.", signal: .narrative, strength: 78),
+                altHooks: [],
+                body: "Stop overthinking your content. Here is the one system that actually works. Pick one idea, film it in a single take, and ship it. Follow for more.",
+                cta: "Follow for more",
+                shotPlan: ["Hook on frame 1, direct eye contact", "One punch-in on the key line", "CTA to camera"],
+                targetSeconds: 22,
+                predictedScore: 78
+            )
+            scripts.insert(script, at: 0)
+            var clip = Clip(scriptId: script.id, formatId: script.formatId,
+                            formatName: "Myth-buster", caption: script.body,
+                            predictedScore: 78, status: .ready, seconds: 22)
+            clip.title = script.title
+            clip.jobId = "demo-clip-job"     // non-nil ⇒ Library shows "Edit manually"
+            clips.insert(clip, at: 0)
+        }
         #endif
     }
 

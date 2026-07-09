@@ -1,0 +1,47 @@
+appId: com.getmarque.app
+name: E-25 exit gate — drive ProEditorView on a seeded ready clip
+# Deterministic: -demoClip seeds one READY clip; land on Home, go to Library,
+# open the clip, Edit manually → ProEditorView (placeholder mode, no source video).
+# Exercises: open → play/pause → each mode (Edit/Text/Sound/Effects) → save.
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible:
+      id: "library.clip"
+    timeout: 8000
+- tapOn:
+    id: "library.clip"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.playPause"
+    timeout: 12000
+- takeScreenshot: /tmp/r5-editor-01-open
+- tapOn:
+    id: "editorPro.playPause"
+- takeScreenshot: /tmp/r5-editor-02-play
+- tapOn:
+    id: "editorPro.mode.text"
+- takeScreenshot: /tmp/r5-editor-03-text
+- tapOn:
+    id: "editorPro.mode.sound"
+- takeScreenshot: /tmp/r5-editor-04-sound
+- tapOn:
+    id: "editorPro.mode.effects"
+- takeScreenshot: /tmp/r5-editor-05-effects
+- tapOn:
+    id: "editorPro.mode.edit"
+- takeScreenshot: /tmp/r5-editor-06-edit

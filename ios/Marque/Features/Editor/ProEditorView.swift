@@ -35,19 +35,29 @@ struct ProEditorView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                switch phase {
-                case .loading:  ProgressView("Loading your edit…").frame(maxWidth: .infinity, maxHeight: .infinity)
-                case .applying: ProgressView("Applying…").frame(maxWidth: .infinity, maxHeight: .infinity)
-                case .rendering: renderingView
-                case .failed(let m): failedView(m)
-                case .editing:  editor
+            ZStack {
+                // Full-screen dark fill FIRST so the editor stays immersive edge to
+                // edge — a .background() on the content only wraps its natural height
+                // and leaves the safe-area bands white. This fills everything.
+                Palette.night.ignoresSafeArea()
+                Group {
+                    switch phase {
+                    case .loading:  ProgressView("Loading your edit…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .applying: ProgressView("Applying…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                    case .rendering: renderingView
+                    case .failed(let m): failedView(m)
+                    case .editing:  editor
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(Palette.night.ignoresSafeArea())
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
+            .toolbarBackground(Palette.night, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
         }
+        .preferredColorScheme(.dark)
         .task { await load() }
         .onDisappear { applyTask?.cancel(); player?.teardown() }
     }
@@ -80,13 +90,14 @@ struct ProEditorView: View {
 
     @ViewBuilder private var editor: some View {
         VStack(spacing: 0) {
-            playerSurface
+            playerSurface                       // flexes to fill; keeps the toolbar pinned bottom
             if let t = transient { transientBar(t) }
             timelinePane
             contextStrip
             modeDrawer
             modeToolbar
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     @ViewBuilder private var modeDrawer: some View {
@@ -179,7 +190,7 @@ struct ProEditorView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 320)
+        .frame(maxHeight: .infinity)          // fill remaining space so the toolbar pins to the bottom (CapCut layout)
         .contentShape(Rectangle())
         .onTapGesture { player?.togglePlay() }
         .clipped()

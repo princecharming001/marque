@@ -1,0 +1,84 @@
+appId: com.getmarque.app
+name: Open ProEditorView on a real clip + verify controls
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn:
+    id: "film.open"
+- extendedWaitUntil:
+    visible:
+      id: "film.customScript"
+    timeout: 6000
+- tapOn:
+    id: "film.customScript"
+- extendedWaitUntil:
+    visible:
+      id: "film.customBody"
+    timeout: 5000
+- tapOn:
+    id: "film.customBody"
+- inputText: "Stop overthinking your content. Here is the one system that actually works. Follow for more."
+- tapOn:
+    id: "film.customSave"
+- extendedWaitUntil:
+    visible:
+      id: "film.readied"
+    timeout: 6000
+- tapOn:
+    id: "film.readied"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "script.record"
+    timeout: 8000
+- tapOn:
+    id: "script.record"
+- extendedWaitUntil:
+    visible:
+      id: "record.capture"
+    timeout: 6000
+- tapOn:
+    id: "record.capture"
+- extendedWaitUntil:
+    visible:
+      id: "record.makeClips"
+    timeout: 8000
+- tapOn:
+    id: "record.makeClips"
+- extendedWaitUntil:
+    visible: "YOUR EDIT PLAN"
+    timeout: 12000
+- tapOn:
+    id: "record.makeMyClip"
+- extendedWaitUntil:
+    visible:
+      id: "celebration.dismiss"
+    timeout: 14000
+- tapOn:
+    id: "celebration.dismiss"
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: "YOUR CREATIVE VAULT"
+    timeout: 6000
+- tapOn:
+    id: "library.clip"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.playPause"
+    timeout: 10000
+- takeScreenshot: /tmp/r5-editor
+- tapOn:
+    id: "editorPro.mode.text"
+- takeScreenshot: /tmp/r5-editor-text

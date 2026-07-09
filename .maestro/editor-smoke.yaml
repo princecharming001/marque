@@ -1,0 +1,54 @@
+appId: com.getmarque.app
+name: Editor smoke — reach ProEditorView on a fresh keyless clip
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+# Land on Home (demoHome bypasses gates). Create a clip: FAB → film → readied → record → brief → confirm.
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Film"
+- extendedWaitUntil:
+    visible:
+      id: "film.readied"
+    timeout: 6000
+- tapOn:
+    id: "film.readied"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "script.record"
+    timeout: 6000
+- tapOn:
+    id: "script.record"
+- extendedWaitUntil:
+    visible:
+      id: "record.capture"
+    timeout: 6000
+- tapOn:
+    id: "record.capture"
+- extendedWaitUntil:
+    visible:
+      id: "record.makeClips"
+    timeout: 8000
+- tapOn:
+    id: "record.makeClips"
+- extendedWaitUntil:
+    visible: "YOUR EDIT PLAN"
+    timeout: 12000
+- tapOn:
+    id: "record.makeMyClip"
+- extendedWaitUntil:
+    visible:
+      id: "celebration.dismiss"
+    timeout: 14000
+- tapOn:
+    id: "celebration.dismiss"
+# Open Library → the clip → Edit manually → ProEditorView
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: "YOUR CREATIVE VAULT"
+    timeout: 6000
+- takeScreenshot: /tmp/r5-library
