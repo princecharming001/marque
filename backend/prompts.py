@@ -1238,11 +1238,14 @@ def teardown_prompt(clip: dict) -> tuple[str, str]:
     return system, user
 
 
-def insights_prompt(brand: dict, summary: str) -> tuple[str, str]:
+def insights_prompt(brand: dict, summary: str, persona: str = "closer") -> tuple[str, str]:
+    # C-09: the coach speaks in the creator's chosen voice (same persona set as chat).
+    voice = _PERSONA_VOICES.get(persona, _PERSONA_VOICES["closer"])
     system = (
         "You are Marque's growth coach. Give exactly TWO tight sentences: "
         "sentence 1 names the single strongest signal (format, hook type, or topic) that's working; "
-        "sentence 2 names the exact next move. No fluff, no preamble, no lists."
+        "sentence 2 names the exact next move. No fluff, no preamble, no lists.\n"
+        f"{voice}"
     )
     return system, f"{brand_block(brand)}\nThis week's performance summary: {summary}\nTwo sentences."
 
@@ -1946,7 +1949,7 @@ def memory_block(memory: dict | None) -> str:
 CONVERSE_ENVELOPE_SCHEMA = (
     '{"reply": str, '
     '"memory_updates": [{"op": "add"|"remove"|"set", "field": "facts"|"perspective"|"ideas"|"preferences"|"angle", "value": str}], '
-    '"intent": "none"|"generate_scripts"|"day_plan"|"save_idea"|"update_brand_angle", '
+    '"intent": "none"|"generate_scripts"|"day_plan"|"save_idea"|"update_brand_angle"|"edit_video", '
     '"intent_args_json": str (a JSON-ENCODED object of the intent\'s args per the intent rules; "{}" when none), '
     '"chips": [str] (2-3 short suggested next messages, ≤6 words each)}'
 )
@@ -1967,7 +1970,7 @@ CONVERSE_ENVELOPE_JSON_SCHEMA = {
                 "field": {"type": "string", "enum": ["facts", "perspective", "ideas", "preferences", "angle"]},
                 "value": {"type": "string"}}}},
         "intent": {"type": "string",
-                   "enum": ["none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle"]},
+                   "enum": ["none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle", "edit_video"]},
         "intent_args_json": {"type": "string"},
         "chips": {"type": "array", "items": {"type": "string"}},
     },
@@ -2051,7 +2054,10 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "[{\"time\": str (e.g. \"9:00\"), \"action\": str (≤6 words), \"detail\": str (one sentence)}]}} — "
         "build a realistic filming/posting day from their weekly target, blockers, and active ideas (4-6 blocks).\n"
         "- save_idea: they shared an idea to remember (also add it to memory ideas). args: {}.\n"
-        "- update_brand_angle: their brand direction/angle shifted (also set memory angle). args: {}.\n\n"
+        "- update_brand_angle: their brand direction/angle shifted (also set memory angle). args: {}.\n"
+        "- edit_video: ONLY when the context notes they attached video clips AND they ask you to edit / "
+        "stitch / cut / trim them. args: {\"instructions\": str (their editing directions, verbatim)}. Your "
+        "reply confirms what the edit will do; the app runs the edit itself.\n\n"
         f"OUTPUT: Reply with ONLY a valid JSON object matching exactly: {CONVERSE_ENVELOPE_SCHEMA}\n"
         "No prose outside the JSON, no code fences.\n\n"
         f"Worked example:\n{CONVERSE_ENVELOPE_EXEMPLAR}"
@@ -2165,9 +2171,12 @@ def brand_summary_prompt(brand: dict, memory: dict | None = None,
 
 
 def converse_user(brand: dict, memory: dict | None, messages: list[dict],
-                  arm_stats: list[dict] | None = None, trends: list[dict] | None = None) -> str:
+                  arm_stats: list[dict] | None = None, trends: list[dict] | None = None,
+                  attachments: list | None = None) -> str:
     """User content for /v1/converse: brand + memory + performance + recent transcript."""
     parts = [brand_block(brand), "", memory_block(memory)]
+    if attachments:
+        parts += ["", f"ATTACHED: {len(attachments)} video clip(s) the creator uploaded for editing this turn."]
     learn = learning_block(arm_stats or [])
     if not learn:                                    # cold start → niche baseline (parity w/ scripts/hooks)
         learn = niche_prior_block(brand.get("niche", ""))

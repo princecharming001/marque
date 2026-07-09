@@ -101,7 +101,27 @@ def _flag_stacked_cta(sc, brand):
     return "stacked CTA (>1 ask)" if n > 1 else None
 
 
-QUALITY_FLAGS = [_flag_slop, _flag_question_opener, _flag_stacked_cta]
+import re as _re
+_UNGROUNDED_VERB = _re.compile(
+    r"\bI (tracked|tested|tried|ran|made|earned|lost|gained|spent|posted|coached|helped|built|grew)\b[^.!?]*\d",
+    _re.I)
+_CLIENT_RECEIPT = _re.compile(r"\bmy client\b[^.!?]*(\$|\d)", _re.I)
+
+
+def _flag_ungrounded_receipt(sc, brand):
+    """W3: a first-person past-tense claim with a number, or a client-testimonial with a
+    figure — a fabricated personal receipt. Suppressed when a bracketed fill-in is present."""
+    for field in ("hook", "body"):
+        text = _s(sc, field)
+        for sentence in _re.split(r"(?<=[.!?])\s", text):
+            if "[" in sentence:
+                continue
+            if _UNGROUNDED_VERB.search(sentence) or _CLIENT_RECEIPT.search(sentence):
+                return "ungrounded receipt"
+    return None
+
+
+QUALITY_FLAGS = [_flag_slop, _flag_question_opener, _flag_stacked_cta, _flag_ungrounded_receipt]
 
 
 def evaluate_script(script: dict, brand: dict | None = None) -> dict:

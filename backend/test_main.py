@@ -156,6 +156,39 @@ def test_publish_mock_when_no_target_accounts():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+def test_converse_edit_video_intent_keyless():
+    # W5-1: attachments + an edit ask → edit_video intent with the instructions echoed.
+    r = client.post("/v1/converse", json={"messages": [{"role": "user", "content": "stitch these and cut the pauses"}],
+                                          "attachments": [{"type": "video_upload"}, {"type": "video_upload"}]}).json()
+    assert r["intent"] == "edit_video"
+    assert "cut the pauses" in r["payload"]["edit_instructions"]
+
+
+def test_converse_edit_video_needs_attachments():
+    r = client.post("/v1/converse", json={"messages": [{"role": "user", "content": "cut the pauses"}]}).json()
+    assert r["intent"] != "edit_video"     # no attachments → not an edit
+
+
+def test_perf_summary_no_data_flag():
+    # C-04: keyless / no settled posts → honest no_data so the client shows an empty state.
+    r = client.get("/v1/performance/summary", params={"creator_id": "c_nodata"}).json()
+    assert r["mode"] == "mock" and r.get("no_data") is True
+
+
+def test_insights_persona_in_prompt():
+    # C-09: coach persona threads into the prompt voice.
+    sysp, _ = prompts.insights_prompt({"niche": "fitness"}, "great week", persona="sergeant")
+    assert "Sergeant" in sysp or "sergeant" in sysp.lower()
+
+
+def test_eval_flags_ungrounded_receipt():
+    from eval.invariants import _flag_ungrounded_receipt
+    bad = {"hook": "I made $4,200 in three weeks doing this.", "body": "here's how"}
+    good = {"hook": "Most people leave [your number] on the table.", "body": "here's the fix"}
+    assert _flag_ungrounded_receipt(bad, {}) == "ungrounded receipt"
+    assert _flag_ungrounded_receipt(good, {}) is None     # bracketed fill-in suppresses it
+
+
 def test_rehost_media_keyless_noop(monkeypatch):
     # W2-2: no Supabase config → returns None (keeps CDN url), suite stays keyless-green.
     monkeypatch.setattr(main, "SUPABASE_URL", "")

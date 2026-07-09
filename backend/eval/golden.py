@@ -63,6 +63,18 @@ KNOWN_GOOD = [
 
 # Each: script + the check name(s) it must trip.
 KNOWN_BAD = [
+    {"why": "fabricated client testimonial", "expect_flag": "ungrounded receipt", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "My client Sarah lost 40 pounds in 12 weeks with this.",
+        "hookSignal": "authority", "formatId": "before-after",
+        "body": "She did exactly what I'm about to show you and the results were undeniable.", "cta": "Follow.",
+        "predictedScore": 80, "style": "talking_head"}},
+    {"why": "fabricated personal experiment", "expect_flag": "ungrounded receipt", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "I tested 5 diets for 30 days and tracked every macro.",
+        "hookSignal": "specificity", "formatId": "myth-buster",
+        "body": "The results shocked me and they'll shock you too — here's what happened.", "cta": "Follow.",
+        "predictedScore": 80, "style": "talking_head"}},
     {"why": "slop opener", "expect_flag": "slop opener", "gate_ok": True,
      "brand": _FIT_BRAND, "script": {
         "title": "x", "hook": "In this video I'll show you three workouts.",

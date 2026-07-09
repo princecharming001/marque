@@ -783,6 +783,7 @@ class TeardownRequest(BaseModel):
 
 class InsightsRequest(Brand):
     summary: str = ""
+    persona: str = "closer"       # C-09: coach voice
 
 
 class ScanRequest(Brand):
@@ -1447,7 +1448,7 @@ async def insights(req: InsightsRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "coaching": _MOCK_COACHING}
     try:
-        sys, usr = prompts.insights_prompt(req.d(), req.summary)
+        sys, usr = prompts.insights_prompt(req.d(), req.summary, persona=req.persona)
         txt = (await anthropic(sys, usr, HAIKU, 250)).strip()
         return {"mode": "live", "coaching": txt or _MOCK_COACHING}
     except HTTPException:
@@ -4206,7 +4207,7 @@ async def get_learned_insights(creator_id: str = "default"):
 
 _VALID_MEMORY_OPS = {"add", "remove", "set"}
 _VALID_MEMORY_FIELDS = set(prompts.MEMORY_FIELDS) | {"angle"}
-_VALID_INTENTS = {"none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle"}
+_VALID_INTENTS = {"none", "generate_scripts", "day_plan", "save_idea", "update_brand_angle", "edit_video"}
 
 
 def _sanitize_memory_updates(raw) -> list[dict]:
@@ -4255,7 +4256,14 @@ def mock_converse(req: ConverseRequest) -> dict:
     intent, intent_args = "none", {}
     chips = ["Build my day", "Write me a script", "What should I post today?"]
 
-    if any(k in low for k in ("build my day", "build my content", "plan my day", "day plan", "build out my day")):
+    # W5: the creator attached video clips this turn and asked to edit them.
+    if (req.attachments and any(k in low for k in ("edit", "stitch", "cut", "trim", "combine", "clip"))):
+        intent = "edit_video"
+        intent_args = {"instructions": last}
+        reply = ("On it — I'll stitch your clips, cut the dead air, and tighten the pacing per your notes. "
+                 "You'll see it building in your Library.")
+        chips = ["Add captions", "Make it punchier", "Show me when it's done"]
+    elif any(k in low for k in ("build my day", "build my content", "plan my day", "day plan", "build out my day")):
         intent = "day_plan"
         intent_args = {"plan": _mock_day_plan(req.brand, req.memory)}
         reply = ("Here's your day — front-load the filming while you're fresh, then let the edits run while "
@@ -4399,6 +4407,8 @@ async def converse(req: ConverseRequest):
             out["payload"] = {"scripts": await _chain_scripts(req, out.get("intent_args", {}))}
         elif out["intent"] == "day_plan":
             out["payload"] = {"plan": out.get("intent_args", {}).get("plan", {})}
+        elif out["intent"] == "edit_video":
+            out["payload"] = {"edit_instructions": out.get("intent_args", {}).get("instructions", "")}
         return {"mode": "mock", "reply": out["reply"], "memory_updates": out["memory_updates"],
                 "intent": out["intent"], "payload": out.get("payload"), "suggested_chips": out["chips"]}
 
@@ -4407,7 +4417,8 @@ async def converse(req: ConverseRequest):
     # No trends passed: mock_trends is hand-authored filler, and injecting it as
     # "Trending right now" into a LIVE strategist makes the model relay invented trend
     # claims as fact. Omit until a real trend source exists (audit B-10/F16).
-    user = prompts.converse_user(req.brand, req.memory, req.messages, arm_stats=stats)
+    user = prompts.converse_user(req.brand, req.memory, req.messages, arm_stats=stats,
+                                 attachments=req.attachments or None)
     envelope = None
     try:
         # OPT-5: chat runs SONNET by default — voice mode already trusted it with the
@@ -4434,6 +4445,9 @@ async def converse(req: ConverseRequest):
     elif intent == "day_plan":
         plan = intent_args.get("plan")
         payload = {"plan": plan if isinstance(plan, dict) and plan.get("blocks") else _mock_day_plan(req.brand, req.memory)}
+    elif intent == "edit_video":
+        # W5: the app owns the upload + edit; the backend just relays the instructions.
+        payload = {"edit_instructions": (intent_args.get("instructions") or "").strip()}
 
     chips = [c for c in (envelope.get("chips") or []) if isinstance(c, str) and c.strip()][:3]
     return {"mode": "live", "reply": envelope["reply"],
@@ -5372,10 +5386,26 @@ async def performance_summary(creator_id: str = "default", days: int = 30, now: 
                 best = {"post_id": pid, "views": m.get("views", 0), "likes": m.get("likes", 0),
                         "format_id": fmt, "platform": plat}
         eng = round((totals["likes"] / max(totals["views"], 1)) * 100, 1)
-        return {"mode": "live", "days": days, "totals": {**totals, "engagement_rate": eng},
-                "platforms": platforms, "daily": [],
-                "best_post": best, "format_mix": [{"format": k, "count": v} for k, v in
-                                                  sorted(fmt_mix.items(), key=lambda x: -x[1])]}
+        # C-11: the creator's actual best posting hour — mode hour weighted by views, gated
+        # on enough evidence (N>=4). Below the gate the field is omitted (client keeps its
+        # honest "guidance, not measured" copy).
+        hour_views: dict[int, int] = {}
+        for _pid, p in settled:
+            sa = p.get("scheduled_at") or p.get("settled_at")
+            try:
+                hr = datetime.fromisoformat(sa).hour if sa else None
+            except (ValueError, TypeError):
+                hr = None
+            if hr is not None:
+                hour_views[hr] = hour_views.get(hr, 0) + p["metrics"].get("views", 0)
+        best_hour = max(hour_views, key=hour_views.get) if len(settled) >= 4 and hour_views else None
+        out = {"mode": "live", "days": days, "totals": {**totals, "engagement_rate": eng},
+               "platforms": platforms, "daily": [],
+               "best_post": best, "format_mix": [{"format": k, "count": v} for k, v in
+                                                 sorted(fmt_mix.items(), key=lambda x: -x[1])]}
+        if best_hour is not None:
+            out["best_hour"] = best_hour
+        return out
     # Deterministic mock series (seeded by creator_id) so the UI charts something believable
     rng = random.Random(creator_id)
     base = rng.randint(300, 900)
@@ -5390,7 +5420,9 @@ async def performance_summary(creator_id: str = "default", days: int = 30, now: 
         tv += views; tl += likes
     ig_share = rng.uniform(0.45, 0.65)
     follows = int(tv * 0.004)
-    return {"mode": "mock", "days": days,
+    # C-04: honest signal — the series below is placeholder, not measured. The client shows an
+    # empty state on no_data instead of charting fabricated numbers.
+    return {"mode": "mock", "no_data": True, "days": days,
             "totals": {"views": tv, "likes": tl, "follows_gained": follows, "posts": days // 3,
                        "engagement_rate": round(tl / max(tv, 1) * 100, 1)},
             "platforms": {
