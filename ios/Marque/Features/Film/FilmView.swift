@@ -10,6 +10,8 @@ struct FilmView: View {
     @State private var customScript = ""
     @State private var showCustomEditor = false
     @State private var showSettings = false
+    @State private var showReorder = false          // W4
+    @State private var showArchived = false
 
     private var drafts: [Clip] { store.clips.filter { $0.status == .draft } }
 
@@ -36,30 +38,56 @@ struct FilmView: View {
                     }
                 }
 
-                // Readied scripts (the film queue)
+                // Readied scripts (the film queue) — W4: reorder / archive / delete / sections
                 VStack(alignment: .leading, spacing: Space.md) {
                     HStack {
                         SectionLabel(text: "Your queue", accent: Palette.accent)
                         Spacer()
-                        Text("\(store.readiedScripts.count)")
+                        if store.queuedScripts.count > 1 {
+                            Button { showReorder = true } label: {
+                                Label("Reorder", systemImage: "arrow.up.arrow.down").font(AppFont.caption)
+                            }.tint(Palette.accent).accessibilityIdentifier("film.reorder")
+                        }
+                        Text("\(store.queuedScripts.count)")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     }
-                    if store.readiedScripts.isEmpty {
+                    if store.queuedScripts.isEmpty {
                         EmptyStateView(icon: "bookmark", title: "Nothing queued yet",
                                        message: "Save scripts from your Home picks, a mimic, or chat — they land here ready to film.")
                     } else {
-                        ForEach(store.readiedScripts) { saved in
-                            NavigationLink(value: saved.script) {
-                                readiedRow(saved)
-                            }
+                        ForEach(store.queuedScripts) { saved in
+                            NavigationLink(value: saved.script) { readiedRow(saved) }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("film.readied")
                             .contextMenu {
-                                Button(role: .destructive) {
-                                    store.removeReadiedScript(saved)
-                                } label: { Label("Remove from queue", systemImage: "bookmark.slash") }
+                                Button { store.archiveReadied(saved) } label: { Label("Archive", systemImage: "archivebox") }
+                                    .accessibilityIdentifier("film.archive")
+                                Button(role: .destructive) { store.removeReadiedScript(saved) } label: {
+                                    Label("Remove from queue", systemImage: "bookmark.slash")
+                                }
                             }
                         }
+                    }
+                }
+
+                // Archived section
+                if !store.archivedReadied.isEmpty {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        DisclosureGroup(isExpanded: $showArchived) {
+                            ForEach(store.archivedReadied) { saved in
+                                readiedRow(saved).opacity(0.7)
+                                    .contextMenu {
+                                        Button { store.unarchiveReadied(saved) } label: { Label("Restore", systemImage: "tray.and.arrow.up") }
+                                            .accessibilityIdentifier("film.restore")
+                                        Button(role: .destructive) { store.removeReadiedScript(saved) } label: {
+                                            Label("Remove", systemImage: "trash")
+                                        }
+                                    }
+                            }
+                        } label: {
+                            SectionLabel(text: "Archived (\(store.archivedReadied.count))", accent: Palette.textTertiary)
+                        }
+                        .accessibilityIdentifier("film.archivedSection")
                     }
                 }
 
@@ -114,6 +142,7 @@ struct FilmView: View {
         .navigationDestination(for: Script.self) { ScriptReaderView(script: $0) }
         .sheet(isPresented: $showCustomEditor) { CustomScriptSheet() }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $showReorder) { QueueReorderSheet() }
         .onAppear { consumePendingFilmScript() }
         .onChange(of: router.pendingFilmScriptId) { _, _ in consumePendingFilmScript() }
     }
@@ -299,5 +328,30 @@ struct CustomScriptSheet: View {
         store.scripts.insert(script, at: 0)
         store.readyScript(script, source: .custom)
         dismiss()
+    }
+}
+
+// W4: dedicated reorder sheet — a real drag-to-reorder List (.onMove) for the film queue.
+struct QueueReorderSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(store.queuedScripts) { saved in
+                    HStack {
+                        Text(saved.script.title.isEmpty ? saved.script.hook.text : saved.script.title)
+                            .font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                        Spacer()
+                        Image(systemName: "line.3.horizontal").foregroundStyle(Palette.textTertiary)
+                    }
+                }
+                .onMove { store.moveReadied(fromOffsets: $0, toOffset: $1) }
+            }
+            .environment(\.editMode, .constant(.active))
+            .navigationTitle("Reorder queue")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }
     }
 }

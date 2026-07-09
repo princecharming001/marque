@@ -1224,4 +1224,28 @@ final class AppStore {
         readiedScripts.removeAll { $0.id == saved.id }
         save()
     }
+
+    // W4: film-queue management — fixed Queue / Archived sections; order = array order.
+    var queuedScripts: [SavedScript] { readiedScripts.filter { $0.archivedAt == nil } }
+    var archivedReadied: [SavedScript] { readiedScripts.filter { $0.archivedAt != nil } }
+
+    /// Reorder within the queued subset (maps queued indices back to the master array).
+    func moveReadied(fromOffsets source: IndexSet, toOffset destination: Int) {
+        var queued = queuedScripts
+        queued.move(fromOffsets: source, toOffset: destination)
+        let archived = archivedReadied
+        readiedScripts = queued + archived     // queued first (display order), archived after
+        save()
+    }
+
+    func archiveReadied(_ saved: SavedScript) {
+        if let i = readiedScripts.firstIndex(where: { $0.id == saved.id }) {
+            readiedScripts[i].archivedAt = Date(); save()
+        }
+    }
+    func unarchiveReadied(_ saved: SavedScript) {
+        if let i = readiedScripts.firstIndex(where: { $0.id == saved.id }) {
+            readiedScripts[i].archivedAt = nil; save()
+        }
+    }
 }

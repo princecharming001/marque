@@ -596,6 +596,9 @@ struct SavedScript: Codable, Hashable, Identifiable {
     var source: SavedScriptSource = .daily
     var mimickedFrom: String = ""   // "@handle" provenance when source == .mimic
     var addedAt: Date = Date()
+    // W4: nil = active (in the Queue); non-nil = archived. Optional-with-default → old
+    // Snapshot blobs decode fine (Codable does NOT default-fill missing keys).
+    var archivedAt: Date? = nil
 }
 
 // MARK: - V3: Editing preferences (Settings → threaded into every AI edit)
