@@ -1,0 +1,8 @@
+appId: com.getmarque.app
+name: Confirm import + grid
+---
+- tapOn: { point: "90%,13%" }
+- extendedWaitUntil:
+    visible: "in your media library"
+    timeout: 15000
+- takeScreenshot: /tmp/r6-media-grid3

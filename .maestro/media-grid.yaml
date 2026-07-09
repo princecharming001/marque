@@ -1,0 +1,11 @@
+appId: com.getmarque.app
+name: Media grid layout check
+---
+- launchApp: { arguments: { demoHome: 1 } }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: "Media"
+- extendedWaitUntil:
+    visible: "Import media"
+    timeout: 8000
+- takeScreenshot: /tmp/r6-media-grid

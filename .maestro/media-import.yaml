@@ -1,0 +1,25 @@
+appId: com.getmarque.app
+name: Import media + check grid
+---
+- launchApp: { arguments: { demoHome: 1 } }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: "Media"
+- tapOn: { id: "library.importMedia" }
+- extendedWaitUntil:
+    visible: "Photos"
+    timeout: 8000
+- tapOn: { point: "18%,32%" }
+- tapOn: { point: "50%,32%" }
+- tapOn: { point: "82%,32%" }
+- tapOn: { point: "18%,50%" }
+- tapOn: { point: "50%,50%" }
+- runFlow:
+    when:
+      visible: "Add"
+    commands:
+      - tapOn: "Add"
+- extendedWaitUntil:
+    visible: "in your media library"
+    timeout: 12000
+- takeScreenshot: /tmp/r6-media-grid2

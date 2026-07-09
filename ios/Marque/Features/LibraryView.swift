@@ -388,7 +388,11 @@ struct MediaSection: View {
     @State private var picked: [PhotosPickerItem] = []
     @State private var importing = false
     @State private var edit: MediaAsset?
-    private let cols = [GridItem(.adaptive(minimum: 92), spacing: Space.sm)]
+    // Fixed 3-column square grid — the old .adaptive + aspectRatio(.fill) let each cell take
+    // its image's natural shape, so rows came out ragged with bleed/overlap.
+    private let cols = [GridItem(.flexible(), spacing: Space.sm),
+                        GridItem(.flexible(), spacing: Space.sm),
+                        GridItem(.flexible(), spacing: Space.sm)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
@@ -430,22 +434,52 @@ struct MediaSection: View {
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 LazyVGrid(columns: cols, spacing: Space.sm) {
                     ForEach(store.media) { m in
-                        Button { edit = m } label: {
-                            LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo)
-                                .aspectRatio(1, contentMode: .fill)
-                                .frame(minHeight: 92).clipped()
-                                .overlay(alignment: .bottomLeading) {
-                                    Text(m.kind.label).font(.system(size: 9, weight: .semibold))
-                                        .foregroundStyle(.white).padding(.horizontal, 5).padding(.vertical, 2)
-                                        .background(Palette.ink.opacity(0.6)).clipShape(Capsule()).padding(4)
-                                }
-                        }
-                        .buttonStyle(.plain)
+                        Button { edit = m } label: { mediaCell(m) }
+                            .buttonStyle(.plain)
                     }
                 }
             }
         }
         .sheet(item: $edit) { MediaEditSheet(asset: $0) }
+    }
+
+    /// A guaranteed-square cell: Color.clear pins the 1:1 frame, the thumbnail fills it and
+    /// is clipped — so mixed portrait/landscape media all render as an even grid.
+    private func mediaCell(_ m: MediaAsset) -> some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay(LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo).scaledToFill())
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(alignment: .bottomLeading) { kindChip(m) }
+            .overlay(alignment: .topTrailing) { analysisBadge(m) }
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 0.5))
+            .accessibilityIdentifier("library.mediaCell")
+    }
+
+    private func kindChip(_ m: MediaAsset) -> some View {
+        Text(m.kind.label).font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.white).padding(.horizontal, 5).padding(.vertical, 2)
+            .background(Palette.ink.opacity(0.6)).clipShape(Capsule()).padding(4)
+    }
+
+    /// I-5: analysis-state badge — ✓ analyzed, spinner while running, ! on failure, nothing yet.
+    @ViewBuilder private func analysisBadge(_ m: MediaAsset) -> some View {
+        switch (store.media.first { $0.id == m.id }?.analysisStatus ?? m.analysisStatus) {
+        case .done:
+            Image(systemName: "checkmark").font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white).frame(width: 16, height: 16)
+                .background(Circle().fill(Palette.ink)).padding(4)
+        case .analyzing:
+            ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
+                .background(Circle().fill(Palette.ink.opacity(0.5))).padding(4)
+        case .failed:
+            Image(systemName: "exclamationmark").font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.white).frame(width: 16, height: 16)
+                .background(Circle().fill(Palette.critical)).padding(4)
+        case .none:
+            EmptyView()
+        }
     }
 }
 
