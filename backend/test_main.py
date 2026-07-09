@@ -156,6 +156,41 @@ def test_publish_mock_when_no_target_accounts():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+def test_trends_mock_rotates_by_bucket(monkeypatch):
+    # W1-2: the mock trend list rotates by the 6h time bucket so the ticker isn't frozen.
+    monkeypatch.setattr(main, "_niche_trends_cache", {})
+    monkeypatch.setattr(main.time, "time", lambda: 0.0)
+    a = client.get("/v1/trends", params={"niche": "fitness"}).json()
+    monkeypatch.setattr(main.time, "time", lambda: 6 * 3600.0 + 1)
+    b = client.get("/v1/trends", params={"niche": "fitness"}).json()
+    assert a["mode"] == "mock" and b["mode"] == "mock"
+    assert len(a["trends"]) == len(b["trends"]) == 6
+    assert a["trends"][0]["title"] != b["trends"][0]["title"]   # rotated
+
+
+def test_heuristic_niche_trends_computed_stats():
+    posts = [{"caption": "5 mistakes killing your gains", "views": 90000},
+             {"caption": "5 rules for protein", "views": 40000},
+             {"caption": "the truth about cardio", "views": 10000}]
+    trends = main._heuristic_niche_trends("fitness", posts)
+    assert trends and all("formatId" in t and t["formatId"] in main.FORMAT_IDS for t in trends)
+    assert "views" in trends[0]["why"]                          # real computed stat, not invented
+    assert trends[0]["formatId"] == "listicle"                  # highest-view cluster
+
+
+def test_trends_live_swr(monkeypatch):
+    key = main._niche_cache_key("fitness")
+    monkeypatch.setattr(main, "_niche_trends_cache",
+                        {key: {"trends": [{"title": "Live one", "why": "w", "formatId": "listicle"}], "ts": 9e18}})
+    r = client.get("/v1/trends", params={"niche": "fitness"}).json()
+    assert r["mode"] == "live" and r["trends"][0]["title"] == "Live one"
+
+
+def test_niche_trends_prompt_shape():
+    sysp, usr = prompts.niche_trends_prompt("fitness", [{"caption": "5 rules"}])
+    assert "fitness" in sysp and "JSON array" in sysp
+
+
 def test_grounding_block_in_generation_prompts():
     # W3: no-fabrication rule injected into scripts/hooks/mimic/revise/analyze systems.
     assert "GROUNDING" in prompts.scripts_prompt({"niche": "fitness"}, {"name": "P"}, "talking_head", 2)[0]

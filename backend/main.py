@@ -1520,12 +1520,14 @@ async def score(req: ScoreRequest):
 
 @app.get("/v1/trends")
 async def trends(niche: str = ""):
-    # DECISION (2026-07): real trend-scraping is explicitly deferred, not a live
-    # gap to close opportunistically. The niche-aware mock set is good enough for
-    # the current surface (a ticker line, not a ranked feed); wiring a scrape job
-    # here is only worth it once trends becomes a primary discovery surface.
+    # W1: serve live niche trends (derived from the scraped reels corpus) when available;
+    # else the mock set ROTATED by the 6h bucket so the ticker never looks frozen.
+    live = _niche_live_trends(niche)
+    if live:
+        return {"mode": "live", "trends": live}
     base = mock_trends(niche)
-    return {"mode": "mock", "trends": base}
+    shift = _trend_bucket() % len(base)
+    return {"mode": "mock", "trends": base[shift:] + base[:shift]}
 
 
 # ---------------------------------------------------------------------------
@@ -4811,6 +4813,91 @@ def _niche_real_reels(niche: str) -> list[dict]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# W1: live niche trends — derived from the SAME scraped corpus the reels use (zero extra
+# Apify spend). Heuristic format-clustering with computed view stats (honest numbers), plus
+# an optional HAIKU naming pass. SWR-on-request; falls back to the rotated mock keyless.
+# ---------------------------------------------------------------------------
+
+_TREND_BUCKET_S = 6 * 3600
+_niche_trends_cache: dict[str, dict] = {}     # key -> {"trends", "ts"}
+_trends_refreshing: set[str] = set()
+_NICHE_TRENDS_TTL_S = 24 * 3600
+
+_TREND_TITLES = {
+    "listicle": "Rapid-fire {n} listicles", "myth-buster": "Myth-busting {n} takes",
+    "do-this-not-that": "“Do this, not that” {n} splits", "before-after": "{n} before/after receipts",
+    "pov-story": "POV {n} stories", "broll-hook": "B-roll hook {n} explainers", "faceless": "Faceless {n} explainers",
+}
+
+
+def _trend_bucket() -> int:
+    return int(time.time() // _TREND_BUCKET_S)
+
+
+def _heuristic_niche_trends(niche: str, posts: list[dict]) -> list[dict]:
+    """Cluster the scraped posts by format, rank by combined views — the 'why' is a REAL
+    computed stat (honesty rule), never invented."""
+    from collections import defaultdict
+    agg: dict[str, dict] = defaultdict(lambda: {"count": 0, "views": 0})
+    for p in posts:
+        fmt = _heuristic_reel_annotation(p)["format_id"]
+        agg[fmt]["count"] += 1
+        agg[fmt]["views"] += p.get("views", 0) or (p.get("likes", 0) * 10)
+    total = max(1, len(posts))
+    ranked = sorted(agg.items(), key=lambda kv: kv[1]["views"], reverse=True)[:6]
+    out = []
+    for fmt, s in ranked:
+        title = _TREND_TITLES.get(fmt, f"{fmt.replace('-', ' ').title()} {niche}").format(n=niche)
+        why = (f"{s['count']} of the top {total} {niche} reels right now are {fmt.replace('-', ' ')} — "
+               f"{_compact_count(s['views'])} combined views.")
+        out.append({"title": title, "why": why, "formatId": fmt})
+    return out
+
+
+async def _refresh_niche_trends(niche: str) -> None:
+    key = _niche_cache_key(niche)
+    try:
+        # Reuse the reels corpus if fresh, else a light scrape.
+        reels_entry = _niche_reels_cache.get(key)
+        posts = await scrape_niche_posts(niche, limit=20) if not reels_entry else \
+            [{"caption": r.get("hook_text", ""), "views": r.get("views", 0), "likes": r.get("likes", 0),
+              "transcript": r.get("transcript", "")} for r in reels_entry["reels"]]
+        trends = _heuristic_niche_trends(niche, posts)
+        if not trends:
+            return
+        if ANTHROPIC_KEY and AI_QUALITY:
+            try:
+                sysp, usr = prompts.niche_trends_prompt(niche, posts[:12])
+                named = extract_json(await anthropic(sysp, usr, HAIKU, 800), array=True) or []
+                clean = [{"title": str(t.get("title", ""))[:80], "why": str(t.get("why", ""))[:160],
+                          "formatId": t.get("formatId") if t.get("formatId") in FORMAT_IDS else "pov-story"}
+                         for t in named if isinstance(t, dict) and t.get("title")][:6]
+                if clean:
+                    trends = clean
+            except HTTPException:
+                pass
+        _niche_trends_cache[key] = {"trends": trends, "ts": time.time()}
+        _cap_evict(_niche_trends_cache, 128)
+    except Exception as e:
+        logging.warning("niche trends refresh failed for %s: %s", niche, e)
+    finally:
+        _trends_refreshing.discard(key)
+
+
+def _niche_live_trends(niche: str) -> list[dict] | None:
+    if not niche.strip():
+        return None
+    key = _niche_cache_key(niche)
+    entry = _niche_trends_cache.get(key)
+    out = list(entry["trends"]) if entry else None
+    stale = not entry or (time.time() - entry["ts"]) > _NICHE_TRENDS_TTL_S
+    if stale and APIFY_KEY and key not in _trends_refreshing:
+        _trends_refreshing.add(key)
+        _spawn(_refresh_niche_trends(niche))
+    return out
+
+
 class ReelsWarmRequest(BaseModel):
     handle: str = ""
     platform: str = "instagram"
@@ -4930,8 +5017,10 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
     reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
     items += [{"type": "reel", "reel": r} for r in reel_result.get("reels", [])[:4]]
 
-    all_trends = mock_trends(niche)
-    items.append({"type": "trend", "trend": all_trends[cursor % len(all_trends)]})
+    # W1: live niche trends when cached, else mock ROTATED by cursor + 6h bucket so a
+    # given page's trend actually changes through the day.
+    all_trends = _niche_live_trends(niche) or mock_trends(niche)
+    items.append({"type": "trend", "trend": all_trends[(cursor + _trend_bucket()) % len(all_trends)]})
 
     reels_more = reel_result.get("next_cursor") is not None
     next_cursor = cursor + 1 if (cursor + 1 < _FEED_MAX_PAGES or reels_more) else None

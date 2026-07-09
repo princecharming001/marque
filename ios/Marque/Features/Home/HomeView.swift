@@ -21,7 +21,7 @@ struct HomeView: View {
                     .staggerReveal(1)
                 picksSection.staggerReveal(2)
                 if let trend = feed.trend {
-                    TrendTicker(trend: trend).staggerReveal(3)
+                    TrendTicker(trend: trend, all: store.trends).staggerReveal(3)
                 }
                 stealSection.staggerReveal(4)
             }
@@ -37,6 +37,7 @@ struct HomeView: View {
             ReelDetailSheet(reel: reel)
         }
         .task { await feed.loadInitial(store: store) }
+        .task { await store.loadTrends() }          // W1: full niche-trend list for the rotating ticker
         .refreshable { await feed.refresh(store: store) }
         .navigationDestination(for: String.self) { dest in
             if dest == "profile" { ProfileView() }

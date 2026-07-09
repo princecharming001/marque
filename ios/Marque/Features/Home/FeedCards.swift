@@ -164,6 +164,7 @@ struct ReelCard: View {
 
 struct TrendTicker: View {
     let trend: TrendItem
+    var all: [TrendItem] = []          // W1: the full niche-trend list (rotates the ticker)
     @State private var currentIndex = 0
     @State private var allTrends: [TrendItem] = []
     @State private var expanded = false
@@ -215,7 +216,13 @@ struct TrendTicker: View {
         }
         .onAppear {
             withAnimation(Motion.breath) { pulse = true }
-            allTrends = [trend] // seed with initial trend; backend would populate allTrends for multi-trend carousel
+            // W1: seed with the full list when present so scheduleRotation actually cycles.
+            allTrends = all.count > 1 ? all : [trend]
+            scheduleRotation()
+        }
+        .onChange(of: all) { _, new in
+            allTrends = new.count > 1 ? new : [trend]
+            currentIndex = 0
             scheduleRotation()
         }
     }

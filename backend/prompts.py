@@ -1617,6 +1617,29 @@ def next_idea_prompt(niche: str, insight: dict | None) -> tuple[str, str]:
     return system, user
 
 
+def niche_trends_prompt(niche: str, posts: list[dict]) -> tuple[str, str]:
+    """Name 5-6 live trends for a niche from the REAL scraped top posts. Same number
+    discipline as the rest of the system: the 'why' may reference what's observed, but
+    must not invent statistics — describe the pattern, not a fabricated metric."""
+    system = (
+        f"You name the 5-6 short-form content trends spiking in the '{niche}' niche RIGHT NOW, from a "
+        "sample of its current top-performing posts.\n"
+        "HARD RULES:\n"
+        "- Base every trend on patterns actually visible in the posts below (format, hook shape, theme).\n"
+        "- The 'why' describes the observed pattern; do NOT invent view counts or percentages.\n"
+        "- Each formatId must be one of: " + ", ".join(sorted(FORMAT_IDS)) + ".\n"
+        'Return ONLY a JSON array: [{"title": "<max 8 words>", "why": "<one sentence>", "formatId": "<id>"}]'
+    )
+    lines = []
+    for p in posts[:12]:
+        cap = (p.get("transcript") or p.get("caption") or "").strip()[:160]
+        if cap:
+            lines.append(f"- {cap}")
+    user = (f"Top {niche} posts right now:\n" + ("\n".join(lines) or "(no samples)")
+            + "\n\nName the 5-6 trends.")
+    return system, user
+
+
 def coach_card_prompt(insight: dict) -> tuple[str, str]:
     """Phrase the Today-coach card from ONE pre-computed insight. Same number
     discipline as attribution_prompt: the lift is used verbatim or the caller
