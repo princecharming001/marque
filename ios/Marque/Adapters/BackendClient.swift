@@ -790,6 +790,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
         struct FormatMix: Decodable { let format: String; let count: Int }
         let mode: String?
+        let no_data: Bool?          // C-04/C-05: true when the series is placeholder, not measured
+        let best_hour: Int?         // C-11/C-12: the creator's real best posting hour
         let days: Int
         let totals: Totals
         let platforms: [String: PlatformStats]

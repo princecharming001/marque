@@ -112,7 +112,13 @@ struct InsightsSection: View {
     /// The learning loop needs real posted metrics before it has anything to say —
     /// gate on posts_learned (populated once /v1/metrics/ingest has fired at least
     /// once), the same signal the backend uses for learning_progress.
-    private var hasLearningData: Bool { store.postsLearned > 0 }
+    // C-05: honest empty state whenever the data is placeholder — not just when postsLearned==0.
+    // The backend flags a seeded/placeholder series with no_data:true (or mode:"mock").
+    private var hasLearningData: Bool {
+        guard store.postsLearned > 0 else { return false }
+        guard let s = summary else { return true }             // still loading → don't flash the teaser
+        return !(s.no_data ?? false) && s.mode != "mock"
+    }
     private let learningTarget = 15   // mirrors backend main.py get_learned_insights target
 
     var body: some View {
@@ -178,6 +184,7 @@ struct InsightsSection: View {
         }
         .task {
             summary = await store.backend.fetchPerformanceSummary(days: 30)
+            store.learnedBestHour = summary?.best_hour          // C-12
             await store.loadInsights()
             loaded = true
         }

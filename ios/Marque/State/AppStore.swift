@@ -885,8 +885,11 @@ final class AppStore {
 
     /// Plain-language best-time guidance (evenings skew best for most creator niches). Guidance,
     /// not a measured optimum — we never present it as a precise, data-derived number.
+    var learnedBestHour: Int? = nil     // C-12: the creator's measured best hour (from settled posts)
     func bestPostTime(on day: Date) -> Date {
-        Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: day) ?? day
+        // C-12: use the measured best hour when the learning loop has it; else 6 PM guidance.
+        let hour = learnedBestHour ?? 18
+        return Calendar.current.date(bySettingHour: hour, minute: 0, second: 0, of: day) ?? day
     }
 
     // MARK: Reminders (local notifications) — powers the "consistency" promise
