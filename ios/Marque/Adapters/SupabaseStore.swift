@@ -13,6 +13,19 @@ struct SupabaseStore: RemotePersistence {
     private let table = "app_state"
     private var configured: Bool { !AppConfig.supabaseURL.isEmpty && !AppConfig.supabaseAnonKey.isEmpty }
 
+    // C-13: key the mirror by the signed-in creator's userId so a reinstall +
+    // sign-in restores their state. The per-install deviceKey (which regenerates
+    // on every fresh install, making restore impossible) is only the fallback for
+    // a not-yet-authed session.
+    private var rowKey: String {
+        if let data = UserDefaults.standard.data(forKey: "marque.auth.v1"),
+           let auth = try? JSONDecoder().decode(AuthState.self, from: data),
+           !auth.userId.isEmpty {
+            return auth.userId
+        }
+        return deviceKey
+    }
+
     private var deviceKey: String {
         if let k = UserDefaults.standard.string(forKey: "device.key") { return k }
         let k = UUID().uuidString
@@ -35,13 +48,13 @@ struct SupabaseStore: RemotePersistence {
         guard var req = request(table, method: "POST") else { return }
         req.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
         let snapshot = (try? JSONSerialization.jsonObject(with: data)) ?? [:]
-        let row: [String: Any] = ["id": deviceKey, "snapshot": snapshot]
+        let row: [String: Any] = ["id": rowKey, "snapshot": snapshot]
         req.httpBody = try? JSONSerialization.data(withJSONObject: [row])
         _ = try? await URLSession.shared.data(for: req)
     }
 
     func pull() async -> Data? {
-        guard let req = request("\(table)?id=eq.\(deviceKey)&select=snapshot", method: "GET") else { return nil }
+        guard let req = request("\(table)?id=eq.\(rowKey)&select=snapshot", method: "GET") else { return nil }
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
         guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],

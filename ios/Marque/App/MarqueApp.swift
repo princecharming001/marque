@@ -71,6 +71,12 @@ struct RootView: View {
         .onChange(of: net.isOnline) { _, online in
             if online { Task { await store.retryPendingPublishes() } }
         }
+        // C-13: on cold-start-when-signed-in and whenever the creator signs in
+        // (userId changes), pull their cloud snapshot — restores state after a
+        // reinstall. No-op unless Supabase is configured and local is empty.
+        .task(id: store.auth.state?.userId) {
+            if store.auth.isAuthed { await store.restoreFromCloud() }
+        }
     }
 }
 

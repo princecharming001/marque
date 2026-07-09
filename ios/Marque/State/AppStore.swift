@@ -1200,9 +1200,31 @@ final class AppStore {
         }
     }
 
+    /// C-13: pull-on-sign-in restore. Keyed by the auth userId (see SupabaseStore.rowKey),
+    /// so a reinstall + sign-in brings the creator's state back. Conservative merge:
+    /// adopt the remote snapshot ONLY when the local store is effectively empty
+    /// (fresh install / nothing created) — we never overwrite non-empty local work.
+    /// No-op when Supabase isn't configured or nothing is stored remotely.
+    func restoreFromCloud() async {
+        guard !AppConfig.supabaseAnonKey.isEmpty else { return }
+        // "Effectively empty" = the user hasn't built anything worth protecting here.
+        let localHasContent = hasOnboarded || !scripts.isEmpty || !clips.isEmpty
+            || !readiedScripts.isEmpty || !media.isEmpty
+        guard !localHasContent else { return }
+        guard let data = await remote.pull(),
+              let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        applySnapshot(snap)
+        save()   // write the restored state into local UserDefaults as the new baseline
+    }
+
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: saveKey),
               let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        applySnapshot(snap)
+    }
+
+    /// Shared snapshot→state application, used by both local load() and cloud restore.
+    private func applySnapshot(_ snap: Snapshot) {
         brand = snap.brand; pillars = snap.pillars; scripts = snap.scripts
         clips = snap.clips; footage = snap.footage; media = snap.media
         schedule = snap.schedule; teardowns = snap.teardowns
