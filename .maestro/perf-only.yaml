@@ -1,0 +1,9 @@
+appId: com.getmarque.app
+name: Perf tracker verify
+---
+- tapOn: "Performance"
+- extendedWaitUntil:
+    visible:
+      id: "performance.periodToggle"
+    timeout: 10000
+- takeScreenshot: /tmp/r5-v2-perf

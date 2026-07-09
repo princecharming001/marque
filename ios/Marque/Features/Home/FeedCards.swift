@@ -17,7 +17,7 @@ struct ScriptFeedCard: View {
     var onOpen: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(alignment: .leading, spacing: Space.md) {
             HStack {
                 FormatTag(formatId: script.formatId)
                 Spacer()
@@ -26,18 +26,12 @@ struct ScriptFeedCard: View {
                     .foregroundStyle(Palette.textTertiary)
             }
             // Titles are clamped server-side (≤42 chars) so three lines always
-            // fits the whole thing — never an ellipsis mid-word.
-            Text(script.title.isEmpty ? script.hook.text : script.title)
+            // fits the whole thing — never an ellipsis mid-word. Lowercase for the
+            // editorial look — the classification above carries the caps.
+            Text((script.title.isEmpty ? script.hook.text : script.title).lowercased())
                 .font(AppFont.serifM).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-            // The hook quote earns its slot only when it says something the title
-            // doesn't — a no-title card already leads with the hook.
-            if !script.title.isEmpty, !script.hook.text.hasPrefix(String(script.title.prefix(24))) {
-                Text("\u{201C}\(script.hook.text)\u{201D}")
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                    .lineLimit(2)
-            }
             Spacer(minLength: 0)
             HStack(spacing: Space.sm) {
                 Button(action: onFilm) {

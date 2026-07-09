@@ -334,14 +334,14 @@ struct EmptyStateView: View {
     }
 }
 
-// Format classification mark (myth-buster, pov/story, …) — bare lowercase text,
-// no background, no border, no icon. The quietest possible label: type does all
-// the work, tracking gives it just enough presence to read as a classification.
+// Format classification mark (MYTH-BUSTER, POV/STORY, …) — bare tracked caps,
+// no background, no border, no icon. The classification reads as a small label;
+// the card's title (set lowercase) carries the visual weight.
 struct FormatTag: View {
     let formatId: String
     var body: some View {
-        Text(Catalog.format(formatId).name.lowercased())
-            .font(Typeface.sans(11, .medium)).tracking(0.9)
+        Text(Catalog.format(formatId).name.uppercased())
+            .font(Typeface.sans(11, .semibold)).tracking(Track.label)
             .foregroundStyle(Palette.textTertiary)
     }
 }

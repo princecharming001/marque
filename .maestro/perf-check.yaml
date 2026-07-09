@@ -1,0 +1,20 @@
+appId: com.getmarque.app
+name: Perf tracker + pick tag/title
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "feed.pick"
+    timeout: 25000
+- takeScreenshot: /tmp/r5-v2-picks
+- tapOn: "Performance"
+- extendedWaitUntil:
+    visible:
+      id: "performance.periodToggle"
+    timeout: 10000
+- takeScreenshot: /tmp/r5-v2-perf

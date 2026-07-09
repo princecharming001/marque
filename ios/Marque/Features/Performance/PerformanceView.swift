@@ -107,119 +107,116 @@ struct InsightsSection: View {
     @Environment(AppRouter.self) private var router
     @State private var summary: BackendClient.PerformanceSummary?
     @State private var platform = 0   // 0 all · 1 instagram · 2 tiktok
+    @State private var period = 1     // 0 = 7d · 1 = 30d · 2 = 90d
     @State private var loaded = false
+    @State private var loading = false
 
-    /// The learning loop needs real posted metrics before it has anything to say —
-    /// gate on posts_learned (populated once /v1/metrics/ingest has fired at least
-    /// once), the same signal the backend uses for learning_progress.
-    // C-05: honest empty state whenever the data is placeholder — not just when postsLearned==0.
-    // The backend flags a seeded/placeholder series with no_data:true (or mode:"mock").
-    private var hasLearningData: Bool {
-        guard store.postsLearned > 0 else { return false }
-        guard let s = summary else { return true }             // still loading → don't flash the teaser
+    private let periodDays = [7, 30, 90]
+    private let periodLabels = ["7 days", "30 days", "90 days"]
+
+    /// Real, measured data — as opposed to a seeded/placeholder series the backend
+    /// flags with no_data:true or mode:"mock". When false we still show the tracker,
+    /// just with honest zeros and a one-line note (never a "post N to unlock" gate).
+    private var hasRealData: Bool {
+        guard let s = summary else { return false }
         return !(s.no_data ?? false) && s.mode != "mock"
     }
-    private let learningTarget = 15   // mirrors backend main.py get_learned_insights target
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            SectionLabel(text: "Last 30 days", accent: Palette.accent)
+            HStack {
+                SectionLabel(text: "Performance", accent: Palette.accent)
+                Spacer()
+                if loading { ProgressView().controlSize(.small).tint(Palette.textTertiary) }
+            }
 
-            if loaded, !hasLearningData {
-                learningTeaser
-            } else {
-                Picker("Platform", selection: $platform) {
-                    Text("All").tag(0); Text("Instagram").tag(1); Text("TikTok").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("performance.platformToggle")
+            // Time-window selector — the tracker always shows YOUR account over the
+            // chosen span, whether or not the learning loop has enough to coach on.
+            Picker("Period", selection: $period) {
+                ForEach(0..<periodDays.count, id: \.self) { i in Text(periodLabels[i]).tag(i) }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("performance.periodToggle")
+            .onChange(of: period) { _, _ in Task { await reload() } }
 
-                // Coach persona picker — controls the tone of performance coaching feedback
+            Picker("Platform", selection: $platform) {
+                Text("All").tag(0); Text("Instagram").tag(1); Text("TikTok").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("performance.platformToggle")
+
+            // Stat tiles — always present, real numbers or honest zeros.
+            HStack(spacing: Space.md) {
+                statTile(summary.map { compactNumber(views($0)) } ?? "—", "Views")
+                statTile(summary.map { compactNumber(likes($0)) } ?? "—", "Likes")
+                statTile(summary.map { "+\(follows($0))" } ?? "—", "Follows")
+            }
+
+            if let s = summary, platform == 0, s.daily.contains(where: { $0.views > 0 }) {
+                Sparkline(values: normalized(s.daily.map { Double($0.views) }))
+                    .frame(height: 44)
+                    .padding(.vertical, Space.xs)
+            }
+
+            if loaded, !hasRealData {
+                // Honest, quiet note — not a locked feature.
+                Text("No posts in this window yet. Publish a clip and your views, likes, and follows show up here.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Coaching read-out (only when the loop has something real to say).
+            if hasRealData, !store.coaching.isEmpty {
+                MarqueHairline().padding(.vertical, Space.xs)
                 VStack(alignment: .leading, spacing: Space.sm) {
-                    Text("COACH").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                    HStack(spacing: Space.sm) {
-                        ForEach(ChatPersona.allCases) { persona in
-                            Button { store.coachPersona = persona } label: {
-                                VStack(spacing: 4) {
-                                    Image(systemName: persona.icon)
-                                        .font(.system(size: 14, weight: .semibold))
-                                    Text(persona.label)
-                                        .font(AppFont.micro).tracking(0.3)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(Space.md)
-                                .background(store.coachPersona == persona ? Color(hex: persona.glow) : Palette.surfaceRaised)
-                                .foregroundStyle(store.coachPersona == persona ? Color.white : Palette.textPrimary)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                    .strokeBorder(store.coachPersona == persona ? Color.clear : Palette.hairline, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("performance.coach.\(persona.rawValue)")
-                        }
+                    HStack {
+                        Text("YOUR COACH").font(AppFont.micro).tracking(Track.label)
+                            .foregroundStyle(Palette.textTertiary)
+                        Spacer()
                     }
-                }
-
-                if let s = summary {
-                    HStack(spacing: Space.md) {
-                        statTile(compactNumber(views(s)), "Views")
-                        statTile(compactNumber(likes(s)), "Likes")
-                        statTile("+\(follows(s))", "Follows")
-                    }
-                    if platform == 0, !s.daily.isEmpty {
-                        Sparkline(values: normalized(s.daily.map { Double($0.views) }))
-                            .frame(height: 44)
-                            .padding(.vertical, Space.xs)
-                    }
-                    if !store.coaching.isEmpty {
-                        Text(store.coaching)
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                            .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-                    }
-                } else {
-                    HStack { Spacer(); ProgressView().tint(Palette.accent); Spacer() }
-                        .padding(.vertical, Space.lg)
+                    Text(store.coaching)
+                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                    coachPicker
                 }
             }
         }
         .task {
-            summary = await store.backend.fetchPerformanceSummary(days: 30)
-            store.learnedBestHour = summary?.best_hour          // C-12
-            await store.loadInsights()
-            loaded = true
+            if !loaded { await reload(); loaded = true }
         }
     }
 
-    /// Pre-data locked state: markets what's coming (a real, personalized winning
-    /// formula) instead of showing empty tiles, and gives the tab a reason to pull
-    /// creators back before they've posted anything.
-    private var learningTeaser: some View {
-        VStack(spacing: Space.md) {
-            Image(systemName: "chart.line.uptrend.xyaxis")
-                .font(.system(size: 19, weight: .light)).foregroundStyle(Palette.textTertiary)
-            Text("Unlock your winning formula")
-                .font(Typeface.display(21, .semibold)).tracking(Track.title)
-                .foregroundStyle(Palette.textPrimary)
-            Text("Post \(learningTarget) clips and Yunicorn learns what actually works for you — the hooks, formats, and topics ranked by real results.")
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
-                .frame(maxWidth: 300)
-                .fixedSize(horizontal: false, vertical: true)
+    private func reload() async {
+        loading = true
+        summary = await store.backend.fetchPerformanceSummary(days: periodDays[period])
+        store.learnedBestHour = summary?.best_hour          // C-12
+        await store.loadInsights()
+        loading = false
+    }
 
-            VStack(spacing: Space.xs) {
-                ProgressView(value: Double(store.postsLearned), total: Double(learningTarget))
-                    .tint(Palette.accent)
-                Text("\(store.postsLearned) of \(learningTarget) posts")
-                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+    // Coach-tone picker — controls how the coaching read-out is phrased.
+    private var coachPicker: some View {
+        HStack(spacing: Space.sm) {
+            ForEach(ChatPersona.allCases) { persona in
+                Button { store.coachPersona = persona } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: persona.icon).font(.system(size: 14, weight: .semibold))
+                        Text(persona.label).font(AppFont.micro).tracking(0.3)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(Space.md)
+                    .background(store.coachPersona == persona ? Color(hex: persona.glow) : Palette.surfaceRaised)
+                    .foregroundStyle(store.coachPersona == persona ? Color.white : Palette.textPrimary)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(store.coachPersona == persona ? Color.clear : Palette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("performance.coach.\(persona.rawValue)")
             }
-            .padding(.horizontal, Space.xl)
-
-            PrimaryButton(title: "Film your next clip") { router.showFilm = true }
-                .accessibilityIdentifier("performance.learningTeaserFilm")
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Space.lg)
+        .padding(.top, Space.xs)
     }
 
     private func views(_ s: BackendClient.PerformanceSummary) -> Int {
