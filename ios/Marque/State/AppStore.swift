@@ -428,7 +428,10 @@ final class AppStore {
 
     func steer(_ script: Script, instruction: String) async {
         let updated = await llm.steer(script: script, brand: brand, instruction: instruction)
+        // Upsert, not update-if-present: a feed pick opened straight from Home
+        // isn't in `scripts` yet — refining it must not silently no-op.
         if let idx = scripts.firstIndex(where: { $0.id == script.id }) { scripts[idx] = updated }
+        else { scripts.insert(updated, at: 0) }
         save()
     }
 

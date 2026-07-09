@@ -1,0 +1,37 @@
+appId: com.getmarque.app
+name: Pick card plain tag + refine chat composer
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "feed.pick"
+    timeout: 20000
+- takeScreenshot: /tmp/r5-plain-tag
+- tapOn:
+    id: "feed.pick"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "script.record"
+    timeout: 8000
+- scrollUntilVisible:
+    element:
+      id: "script.refineField"
+    direction: DOWN
+    timeout: 10000
+    visibilityPercentage: 50
+- tapOn:
+    id: "script.refineField"
+- inputText: "make the hook about busy parents"
+- tapOn:
+    id: "script.refineSend"
+- extendedWaitUntil:
+    visible: "make the hook about busy parents"
+    timeout: 15000
+- takeScreenshot: /tmp/r5-refine-chat

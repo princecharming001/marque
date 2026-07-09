@@ -7,6 +7,9 @@ struct ScriptReaderView: View {
     @State private var showHookLab = false
     @State private var showRecord = false
     @State private var steering = false
+    @State private var refineDraft = ""         // free-text refine ("chat with the script")
+    @State private var appliedRefinements: [String] = []
+    @FocusState private var refineFocused: Bool
     @State private var editingBody = false
     @State private var bodyDraft = ""
     @State private var editingHook = false
@@ -179,14 +182,82 @@ struct ScriptReaderView: View {
                 HStack(spacing: Space.sm) {
                     ForEach(["Shorter", "More contrarian", "Funnier", "More personal"], id: \.self) { label in
                         Button {
-                            steering = true
-                            Task { await store.steer(live, instruction: label); steering = false }
+                            applyRefinement(label)
                         } label: { Chip(text: label) }.buttonStyle(.plain)
                         .accessibilityIdentifier("script.steer")
                     }
                 }
             }
-            if steering { ProgressView().tint(Palette.gold) }
+
+            // Free-text refine — tell Yunicorn exactly what to change, in your words.
+            // Same steer pipeline as the chips; the rewrite lands in place above.
+            HStack(alignment: .bottom, spacing: Space.sm) {
+                TextField("Tell Yunicorn what to change…", text: $refineDraft, axis: .vertical)
+                    .font(AppFont.body)
+                    .lineLimit(1...3)
+                    .focused($refineFocused)
+                    .padding(.horizontal, Space.md).padding(.vertical, 11)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                    .onSubmit { sendRefine() }
+                    .accessibilityIdentifier("script.refineField")
+                Button(action: sendRefine) {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Palette.onInk)
+                        .frame(width: 38, height: 38)
+                        .background(Circle().fill(canSendRefine ? Palette.ink : Palette.textTertiary.opacity(0.4)))
+                }
+                .buttonStyle(PressableStyle())
+                .disabled(!canSendRefine)
+                .accessibilityIdentifier("script.refineSend")
+            }
+            .padding(.top, Space.xs)
+
+            if steering {
+                HStack(spacing: Space.sm) {
+                    ProgressView().controlSize(.small).tint(Palette.gold)
+                    Text("Rewriting…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                }
+            }
+            // Quiet log of what's been applied this session — reads as a mini
+            // conversation with the script.
+            ForEach(Array(appliedRefinements.enumerated()), id: \.offset) { _, instruction in
+                HStack(alignment: .top, spacing: Space.sm) {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                        .padding(.top, 3)
+                    Text(instruction)
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private var canSendRefine: Bool {
+        !refineDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !steering
+    }
+
+    private func sendRefine() {
+        let text = refineDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !steering else { return }
+        refineDraft = ""
+        refineFocused = false
+        applyRefinement(text)
+    }
+
+    /// One shared path for chips + free text: steer the script, log the instruction.
+    private func applyRefinement(_ instruction: String) {
+        guard !steering else { return }
+        steering = true
+        Task {
+            await store.steer(live, instruction: instruction)
+            appliedRefinements.append(instruction)
+            steering = false
         }
     }
 }

@@ -334,20 +334,15 @@ struct EmptyStateView: View {
     }
 }
 
-// Format classification mark (Myth-Buster, POV/Story, …) — letterpress caps on
-// liquid glass. No icon, no capsule: a small continuous-corner glass tag reads
-// as a quiet editorial label instead of a UI chip.
+// Format classification mark (myth-buster, pov/story, …) — bare lowercase text,
+// no background, no border, no icon. The quietest possible label: type does all
+// the work, tracking gives it just enough presence to read as a classification.
 struct FormatTag: View {
     let formatId: String
     var body: some View {
-        Text(Catalog.format(formatId).name.uppercased())
-            .font(Typeface.sans(10, .semibold)).tracking(1.2)
-            .foregroundStyle(Palette.textSecondary)
-            .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(.ultraThinMaterial,
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 0.75))
+        Text(Catalog.format(formatId).name.lowercased())
+            .font(Typeface.sans(11, .medium)).tracking(0.9)
+            .foregroundStyle(Palette.textTertiary)
     }
 }
 

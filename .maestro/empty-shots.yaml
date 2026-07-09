@@ -1,0 +1,14 @@
+appId: com.getmarque.app
+name: Library empty states after editorial restyle
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: "No clips yet"
+    timeout: 8000
+- takeScreenshot: /tmp/r5-empty-clips
