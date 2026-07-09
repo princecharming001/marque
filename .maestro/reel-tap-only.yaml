@@ -1,0 +1,12 @@
+appId: com.getmarque.app
+name: Tap visible reel → detail sheet (no relaunch)
+---
+- tapOn:
+    id: "feed.reel"
+    index: 0
+- extendedWaitUntil:
+    visible: "Why it's working"
+    timeout: 8000
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: /tmp/r5-reel-detail

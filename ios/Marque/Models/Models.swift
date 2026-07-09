@@ -586,6 +586,7 @@ struct ReelItem: Codable, Hashable, Identifiable {
     var formatId: String = "myth-buster"
     var style: String = "talking_head"
     var fromWatched: Bool = false
+    var transcribed: Bool = false   // real spoken transcript vs caption fallback
 }
 
 enum SavedScriptSource: String, Codable {

@@ -79,6 +79,9 @@ final class AppStore {
             hasOnboarded = true
             auth.continueAsDemo()
             subscription.devContinue()
+            // A demo home with an empty brand fetches an empty feed (no niche →
+            // no reels/trends). Give it a real one so demo == the real experience.
+            if brand.niche.isEmpty { brand.niche = "fitness" }
         }
         // Deterministic editor-verification entry: seed one READY clip with a
         // placeholder jobId so Library → Edit manually → ProEditorView opens

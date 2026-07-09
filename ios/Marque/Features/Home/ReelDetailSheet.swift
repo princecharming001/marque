@@ -105,7 +105,9 @@ struct ReelDetailSheet: View {
 
             if !reel.transcript.isEmpty {
                 VStack(alignment: .leading, spacing: Space.sm) {
-                    SectionLabel(text: "Structure", accent: nil)
+                    // Honest labeling: only call it a transcript when it IS the
+                    // spoken words — otherwise it's the post caption.
+                    SectionLabel(text: reel.transcribed ? "Transcript" : "Caption", accent: nil)
                     Text(reel.transcript)
                         .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                         .lineSpacing(5)
