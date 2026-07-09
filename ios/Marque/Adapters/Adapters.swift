@@ -11,7 +11,7 @@ protocol LLMRouting {
     func steer(script: Script, brand: BrandGraph, instruction: String) async -> Script
     func captions(for script: Script) async -> [String]
     func teardown(for clip: Clip) async -> TeardownCard
-    func interpretInsights(brand: BrandGraph, summary: String) async -> String
+    func interpretInsights(brand: BrandGraph, summary: String, persona: String) async -> String
 }
 
 extension LLMRouting {
@@ -259,7 +259,7 @@ struct MockLLMRouter: LLMRouting {
         }
     }
 
-    func interpretInsights(brand: BrandGraph, summary: String) async -> String {
+    func interpretInsights(brand: BrandGraph, summary: String, persona: String = "closer") async -> String {
         try? await Task.sleep(nanoseconds: 300_000_000)
         return "Your contrarian hooks are outperforming. Lean into myth-busting this week, and make two more in whichever format spiked."
     }

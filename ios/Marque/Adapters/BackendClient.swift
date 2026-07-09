@@ -240,11 +240,11 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                             liftPercent: min(100, max(0, r.liftPercent ?? 30)))
     }
 
-    func interpretInsights(brand: BrandGraph, summary: String) async -> String {
-        var body = brandBody(brand); body["summary"] = summary
+    func interpretInsights(brand: BrandGraph, summary: String, persona: String = "closer") async -> String {
+        var body = brandBody(brand); body["summary"] = summary; body["persona"] = persona   // C-09
         guard let data = await post("/v1/insights", body),
               let r = try? JSONDecoder().decode(InsightsResp.self, from: data), !r.coaching.isEmpty else {
-            return await fallback.interpretInsights(brand: brand, summary: summary)
+            return await fallback.interpretInsights(brand: brand, summary: summary, persona: persona)
         }
         note(r.mode)
         return r.coaching

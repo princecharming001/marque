@@ -12,7 +12,6 @@ struct SettingsView: View {
     @State private var showSignOutConfirm = false
     @State private var restoring = false
     @State private var notifPublished = UserDefaults.standard.bool(forKey: "notif.published")
-    @State private var notifRecap = UserDefaults.standard.bool(forKey: "notif.recap")
 
     var body: some View {
         @Bindable var store = store
@@ -96,19 +95,9 @@ struct SettingsView: View {
                         .tint(Palette.accent)
                         .onChange(of: notifPublished) { _, v in UserDefaults.standard.set(v, forKey: "notif.published") }
                         .padding(.horizontal, Space.md).padding(.vertical, 10)
-
-                        Divider().padding(.leading, Space.md)
-
-                        Toggle(isOn: $notifRecap) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Weekly recap").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                                Text("Your reach, top clip, and what to film next.")
-                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            }
-                        }
-                        .tint(Palette.accent)
-                        .onChange(of: notifRecap) { _, v in UserDefaults.standard.set(v, forKey: "notif.recap") }
-                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        // C-08: "Weekly recap" toggle removed — it wrote a UserDefaults key nothing
+                        // consumed (no recap generator exists). "Post published" above now backs a
+                        // real notification (C-03 retry-queue success path).
                     }
 
                     // MARK: Subscription

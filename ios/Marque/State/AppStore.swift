@@ -18,6 +18,7 @@ final class AppStore {
     var teardowns: [TeardownCard] = []
     var hasOnboarded = false
     var streak = 0
+    var lastStreakDate: Date? = nil      // C-06: day-based streak gate
 
     // V3: conversation memory + readied scripts + chat + edit prefs
     var memory = CreatorMemory()
@@ -520,8 +521,9 @@ final class AppStore {
             }
             notifyClipsReady(count: readyCount)
         }
-        // Consistency measures showing up: one per completed recording session.
-        streak += 1
+        // C-06: consecutive-DAY streak (the flame reads as a day-streak) — increments
+        // only on the first completed session of a calendar day.
+        bumpDailyStreak()
         save()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
@@ -589,7 +591,7 @@ final class AppStore {
         } else {
             notifyClipsReady(count: tagged.filter { $0.status == .ready }.count)
         }
-        streak += 1
+        bumpDailyStreak()
         save()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
@@ -1079,7 +1081,8 @@ final class AppStore {
         } else {
             summary = "\(activeClipCount) clips scheduled or posted this week; no performance data has come back yet."
         }
-        coaching = await llm.interpretInsights(brand: brand, summary: summary)
+        coaching = await llm.interpretInsights(brand: brand, summary: summary,
+                                               persona: (coachPersona ?? .closer).rawValue)   // C-09
     }
 
     // MARK: Today directive + weekly metrics
@@ -1144,6 +1147,7 @@ final class AppStore {
         var chatPersona: ChatPersona? = nil
         var chatResponseLength: ChatResponseLength? = nil
         var pendingPublishes: [ScheduledPost]? = nil   // C-03: transport-failure retry queue
+        var lastStreakDate: Date? = nil                // C-06
     }
 
     func save() {
@@ -1153,7 +1157,8 @@ final class AppStore {
                             memory: memory, readiedScripts: readiedScripts,
                             conversations: conversations, editPrefs: editPrefs,
                             brandSummary: brandSummary, chatPersona: chatPersona,
-                            chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes)
+                            chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes,
+                            lastStreakDate: lastStreakDate)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -1176,6 +1181,7 @@ final class AppStore {
         chatPersona = snap.chatPersona
         chatResponseLength = snap.chatResponseLength
         pendingPublishes = snap.pendingPublishes ?? []
+        lastStreakDate = snap.lastStreakDate
         migrateFootageIntoMedia()
     }
 
@@ -1223,6 +1229,22 @@ final class AppStore {
     func removeReadiedScript(_ saved: SavedScript) {
         readiedScripts.removeAll { $0.id == saved.id }
         save()
+    }
+
+    /// C-06: increment the streak at most once per calendar day; a gap of >1 day resets it.
+    /// The flame glyph reads as a day-streak, so a raw session counter was quietly dishonest.
+    private func bumpDailyStreak() {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        if let last = lastStreakDate {
+            let lastDay = cal.startOfDay(for: last)
+            if lastDay == today { return }
+            let gap = cal.dateComponents([.day], from: lastDay, to: today).day ?? 2
+            streak = gap == 1 ? streak + 1 : 1
+        } else {
+            streak = max(streak, 1)
+        }
+        lastStreakDate = today
     }
 
     // W4: film-queue management — fixed Queue / Archived sections; order = array order.

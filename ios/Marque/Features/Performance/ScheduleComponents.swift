@@ -292,6 +292,7 @@ struct PostEditorSheet: View {
     @State private var caption: String
     @State private var autoCaptions: Bool
     @State private var posting = false
+    @State private var showSubscribe = false      // C-07
     @State private var showMetrics = false
     @State private var showRemoveConfirm = false
 
@@ -381,7 +382,8 @@ struct PostEditorSheet: View {
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
                 } else {
-                    NavigationLink(destination: PaywallView()) {
+                    // C-07: the real subscription gate (StoreKit2), not the dead PaywallView.
+                    Button { showSubscribe = true } label: {
                         Label("Upgrade to publish", systemImage: "lock.fill")
                             .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
                             .frame(maxWidth: .infinity).padding(Space.md)
@@ -390,6 +392,7 @@ struct PostEditorSheet: View {
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
+                    .sheet(isPresented: $showSubscribe) { SubscriptionGateView() }
                 }
             }
         }
