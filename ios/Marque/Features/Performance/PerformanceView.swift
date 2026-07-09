@@ -145,16 +145,18 @@ struct InsightsSection: View {
             .pickerStyle(.segmented)
             .accessibilityIdentifier("performance.platformToggle")
 
-            // Stat tiles — always present, real numbers or honest zeros.
+            // Stat tiles — real numbers only. I-3: never show fabricated totals when the
+            // series is placeholder (no_data); dashes read honestly instead.
             HStack(spacing: Space.md) {
-                statTile(summary.map { compactNumber(views($0)) } ?? "—", "Views")
-                statTile(summary.map { compactNumber(likes($0)) } ?? "—", "Likes")
-                statTile(summary.map { "+\(follows($0))" } ?? "—", "Follows")
+                statTile(hasRealData ? compactNumber(views(summary!)) : "—", "Views")
+                statTile(hasRealData ? compactNumber(likes(summary!)) : "—", "Likes")
+                statTile(hasRealData ? "+\(follows(summary!))" : "—", "Follows")
             }
 
-            if let s = summary, platform == 0, s.daily.contains(where: { $0.views > 0 }) {
-                Sparkline(values: normalized(s.daily.map { Double($0.views) }))
-                    .frame(height: 44)
+            // I-3: interactive, dated graph — only for real data (a fabricated series is as
+            // dishonest as fabricated tiles).
+            if let s = summary, hasRealData, platform == 0, s.daily.contains(where: { $0.views > 0 }) {
+                InteractiveSparkline(points: s.daily, windowDays: s.days)
                     .padding(.vertical, Space.xs)
             }
 

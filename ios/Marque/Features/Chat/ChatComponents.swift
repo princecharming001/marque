@@ -44,6 +44,7 @@ struct ChatAssistantMessage: View {
     let isTypewriting: Bool
     var onTick: () -> Void = {}
     var onTypewriterDone: () -> Void = {}
+    var onOpenScript: (Script) -> Void = { _ in }   // I-1
 
     @State private var displayed = ""
     @State private var caretOn = true
@@ -92,7 +93,7 @@ struct ChatAssistantMessage: View {
         VStack(alignment: .leading, spacing: Space.md) {
             if let plan = message.plan { DayPlanCard(plan: plan) }
             if let scripts = message.scripts, !scripts.isEmpty {
-                ForEach(scripts) { ChatScriptCard(script: $0) }
+                ForEach(scripts) { s in ChatScriptCard(script: s, onOpen: { onOpenScript(s) }) }
             }
             if let analysis = message.analysis { ChatVideoAnalysisCard(analysis: analysis) }
             if let edit = message.clipEdit { ClipEditCard(state: edit) }
@@ -166,10 +167,14 @@ struct ChatScriptCard: View {
     let script: Script
     var saveLabel: String = "Save for later"
     var saveId: String = "chat.save"
+    var onOpen: (() -> Void)? = nil        // I-1: tap the card to open the full reader
 
     var body: some View {
-        ChatScriptCardContent(script: script, saveLabel: saveLabel, saveId: saveId)
+        ChatScriptCardContent(script: script, saveLabel: saveLabel, saveId: saveId, showChevron: onOpen != nil)
             .marqueCard(padding: Space.md)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+            .onTapGesture { onOpen?() }     // inner Film/Save buttons keep their own hit areas
+            .accessibilityIdentifier("chat.scriptCard")
     }
 }
 
@@ -180,12 +185,21 @@ struct ChatScriptCardContent: View {
     let script: Script
     var saveLabel: String = "Save for later"
     var saveId: String = "chat.save"
+    var showChevron: Bool = false
 
     private var isSaved: Bool { store.readiedScripts.contains { $0.script.id == script.id } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            FormatTag(formatId: script.formatId)
+            HStack {
+                FormatTag(formatId: script.formatId)
+                Spacer()
+                if showChevron {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                }
+            }
             Text(script.title.isEmpty ? script.hook.text : script.title)
                 .font(AppFont.serifM)
                 .foregroundStyle(Palette.textPrimary)

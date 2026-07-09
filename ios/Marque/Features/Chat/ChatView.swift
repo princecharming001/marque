@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var pickedClips: [PhotosPickerItem] = []
     @State private var speech = SpeechRecognizer()    // C-10: chat dictation
     @State private var dictating = false
+    @State private var peekedScript: Script?          // I-1: chat card → full reader
     @FocusState private var composerFocused: Bool
 
     private static let bottomAnchor = "chat.bottomAnchor"
@@ -66,6 +67,9 @@ struct ChatView: View {
         }
         // W5: attach up to 4 videos → edit them from chat with the current draft as
         // the instruction. Selection completing kicks off the edit pipeline.
+        .sheet(item: $peekedScript) { s in
+            NavigationStack { ScriptReaderView(script: s) }
+        }
         .photosPicker(isPresented: $showClipPicker, selection: $pickedClips,
                       maxSelectionCount: 4, matching: .videos)
         .onChange(of: pickedClips) { _, items in
@@ -201,7 +205,8 @@ struct ChatView: View {
                 onTypewriterDone: {
                     if chat.typewriterMessageId == message.id { chat.typewriterMessageId = nil }
                     proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
-                }
+                },
+                onOpenScript: { peekedScript = $0 }
             )
         }
     }

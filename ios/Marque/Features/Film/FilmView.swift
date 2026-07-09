@@ -12,6 +12,7 @@ struct FilmView: View {
     @State private var showSettings = false
     @State private var showReorder = false          // W4
     @State private var showArchived = false
+    @State private var showFreestyle = false        // I-4
 
     private var drafts: [Clip] { store.clips.filter { $0.status == .draft } }
 
@@ -23,6 +24,30 @@ struct FilmView: View {
                     Text("Film").font(Typeface.display(40)).tracking(-1).foregroundStyle(Palette.textPrimary)
                 }
                 .padding(.top, Space.md)
+
+                // I-4: film without a script — just talk, the editor finds the cut.
+                Button { showFreestyle = true } label: {
+                    HStack(spacing: Space.md) {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 16, weight: .semibold)).foregroundStyle(Palette.onInk)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(Palette.ink))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Freestyle").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                            Text("No script. Just talk — the editor finds the cut.")
+                                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
+                    }
+                    .padding(Space.md)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(PressableStyle(dim: 0.7))
+                .accessibilityIdentifier("film.freestyle")
 
                 // Continue a draft
                 if !drafts.isEmpty {
@@ -143,6 +168,7 @@ struct FilmView: View {
         .sheet(isPresented: $showCustomEditor) { CustomScriptSheet() }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .sheet(isPresented: $showReorder) { QueueReorderSheet() }
+        .fullScreenCover(isPresented: $showFreestyle) { RecordView(script: nil) }   // I-4
         .onAppear { consumePendingFilmScript() }
         .onChange(of: router.pendingFilmScriptId) { _, _ in consumePendingFilmScript() }
     }

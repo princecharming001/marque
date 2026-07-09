@@ -666,14 +666,36 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
     }
 
-    func fetchFeed(brand: BrandGraph, cursor: Int) async -> FeedPage? {
+    /// I-2/I-8: fire-and-forget Today's-picks feedback → the backend learning loop.
+    /// 404-tolerant (older backends), so it's safe to call before the endpoint deploys.
+    func sendFeedFeedback(script: Script, niche: String, verdict: String) async {
+        _ = await post("/v1/feed/feedback", [
+            "creator_id": creatorId, "verdict": verdict, "niche": niche,
+            "script": ["title": script.title, "hook": script.hook.text,
+                       "pillar": script.pillarName, "style": script.style,
+                       "formatId": script.formatId, "hookSignal": script.hook.signal.rawValue],
+        ])
+    }
+
+    func fetchFeed(brand: BrandGraph, memory: CreatorMemory, cursor: Int) async -> FeedPage? {
         let styles = brand.preferredStyles.map { $0.rawValue }.joined(separator: ",")
-        let path = "/v1/feed?creator_id=\(q(creatorId))&niche=\(q(brand.niche))"
-            + "&audience=\(q(brand.audience))&known_for=\(q(brand.knownFor))"
-            + "&goal=\(q(brand.goal.rawValue))&styles=\(q(styles))"
-            + "&watched=\(q(watchedParam(brand)))&cursor=\(cursor)"
-        guard let data = await get(path),
-              let r = try? JSONDecoder().decode(FeedResp.self, from: data) else { return nil }
+        // I-8: POST so the creator's memory (yap-session context) personalizes picks. Falls
+        // back to the GET path if POST isn't available (older backend → 404/nil).
+        let body: [String: Any] = [
+            "creator_id": creatorId, "niche": brand.niche, "audience": brand.audience,
+            "known_for": brand.knownFor, "goal": brand.goal.rawValue, "styles": styles,
+            "watched": watchedParam(brand), "cursor": cursor,
+            "memory": memory.asDictionary,
+        ]
+        var data = await post("/v1/feed", body)
+        if data == nil {                        // fallback: GET (no personalization)
+            let path = "/v1/feed?creator_id=\(q(creatorId))&niche=\(q(brand.niche))"
+                + "&audience=\(q(brand.audience))&known_for=\(q(brand.knownFor))"
+                + "&goal=\(q(brand.goal.rawValue))&styles=\(q(styles))"
+                + "&watched=\(q(watchedParam(brand)))&cursor=\(cursor)"
+            data = await get(path)
+        }
+        guard let data, let r = try? JSONDecoder().decode(FeedResp.self, from: data) else { return nil }
         note(r.mode)
         let entries: [FeedEntry] = r.items.compactMap { item in
             switch item.type {
@@ -780,11 +802,15 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         struct Totals: Decodable {
             let views: Int; let likes: Int; let follows_gained: Int
             let posts: Int; let engagement_rate: Double
+            let comments: Int?; let shares: Int?      // B-2 additive
         }
         struct PlatformStats: Decodable {
             let views: Int; let likes: Int; let follows_gained: Int; let posts: Int
         }
-        struct DailyPoint: Decodable { let day: Int; let views: Int; let likes: Int }
+        struct DailyPoint: Decodable {
+            let day: Int; let views: Int; let likes: Int
+            let date: String?                         // B-1 additive: ISO yyyy-MM-dd for the graph
+        }
         struct BestPost: Decodable {
             let post_id: String?; let views: Int; let likes: Int
             let format_id: String?; let platform: String?

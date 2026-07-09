@@ -15,15 +15,32 @@ struct ScriptFeedCard: View {
     var saved: Bool
     /// Tap anywhere on the card (outside the buttons) → open the full script.
     var onOpen: () -> Void = {}
+    // I-2: Today's-picks feedback — ✓ likes (learning signal), ✗ dismisses.
+    var liked: Bool = false
+    var onLike: () -> Void = {}
+    var onDismiss: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            HStack {
+            HStack(spacing: Space.sm) {
                 FormatTag(formatId: script.formatId)
                 Spacer()
-                Image(systemName: "chevron.right")            // affordance: the card opens
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Palette.textTertiary)
+                Button(action: onLike) {
+                    Image(systemName: liked ? "checkmark.circle.fill" : "checkmark")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(liked ? Palette.accent : Palette.textTertiary)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(liked ? Palette.accent.opacity(0.12) : Palette.surfaceSunken))
+                }
+                .buttonStyle(PressableStyle()).accessibilityIdentifier("feed.like")
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                        .frame(width: 26, height: 26)
+                        .background(Circle().fill(Palette.surfaceSunken))
+                }
+                .buttonStyle(PressableStyle()).accessibilityIdentifier("feed.dismiss")
             }
             // Titles are clamped server-side (≤42 chars) so three lines always
             // fits the whole thing — never an ellipsis mid-word. Lowercase for the

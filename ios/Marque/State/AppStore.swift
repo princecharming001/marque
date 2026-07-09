@@ -570,7 +570,7 @@ final class AppStore {
     /// Create the analyze job against an already-uploaded public URL (RecordView hoists
     /// mint+upload so it runs while the creator reviews the take). nil → the caller
     /// falls back to the local mock pipeline; the creator is never stranded.
-    func startAnalyzeJob(script: Script, publicURL: String?,
+    func startAnalyzeJob(script: Script?, publicURL: String?,
                          customInstructions: String = "",
                          reactSourceURL: String = "") async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
@@ -1188,6 +1188,8 @@ final class AppStore {
         var chatResponseLength: ChatResponseLength? = nil
         var pendingPublishes: [ScheduledPost]? = nil   // C-03: transport-failure retry queue
         var lastStreakDate: Date? = nil                // C-06
+        var likedPicks: [UUID]? = nil                  // I-2: Today's-picks feedback
+        var dismissedPicks: [UUID]? = nil
     }
 
     func save() {
@@ -1198,7 +1200,8 @@ final class AppStore {
                             conversations: conversations, editPrefs: editPrefs,
                             brandSummary: brandSummary, chatPersona: chatPersona,
                             chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes,
-                            lastStreakDate: lastStreakDate)
+                            lastStreakDate: lastStreakDate,
+                            likedPicks: likedPicks, dismissedPicks: dismissedPicks)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -1244,6 +1247,8 @@ final class AppStore {
         chatResponseLength = snap.chatResponseLength
         pendingPublishes = snap.pendingPublishes ?? []
         lastStreakDate = snap.lastStreakDate
+        likedPicks = snap.likedPicks ?? []
+        dismissedPicks = snap.dismissedPicks ?? []
         migrateFootageIntoMedia()
     }
 
@@ -1291,6 +1296,27 @@ final class AppStore {
     func removeReadiedScript(_ saved: SavedScript) {
         readiedScripts.removeAll { $0.id == saved.id }
         save()
+    }
+
+    // MARK: Today's-picks feedback (I-2)
+
+    var likedPicks: [UUID] = []
+    var dismissedPicks: [UUID] = []
+
+    /// ✓ on a pick — a positive learning signal (the backend folds it into the bandit).
+    func likePick(_ script: Script) {
+        if !likedPicks.contains(script.id) { likedPicks.append(script.id) }
+        if likedPicks.count > 200 { likedPicks.removeFirst(likedPicks.count - 200) }
+        save()
+        Task { await backend.sendFeedFeedback(script: script, niche: brand.niche, verdict: "like") }
+    }
+
+    /// ✗ on a pick — dismiss it (persisted so it stays gone) + a negative learning signal.
+    func dismissPick(_ script: Script) {
+        if !dismissedPicks.contains(script.id) { dismissedPicks.append(script.id) }
+        if dismissedPicks.count > 200 { dismissedPicks.removeFirst(dismissedPicks.count - 200) }
+        save()
+        Task { await backend.sendFeedFeedback(script: script, niche: brand.niche, verdict: "dislike") }
     }
 
     /// C-06: increment the streak at most once per calendar day; a gap of >1 day resets it.

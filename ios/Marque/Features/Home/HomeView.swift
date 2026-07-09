@@ -135,8 +135,12 @@ struct HomeView: View {
                                 },
                                 onSave: { store.readyScript(s, source: .daily) },
                                 saved: store.readiedScripts.contains { $0.script.id == s.id },
-                                onOpen: { peekedScript = s }
+                                onOpen: { peekedScript = s },
+                                liked: store.likedPicks.contains(s.id),
+                                onLike: { store.likePick(s) },
+                                onDismiss: { withAnimation(Motion.quick) { feed.dismiss(s, store: store) } }
                             )
+                            .transition(.scale(scale: 0.92).combined(with: .opacity))
                         }
                         if feed.feedCursor >= 0 {
                             morePicksCard

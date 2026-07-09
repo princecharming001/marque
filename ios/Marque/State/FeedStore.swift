@@ -33,11 +33,11 @@ final class FeedStore {
         isLoading = true
         defer { isLoading = false }
 
-        guard let page = await store.backend.fetchFeed(brand: store.brand, cursor: 0) else {
+        guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0) else {
             loadedOnce = false            // network miss — allow a later re-appear / pull to retry
             return
         }
-        ingest(page.entries, includeReels: true)
+        ingest(page.entries, includeReels: true, store: store)
         feedCursor = page.nextCursor ?? -1
         reelCursor = 1                    // page 0's reels arrived inside the feed
 
@@ -55,10 +55,10 @@ final class FeedStore {
                 try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
                 if Task.isCancelled { return }
                 guard let self else { return }
-                guard let page = await store.backend.fetchFeed(brand: store.brand, cursor: 0),
+                guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0),
                       page.mode == "live" else { continue }
                 // Real AI landed — swap the script picks in place (keep reels/trend/cursors).
-                self.ingestScriptsOnly(page.entries)
+                self.ingestScriptsOnly(page.entries, store: store)
                 return
             }
         }
@@ -72,9 +72,18 @@ final class FeedStore {
         isLoadingMoreScripts = true
         defer { isLoadingMoreScripts = false }
 
-        guard let page = await store.backend.fetchFeed(brand: store.brand, cursor: feedCursor) else { return }
-        ingest(page.entries, includeReels: false)
+        guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: feedCursor) else { return }
+        ingest(page.entries, includeReels: false, store: store)
         feedCursor = page.nextCursor ?? -1
+    }
+
+    // MARK: I-2 — dismiss a pick (✗): remove it, learn from it, top up so the row never empties.
+    func dismiss(_ s: Script, store: AppStore) {
+        scriptItems.removeAll { $0.id == s.id }
+        store.dismissPick(s)
+        if scriptItems.count < 3, feedCursor >= 0 {
+            Task { await loadMoreScripts(store: store) }
+        }
     }
 
     // MARK: Load more reels (reels-only endpoint)
@@ -106,11 +115,11 @@ final class FeedStore {
 
     // MARK: Bucketing + dedupe
 
-    private func ingest(_ entries: [BackendClient.FeedEntry], includeReels: Bool) {
+    private func ingest(_ entries: [BackendClient.FeedEntry], includeReels: Bool, store: AppStore) {
         for entry in entries {
             switch entry {
             case .script(let s):
-                appendScript(s)
+                appendScript(s, store: store)
             case .reel(let r):
                 if includeReels { appendReel(r) }
             case .trend(let t):
@@ -121,16 +130,17 @@ final class FeedStore {
 
     /// Replace ONLY the script picks (the AI upgrade) while leaving reels/trend/cursors
     /// intact — used when the background AI version of "Today's picks" arrives.
-    private func ingestScriptsOnly(_ entries: [BackendClient.FeedEntry]) {
+    private func ingestScriptsOnly(_ entries: [BackendClient.FeedEntry], store: AppStore) {
         let fresh = entries.compactMap { e -> Script? in
-            if case .script(let s) = e { return s } else { return nil }
+            if case .script(let s) = e, !store.dismissedPicks.contains(s.id) { return s } else { return nil }
         }
         guard !fresh.isEmpty else { return }
         scriptItems = fresh
     }
 
-    private func appendScript(_ s: Script) {
-        guard !scriptItems.contains(where: { $0.id == s.id }) else { return }
+    private func appendScript(_ s: Script, store: AppStore) {
+        guard !scriptItems.contains(where: { $0.id == s.id }),
+              !store.dismissedPicks.contains(s.id) else { return }        // I-2: stay dismissed
         scriptItems.append(s)
     }
 

@@ -10,7 +10,8 @@ struct RecordView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @StateObject private var camera = CameraModel()
-    let script: Script
+    let script: Script?                          // I-4: nil = freestyle (no teleprompter)
+    private var isFreestyle: Bool { script == nil }
 
     @State private var phase: Phase = .ready
     @State private var promptRunning = false
@@ -44,9 +45,16 @@ struct RecordView: View {
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
-    init(script: Script) {
+    init(script: Script?) {
         self.script = script
-        _liveScript = State(initialValue: script)
+        // Freestyle: a minimal placeholder script so clip metadata + the analyze pipeline
+        // have something to hang on; the teleprompter is hidden (I-4). Mirrors the synthesized
+        // script ChatStore.runEditClips uses for its script-less edit flow.
+        _liveScript = State(initialValue: script ?? Script(
+            pillarName: "Freestyle", title: "Freestyle take", summary: "Filmed off script",
+            style: VideoStyle.talkingHead.rawValue, formatId: "myth-buster",
+            hook: Hook(text: "Freestyle take", signal: .narrative, strength: 70),
+            altHooks: [], body: "", cta: "", shotPlan: [], targetSeconds: 60, predictedScore: 70))
     }
 
     var body: some View {
@@ -55,8 +63,20 @@ struct RecordView: View {
             VStack(spacing: Space.lg) {
                 topBar
                 Spacer(minLength: 0)
-                Teleprompter(script: $liveScript, running: $promptRunning, speed: $speed, restartToken: $restartToken)
+                if isFreestyle {
+                    VStack(spacing: Space.sm) {
+                        Image(systemName: "mic.fill").font(.system(size: 22)).foregroundStyle(.white.opacity(0.7))
+                        Text("No script — just talk.")
+                            .font(AppFont.title).foregroundStyle(.white)
+                        Text("Film it your way; the editor finds the cut after.")
+                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                    }
                     .frame(height: 300)
+                } else {
+                    Teleprompter(script: $liveScript, running: $promptRunning, speed: $speed, restartToken: $restartToken)
+                        .frame(height: 300)
+                }
                 Spacer(minLength: 0)
                 controls
             }
@@ -356,7 +376,10 @@ struct RecordView: View {
         styleCaps = await BackendClient.shared.editorCapabilities()
     }
 
-    private var speedControl: some View {
+    @ViewBuilder private var speedControl: some View {
+        if isFreestyle {
+            EmptyView()          // no teleprompter to pace in freestyle mode
+        } else {
         HStack(spacing: Space.sm) {
             ForEach([("Slow", 0.6), ("Normal", 1.0), ("Fast", 1.5)], id: \.0) { label, val in
                 Button { speed = val } label: {
@@ -374,6 +397,7 @@ struct RecordView: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
         }
     }
 
@@ -512,9 +536,9 @@ struct RecordView: View {
         phase = .analyzing
         // Keep the raw take in the Library so it can be re-cut later.
         if let footagePath {
-            store.addFootage(path: footagePath, scriptId: script.id,
-                             title: script.title.isEmpty ? script.hook.text : script.title,
-                             seconds: script.targetSeconds)
+            store.addFootage(path: footagePath, scriptId: liveScript.id,
+                             title: liveScript.title.isEmpty ? liveScript.hook.text : liveScript.title,
+                             seconds: liveScript.targetSeconds)
         }
         submitTask = Task {
             defer { submitTask = nil }
@@ -522,7 +546,7 @@ struct RecordView: View {
             let publicURL = await uploadTask?.value
             guard !Task.isCancelled else { return }           // AF-I3: dismissed mid-submit
             guard let resp = await store.startAnalyzeJob(
-                    script: liveScript, publicURL: publicURL,
+                    script: isFreestyle ? nil : liveScript, publicURL: publicURL,
                     customInstructions: customInstructions,
                     reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                 await fallbackToMock()
