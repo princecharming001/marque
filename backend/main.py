@@ -3259,7 +3259,9 @@ async def _transcribe_top_posts(posts: list[dict], top_n: int = 4) -> list[dict]
     Per-post failures are non-fatal (CDN URLs 403/expire); keyless is a no-op."""
     if not ASSEMBLY_KEY or not posts:
         return posts
-    ranked = sorted((p for p in posts if p.get("video_url")),
+    # Skip posts that already carry a transcript (merged from a previous cycle) —
+    # each refresh then transcribes up to top_n NEW reels, so coverage accumulates.
+    ranked = sorted((p for p in posts if p.get("video_url") and not p.get("transcript")),
                     key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)[:top_n]
     if not ranked:
         return posts
@@ -4792,6 +4794,16 @@ def _heuristic_reel_annotation(post: dict) -> dict:
             "style": style, "why_trending": why, "hook_text": hook}
 
 
+def _reel_public_id(post: dict, handle: str, platform: str, idx: int) -> str:
+    """The stable public id a post maps to in _reel_from_post — extracted so the
+    refresh cycle can match a re-scraped post against its previous cache entry
+    (to carry forward transcripts + re-hosted media)."""
+    cap = (post.get("caption") or "").strip()
+    seed = post.get("posted_at") or cap or str(idx)
+    sid = hashlib.sha1(f"{platform}:{handle}:{seed}".encode()).hexdigest()[:10]
+    return f"real-{platform}-{handle}-{sid}"
+
+
 def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: bool) -> dict:
     """Map a normalized Apify post → the ReelItem shape iOS renders. Stable id
     (hash of platform+handle+timestamp) so FeedStore dedupes across pages."""
@@ -4799,15 +4811,16 @@ def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: b
     cap = (post.get("caption") or "").strip()
     first_line = cap.split("\n")[0].strip()
     title = re.sub(r"(#\w+\s*)+$", "", first_line).strip()[:80] or f"@{handle} — {ann['format_id'].replace('-', ' ')}"
-    seed = post.get("posted_at") or cap or str(idx)
-    sid = hashlib.sha1(f"{platform}:{handle}:{seed}".encode()).hexdigest()[:10]
     return {
-        "id": f"real-{platform}-{handle}-{sid}",
+        "id": _reel_public_id(post, handle, platform, idx),
         "creator_handle": (post.get("author") or handle).lstrip("@"),
         "platform": platform,
         "title": title,
         "hook_text": ann["hook_text"] or title,
         "transcript": post.get("transcript") or cap,
+        # True only when a REAL spoken transcript exists (vs the caption fallback
+        # above) — lets the next refresh cycle know this work is done and carry it.
+        "transcribed": bool(post.get("transcript")),
         "thumbnail_url": post.get("thumbnail_url") or "",
         "video_url": post.get("video_url") or "",
         "views": int(post.get("views", 0) or 0),
@@ -4820,17 +4833,23 @@ def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: b
 
 
 async def _refresh_watched_creator(platform: str, handle: str) -> None:
-    """Background: scrape one watched creator's top posts → real reels in cache."""
+    """Background: scrape one watched creator's top posts → real reels in cache.
+    Mirrored to Supabase (survives deploys); previous transcripts carried forward."""
     key = f"{platform}:{handle}"
     try:
         posts = await scrape_posts(handle, platform, limit=8)
         if not posts:
             return
-        posts = await _transcribe_top_posts(posts, top_n=2)
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
+        prev = await _prev_reels_entry(_watched_reels_cache, key)
+        _merge_prev_reel_work(posts, (prev or {}).get("reels") or [], handle=handle)
+        posts = await _transcribe_top_posts(posts, top_n=2)
         reels = [_reel_from_post(p, handle, platform, i, True) for i, p in enumerate(posts[:6])]
-        _watched_reels_cache[key] = {"reels": reels, "ts": time.time()}
+        entry = {"reels": reels, "ts": time.time()}
+        _watched_reels_cache[key] = entry
         _cap_evict(_watched_reels_cache, _WATCHED_CACHE_CAP)
+        if _supabase_client:
+            await _supabase_client.upsert_reels_cache(key, entry)
     except Exception as e:
         logging.warning("watched-reel refresh failed for %s: %s", key, e)
     finally:
@@ -4876,34 +4895,84 @@ def _reel_storage_stem(post: dict) -> str:
     return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
 
+def _merge_prev_reel_work(posts: list[dict], prev_reels: list[dict], handle: str = "") -> None:
+    """Carry forward the expensive per-reel work from a previous refresh cycle:
+    real transcripts and re-hosted (durable Supabase) media URLs. Matched by the
+    stable public reel id, applied in place BEFORE transcription/rehosting so
+    those steps can skip what's already done — coverage accumulates across
+    cycles instead of resetting. `handle` pins the id handle for the watched-
+    creator path (which maps every post under one handle); the niche path leaves
+    it empty and falls back to each post's author."""
+    if not prev_reels:
+        return
+    prev_by_id = {r.get("id"): r for r in prev_reels if r.get("id")}
+    sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else None
+    for i, p in enumerate(posts):
+        h = handle or (p.get("author") or "creator")
+        old = prev_by_id.get(_reel_public_id(p, h, p.get("platform", "instagram"), i))
+        if not old:
+            continue
+        if not p.get("transcript") and old.get("transcribed") and old.get("transcript"):
+            p["transcript"] = old["transcript"]
+        for field in ("video_url", "thumbnail_url"):
+            u = old.get(field) or ""
+            if sb_base and u.startswith(sb_base):     # durable URLs never expire — keep them
+                p[field] = u
+
+
+async def _prev_reels_entry(cache: dict, key: str) -> dict | None:
+    """The previous cache entry for a key: in-memory first, else the durable
+    Supabase copy (survives deploys)."""
+    entry = cache.get(key)
+    if entry:
+        return entry
+    if _supabase_client:
+        try:
+            return await _supabase_client.load_reels_cache(key)
+        except Exception:
+            return None
+    return None
+
+
 async def _refresh_niche_reels(niche: str) -> None:
     """Background: scrape trending niche posts → real reels in cache. W2: transcribe the top
     few (real spoken transcript, not caption) and re-host their media to Supabase Storage so
-    the "Steal these" preview actually plays."""
+    the "Steal these" preview actually plays. The finished entry is mirrored to Supabase so
+    deploys never lose this work, and prior transcripts/durable URLs are carried forward."""
     key = _niche_cache_key(niche)
     try:
         posts = await scrape_niche_posts(niche, limit=20)
         posts = [p for p in posts if p.get("views", 0) >= 10_000]
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
         posts = posts[:18]
+        # Carry forward transcripts + durable media from the previous cycle first,
+        # so the expensive steps below only run for posts that still need them.
+        prev = await _prev_reels_entry(_niche_reels_cache, key)
+        _merge_prev_reel_work(posts, (prev or {}).get("reels") or [])
         # W2-1: real spoken transcript for the top reels (before mapping, so hook extraction benefits).
         posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
         # W2-3: re-host the top reels' video + all thumbnails to stable Supabase URLs.
+        sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else None
+        def _durable(u: str) -> bool:
+            return bool(sb_base and u.startswith(sb_base))
         for i, p in enumerate(posts):
             stem = _reel_storage_stem(p)
-            if p.get("thumbnail_url"):
+            if p.get("thumbnail_url") and not _durable(p["thumbnail_url"]):
                 durable = await _rehost_media(p["thumbnail_url"], f"reels/{stem}.jpg", "image/jpeg", 2_000_000)
                 if durable:
                     p["thumbnail_url"] = durable
-            if i < _REEL_REHOST_TOP_N and p.get("video_url"):
+            if i < _REEL_REHOST_TOP_N and p.get("video_url") and not _durable(p["video_url"]):
                 durable = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4", 60_000_000)
                 if durable:
                     p["video_url"] = durable
         reels = [_reel_from_post(p, p.get("author") or "creator",
                                  p.get("platform", "instagram"), i, False)
                  for i, p in enumerate(posts)]
-        _niche_reels_cache[key] = {"reels": reels, "ts": time.time()}
+        entry = {"reels": reels, "ts": time.time()}
+        _niche_reels_cache[key] = entry
         _cap_evict(_niche_reels_cache, _NICHE_CACHE_CAP)
+        if _supabase_client:                    # durability: survive the next deploy
+            await _supabase_client.upsert_reels_cache(key, entry)
     except Exception as e:
         logging.warning("niche-reel refresh failed for %s: %s", key, e)
     finally:
@@ -5044,11 +5113,45 @@ async def reels_warm(req: ReelsWarmRequest):
     return {"ok": True, "mode": "live" if APIFY_KEY else "mock", "cached": cached}
 
 
+async def _hydrate_reels_caches(niche: str, parsed: list[tuple[str, str]]) -> None:
+    """Cold-miss hydration: after a deploy the in-memory caches are empty but the
+    durable Supabase copies (with transcripts + re-hosted media) are not — load
+    them so the first paint isn't an empty list. Preserves the stored ts so the
+    normal staleness check still kicks a background re-scrape when due. Bounded
+    to a few seconds; on any failure the SWR path behaves exactly as before."""
+    if not _supabase_client:
+        return
+    wanted: list[tuple[dict, str]] = []
+    if niche.strip():
+        k = _niche_cache_key(niche)
+        if k not in _niche_reels_cache:
+            wanted.append((_niche_reels_cache, k))
+    for platform, handle in parsed:
+        k = f"{platform}:{handle}"
+        if k not in _watched_reels_cache:
+            wanted.append((_watched_reels_cache, k))
+    if not wanted:
+        return
+
+    async def _one(cache: dict, k: str) -> None:
+        entry = await _supabase_client.load_reels_cache(k)
+        if entry and isinstance(entry.get("reels"), list) and entry["reels"]:
+            cache[k] = {"reels": entry["reels"], "ts": float(entry.get("ts") or 0)}
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(_one(c, k) for c, k in wanted), return_exceptions=True),
+            timeout=4.0)
+    except asyncio.TimeoutError:
+        pass
+
+
 @app.get("/v1/reels")
 async def reels(niche: str = "", creator_id: str = "default", watched: str = "", cursor: int = 0):
     cursor = max(0, min(cursor, 50))
     parsed = _parse_watched(watched)
     if APIFY_KEY:
+        await _hydrate_reels_caches(niche, parsed)
         # Production: ONLY real reels. Watched creators' top posts first, then
         # niche-trending. No fabricated filler — an empty list (cold cache) is
         # honest; iOS shows a "finding real reels" state and pull-to-refresh fills.

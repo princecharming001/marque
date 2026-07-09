@@ -256,6 +256,30 @@ class SupabaseClient:
             return None
         return rows[0]["profile"] if rows and rows[0].get("profile") else None
 
+    # --- reels_cache (durable "Steal these" reels) -----------------------------
+    # The in-memory niche/watched reels caches die on every deploy, losing the
+    # expensive transcribe + re-host work (users then see caption-as-transcript
+    # and unplayable CDN URLs until a full re-scrape). One JSONB blob per cache
+    # key mirrors the in-memory entry {"reels": [...], "ts": ...}.
+
+    async def upsert_reels_cache(self, cache_key: str, entry: dict) -> bool:
+        row = {"cache_key": cache_key, "entry": entry}
+        r = await self._request(
+            "POST", "/reels_cache", params={"on_conflict": "cache_key"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_reels_cache(self, cache_key: str) -> dict | None:
+        r = await self._request("GET", "/reels_cache",
+                                params={"cache_key": f"eq.{cache_key}", "select": "entry"})
+        if not (r and r.status_code == 200):
+            return None
+        try:
+            rows = r.json()
+        except Exception:
+            return None
+        return rows[0]["entry"] if rows and rows[0].get("entry") else None
+
     # --- clip_edit_sessions (F15: durable manual-editor state) ----------------
     # The whole in-memory job dict, stored as one JSONB blob — see migrations.sql
     # for why this is a blob rather than a column-per-field table.

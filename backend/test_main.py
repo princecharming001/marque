@@ -223,6 +223,82 @@ def test_refresh_niche_reels_transcribes_before_mapping(monkeypatch):
     assert captured["top_n"] == main._REEL_TRANSCRIBE_TOP_N
 
 
+class _FakeReelsPersistence:
+    """Stand-in for SupabaseClient in the reels-durability tests."""
+    def __init__(self, preload=None):
+        self.rows = dict(preload or {})
+        self.upserts = []
+    async def upsert_reels_cache(self, cache_key, entry):
+        self.rows[cache_key] = entry
+        self.upserts.append(cache_key)
+        return True
+    async def load_reels_cache(self, cache_key):
+        return self.rows.get(cache_key)
+
+
+def test_refresh_niche_reels_writes_through_to_supabase(monkeypatch):
+    """Durability: a completed refresh mirrors the cache entry to Supabase so a
+    deploy no longer wipes transcripts + re-hosted media."""
+    async def fake_scrape(niche, limit=20):
+        return [{"author": "c", "platform": "instagram", "views": 50000, "likes": 100,
+                 "caption": "cap", "video_url": "https://cdn/v.mp4", "posted_at": "t1"}]
+    fake = _FakeReelsPersistence()
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "SUPABASE_URL", "")            # skip rehost
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    asyncio.run(main._refresh_niche_reels("fitness"))
+    key = main._niche_cache_key("fitness")
+    assert key in fake.rows
+    assert fake.rows[key]["reels"][0]["creator_handle"] == "c"
+
+
+def test_refresh_niche_reels_carries_prev_transcript_and_durable_media(monkeypatch):
+    """Accumulation: a re-scrape of the same post must NOT lose the transcript or
+    the re-hosted Supabase video URL earned on a previous cycle (in-memory cache
+    empty → previous entry comes from Supabase)."""
+    post = {"author": "c", "platform": "instagram", "views": 50000, "likes": 100,
+            "caption": "cap", "video_url": "https://cdn/expired.mp4", "posted_at": "t1"}
+    async def fake_scrape(niche, limit=20):
+        return [dict(post)]
+    key = main._niche_cache_key("fitness")
+    prev_reel = main._reel_from_post(
+        {**post, "transcript": "the real spoken words",
+         "video_url": "https://nxi.supabase.co/storage/v1/object/public/marque-clips/reels/x.mp4"},
+        "c", "instagram", 0, False)
+    fake = _FakeReelsPersistence({key: {"reels": [prev_reel], "ts": 1.0}})
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "")            # no live transcription
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://nxi.supabase.co")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "")            # rehost disabled (no key)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    asyncio.run(main._refresh_niche_reels("fitness"))
+    got = main._niche_reels_cache[key]["reels"][0]
+    assert got["transcript"] == "the real spoken words"      # carried, not reset to caption
+    assert got["video_url"].startswith("https://nxi.supabase.co/")  # durable URL kept
+    assert got["transcribed"] is True
+
+
+def test_reels_endpoint_hydrates_from_supabase_on_cold_miss(monkeypatch):
+    """A deploy wipes the in-memory cache; the first /v1/reels call must serve the
+    durable Supabase copy instead of an empty list."""
+    key = main._niche_cache_key("fitness")
+    reel = main._reel_from_post(
+        {"author": "c", "platform": "instagram", "views": 50000, "likes": 9,
+         "caption": "cap", "transcript": "spoken", "posted_at": "t1"},
+        "c", "instagram", 0, False)
+    fake = _FakeReelsPersistence({key: {"reels": [reel], "ts": main.time.time()}})
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    monkeypatch.setattr(main, "_reels_refreshing", set())
+    r = client.get("/v1/reels", params={"niche": "fitness"}).json()
+    assert r["mode"] == "live"
+    assert len(r["reels"]) == 1 and r["reels"][0]["transcript"] == "spoken"
+
+
 def test_trends_mock_rotates_by_bucket(monkeypatch):
     # W1-2: the mock trend list rotates by the 6h time bucket so the ticker isn't frozen.
     monkeypatch.setattr(main, "_niche_trends_cache", {})

@@ -101,3 +101,15 @@ ALTER TABLE post_registry       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE emulation_profiles  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE clip_edit_sessions  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE creators            ENABLE ROW LEVEL SECURITY;
+
+-- Durable mirror of the in-memory "Steal these" reels caches (niche + watched).
+-- One JSONB blob per cache key ("niche:fitness" / "instagram:handle") holding
+-- {"reels": [...], "ts": <epoch>}. Deploys wipe the in-memory caches; without
+-- this the expensive transcribe + re-host work was lost every release and users
+-- saw caption-as-transcript and unplayable expired CDN URLs until a re-scrape.
+CREATE TABLE IF NOT EXISTS reels_cache (
+    cache_key   TEXT PRIMARY KEY,
+    entry       JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE reels_cache ENABLE ROW LEVEL SECURITY;
