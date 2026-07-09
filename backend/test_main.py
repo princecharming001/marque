@@ -223,6 +223,31 @@ def test_refresh_niche_reels_transcribes_before_mapping(monkeypatch):
     assert captured["top_n"] == main._REEL_TRANSCRIBE_TOP_N
 
 
+def test_clamp_title_word_boundary():
+    """Pick-card titles must be short enough to render un-truncated: ≤42 chars,
+    cut at a word boundary, no trailing punctuation fragments."""
+    long = "upper body home workout featuring push ups (12 reps), pike push ups (8 reps)"
+    out = main._clamp_title(long)
+    assert len(out) <= 42
+    assert not out.endswith((" ", ",", "(", "-"))
+    assert out == "upper body home workout featuring push ups"
+    assert main._clamp_title("Short title") == "Short title"
+    assert main._clamp_title("") == ""
+
+
+def test_feed_scripts_titles_clamped(monkeypatch):
+    """Every script entry the feed serves carries a display-safe title, even when
+    the (cached/LLM) script arrived with a runaway one."""
+    async def fake_reels(niche="", creator_id="default", watched="", cursor=0):
+        return {"mode": "mock", "reels": [], "next_cursor": None}
+    monkeypatch.setattr(main, "reels", fake_reels)
+    long_title = "the seven strength training mistakes that are quietly killing your gains after thirty"
+    result = {"mode": "live", "scripts": [{"title": long_title, "hook": {"text": "h"}}]}
+    items, _ = asyncio.run(main._compose_feed_items(result, "fitness", "c1", "", 0))
+    script_items = [i for i in items if i["type"] == "script"]
+    assert script_items and all(len(i["script"]["title"]) <= 42 for i in script_items)
+
+
 class _FakeReelsPersistence:
     """Stand-in for SupabaseClient in the reels-durability tests."""
     def __init__(self, preload=None):

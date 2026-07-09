@@ -13,17 +13,24 @@ struct ScriptFeedCard: View {
     var onFilm: () -> Void
     var onSave: () -> Void
     var saved: Bool
+    /// Tap anywhere on the card (outside the buttons) → open the full script.
+    var onOpen: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack {
                 FormatTag(formatId: script.formatId)
                 Spacer()
+                Image(systemName: "chevron.right")            // affordance: the card opens
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Palette.textTertiary)
             }
+            // Titles are clamped server-side (≤42 chars) so three lines always
+            // fits the whole thing — never an ellipsis mid-word.
             Text(script.title.isEmpty ? script.hook.text : script.title)
                 .font(AppFont.serifM).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             Text("\u{201C}\(script.hook.text)\u{201D}")
                 .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 .lineLimit(2)
@@ -53,6 +60,11 @@ struct ScriptFeedCard: View {
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
         .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 12, x: 0, y: 6)
+        // Whole card opens the full script; the inner Film/Save buttons keep
+        // their own hit areas (buttons beat a background tap gesture).
+        .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .onTapGesture(perform: onOpen)
+        .accessibilityIdentifier("feed.pick")
     }
 }
 

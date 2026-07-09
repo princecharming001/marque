@@ -10,6 +10,7 @@ struct HomeView: View {
     @State private var showVoice = false
     @State private var feed = FeedStore()
     @State private var selectedReel: ReelItem?
+    @State private var peekedScript: Script?    // tapped pick card → full script sheet
 
     var body: some View {
         ScrollView {
@@ -35,6 +36,11 @@ struct HomeView: View {
         .sheet(isPresented: $showVoice) { VoiceSessionView() }
         .sheet(item: $selectedReel) { reel in
             ReelDetailSheet(reel: reel)
+        }
+        // Tapping a pick opens the full script (read it, tweak it, film it) —
+        // the card only ever shows the title + hook.
+        .sheet(item: $peekedScript) { s in
+            NavigationStack { ScriptReaderView(script: s) }
         }
         .task { await feed.loadInitial(store: store) }
         .task { await store.loadTrends() }          // W1: full niche-trend list for the rotating ticker
@@ -128,7 +134,8 @@ struct HomeView: View {
                                     router.showFilm = true
                                 },
                                 onSave: { store.readyScript(s, source: .daily) },
-                                saved: store.readiedScripts.contains { $0.script.id == s.id }
+                                saved: store.readiedScripts.contains { $0.script.id == s.id },
+                                onOpen: { peekedScript = s }
                             )
                         }
                         if feed.feedCursor >= 0 {

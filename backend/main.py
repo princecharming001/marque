@@ -1355,6 +1355,9 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         out = await quality_scripts(req.d(), req.style, out, req.posts or None,
                                     creator_id=req.creator_id, mandated_hooks=mandated or None,
                                     memory=req.memory or None)
+        for s in out:
+            if isinstance(s, dict) and s.get("title"):
+                s["title"] = _clamp_title(str(s["title"]))
         return {"mode": "live", "scripts": out}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}
@@ -5236,11 +5239,29 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
 
 
+def _clamp_title(title: str, limit: int = 42) -> str:
+    """Display-safe pick-card title: ≤limit chars, cut at a word boundary, no
+    dangling punctuation. The prompts ask for ≤6 words but LLM/cached/mock paths
+    can all exceed it — this is the enforcement so the card never truncates
+    mid-word with an ellipsis."""
+    t = (title or "").strip()
+    if len(t) <= limit:
+        return t
+    cut = t[:limit + 1]
+    if " " in cut:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-–—(&/").rstrip()
+
+
 async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
                               watched: str, cursor: int) -> tuple[list[dict], int | None]:
     """Shared item-composition body — the fast path, the cached path, and the
     background full-quality refresh all emit byte-identical FeedResp shapes."""
-    items = [{"type": "script", "script": s} for s in script_result.get("scripts", [])[:3]]
+    items = []
+    for s in script_result.get("scripts", [])[:3]:
+        if isinstance(s, dict) and s.get("title"):
+            s = {**s, "title": _clamp_title(str(s["title"]))}
+        items.append({"type": "script", "script": s})
 
     reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
     items += [{"type": "reel", "reel": r} for r in reel_result.get("reels", [])[:4]]

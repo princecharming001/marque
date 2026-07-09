@@ -1,0 +1,23 @@
+appId: com.getmarque.app
+name: Today's pick card tap → full script sheet
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "feed.pick"
+    timeout: 15000
+- takeScreenshot: /tmp/r5-picks-cards
+- tapOn:
+    id: "feed.pick"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "script.record"
+    timeout: 6000
+- takeScreenshot: /tmp/r5-pick-open
