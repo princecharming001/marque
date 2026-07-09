@@ -13,6 +13,7 @@ final class AppStore {
     var footage: [Footage] = []          // filmed-but-undecided takes (Library "Footage")
     var media: [MediaAsset] = []         // personal media corpus the AI references
     var schedule: [ScheduledPost] = []
+    var pendingPublishes: [ScheduledPost] = []   // C-03: posts that hit a transport failure, retried on reconnect
     var trends: [TrendItem] = []
     var teardowns: [TeardownCard] = []
     var hasOnboarded = false
@@ -781,13 +782,19 @@ final class AppStore {
                                  platforms: platforms, date: date, autoCaptions: autoCaptions,
                                  mediaURL: clip.remoteURL ?? clip.localVideoPath)
         // Only OAuth-linked accounts (non-empty accountId) can actually be posted to.
-        let ok = await publisher.schedule(post, accountIds: publishAccountIds(for: platforms))
-        if ok {
-            schedule.append(post)
+        var scheduled = post
+        let outcome = await publisher.schedule(post, accountIds: publishAccountIds(for: platforms))
+        // C-02/C-03: record the honest outcome; a scheduled post is ALWAYS saved locally,
+        // but the clip only advances to .scheduled when there's a real account behind it.
+        scheduled.outcome = outcome
+        if outcome == .queuedTransportFailure { pendingPublishes.append(scheduled) }
+        schedule.append(scheduled)
+        if outcome == .posted || outcome == .savedLocalNoAccounts {
             if let idx = clips.firstIndex(where: { $0.id == clip.id }) { clips[idx].status = .scheduled }
-            save()
-            // Register with learning loop so it tracks this arm.
-            let registered = post
+        }
+        save()
+        if outcome == .posted {
+            let registered = scheduled
             Task { await backend.registerPost(registered, clip: clip) }
         }
     }
@@ -940,6 +947,24 @@ final class AppStore {
                                   content: content, trigger: nil))
     }
 
+    /// C-03/C-08: "your post is live" — fired when a queued/scheduled post actually
+    /// publishes upstream. Gated on the Settings "Post published" toggle (default on)
+    /// so the toggle backs a real notification instead of writing a dead UserDefaults key.
+    private func notifyPostPublished(_ post: ScheduledPost) {
+        guard UserDefaults.standard.object(forKey: "notif.published") as? Bool ?? true else { return }
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            guard settings.authorizationStatus == .authorized
+                    || settings.authorizationStatus == .provisional else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Your post is live 🚀"
+            content.body = "It just went out to your connected account."
+            content.sound = .default
+            center.add(UNNotificationRequest(identifier: "marque.published.\(UUID().uuidString)",
+                                             content: content, trigger: nil))
+        }
+    }
+
     /// Onboarding digest completion — fires so users who backgrounded the app during
     /// plan-building ("feel free to close the app") come back at the right moment.
     private func notifyScriptsReady() {
@@ -973,11 +998,40 @@ final class AppStore {
         guard canPublish else { return }
         var p = post
         p.date = Date()
-        let ok = await publisher.schedule(p, accountIds: publishAccountIds(for: p.platforms))
-        p.posted = ok
+        let outcome = await publisher.schedule(p, accountIds: publishAccountIds(for: p.platforms))
+        p.posted = (outcome == .posted)                 // ONLY a real post counts as posted
+        p.outcome = outcome
+        if outcome == .queuedTransportFailure { pendingPublishes.append(p) }
         if let idx = schedule.firstIndex(where: { $0.id == post.id }) { schedule[idx] = p }
         else { schedule.append(p) }
-        if ok, let ci = clips.firstIndex(where: { $0.id == post.clipId }) { clips[ci].status = .posted }
+        if outcome == .posted, let ci = clips.firstIndex(where: { $0.id == post.clipId }) {
+            clips[ci].status = .posted
+        }
+        save()
+    }
+
+    /// C-03: retry posts that failed to reach the backend (called on app foreground and on
+    /// NetworkMonitor reconnect). Each success promotes the post to truly posted and fires
+    /// the "your post is live" notification; anything still unreachable stays queued.
+    func retryPendingPublishes() async {
+        guard !pendingPublishes.isEmpty else { return }
+        let queue = pendingPublishes
+        for var p in queue {
+            let outcome = await publisher.schedule(p, accountIds: publishAccountIds(for: p.platforms))
+            guard outcome != .queuedTransportFailure else { continue }   // still offline — keep it
+            pendingPublishes.removeAll { $0.id == p.id }
+            p.outcome = outcome
+            p.posted = (outcome == .posted)
+            if let idx = schedule.firstIndex(where: { $0.id == p.id }) { schedule[idx] = p }
+            if outcome == .posted {
+                notifyPostPublished(p)
+                if let ci = clips.firstIndex(where: { $0.id == p.clipId }) {
+                    clips[ci].status = .posted
+                    let registered = p, clip = clips[ci]
+                    Task { await backend.registerPost(registered, clip: clip) }
+                }
+            }
+        }
         save()
     }
 
@@ -1089,6 +1143,7 @@ final class AppStore {
         var brandSummary: BrandSummaryCard? = nil
         var chatPersona: ChatPersona? = nil
         var chatResponseLength: ChatResponseLength? = nil
+        var pendingPublishes: [ScheduledPost]? = nil   // C-03: transport-failure retry queue
     }
 
     func save() {
@@ -1098,7 +1153,7 @@ final class AppStore {
                             memory: memory, readiedScripts: readiedScripts,
                             conversations: conversations, editPrefs: editPrefs,
                             brandSummary: brandSummary, chatPersona: chatPersona,
-                            chatResponseLength: chatResponseLength)
+                            chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -1120,6 +1175,7 @@ final class AppStore {
         brandSummary = snap.brandSummary
         chatPersona = snap.chatPersona
         chatResponseLength = snap.chatResponseLength
+        pendingPublishes = snap.pendingPublishes ?? []
         migrateFootageIntoMedia()
     }
 

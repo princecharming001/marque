@@ -44,6 +44,7 @@ struct MarqueApp: App {
 struct RootView: View {
     @Environment(AppStore.self) private var store
     @StateObject private var net = NetworkMonitor()
+    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         Group {
             if !store.hasOnboarded {
@@ -61,6 +62,14 @@ struct RootView: View {
         .animation(Motion.calm, value: store.subscription.isSubscribed)
         .safeAreaInset(edge: .top) {
             if !net.isOnline { OfflineBanner() }
+        }
+        // C-03: retry transport-failed publishes when the app returns to the foreground
+        // or the network comes back — a queued post lands the moment we can reach the API.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await store.retryPendingPublishes() } }
+        }
+        .onChange(of: net.isOnline) { _, online in
+            if online { Task { await store.retryPendingPublishes() } }
         }
     }
 }

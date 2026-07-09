@@ -357,9 +357,22 @@ struct ScheduledPost: Codable, Hashable, Identifiable {
     var platforms: [SocialPlatform]
     var date: Date
     var autoCaptions: Bool = true       // burn captions before publishing
-    var mediaURL: String? = nil         // public render URL attached to the post (Ayrshare mediaUrls)
+    var mediaURL: String? = nil         // public render URL attached to the post (Post for Me media)
     var posted: Bool = false
     var metrics: PostMetrics? = nil     // populated post-publish from Insights
+    // C-02/C-03: the honest last publish result (Optional-with-default → Snapshot decode-safe).
+    var outcome: PublishOutcome? = nil
+}
+
+/// C-02: the truthful result of a publish attempt — replaces the `Bool` that let a silent
+/// mock or a transport failure show the creator "Posted". Codable so it persists + drives UI.
+enum PublishOutcome: Codable, Equatable, Hashable {
+    case posted                     // genuinely published upstream
+    case savedLocalNoAccounts       // nothing to post to — user must connect an account
+    case queuedTransportFailure     // couldn't reach the backend — retry later
+    case failed(String)             // upstream rejected it
+
+    var didPost: Bool { self == .posted }
 }
 
 // MARK: - Personal media corpus (the AI references this when writing/cutting reels)

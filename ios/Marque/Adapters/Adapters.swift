@@ -47,7 +47,7 @@ extension ClipEngineProtocol {
 protocol Publishing {
     /// `accountIds` are the Post for Me account ids (spc_…) to publish to. Empty means
     /// no OAuth-linked account for the chosen platforms → the backend degrades to mock.
-    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> Bool
+    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> PublishOutcome
 }
 
 protocol InsightsProviding {
@@ -387,9 +387,10 @@ struct MockClipEngine: ClipEngineProtocol {
 // MARK: - Mock publisher & insights
 
 struct MockPublisher: Publishing {
-    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> Bool {
+    func schedule(_ post: ScheduledPost, accountIds: [String]) async -> PublishOutcome {
         try? await Task.sleep(nanoseconds: 300_000_000)
-        return true
+        // Honest even in the mock provider: nothing was actually posted.
+        return .savedLocalNoAccounts
     }
 }
 

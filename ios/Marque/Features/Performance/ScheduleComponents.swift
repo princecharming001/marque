@@ -172,18 +172,33 @@ struct PostRow: View {
                 }
             }
             Spacer()
-            Text(post.posted ? "Posted" : "Scheduled")
+            // C-03: the badge tells the TRUTH about what happened — never "Posted" for a
+            // local save. Only a real upstream post is green.
+            let s = postStatus(post)
+            Text(s.label)
                 .font(.system(size: 9, weight: .bold)).tracking(0.4)
-                .foregroundStyle(post.posted ? Palette.positive : Palette.textSecondary)
+                .foregroundStyle(s.color)
                 .padding(.horizontal, 6).padding(.vertical, 2)
-                .background((post.posted ? Palette.positive : Palette.textSecondary).opacity(0.12))
+                .background(s.color.opacity(0.12))
                 .clipShape(Capsule())
-            Image(systemName: post.posted ? "checkmark.circle.fill" : "chevron.right")
-                .font(.system(size: 13)).foregroundStyle(post.posted ? Palette.positive : Palette.textTertiary)
+            Image(systemName: s.icon)
+                .font(.system(size: 13)).foregroundStyle(s.color)
         }
         .padding(.vertical, 4)
     }
     private func icon(_ p: SocialPlatform) -> String { p == .instagram ? "camera.circle" : "music.note" }
+
+    private func postStatus(_ p: ScheduledPost) -> (label: String, icon: String, color: Color) {
+        switch p.outcome {
+        case .posted:                   return ("Posted", "checkmark.circle.fill", Palette.positive)
+        case .queuedTransportFailure:   return ("Will retry", "arrow.clockwise.circle", Palette.warning)
+        case .savedLocalNoAccounts:     return ("Saved — connect account", "link.circle", Palette.textSecondary)
+        case .failed:                   return ("Failed", "exclamationmark.circle", Palette.critical)
+        case nil:                       return (p.posted ? "Posted" : "Scheduled",
+                                                p.posted ? "checkmark.circle.fill" : "chevron.right",
+                                                p.posted ? Palette.positive : Palette.textSecondary)
+        }
+    }
 }
 
 // MARK: - Schedule a new post (time + platforms + auto-captions, then pick a clip)
