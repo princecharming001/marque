@@ -171,10 +171,46 @@ extension ProEditorView {
         captionsOn = on
     }
     func setCaptionStyle(_ s: String) { mutate([.captionStyle(s)]) }
-    func beginCaptionEdit(frame: Int, current: String) { editDraft = current; editingCaptionFrame = frame }
-    func commitCaptionEdit() {
-        if let f = editingCaptionFrame { mutate([.editCaption(frame: f, word: editDraft.trimmingCharacters(in: .whitespaces))]) }
-        editingCaptionFrame = nil
+
+    // MARK: Phrase-level caption editing (the caption-track model — never word chips)
+
+    func beginPhraseEdit(_ p: CaptionPhrase) {
+        guard captionsOn else { flash("Turn captions on first."); return }
+        editDraft = p.text
+        editingPhrase = p
+    }
+
+    /// Commit an edited phrase: the new text is redistributed across the phrase's transcript
+    /// word slots (extra words merge into shared slots; missing words clear their slot), as ONE
+    /// perform → one undo step. Word timing never changes — fixing text never breaks sync
+    /// (the Descript "Correct" principle).
+    func commitPhraseEdit() {
+        guard let p = editingPhrase else { return }
+        editingPhrase = nil
+        let newWords = editDraft.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        var ops: [WireOp] = []
+        // Clear any stray captions in the phrase's span that sit off the transcript slots
+        // (e.g. server-side chat edits) so the redistribute below fully owns the range.
+        for cap in session?.draft.captions ?? []
+        where cap.frame >= p.startFrame && cap.frame < p.endFrame && !p.wordFrames.contains(cap.frame) {
+            ops.append(.editCaption(frame: cap.frame, word: ""))
+        }
+        let slots = p.wordFrames
+        if newWords.count <= slots.count {
+            for (i, slot) in slots.enumerated() {
+                ops.append(.editCaption(frame: slot, word: i < newWords.count ? newWords[i] : ""))
+            }
+        } else {
+            // More words than slots: balanced contiguous chunks share slots.
+            let base = newWords.count / slots.count, extra = newWords.count % slots.count
+            var idx = 0
+            for (j, slot) in slots.enumerated() {
+                let take = base + (j < extra ? 1 : 0)
+                ops.append(.editCaption(frame: slot, word: newWords[idx..<idx + take].joined(separator: " ")))
+                idx += take
+            }
+        }
+        mutate(ops)
     }
     /// UX-2: an insert's [start, start+len) window ANCHORED AT THE PLAYHEAD — every editor
     /// inserts where you're parked, not at 0:00. Falls back to the first kept interval when
@@ -199,14 +235,40 @@ extension ProEditorView {
     // MARK: Effects-mode actions
 
     func addPunchInOnHook() {
-        guard let (a, b) = insertWindow(len: 60) else { return }
+        // 2.5s default block — the documented talking-head push-in idiom (100→~108% over 2-6s).
+        guard let (a, b) = insertWindow(len: 75) else { return }
         // UX-2: don't stack an invisible duplicate — repeated taps used to append identical
         // overlays the user couldn't see or remove.
         if session?.draft.overlays.contains(where: { $0.type == "punch_in" && $0.srcIn < b && a < $0.srcOut }) == true {
-            flash("There's already a zoom here — undo to remove it.")
+            flash("There's already a zoom here — tap its block to adjust it.")
             return
         }
-        mutate([.addPunchIn(a, b, scale: 1.08)], rejectMsg: "Punch-ins aren't rendered for this style.")
+        mutate([.addPunchIn(a, b, scale: 1.08)], rejectMsg: "Zooms aren't rendered for this style.")
+        // Select the new block so the intensity/duration controls appear immediately.
+        if let idx = session?.draft.overlays.lastIndex(where: { $0.type == "punch_in" && $0.srcIn == a }) {
+            selectedSeg = nil
+            selectedOverlay = idx
+        }
+    }
+
+    /// Swap a zoom block's intensity. edit_overlay doesn't carry scale, so this is a
+    /// remove+re-add at the same span — one perform, one undo step.
+    func setZoomIntensity(_ idx: Int, scale: Double) {
+        guard let o = session?.draft.overlays[safe: idx], o.type == "punch_in" else { return }
+        mutate([.removeOverlay(kind: "punch_in", o.srcIn, o.srcOut),
+                .addPunchIn(o.srcIn, o.srcOut, scale: scale)])
+        // The re-added block lands at the end of the overlays array — keep it selected.
+        if let ni = session?.draft.overlays.lastIndex(where: { $0.type == "punch_in" && $0.srcIn == o.srcIn }) {
+            selectedOverlay = ni
+        }
+    }
+
+    /// Grow/shrink a zoom block's tail by ±0.5s, clamped to a 0.5s minimum.
+    func adjustOverlayDuration(_ idx: Int, deltaFrames: Int) {
+        guard let o = session?.draft.overlays[safe: idx] else { return }
+        let newOut = max(o.srcIn + 15, o.srcOut + deltaFrames)
+        guard newOut != o.srcOut else { flash("That's as short as a zoom gets.") ; return }
+        mutate([.editOverlay(index: idx, frameIn: o.srcIn, frameOut: newOut)])
     }
     func addBroll(_ query: String) {
         guard let (a, b) = insertWindow(len: 90) else { return }
@@ -312,6 +374,71 @@ extension ProEditorView {
             Text(t).font(AppFont.caption).foregroundStyle(.white.opacity(0.85))
             Spacer()
         }.padding(.horizontal, Space.md).padding(.vertical, 6).background(Palette.ink.opacity(0.8))
+    }
+
+    // MARK: caption list sheet — the batch editor (rows: timecode + phrase, tap to fix)
+
+    var captionListPanel: some View {
+        VStack(spacing: 0) {
+            // Custom header (CapCut's caption bar).
+            ZStack {
+                Text("\(phrases.count) captions")
+                    .font(AppFont.headline).foregroundStyle(.white)
+                HStack {
+                    Spacer()
+                    Button { showCaptionList = false } label: {
+                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.accent)
+                            .padding(.horizontal, Space.md).padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editorPro.captionList.done")
+                }
+            }
+            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(phrases) { p in
+                        Button {
+                            // List stays open — fixing captions is a serial workflow; the edit
+                            // dialog floats above and the row updates in place on commit.
+                            beginPhraseEdit(p)
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: Space.md) {
+                                Text(timecode(forPhrase: p))
+                                    .font(.system(size: 11, weight: .medium)).monospacedDigit()
+                                    .foregroundStyle(.white.opacity(0.45))
+                                    .frame(width: 44, alignment: .leading)
+                                Text(p.text)
+                                    .font(AppFont.callout).foregroundStyle(.white)
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Image(systemName: "pencil")
+                                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.35))
+                            }
+                            .padding(.horizontal, Space.lg).padding(.vertical, 12)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("editorPro.captionRow.\(p.startFrame)")
+                        Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5)
+                            .padding(.leading, Space.lg)
+                    }
+                }
+                .padding(.vertical, Space.sm)
+            }
+        }
+        .frame(height: 320, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background(Palette.ink.opacity(0.6))
+    }
+
+    /// The phrase's output-time position as m:ss (where it plays in the cut, drops applied).
+    private func timecode(forPhrase p: CaptionPhrase) -> String {
+        guard let span = session?.draft.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) else { return "–" }
+        let s = Int(span.start)
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // MARK: music sheet

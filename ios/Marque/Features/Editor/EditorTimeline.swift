@@ -14,6 +14,15 @@ struct EditorTimeline: View {
     @Binding var selectedOverlay: Int?     // chip-lane selection (mutually exclusive with selectedSeg)
     let onTrim: (Int, TrimEdge, Int) -> Void
     let onReorder: ([Int]) -> Void
+    // Track lanes (CapCut layout: captions under video, then effects, then audio lanes).
+    var phrases: [CaptionPhrase] = []
+    var captionsOn: Bool = false
+    var musicName: String? = nil           // nil = no music set
+    var musicVolume: Double = 0.15
+    var showMusicAdd: Bool = false         // empty-lane "+ Add sound" affordance (sound mode)
+    var onTapPhrase: (CaptionPhrase) -> Void = { _ in }
+    var onTapMusic: () -> Void = {}
+    var onTapVoice: (Int) -> Void = { _ in }
 
     @State private var dragBaseOffset: CGFloat?
     @GestureState private var pinch: CGFloat = 1
@@ -45,14 +54,18 @@ struct EditorTimeline: View {
             ZStack(alignment: .leading) {
                 // UX-9: the ruler and the clips scroll TOGETHER under the fixed playhead —
                 // the ruler used to stay pinned, so its tick marks lied about position.
-                VStack(spacing: 2) {
+                VStack(alignment: .leading, spacing: 2) {
                     ruler(width: geo.size.width)
                     HStack(spacing: 3) {
                         ForEach(Array(clips.enumerated()), id: \.offset) { pos, c in
                             clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut, keptFrames: c.keptFrames)
                         }
                     }
-                    if !document.overlays.isEmpty { overlayLane }   // punch-ins/text cards as objects
+                    // CapCut lane order: captions directly under video, then effects, then audio.
+                    if captionsOn, !phrases.isEmpty { captionLane }
+                    if !document.overlays.isEmpty { overlayLane }   // zoom blocks + text cards
+                    voiceLane                                        // original voice as a waveform strip
+                    if musicName != nil || showMusicAdd { musicLane }
                 }
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
                 .offset(x: -playheadOffset)    // content scrolls under the fixed playhead
@@ -132,15 +145,8 @@ struct EditorTimeline: View {
                     .padding(3)
             }
         }
-        // #6: muted / volume-lowered clips get a badge so a silent clip isn't invisible.
-        .overlay(alignment: .topLeading) {
-            if let vol = clipVolumeLabel(srcIn: srcIn, srcOut: srcOut) {
-                Image(systemName: vol)
-                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
-                    .padding(3).background(Color.black.opacity(0.5)).clipShape(Circle())
-                    .padding(3)
-            }
-        }
+        // (Mute state now lives on the voice lane below — the audio is a visible object there,
+        // so the video cell no longer doubles it with a badge.)
         // Floating duration badge while trimming — the live feedback that was missing.
         .overlay(alignment: edgeAlignment) {
             if trimming {
@@ -168,13 +174,55 @@ struct EditorTimeline: View {
         (trimPreview?.edge == .leading) ? .topLeading : .topTrailing
     }
 
-    /// SF Symbol for a clip whose audio the creator lowered/muted (nil = full volume).
-    private func clipVolumeLabel(srcIn: Int, srcOut: Int) -> String? {
-        let ranges = document.volumeRanges.filter { $0.srcIn <= srcIn && $0.srcOut >= srcOut }
-        guard let r = ranges.min(by: { $0.volume < $1.volume }) else { return nil }
-        if r.volume <= 0.01 { return "speaker.slash.fill" }
-        if r.volume < 0.95 { return "speaker.wave.1.fill" }
-        return nil
+    // MARK: Caption track — one white phrase clip per caption group (CapCut's text lane).
+    private var captionLane: some View {
+        ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 18)
+            ForEach(phrases) { p in
+                if let span = document.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) {
+                    CaptionClipStrip(phrase: p, span: span, pointsPerSecond: pointsPerSecond) { onTapPhrase(p) }
+                        .offset(y: 1)
+                }
+            }
+        }
+        .frame(height: 18, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("editorPro.captionLane")
+    }
+
+    // MARK: Voice track — the original audio, mirrored clip-for-clip as waveform strips so
+    // mute/low-volume states are visible objects (not just a badge on the video cell).
+    private var voiceLane: some View {
+        HStack(spacing: 3) {
+            ForEach(Array(clips.enumerated()), id: \.offset) { _, c in
+                let frames = previewFrames(segIdx: c.segIdx, base: c.keptFrames, srcIn: c.srcIn, srcOut: c.srcOut)
+                VoiceStrip(srcIn: c.srcIn, srcOut: c.srcOut,
+                           width: max(30, width(frames)),
+                           volume: effectiveVolume(srcIn: c.srcIn, srcOut: c.srcOut),
+                           speechFrames: speechFrameSet)
+                    .onTapGesture { onTapVoice(c.segIdx) }
+            }
+        }
+        .accessibilityIdentifier("editorPro.voiceLane")
+    }
+
+    private var speechFrameSet: Set<Int> { Set(document.speechFrames) }
+
+    private func effectiveVolume(srcIn: Int, srcOut: Int) -> Double {
+        document.volumeRanges.filter { $0.srcIn <= srcIn && $0.srcOut >= srcOut }
+            .map(\.volume).min() ?? 1.0
+    }
+
+    // MARK: Music track — a named teal strip spanning the cut; "+ Add sound" when empty.
+    @ViewBuilder private var musicLane: some View {
+        let w = max(1, CGFloat(totalSeconds) * pointsPerSecond)
+        if let name = musicName {
+            MusicStrip(name: name, width: w, volume: musicVolume, onTap: onTapMusic)
+                .accessibilityIdentifier("editorPro.musicLane")
+        } else {
+            AddLaneStrip(label: "Add sound", width: w, onTap: onTapMusic)
+                .accessibilityIdentifier("editorPro.musicLane.add")
+        }
     }
 
     // MARK: Overlay chip lane — punch-ins/text cards become visible, tappable objects.
@@ -195,6 +243,8 @@ struct EditorTimeline: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var zoomPurple: Color { Color(hex: 0x8B5CF6) }
+
     private func overlayChip(idx: Int, overlay o: EditorOverlay, span: (start: Double, end: Double)) -> some View {
         let w = max(26, CGFloat(span.end - span.start) * pointsPerSecond)
         let selected = selectedOverlay == idx
@@ -205,15 +255,18 @@ struct EditorTimeline: View {
                 Text(String(o.text.prefix(8))).font(.system(size: 9, weight: .semibold)).lineLimit(1)
             }
         }
-        .foregroundStyle(selected ? Palette.night : (o.type == "punch_in" ? Palette.accent : .white))
+        // Zoom blocks read purple (the effect-block color: Screen Studio's zoom track,
+        // CapCut effect clips); text cards stay neutral white.
+        .foregroundStyle(selected ? .white : (o.type == "punch_in" ? zoomPurple : .white))
         .frame(width: w, height: 16)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(selected ? Palette.accent
-                               : (o.type == "punch_in" ? Palette.accent.opacity(0.22) : Color.white.opacity(0.16)))
+                .fill(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent)
+                               : (o.type == "punch_in" ? zoomPurple.opacity(0.25) : Color.white.opacity(0.16)))
         )
         .overlay(RoundedRectangle(cornerRadius: 4)
-            .strokeBorder(selected ? Palette.accent : Color.white.opacity(0.2), lineWidth: selected ? 1.5 : 0.5))
+            .strokeBorder(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent) : Color.white.opacity(0.2),
+                          lineWidth: selected ? 1.5 : 0.5))
         .offset(x: CGFloat(span.start) * pointsPerSecond, y: 2)
         .onTapGesture {
             withAnimation(.easeOut(duration: 0.15)) {

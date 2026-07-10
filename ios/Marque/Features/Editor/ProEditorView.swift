@@ -33,7 +33,8 @@ struct ProEditorView: View {
     @State var showMusicSheet = false
     @State var showTextCardAlert = false
     @State var editDraft = ""
-    @State var editingCaptionFrame: Int?
+    @State var editingPhrase: CaptionPhrase?     // phrase-level caption edit in flight
+    @State var showCaptionList = false           // the batch caption list editor
     @State var hapticTick = 0                    // I-7: .sensoryFeedback trigger
     // One-time first-run coach: three lines of orientation, dismissed forever after.
     @AppStorage("editorPro.coachShown") private var coachShown = false
@@ -75,6 +76,16 @@ struct ProEditorView: View {
         .marqueConfirm($confirmDiscard, title: "Discard your edits?",
                        message: "You have unsaved changes. Save re-cuts the clip; discarding loses them.",
                        confirm: "Discard edits", destructive: true, cancel: "Keep editing") { dismiss() }
+        // Dialogs + sheets live on the ROOT, not modeToolbar — the toolbar swaps out while the
+        // caption list is open (dialog would never render), and an .overlay hosted by a 64pt
+        // view clips its accessibility/hit-testing to that frame.
+        .sheet(isPresented: $showMusicSheet) { musicSheet }
+        .marqueInput($showTextCardAlert, title: "Text card", placeholder: "Card text",
+                     text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
+        .marqueInput(Binding(get: { editingPhrase != nil }, set: { if !$0 { editingPhrase = nil } }),
+                     title: "Edit caption", placeholder: "Caption text", text: $editDraft) { commitPhraseEdit() }
+        .marqueInput(Binding(get: { editingOverlayIndex != nil }, set: { if !$0 { editingOverlayIndex = nil } }),
+                     title: "Edit text card", placeholder: "Text", text: $editDraft) { commitOverlayTextEdit() }
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)   // I-7 haptics
         .task { await load() }
         .onChange(of: phase) { _, p in
@@ -93,7 +104,7 @@ struct ProEditorView: View {
                 VStack(alignment: .leading, spacing: Space.sm) {
                     coachRow("hand.tap", "Tap a clip to select it — trim with the edge handles")
                     coachRow("square.split.2x1", "Split cuts at the playhead — scrub to the exact moment first")
-                    coachRow("textformat", "Text mode: tap any word to fix its caption")
+                    coachRow("textformat", "Tap a caption strip on the timeline to fix its words")
                 }
                 Button {
                     coachShown = true
@@ -170,11 +181,16 @@ struct ProEditorView: View {
         VStack(spacing: 0) {
             playerSurface                       // flexes to fill; keeps the toolbar pinned bottom
             if let t = transient { transientBar(t) }
-            timelinePane
-            if mode == .text, !words.isEmpty { wordStrip }   // I-7: per-word caption editing
-            contextStrip
-            modeDrawer
-            modeToolbar
+            if showCaptionList {
+                // CapCut pattern: the caption list replaces the timeline pane inline —
+                // a system sheet here is invisible to accessibility/automation.
+                captionListPanel
+            } else {
+                timelinePane
+                contextStrip
+                modeDrawer
+                modeToolbar
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
@@ -217,6 +233,11 @@ struct ProEditorView: View {
                     drawerButton(captionsOn ? "Captions on" : "Captions off",
                                  captionsOn ? "captions.bubble.fill" : "captions.bubble") { toggleCaptions(!captionsOn) }
                         .accessibilityIdentifier("editorPro.captionsToggle")
+                    if captionsOn, !phrases.isEmpty {
+                        // The batch list editor (CapCut "Batch edit") — where misheard words get fixed.
+                        drawerButton("Edit captions", "list.bullet.rectangle") { showCaptionList = true }
+                            .accessibilityIdentifier("editorPro.editCaptions")
+                    }
                     if captionsOn {
                         ForEach(["clean", "bold-word", "karaoke"], id: \.self) { st in
                             drawerButton(st.capitalized, "textformat", active: session?.draft.captionStyle == st) { setCaptionStyle(st) }
@@ -357,48 +378,35 @@ struct ProEditorView: View {
         return cap.word
     }
 
-    // I-7: the transcript as tappable word chips — tap a word to fix its caption. The chip
-    // nearest the playhead is highlighted so the creator knows where they are.
     // (internal: +Actions' split-at-playhead reads it too)
     var playheadSourceFrame: Int {
         guard let d = session?.draft else { return 0 }
         return secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
     }
-    private var wordStrip: some View {
-        let cur = playheadSourceFrame
-        return ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(Array(words.enumerated()), id: \.offset) { i, w in
-                        let active = cur >= w.startFrame && cur < w.endFrame
-                        // #4: show the EDITED caption word if the user changed it, not the
-                        // immutable transcript — so a fixed typo visibly sticks.
-                        let display = session?.draft.captions.first(where: { $0.frame == w.startFrame })?.word ?? w.text
-                        Button { beginCaptionEdit(frame: w.startFrame, current: display); bumpHaptic() } label: {
-                            Text(display)
-                                .font(.system(size: 13, weight: active ? .semibold : .regular))
-                                .foregroundStyle(active ? Palette.night : .white)
-                                .padding(.horizontal, 9).padding(.vertical, 6)
-                                .background(Capsule().fill(active ? Palette.accent : Color.white.opacity(0.12)))
-                        }
-                        .buttonStyle(.plain)
-                        .id(i)
-                        .accessibilityIdentifier("editorPro.word.\(i)")
-                    }
-                }
-                .padding(.horizontal, Space.md)
-            }
-            .frame(height: 40)
-            .accessibilityIdentifier("editorPro.wordStrip")
-            .onChange(of: cur) { _, _ in
-                if let idx = words.firstIndex(where: { cur >= $0.startFrame && cur < $0.endFrame }) {
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(idx, anchor: .center) }
-                }
-            }
-        }
-    }
 
     // MARK: timeline
+
+    /// Transcript words grouped into caption phrase clips; edited caption text wins.
+    var phrases: [CaptionPhrase] {
+        buildCaptionPhrases(words: words, captions: session?.draft.captions ?? [])
+    }
+
+    /// The music track's display name (catalog lookup by URL, filename fallback).
+    private var musicName: String? {
+        guard let m = session?.draft.music else { return nil }
+        return MusicCatalog.tracks.first { $0.url == m.url }?.name
+            ?? URL(string: m.url)?.deletingPathExtension().lastPathComponent ?? "Music"
+    }
+
+    /// The lane stack is dynamic — the pane grows with the tracks it actually shows.
+    private var timelineHeight: CGFloat {
+        var h: CGFloat = 12 + 2 + 56 + 8                                  // ruler + video + padding
+        if captionsOn, !phrases.isEmpty { h += 20 }
+        if !(session?.draft.overlays.isEmpty ?? true) { h += 22 }
+        h += 18                                                            // voice lane (always)
+        if session?.draft.music != nil || mode == .sound { h += 20 }
+        return h + 8
+    }
 
     private var timelinePane: some View {
         EditorTimeline(
@@ -409,9 +417,21 @@ struct ProEditorView: View {
             selectedSeg: $selectedSeg,
             selectedOverlay: $selectedOverlay,
             onTrim: { segIdx, edge, newFrame in trim(segIdx: segIdx, edge: edge, to: newFrame) },
-            onReorder: { order in reorder(order) }
+            onReorder: { order in reorder(order) },
+            phrases: phrases,
+            captionsOn: captionsOn,
+            musicName: musicName,
+            musicVolume: session?.draft.music?.volume ?? 0.15,
+            showMusicAdd: mode == .sound && session?.draft.music == nil,
+            onTapPhrase: { p in beginPhraseEdit(p); bumpHaptic() },
+            onTapMusic: { mode = .sound; showMusicSheet = session?.draft.music == nil },
+            onTapVoice: { segIdx in
+                // Voice strip tap = select that clip in Sound mode — volume + mute right there.
+                mode = .sound
+                withAnimation(.easeOut(duration: 0.15)) { selectedOverlay = nil; selectedSeg = segIdx }
+            }
         )
-        .frame(height: 152)
+        .frame(height: timelineHeight)
         .background(Palette.ink.opacity(0.6))
     }
 
@@ -419,19 +439,39 @@ struct ProEditorView: View {
 
     @ViewBuilder private var contextStrip: some View {
         if let ov = selectedOverlay, let overlay = session?.draft.overlays[safe: ov] {
-            // Overlay selected (chip lane): the strip swaps to overlay ops.
-            HStack(spacing: Space.lg) {
-                contextButton("Delete", "trash") { deleteOverlay(ov); bumpHaptic() }
-                    .accessibilityIdentifier("editorPro.ctx.deleteOverlay")
-                if overlay.type == "text_card" {
-                    contextButton("Edit text", "pencil") { beginOverlayTextEdit(ov); bumpHaptic() }
-                        .accessibilityIdentifier("editorPro.ctx.editOverlayText")
+            // Overlay selected (chip lane): the strip swaps to overlay ops. Scrolls —
+            // the zoom controls (intensity + duration + delete) overflow a fixed row.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.lg) {
+                    contextButton("Delete", "trash") { deleteOverlay(ov); bumpHaptic() }
+                        .accessibilityIdentifier("editorPro.ctx.deleteOverlay")
+                    if overlay.type == "text_card" {
+                        contextButton("Edit text", "pencil") { beginOverlayTextEdit(ov); bumpHaptic() }
+                            .accessibilityIdentifier("editorPro.ctx.editOverlayText")
+                    }
+                    if overlay.type == "punch_in" {
+                        // Zoom block controls (Screen Studio's model): intensity presets + duration.
+                        ForEach([("Subtle", 1.05), ("Medium", 1.1), ("Strong", 1.2)], id: \.0) { label, scale in
+                            Button { setZoomIntensity(ov, scale: scale); bumpHaptic() } label: {
+                                Text(label).font(.system(size: 10, weight: abs(overlay.scale - scale) < 0.02 ? .bold : .regular))
+                                    .fixedSize()
+                                    .foregroundStyle(abs(overlay.scale - scale) < 0.02 ? Palette.night : .white)
+                                    .padding(.horizontal, 8).padding(.vertical, 5)
+                                    .background(Capsule().fill(abs(overlay.scale - scale) < 0.02 ? Color.white : Color.white.opacity(0.12)))
+                            }
+                            .accessibilityIdentifier("editorPro.ctx.zoom\(label)")
+                        }
+                        contextButton("Shorter", "minus") { adjustOverlayDuration(ov, deltaFrames: -15); bumpHaptic() }
+                        contextButton("Longer", "plus") { adjustOverlayDuration(ov, deltaFrames: 15); bumpHaptic() }
+                        Text(String(format: "%.1fs", framesToSeconds(overlay.srcOut - overlay.srcIn)))
+                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).monospacedDigit()
+                    } else {
+                        Text("Text card").font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
+                    }
                 }
-                Spacer()
-                Text(overlay.type == "punch_in" ? "Zoom ×\(String(format: "%.2f", overlay.scale))" : "Text card")
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
+                .padding(.horizontal, Space.md)
             }
-            .frame(height: 44).padding(.horizontal, Space.md)
+            .frame(height: 44)
             .background(Palette.ink.opacity(0.4))
         } else {
             segContextStrip
@@ -492,14 +532,6 @@ struct ProEditorView: View {
             }
         }
         .frame(height: 64).background(Palette.ink)
-        .sheet(isPresented: $showMusicSheet) { musicSheet }
-        // Branded input dialogs (replace the stock TextField-in-.alert).
-        .marqueInput($showTextCardAlert, title: "Text card", placeholder: "Card text",
-                     text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
-        .marqueInput(Binding(get: { editingCaptionFrame != nil }, set: { if !$0 { editingCaptionFrame = nil } }),
-                     title: "Edit caption", placeholder: "Word", text: $editDraft) { commitCaptionEdit() }
-        .marqueInput(Binding(get: { editingOverlayIndex != nil }, set: { if !$0 { editingOverlayIndex = nil } }),
-                     title: "Edit text card", placeholder: "Text", text: $editDraft) { commitOverlayTextEdit() }
     }
 
     // #5/#8: capability helpers fall back to the LOCAL style rules (mirrors LocalEDLEngine's
@@ -519,9 +551,7 @@ struct ProEditorView: View {
     }
 
     private func openModeDrawer(_ m: Mode) {
-        switch m {
-        case .sound where session?.draft.music == nil: showMusicSheet = true
-        default: break
-        }
+        // Sound mode no longer auto-pops the music sheet — the timeline's "+ Add sound"
+        // lane and the drawer button advertise it (empty lanes advertise themselves).
     }
 }

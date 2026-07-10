@@ -1,0 +1,44 @@
+appId: com.getmarque.app
+name: Track lanes — caption strip, voice lane, music affordance, zoom blocks
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+- takeScreenshot: /tmp/trD-01-open
+# Text mode → batch caption editor
+- tapOn: { id: "editorPro.mode.text" }
+- takeScreenshot: /tmp/trD-02-textmode
+- tapOn: { id: "editorPro.editCaptions" }
+- takeScreenshot: /tmp/trD-03-captionlist
+# Tap a caption row → phrase editor opens → rewrite the phrase
+- tapOn: { id: "editorPro.captionRow.0" }
+- takeScreenshot: /tmp/trD-03b-phraseedit
+- tapOn: { id: "dialog.input" }
+- eraseText
+- inputText: "STOP scrolling right now"
+- tapOn: { id: "dialog.save" }
+- takeScreenshot: /tmp/trD-03c-phrasesaved
+- tapOn: { id: "editorPro.captionList.done" }
+# Sound mode → music add affordance visible in timeline
+- tapOn: { id: "editorPro.mode.sound" }
+- takeScreenshot: /tmp/trD-04-soundmode
+# Zoom block: select the seeded punch_in chip → intensity controls → Strong
+- tapOn: { id: "editorPro.overlay.0" }
+- takeScreenshot: /tmp/trD-05-zoomselected
+- tapOn: { id: "editorPro.ctx.zoomStrong" }
+- takeScreenshot: /tmp/trD-06-zoomstrong
+# Save (caption edit → Render label) and land back on the clip sheet
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil:
+    visible: { id: "clip.editManual" }
+    timeout: 90000
+- takeScreenshot: /tmp/trD-07-saved

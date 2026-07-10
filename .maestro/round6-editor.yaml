@@ -1,5 +1,5 @@
 appId: com.getmarque.app
-name: R6 editor — reorder button, placeholder playback, word strip
+name: R6 editor — reorder button, placeholder playback, caption track
 ---
 - launchApp:
     arguments:
@@ -23,13 +23,16 @@ name: R6 editor — reorder button, placeholder playback, word strip
     timeout: 4000
 - tapOn: { id: "editorPro.moveRight" }
 - takeScreenshot: /tmp/r6-ed-03-reordered
-# word strip in Text mode
+# caption track in Text mode (phrase clips on the timeline; word strip retired)
 - tapOn: { id: "editorPro.mode.text" }
 - extendedWaitUntil:
-    visible: { id: "editorPro.wordStrip" }
+    visible: { id: "editorPro.captionLane" }
     timeout: 4000
-- tapOn: { id: "editorPro.word.0" }
+- tapOn: { id: "editorPro.editCaptions" }
+- tapOn: { id: "editorPro.captionRow.0" }
 - extendedWaitUntil:
     visible: "Edit caption"
     timeout: 4000
-- takeScreenshot: /tmp/r6-ed-04-wordedit
+- takeScreenshot: /tmp/r6-ed-04-phraseedit
+- tapOn: { id: "dialog.cancel" }
+- tapOn: { id: "editorPro.captionList.done" }

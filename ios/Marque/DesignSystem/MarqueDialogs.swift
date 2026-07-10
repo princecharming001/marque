@@ -45,7 +45,10 @@ struct MarqueDialogCard: View {
                 VStack(spacing: Space.sm) {
                     ForEach(actions) { a in
                         Button {
-                            dismiss(); a.action()
+                            // Action BEFORE dismiss — dismissal clears the caller's presented
+                            // state (e.g. `editingPhrase = nil`), so a commit handler that runs
+                            // after it reads nil and silently no-ops.
+                            a.action(); dismiss()
                         } label: { actionLabel(a) }
                         .buttonStyle(PressableStyle(dim: a.kind == .cancel ? 0.7 : 1))
                         .accessibilityIdentifier("dialog.\(a.label.lowercased().replacingOccurrences(of: " ", with: ""))")
