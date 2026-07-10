@@ -1,0 +1,76 @@
+appId: com.getmarque.app
+name: Edit formats — picker, mimic reel, recap_music E2E to a music-laned EDL
+---
+- launchApp:
+    clearState: true
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+# Create a script + film it (the standard sim record path)
+- tapOn: { id: "film.open" }
+- extendedWaitUntil:
+    visible: { id: "film.customScript" }
+    timeout: 6000
+- tapOn: { id: "film.customScript" }
+- extendedWaitUntil:
+    visible: { id: "film.customBody" }
+    timeout: 5000
+- tapOn: { id: "film.customBody" }
+- inputText: "My week of shipping in twenty seconds. Day one we planned. Day three we built. Day five we launched. Follow for the next sprint."
+- tapOn: { text: "Done", optional: true }      # dismiss the keyboard so Save is hittable
+- hideKeyboard
+- tapOn: { id: "film.customSave" }
+- extendedWaitUntil:
+    visible: { id: "film.readied" }
+    timeout: 6000
+- tapOn: { id: "film.readied", index: 0 }
+- extendedWaitUntil:
+    visible: { id: "script.record" }
+    timeout: 8000
+- tapOn: { id: "script.record" }
+- extendedWaitUntil:
+    visible: { id: "record.capture" }
+    timeout: 6000
+- tapOn: { id: "record.capture" }
+# The new pre-submit step: format picker + mimic strip
+- extendedWaitUntil:
+    visible: { id: "record.format.talking_head" }
+    timeout: 8000
+- takeScreenshot: /tmp/fmt-01-picker
+- tapOn: { id: "record.format.recap_music" }
+- extendedWaitUntil:
+    visible: { id: "record.mimic.0" }
+    timeout: 8000
+- tapOn: { id: "record.mimic.0" }
+- takeScreenshot: /tmp/fmt-02-mimic-selected
+- tapOn: { id: "record.makeClips" }
+# Brief screen: the picked treatment + the vibe line
+- extendedWaitUntil:
+    visible: "YOUR EDIT PLAN"
+    timeout: 12000
+- assertVisible: "Recap with music"
+- assertVisible:
+    text: "Matching the vibe of.*"
+- takeScreenshot: /tmp/fmt-03-brief
+- tapOn: { id: "record.makeMyClip" }
+- extendedWaitUntil:
+    visible: { id: "celebration.dismiss" }
+    timeout: 14000
+- tapOn: { id: "celebration.dismiss" }
+# The confirmed EDL must carry the injected music track — the manual editor's
+# music lane renders ONLY when edl.audio.music is set.
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: { id: "library.clip" }
+    timeout: 6000
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+- extendedWaitUntil:
+    visible: { id: "editorPro.musicLane" }
+    timeout: 6000
+- takeScreenshot: /tmp/fmt-04-music-lane

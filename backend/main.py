@@ -901,6 +901,12 @@ class ClipJobRequest(BaseModel):
     # Loop F analyze-first flow: analyze the raw take → edit brief BEFORE editing.
     analyze_first: bool = False
     custom_instructions: str = ""       # free-text editing instructions from the creator
+    # The cut treatment the creator explicitly picked at submit time (a key of
+    # prompts.EDIT_FORMATS). Empty = infer from the take (legacy behavior).
+    edit_format: str = ""
+    # Optional reference reel this cut should FEEL like — pacing/energy/caption
+    # vibe, never the words. Whitelisted before storage (_clean_reference_reel).
+    reference_reel: dict = {}
 
 
 class ConfirmRequest(BaseModel):
@@ -1607,6 +1613,112 @@ async def trends(niche: str = ""):
 
 
 # ---------------------------------------------------------------------------
+# Edit-format example reels — the "match a vibe" cards shown before submit.
+# Curated per-format exemplars communicate what each cut treatment FEELS like;
+# real scraped reels of the matching style top the list when the niche cache
+# has them. Serving is cache-only (never blocks on an Apify run).
+# ---------------------------------------------------------------------------
+
+_FORMAT_EXAMPLES = {
+    "talking_head": [
+        ("cameraconfident", "tiktok", "The {niche} advice I'd give my younger self",
+         "One take, straight to camera — every cut lands on a sentence break.",
+         "Clean single-take energy: tight trims, punch-ins on the key lines, zero gimmicks."),
+        ("directwith{slug}", "instagram", "Why your {niche} progress stalled",
+         "Direct eye contact, one idea, thirty seconds.",
+         "The classic creator cut — face carries it, captions catch the skimmers."),
+        ("real{slug}talk", "tiktok", "Nobody says this about {niche}",
+         "A contrarian take delivered like a friend leveling with you.",
+         "Conversational pacing with surgical filler removal — feels effortless, is not."),
+    ],
+    "talking_head_broll": [
+        ("show{slug}", "instagram", "How I actually plan my {niche} week",
+         "Talking head that cuts away to the desk, the notebook, the app.",
+         "Every key noun gets 2s of b-roll — face for trust, cutaways for proof."),
+        ("proofby{slug}", "tiktok", "3 {niche} tools I can't live without",
+         "Each tool name triggers a cutaway of it in use.",
+         "The show-don't-tell cut: b-roll on the nouns, hook and CTA stay on the face."),
+        ("workingon{slug}", "instagram", "A {niche} mistake hiding in plain sight",
+         "The claim on camera, the evidence in cutaways.",
+         "Cutaways every 4-6 seconds keep watch time up without losing the person."),
+    ],
+    "recap_music": [
+        ("{slug}inmotion", "instagram", "My week in {niche}, 20 seconds",
+         "Hard cuts on the beat, music forward, captions carry the story.",
+         "Montage energy: only the best beats survive, every cut hits with the track."),
+        ("fastforward{slug}", "tiktok", "30 days of {niche} in 25 seconds",
+         "A before-after arc told in rapid-fire moments.",
+         "Music-driven recap — no talking, high energy, rewatch-loop pacing."),
+        ("{slug}supercut", "instagram", "Everything we shipped this month",
+         "5-8 punchy moments, one hard cut each, zero filler.",
+         "The supercut treatment: momentum over narration, captions land the message."),
+    ],
+    "recap_voiceover": [
+        ("{slug}narrates", "tiktok", "What a real {niche} day looks like",
+         "Calm voiceover over the footage — the visuals change, the voice carries.",
+         "Documentary-style recap: continuous narration, visuals cut on beat boundaries."),
+        ("storyof{slug}", "instagram", "How this {niche} project actually went",
+         "The honest story narrated over the b-roll of it happening.",
+         "Voice-led recap — narration never cut mid-sentence, footage illustrates each beat."),
+        ("behind{slug}", "tiktok", "The part of {niche} nobody films",
+         "A reflective voiceover over unpolished, real footage.",
+         "Vlog-style voiceover recap: intimate read, clean audio, captions on."),
+    ],
+}
+
+
+def _format_example_reels(fmt: str, niche: str) -> list[dict]:
+    """Deterministic curated example reels for one edit format (keyless + top-up)."""
+    spec = prompts.EDIT_FORMATS[fmt]
+    n = niche or "your niche"
+    slug = "".join(c for c in n.lower().split()[0] if c.isalpha()) or "creator"
+    fmt_id = (STYLES.get(spec["style"]) or {}).get("formats", ["myth-buster"])[0]
+    out = []
+    for i, (handle, platform, title, hook, why) in enumerate(_FORMAT_EXAMPLES[fmt]):
+        out.append({
+            "id": f"ex-{fmt}-{i}",
+            "creator_handle": handle.format(slug=slug),
+            "platform": platform,
+            "title": title.format(niche=n),
+            "hook_text": hook.format(niche=n),
+            "transcript": "",
+            "thumbnail_url": f"https://picsum.photos/seed/ex-{fmt}-{slug}-{i}/400/711",
+            "video_url": "",
+            "views": 1_200_000 + i * 310_000,
+            "likes": 140_000 + i * 36_000,
+            "why_trending": why,
+            "format_id": fmt_id,
+            "style": spec["style"],
+            "from_watched": False,
+            "edit_format": fmt,
+        })
+    return out
+
+
+@app.get("/v1/reels/examples")
+async def reels_examples(format: str = "talking_head", niche: str = ""):
+    """Example reels for one edit format — what the creator's cut could feel like.
+    Real niche reels of the matching engine style lead when cached; curated
+    exemplars guarantee at least 3 cards. The picked reel returns to POST /v1/clips
+    as `reference_reel` and steers the brief + EDL prompts."""
+    fmt = format if format in prompts.EDIT_FORMATS else "talking_head"
+    target_style = prompts.EDIT_FORMATS[fmt]["style"]
+    out: list[dict] = []
+    if niche:
+        try:
+            entry = await _prev_reels_entry(_niche_reels_cache, _niche_cache_key(niche))
+            for r in (entry or {}).get("reels") or []:
+                if r.get("style") == target_style and r.get("title") and len(out) < 6:
+                    out.append({**r, "edit_format": fmt})
+        except Exception:
+            pass                                   # examples must never 500 over a cache hiccup
+    mode = "live" if out else "mock"
+    if len(out) < 3:
+        out.extend(_format_example_reels(fmt, niche)[: 6 - len(out)])
+    return {"mode": mode, "format": fmt, "reels": out[:6]}
+
+
+# ---------------------------------------------------------------------------
 # Media upload + clip pipeline
 # ---------------------------------------------------------------------------
 
@@ -1770,6 +1882,19 @@ async def mint_upload_url(req: UploadMintRequest):
     return {"mode": "live", "upload_url": upload_url, "key": key, "public_url": public_url}
 
 
+# Server-side music catalog (same tracks the iOS Sound-mode ships) — the source for
+# the music toggle's ACTUAL injection. Until this existed the toggle was a silent
+# no-op: it set prefs["music"]=true and nothing ever put a track in the EDL.
+MUSIC_TRACKS = [
+    {"name": "Neverwritten (upbeat)",
+     "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/DDR_assets/Kangaroo_MusiQue_-_The_Neverwritten_Role_Playing_Game.mp3"},
+    {"name": "Epoq (chill)",
+     "url": "https://commondatastorage.googleapis.com/codeskulptor-assets/Epoq-Lepidoptera.ogg"},
+    {"name": "Race Menu (driving)",
+     "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/riceracer_assets/music/menu.ogg"},
+]
+
+
 def _apply_edit_prefs(edl: dict, prefs: dict) -> dict:
     """Post-process an EDL per the creator's editing preferences."""
     if not edl or not prefs:
@@ -1789,6 +1914,20 @@ def _apply_edit_prefs(edl: dict, prefs: dict) -> dict:
         # tighten: mark every drop, and flag the EDL so the renderer trims gaps > 200ms
         if not edl.get("trim_aggressiveness"):
             edl["trim_aggressiveness"] = "aggressive"
+    if prefs.get("music"):
+        audio = edl.get("audio")
+        if not isinstance(audio, dict):
+            audio = {"lufs_target": -14.0}
+            edl["audio"] = audio
+        if not audio.get("music"):
+            # Deterministic pick (segment count as seed) so retries render identically.
+            track = MUSIC_TRACKS[len(edl.get("segments") or []) % len(MUSIC_TRACKS)]
+            montage = edl.get("style") == "fast_cuts"
+            # A montage recap is music-forward (louder, no duck); a talking cut sits
+            # the track quietly under the voice.
+            audio["music"] = {"url": track["url"], "query": None,
+                              "volume": 0.3 if montage else 0.12,
+                              "duck_voice": not montage}
     return edl
 
 
@@ -1805,14 +1944,20 @@ async def create_clip_job(req: ClipJobRequest):
     job_id = str(uuid.uuid4())
     clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "queued"}
              for f in (req.formats or ["myth-buster"])]
+    # An explicit edit format pins the engine style from the start — inference
+    # (brief/confirm) must never override the creator's choice.
+    edit_format = req.edit_format if req.edit_format in prompts.EDIT_FORMATS else ""
+    style = prompts.EDIT_FORMATS[edit_format]["style"] if edit_format else req.style
     job = {
         "job_id": job_id, "source_id": req.source_id, "status": "transcribing",
-        "clips": clips, "script": req.script, "style": req.style,
+        "clips": clips, "script": req.script, "style": style,
         "brand": req.brand, "media_context": req.media_context,
         "source_url": req.source_url, "edl": None, "error": None,
         "edit_prefs": req.edit_prefs or {},
         "react_source_url": req.react_source_url,
         "react_credit_label": req.react_credit_label,
+        "edit_format": edit_format,
+        "reference_reel": _clean_reference_reel(req.reference_reel),
         # Conversational-tweak state: transcript kept for re-editing, prior EDLs
         # for undo, and the tweak chat history.
         "words": [], "edl_history": [], "tweaks": [],
@@ -1828,11 +1973,12 @@ async def create_clip_job(req: ClipJobRequest):
             job["words"] = _mock_words(req.script or {})
             total_f = ms_to_frame(max((w["end_ms"] for w in job["words"]), default=0))
             brief = _mock_edit_brief(job["words"], " ".join(w["word"] for w in job["words"]),
-                                     req.custom_instructions)
+                                     req.custom_instructions, edit_format=edit_format)
             job["edit_brief"] = _resolve_strategy(brief, total_f)
             job["status"] = "brief_ready"
             return {"mode": "mock", "job_id": job_id, "status": "brief_ready",
-                    "edit_brief": job["edit_brief"], "toggles": _default_toggles(job["edit_brief"])}
+                    "edit_brief": job["edit_brief"],
+                    "toggles": _default_toggles(job["edit_brief"], edit_format)}
     job["status"] = "analyzing"
     _spawn(_run_analysis(job_id))
     _spawn(_persist_clip_job(job_id))
@@ -1869,7 +2015,9 @@ async def get_clip_job(job_id: str, include_words: int = 0):
     }
     if job.get("edit_brief"):                     # analyze-first: surface the brief + toggles
         out["edit_brief"] = job["edit_brief"]
-        out["toggles"] = job.get("toggles") or _default_toggles(job["edit_brief"])
+        out["toggles"] = job.get("toggles") or _default_toggles(job["edit_brief"], job.get("edit_format", ""))
+    if job.get("edit_format"):
+        out["edit_format"] = job["edit_format"]
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint
         # is polled every 5s; the manual editor is the only caller that needs them.
@@ -1895,12 +2043,18 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
     if not brief:
         raise HTTPException(status_code=409, detail="no edit brief — analyze the video first")
 
-    toggles = req.toggles or job.get("toggles") or _default_toggles(brief)
+    edit_format = job.get("edit_format", "")
+    toggles = req.toggles or job.get("toggles") or _default_toggles(brief, edit_format)
     job["toggles"] = toggles
     if req.custom_instructions:
         job["custom_instructions"] = req.custom_instructions
     inf = brief.get("inferred") or {}
-    job["style"] = inf.get("style") if inf.get("style") in STYLES else (job.get("style") or "talking_head")
+    if edit_format in prompts.EDIT_FORMATS:
+        # The creator picked this cut treatment at submit — it PINS the style; the
+        # brief's inference only fills in when no explicit format was chosen.
+        job["style"] = prompts.EDIT_FORMATS[edit_format]["style"]
+    else:
+        job["style"] = inf.get("style") if inf.get("style") in STYLES else (job.get("style") or "talking_head")
     fmt = inf.get("format_id") if inf.get("format_id") in FORMAT_IDS else "myth-buster"
     job.setdefault("script", {})
     if isinstance(job["script"], dict):
@@ -2349,7 +2503,10 @@ def _mock_edl(style: str, script: dict) -> dict:
         "drops": [{"src_in": 45, "src_out": 51, "reason": "filler"}],
         "captions": [{"word": w, "frame": i*20}
                      for i, w in enumerate(script.get("hook", "Great hook").split()[:8])],
-        "overlays": [{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}],
+        # Punch-ins only for styles whose composition draws them (mirrors _PUNCH_STYLES) —
+        # a recap/faceless mock shouldn't carry a zoom the caps say isn't supported.
+        "overlays": ([{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}]
+                     if style in ("talking_head", "duet_split") else []),
         "broll": [], "layout": {"style": style, "panels": 1 if style != "split_three" else 3,
                                 "panel_boundaries": [240, 480] if style == "split_three" else []},
         "audio": {"lufs_target": -14.0},
@@ -2409,10 +2566,23 @@ def _mock_words(script: dict) -> list[dict]:
     return out
 
 
-def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instructions: str = "") -> dict:
+def _clean_reference_reel(reel: dict | None) -> dict:
+    """Whitelist + truncate the client's reference reel before it lands on the job
+    (it flows into prompts — never store arbitrary keys or unbounded strings)."""
+    if not reel or not isinstance(reel, dict):
+        return {}
+    keys = ("id", "creator_handle", "platform", "title", "hook_text",
+            "why_trending", "format_id", "style")
+    out = {k: str(reel[k])[:220] for k in keys if isinstance(reel.get(k), (str, int)) and str(reel[k]).strip()}
+    return out if out.get("title") or out.get("creator_handle") else {}
+
+
+def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instructions: str = "",
+                     edit_format: str = "") -> dict:
     """Deterministic keyless edit brief (Loop F). filler/dead-air cut_regions come
     ONLY from strip_fillers (never invented); the hook candidate is the opening kept
-    words; everything else is a sane talking-head default. Works with no script."""
+    words; everything else is a sane talking-head default. Works with no script.
+    An explicit edit_format pins inferred.style + shapes pacing (recaps read high)."""
     from app.edl import strip_fillers, ms_to_frame
     kept, drops = strip_fillers(words or [])
     cut_regions = [{"start_frame": d.src_in, "end_frame": d.src_out,
@@ -2427,6 +2597,10 @@ def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instruction
     else:
         start_f, end_f, quote = 0, 30, (transcript[:60].strip() or "Your opening line")
     through = (transcript.split(".")[0].strip() if transcript else "") or "The main point of this video."
+    spec = prompts.EDIT_FORMATS.get(edit_format)
+    style = spec["style"] if spec else "talking_head"
+    fmt_id = (STYLES.get(style) or {}).get("formats", ["myth-buster"])[0]
+    recap = edit_format in ("recap_music", "recap_voiceover")
     return {
         "video_type": "scripted_talking_head", "is_scripted": bool(transcript),
         "through_line": through[:160],
@@ -2434,17 +2608,22 @@ def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instruction
                              "quote": quote[:120], "reason": "Opens on the core claim.",
                              "signal": "curiosity"}],
         "cut_regions": cut_regions,
-        "pacing": {"energy": "medium", "read": "Steady, conversational pacing."},
+        "pacing": ({"energy": "high", "read": "Montage pacing — hard cuts between beats."} if recap
+                   else {"energy": "medium", "read": "Steady, conversational pacing."}),
         "broll_moments": [], "punch_in_moments": [],
         "strategy": "trim_only", "restructure_order": [],
-        "inferred": {"style": "talking_head", "format_id": "myth-buster",
+        "inferred": {"style": style, "format_id": fmt_id,
                      "hook_signal": "curiosity", "pillar": ""},
     }
 
 
-def _default_toggles(brief: dict) -> dict:
-    """Sensible per-type defaults for the editable toggles (captions + filler/dead-air/
-    flub cuts are always-on and not toggles). The creator can flip any of these."""
+def _default_toggles(brief: dict, edit_format: str = "") -> dict:
+    """Sensible defaults for the editable toggles (captions + filler/dead-air/flub cuts
+    are always-on and not toggles). An explicit edit format seeds its own defaults
+    (recap_music turns music ON, +b-roll turns b-roll ON); otherwise fall back to the
+    per-video-type heuristics. The creator can still flip any of these."""
+    if edit_format in prompts.EDIT_FORMATS:
+        return dict(prompts.EDIT_FORMATS[edit_format]["toggles"])
     vtype = brief.get("video_type", "other")
     return {
         "broll": vtype in ("story", "listicle", "tutorial", "freestyle_rant"),
@@ -2454,23 +2633,29 @@ def _default_toggles(brief: dict) -> dict:
 
 
 async def _generate_edit_brief(words: list[dict], transcript: str = "",
-                               custom_instructions: str = "", brand: dict | None = None) -> dict:
+                               custom_instructions: str = "", brand: dict | None = None,
+                               edit_format: str = "", reference: dict | None = None) -> dict:
     """Live edit brief (SONNET) with the deterministic mock as the keyless path AND the
     degrade fallback. Re-grounds two things the LLM must NOT own: (1) inferred dims are
     validated against the taxonomies; (2) filler/dead-air cut_regions are re-merged from
-    strip_fillers (the model only contributes flub/ramble/tangent)."""
-    mock = _mock_edit_brief(words, transcript, custom_instructions)
+    strip_fillers (the model only contributes flub/ramble/tangent). An explicit
+    edit_format steers the analysis AND pins inferred.style afterward — the creator's
+    choice beats the model's inference."""
+    mock = _mock_edit_brief(words, transcript, custom_instructions, edit_format=edit_format)
     if not (ANTHROPIC_KEY and AI_QUALITY):
         return mock
     try:
-        sys, usr = prompts.edit_brief_prompt(words, custom_instructions, brand or {})
+        sys, usr = prompts.edit_brief_prompt(words, custom_instructions, brand or {},
+                                             edit_format=edit_format, reference=reference)
         data = await anthropic_json(sys, usr, prompts.EDIT_BRIEF_SCHEMA, SONNET, 1600)
     except HTTPException:
         return mock
     if not isinstance(data, dict) or not data.get("inferred"):
         return mock
     inf = dict(data.get("inferred") or {})
-    if inf.get("style") not in STYLES:
+    if edit_format in prompts.EDIT_FORMATS:
+        inf["style"] = prompts.EDIT_FORMATS[edit_format]["style"]
+    elif inf.get("style") not in STYLES:
         inf["style"] = "talking_head"
     if inf.get("format_id") not in FORMAT_IDS:
         inf["format_id"] = "myth-buster"
@@ -2690,7 +2875,9 @@ async def _run_analysis(job_id: str) -> None:
             c["status"] = "analyzing"
         transcript_text = " ".join(w.get("word", "") for w in words)
         brief = await _generate_edit_brief(words, transcript_text,
-                                           job.get("custom_instructions", ""), job.get("brand") or {})
+                                           job.get("custom_instructions", ""), job.get("brand") or {},
+                                           edit_format=job.get("edit_format", ""),
+                                           reference=job.get("reference_reel") or None)
         total_f = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=0))
         job["edit_brief"] = _resolve_strategy(brief, total_f)
         job["status"] = "brief_ready"
@@ -2736,7 +2923,8 @@ async def _run_edit(job_id: str, words: list[dict]):
                                           disfluency_spans=disfluency_spans,
                                           emphasis_spans=emphasis_spans,
                                           custom_instructions=job.get("custom_instructions", ""),
-                                          brief=job.get("edit_brief"))
+                                          brief=job.get("edit_brief"),
+                                          reference=job.get("reference_reel") or None)
         prefs = job.get("edit_prefs") or {}
         if prefs:
             hints = []

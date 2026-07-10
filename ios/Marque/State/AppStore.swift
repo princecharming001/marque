@@ -593,11 +593,15 @@ final class AppStore {
     /// falls back to the local mock pipeline; the creator is never stranded.
     func startAnalyzeJob(script: Script?, publicURL: String?,
                          customInstructions: String = "",
-                         reactSourceURL: String = "") async -> AnalyzeJobResponse? {
+                         reactSourceURL: String = "",
+                         editFormat: String = "",
+                         referenceReel: ReelItem? = nil) async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
         return await backend.createAnalyzeJob(sourceURL: publicURL, script: script,
                                               customInstructions: customInstructions,
-                                              reactSourceURL: reactSourceURL)
+                                              reactSourceURL: reactSourceURL,
+                                              editFormat: editFormat,
+                                              referenceReel: referenceReel)
     }
 
     /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min

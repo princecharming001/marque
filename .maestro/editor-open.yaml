@@ -24,6 +24,10 @@ name: Open ProEditorView on a real clip + verify controls
     id: "film.customBody"
 - inputText: "Stop overthinking your content. Here is the one system that actually works. Follow for more."
 - tapOn:
+    text: "Done"
+    optional: true
+- hideKeyboard
+- tapOn:
     id: "film.customSave"
 - extendedWaitUntil:
     visible:

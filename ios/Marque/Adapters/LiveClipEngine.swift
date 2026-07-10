@@ -219,13 +219,26 @@ extension BackendClient {
     /// brief (keyless mock) or status "analyzing" (poll getBrief until brief_ready).
     func createAnalyzeJob(sourceURL: String, script: Script?,
                           customInstructions: String = "",
-                          reactSourceURL: String = "") async -> AnalyzeJobResponse? {
+                          reactSourceURL: String = "",
+                          editFormat: String = "",
+                          referenceReel: ReelItem? = nil) async -> AnalyzeJobResponse? {
         var body: [String: Any] = [
             "analyze_first": true,
             "source_url": sourceURL,
             "custom_instructions": customInstructions,
             "edit_prefs": editPrefs,
         ]
+        // The creator's explicit cut treatment — pins the engine style server-side
+        // (brief inference never overrides an explicit pick).
+        if !editFormat.isEmpty { body["edit_format"] = editFormat }
+        // The reel this cut should FEEL like (pacing/energy/caption vibe, never words).
+        if let r = referenceReel {
+            body["reference_reel"] = [
+                "id": r.id, "creator_handle": r.creatorHandle, "platform": r.platform,
+                "title": r.title, "hook_text": r.hookText, "why_trending": r.whyTrending,
+                "format_id": r.formatId, "style": r.style,
+            ]
+        }
         // AF-I2 (audit): the duet react source was silently dropped on the whole
         // analyze path — the rendered duet had no react panel with zero errors.
         if !reactSourceURL.isEmpty { body["react_source_url"] = reactSourceURL }

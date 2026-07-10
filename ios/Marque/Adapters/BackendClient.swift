@@ -651,6 +651,14 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             .joined(separator: ",")
     }
 
+    /// Example reels for one edit format — the "match a vibe" cards shown before
+    /// submit; the picked one returns to POST /v1/clips as `reference_reel`.
+    func editExamples(format: String, niche: String) async -> [ReelItem] {
+        guard let data = await get("/v1/reels/examples?format=\(q(format))&niche=\(q(niche))"),
+              let r = try? JSONDecoder().decode(ReelsResp.self, from: data) else { return [] }
+        return r.reels.map(reel)
+    }
+
     private struct WarmResp: Decodable { let ok: Bool? }
 
     /// Fire-and-forget: pre-scrape a newly-added watched creator so their real

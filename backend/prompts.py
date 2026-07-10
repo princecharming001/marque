@@ -30,6 +30,74 @@ ACTIVE_STYLES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Edit formats — the four cut treatments the creator picks at SUBMIT time (how
+# the take should be edited), distinct from script styles (what they filmed).
+# Each maps to the engine style whose Remotion composition renders it, seeds the
+# confirm toggles, and steers the edit brief. A user-picked format PINS the
+# style — the brief's inference must never override an explicit choice.
+# ---------------------------------------------------------------------------
+EDIT_FORMATS = {
+    "talking_head": {
+        "label": "Talking head",
+        "style": "talking_head",
+        "toggles": {"broll": False, "punch_ins": True, "music": False},
+        "brief_hint": (
+            "Classic talking-head cut: tight filler trims, open on the strongest hook, "
+            "punch-ins on emphasized lines, captions carry the words."),
+    },
+    "talking_head_broll": {
+        "label": "Talking head + B-roll",
+        "style": "broll_cutaway",
+        "toggles": {"broll": True, "punch_ins": True, "music": False},
+        "brief_hint": (
+            "Talking head with b-roll cutaways: find 3-5 broll_moments on concrete visual "
+            "nouns/actions (roughly one every 4-6s); the hook and CTA stay on the creator's face."),
+    },
+    "recap_music": {
+        "label": "Recap with music",
+        "style": "fast_cuts",
+        "toggles": {"broll": False, "punch_ins": False, "music": True},
+        "brief_hint": (
+            "Music-forward montage recap: keep ONLY the strongest beats as hard cuts (aim for "
+            "5-8 short segments), kill every slow moment, energy reads high, captions carry the "
+            "message over the track."),
+    },
+    "recap_voiceover": {
+        "label": "Recap with voiceover",
+        "style": "faceless",
+        "toggles": {"broll": False, "punch_ins": False, "music": False},
+        "brief_hint": (
+            "Voiceover recap: the creator's voice narrates over the footage. Keep the narration "
+            "continuous and clean (cut only flubs/fillers — never mid-sentence), let the visuals "
+            "change on beat boundaries, captions on."),
+    },
+}
+
+
+def _reference_reel_block(reference: dict | None) -> str:
+    """The mimic context appended to brief/EDL prompts when the creator picked a
+    reference reel: match its pacing/energy/caption vibe, never copy its words."""
+    if not reference or not isinstance(reference, dict):
+        return ""
+    handle = str(reference.get("creator_handle", "")).lstrip("@")
+    bits = [b for b in [
+        f'@{handle}' if handle else "",
+        f'"{reference.get("title", "")}"' if reference.get("title") else "",
+        f'({reference.get("platform", "")})' if reference.get("platform") else "",
+    ] if b]
+    why = reference.get("why_trending") or ""
+    hook = reference.get("hook_text") or ""
+    lines = [f"REFERENCE REEL the creator wants this cut to feel like: {' '.join(bits)}."]
+    if hook:
+        lines.append(f'Its hook: "{hook}"')
+    if why:
+        lines.append(f"Why it works: {why}")
+    lines.append(
+        "Match its PACING, ENERGY, and caption vibe in your choices (cut density, hook placement, "
+        "overlay usage). NEVER copy its wording — the creator's own words are the material.")
+    return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
 # Video styles — the coarse lane the creator chooses; each shapes the script.
 # `formats` are the fine-grained recipes allowed within the style.
 # ---------------------------------------------------------------------------
@@ -348,7 +416,8 @@ def edl_prompt(style: str, transcript_words: list[dict], script: dict, brand: di
                media_context: str = "",
                disfluency_spans: list | None = None,
                emphasis_spans: list | None = None,
-               custom_instructions: str = "", brief: dict | None = None) -> tuple[str, str]:
+               custom_instructions: str = "", brief: dict | None = None,
+               reference: dict | None = None) -> tuple[str, str]:
     """Return (system, user) for the per-style EDL generation call. When an analyze-
     first `brief` is present, the edit is steered by it (open on the chosen hook, make
     the editorial cuts, honor the strategy); custom_instructions are honored verbatim."""
@@ -405,6 +474,8 @@ EDIT BRIEF (from the analysis — act on it):
 - Editorial cuts to make (frame ranges, beyond fillers): {', '.join(cuts) or 'none'}
 - Strategy: {strategy}{restructure}"""
     custom_line = f"\nCREATOR'S CUSTOM EDITING INSTRUCTIONS (honor these verbatim): {custom_instructions}\n" if custom_instructions else ""
+    ref_block = _reference_reel_block(reference)
+    ref_line = f"\n{ref_block}\n" if ref_block else ""
 
     user = f"""Script:
 Hook: {hook}
@@ -418,7 +489,7 @@ Word-level transcript (30fps, frame = round(start_ms/1000*30)):
 {json.dumps(transcript_words[:200])}
 
 Media context: {media_context or "none"}
-{grounding}{brief_line}{custom_line}
+{grounding}{brief_line}{custom_line}{ref_line}
 
 Generate the EDL for this {style} edit. Output JSON only."""
 
@@ -442,7 +513,8 @@ def _frame_anchored_transcript(words: list[dict], phrase_len: int = 8) -> str:
 
 
 def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
-                      brand: dict | None = None) -> tuple[str, str]:
+                      brand: dict | None = None, edit_format: str = "",
+                      reference: dict | None = None) -> tuple[str, str]:
     """Analyze a raw talking-head transcript BEFORE editing → a grounded edit brief
     (Loop F). Adapted to Yunicorn's short-form talking-head ICP from Palo's creative-
     review doctrine: every claim is grounded in a real frame anchor + a verbatim quote,
@@ -475,8 +547,15 @@ def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
         "Reply with ONLY the JSON object for the schema. No prose, no code fences."
     )
     custom_line = f"\nCREATOR'S CUSTOM EDITING INSTRUCTIONS (honor these): {custom_instructions}\n" if custom_instructions else ""
+    fmt_line = ""
+    if edit_format in EDIT_FORMATS:
+        spec = EDIT_FORMATS[edit_format]
+        fmt_line = (f"\nREQUESTED EDIT FORMAT (the creator explicitly chose this — your brief serves it, "
+                    f"and inferred.style MUST be \"{spec['style']}\"): {spec['label']} — {spec['brief_hint']}\n")
+    ref_block = _reference_reel_block(reference)
+    ref_line = f"\n{ref_block}\n" if ref_block else ""
     user = (
-        f"{brand_block(brand)}{custom_line}\n"
+        f"{brand_block(brand)}{fmt_line}{ref_line}{custom_line}\n"
         f"Total frames: {total_f} (30fps).\n"
         f"TRANSCRIPT (frame-anchored):\n{_frame_anchored_transcript(words)}\n\n"
         "Produce the edit brief JSON."
@@ -2005,7 +2084,8 @@ CONVERSE_ENVELOPE_SCHEMA = (
     '"memory_updates": [{"op": "add"|"remove"|"set", "field": "facts"|"perspective"|"ideas"|"preferences"|"angle", "value": str}], '
     '"intent": "none"|"generate_scripts"|"day_plan"|"save_idea"|"update_brand_angle"|"edit_video", '
     '"intent_args_json": str (a JSON-ENCODED object of the intent\'s args per the intent rules; "{}" when none), '
-    '"chips": [str] (2-3 short suggested next messages, ≤6 words each)}'
+    '"chips": [str] (2-3 suggested next messages the CREATOR could send, ≤6 words each, '
+    'first person; if your reply asks a question they MUST be plausible direct answers to it)}'
 )
 
 # Structured-output schema for the converse envelope. intent_args is carried as a
@@ -2040,7 +2120,15 @@ CONVERSE_ENVELOPE_EXEMPLAR = (
     '{"op": "set", "field": "angle", "value": "Taking harder, evidence-backed stances against training myths"}, '
     '{"op": "add", "field": "ideas", "value": "Debunk the anabolic window myth (with receipts)"}], '
     '"intent": "update_brand_angle", "intent_args_json": "{}", '
-    '"chips": ["Write the anabolic window script", "What else should I debunk?", "Build my day"]}'
+    '"chips": ["Write the anabolic window script", "What else should I debunk?", "Build my day"]}\n\n'
+    # Second exemplar: the reply ends in a QUESTION, so the chips are ANSWERS to it —
+    # concrete, first-person, tailored — never generic feature commands.
+    'User said: "Write me a script" (their brand: fitness coach)\n'
+    "Correct envelope:\n"
+    '{"reply": "What\'s the one thing you tell every client that contradicts what they\'ve heard everywhere else?", '
+    '"memory_updates": [], "intent": "none", "intent_args_json": "{}", '
+    '"chips": ["Cardio isn\'t how you lose fat", "You\'re eating too little, not too much", '
+    '"Soreness doesn\'t mean progress"]}'
 )
 
 
@@ -2113,7 +2201,9 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "- generate_scripts: they want a script/scripts written now. args: {\"topic\": str, "
         "\"style\": one of [talking_head, green_screen, broll_cutaway, split_three, duet_split, faceless] or \"\", \"count\": 1-3}. "
         "The scripts are generated and attached automatically — your reply is ONE tight sentence teeing them up, "
-        "no preamble and no trailing offer.\n"
+        "no preamble and no trailing offer. If the topic is genuinely unknown, ask AT MOST ONE tight clarifying "
+        "question — after their next answer you MUST write (fire the intent with your best-assumption topic; "
+        "they can tweak after). Never stack a second clarifying round; interrogation kills momentum.\n"
         "- day_plan: they want their day/content day built out. args: {\"plan\": {\"blocks\": "
         "[{\"time\": str (e.g. \"9:00\"), \"action\": str (≤6 words), \"detail\": str (one sentence)}]}} — "
         "build a realistic filming/posting day from their weekly target, blockers, and active ideas (4-6 blocks).\n"
@@ -2122,6 +2212,20 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
         "- edit_video: ONLY when the context notes they attached video clips AND they ask you to edit / "
         "stitch / cut / trim them. args: {\"instructions\": str (their editing directions, verbatim)}. Your "
         "reply confirms what the edit will do; the app runs the edit itself.\n\n"
+        "CHIPS RULES: chips are one-tap messages the CREATOR sends next (their words, first person) — they "
+        "render as tappable options right above the text box.\n"
+        "- If your reply ends with (or contains) a question, every chip MUST be a plausible, concrete answer "
+        "to that question — tailored to their brand/memory, like answers they'd actually give. NEVER feature "
+        "commands ('Build my day', 'Write me a script') under a question; a mismatched chip reads as broken.\n"
+        "- If your reply is not a question, chips are natural follow-up moves on THIS thread (sharpen it, go "
+        "deeper, do the next step). Generic app commands only when the thread has genuinely concluded.\n"
+        "- The creator can always type a custom reply instead — chips are shortcuts, not choices; never write "
+        "your reply as if they must pick one.\n\n"
+        "CLARIFY-ONCE: One clarifying question per request, MAXIMUM. If your previous turn already asked a "
+        "question, your next turn must DELIVER — take whatever they gave you, fill the gaps with the strongest "
+        "reasonable assumption from their brand/memory, and fire the intent (e.g. write the script on your "
+        "best-guess topic). A second question in a row reads as interrogation and kills momentum; a good draft "
+        "they can tweak beats another question every time.\n\n"
         f"OUTPUT: Reply with ONLY a valid JSON object matching exactly: {CONVERSE_ENVELOPE_SCHEMA}\n"
         "No prose outside the JSON, no code fences.\n\n"
         f"Worked example:\n{CONVERSE_ENVELOPE_EXEMPLAR}"

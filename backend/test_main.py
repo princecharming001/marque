@@ -4429,3 +4429,159 @@ def test_brand_keeps_quiz_context_fields():
     assert "instagram" in block
     assert "1K–10K followers" in block
     assert "tie scripts to their offer" in block                # why_now hint fires
+
+
+# ---------------------------------------------------------------------------
+# Edit formats (talking_head / talking_head_broll / recap_music / recap_voiceover)
+# — the submit-time cut treatment pins the engine style end to end, seeds the
+# toggles, and recap_music actually injects a music track into the EDL.
+# ---------------------------------------------------------------------------
+
+def _create_with_format(fmt: str) -> dict:
+    return client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True, "edit_format": fmt,
+        "script": {"hook": "Big claim", "body": "Proof here.", "cta": "Follow."}}).json()
+
+
+def test_edit_format_recap_music_pins_fast_cuts_and_injects_music():
+    created = _create_with_format("recap_music")
+    assert created["status"] == "brief_ready"
+    # Format seeds the toggles: music ON, punch-ins OFF for a montage recap.
+    assert created["toggles"] == {"broll": False, "punch_ins": False, "music": True}
+    assert created["edit_brief"]["inferred"]["style"] == "fast_cuts"
+    assert created["edit_brief"]["pacing"]["energy"] == "high"
+    job_id = created["job_id"]
+    assert client.get(f"/v1/clips/{job_id}").json()["edit_format"] == "recap_music"
+
+    confirmed = client.post(f"/v1/clips/{job_id}/confirm", json={}).json()
+    assert confirmed["status"] == "mock_ready"
+    job = main._clip_jobs[job_id]
+    assert job["style"] == "fast_cuts"                       # user format pinned the style
+    edl = job["edl"]
+    assert edl["style"] == "fast_cuts"
+    assert edl["overlays"] == []                             # no punch-ins in a montage
+    music = edl["audio"]["music"]
+    assert music["url"] and music["volume"] == 0.3 and music["duck_voice"] is False
+
+
+def test_edit_format_recap_voiceover_maps_to_faceless():
+    created = _create_with_format("recap_voiceover")
+    assert created["toggles"]["music"] is False
+    job_id = created["job_id"]
+    client.post(f"/v1/clips/{job_id}/confirm", json={})
+    job = main._clip_jobs[job_id]
+    assert job["style"] == "faceless"
+    assert job["edl"]["style"] == "faceless"
+    assert job["edl"]["format_id"] in prompts.STYLES["faceless"]["formats"]
+    assert not (job["edl"]["audio"].get("music"))            # voiceover recap: no default track
+
+
+def test_edit_format_talking_head_broll_seeds_broll_toggle():
+    created = _create_with_format("talking_head_broll")
+    assert created["toggles"]["broll"] is True
+    job_id = created["job_id"]
+    client.post(f"/v1/clips/{job_id}/confirm", json={})
+    job = main._clip_jobs[job_id]
+    assert job["style"] == "broll_cutaway"
+    assert job["edit_prefs"]["broll"] is True
+
+
+def test_edit_format_user_choice_beats_brief_inference():
+    # The mock brief infers talking_head — the explicit recap_music format must win
+    # at confirm even when the client re-sends inference-shaped toggles.
+    created = _create_with_format("recap_music")
+    job_id = created["job_id"]
+    client.post(f"/v1/clips/{job_id}/confirm",
+                json={"toggles": {"broll": False, "punch_ins": True, "music": True}})
+    assert main._clip_jobs[job_id]["style"] == "fast_cuts"
+
+
+def test_invalid_edit_format_falls_back_to_inference():
+    created = client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True, "edit_format": "vertical_epic",
+        "script": {"hook": "Big claim", "body": "Proof.", "cta": "Follow."}}).json()
+    job_id = created["job_id"]
+    assert "edit_format" not in client.get(f"/v1/clips/{job_id}").json()
+    client.post(f"/v1/clips/{job_id}/confirm", json={})
+    assert main._clip_jobs[job_id]["style"] in prompts.STYLES     # legacy inference path
+
+
+def test_music_toggle_injects_quiet_ducked_track_for_talking_head():
+    # No edit format at all — flipping the music toggle alone must now land an
+    # actual track (it used to be a silent no-op: prefs set, EDL untouched).
+    created = client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True,
+        "script": {"hook": "Big claim", "body": "Proof.", "cta": "Follow."}}).json()
+    job_id = created["job_id"]
+    client.post(f"/v1/clips/{job_id}/confirm",
+                json={"toggles": {"broll": False, "punch_ins": True, "music": True}})
+    music = main._clip_jobs[job_id]["edl"]["audio"]["music"]
+    assert music["url"] and music["volume"] == 0.12 and music["duck_voice"] is True
+
+
+def test_apply_edit_prefs_music_respects_existing_track():
+    edl = {"style": "talking_head", "segments": [{"src_in": 0, "src_out": 300}],
+           "audio": {"lufs_target": -14.0, "music": {"url": "keep://this.mp3", "volume": 0.2,
+                                                     "duck_voice": True, "query": None}}}
+    out = main._apply_edit_prefs(edl, {"music": True})
+    assert out["audio"]["music"]["url"] == "keep://this.mp3"       # never clobber a chosen track
+
+
+def test_default_toggles_seeded_by_format_else_vtype():
+    assert main._default_toggles({}, "recap_music") == {"broll": False, "punch_ins": False, "music": True}
+    legacy = main._default_toggles({"video_type": "story"}, "")
+    assert legacy["broll"] is True and legacy["music"] is False
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/reels/examples — per-format "match a vibe" cards.
+# ---------------------------------------------------------------------------
+
+def test_reels_examples_returns_style_matched_cards_per_format():
+    for fmt, spec in prompts.EDIT_FORMATS.items():
+        body = client.get(f"/v1/reels/examples?format={fmt}&niche=fitness").json()
+        assert body["format"] == fmt
+        reels = body["reels"]
+        assert len(reels) >= 3
+        for r in reels:
+            assert r["style"] == spec["style"]
+            assert r["edit_format"] == fmt
+            assert r["title"] and r["creator_handle"] and r["thumbnail_url"]
+
+
+def test_reels_examples_invalid_format_falls_back():
+    body = client.get("/v1/reels/examples?format=nope").json()
+    assert body["format"] == "talking_head"
+    assert len(body["reels"]) >= 3
+
+
+# ---------------------------------------------------------------------------
+# Reference reel — whitelisted on the job, threaded into brief + EDL prompts.
+# ---------------------------------------------------------------------------
+
+def test_reference_reel_whitelisted_and_stored():
+    created = client.post("/v1/clips", json={
+        "source_url": "mock://take.mov", "analyze_first": True, "edit_format": "recap_music",
+        "reference_reel": {"id": "ex-recap_music-0", "creator_handle": "fastforwardfit",
+                           "platform": "tiktok", "title": "30 days in 25 seconds",
+                           "why_trending": "Music-driven recap", "style": "fast_cuts",
+                           "evil_key": "drop me", "hook_text": "x" * 500},
+        "script": {"hook": "Big claim", "body": "Proof.", "cta": "Follow."}}).json()
+    ref = main._clip_jobs[created["job_id"]]["reference_reel"]
+    assert ref["creator_handle"] == "fastforwardfit"
+    assert "evil_key" not in ref
+    assert len(ref["hook_text"]) <= 220                      # truncated before prompts
+
+
+def test_reference_and_format_reach_the_prompts():
+    ref = {"creator_handle": "fastforwardfit", "title": "30 days in 25 seconds",
+           "platform": "tiktok", "why_trending": "Music-driven recap, no talking."}
+    words = [{"word": "hello", "start_ms": 0, "end_ms": 250}]
+    _, usr = prompts.edit_brief_prompt(words, "", {}, edit_format="recap_music", reference=ref)
+    assert "REQUESTED EDIT FORMAT" in usr and "fast_cuts" in usr
+    assert "REFERENCE REEL" in usr and "@fastforwardfit" in usr and "NEVER copy its wording" in usr
+    _, edl_usr = prompts.edl_prompt("fast_cuts", words, {}, {}, reference=ref)
+    assert "REFERENCE REEL" in edl_usr and "fastforwardfit" in edl_usr
+    # and without a reference the block is absent
+    _, bare = prompts.edl_prompt("fast_cuts", words, {}, {})
+    assert "REFERENCE REEL" not in bare

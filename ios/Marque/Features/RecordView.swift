@@ -42,8 +42,22 @@ struct RecordView: View {
     @State private var importError: String? = nil
     // Per-style edit capabilities (G-04) — gates which toggles the brief screen shows.
     @State private var styleCaps: [String: [String: Bool]]? = nil
+    // The submit-time cut treatment — pins the engine style server-side. Seeded from
+    // the script's style lane; the creator can change it before submitting.
+    @State private var editFormat: EditFormat
+    // "Match a vibe": per-format example reels + the one the creator picked to mimic.
+    @State private var exampleReels: [ReelItem] = []
+    @State private var referenceReel: ReelItem? = nil
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
+
+    /// The prompter shows only while filming; review/brief phases reclaim its space.
+    private var showsPrompter: Bool {
+        switch phase {
+        case .ready, .recording, .paused, .stitching: return true
+        case .recorded, .analyzing, .brief, .making: return false
+        }
+    }
 
     init(script: Script?) {
         self.script = script
@@ -55,6 +69,7 @@ struct RecordView: View {
             style: VideoStyle.talkingHead.rawValue, formatId: "myth-buster",
             hook: Hook(text: "Freestyle take", signal: .narrative, strength: 70),
             altHooks: [], body: "", cta: "", shotPlan: [], targetSeconds: 60, predictedScore: 70))
+        _editFormat = State(initialValue: EditFormat.inferred(fromScriptStyle: script?.style ?? ""))
     }
 
     var body: some View {
@@ -63,21 +78,25 @@ struct RecordView: View {
             VStack(spacing: Space.lg) {
                 topBar
                 Spacer(minLength: 0)
-                if isFreestyle {
-                    VStack(spacing: Space.sm) {
-                        Image(systemName: "mic.fill").font(.system(size: 22)).foregroundStyle(.white.opacity(0.7))
-                        Text("No script — just talk.")
-                            .font(AppFont.title).foregroundStyle(.white)
-                        Text("Film it your way; the editor finds the cut after.")
-                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(height: 300)
-                } else {
-                    Teleprompter(script: $liveScript, running: $promptRunning, speed: $speed, restartToken: $restartToken)
+                // The prompter matters only while filming — after the take it's dead
+                // copy stealing 300pt the format picker/brief need.
+                if showsPrompter {
+                    if isFreestyle {
+                        VStack(spacing: Space.sm) {
+                            Image(systemName: "mic.fill").font(.system(size: 22)).foregroundStyle(.white.opacity(0.7))
+                            Text("No script — just talk.")
+                                .font(AppFont.title).foregroundStyle(.white)
+                            Text("Film it your way; the editor finds the cut after.")
+                                .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                        }
                         .frame(height: 300)
+                    } else {
+                        Teleprompter(script: $liveScript, running: $promptRunning, speed: $speed, restartToken: $restartToken)
+                            .frame(height: 300)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
                 controls
             }
             .padding(Space.lg)
@@ -232,17 +251,31 @@ struct RecordView: View {
                 ProgressView().tint(Palette.accent)
                 Text("Stitching your takes…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
             case .recorded:
-                // H-05: no format picker — the editor infers the right style/format
-                // from the take itself and shows its plan on the brief screen next.
-                Text("Nice take. Your editor will study it and show you the plan.")
-                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.85)).multilineTextAlignment(.center)
-                Button { reRecord() } label: {
-                    Label("Re-record", systemImage: "arrow.counterclockwise")
-                        .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                // The creator picks the CUT TREATMENT here (it pins the engine style
+                // server-side) and can optionally point at a reel to mimic the vibe of.
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: Space.md) {
+                        Text("HOW SHOULD WE CUT THIS?")
+                            .font(AppFont.micro).tracking(Track.label)
+                            .foregroundStyle(.white.opacity(0.6))
+                            .frame(maxWidth: .infinity, alignment: .center)
+                        formatGrid
+                        mimicSection
+                        if liveScript.style == VideoStyle.duetSplit.rawValue {
+                            reactSourceField
+                        }
+                    }
                 }
-                .accessibilityIdentifier("record.reRecord")
-                if liveScript.style == VideoStyle.duetSplit.rawValue {
-                    reactSourceField
+                .frame(maxHeight: 560)
+                .task(id: editFormat) { await loadExamples() }
+                HStack(spacing: Space.lg) {
+                    Button { reRecord() } label: {
+                        Label("Re-record", systemImage: "arrow.counterclockwise")
+                            .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                    }
+                    .accessibilityIdentifier("record.reRecord")
+                    GhostButton(title: "Save as draft") { saveDraftAndClose() }
+                        .accessibilityIdentifier("record.saveDraft")
                 }
                 Button { makeClips() } label: {
                     Text("Submit for editing")
@@ -252,8 +285,6 @@ struct RecordView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("record.makeClips")
-                GhostButton(title: "Save as draft") { saveDraftAndClose() }
-                    .accessibilityIdentifier("record.saveDraft")
             case .analyzing:
                 ProgressView().tint(Palette.accent)
                 Text("Studying your take — cuts, hook, pacing…")
@@ -284,13 +315,18 @@ struct RecordView: View {
 
                 if let brief {
                     HStack(spacing: Space.sm) {
-                        briefChip(brief.videoTypeLabel)
+                        briefChip(editFormat.label)          // the treatment the creator picked
                         briefChip(brief.strategy == "restructure" ? "Re-ordered for the hook" : "Tightened, not re-cut")
                         if !brief.cutRegions.isEmpty {
                             briefChip(brief.cutRegions.count == 1 ? "1 cut" : "\(brief.cutRegions.count) cuts")
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
+                    if let ref = referenceReel {
+                        Text("Matching the vibe of @\(ref.creatorHandle)")
+                            .font(AppFont.caption).foregroundStyle(Palette.accent)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
 
                     if !brief.throughLine.isEmpty {
                         Text(brief.throughLine)
@@ -353,6 +389,112 @@ struct RecordView: View {
             .clipShape(Capsule())
     }
 
+    // MARK: Edit-format picker + "match a vibe" (pre-submit)
+
+    private var formatGrid: some View {
+        let cols = [GridItem(.flexible(), spacing: Space.sm), GridItem(.flexible(), spacing: Space.sm)]
+        return LazyVGrid(columns: cols, spacing: Space.sm) {
+            ForEach(EditFormat.allCases) { f in
+                let selected = editFormat == f
+                Button { selectFormat(f) } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Image(systemName: f.icon).font(.system(size: 15, weight: .semibold))
+                        Text(f.label)
+                            .font(AppFont.caption.weight(.semibold))
+                            .lineLimit(1).minimumScaleFactor(0.75)
+                        Text(f.blurb)
+                            .font(.system(size: 10))
+                            .opacity(0.75)
+                            .lineLimit(2, reservesSpace: true)
+                            .multilineTextAlignment(.leading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Space.sm + 2)
+                    .background(selected ? Color.white : Color.white.opacity(0.10))
+                    .foregroundStyle(selected ? Palette.ink : .white)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("record.format.\(f.rawValue)")
+            }
+        }
+    }
+
+    private func selectFormat(_ f: EditFormat) {
+        guard editFormat != f else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            editFormat = f
+            referenceReel = nil        // the picked vibe belongs to the old format
+            exampleReels = []          // .task(id: editFormat) refetches
+        }
+    }
+
+    @ViewBuilder private var mimicSection: some View {
+        if !exampleReels.isEmpty {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text("MATCH A VIBE — OPTIONAL")
+                    .font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(.white.opacity(0.5))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Space.sm) {
+                        ForEach(Array(exampleReels.enumerated()), id: \.element.id) { i, r in
+                            mimicCard(r, index: i)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func mimicCard(_ r: ReelItem, index: Int) -> some View {
+        let selected = referenceReel?.id == r.id
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                referenceReel = selected ? nil : r      // tap again to unpick
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                ZStack(alignment: .topTrailing) {
+                    AsyncImage(url: URL(string: r.thumbnailURL)) { img in
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Rectangle().fill(Color.white.opacity(0.08))
+                            .overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
+                    }
+                    .frame(width: 104, height: 130).clipped()
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Palette.accent)
+                            .background(Circle().fill(.white).padding(2))
+                            .padding(5)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                Text("@\(r.creatorHandle)")
+                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                Text(r.title)
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(width: 104)
+            .padding(4)
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("record.mimic.\(index)")
+    }
+
+    private func loadExamples() async {
+        let reels = await store.backend.editExamples(format: editFormat.rawValue,
+                                                     niche: store.brand.niche)
+        guard !Task.isCancelled else { return }
+        exampleReels = reels
+    }
+
     private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
         HStack {
             Text(label).font(AppFont.callout).foregroundStyle(.white)
@@ -367,11 +509,12 @@ struct RecordView: View {
     }
 
     /// Style-gated toggle visibility. Missing data (caps fetch failed / unknown
-    /// style) shows the toggle — never wrongly hide a real capability.
+    /// style) shows the toggle — never wrongly hide a real capability. The picked
+    /// edit format pins the engine style, so it (not the script lane) is the fallback.
     private func briefCapability(_ key: String) -> Bool {
         guard let styleCaps else { return true }
         let style = brief?.inferred?.style.isEmpty == false ? brief!.inferred!.style
-                                                            : liveScript.style
+                                                            : editFormat.engineStyle
         return styleCaps[style]?[key] ?? true
     }
 
@@ -552,7 +695,9 @@ struct RecordView: View {
             guard let resp = await store.startAnalyzeJob(
                     script: isFreestyle ? nil : liveScript, publicURL: publicURL,
                     customInstructions: customInstructions,
-                    reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+                    reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                    editFormat: editFormat.rawValue,
+                    referenceReel: referenceReel) else {
                 await fallbackToMock()
                 return
             }
