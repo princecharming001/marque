@@ -358,12 +358,9 @@ private struct WatchedCreatorSlot: View {
 
     private var editor: some View {
         VStack(spacing: Space.sm) {
-            Picker("Platform", selection: $platform) {
-                ForEach(SocialPlatform.allCases) { p in
-                    Text(p.label).tag(p)
-                }
-            }
-            .pickerStyle(.segmented)
+            MarqueSegmented(options: SocialPlatform.allCases.map(\.label),
+                            index: Binding(get: { SocialPlatform.allCases.firstIndex(of: platform) ?? 0 },
+                                           set: { platform = SocialPlatform.allCases[$0] }))
 
             HStack(spacing: 4) {
                 Text("@").foregroundStyle(Palette.textTertiary)
@@ -583,15 +580,12 @@ struct PillarsEditorSheet: View {
                         confirmRefresh = true
                     }
                     .disabled(regenerating)
-                    .confirmationDialog("Regenerate pillars?",
-                                        isPresented: $confirmRefresh, titleVisibility: .visible) {
-                        Button("Replace my edits", role: .destructive) {
-                            regenerating = true
-                            Task { await store.analyzePage(); draft = store.pillars; regenerating = false }
-                        }
-                        Button("Keep my edits", role: .cancel) {}
-                    } message: {
-                        Text("This replaces everything here with a fresh AI analysis of your brand.")
+                    .marqueConfirm($confirmRefresh, title: "Regenerate pillars?",
+                                   message: "This replaces everything here with a fresh AI analysis of your brand.",
+                                   confirm: "Replace my edits", destructive: true,
+                                   cancel: "Keep my edits") {
+                        regenerating = true
+                        Task { await store.analyzePage(); draft = store.pillars; regenerating = false }
                     }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
@@ -653,10 +647,8 @@ private struct PillarEditRow: View {
                 .disabled(!canDelete)
                 .opacity(canDelete ? 1 : 0.3)
                 .accessibilityIdentifier("pillars.delete")
-                .confirmationDialog("Delete this pillar?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                    Button("Delete", role: .destructive) { onDelete() }
-                    Button("Cancel", role: .cancel) {}
-                }
+                .marqueConfirm($confirmDelete, title: "Delete this pillar?",
+                               confirm: "Delete", destructive: true) { onDelete() }
             }
             TextField("One-line summary", text: $pillar.summary, axis: .vertical)
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...2)

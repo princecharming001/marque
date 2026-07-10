@@ -22,28 +22,20 @@ struct SettingsView: View {
                     // MARK: Editing — bound to store.editPrefs; didSet threads them into
                     // every clip job via BackendClient.editPrefs.
                     settingsGroup("Editing") {
-                        Toggle(isOn: $store.editPrefs.autoCaptions) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Auto-captions").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                                Text("Burn word-timed captions into every clip.")
-                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            }
-                        }
-                        .tint(Palette.accent)
-                        .accessibilityIdentifier("settings.autoCaptions")
-                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        MarqueToggleRow(title: "Auto-captions",
+                                        subtitle: "Burn word-timed captions into every clip.",
+                                        isOn: $store.editPrefs.autoCaptions)
+                            .accessibilityIdentifier("settings.autoCaptions")
+                            .padding(.horizontal, Space.md).padding(.vertical, 10)
 
                         Divider().padding(.leading, Space.md)
 
                         VStack(alignment: .leading, spacing: Space.sm) {
                             Text("Caption style").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            Picker("Caption style", selection: $store.editPrefs.captionStyle) {
-                                ForEach(CaptionStyle.allCases) { style in
-                                    Text(style.label).tag(style)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .accessibilityIdentifier("settings.captionStyle")
+                            MarqueSegmented(options: CaptionStyle.allCases.map(\.label),
+                                            index: Binding(get: { CaptionStyle.allCases.firstIndex(of: store.editPrefs.captionStyle) ?? 0 },
+                                                           set: { store.editPrefs.captionStyle = CaptionStyle.allCases[$0] }))
+                                .accessibilityIdentifier("settings.captionStyle")
                         }
                         .padding(.horizontal, Space.md).padding(.vertical, 10)
 
@@ -51,13 +43,10 @@ struct SettingsView: View {
 
                         VStack(alignment: .leading, spacing: Space.sm) {
                             Text("Trim filler").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            Picker("Trim filler", selection: $store.editPrefs.fillerTrim) {
-                                ForEach(FillerTrim.allCases) { trim in
-                                    Text(trim.label).tag(trim)
-                                }
-                            }
-                            .pickerStyle(.segmented)
-                            .accessibilityIdentifier("settings.fillerTrim")
+                            MarqueSegmented(options: FillerTrim.allCases.map(\.label),
+                                            index: Binding(get: { FillerTrim.allCases.firstIndex(of: store.editPrefs.fillerTrim) ?? 0 },
+                                                           set: { store.editPrefs.fillerTrim = FillerTrim.allCases[$0] }))
+                                .accessibilityIdentifier("settings.fillerTrim")
                         }
                         .padding(.horizontal, Space.md).padding(.vertical, 10)
                     }
@@ -69,32 +58,21 @@ struct SettingsView: View {
 
                     // MARK: Notifications
                     settingsGroup("Notifications") {
-                        Toggle(isOn: Binding(
-                            get: { store.remindersEnabled },
-                            set: { on in if on { store.requestRemindersAndEnable() } else { store.remindersEnabled = false } }
-                        )) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Daily film reminder").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                                Text("A nudge each morning to keep your week full.")
-                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            }
-                        }
-                        .tint(Palette.accent)
-                        .accessibilityIdentifier("settings.reminders")
-                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        MarqueToggleRow(title: "Daily film reminder",
+                                        subtitle: "A nudge each morning to keep your week full.",
+                                        isOn: Binding(
+                                            get: { store.remindersEnabled },
+                                            set: { on in if on { store.requestRemindersAndEnable() } else { store.remindersEnabled = false } }))
+                            .accessibilityIdentifier("settings.reminders")
+                            .padding(.horizontal, Space.md).padding(.vertical, 10)
 
                         Divider().padding(.leading, Space.md)
 
-                        Toggle(isOn: $notifPublished) {
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Post published").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                                Text("Know the moment a clip goes live.")
-                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            }
-                        }
-                        .tint(Palette.accent)
-                        .onChange(of: notifPublished) { _, v in UserDefaults.standard.set(v, forKey: "notif.published") }
-                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        MarqueToggleRow(title: "Post published",
+                                        subtitle: "Know the moment a clip goes live.",
+                                        isOn: $notifPublished)
+                            .onChange(of: notifPublished) { _, v in UserDefaults.standard.set(v, forKey: "notif.published") }
+                            .padding(.horizontal, Space.md).padding(.vertical, 10)
                         // C-08: "Weekly recap" toggle removed — it wrote a UserDefaults key nothing
                         // consumed (no recap generator exists). "Post published" above now backs a
                         // real notification (C-03 retry-queue success path).
@@ -249,20 +227,14 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
-            .confirmationDialog("Sign out?", isPresented: $showSignOutConfirm, titleVisibility: .visible) {
-                Button("Sign out", role: .destructive) {
-                    store.auth.signOut()    // gate machine swaps to the auth wall automatically
-                    dismiss()
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Your brand stays on this device.")
+            .marqueConfirm($showSignOutConfirm, title: "Sign out?", message: "Your brand stays on this device.",
+                           confirm: "Sign out", destructive: true) {
+                store.auth.signOut(); dismiss()      // gate machine swaps to the auth wall automatically
             }
-            .alert("Delete account?", isPresented: $showDeleteConfirm) {
-                Button("Cancel", role: .cancel) {}
-                Button("Delete", role: .destructive) { store.resetAll(); dismiss() }
-            } message: {
-                Text("This permanently erases your brand, scripts, clips, and schedule from this device. This can't be undone.")
+            .marqueConfirm($showDeleteConfirm, title: "Delete account?",
+                           message: "This permanently erases your brand, scripts, clips, and schedule from this device. This can't be undone.",
+                           confirm: "Delete", destructive: true) {
+                store.resetAll(); dismiss()
             }
         }
     }

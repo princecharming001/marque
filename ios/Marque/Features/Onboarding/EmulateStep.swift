@@ -114,11 +114,9 @@ struct EmulateStep: View {
 
     private var linkInputRow: some View {
         VStack(spacing: Space.sm) {
-            Picker("Platform", selection: $linkPlatform) {
-                Text("Instagram").tag("instagram")
-                Text("TikTok").tag("tiktok")
-            }
-            .pickerStyle(.segmented)
+            MarqueSegmented(options: ["Instagram", "TikTok"],
+                            index: Binding(get: { linkPlatform == "tiktok" ? 1 : 0 },
+                                           set: { linkPlatform = $0 == 1 ? "tiktok" : "instagram" }))
 
             HStack(spacing: 4) {
                 Text("@").foregroundStyle(Palette.textTertiary)

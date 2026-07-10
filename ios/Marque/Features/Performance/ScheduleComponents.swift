@@ -234,8 +234,7 @@ struct SchedulePickerSheet: View {
                     SectionLabel(text: "Time", accent: Palette.accent)
                     Text("Evenings (around 6 PM) tend to land best for most niches.")
                         .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    DatePicker("", selection: $time, displayedComponents: .hourAndMinute)
-                        .labelsHidden().datePickerStyle(.wheel).frame(maxHeight: 130)
+                    MarqueTimePicker(time: $time)
 
                     SectionLabel(text: "Platforms")
                     HStack(spacing: Space.sm) {
@@ -245,12 +244,9 @@ struct SchedulePickerSheet: View {
                         }
                     }
 
-                    Toggle(isOn: $autoCaptions) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("Auto-captions").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            Text("Burn captions onto the clip before posting").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        }
-                    }.tint(Palette.accent)
+                    MarqueToggleRow(title: "Auto-captions",
+                                    subtitle: "Burn captions onto the clip before posting",
+                                    isOn: $autoCaptions)
 
                     SectionLabel(text: "Pick a clip")
                     // I-6: schedule a video you didn't film on Yunicorn.
@@ -355,7 +351,7 @@ struct PostEditorSheet: View {
                             .strokeBorder(Palette.hairline, lineWidth: 1))
 
                     SectionLabel(text: "When")
-                    DatePicker("", selection: $time, displayedComponents: [.date, .hourAndMinute]).labelsHidden()
+                    MarqueTimePicker(time: $time, includeDate: true)
 
                     SectionLabel(text: "Platforms")
                     HStack(spacing: Space.sm) {
@@ -365,9 +361,7 @@ struct PostEditorSheet: View {
                         }
                     }
 
-                    Toggle(isOn: $autoCaptions) {
-                        Text("Auto-captions").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                    }.tint(Palette.accent)
+                    MarqueToggleRow(title: "Auto-captions", isOn: $autoCaptions)
 
                     // Log real results so Today/Insights/Coach learn from measured reach, not guesses.
                     Button { showMetrics = true } label: {
@@ -388,10 +382,6 @@ struct PostEditorSheet: View {
                         Text("Remove from schedule").font(AppFont.callout).foregroundStyle(Palette.critical)
                     }
                     .padding(.top, Space.sm)
-                    .confirmationDialog("Remove this post from your schedule?", isPresented: $showRemoveConfirm, titleVisibility: .visible) {
-                        Button("Remove", role: .destructive) { store.deleteScheduledPost(post); dismiss() }
-                        Button("Cancel", role: .cancel) {}
-                    }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
@@ -401,6 +391,8 @@ struct PostEditorSheet: View {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() } }
             }
+            .marqueConfirm($showRemoveConfirm, title: "Remove this post from your schedule?",
+                           confirm: "Remove", destructive: true) { store.deleteScheduledPost(post); dismiss() }
             .sheet(isPresented: $showMetrics) { MetricsEntrySheet(post: post) }
             .safeAreaInset(edge: .bottom) {
                 if store.canPublish {

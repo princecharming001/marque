@@ -60,11 +60,10 @@ struct ChatView: View {
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
-        .confirmationDialog("Add to chat", isPresented: $showAttach, titleVisibility: .hidden) {
-            Button("Edit my clips") { showClipPicker = true }
-            Button("Paste video link") { pasteVideoLink() }
-            Button("Cancel", role: .cancel) {}
-        }
+        .marqueActions($showAttach, title: "Add to chat", actions: [
+            MarqueDialogAction("Edit my clips") { showClipPicker = true },
+            MarqueDialogAction("Paste video link") { pasteVideoLink() },
+        ])
         // W5: attach up to 4 videos → edit them from chat with the current draft as
         // the instruction. Selection completing kicks off the edit pipeline.
         .sheet(item: $peekedScript) { s in

@@ -368,12 +368,11 @@ struct ClipDetailSheet: View {
                     .background(.ultraThinMaterial)
                 }
             }
-            .confirmationDialog("Delete this clip?", isPresented: $showDelete, titleVisibility: .visible) {
-                Button("Delete", role: .destructive) { store.deleteClip(clip); dismiss() }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text(isDraft ? "This removes the draft take. This can't be undone."
-                             : "This removes the clip and any times it's scheduled. This can't be undone.")
+            .marqueConfirm($showDelete, title: "Delete this clip?",
+                           message: isDraft ? "This removes the draft take. This can't be undone."
+                                            : "This removes the clip and any times it's scheduled. This can't be undone.",
+                           confirm: "Delete", destructive: true) {
+                store.deleteClip(clip); dismiss()
             }
             .sheet(isPresented: $showTweak) { TweakChatSheet(clip: clip) }
             .fullScreenCover(isPresented: $showEditor) { ProEditorView(clip: clip) }

@@ -354,12 +354,16 @@ struct RecordView: View {
     }
 
     private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
-        Toggle(label, isOn: isOn)
-            .font(AppFont.callout).foregroundStyle(.white)
-            .tint(Palette.accent)
-            .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-            .background(Color.white.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        HStack {
+            Text(label).font(AppFont.callout).foregroundStyle(.white)
+            Spacer(minLength: Space.md)
+            MarqueToggle(isOn: isOn, offTrack: Color.white.opacity(0.22))
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { isOn.wrappedValue.toggle() }
+        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
+        .background(Color.white.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
     }
 
     /// Style-gated toggle visibility. Missing data (caps fetch failed / unknown

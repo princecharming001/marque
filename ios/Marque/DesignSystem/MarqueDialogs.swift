@@ -150,10 +150,12 @@ extension View {
 
 struct MarqueToggle: View {
     @Binding var isOn: Bool
+    /// Off-state track color. Defaults suit a light surface; pass a lighter value on dark backgrounds.
+    var offTrack: Color = Palette.textTertiary.opacity(0.35)
     var body: some View {
         Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) { isOn.toggle() } } label: {
             Capsule()
-                .fill(isOn ? Palette.accent : Palette.textTertiary.opacity(0.35))
+                .fill(isOn ? Palette.accent : offTrack)
                 .frame(width: 46, height: 28)
                 .overlay(alignment: isOn ? .trailing : .leading) {
                     Circle().fill(.white).frame(width: 22, height: 22)
@@ -211,4 +213,157 @@ struct MarqueSegmented: View {
         .background(Palette.surfaceSunken)
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
     }
+}
+
+// MARK: - MarqueWheel — a single snapping value column, the building block of MarqueTimePicker.
+// Fully custom (no UIKit wheel): a snap-scrolling LazyVStack with a center highlight band.
+
+struct MarqueWheel<T: Hashable>: View {
+    let items: [T]
+    @Binding var selection: T
+    let label: (T) -> String
+    var width: CGFloat = 64
+
+    private let rowH: CGFloat = 40
+    // Starts nil (not seeded to `selection`): scrollPosition only scrolls on a *change*, so we
+    // set it to `selection` in .onAppear to force the initial centering scroll.
+    @State private var scrollID: T?
+
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            // Non-lazy so every row is measured before scrollPosition seeds — a LazyVStack
+            // leaves far-down rows unmeasured, so the initial scroll to `selection` lands short.
+            VStack(spacing: 0) {
+                ForEach(items, id: \.self) { item in
+                    Text(label(item))
+                        .font(item == selection ? Typeface.display(22, .semibold) : AppFont.bodyL)
+                        .foregroundStyle(item == selection ? Palette.textPrimary : Palette.textTertiary)
+                        .frame(width: width, height: rowH)
+                        .id(item)
+                }
+            }
+            .scrollTargetLayout()
+        }
+        // Content margins let the first/last item scroll to the vertical center under the band.
+        .contentMargins(.vertical, rowH * 1.5, for: .scrollContent)
+        .frame(width: width, height: rowH * 4)
+        .scrollPosition(id: $scrollID, anchor: .center)
+        .scrollTargetBehavior(.viewAligned)
+        .onAppear { scrollID = selection }
+        .onChange(of: scrollID) { _, new in
+            if let new, new != selection { selection = new }
+        }
+        .onChange(of: selection) { _, new in
+            if scrollID != new { withAnimation(Motion.quick) { scrollID = new } }
+        }
+    }
+}
+
+// MARK: - MarqueTimePicker — branded replacement for `DatePicker(...).datePickerStyle(.wheel)`
+// and the compact date+time picker. Hour / minute / AM-PM columns, optional date rail.
+
+struct MarqueTimePicker: View {
+    @Binding var time: Date
+    /// When true, a horizontal day rail (today + next 13 days) sits above the time wheels.
+    var includeDate: Bool = false
+
+    private let cal = Calendar.current
+
+    var body: some View {
+        VStack(spacing: Space.md) {
+            if includeDate { dateRail }
+
+            ZStack {
+                // Center highlight band the selected values sit inside.
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .fill(Palette.surfaceSunken)
+                    .frame(height: 40)
+
+                HStack(spacing: Space.xs) {
+                    MarqueWheel(items: Array(1...12), selection: hourBinding) { String($0) }
+                    Text(":").font(Typeface.display(22, .semibold)).foregroundStyle(Palette.textTertiary)
+                    MarqueWheel(items: Array(0...59), selection: minuteBinding) { String(format: "%02d", $0) }
+                    MarqueWheel(items: ["AM", "PM"], selection: periodBinding, label: { $0 }, width: 52)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("marque.timePicker")
+    }
+
+    // MARK: Date rail
+
+    private var dateRail: some View {
+        let start = cal.startOfDay(for: time)
+        let base = cal.startOfDay(for: Date())
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.sm) {
+                ForEach(0..<14, id: \.self) { offset in
+                    let day = cal.date(byAdding: .day, value: offset, to: base) ?? base
+                    let active = cal.isDate(day, inSameDayAs: start)
+                    Button { setDate(day) } label: {
+                        VStack(spacing: 2) {
+                            Text(weekday(day)).font(AppFont.micro).tracking(Track.label)
+                            Text(dayNum(day)).font(Typeface.display(18, .semibold))
+                        }
+                        .foregroundStyle(active ? Palette.onInk : Palette.textSecondary)
+                        .frame(width: 48, height: 56)
+                        .background(active ? Palette.ink : Palette.surfaceSunken)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    // MARK: Component bindings — read/write the shared `time` Date.
+
+    private var hourBinding: Binding<Int> {
+        Binding(get: {
+            let h = cal.component(.hour, from: time) % 12
+            return h == 0 ? 12 : h
+        }, set: { newHour12 in
+            let pm = cal.component(.hour, from: time) >= 12
+            let h24 = (newHour12 % 12) + (pm ? 12 : 0)
+            setComponents(hour: h24)
+        })
+    }
+
+    private var minuteBinding: Binding<Int> {
+        Binding(get: { cal.component(.minute, from: time) },
+                set: { setComponents(minute: $0) })
+    }
+
+    private var periodBinding: Binding<String> {
+        Binding(get: { cal.component(.hour, from: time) >= 12 ? "PM" : "AM" },
+                set: { newPeriod in
+            let h = cal.component(.hour, from: time)
+            let wantPM = newPeriod == "PM"
+            let isPM = h >= 12
+            guard wantPM != isPM else { return }
+            setComponents(hour: wantPM ? h + 12 : h - 12)
+        })
+    }
+
+    private func setComponents(hour: Int? = nil, minute: Int? = nil) {
+        var c = cal.dateComponents([.year, .month, .day, .hour, .minute], from: time)
+        if let hour { c.hour = hour }
+        if let minute { c.minute = minute }
+        if let d = cal.date(from: c) { time = d }
+    }
+
+    private func setDate(_ day: Date) {
+        var c = cal.dateComponents([.hour, .minute], from: time)
+        let d = cal.dateComponents([.year, .month, .day], from: day)
+        c.year = d.year; c.month = d.month; c.day = d.day
+        if let combined = cal.date(from: c) { time = combined }
+    }
+
+    private func weekday(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "EEE"; return f.string(from: d).uppercased()
+    }
+    private func dayNum(_ d: Date) -> String { String(cal.component(.day, from: d)) }
 }

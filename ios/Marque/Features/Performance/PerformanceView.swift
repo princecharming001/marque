@@ -24,11 +24,10 @@ struct PerformanceView: View {
 
                 // MARK: Upcoming queue
                 SectionLabel(text: "Coming up", accent: Palette.accent)
-                Picker("View", selection: $mode) {
-                    ForEach(CalMode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("calendar.modeToggle")
+                MarqueSegmented(options: CalMode.allCases.map(\.rawValue),
+                                index: Binding(get: { CalMode.allCases.firstIndex(of: mode) ?? 0 },
+                                               set: { mode = CalMode.allCases[$0] }))
+                    .accessibilityIdentifier("calendar.modeToggle")
 
                 if mode == .week {
                     // Seven identical "Nothing scheduled" cards read as a wall of holes —
@@ -132,18 +131,12 @@ struct InsightsSection: View {
 
             // Time-window selector — the tracker always shows YOUR account over the
             // chosen span, whether or not the learning loop has enough to coach on.
-            Picker("Period", selection: $period) {
-                ForEach(0..<periodDays.count, id: \.self) { i in Text(periodLabels[i]).tag(i) }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("performance.periodToggle")
-            .onChange(of: period) { _, _ in Task { await reload() } }
+            MarqueSegmented(options: periodLabels, index: $period)
+                .accessibilityIdentifier("performance.periodToggle")
+                .onChange(of: period) { _, _ in Task { await reload() } }
 
-            Picker("Platform", selection: $platform) {
-                Text("All").tag(0); Text("Instagram").tag(1); Text("TikTok").tag(2)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityIdentifier("performance.platformToggle")
+            MarqueSegmented(options: ["All", "Instagram", "TikTok"], index: $platform)
+                .accessibilityIdentifier("performance.platformToggle")
 
             // Stat tiles — real numbers only. I-3: never show fabricated totals when the
             // series is placeholder (no_data); dashes read honestly instead.
