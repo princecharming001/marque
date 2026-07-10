@@ -108,7 +108,11 @@ enum LocalEDLEngine {
             guard let style = op.s["style"], ["clean", "bold-word", "karaoke"].contains(style) else { return nil }
             d.captionStyle = style
         case "set_captions_enabled":
-            if op.bool["enabled"] == false { d.captions = [] } else { return nil }   // rebuild needs words (server)
+            // Enabling is a logged no-op locally (the server rebuilds captions from the
+            // transcript on render); the view shows a live preview from its `words` array.
+            // Disabling clears the local captions. Previously enabling returned nil, so the
+            // op was dropped and captions could NEVER be turned back on.
+            if op.bool["enabled"] == false { d.captions = [] }
         case "edit_caption":
             guard let frame = op.i["frame"] else { return nil }
             let word = op.s["word"] ?? ""

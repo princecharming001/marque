@@ -24,13 +24,14 @@ struct EditorTimeline: View {
     @State private var snapTick = 0
     @State private var lastSnapIndex: Int? = nil
 
-    // Play-order clips = (sourceSegmentIndex, kept source interval). Only un-fully-dropped segs show.
-    private var clips: [(segIdx: Int, srcIn: Int, srcOut: Int)] {
+    // Play-order clips = (sourceSegmentIndex, KEPT bounds after drops, kept frame count).
+    // Using kept bounds (not raw srcIn/srcOut) means a trim — which drops an interior range
+    // without moving the segment boundary — visibly shrinks the cell + its duration label.
+    private var clips: [(segIdx: Int, srcIn: Int, srcOut: Int, keptFrames: Int)] {
         let order = document.segmentOrder ?? Array(document.segments.indices)
         return order.compactMap { idx in
-            guard document.segments.indices.contains(idx) else { return nil }
-            let s = document.segments[idx]
-            return (idx, s.srcIn, s.srcOut)
+            guard let kb = document.keptBounds(ofSegment: idx) else { return nil }   // fully-dropped → hidden
+            return (idx, kb.first, kb.last, kb.frames)
         }
     }
 
@@ -48,7 +49,7 @@ struct EditorTimeline: View {
                     ruler(width: geo.size.width)
                     HStack(spacing: 3) {
                         ForEach(Array(clips.enumerated()), id: \.offset) { pos, c in
-                            clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut)
+                            clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut, keptFrames: c.keptFrames)
                         }
                     }
                     if !document.overlays.isEmpty { overlayLane }   // punch-ins/text cards as objects
@@ -95,19 +96,18 @@ struct EditorTimeline: View {
         return 0
     }
 
-    /// The clip's frame count with any in-flight trim drag applied — the rubber-band is
+    /// The clip's kept frame count with any in-flight trim drag applied — the rubber-band is
     /// HONEST: it clamps to exactly what the commit will produce (min 30 frames of clip;
     /// outward growth capped at the abutting trimmed footage, 0 when there's none).
-    private func previewFrames(segIdx: Int, srcIn: Int, srcOut: Int) -> Int {
-        let base = srcOut - srcIn
+    private func previewFrames(segIdx: Int, base: Int, srcIn: Int, srcOut: Int) -> Int {
         guard let t = trimPreview, t.segIdx == segIdx else { return base }
         let adjusted = t.edge == .leading ? base - t.deltaFrames : base + t.deltaFrames
         let maxGrow = base + restorableFrames(edge: t.edge, srcIn: srcIn, srcOut: srcOut)
         return min(maxGrow, max(30, adjusted))
     }
 
-    @ViewBuilder private func clipCell(pos: Int, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
-        let frames = previewFrames(segIdx: segIdx, srcIn: srcIn, srcOut: srcOut)
+    @ViewBuilder private func clipCell(pos: Int, segIdx: Int, srcIn: Int, srcOut: Int, keptFrames: Int) -> some View {
+        let frames = previewFrames(segIdx: segIdx, base: keptFrames, srcIn: srcIn, srcOut: srcOut)
         let trimming = trimPreview?.segIdx == segIdx
         let w = max(30, width(frames))
         let selected = selectedSeg == segIdx
@@ -132,6 +132,15 @@ struct EditorTimeline: View {
                     .padding(3)
             }
         }
+        // #6: muted / volume-lowered clips get a badge so a silent clip isn't invisible.
+        .overlay(alignment: .topLeading) {
+            if let vol = clipVolumeLabel(srcIn: srcIn, srcOut: srcOut) {
+                Image(systemName: vol)
+                    .font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
+                    .padding(3).background(Color.black.opacity(0.5)).clipShape(Circle())
+                    .padding(3)
+            }
+        }
         // Floating duration badge while trimming — the live feedback that was missing.
         .overlay(alignment: edgeAlignment) {
             if trimming {
@@ -146,6 +155,7 @@ struct EditorTimeline: View {
         .overlay(alignment: .leading) { if selected { trimHandle(.leading, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .overlay(alignment: .trailing) { if selected { trimHandle(.trailing, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .onTapGesture {
+            player?.pause()          // #10: freeze the playhead so Split cuts where they see
             withAnimation(.easeOut(duration: 0.15)) {
                 selectedOverlay = nil
                 selectedSeg = (selectedSeg == segIdx) ? nil : segIdx
@@ -156,6 +166,15 @@ struct EditorTimeline: View {
 
     private var edgeAlignment: Alignment {
         (trimPreview?.edge == .leading) ? .topLeading : .topTrailing
+    }
+
+    /// SF Symbol for a clip whose audio the creator lowered/muted (nil = full volume).
+    private func clipVolumeLabel(srcIn: Int, srcOut: Int) -> String? {
+        let ranges = document.volumeRanges.filter { $0.srcIn <= srcIn && $0.srcOut >= srcOut }
+        guard let r = ranges.min(by: { $0.volume < $1.volume }) else { return nil }
+        if r.volume <= 0.01 { return "speaker.slash.fill" }
+        if r.volume < 0.95 { return "speaker.wave.1.fill" }
+        return nil
     }
 
     // MARK: Overlay chip lane — punch-ins/text cards become visible, tappable objects.
@@ -240,7 +259,7 @@ struct EditorTimeline: View {
         var acc = 0.0
         var out: [Double] = [0]
         for c in clips {
-            acc += framesToSeconds(c.srcOut - c.srcIn)
+            acc += framesToSeconds(c.keptFrames)
             out.append(acc)
         }
         return out

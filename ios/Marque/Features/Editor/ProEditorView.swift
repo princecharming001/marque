@@ -24,6 +24,8 @@ struct ProEditorView: View {
     @State var selectedSeg: Int? = nil          // index into segments (source index)
     @State var selectedOverlay: Int? = nil      // index into draft.overlays (chip lane)
     @State var editingOverlayIndex: Int? = nil  // text-card text edit in flight
+    @State var captionsOn = false               // #1: enabled-state tracked in the view (local
+                                                // captions may be empty while enabled → preview from words)
     @State var pointsPerSecond: CGFloat = 18
     @State var applyTask: Task<Void, Never>?
     @State var renderStartedAt: Date?
@@ -70,6 +72,9 @@ struct ProEditorView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
+        .marqueConfirm($confirmDiscard, title: "Discard your edits?",
+                       message: "You have unsaved changes. Save re-cuts the clip; discarding loses them.",
+                       confirm: "Discard edits", destructive: true, cancel: "Keep editing") { dismiss() }
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)   // I-7 haptics
         .task { await load() }
         .onChange(of: phase) { _, p in
@@ -129,12 +134,6 @@ struct ProEditorView: View {
                 if phase == .editing, session?.isDirty == true { confirmDiscard = true } else { dismiss() }
             } label: { Image(systemName: "xmark") }.tint(.white)
                 .accessibilityIdentifier("editorPro.close")
-                .confirmationDialog("Discard your edits?", isPresented: $confirmDiscard, titleVisibility: .visible) {
-                    Button("Discard edits", role: .destructive) { dismiss() }
-                    Button("Keep editing", role: .cancel) {}
-                } message: {
-                    Text("You have unsaved changes. Save re-cuts the clip; discarding loses them.")
-                }
         }
         ToolbarItemGroup(placement: .principal) {
             if phase == .editing, let session {
@@ -147,11 +146,22 @@ struct ProEditorView: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             if phase == .editing {
-                Button { save() } label: { Text("Save").fontWeight(.semibold) }
+                // #11: overlay/caption/music edits re-render (~1 min); structural cuts apply
+                // instantly. Label the cost so a text-card add isn't a surprise wait.
+                Button { save() } label: { Text(saveNeedsRender ? "Render" : "Save").fontWeight(.semibold) }
                     .tint(Palette.accent).disabled(!(session?.isDirty ?? false))
                     .accessibilityIdentifier("editorPro.save")
             }
         }
+    }
+
+    /// True when the pending edits include anything that re-renders server-side (overlays,
+    /// captions, music, b-roll) rather than the instant structural ops.
+    var saveNeedsRender: Bool {
+        let structural: Set = ["cut_range", "restore_range", "split_segment", "reorder_segments",
+                               "mute_range", "set_segment_volume"]
+        guard let ops = session?.flattenedOps() else { return false }
+        return ops.contains { !structural.contains($0["type"] as? String ?? "") }
     }
 
     // MARK: editing layout
@@ -203,20 +213,27 @@ struct ProEditorView: View {
                         }
                     }
                 case .text:
-                    let on = !(session?.draft.captions.isEmpty ?? true)
-                    drawerButton(on ? "Captions on" : "Captions off", on ? "captions.bubble.fill" : "captions.bubble") { toggleCaptions(!on) }
+                    // #1: caption on/off reads the tracked state (captions can be turned back ON).
+                    drawerButton(captionsOn ? "Captions on" : "Captions off",
+                                 captionsOn ? "captions.bubble.fill" : "captions.bubble") { toggleCaptions(!captionsOn) }
                         .accessibilityIdentifier("editorPro.captionsToggle")
-                    if on {
+                    if captionsOn {
                         ForEach(["clean", "bold-word", "karaoke"], id: \.self) { st in
                             drawerButton(st.capitalized, "textformat", active: session?.draft.captionStyle == st) { setCaptionStyle(st) }
                         }
                     }
-                    drawerButton("Text card", "text.badge.plus") { editDraft = ""; showTextCardAlert = true }
-                        .accessibilityIdentifier("editorPro.addTextCard")
+                    // #5: text card is only supported for green-screen / duet styles — gate the
+                    // button so a talking-head creator doesn't type one only to be rejected.
+                    if textCardsSupported {
+                        drawerButton("Text card", "text.badge.plus") { editDraft = ""; showTextCardAlert = true }
+                            .accessibilityIdentifier("editorPro.addTextCard")
+                    }
                 case .effects:
-                    if caps?["punch_ins"] ?? false { drawerButton("Zoom on hook", "plus.magnifyingglass") { addPunchInOnHook() }.accessibilityIdentifier("editorPro.addPunchIn") }
+                    // #8: fall back to the LOCAL style capability when the server caps didn't
+                    // load (keyless/network hiccup) so Zoom doesn't silently vanish.
+                    if punchInsSupported { drawerButton("Add zoom", "plus.magnifyingglass") { addPunchInOnHook() }.accessibilityIdentifier("editorPro.addPunchIn") }
                     if caps?["broll"] ?? false { drawerButton("Add b-roll", "photo.on.rectangle") { addBroll("relevant") }.accessibilityIdentifier("editorPro.addBroll") }
-                    if !(caps?["punch_ins"] ?? false) && !(caps?["broll"] ?? false) {
+                    if !punchInsSupported && !(caps?["broll"] ?? false) {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
                 }
@@ -354,8 +371,11 @@ struct ProEditorView: View {
                 HStack(spacing: 6) {
                     ForEach(Array(words.enumerated()), id: \.offset) { i, w in
                         let active = cur >= w.startFrame && cur < w.endFrame
-                        Button { beginCaptionEdit(frame: w.startFrame, current: w.text); bumpHaptic() } label: {
-                            Text(w.text)
+                        // #4: show the EDITED caption word if the user changed it, not the
+                        // immutable transcript — so a fixed typo visibly sticks.
+                        let display = session?.draft.captions.first(where: { $0.frame == w.startFrame })?.word ?? w.text
+                        Button { beginCaptionEdit(frame: w.startFrame, current: display); bumpHaptic() } label: {
+                            Text(display)
                                 .font(.system(size: 13, weight: active ? .semibold : .regular))
                                 .foregroundStyle(active ? Palette.night : .white)
                                 .padding(.horizontal, 9).padding(.vertical, 6)
@@ -473,27 +493,26 @@ struct ProEditorView: View {
         }
         .frame(height: 64).background(Palette.ink)
         .sheet(isPresented: $showMusicSheet) { musicSheet }
-        .alert("Text card", isPresented: $showTextCardAlert) {
-            TextField("Card text", text: $editDraft)
-            Button("Add") { addTextCard(editDraft) }
-            Button("Cancel", role: .cancel) {}
-        }
-        .alert("Edit caption", isPresented: Binding(get: { editingCaptionFrame != nil },
-                                                    set: { if !$0 { editingCaptionFrame = nil } })) {
-            TextField("Word", text: $editDraft)
-            Button("Save") { commitCaptionEdit() }
-            Button("Cancel", role: .cancel) { editingCaptionFrame = nil }
-        }
-        .alert("Edit text card", isPresented: Binding(get: { editingOverlayIndex != nil },
-                                                      set: { if !$0 { editingOverlayIndex = nil } })) {
-            TextField("Text", text: $editDraft)
-            Button("Save") { commitOverlayTextEdit() }
-            Button("Cancel", role: .cancel) { editingOverlayIndex = nil }
-        }
+        // Branded input dialogs (replace the stock TextField-in-.alert).
+        .marqueInput($showTextCardAlert, title: "Text card", placeholder: "Card text",
+                     text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
+        .marqueInput(Binding(get: { editingCaptionFrame != nil }, set: { if !$0 { editingCaptionFrame = nil } }),
+                     title: "Edit caption", placeholder: "Word", text: $editDraft) { commitCaptionEdit() }
+        .marqueInput(Binding(get: { editingOverlayIndex != nil }, set: { if !$0 { editingOverlayIndex = nil } }),
+                     title: "Edit text card", placeholder: "Text", text: $editDraft) { commitOverlayTextEdit() }
     }
 
+    // #5/#8: capability helpers fall back to the LOCAL style rules (mirrors LocalEDLEngine's
+    // gates) so tabs/buttons stay STABLE when the server caps dict didn't load — punch-ins &
+    // text cards are locally supported for these styles regardless of the network.
+    private var draftStyle: String { session?.draft.style ?? "talking_head" }
+    var punchInsSupported: Bool { (caps?["punch_ins"] ?? false) || ["talking_head", "duet_split"].contains(draftStyle) }
+    var textCardsSupported: Bool { (caps?["text_cards"] ?? false) || ["green_screen", "duet_split"].contains(draftStyle) }
+
     private var visibleModes: [Mode] {
-        Mode.allCases.filter { $0 != .effects || (caps?["punch_ins"] ?? false) || (caps?["broll"] ?? false) || (caps?["text_cards"] ?? false) }
+        // Effects is always available when zoom or b-roll could apply; never let a nil caps
+        // dict make the whole tab vanish.
+        Mode.allCases.filter { $0 != .effects || punchInsSupported || (caps?["broll"] ?? false) }
     }
     private func iconFor(_ m: Mode) -> String {
         switch m { case .edit: "scissors"; case .sound: "music.note"; case .text: "textformat"; case .effects: "sparkles" }

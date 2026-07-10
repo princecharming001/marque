@@ -1,0 +1,26 @@
+appId: com.getmarque.app
+name: Branded discard dialog + duration label after split
+---
+- launchApp:
+    arguments: { demoClip: 1, backend.url: "http://127.0.0.1:8001" }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+- tapOn: { id: "editorPro.clip.0" }
+- tapOn: { id: "editorPro.ctx.split" }
+- takeScreenshot: /tmp/r6-trim-02-split
+# branded custom discard dialog (NOT native alert) with a branded "Discard edits" button
+- tapOn: { id: "editorPro.close" }
+- extendedWaitUntil:
+    visible: "Discard your edits?"
+    timeout: 4000
+- takeScreenshot: /tmp/r6-trim-03-discard
+- tapOn: "Keep editing"
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 4000

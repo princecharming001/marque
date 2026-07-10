@@ -130,6 +130,25 @@ struct EditorDocument: Equatable {
     var totalKeptFrames: Int { keptIntervals.reduce(0) { $0 + ($1.srcOut - $1.srcIn) } }
     var outputSeconds: Double { framesToSeconds(totalKeptFrames) }
 
+    /// The kept sub-range of a segment after drops: first & last kept SOURCE frame and the kept
+    /// frame count. The timeline renders cells at this size (not raw srcOut-srcIn) so a trim —
+    /// which adds an interior drop without moving the segment boundary — visibly shrinks the clip,
+    /// and its duration label stays honest. nil when the segment is fully dropped.
+    func keptBounds(ofSegment idx: Int) -> (first: Int, last: Int, frames: Int)? {
+        guard segments.indices.contains(idx) else { return nil }
+        let s = segments[idx]
+        let dropRanges = drops.filter { $0.srcOut > $0.srcIn }.map { ($0.srcIn, $0.srcOut) }.sorted { $0.0 < $1.0 }
+        var kept = 0, first = s.srcOut, last = s.srcIn, cur = s.srcIn
+        for (dIn, dOut) in dropRanges {
+            if dOut <= cur || dIn >= s.srcOut { continue }
+            if dIn > cur { let hi = min(dIn, s.srcOut); kept += hi - cur; first = min(first, cur); last = max(last, hi) }
+            cur = max(cur, dOut)
+            if cur >= s.srcOut { break }
+        }
+        if cur < s.srcOut { kept += s.srcOut - cur; first = min(first, cur); last = s.srcOut }
+        return kept > 0 ? (first, last, kept) : nil
+    }
+
     /// Output-time (seconds) -> source-time (seconds). The Swift twin of map_point (edl.py).
     func sourceSeconds(forOutput outputSec: Double) -> Double {
         var acc = 0

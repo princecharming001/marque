@@ -38,6 +38,7 @@ extension ProEditorView {
 
         // Per-style capabilities gate the Effects tab.
         if let all = await store.backend.editorCapabilities() { caps = all[doc.style] }
+        captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
         phase = .editing
     }
 
@@ -62,28 +63,34 @@ extension ProEditorView {
     // MARK: Edit-mode actions
 
     func trim(segIdx: Int, edge: TrimEdge, to newFrame: Int) {
-        guard let seg = session?.draft.segments[safe: segIdx] else { return }
-        // Trims are emitted as cut_range (reversible via restore_range) — not destructive trim_*.
-        // UX-1: CLAMPED — an over-drag past the clip's far edge used to emit an unbounded cut
-        // that silently ate the NEIGHBORING clip's footage (drops are global source ranges).
-        // And an OUTWARD drag now honors the rubber-band's promise: it restores previously
-        // trimmed footage via restore_range (no-op flash when there's nothing to restore).
+        guard let seg = session?.draft.segments[safe: segIdx],
+              let kb = session?.draft.keptBounds(ofSegment: segIdx) else { return }
+        // Trims act on the KEPT edge (kb.first/kb.last), not the raw segment boundary — so a
+        // handle already dragged inward keeps trimming/restoring from where the footage
+        // currently starts. Emitted as cut_range/restore_range (reversible, coalescing).
+        // UX-1: CLAMPED so an over-drag can't eat the neighbor; OUTWARD drag restores the
+        // interior drop the trim created (up to the raw segment bounds).
         switch edge {
-        case .leading where newFrame > seg.srcIn:
-            mutate([.cut(seg.srcIn, min(newFrame, seg.srcOut - 30))], rejectMsg: "That leaves too little footage.")
-        case .leading where newFrame < seg.srcIn:
-            mutate([.restore(max(0, newFrame), seg.srcIn)], rejectMsg: "Nothing trimmed there to bring back.")
-        case .trailing where newFrame < seg.srcOut:
-            mutate([.cut(max(newFrame, seg.srcIn + 30), seg.srcOut)], rejectMsg: "That leaves too little footage.")
-        case .trailing where newFrame > seg.srcOut:
-            mutate([.restore(seg.srcOut, newFrame)], rejectMsg: "Nothing trimmed there to bring back.")
+        case .leading where newFrame > kb.first:
+            mutate([.cut(kb.first, min(newFrame, kb.last - 30))], rejectMsg: "That leaves too little footage.")
+        case .leading where newFrame < kb.first:
+            mutate([.restore(max(seg.srcIn, newFrame), kb.first)], rejectMsg: "Nothing trimmed there to bring back.")
+        case .trailing where newFrame < kb.last:
+            mutate([.cut(max(newFrame, kb.first + 30), kb.last)], rejectMsg: "That leaves too little footage.")
+        case .trailing where newFrame > kb.last:
+            mutate([.restore(kb.last, min(seg.srcOut, newFrame))], rejectMsg: "Nothing trimmed there to bring back.")
         default: break
         }
     }
 
     func splitSelected(_ segIdx: Int) {
+        player?.pause()          // #10: stabilize the playhead before capturing the cut frame
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
         guard seg.frames >= 90 else { flash("That clip is too short to split."); return }
+        // #10: if the playhead isn't inside this clip, tell the user the cut used its center.
+        if !(playheadSourceFrame > seg.srcIn + 30 && playheadSourceFrame < seg.srcOut - 30) {
+            flash("Cut at the clip's middle — scrub onto a clip to cut there.")
+        }
         let lo: Int = seg.srcIn + 30
         let hi: Int = seg.srcOut - 30
         // Editor convention (CapCut/InShot/VN): split cuts AT THE PLAYHEAD. Use the playhead's
@@ -156,7 +163,13 @@ extension ProEditorView {
 
     // MARK: Text-mode actions
 
-    func toggleCaptions(_ on: Bool) { mutate([.captionsEnabled(on)], rejectMsg: on ? "No transcript to caption." : nil) }
+    func toggleCaptions(_ on: Bool) {
+        // #1: enabling needs a transcript; the op is a logged no-op locally (server rebuilds),
+        // and captionsOn drives the live word-preview + button label.
+        if on, words.isEmpty { flash("No transcript to caption."); return }
+        mutate([.captionsEnabled(on)])
+        captionsOn = on
+    }
     func setCaptionStyle(_ s: String) { mutate([.captionStyle(s)]) }
     func beginCaptionEdit(frame: Int, current: String) { editDraft = current; editingCaptionFrame = frame }
     func commitCaptionEdit() {
@@ -169,7 +182,9 @@ extension ProEditorView {
     private func insertWindow(len: Int) -> (Int, Int)? {
         guard let d = session?.draft else { return nil }
         let f = playheadSourceFrame
-        let iv = d.keptIntervals.first { $0.srcIn <= f && f < $0.srcOut } ?? d.keptIntervals.first
+        // #9: when parked at/after the end (no interval contains the playhead), anchor to the
+        // LAST kept interval — not the first — so an outro zoom/card lands where the user is.
+        let iv = d.keptIntervals.first { $0.srcIn <= f && f < $0.srcOut } ?? d.keptIntervals.last
         guard let iv else { return nil }
         let start = min(max(f, iv.srcIn), max(iv.srcIn, iv.srcOut - 30))
         return (start, min(start + len, iv.srcOut))
