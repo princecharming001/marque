@@ -30,13 +30,32 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
     if (acc > 0) cutStarts.push(acc);   // skip the very first (frame 0)
     acc += clipOutFrames(c);            // G10: MUST match CutVideo's outCursor formula
   }
-  const flashing = cutStarts.some((s) => frame >= s && frame < s + 2);
+
+  // P0.4: the old flash strobed — 0.18 opacity for 2 hard frames at EVERY boundary,
+  // so a burst of filler micro-cuts (multiple cuts within a few frames) flickered.
+  // Now (1) rate-limit: a flash only fires at a cut ≥45 output frames (1.5s) since the
+  // last flashed cut — filler micro-cuts get none — and (2) soften: peak 0.10 opacity
+  // on the boundary frame, linearly fading to 0 across 3 frames (an accent, not a strobe).
+  const FLASH_MIN_GAP = 45;
+  const FLASH_PEAK = 0.10;
+  const FLASH_FRAMES = 3;
+  const flashStarts: number[] = [];
+  let lastFlash = -Infinity;
+  for (const s of cutStarts) {
+    if (s - lastFlash >= FLASH_MIN_GAP) { flashStarts.push(s); lastFlash = s; }
+  }
+  let flashOpacity = 0;
+  for (const s of flashStarts) {
+    if (frame >= s && frame < s + FLASH_FRAMES) {
+      flashOpacity = Math.max(flashOpacity, FLASH_PEAK * (1 - (frame - s) / FLASH_FRAMES));
+    }
+  }
 
   return (
     <AbsoluteFill style={{ background: "#000" }}>
       <CutVideo sourceUrl={sourceUrl} clips={clips} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
-      {flashing && (
-        <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.18 }} />
+      {flashOpacity > 0 && (
+        <div style={{ position: "absolute", inset: 0, background: "white", opacity: flashOpacity }} />
       )}
       {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
