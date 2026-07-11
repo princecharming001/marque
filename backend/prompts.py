@@ -12,6 +12,7 @@ import logging
 import re
 
 from app.edl import ms_to_frame, TWEAK_OP_TYPES
+from app import knowledge as _kb
 
 OPUS = "claude-opus-4-8"
 HAIKU = "claude-haiku-4-5-20251001"
@@ -507,6 +508,10 @@ Media context: {media_context or "none"}
 
 Generate the EDL for this {style} edit. Output JSON only."""
 
+    # P2.2: craft numbers come from the versioned KB, not hard-coded here.
+    kb_block = _kb.digest(style, (brief or {}).get("video_type", ""), "edit_plan")
+    if kb_block:
+        system = f"{system}\n\n{kb_block}"
     return system, user
 
 
@@ -574,6 +579,11 @@ def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
         f"TRANSCRIPT (frame-anchored):\n{_frame_anchored_transcript(words)}\n\n"
         "Produce the edit brief JSON."
     )
+    # P2.2: retention/hook craft numbers from the versioned KB (buried-hook recognition etc.).
+    _style = EDIT_FORMATS.get(edit_format, {}).get("style", "") if edit_format else ""
+    kb_block = _kb.digest(_style, "", "brief")
+    if kb_block:
+        system = f"{system}\n\n{kb_block}"
     return system, user
 
 

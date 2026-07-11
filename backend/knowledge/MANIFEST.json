@@ -1,0 +1,13 @@
+{
+  "version": "kb-2026.07",
+  "description": "Marque editing-craft knowledge base v1 — operational rules with numbers, consumed by app/knowledge.py digest() and stamped into job['knowledge_version'] for A/B + revert.",
+  "files": [
+    "retention.md",
+    "hooks.md",
+    "pacing.md",
+    "broll.md",
+    "captions.md",
+    "audio.md",
+    "review_rubric.md"
+  ]
+}

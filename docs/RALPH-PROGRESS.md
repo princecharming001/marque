@@ -48,10 +48,10 @@ Swift via backend↔Swift golden parity fixtures + line-by-line mirror review.
 
 ## Phase 2 — Editing knowledge base
 
-- [ ] P2.1 — `backend/knowledge/` v1: retention.md, hooks.md, pacing.md, broll.md, captions.md, audio.md, review_rubric.md, MANIFEST.json — operational rules with numbers (seed data in the plan's research section)
-- [ ] P2.2 — `backend/app/knowledge.py` loader + `digest(style, video_type, call)` (~600–1000 tokens); `EDIT_RUBRICS` becomes a thin KB wrapper; `knowledge_version` stamped into jobs + eval scorecard
-- [ ] P2.3 — reference-reel patterns: playable Apify reel → same dossier adapter (cached per URL) → measured `reference_patterns` block fed to brief + edit-plan
-- [ ] P2.REVIEW
+- [x] P2.1 — `backend/knowledge/` v1: retention.md (0–3s win conditions, +41%/+35% numbers, AIDA, buried-hook), hooks.md (five-layer, taxonomy→SIGNAL_LIST), pacing.md (cadence-by-video_type table + by-style rows + energy-matched + dead-air budgets), broll.md (J-cut 12f, 2–3s/45–105f holds, ≥90f spacing, hook/CTA protection), captions.md (3-word phrase, 55–75pt, safe zones, emphasis), audio.md (−14 LUFS, duck ±8f, music-under-voice), review_rubric.md (6 scored dimensions + fix_op codes), MANIFEST.json (version kb-2026.07). Operational numbers only. Evidence: files load; loader parses the pacing table + style rows.
+- [x] P2.2 — `backend/app/knowledge.py`: `digest(style, video_type, call)` assembles call-scoped craft (brief→retention+hooks, edit_plan→pacing+broll+captions, review→rubric) with the video_type pacing row + style note FIRST so they survive the ~1000-tok trim (measured 825/995/421 tok); `knowledge_version()` reads MANIFEST (lru-cached); fail-soft (missing KB → empty digest). Wired additively into `edl_prompt` (edit_plan digest, video_type from brief) + `edit_brief_prompt` (brief digest); `style_rules()` is the thin KB-backed successor to EDIT_RUBRICS' style-mechanics. `job["knowledge_version"]` stamped at both real + mock edit sites; eval scorecard already reads MANIFEST. Evidence: `make test` **518 passed** (+7 test_knowledge: version, pacing selection, style note, budget, prompt embedding); digests confirmed in both prompts.
+- [ ] P2.3 — reference-reel patterns: playable Apify reel → same dossier adapter (cached per URL) → measured `reference_patterns` block fed to brief + edit-plan **[deferred until P1.1 dossier.py exists — reordered per its dependency]**
+- [ ] P2.REVIEW  (blocked on P2.3)
 
 ## Phase 3 — Judgment ("LLM decides, code assembles")
 
