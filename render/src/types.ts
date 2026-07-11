@@ -49,6 +49,8 @@ export interface CaptionOptions {
   font: "inter" | "archivo" | "baloo";
   // word = one word at a time; phrase = ~3-word chunks; line = sliding window (legacy look)
   grouping: "word" | "phrase" | "line";
+  // Normalized lowercase words rendered in the accent color (CapCut keyword highlight).
+  highlight_words?: string[];
 }
 
 // Audio plan (output coords for volume_ranges; music plays across the whole output).

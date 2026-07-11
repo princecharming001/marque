@@ -107,6 +107,7 @@ struct EditorCaptionOptions: Equatable {
     var uppercase: Bool = false
     var font: String = "inter"         // inter | archivo | baloo
     var grouping: String = "line"      // word | phrase | line
+    var highlightWords: [String] = []  // normalized keywords painted in the accent color
 }
 
 struct EditorVolumeRange: Equatable {
@@ -149,7 +150,8 @@ struct EditorDocument: Equatable {
                 accent: co["accent"] as? String,
                 uppercase: co["uppercase"] as? Bool ?? false,
                 font: co["font"] as? String ?? "inter",
-                grouping: co["grouping"] as? String ?? "line")
+                grouping: co["grouping"] as? String ?? "line",
+                highlightWords: co["highlight_words"] as? [String] ?? [])
         }
         segments = (edl["segments"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }

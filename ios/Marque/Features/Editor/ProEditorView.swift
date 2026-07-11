@@ -69,6 +69,9 @@ struct ProEditorView: View {
     @State var mediaPickerItem: PhotosPickerItem? = nil
     @State var uploadingMedia = false
     @State var replacingRoll: Int? = nil          // roll index being swapped via the media panel
+    // R10: filler/pause cleanup — the transcript-driven bulk-cut panel.
+    @State var showCleanup = false
+    @State var cleanupSkip: Set<Int> = []         // target indices the user unchecked
     // url → local file path, so the player sim can show freshly-imported media
     // before the server round-trip.
     @State var localMediaPreviews: [String: String] = [:]
@@ -234,6 +237,8 @@ struct ProEditorView: View {
                 captionListPanel
             } else if showMediaPanel {
                 mediaPanel
+            } else if showCleanup {
+                cleanupPanel
             } else {
                 transportRow                       // R10: CapCut transport strip + divider
                 timelinePane
@@ -534,6 +539,10 @@ struct ProEditorView: View {
                 ForEach(["#FFD60A", "#34D399", "#F472B6", "#60A5FA"], id: \.self) { hex in
                     colorSwatch(hex, active: o.accent == hex)
                 }
+                optDivider
+                // CapCut "auto-highlight keywords" — paints notable words in the accent color.
+                optChip("Keywords", active: !o.highlightWords.isEmpty) { toggleKeywordHighlight() }
+                    .accessibilityIdentifier("editorPro.capKeywords")
                 optDivider
                 // Size + position moved ONTO the canvas (TikTok model): drag the caption
                 // to place it, pinch to resize. The hint earns its row space once.
@@ -846,6 +855,7 @@ struct ProEditorView: View {
                             .foregroundStyle(.white).frame(width: 40, height: 40)
                             .background(.black.opacity(0.4)).clipShape(Circle())
                     }.padding(Space.md)
+                    .accessibilityIdentifier("editorPro.fullscreen.close")
                 }
                 Spacer()
                 Button { player?.togglePlay() } label: {
@@ -1147,12 +1157,15 @@ struct ProEditorView: View {
                 let interacting = capDragY != nil || capPinch != nil
                 HStack(spacing: 5) {
                     ForEach(Array(group.words.enumerated()), id: \.offset) { i, w in
+                        let norm = w.lowercased().filter { $0.isLetter || $0.isNumber }
+                        let isHi = o.highlightWords.contains(norm)
                         Text(o.uppercase || d.captionStyle == "bold-word" ? w.uppercased() : w)
                             .font(simCaptionFont(o.font, size: base * effScale,
-                                                 heavy: d.captionStyle == "bold-word"))
-                            .foregroundStyle(simCaptionColor(d, isHot: i == group.activeInGroup,
-                                                             spoken: i <= group.activeInGroup))
-                            .opacity(d.captionStyle == "clean" && i != group.activeInGroup ? 0.55 : 1)
+                                                 heavy: d.captionStyle == "bold-word" || isHi))
+                            .foregroundStyle(isHi ? (o.accent.map { colorFromHex($0) } ?? Color(hex: 0xFFD60A))
+                                                  : simCaptionColor(d, isHot: i == group.activeInGroup,
+                                                                    spoken: i <= group.activeInGroup))
+                            .opacity(d.captionStyle == "clean" && i != group.activeInGroup && !isHi ? 0.55 : 1)
                             .shadow(radius: 4)
                     }
                 }
@@ -1500,6 +1513,11 @@ struct ProEditorView: View {
                     withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
                 }
                 .accessibilityIdentifier("editorPro.addMediaBtn")
+                contextButton("Clean up", "wand.and.sparkles") {
+                    player?.pause(); cleanupSkip = []
+                    withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
+                }
+                .accessibilityIdentifier("editorPro.cleanup")
             }
             contextButton("Split", "square.split.2x1") { if let s = seg { splitSelected(s); bumpHaptic() } }
                 .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)

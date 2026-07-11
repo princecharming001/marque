@@ -1,0 +1,59 @@
+appId: com.getmarque.app
+name: R10 — CapCut mimicry (transport, filter cards, keywords, cleanup, fullscreen)
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+# TRANSPORT: play/undo/redo/fullscreen live in the strip
+- assertVisible: { id: "editorPro.fullscreen" }
+- assertVisible: { id: "editorPro.undo" }
+- takeScreenshot: /tmp/cc-01-transport
+# FILTER CARDS: visual thumbnails + intensity slider
+- tapOn: { id: "editorPro.mode.filters" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.filterCards" }
+    timeout: 4000
+- tapOn: { id: "editorPro.filter.film" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.filterIntensity" }
+    timeout: 4000
+- takeScreenshot: /tmp/cc-02-filter-cards
+# KEYWORD HIGHLIGHT: Text mode → Keywords toggle paints notable words
+- tapOn: { id: "editorPro.mode.text" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.capKeywords" }
+    timeout: 4000
+- tapOn: { id: "editorPro.capKeywords" }
+- takeScreenshot: /tmp/cc-03-keywords
+# CLEANUP: Edit mode → transcript-driven filler/pause bulk cut
+- tapOn: { id: "editorPro.mode.edit" }
+- tapOn: { id: "editorPro.cleanup" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.cleanupPanel" }
+    timeout: 4000
+- takeScreenshot: /tmp/cc-04-cleanup
+# dismiss the panel (Button ids aren't tappable in Maestro; the static text is)
+- tapOn: "Cancel"
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 4000
+# FULLSCREEN: transport ⛶ opens a full preview, X closes it
+- tapOn: { id: "editorPro.fullscreen" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.fullscreen.close" }
+    timeout: 4000
+- takeScreenshot: /tmp/cc-05-fullscreen
+- tapOn: { id: "editorPro.fullscreen.close" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 4000
+- takeScreenshot: /tmp/cc-06-back

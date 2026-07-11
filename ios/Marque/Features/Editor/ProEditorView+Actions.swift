@@ -173,6 +173,28 @@ extension ProEditorView {
     }
     func setCaptionStyle(_ s: String) { mutate([.captionStyle(s)]) }
 
+    /// R10: CapCut "auto-highlight keywords" — toggles the highlight list between empty
+    /// and a heuristic pick of significant transcript words (5+ chars, non-stopword).
+    func toggleKeywordHighlight() {
+        guard let d = session?.draft else { return }
+        if !d.captionOptions.highlightWords.isEmpty {
+            mutate([.captionOptions(highlightWords: [])]); return
+        }
+        let stop: Set<String> = ["the","and","that","this","with","your","you","for","are","was",
+                                 "have","has","not","but","all","can","will","just","what","when",
+                                 "they","them","from","into","about","would","could","should","been",
+                                 "here","there","then","than","were","who","how","why","our","out",
+                                 "get","got","one","two","more","most","some","like","really"]
+        var picks: [String] = [], seen = Set<String>()
+        for w in words {
+            let n = w.text.lowercased().filter { $0.isLetter || $0.isNumber }
+            if n.count >= 5, !stop.contains(n), !seen.contains(n) { seen.insert(n); picks.append(n) }
+            if picks.count >= 12 { break }
+        }
+        guard !picks.isEmpty else { flashPublic("No keywords found to highlight."); return }
+        mutate([.captionOptions(highlightWords: picks)])
+    }
+
     // MARK: Phrase-level caption editing (the caption-track model — never word chips)
 
     func beginPhraseEdit(_ p: CaptionPhrase) {
@@ -530,6 +552,116 @@ extension ProEditorView {
             if !t.isEmpty { mutate([.editOverlayText(index: idx, text: t)]) }
         }
         editingOverlayIndex = nil
+    }
+
+    // MARK: R10 — filler / pause cleanup (transcript-driven bulk cut)
+
+    struct CleanupTarget: Identifiable {
+        let id: Int; let label: String; let detail: String
+        let srcIn: Int; let srcOut: Int; let kind: String   // filler | pause
+    }
+
+    /// Detect filler words + long pauses from the transcript word timings.
+    func cleanupTargets() -> [CleanupTarget] {
+        let fillers: Set<String> = ["um", "uh", "uhh", "like", "you", "know", "so", "basically",
+                                    "literally", "actually", "right", "okay", "ok", "yeah", "yep",
+                                    "well", "hmm", "er", "erm", "mmm"]
+        var out: [CleanupTarget] = []
+        var id = 0
+        let sorted = words.sorted { $0.startFrame < $1.startFrame }
+        for (i, w) in sorted.enumerated() {
+            let norm = w.text.lowercased().filter { $0.isLetter }
+            if fillers.contains(norm) {
+                out.append(CleanupTarget(id: id, label: "“\(w.text)”", detail: "filler word",
+                                         srcIn: w.startFrame, srcOut: w.endFrame, kind: "filler")); id += 1
+            }
+            if i + 1 < sorted.count {
+                let gap = sorted[i + 1].startFrame - w.endFrame
+                if gap > 24 {   // > ~0.8s of silence
+                    out.append(CleanupTarget(id: id, label: "Pause",
+                                             detail: String(format: "%.1fs of silence", Double(gap) / 30.0),
+                                             srcIn: w.endFrame, srcOut: sorted[i + 1].startFrame, kind: "pause")); id += 1
+                }
+            }
+        }
+        return out
+    }
+
+    /// Bulk-cut every selected target as ONE undo step (over-cuts that would leave too little
+    /// footage are skipped by the engine).
+    func applyCleanup() {
+        let keep = cleanupTargets().filter { !cleanupSkip.contains($0.id) }
+        guard !keep.isEmpty else { withAnimation { showCleanup = false }; return }
+        let secs = Double(keep.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
+        mutate(keep.map { WireOp.cut($0.srcIn, $0.srcOut) },
+               rejectMsg: "Couldn't remove those — too little footage would remain.")
+        withAnimation { showCleanup = false }
+        showToast(String(format: "Removed %d · %.1fs", keep.count, secs))
+    }
+
+    var cleanupPanel: some View {
+        let targets = cleanupTargets()
+        let keep = targets.filter { !cleanupSkip.contains($0.id) }
+        let secs = Double(keep.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
+        return VStack(spacing: 0) {
+            ZStack {
+                Text("Clean up").font(AppFont.headline).foregroundStyle(.white)
+                HStack {
+                    Spacer()
+                    Button { withAnimation(.easeOut(duration: 0.15)) { showCleanup = false } } label: {
+                        Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                            .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityIdentifier("editorPro.cleanup.cancel")
+                }
+            }
+            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+
+            if targets.isEmpty {
+                Spacer()
+                Text("Nothing to clean up — no filler words or long pauses found.")
+                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center).padding(Space.xl)
+                Spacer()
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(targets) { t in
+                            let on = !cleanupSkip.contains(t.id)
+                            Button {
+                                if on { cleanupSkip.insert(t.id) } else { cleanupSkip.remove(t.id) }
+                            } label: {
+                                HStack(spacing: Space.md) {
+                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(t.label).font(AppFont.callout).foregroundStyle(.white)
+                                            .strikethrough(on, color: .white.opacity(0.5))
+                                        Text(t.detail).font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                                    }
+                                    Spacer()
+                                    Image(systemName: t.kind == "pause" ? "pause.circle" : "waveform")
+                                        .foregroundStyle(.white.opacity(0.3))
+                                }
+                                .padding(.horizontal, Space.lg).padding(.vertical, 10).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5).padding(.leading, Space.lg)
+                        }
+                    }.padding(.vertical, Space.sm)
+                }
+                Button { applyCleanup() } label: {
+                    Text(keep.isEmpty ? "Select something to remove"
+                                      : String(format: "Remove %d · %.1fs", keep.count, secs))
+                        .font(AppFont.headline).foregroundStyle(Palette.night)
+                        .frame(maxWidth: .infinity).frame(height: 48)
+                        .background(keep.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
+                }.buttonStyle(.plain).disabled(keep.isEmpty).padding(Space.md)
+                    .accessibilityIdentifier("editorPro.cleanup.apply")
+            }
+        }
+        .frame(height: 340, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background(Palette.ink.opacity(0.6))
+        .accessibilityIdentifier("editorPro.cleanupPanel")
     }
 
     // MARK: Save (flatten op log → one tweak POST → per-clip poll → reload)

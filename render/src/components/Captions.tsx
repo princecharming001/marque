@@ -49,8 +49,16 @@ const CAPTION_SAFE_TOP = 280;
 const DEFAULTS: CaptionOptions = {
   position: "bottom", size: "medium", pos_y: null, scale: null,
   accent: null, uppercase: false, font: "inter",
-  grouping: "line",
+  grouping: "line", highlight_words: [],
 };
+
+// CapCut keyword highlight: a word whose normalized form is in highlight_words
+// renders in the accent color (default gold) regardless of active state.
+const HIGHLIGHT_DEFAULT = "#FFD60A";
+const normWord = (w: string): string => w.toLowerCase().replace(/[^a-z0-9]/g, "");
+const isHighlighted = (word: string, opts: CaptionOptions): boolean =>
+  (opts.highlight_words ?? []).includes(normWord(word));
+const highlightColor = (opts: CaptionOptions): string => opts.accent ?? HIGHLIGHT_DEFAULT;
 
 // Effective font-size multiplier: continuous pinch `scale` wins over the S/M/L word.
 const sizeMult = (opts: CaptionOptions): number =>
@@ -139,13 +147,14 @@ const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Captio
     <div style={lineWrap(opts)}>
       {captions.slice(start, end + 1).map((c, i) => {
         const isActive = start + i === activeIdx;
+        const hi = isHighlighted(c.word, opts);
         return (
           <span key={start + i} style={{
             fontFamily: FONTS[opts.font], fontSize: 50 * sizeMult(opts),
-            fontWeight: weightFor(opts.font, 600),
-            // The accent (when chosen) colors the HOT word; default stays white.
-            color: isActive && opts.accent ? opts.accent : "white",
-            opacity: isActive ? 1 : 0.55,
+            fontWeight: weightFor(opts.font, hi ? 800 : 600),
+            // Keyword highlight wins; else the accent colors the HOT word; default white.
+            color: hi ? highlightColor(opts) : (isActive && opts.accent ? opts.accent : "white"),
+            opacity: isActive || hi ? 1 : 0.55,
             textShadow: "0 2px 8px rgba(0,0,0,0.8)",
           }}>{casing(c.word, opts)}</span>
         );

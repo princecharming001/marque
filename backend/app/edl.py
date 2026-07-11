@@ -188,6 +188,8 @@ class CaptionOptions(BaseModel):
     uppercase: bool = False           # force ALL CAPS
     font: str = "inter"               # inter | archivo | baloo (mirrors render/src fonts)
     grouping: str = "line"            # word | phrase (~3 words) | line (sliding window)
+    highlight_words: list[str] = []   # normalized lowercase words rendered in the accent color
+                                      # (CapCut "auto-highlight keywords")
 
 
 class EDL(BaseModel):
@@ -510,7 +512,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
             continue
         transitions_out.append({"at_frame": end,
                                 "style": t.get("style", "fade_black"),
-                                "frames": max(4, min(30, int(t.get("frames") or 12)))})
+                                "frames": max(4, min(45, int(t.get("frames") or 12)))})
     transitions_out.sort(key=lambda t: t["at_frame"])
 
     broll = []
@@ -739,6 +741,33 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                 if not bad and op.get("uppercase") is not None:
                     cur["uppercase"] = bool(op.get("uppercase"))
                     changed.append("uppercase")
+                # Continuous canvas overrides (drag pos_y / pinch scale) — clamped.
+                if not bad and op.get("pos_y") is not None:
+                    try:
+                        cur["pos_y"] = min(0.85, max(0.15, float(op["pos_y"])))
+                        changed.append("pos_y")
+                    except (TypeError, ValueError):
+                        bad = f"bad pos_y '{op.get('pos_y')}'"
+                if not bad and op.get("scale") is not None:
+                    try:
+                        cur["scale"] = min(2.0, max(0.5, float(op["scale"])))
+                        changed.append("scale")
+                    except (TypeError, ValueError):
+                        bad = f"bad scale '{op.get('scale')}'"
+                # Keyword highlight list — normalized to lowercase alphanumerics, capped.
+                if not bad and op.get("highlight_words") is not None:
+                    hw = op.get("highlight_words")
+                    if isinstance(hw, list) and all(isinstance(x, str) for x in hw):
+                        norm = [re.sub(r"[^a-z0-9]", "", x.lower()) for x in hw]
+                        cur["highlight_words"] = [x for x in norm if x][:40]
+                        changed.append("highlight_words")
+                    else:
+                        bad = "highlight_words must be a list of strings"
+                # Newest intent wins: a discrete position/size clears its continuous override.
+                if "position" in changed:
+                    cur["pos_y"] = None
+                if "size" in changed:
+                    cur["scale"] = None
                 if bad:
                     reason = bad
                 elif changed:
@@ -927,7 +956,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     trans = [tr for tr in (edl.get("transitions") or []) if tr.get("after_segment") != idx]
                     if style_v != "none":
                         trans.append({"after_segment": idx, "style": style_v,
-                                      "frames": max(4, min(30, int(op.get("frames") or 12)))})
+                                      "frames": max(4, min(45, int(op.get("frames") or 12)))})
                     edl["transitions"] = trans
                     applied = True
 

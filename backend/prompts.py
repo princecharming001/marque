@@ -633,6 +633,7 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
                          "scale", "text", "query", "value", "kind", "frames",
                          "order", "url", "volume",
                          "position", "size", "accent", "uppercase", "font", "grouping",
+                         "highlight_words",
                          "index", "speed", "after_segment", "name", "intensity",
                          "brightness", "contrast", "saturation", "temperature", "vignette",
                          "color", "bg", "off_x", "off_y"],
@@ -660,6 +661,8 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
                 "uppercase": {"type": ["boolean", "null"]},
                 "font": {"type": ["string", "null"]},
                 "grouping": {"type": ["string", "null"]},
+                # CapCut keyword highlight — words to color with the accent (null = unused)
+                "highlight_words": {"type": ["array", "null"], "items": {"type": "string"}},
                 # speed / transition / look / sticker knobs (null = unused)
                 "index": {"type": ["integer", "null"]},
                 "speed": {"type": ["number", "null"]},
@@ -712,7 +715,8 @@ def tweak_prompt(edl: dict, transcript_words: list[dict], instruction: str,
         "- set_caption_style {style: clean|bold-word|karaoke}\n"
         "- set_caption_options {position: top|middle|bottom, size: small|medium|large, "
         "accent: '#RRGGBB' or 'default', uppercase: bool, font: inter|archivo|baloo, "
-        "grouping: word|phrase|line} — any subset; accent colors the active word / karaoke fill\n"
+        "grouping: word|phrase|line, highlight_words: [str]} — any subset; accent colors the "
+        "active word / karaoke fill; highlight_words paints those keywords in the accent color\n"
         "- set_captions_enabled {enabled}\n"
         "- set_segment_speed {index, speed: 0.5-3.0} — play one clip faster or slower\n"
         "- set_segment_transform {index, scale: 0.5-3.0, off_x/off_y: -0.5..0.5} — zoom/reposition "

@@ -11,6 +11,7 @@ struct WireOp: Equatable {
     var s: [String: String] = [:]     // string args (style, word, text, url, kind, enabled-as-string handled below)
     var order: [Int]? = nil           // reorder_segments permutation
     var bool: [String: Bool] = [:]
+    var strings: [String: [String]] = [:]   // string-list args (highlight_words)
 
     /// The JSON dict the backend expects.
     func json() -> [String: Any] {
@@ -19,6 +20,7 @@ struct WireOp: Equatable {
         for (k, v) in d { out[k] = v }
         for (k, v) in s { out[k] = v }
         for (k, v) in bool { out[k] = v }
+        for (k, v) in strings { out[k] = v }
         if let order { out["order"] = order }
         return out
     }
@@ -38,7 +40,8 @@ struct WireOp: Equatable {
     static func captionOptions(position: String? = nil, size: String? = nil,
                                posY: Double? = nil, scale: Double? = nil,
                                accent: String? = nil, uppercase: Bool? = nil,
-                               font: String? = nil, grouping: String? = nil) -> WireOp {
+                               font: String? = nil, grouping: String? = nil,
+                               highlightWords: [String]? = nil) -> WireOp {
         var s: [String: String] = [:]
         if let position { s["position"] = position }
         if let size { s["size"] = size }
@@ -50,7 +53,9 @@ struct WireOp: Equatable {
         if let scale { d["scale"] = scale }
         var b: [String: Bool] = [:]
         if let uppercase { b["uppercase"] = uppercase }
-        return WireOp(type: "set_caption_options", d: d, s: s, bool: b)
+        var op = WireOp(type: "set_caption_options", d: d, s: s, bool: b)
+        if let highlightWords { op.strings = ["highlight_words": highlightWords] }
+        return op
     }
     static func editCaption(frame: Int, word: String) -> WireOp { WireOp(type: "edit_caption", i: ["frame": frame], s: ["word": word]) }
     static func addPunchIn(_ a: Int, _ b: Int, scale: Double) -> WireOp { WireOp(type: "add_punch_in", i: ["start_frame": a, "end_frame": b], d: ["scale": scale]) }
@@ -192,6 +197,11 @@ enum LocalEDLEngine {
                 }
             }
             if let v = op.bool["uppercase"] { o.uppercase = v; changed = true }
+            if let hw = op.strings["highlight_words"] {
+                o.highlightWords = hw.map { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
+                    .filter { !$0.isEmpty }
+                changed = true
+            }
             guard changed else { return nil }
             d.captionOptions = o
         case "set_segment_transform":

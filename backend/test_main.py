@@ -4636,6 +4636,26 @@ def test_set_caption_options_partial_merge_and_validation():
     assert res[0]["applied"] is True and edl["caption_options"]["accent"] is None
 
 
+def test_set_caption_options_pos_y_scale_and_highlight_words():
+    from app.edl import apply_edl_ops
+    # continuous drag/pinch overrides are stored + clamped
+    edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options", "pos_y": 0.05, "scale": 3.0}], [])
+    assert res[0]["applied"] and edl["caption_options"]["pos_y"] == 0.15   # clamped 0.15
+    assert edl["caption_options"]["scale"] == 2.0                          # clamped 2.0
+    # a later discrete position clears the pos_y override (newest intent wins)
+    edl, res = apply_edl_ops(edl, [{"type": "set_caption_options", "position": "top"}], [])
+    assert res[0]["applied"] and edl["caption_options"]["position"] == "top"
+    assert edl["caption_options"]["pos_y"] is None
+    # keyword highlight list — normalized to lowercase alphanumerics
+    edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options",
+                                              "highlight_words": ["STOP!", "Overthinking", ""]}], [])
+    assert res[0]["applied"]
+    assert edl["caption_options"]["highlight_words"] == ["stop", "overthinking"]
+    # a non-list highlight_words rejects the op whole
+    _, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options", "highlight_words": "stop"}], [])
+    assert not res[0]["applied"]
+
+
 def test_set_caption_options_rejects_bad_values_whole():
     from app.edl import apply_edl_ops
     for bad in ({"position": "underneath"}, {"size": "jumbo"},
@@ -4657,14 +4677,14 @@ def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
     assert plan["caption_options"] == {"position": "middle", "size": "small",
                                        "pos_y": None, "scale": None,
                                        "accent": "#60A5FA", "uppercase": True, "font": "baloo",
-                                       "grouping": "line"}
+                                       "grouping": "line", "highlight_words": []}
     # and an EDL without options ships fully-defaulted values (render bridge
     # must never see undefined keys)
     plan2 = build_render_plan(EDL(**_caption_edl()).model_dump())
     assert plan2["caption_options"] == {"position": "bottom", "size": "medium",
                                         "pos_y": None, "scale": None,
                                         "accent": None, "uppercase": False, "font": "inter",
-                                        "grouping": "line"}
+                                        "grouping": "line", "highlight_words": []}
 
 
 def test_mock_tweak_grammar_caption_options():
