@@ -31,6 +31,7 @@ struct EditorTimeline: View {
     var selectedBroll: Int? = nil
     var onTapBroll: (Int) -> Void = { _ in }
     var onTapAddMedia: () -> Void = {}
+    var showRollsAdd: Bool = false            // empty-lane "+ Add b-roll" affordance
 
     @State private var dragBaseOffset: CGFloat?
     @GestureState private var pinch: CGFloat = 1
@@ -80,6 +81,7 @@ struct EditorTimeline: View {
                     if captionsOn, !phrases.isEmpty { captionLane }
                     if !document.overlays.isEmpty { overlayLane }   // zoom blocks + text cards
                     if !document.broll.isEmpty { rollsLane }         // media rolls, stacked on overlap
+                    else if showRollsAdd { rollsAddLane }            // empty lane advertises itself
                     voiceLane                                        // original voice as a waveform strip
                     if musicName != nil || showMusicAdd { musicLane }
                 }
@@ -242,6 +244,7 @@ struct EditorTimeline: View {
             if captionsOn, !phrases.isEmpty { gutterIcon("captions.bubble").frame(height: 18) }
             if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 20) }
             if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 18) }
+            else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 18) }
             gutterIcon("waveform").frame(height: 16)
             if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 16) }
         }
@@ -289,6 +292,16 @@ struct EditorTimeline: View {
         return placed
     }
     private var rollsRows: Int { min(2, max(1, (rollPlacements.map(\.row).max() ?? 0) + 1)) }
+
+    /// The empty rolls lane sells the feature (music-lane pattern): a dashed
+    /// "+ Add b-roll" strip straight into the media panel.
+    private var rollsAddLane: some View {
+        AddLaneStrip(label: "Add b-roll", width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
+                     onTap: onTapAddMedia)
+            .frame(height: 18, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("editorPro.rollsLane.add")
+    }
 
     private var rollsLane: some View {
         let placed = rollPlacements

@@ -231,20 +231,21 @@ struct ProEditorView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
+    /// An object selection (roll/boundary/overlay) swaps the palette row out for
+    /// the context strip — CapCut's one-bar model, and the canvas keeps the space.
+    private var objectSelectionActive: Bool {
+        selectedBroll != nil || selectedBoundary != nil || selectedOverlay != nil
+    }
+
     @ViewBuilder private var modeDrawer: some View {
+        // Edit mode has no palette (its tools live in the always-on context strip),
+        // and an object selection replaces the palette with its context tools.
+        if mode != .edit, !objectSelectionActive {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.md) {
                 switch mode {
                 case .edit:
-                    // The fast add-media path lives here too, not just the track-end "+" —
-                    // the tile sits at the timeline's end, off-screen until you scrub there.
-                    drawerButton("Add media", "plus.rectangle.on.rectangle") {
-                        player?.pause()
-                        withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
-                    }
-                    .accessibilityIdentifier("editorPro.addMediaBtn")
-                    Text("Trim with the handles · Split cuts at the playhead · Move ◀ ▶ reorders")
-                        .font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
+                    EmptyView()
                 case .sound:
                     drawerButton(session?.draft.music == nil ? "Add sound" : "Change sound", "music.note") { showMusicSheet = true }
                         .accessibilityIdentifier("editorPro.addSound")
@@ -324,6 +325,7 @@ struct ProEditorView: View {
             }.padding(.horizontal, Space.md)
         }
         .frame(height: 52).background(Palette.ink.opacity(0.25))
+        }
         // The caption customizer (research round: preset + accent/size/position/case/
         // grouping/font are the knobs creators actually touch) — its own row so the
         // presets row stays scannable.
@@ -1014,6 +1016,8 @@ struct ProEditorView: View {
             let sorted = rolls.sorted { $0.srcIn < $1.srcIn }
             let overlaps = zip(sorted, sorted.dropFirst()).contains { $0.srcOut > $1.srcIn }
             h += overlaps ? 38 : 20
+        } else if mode == .edit || mode == .effects {
+            h += 20                                                        // "+ Add b-roll" strip
         }
         h += 18                                                            // voice lane (always)
         if session?.draft.music != nil || mode == .sound { h += 20 }
@@ -1060,7 +1064,8 @@ struct ProEditorView: View {
                 }
                 bumpHaptic()
             },
-            onTapAddMedia: { player?.pause(); withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true } }
+            onTapAddMedia: { player?.pause(); withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true } },
+            showRollsAdd: mode == .edit || mode == .effects
         )
         .frame(height: timelineHeight)
         .background(Palette.ink.opacity(0.6))
@@ -1150,6 +1155,13 @@ struct ProEditorView: View {
         // the creator discovers what's possible instead of staring at a hint sentence.
         let seg = selectedSeg
         HStack(spacing: Space.lg) {
+            if mode == .edit {
+                contextButton("Add", "plus.rectangle.on.rectangle") {
+                    player?.pause()
+                    withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
+                }
+                .accessibilityIdentifier("editorPro.addMediaBtn")
+            }
             contextButton("Split", "square.split.2x1") { if let s = seg { splitSelected(s); bumpHaptic() } }
                 .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
             contextButton("Speed", "gauge.with.needle") {
@@ -1196,7 +1208,13 @@ struct ProEditorView: View {
     private var modeToolbar: some View {
         HStack(spacing: 0) {
             ForEach(visibleModes, id: \.self) { m in
-                Button { mode = m; openModeDrawer(m) } label: {
+                Button {
+                    mode = m; openModeDrawer(m)
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        selectedOverlay = nil; selectedBoundary = nil
+                        selectedBroll = nil; speedPanelSeg = nil
+                    }
+                } label: {
                     VStack(spacing: 4) {
                         Image(systemName: iconFor(m)).font(.system(size: 18))
                         Text(m.rawValue).font(.system(size: 11))
