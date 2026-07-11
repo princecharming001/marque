@@ -468,11 +468,24 @@ GROUNDED SIGNALS (from the transcript — trust these over your own guesses):
             restructure = f"\n- Restructure: reorder segments to {brief['restructure_order']} to pull the strongest moment forward (set segment_order)."
         elif brief.get("pull_hook_forward"):
             restructure = "\n- Pull the hook forward: open on the hook moment above even though it's later in the take."
+        # P0.9: the brief's b-roll / punch-in moments were computed then discarded. Feed
+        # them to the EDL author, frame-anchored, so cutaways and push-ins land on the
+        # analyzed visual/emphasis beats instead of the model's guesses.
+        brolls = brief.get("broll_moments") or []
+        punches = brief.get("punch_in_moments") or []
+        broll_line = ""
+        if brolls:
+            broll_line = "\n- B-roll moments (place `broll` cutaways on these concrete visuals): " + \
+                "; ".join(f'[f{b["start_frame"]}-{b["end_frame"]}] {b.get("cue", "")}' for b in brolls)
+        punch_line = ""
+        if punches:
+            punch_line = "\n- Punch-in moments (place `punch_in` overlays on these emphasis beats): " + \
+                "; ".join(f'[f{p["frame"]}] {p.get("reason", "")}' for p in punches)
         brief_line = f"""
 EDIT BRIEF (from the analysis — act on it):
 - Open on this moment: "{hookq}"
 - Editorial cuts to make (frame ranges, beyond fillers): {', '.join(cuts) or 'none'}
-- Strategy: {strategy}{restructure}"""
+- Strategy: {strategy}{restructure}{broll_line}{punch_line}"""
     custom_line = f"\nCREATOR'S CUSTOM EDITING INSTRUCTIONS (honor these verbatim): {custom_instructions}\n" if custom_instructions else ""
     ref_block = _reference_reel_block(reference)
     ref_line = f"\n{ref_block}\n" if ref_block else ""
@@ -485,8 +498,9 @@ ShotPlan: {json.dumps(shot_plan)}
 Style: {style}
 Format: {format_id}
 
-Word-level transcript (30fps, frame = round(start_ms/1000*30)):
-{json.dumps(transcript_words[:200])}
+Frame-anchored transcript (30fps; each line "[fN] words" starts at frame N — cite these
+frames for hooks/cuts/overlays instead of guessing):
+{_frame_anchored_transcript(transcript_words)}
 
 Media context: {media_context or "none"}
 {grounding}{brief_line}{custom_line}{ref_line}
@@ -841,6 +855,63 @@ EDIT_BRIEF_SCHEMA = {
                                     "format_id": {"type": "string", "enum": FORMAT_IDS},
                                     "hook_signal": {"type": "string", "enum": SIGNAL_LIST},
                                     "pillar": _STR}},
+    },
+}
+
+# P0.9: structured-output schema for the EDL author call (mirrors the inline schema block
+# in edl_prompt + the app/edl.py Pydantic models). Lets the EDL be generated via
+# anthropic_json at temperature 0 — deterministic, no free-form JSON-parsing failures.
+_NUM = {"type": "number"}
+EDL_JSON_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["style", "format_id", "segments", "drops", "captions", "overlays",
+                 "broll", "react_source", "react_schedule", "layout", "audio"],
+    "properties": {
+        "style": _STR,
+        "format_id": _STR,
+        "segments": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["src_in", "src_out"],
+            "properties": {"src_in": _INT, "src_out": _INT}}},
+        "drops": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["src_in", "src_out", "reason"],
+            "properties": {"src_in": _INT, "src_out": _INT,
+                           "reason": {"type": "string", "enum": ["filler", "dead_air", "false_start"]}}}},
+        "captions": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["word", "frame"],
+            "properties": {"word": _STR, "frame": _INT}}},
+        "overlays": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["type", "src_in", "src_out", "scale", "text"],
+            "properties": {"type": {"type": "string", "enum": ["punch_in", "text_card"]},
+                           "src_in": _INT, "src_out": _INT, "scale": _NUM, "text": _STR}}},
+        "broll": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["src_in", "src_out", "cue_text", "asset_id", "broll_query", "source"],
+            "properties": {"src_in": _INT, "src_out": _INT, "cue_text": _STR,
+                           "asset_id": {"type": ["string", "null"]},
+                           "broll_query": _STR,
+                           "source": {"type": "string", "enum": ["stock", "own_media"]}}}},
+        "react_source": {"type": ["object", "null"], "additionalProperties": False,
+            "required": ["resolved_url", "kind", "credit_label"],
+            "properties": {"resolved_url": {"type": ["string", "null"]},
+                           "kind": {"type": "string", "enum": ["video", "image"]},
+                           "credit_label": _STR}},
+        "react_schedule": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["state", "src_in", "src_out", "clip_from", "audio_gain"],
+            "properties": {"state": {"type": "string", "enum": ["play", "freeze"]},
+                           "src_in": _INT, "src_out": _INT, "clip_from": _INT, "audio_gain": _NUM}}},
+        "layout": {"type": "object", "additionalProperties": False,
+            "required": ["style", "panels", "panel_boundaries", "split_fraction"],
+            "properties": {"style": _STR, "panels": _INT,
+                           "panel_boundaries": {"type": "array", "items": _INT},
+                           "split_fraction": _NUM}},
+        "audio": {"type": "object", "additionalProperties": False,
+            "required": ["lufs_target"],
+            "properties": {"lufs_target": _NUM}},
     },
 }
 

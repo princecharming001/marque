@@ -1188,6 +1188,66 @@ def test_render_plan_sliver_at_2x_speed_is_measured_in_output_frames():
     assert p["total_frames"] == 10
 
 
+# --- P0.9 AI wiring ---
+
+def test_apply_edit_prefs_broll_and_punch_in_toggles():
+    def base():
+        return {"style": "talking_head",
+                "broll": [{"src_in": 10, "src_out": 40, "cue_text": "x"}],
+                "overlays": [{"type": "punch_in", "src_in": 5, "src_out": 30, "scale": 1.08},
+                             {"type": "text_card", "src_in": 0, "src_out": 20, "scale": 1.0}]}
+    # broll OFF strips b-roll
+    assert main._apply_edit_prefs(base(), {"broll": False})["broll"] == []
+    # punch_ins OFF strips only punch-ins (text_card survives)
+    e = main._apply_edit_prefs(base(), {"punch_ins": False})
+    assert all(o["type"] != "punch_in" for o in e["overlays"])
+    assert any(o["type"] == "text_card" for o in e["overlays"])
+    # punch_ins ON + none present + emphasis → synthesize on the top span (supported style)
+    e2 = main._apply_edit_prefs({"style": "talking_head", "overlays": [], "broll": []},
+                                {"punch_ins": True}, emphasis_spans=[(100, 160), (300, 360)])
+    punches = [o for o in e2["overlays"] if o["type"] == "punch_in"]
+    assert len(punches) == 1 and punches[0]["src_in"] == 100 and punches[0]["src_out"] == 160
+    # unsupported style (faceless) never synthesizes a punch-in
+    e3 = main._apply_edit_prefs({"style": "faceless", "overlays": []},
+                                {"punch_ins": True}, emphasis_spans=[(0, 60)])
+    assert not any(o["type"] == "punch_in" for o in e3.get("overlays", []))
+
+
+def test_edl_prompt_threads_moments_and_frame_anchored_transcript():
+    import prompts
+    words = [{"word": f"w{i}", "start_ms": i * 100, "end_ms": i * 100 + 90} for i in range(50)]
+    brief = {"hook_candidates": [{"quote": "the hook"}], "cut_regions": [],
+             "strategy": "trim_only",
+             "broll_moments": [{"start_frame": 30, "end_frame": 60, "cue": "city skyline"}],
+             "punch_in_moments": [{"frame": 90, "reason": "big claim"}]}
+    _sys, usr = prompts.edl_prompt("talking_head", words,
+                                   {"hook": "h", "body": "b", "cta": "c"}, {}, brief=brief)
+    assert "[f30-60] city skyline" in usr    # b-roll moment threaded, frame-anchored
+    assert "[f90] big claim" in usr           # punch-in moment threaded
+    assert "[f0]" in usr                      # frame-anchored transcript present
+    assert '"start_ms"' not in usr            # the raw [:200] json.dumps transcript is gone
+
+
+def test_edl_json_schema_is_structurally_strict():
+    # No jsonschema dep — assert the structured-output invariants Anthropic requires:
+    # every object node has additionalProperties False and required == its property keys.
+    from prompts import EDL_JSON_SCHEMA
+
+    def check(node):
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "object" or (isinstance(node.get("type"), list) and "object" in node["type"]):
+            assert node.get("additionalProperties") is False, node
+            assert set(node.get("required", [])) == set(node.get("properties", {}).keys()), node
+            for v in node.get("properties", {}).values():
+                check(v)
+        if node.get("type") == "array":
+            check(node.get("items"))
+
+    check(EDL_JSON_SCHEMA)
+    assert EDL_JSON_SCHEMA["type"] == "object"
+
+
 # --- P0.7 caption end_frame ---
 
 def test_render_plan_remaps_caption_end_frame():
