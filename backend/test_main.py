@@ -1129,6 +1129,65 @@ def test_render_plan_all_cut_stays_valid():
     assert p["captions"] == []
 
 
+# --- P0.3 min-clip guard golden tests (mirrored in EditorModel.swift) ---
+
+def test_render_plan_drops_sub_12_frame_sliver():
+    # A drop leaves a 10-frame sliver [0,10) before the real clip [100,300). The sliver
+    # is < 12 output frames (400ms) → dropped; only the real clip survives, and
+    # total_frames excludes the sliver (no jarring 1/3-second flash at the top).
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 300}],
+        "drops": [{"src_in": 10, "src_out": 100, "reason": "dead_air"}],
+        "captions": [], "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    assert p["clips"] == [{"src_in": 100, "src_out": 300, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}]
+    assert p["total_frames"] == 200
+
+
+def test_render_plan_keeps_exactly_12_frame_clip():
+    # Boundary: a clip whose output length is EXACTLY 12 frames is kept (>=, not >).
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 12}], "drops": [],
+        "captions": [], "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    assert p["clips"] == [{"src_in": 0, "src_out": 12, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}]
+    assert p["total_frames"] == 12
+
+
+def test_render_plan_keeps_longest_when_every_interval_is_a_sliver():
+    # Degenerate: a short take chopped into only slivers ([0,8)=8f and [15,25)=10f).
+    # The guard must never empty the plan — it keeps the single LONGEST sliver ([15,25)).
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 25}],
+        "drops": [{"src_in": 8, "src_out": 15, "reason": "filler"}],
+        "captions": [], "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    assert p["clips"] == [{"src_in": 15, "src_out": 25, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}]
+    assert p["total_frames"] == 10
+
+
+def test_render_plan_sliver_at_2x_speed_is_measured_in_output_frames():
+    # The guard is on OUTPUT frames: a 20-source-frame kept slice at 2x speed is only
+    # 10 output frames → still a sliver, still dropped. [20 src / 2.0 = 10 out < 12].
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 400, "speed": 2.0}],
+        "drops": [{"src_in": 20, "src_out": 380, "reason": "dead_air"}],
+        "captions": [], "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    p = build_render_plan(edl)
+    # kept slices: [0,20)=10 out frames (sliver, dropped) and [380,400)=10 out frames
+    # (sliver) — every candidate is a sliver, so keep the longest; both are 10, first wins.
+    assert p["clips"] == [{"src_in": 0, "src_out": 20, "speed": 2.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}]
+    assert p["total_frames"] == 10
+
+
 # ---------------------------------------------------------------------------
 # New format pipeline steps: b-roll resolve, react-source attach, plan fields
 # ---------------------------------------------------------------------------

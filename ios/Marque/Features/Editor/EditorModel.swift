@@ -8,6 +8,9 @@ import Foundation
 // reload from GET after every Apply. See LocalEDLEngine for the op semantics we mirror.
 
 let kEditorFPS: Double = 30.0
+// P0.3: kept clips shorter than this in OUTPUT frames (12 = 400ms) are dropped as slivers.
+// Exact mirror of MIN_CLIP_OUTPUT_FRAMES in backend/app/edl.py.
+let kMinClipOutputFrames = 12
 
 func framesToSeconds(_ f: Int) -> Double { Double(f) / kEditorFPS }
 // AF-I5 lesson: banker's rounding to match Python's round() so caption/edit_caption frame
@@ -239,7 +242,25 @@ struct EditorDocument: Equatable {
             }
             if cur < end { out.append((cur, end, speed)) }
         }
-        return out.filter { $0.1 > $0.0 }.map { (srcIn: $0.0, srcOut: $0.1, speed: $0.2) }
+        let candidates = out.filter { $0.1 > $0.0 }
+        // P0.3 min-clip guard — exact mirror of build_render_plan (edl.py): drop kept
+        // intervals whose OUTPUT length is < 12 frames (400ms slivers), but never empty
+        // the plan — if every candidate is a sliver, keep the single longest (first on ties,
+        // matching Python's max()).
+        let kept = candidates.filter { outputFrames($0.1 - $0.0, speed: $0.2) >= kMinClipOutputFrames }
+        let final: [(Int, Int, Double)]
+        if !kept.isEmpty {
+            final = kept
+        } else if var best = candidates.first {
+            for c in candidates.dropFirst()
+            where outputFrames(c.1 - c.0, speed: c.2) > outputFrames(best.1 - best.0, speed: best.2) {
+                best = c
+            }
+            final = [best]
+        } else {
+            final = []
+        }
+        return final.map { (srcIn: $0.0, srcOut: $0.1, speed: $0.2) }
     }
 
     var keptIntervals: [(srcIn: Int, srcOut: Int)] {
