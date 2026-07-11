@@ -41,10 +41,10 @@ Swift via backend↔Swift golden parity fixtures + line-by-line mirror review.
 
 ## Phase 1 — Twelve Labs video dossier
 
-- [ ] P1.1 — `backend/app/dossier.py`: provider chain twelvelabs → claude_frames → off; TL index lifecycle (create-once, upload task, poll, Pegasus generate with dossier JSON schema, `DOSSIER_TIMEOUT_S` fail-down); claude_frames fallback (ffmpeg 0.5fps keyframes + full-res first frame → one vision call); all timestamps → `[fN]` via `ms_to_frame`; mocks + tests keyless
-- [ ] P1.2 — plumb into `_run_analysis` via `asyncio.gather` with transcription; persist `job["dossier"]`; staged progress statuses
-- [ ] P1.3 — brief fusion: dossier param in `edit_brief_prompt`; replace the "you cannot see the video" clause with dossier-only visual grounding; grounding discipline extended to visual claims
-- [ ] P1.REVIEW
+- [x] P1.1 — `backend/app/dossier.py`: `generate_dossier(source_url, duration_ms)` provider chain twelvelabs → claude_frames → off, failing DOWN on any error/missing-key/timeout (fail-soft). TL lifecycle: `_ensure_index` (reuse `TWELVELABS_INDEX_ID` or create pegasus1.2+marengo2.7 once), upload task → `_poll_task` (`DOSSIER_TIMEOUT_S`=240, `_sleep` seam) → Pegasus `/generate` with dossier instructions. claude_frames fallback: `_extract_keyframes` (ffmpeg first-frame full-res + 0.5fps 512px samples) → `_vision_json` (Haiku vision, base64 image blocks, structured schema). `_normalize` converts model SECONDS → `[fN]` frame anchors (v1 shape: first_frame/delivery_curve/visual_events/scenes/on_screen_text/framing/broll_visual_opportunities/gaffes). `mock_dossier` for keyless. Every vendor boundary is a monkeypatchable seam. Evidence: 8 tests (chain fail-down, TL full lifecycle w/ poll, task-failure→down, normalization, garbage-tolerance) green keyless.
+- [x] P1.2 — `_dossier_job(job_id)`: fail-soft dossier build wired into BOTH `_run_analysis` + `_run_pipeline` gathers alongside transcription + loudness (overlaps the 1–3 min TL wait, zero extra wall-clock). `job["dossier"]` set; staged `job["dossier_status"]` (off/watching/ready/unavailable) for the poller ("watching your take…"). Evidence: 3 tests (off no-op, ready status, fail-soft-on-error) green; full suite 532 passed (gather change non-regressing).
+- [x] P1.3 — brief fusion. `edit_brief_prompt` gains `dossier` param; `_dossier_block` renders a compact frame-anchored dossier; with a dossier the "you cannot see the video" clause is REPLACED by "VISUAL FACTS come ONLY from the VIDEO DOSSIER — never invent beyond it" (absence still valid); threaded through `_generate_edit_brief` ← `_run_analysis` (`job["dossier"]`). Evidence: 3 tests (block frame-anchored, dossier swaps the clause, no-dossier keeps transcript-only) green.
+- [ ] P1.REVIEW  (after P2.3 so the reference-reel dossier path is reviewed together)
 
 ## Phase 2 — Editing knowledge base
 

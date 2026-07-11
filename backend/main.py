@@ -31,6 +31,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      style_capabilities, TWEAK_OP_TYPES)
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
+from app import dossier as dossier_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -2660,7 +2661,8 @@ def _default_toggles(brief: dict, edit_format: str = "") -> dict:
 
 async def _generate_edit_brief(words: list[dict], transcript: str = "",
                                custom_instructions: str = "", brand: dict | None = None,
-                               edit_format: str = "", reference: dict | None = None) -> dict:
+                               edit_format: str = "", reference: dict | None = None,
+                               dossier: dict | None = None) -> dict:
     """Live edit brief (SONNET) with the deterministic mock as the keyless path AND the
     degrade fallback. Re-grounds two things the LLM must NOT own: (1) inferred dims are
     validated against the taxonomies; (2) filler/dead-air cut_regions are re-merged from
@@ -2672,7 +2674,8 @@ async def _generate_edit_brief(words: list[dict], transcript: str = "",
         return mock
     try:
         sys, usr = prompts.edit_brief_prompt(words, custom_instructions, brand or {},
-                                             edit_format=edit_format, reference=reference)
+                                             edit_format=edit_format, reference=reference,
+                                             dossier=dossier)
         data = await anthropic_json(sys, usr, prompts.EDIT_BRIEF_SCHEMA, SONNET, 1600)
     except HTTPException:
         return mock
@@ -2934,6 +2937,27 @@ async def _transcribe_job(job_id: str) -> list[dict]:
     return transcript["words"]
 
 
+async def _dossier_job(job_id: str) -> dict | None:
+    """P1.2: build the visual dossier IN PARALLEL with transcription (the user accepts the
+    1–3 min Twelve Labs indexing wait; overlapping it costs no extra wall-clock). Fully
+    fail-soft — any error / missing key / disabled provider leaves job['dossier']=None and
+    the transcript-only edit runs unchanged. Surfaces staged progress for the poller."""
+    job = _clip_jobs[job_id]
+    if (dossier_mod.VIDEO_UNDERSTANDING or "off").lower() == "off":
+        job["dossier_status"] = "off"
+        return None
+    job["dossier_status"] = "watching"     # "watching your take…" reads as intelligence, not lag
+    try:
+        d = await dossier_mod.generate_dossier(job.get("source_url") or "",
+                                               int(job.get("duration_ms") or 0))
+    except Exception as e:               # generate_dossier is already fail-soft; belt+braces
+        logging.warning("dossier: unexpected error for %s: %s", job_id, e)
+        d = None
+    job["dossier"] = d
+    job["dossier_status"] = "ready" if d else "unavailable"
+    return d
+
+
 async def _run_analysis(job_id: str) -> None:
     """Analyze-first phase 1: transcribe → edit brief → stop at 'brief_ready' (no EDL
     or render yet). ALWAYS leaves the job terminal-or-brief_ready."""
@@ -2942,10 +2966,12 @@ async def _run_analysis(job_id: str) -> None:
         # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
         # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
         # gain. transcribe raising propagates to the handler below; probe never raises.
-        words, lufs = await asyncio.gather(
+        words, lufs, dossier = await asyncio.gather(
             _transcribe_job(job_id),
-            audio_mod.probe_loudness(job.get("source_url") or ""))
+            audio_mod.probe_loudness(job.get("source_url") or ""),
+            _dossier_job(job_id))
         job["loudness_lufs"] = lufs
+        job["dossier"] = dossier
         job["status"] = "analyzing"
         for c in job["clips"]:
             c["status"] = "analyzing"
@@ -2953,7 +2979,8 @@ async def _run_analysis(job_id: str) -> None:
         brief = await _generate_edit_brief(words, transcript_text,
                                            job.get("custom_instructions", ""), job.get("brand") or {},
                                            edit_format=job.get("edit_format", ""),
-                                           reference=job.get("reference_reel") or None)
+                                           reference=job.get("reference_reel") or None,
+                                           dossier=job.get("dossier"))
         total_f = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=0))
         job["edit_brief"] = _resolve_strategy(brief, total_f)
         job["status"] = "brief_ready"
@@ -2970,10 +2997,13 @@ async def _run_pipeline(job_id: str):
     job = _clip_jobs[job_id]
     try:
         # P0.6: loudness probe parallel with transcription (same as _run_analysis).
-        words, lufs = await asyncio.gather(
+        # P1.2: + visual dossier in the same gather (all fail-soft).
+        words, lufs, dossier = await asyncio.gather(
             _transcribe_job(job_id),
-            audio_mod.probe_loudness(job.get("source_url") or ""))
+            audio_mod.probe_loudness(job.get("source_url") or ""),
+            _dossier_job(job_id))
         job["loudness_lufs"] = lufs
+        job["dossier"] = dossier
     except PipelineError as e:
         _fail_job(job, e.code, e.detail, e.stage)
         _spawn(_persist_clip_job(job_id))
