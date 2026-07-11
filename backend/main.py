@@ -3240,6 +3240,10 @@ async def _run_edit(job_id: str, words: list[dict]):
         # P2.2: stamp which KB version steered this edit → A/B + revert + eval scorecard.
         job["knowledge_version"] = knowledge_mod.knowledge_version()
 
+        # P5b: optional self-review — preview render → vision score vs rubric → one
+        # revision if below threshold — BEFORE the final render. Flag-gated + fail-soft.
+        await _self_review_edl(job_id)
+
         job["status"] = "rendering"
         await _render_all_clips(job_id)
 
@@ -3258,6 +3262,130 @@ async def _run_edit(job_id: str, words: list[dict]):
         _fail_job(job, "internal_error", str(e))
     finally:
         _spawn(_persist_clip_job(job_id))   # F15: durable at terminal state
+
+
+SELF_REVIEW = os.environ.get("SELF_REVIEW", "0").lower() in ("1", "true", "yes")
+SELF_REVIEW_THRESHOLD = int(os.environ.get("SELF_REVIEW_THRESHOLD", "70"))
+
+
+async def _sample_render_frames(url: str, n: int = 6) -> list[bytes]:
+    """ffmpeg-sample n evenly-spaced frames from a rendered (preview) video → jpeg bytes.
+    Fail-soft to [] (no ffmpeg / unreadable). Monkeypatched in tests."""
+    import shutil, tempfile, subprocess, glob
+    if not shutil.which("ffmpeg") or not url:
+        return []
+    out: list[bytes] = []
+    with tempfile.TemporaryDirectory() as td:
+        pat = os.path.join(td, "rev_%03d.jpg")
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", url, "-vf", "fps=1,scale=360:-1", "-q:v", "5", pat],
+                           capture_output=True, timeout=120)
+        except (subprocess.SubprocessError, OSError):
+            return []
+        paths = sorted(glob.glob(os.path.join(td, "rev_*.jpg")))
+        # even sample of at most n
+        step = max(1, len(paths) // max(1, n))
+        for p in paths[::step][:n]:
+            try:
+                with open(p, "rb") as fh:
+                    out.append(fh.read())
+            except OSError:
+                continue
+    return out
+
+
+async def _score_edl_vision(frames: list[bytes], plan: dict) -> dict | None:
+    """One Claude-vision call scoring sampled frames + the render plan against the review
+    rubric → {score_0_100, issues:[{code, frame, fix_op}]}. fix_op is a tweak-envelope op.
+    Monkeypatched in tests; keyless / no frames → None."""
+    if not ANTHROPIC_KEY or not frames:
+        return None
+    import base64, pathlib
+    rubric_path = pathlib.Path(__file__).resolve().parent / "knowledge" / "review_rubric.md"
+    rubric = rubric_path.read_text() if rubric_path.exists() else "hook 0-3s; caption sync; no slivers; audio; no flashes."
+    schema = {
+        "type": "object", "additionalProperties": False,
+        "required": ["score_0_100", "issues"],
+        "properties": {
+            "score_0_100": {"type": "integer"},
+            "issues": {"type": "array", "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["code", "frame", "fix_op"],
+                "properties": {
+                    "code": {"type": "string"},
+                    "frame": {"type": "integer"},
+                    "fix_op": {"type": "object", "additionalProperties": True,
+                               "required": ["type"], "properties": {
+                                   "type": {"type": "string", "enum": TWEAK_OP_TYPES}}},
+                }}},
+        },
+    }
+    content: list[dict] = [{"type": "text", "text":
+        f"REVIEW RUBRIC:\n{rubric}\n\nRENDER PLAN (output frames):\n{json.dumps(plan, default=str)[:4000]}\n\n"
+        f"The {len(frames)} images are evenly-sampled frames of the rendered edit. Score 0-100 and list "
+        f"issues; each fix_op MUST be a valid tweak op (type from the allowed set) that would fix it."}]
+    for fr in frames[:8]:
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                        "data": base64.b64encode(fr).decode("ascii")}})
+    body = {"model": SONNET, "max_tokens": 1200,
+            "system": "You are a strict short-form video QA reviewer. Score against the rubric.",
+            "messages": [{"role": "user", "content": content}],
+            "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+    try:
+        client = _get_anthropic_client()
+        r = await client.post(ANTHROPIC_URL,
+                              headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                                       "content-type": "application/json"}, json=body)
+        if r.status_code != 200:
+            return None
+        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        return json.loads(text)
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+
+
+async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
+    """P5b: render a cheap preview → vision-score it against the rubric → if score <
+    SELF_REVIEW_THRESHOLD, apply the returned fix_ops (tweak-envelope) ONCE and re-commit
+    the EDL before the final render. Hard limits: flag-gated, one revision, never on
+    re-renders/tweaks. Fully fail-soft — any miss leaves the EDL unchanged."""
+    if not SELF_REVIEW or is_rerender or not ANTHROPIC_KEY:
+        return
+    job = _clip_jobs.get(job_id)
+    if not job or not job.get("edl"):
+        return
+    clip = next((c for c in job.get("clips") or [] if c.get("format")), None)
+    if not clip:
+        return
+    try:
+        async with _render_semaphore:
+            submission = await _submit_remotion_render(
+                job["source_url"], job["edl"], clip["format"], job["style"], preview=True)
+            if not submission:
+                return
+            preview_url = await _poll_remotion_render(submission["render_id"], submission["bucket_name"])
+    except Exception as e:
+        logging.warning("self-review preview render failed: %s", e)
+        return
+    frames = await _sample_render_frames(preview_url, 6)
+    if not frames:
+        return
+    review = await _score_edl_vision(frames, build_render_plan(job["edl"]))
+    if not isinstance(review, dict):
+        return
+    job["self_review"] = {"score": review.get("score_0_100"), "issues": review.get("issues", [])}
+    if (review.get("score_0_100") or 100) >= SELF_REVIEW_THRESHOLD:
+        return
+    ops = [i["fix_op"] for i in (review.get("issues") or [])
+           if isinstance(i.get("fix_op"), dict) and i["fix_op"].get("type") in TWEAK_OP_TYPES]
+    if not ops:
+        return
+    try:
+        new_edl, results = apply_edl_ops(job["edl"], ops, job.get("words") or [])
+        job["edl"] = new_edl
+        job["self_review"]["applied"] = [r for r in results if r.get("applied")]
+    except Exception as e:
+        logging.warning("self-review op apply failed: %s", e)
 
 
 async def _render_all_clips(job_id: str) -> None:

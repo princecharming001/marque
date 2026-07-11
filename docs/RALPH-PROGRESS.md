@@ -68,8 +68,8 @@ Swift via backend↔Swift golden parity fixtures + line-by-line mirror review.
 
 ## Phase 5b — Self-review loop
 
-- [ ] P5b.1 — in `_render_all_clips`: preview render → Claude-vision frame scoring vs `review_rubric.md` → `{score, issues[{code, frame, fix_op}]}` with fix_ops from the tweak-envelope set → apply via `apply_edl_ops` → one final render; hard limits (one revision, only if score < `SELF_REVIEW_THRESHOLD` 70, never on re-renders/tweaks); `SELF_REVIEW` flag
-- [ ] P5b.REVIEW
+- [x] P5b.1 — self-review loop. `_self_review_edl(job_id)` runs in `_run_edit` just before the final `_render_all_clips`: preview render (`_submit_remotion_render(preview=True)`) → `_sample_render_frames` (ffmpeg fps=1 360px seam) → `_score_edl_vision` (Sonnet vision over frames + render plan vs `knowledge/review_rubric.md`, structured `{score_0_100, issues:[{code, frame, fix_op}]}` with fix_op.type ∈ TWEAK_OP_TYPES) → if score < `SELF_REVIEW_THRESHOLD`(70), apply the fix_ops via `apply_edl_ops` ONCE and re-commit `job["edl"]`. Hard limits enforced: `SELF_REVIEW` flag (default off), one revision, skipped on re-renders (`is_rerender`), never on tweaks (only called from `_run_edit`). Fully fail-soft (no key/flag/frames/render → EDL untouched); unknown fix-op types filtered. Evidence: 6 tests (off no-op, rerender skip, high-score no-revision, low-score applies op, non-tweak-op ignored, no-frames fail-soft); full suite **566 passed**.
+- [x] P5b.REVIEW — **GRADE 88/100**. Closed-loop quality gate: the pipeline now grades its own render and self-corrects once when it falls short, using the same rubric the eval judge uses and the same tweak ops the chat editor uses (no new op surface). Flag-gated off, +~60–120s/+~$0.04 only when on. No EDL-contract change. −12: the live path (real preview render + ffmpeg sampling + Sonnet vision) is seam-tested, not live-exercised (needs REMOTION+ANTHROPIC keys — environmental).
 
 ## FINAL gauntlet
 
