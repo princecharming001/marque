@@ -11,9 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     ca-certificates \
+    ffmpeg \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+# ffmpeg: P0.6 loudness probe (app/audio.probe_loudness runs `ffmpeg -af loudnorm`).
+# app/audio fails soft to no-op if the binary is ever absent, but ship it so it works.
 
 # Python deps
 COPY backend/requirements.txt ./backend/requirements.txt

@@ -1188,6 +1188,56 @@ def test_render_plan_sliver_at_2x_speed_is_measured_in_output_frames():
     assert p["total_frames"] == 10
 
 
+# --- P0.6 loudness normalization ---
+
+def test_probe_loudness_fails_soft():
+    import asyncio as _a
+    from app import audio as audio_mod
+    # empty url → None immediately (no ffmpeg invoked)
+    assert _a.run(audio_mod.probe_loudness("")) is None
+
+
+def test_probe_loudness_none_without_ffmpeg(monkeypatch):
+    import asyncio as _a
+    from app import audio as audio_mod
+    monkeypatch.setattr(audio_mod.shutil, "which", lambda _: None)
+    assert _a.run(audio_mod.probe_loudness("https://example.com/take.mp4")) is None
+
+
+def test_gain_db_math_and_clamp():
+    from app.audio import gain_db
+    assert gain_db(None) == 0.0            # unknown loudness → no gain
+    assert gain_db(-14.0) == 0.0           # already at target
+    assert gain_db(-20.0) == 6.0           # quiet take → +6 dB boost
+    assert gain_db(-8.0) == -6.0           # loud take → -6 dB cut
+    assert gain_db(-40.0) == 12.0          # clamp at +12
+    assert gain_db(10.0) == -12.0          # clamp at -12
+    assert gain_db(-18.0, target_lufs=-16.0) == 2.0
+
+
+def test_parse_loudnorm_input_i():
+    from app.audio import _parse_input_i
+    assert _parse_input_i('log...\n{ "input_i" : "-19.5", "input_tp": "-2.0" }\ntail') == -19.5
+    assert _parse_input_i("no json here at all") is None
+    assert _parse_input_i('{"input_i": "-99.0"}') is None   # silence → None
+
+
+def test_render_plan_carries_audio_gain():
+    from app.edl import build_render_plan, EDL
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 100}], "drops": [],
+        "captions": [], "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+        "audio": {"lufs_target": -14.0, "gain": 5.5},
+    }
+    assert build_render_plan(edl)["audio"]["gain"] == 5.5
+    # additive + optional: an EDL without gain defaults to 0.0 (untouched)
+    edl_no_gain = dict(edl, audio={"lufs_target": -14.0})
+    assert build_render_plan(edl_no_gain)["audio"]["gain"] == 0.0
+    # and it survives the Pydantic round-trip the tweak flow does on every edit
+    assert EDL(**edl).model_dump()["audio"]["gain"] == 5.5
+
+
 # ---------------------------------------------------------------------------
 # New format pipeline steps: b-roll resolve, react-source attach, plan fields
 # ---------------------------------------------------------------------------

@@ -67,11 +67,17 @@ export const CutVideo: React.FC<{
   volumeRanges?: VolumeRange[] | null;
   look?: Look | null;
   style?: React.CSSProperties;
-}> = ({ sourceUrl, clips, volumeRanges, look, style }) => {
+  gain?: number;   // P0.6: loudness-normalization dB applied to source audio
+}> = ({ sourceUrl, clips, volumeRanges, look, style, gain }) => {
   if (!sourceUrl || clips.length === 0) {
     return <div style={{ width: "100%", height: "100%", background: "#111" }} />;
   }
   const filter = lookFilterCSS(look);
+  // P0.6: loudness normalization — a linear multiplier on the source audio. gain 0 → 1.0
+  // (untouched). Composes with per-range volume; a range's volume is scaled by the same
+  // factor so mute (0) stays muted.
+  const gainMult = Math.pow(10, (gain ?? 0) / 20);
+  const hasRanges = !!(volumeRanges && volumeRanges.length > 0);
   let outCursor = 0;
   const withOffsets = clips.map((c) => {
     const outStart = outCursor;
@@ -88,9 +94,11 @@ export const CutVideo: React.FC<{
             trimAfter={c.src_out}
             playbackRate={c.speed || 1}
             volume={
-              volumeRanges && volumeRanges.length > 0
-                ? (localF) => volumeAt(outStart + localF, volumeRanges)
-                : undefined
+              hasRanges
+                ? (localF) => volumeAt(outStart + localF, volumeRanges!) * gainMult
+                : gainMult !== 1
+                  ? gainMult
+                  : undefined
             }
             style={{ width: "100%", height: "100%", objectFit: "cover",
                      // Canvas transform: translate in unscaled units, then zoom

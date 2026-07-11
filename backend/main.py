@@ -29,6 +29,7 @@ from contextlib import asynccontextmanager
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
                      style_capabilities, TWEAK_OP_TYPES)
+from app import audio as audio_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -2920,7 +2921,13 @@ async def _run_analysis(job_id: str) -> None:
     or render yet). ALWAYS leaves the job terminal-or-brief_ready."""
     job = _clip_jobs[job_id]
     try:
-        words = await _transcribe_job(job_id)
+        # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
+        # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
+        # gain. transcribe raising propagates to the handler below; probe never raises.
+        words, lufs = await asyncio.gather(
+            _transcribe_job(job_id),
+            audio_mod.probe_loudness(job.get("source_url") or ""))
+        job["loudness_lufs"] = lufs
         job["status"] = "analyzing"
         for c in job["clips"]:
             c["status"] = "analyzing"
@@ -2944,7 +2951,11 @@ async def _run_pipeline(job_id: str):
     """Full pipeline: transcribe → edit → render. Always terminal on exit."""
     job = _clip_jobs[job_id]
     try:
-        words = await _transcribe_job(job_id)
+        # P0.6: loudness probe parallel with transcription (same as _run_analysis).
+        words, lufs = await asyncio.gather(
+            _transcribe_job(job_id),
+            audio_mod.probe_loudness(job.get("source_url") or ""))
+        job["loudness_lufs"] = lufs
     except PipelineError as e:
         _fail_job(job, e.code, e.detail, e.stage)
         _spawn(_persist_clip_job(job_id))
@@ -3072,6 +3083,11 @@ async def _run_edit(job_id: str, words: list[dict]):
         # passes above — it's derived data, never something an LLM should author,
         # and it must survive regardless of what those steps preserved.
         edl_data["speech_frames"] = [ms_to_frame(w["start_ms"]) for w in _clean_words if w.get("word")]
+        # P0.6: loudness normalization — gain = clamp(target − measured, ±12dB). Measured
+        # in _run_analysis/_run_pipeline; None (no ffmpeg / unmeasurable) → gain 0 (no-op).
+        _audio_block = edl_data.setdefault("audio", {"lufs_target": -14.0})
+        _audio_block["gain"] = audio_mod.gain_db(
+            job.get("loudness_lufs"), target_lufs=float(_audio_block.get("lufs_target") or -14.0))
         job["edl"] = edl_data
 
         job["status"] = "rendering"

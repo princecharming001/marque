@@ -64,7 +64,7 @@ export interface VolumeRange { frame_in: number; frame_out: number; volume: numb
 // future loudness-normalization work, but nothing in the compositions reads it
 // today — real LUFS normalization needs an ffmpeg loudnorm pass or equivalent,
 // which doesn't exist in this render bridge yet. Not a bug; documented.
-export interface AudioPlan { lufs_target: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; }
+export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; }
 
 export interface RenderPlan {
   style: string;

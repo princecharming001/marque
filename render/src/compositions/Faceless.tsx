@@ -15,7 +15,7 @@ import { CompositionProps } from "../types";
 export const Faceless: React.FC<CompositionProps> = ({ sourceUrl, edl }) => (
   <AbsoluteFill style={{ background: "#000" }}>
     <AbsoluteFill style={{ opacity: 0 }}>
-      <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
+      <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
     </AbsoluteFill>
     {edl && <BrollLayer broll={edl.broll} />}
     {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
