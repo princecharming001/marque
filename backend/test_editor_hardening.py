@@ -1446,7 +1446,7 @@ _TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "
                         "react_source", "react_schedule", "layout", "caption_style",
                         "caption_options", "transitions", "look", "audio", "total_frames"}
 _TS_CLIP_KEYS = {"src_in", "src_out", "speed", "tx_scale", "tx_x", "tx_y"}
-_TS_CAPTION_KEYS = {"word", "frame"}
+_TS_CAPTION_KEYS = {"word", "frame", "end_frame"}
 _TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
                     "pos_x", "pos_y", "rotation", "color", "bg", "font"}
 _TS_BROLL_KEYS = {"frame_in", "frame_out", "cue_text", "asset_id", "broll_query",
@@ -1465,7 +1465,7 @@ def test_render_plan_matches_typescript_contract_exactly():
         "style": "duet_split", "format_id": "myth-buster",
         "segments": [{"src_in": 0, "src_out": 300}, {"src_in": 300, "src_out": 600}],
         "drops": [{"src_in": 100, "src_out": 120, "reason": "filler"}],
-        "captions": [{"word": "hi", "frame": 10}],
+        "captions": [{"word": "hi", "frame": 10, "end_frame": 25}],
         "overlays": [{"type": "punch_in", "src_in": 20, "src_out": 60, "scale": 1.1, "text": "wow"}],
         "broll": [{"src_in": 200, "src_out": 250, "cue_text": "city", "asset_id": "a1",
                    "broll_query": "city skyline", "source": "stock",

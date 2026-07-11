@@ -1188,6 +1188,39 @@ def test_render_plan_sliver_at_2x_speed_is_measured_in_output_frames():
     assert p["total_frames"] == 10
 
 
+# --- P0.7 caption end_frame ---
+
+def test_render_plan_remaps_caption_end_frame():
+    from app.edl import build_render_plan
+    # A drop [50,100) shifts later captions back 50; end_frame remaps alongside frame.
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 300}],
+        "drops": [{"src_in": 50, "src_out": 100, "reason": "filler"}],
+        "captions": [
+            {"word": "a", "frame": 10, "end_frame": 30},     # before drop → unchanged
+            {"word": "b", "frame": 150, "end_frame": 170},    # after drop → −50
+        ],
+        "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    caps = build_render_plan(edl)["captions"]
+    assert caps == [{"word": "a", "frame": 10, "end_frame": 30},
+                    {"word": "b", "frame": 100, "end_frame": 120}]
+
+
+def test_render_plan_caption_without_end_frame_omits_key():
+    # Additive + optional: a caption with no end_frame stays that way in the plan.
+    from app.edl import build_render_plan
+    edl = {
+        "style": "talking_head", "format_id": "x",
+        "segments": [{"src_in": 0, "src_out": 100}], "drops": [],
+        "captions": [{"word": "hi", "frame": 5}],
+        "overlays": [], "broll": [], "layout": {"style": "talking_head"},
+    }
+    c = build_render_plan(edl)["captions"][0]
+    assert c == {"word": "hi", "frame": 5} and "end_frame" not in c
+
+
 # --- P0.6 loudness normalization ---
 
 def test_probe_loudness_fails_soft():
@@ -4797,14 +4830,14 @@ def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
     assert plan["caption_options"] == {"position": "middle", "size": "small",
                                        "pos_y": None, "scale": None,
                                        "accent": "#60A5FA", "uppercase": True, "font": "baloo",
-                                       "grouping": "line", "highlight_words": []}
+                                       "grouping": "phrase", "highlight_words": []}
     # and an EDL without options ships fully-defaulted values (render bridge
     # must never see undefined keys)
     plan2 = build_render_plan(EDL(**_caption_edl()).model_dump())
     assert plan2["caption_options"] == {"position": "bottom", "size": "medium",
                                         "pos_y": None, "scale": None,
                                         "accent": None, "uppercase": False, "font": "inter",
-                                        "grouping": "line", "highlight_words": []}
+                                        "grouping": "phrase", "highlight_words": []}
 
 
 def test_mock_tweak_grammar_caption_options():
