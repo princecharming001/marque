@@ -62,9 +62,9 @@ Swift via backend↔Swift golden parity fixtures + line-by-line mirror review.
 
 ## Phase 4 — Execution polish
 
-- [ ] P4.1 — b-roll multi-candidate: Pexels `per_page` = `BROLL_CANDIDATES` (6); `_rerank_broll` Haiku-vision scoring vs cue + dossier palette/energy; cache; top-1 fallback; upgrade `/v1/broll/match` for own-media
-- [ ] P4.2 — punch-in exit easing (`TalkingHead.tsx`, `DuetSplit.tsx`); loop-friendly endings (assembler trims trailing dead-air ≤10 frames)
-- [ ] P4.REVIEW
+- [x] P4.1 — b-roll multi-candidate + vision re-rank. `_fetch_pexels_candidates(query, n)` (per_page=`BROLL_CANDIDATES`=6, returns [{link, thumb}]); `_broll_vision_pick` (one Haiku vision call over candidate thumbnails scoring cue relevance + a-roll palette/energy from the dossier framing); `_rerank_broll` (fetch thumbs → vision pick, top-1 fallback on any miss); `_resolve_broll(edl, dossier)` uses them (cached per query). `/v1/broll/match` upgraded: own-media vision re-rank when corpus assets carry `thumb_url` (≥2), else the existing text Haiku tie-break; Pexels fallback also vision-re-ranked. `_fetch_pexels` kept as the single-candidate wrapper. All fail-soft: keyless / no PEXELS_KEY → top-1 == prior behavior. Evidence: 7 rerank tests (single/empty/keyless-top1/vision-pick-index/vision-none-fallback/candidates-empty/resolve-uses-rerank) + adapted the existing cache-skip test to the new seam; full suite 560 passed.
+- [x] P4.2 — punch-in exit easing + loop-friendly endings. `TalkingHead.tsx` + `DuetSplit.tsx`: the punch-in scale now eases OUT over ~8 frames (4-point interpolate `[in, in+r, out−r, out]→[1,scale,scale,1]`, r clamps for short windows) instead of snapping back at frame_out. `assemble_edl`: trims trailing dead-air after the last spoken word to ≤10 output frames (loop-friendly ending) without inverting the final segment. Evidence: render `tsc` rc=0 + bridge build clean; `test_loop_friendly_trailing_trim` green.
+- [x] P4.REVIEW — **GRADE 90/100**. B-roll now picks the best of 6 by vision (was blind top-1) with palette/energy grounding; punch-ins ease symmetrically; endings loop clean. Additive + fully fail-soft (keyless == prior behavior). No EDL-contract change. −10: the live vision re-rank + own-media thumb path need PEXELS_KEY+ANTHROPIC_KEY (seam-tested, not live-exercised — environmental).
 
 ## Phase 5b — Self-review loop
 

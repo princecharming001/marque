@@ -71,6 +71,7 @@ POSTFORME_KEY = os.environ.get("POSTFORME_KEY", "")
 POSTFORME_BASE = os.environ.get("POSTFORME_BASE", "https://api.postforme.dev/v1")
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
+BROLL_CANDIDATES = int(os.environ.get("BROLL_CANDIDATES", "6"))   # P4.1: Pexels per_page for vision re-rank
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # The client compresses each take to fit under this cap before upload. Server-driven
@@ -3205,7 +3206,7 @@ async def _run_edit(job_id: str, words: list[dict]):
         # is a NICETY: a failure here must degrade to a warning, never fail the whole
         # clip job (the tweak path already guards this the same way — audit B-05/F4).
         try:
-            edl_data = await _resolve_broll(edl_data)
+            edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"))
             unresolved = [b.get("broll_query") or b.get("cue_text", "")
                           for b in (edl_data.get("broll") or [])
                           if b.get("source") != "own_media" and not b.get("resolved_url")]
@@ -4370,56 +4371,60 @@ async def match_broll(req: BRollMatchRequest):
     scored.sort(key=lambda x: x["score"], reverse=True)
     top = scored[:req.top_k]
 
-    # Haiku tie-break when scores are close and we have a key. Present candidates with a
-    # clean positional candidate_index (NOT the corpus index the model would otherwise
-    # echo into the score-sorted list, picking the wrong asset — audit B-04/F12/F14).
+    # Tie-break when scores are close and we have a key. P4.1: prefer a VISION re-rank over
+    # the top own-media candidates' thumbnails (thumb_url on the corpus asset) — the same
+    # picker the auto-edit b-roll uses; fall back to the text-only Haiku tie-break when no
+    # thumbnails are available. Positional candidate_index avoids the score-sorted corpus-
+    # index bug (audit B-04/F12/F14).
     if ANTHROPIC_KEY and len(top) >= 2 and top[0]["score"] - top[1]["score"] < 0.05:
-        cands = [{"candidate_index": j, "asset_id": t["asset_id"], "description": t["description"]}
-                 for j, t in enumerate(top[:3])]
-        system, user = prompts.broll_match_prompt(req.cue_text, cands)
-        try:
-            pick = extract_json(await anthropic(system, user, model=HAIKU, max_tokens=100), array=False)
-            ci = pick.get("chosen_index") if isinstance(pick, dict) else None
-            if isinstance(ci, int) and 0 <= ci < len(cands):
+        top_assets = [req.corpus[t["index"]] for t in top[:BROLL_CANDIDATES]]
+        thumb_urls = [a.get("thumb_url") for a in top_assets]
+        if sum(1 for u in thumb_urls if u) >= 2:
+            thumbs: list[bytes] = []
+            try:
+                async with httpx.AsyncClient(timeout=10) as tc:
+                    for u in thumb_urls:
+                        if not u:
+                            thumbs.append(b""); continue
+                        tr = await tc.get(u)
+                        thumbs.append(tr.content if tr.status_code == 200 else b"")
+                ci = await _broll_vision_pick(req.cue_text, thumbs, None)
+            except httpx.HTTPError:
+                ci = None
+            if isinstance(ci, int) and 0 <= ci < len(top):
                 chosen = top[ci]
                 top = [chosen] + [t for t in top if t["asset_id"] != chosen["asset_id"]]
-        except Exception:
-            pass
+        else:
+            cands = [{"candidate_index": j, "asset_id": t["asset_id"], "description": t["description"]}
+                     for j, t in enumerate(top[:3])]
+            system, user = prompts.broll_match_prompt(req.cue_text, cands)
+            try:
+                pick = extract_json(await anthropic(system, user, model=HAIKU, max_tokens=100), array=False)
+                ci = pick.get("chosen_index") if isinstance(pick, dict) else None
+                if isinstance(ci, int) and 0 <= ci < len(cands):
+                    chosen = top[ci]
+                    top = [chosen] + [t for t in top if t["asset_id"] != chosen["asset_id"]]
+            except Exception:
+                pass
 
-    # Pexels fallback for unmatched beats
+    # Pexels fallback for unmatched beats — vision-re-ranked over BROLL_CANDIDATES.
     if not top or top[0]["score"] < 0.3:
-        pexels = await _fetch_pexels(req.cue_text)
+        cands = await _fetch_pexels_candidates(req.cue_text, BROLL_CANDIDATES)
+        pexels = await _rerank_broll(req.cue_text, cands, None)
         top = [{"asset_id": None, "source": "pexels", "pexels_url": pexels,
                 "score": 0.5, "description": req.cue_text}] + top
 
     return {"mode": "live" if ANTHROPIC_KEY else "mock", "matches": top}
 
 
-async def _fetch_pexels(query: str) -> str | None:
-    if not PEXELS_KEY:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("https://api.pexels.com/videos/search",
-                                 headers={"Authorization": PEXELS_KEY},
-                                 params={"query": query, "per_page": 1, "orientation": "portrait"})
-        if r.status_code != 200:
-            return None
-        videos = r.json().get("videos", [])
-    except (httpx.HTTPError, ValueError) as e:      # transport error / malformed body → no b-roll
-        logging.warning("pexels fetch failed: %s", e)
-        return None
-    if not videos:
-        return None
-    files = videos[0].get("video_files", [])
+def _pexels_best_file(video: dict) -> str | None:
+    """Pick the best renderable file link from one Pexels video (portrait/hd first).
+    G5: orientation=portrait only biases which VIDEOS come back — a matched video can
+    still expose landscape transcodes among its own video_files; objectFit:cover never
+    letterboxes but a native-portrait rendition needs far less cropping."""
+    files = video.get("video_files", [])
     if not files:
         return None
-    # G5: orientation=portrait only biases which VIDEOS Pexels returns — a
-    # matched video can still expose landscape transcodes among its own
-    # video_files. objectFit:cover (BrollLayer.tsx) never letterboxes either
-    # way, but a native-portrait file needs far less cropping (a 16:9 file
-    # cropped to fill 9:16 loses ~70% of its width) — prefer an actual
-    # portrait (height > width) rendition, hd quality first.
     def _is_portrait(f: dict) -> bool:
         return (f.get("height") or 0) > (f.get("width") or 0)
     best = (next((f for f in files if _is_portrait(f) and f.get("quality") == "hd"), None)
@@ -4429,13 +4434,109 @@ async def _fetch_pexels(query: str) -> str | None:
     return best.get("link")
 
 
+async def _fetch_pexels_candidates(query: str, n: int = 1) -> list[dict]:
+    """P4.1: fetch up to n candidate videos → [{link, thumb}] (thumb = the preview image
+    for vision re-rank). Fail-soft to [] (no key / error / no results). Boundary is
+    monkeypatchable in tests."""
+    if not PEXELS_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://api.pexels.com/videos/search",
+                                 headers={"Authorization": PEXELS_KEY},
+                                 params={"query": query, "per_page": max(1, n), "orientation": "portrait"})
+        if r.status_code != 200:
+            return []
+        videos = r.json().get("videos", [])
+    except (httpx.HTTPError, ValueError) as e:      # transport error / malformed body → no b-roll
+        logging.warning("pexels fetch failed: %s", e)
+        return []
+    out: list[dict] = []
+    for v in videos:
+        link = _pexels_best_file(v)
+        if link:
+            out.append({"link": link, "thumb": v.get("image")})
+    return out
+
+
+async def _fetch_pexels(query: str) -> str | None:
+    """Single best b-roll link for `query` (back-compat single-candidate path)."""
+    cands = await _fetch_pexels_candidates(query, 1)
+    return cands[0]["link"] if cands else None
+
+
+async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None) -> int | None:
+    """One Haiku vision call scoring candidate thumbnails against the cue + the a-roll's
+    palette/energy (from the dossier). Returns the best index, or None to fall back to
+    top-1. Monkeypatched in tests; keyless → None."""
+    if not ANTHROPIC_KEY or len(thumbs) < 2:
+        return None
+    import base64
+    fr = (dossier or {}).get("framing") or {}
+    aroll_hint = f"a-roll look: lighting={fr.get('lighting')}, shot={fr.get('shot')}" if fr else ""
+    content: list[dict] = [{"type": "text", "text":
+        f"Pick the single best b-roll clip for the cue \"{cue}\". {aroll_hint}. "
+        f"Score cue relevance first, then palette/energy match to the a-roll. "
+        f"Return JSON {{\"best_index\": int}} (0-based)."}]
+    for t in thumbs[:BROLL_CANDIDATES]:
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                        "data": base64.b64encode(t).decode("ascii")}})
+    body = {"model": HAIKU, "max_tokens": 100,
+            "system": "You are a b-roll art director. Choose the best-matching clip.",
+            "messages": [{"role": "user", "content": content}],
+            "output_config": {"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False, "required": ["best_index"],
+                "properties": {"best_index": {"type": "integer"}}}}}}
+    try:
+        client = _get_anthropic_client()
+        r = await client.post(ANTHROPIC_URL,
+                              headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                                       "content-type": "application/json"}, json=body)
+        if r.status_code != 200:
+            return None
+        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        idx = (json.loads(text) or {}).get("best_index")
+        return idx if isinstance(idx, int) and 0 <= idx < len(thumbs) else None
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+
+
+async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None = None) -> str | None:
+    """Choose the best candidate link via vision re-rank (fetch thumbnails → _broll_vision_pick),
+    falling back to top-1 on any miss. Keyless / single-candidate → top-1."""
+    if not candidates:
+        return None
+    if len(candidates) == 1 or not ANTHROPIC_KEY:
+        return candidates[0]["link"]
+    thumbs: list[bytes] = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            for c in candidates[:BROLL_CANDIDATES]:
+                if not c.get("thumb"):
+                    thumbs.append(b"")
+                    continue
+                tr = await client.get(c["thumb"])
+                thumbs.append(tr.content if tr.status_code == 200 else b"")
+    except httpx.HTTPError:
+        return candidates[0]["link"]
+    valid = [t for t in thumbs if t]
+    if len(valid) < 2:
+        return candidates[0]["link"]
+    idx = await _broll_vision_pick(cue, thumbs, dossier)
+    if idx is None or idx >= len(candidates):
+        return candidates[0]["link"]
+    return candidates[idx]["link"]
+
+
 _broll_url_cache: dict[str, str] = {}
 
 
-async def _resolve_broll(edl: dict) -> dict:
+async def _resolve_broll(edl: dict, dossier: dict | None = None) -> dict:
     """Resolve each b-roll cue (broll_query, source='stock') to a real portrait video URL
     via Pexels, in place. own_media entries (already have an asset/URL) are left alone.
-    Cached by query so re-renders don't re-hit Pexels. No-op without PEXELS_KEY."""
+    P4.1: fetch BROLL_CANDIDATES candidates and vision-re-rank the best against the cue +
+    a-roll palette/energy (falls back to top-1). Cached by query so re-renders don't re-hit
+    Pexels/vision. No-op without PEXELS_KEY."""
     broll = edl.get("broll") or []
     if not broll or not PEXELS_KEY:
         return edl
@@ -4448,7 +4549,8 @@ async def _resolve_broll(edl: dict) -> dict:
         if query in _broll_url_cache:
             b["resolved_url"] = _broll_url_cache[query]
             continue
-        url = await _fetch_pexels(query)
+        candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
+        url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
         if url:
             _broll_url_cache[query] = url
             _cap_evict(_broll_url_cache, 10_000)

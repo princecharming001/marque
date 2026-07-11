@@ -73,6 +73,15 @@ def test_buried_hook_pulled_forward_passes_invariant():
     assert out is not None and out <= edl_eval.HOOK_MAX_OUT_FRAMES
 
 
+def test_loop_friendly_trailing_trim():
+    # a keep that extends well past the last spoken word must be trimmed to ≤10 trailing frames
+    w = [{"word": f"w{i}", "start_ms": i * 300, "end_ms": i * 300 + 250} for i in range(15)]
+    last_end = ms_to_frame(w[-1]["end_ms"])
+    edl = assemble_edl({"keeps": [[0, last_end + 200]]}, w, "talking_head", "x")
+    tail = edl.model_dump()["segments"][-1]
+    assert tail["src_out"] - last_end <= 10
+
+
 def test_prefs_disable_broll_and_punchins():
     w = _words("scripted-01")
     plan = {"broll": [{"range": [200, 260], "cue": "c", "query": "q", "source": "stock"}],

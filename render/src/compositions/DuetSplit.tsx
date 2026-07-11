@@ -39,9 +39,17 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   );
   // Ramp the punch-in over ~8 frames with interpolate — a CSS `transition` does nothing
   // in Remotion's frame-by-frame render (each frame is a fresh paint), so it would snap.
+  // P4.2: ease the EXIT too (was a hard snap back at frame_out); r clamps for short windows.
   const bottomScale = punch
-    ? interpolate(frame, [punch.frame_in, punch.frame_in + 8], [1, punch.scale],
-        { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    ? (() => {
+        const r = Math.min(8, (punch.frame_out - punch.frame_in) / 2);
+        return interpolate(
+          frame,
+          [punch.frame_in, punch.frame_in + r, punch.frame_out - r, punch.frame_out],
+          [1, punch.scale, punch.scale, 1],
+          { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
+        );
+      })()
     : 1.0;
   const activeCard = quoteCards.find((o) => frame >= o.frame_in && frame < o.frame_out);
   const frozenNow = schedule.some(

@@ -1347,12 +1347,15 @@ def test_resolve_broll_noop_without_key(monkeypatch):
 def test_resolve_broll_caches_and_skips(monkeypatch):
     calls = []
 
-    async def fake_fetch(q):
+    # P4.1: _resolve_broll now fetches candidates then vision-re-ranks. Keyless → top-1,
+    # so a single candidate exercises the same cache-once/skip semantics as before.
+    async def fake_candidates(q, n):
         calls.append(q)
-        return f"https://cdn/{q}.mp4"
+        return [{"link": f"https://cdn/{q}.mp4", "thumb": None}]
 
     monkeypatch.setattr(main, "PEXELS_KEY", "k")
-    monkeypatch.setattr(main, "_fetch_pexels", fake_fetch)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")     # keyless → _rerank returns top-1
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_candidates)
     main._broll_url_cache.clear()
     edl = {"broll": [
         {"src_in": 0, "src_out": 60, "broll_query": "barbell", "source": "stock"},
