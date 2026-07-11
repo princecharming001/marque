@@ -85,6 +85,7 @@ struct EditorTimeline: View {
                 }
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
                 .offset(x: -playheadOffset)    // content scrolls under the fixed playhead
+                laneGutter                     // CapCut track heads, pinned at the left edge
                 // Fixed center playhead
                 Rectangle().fill(Palette.accent).frame(width: 2)
                     .frame(maxHeight: .infinity).offset(x: mid - 1)
@@ -231,6 +232,31 @@ struct EditorTimeline: View {
         (trimPreview?.edge == .leading) ? .topLeading : .topTrailing
     }
 
+    /// CapCut's track heads: a fixed icon at the screen's left edge names each
+    /// lane while its content scrolls underneath. Mirrors the lane stack's
+    /// conditionals + heights exactly (VStack spacing 2).
+    private var laneGutter: some View {
+        VStack(spacing: 2) {
+            Color.clear.frame(width: 14, height: 12)                       // ruler
+            gutterIcon("film").frame(height: 56)
+            if captionsOn, !phrases.isEmpty { gutterIcon("captions.bubble").frame(height: 18) }
+            if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 20) }
+            if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 18) }
+            gutterIcon("waveform").frame(height: 16)
+            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 16) }
+        }
+        .padding(.leading, 3)
+        .allowsHitTesting(false)
+    }
+
+    private func gutterIcon(_ name: String) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 8, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.6))
+            .frame(width: 15, height: 15)
+            .background(Circle().fill(Color.black.opacity(0.55)))
+    }
+
     /// CapCut's "+" at the end of the main track — the fast path to add media.
     private var addMediaTile: some View {
         Button(action: onTapAddMedia) {
@@ -247,13 +273,12 @@ struct EditorTimeline: View {
     // MARK: Media rolls lane — every photo/video window as a labeled strip
     // (B-roll, C-roll, …). Overlapping rolls stack onto a second row so each
     // stays visible and tappable (the TikTok multi-layer read).
-    private var rollsLane: some View {
-        let rolls = document.broll
-        // Greedy row assignment: a roll overlapping the previous row's occupant
-        // moves down one row (max 2 rows keeps the lane compact).
+    // Greedy row assignment: a roll overlapping the previous row's occupant
+    // moves down one row (max 2 rows keeps the lane compact).
+    private var rollPlacements: [(idx: Int, roll: EditorBroll, span: (start: Double, end: Double), row: Int)] {
         var rowEnd: [Double] = []
         var placed: [(idx: Int, roll: EditorBroll, span: (start: Double, end: Double), row: Int)] = []
-        for (i, r) in rolls.enumerated() {
+        for (i, r) in document.broll.enumerated() {
             guard let span = document.outputSpan(srcIn: r.srcIn, srcOut: r.srcOut) else { continue }
             var row = 0
             while row < rowEnd.count, span.start < rowEnd[row] - 0.01 { row += 1 }
@@ -261,7 +286,13 @@ struct EditorTimeline: View {
             if row >= rowEnd.count { rowEnd.append(span.end) } else { rowEnd[row] = max(rowEnd[row], span.end) }
             placed.append((i, r, span, row))
         }
-        let rows = min(2, max(1, (placed.map(\.row).max() ?? 0) + 1))
+        return placed
+    }
+    private var rollsRows: Int { min(2, max(1, (rollPlacements.map(\.row).max() ?? 0) + 1)) }
+
+    private var rollsLane: some View {
+        let placed = rollPlacements
+        let rows = rollsRows
         return ZStack(alignment: .topLeading) {
             Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
                               height: CGFloat(rows) * 18)
