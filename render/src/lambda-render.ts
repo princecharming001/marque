@@ -25,6 +25,11 @@ import type { AwsRegion } from "@remotion/lambda/client";
 const REGION = (process.env.REMOTION_AWS_REGION || "us-east-1") as AwsRegion;
 const FUNCTION_NAME = process.env.REMOTION_FUNCTION_NAME || "";
 const SERVE_URL = process.env.REMOTION_SERVE_URL || "";
+// P0.2: final-render encode quality. crf 17 + jpegQuality 95 kill the caption halos the
+// q80 intermediate JPEGs caused, at ~10% Lambda cost. Env-tunable so a cost/quality dial
+// stays backend-only. (Preview renders keep their cheap scale:0.5 / crf:30 path.)
+const JPEG_QUALITY = Number(process.env.REMOTION_JPEG_QUALITY || "95");
+const IMAGE_FORMAT = (process.env.REMOTION_IMAGE_FORMAT || "jpeg") as "jpeg" | "png";
 
 async function submit(compositionId: string, inputPropsJson: string, preview?: string) {
   if (!FUNCTION_NAME) throw new Error("REMOTION_FUNCTION_NAME is not set");
@@ -41,7 +46,10 @@ async function submit(compositionId: string, inputPropsJson: string, preview?: s
     // G9: half resolution + higher compression — same composition/timing logic,
     // just cheaper/faster pixels. Never touches width/height/fps/duration, so
     // total_frames-driven durationInFrames (calculateMetadata) stays identical.
-    ...(isPreview ? { scale: 0.5, crf: 30, outName: "preview.mp4" } : {}),
+    // P0.2: final renders get crf 17 + high-quality intermediate JPEGs (no halos).
+    ...(isPreview
+      ? { scale: 0.5, crf: 30, outName: "preview.mp4" }
+      : { crf: 17, imageFormat: IMAGE_FORMAT, jpegQuality: JPEG_QUALITY }),
   });
   process.stdout.write(JSON.stringify({ renderId, bucketName }));
 }
