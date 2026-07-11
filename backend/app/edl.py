@@ -6,6 +6,11 @@ import re
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
+# P0.3: a kept clip shorter than this in OUTPUT frames (12 = 400ms @ 30fps) reads as a
+# jarring sliver — build_render_plan drops such intervals (unless it's the only one).
+# Mirrored in ios/.../EditorModel.swift keptIntervalsWithSpeed for preview parity.
+MIN_CLIP_OUTPUT_FRAMES = 12
+
 FILLER_WORDS = frozenset({
     "um", "uh", "like", "you know", "so", "basically", "literally", "actually",
     "right", "okay", "ok", "yeah", "yep", "well", "i mean", "kind of", "sort of",
@@ -391,19 +396,37 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     # cumulative output offset per kept interval, per segment IN PLAYBACK ORDER.
     # Each interval carries its segment's playback speed: output duration =
     # round(kept/speed), and every source→output mapping divides by it.
-    clips: list[dict] = []
-    index: list[tuple[int, int, int, float]] = []   # (src_in, src_out, out_start, speed)
-    out_cursor = 0
+    #
+    # P0.3 min-clip guard: a kept interval whose OUTPUT length is < 12 frames (400ms)
+    # renders as a jarring sub-half-second sliver — and the old `max(1, round(...))`
+    # even minted 1-frame clips from tiny leftover slices between drops. Collect the
+    # candidate intervals first, drop the slivers, and only then lay out the plan — but
+    # never drop ALL of them (if every candidate is a sliver, keep the single longest
+    # so a heavily-cut take still produces non-empty output).
+    candidates: list[tuple[dict, int, int, float]] = []   # (seg, src_in, src_out, speed)
     for seg in ordered_segments:
         speed = min(3.0, max(0.5, float(seg.get("speed") or 1.0)))
         for s_in, s_out in _kept_intervals([seg], drops):
-            clips.append({"src_in": s_in, "src_out": s_out, "speed": speed,
-                          # canvas transform travels with every kept piece of the clip
-                          "tx_scale": min(3.0, max(0.5, float(seg.get("tx_scale") or 1.0))),
-                          "tx_x": min(0.5, max(-0.5, float(seg.get("tx_x") or 0.0))),
-                          "tx_y": min(0.5, max(-0.5, float(seg.get("tx_y") or 0.0)))})
-            index.append((s_in, s_out, out_cursor, speed))
-            out_cursor += max(1, round((s_out - s_in) / speed))
+            candidates.append((seg, s_in, s_out, speed))
+
+    def _out_len(s_in: int, s_out: int, speed: float) -> int:
+        return max(1, round((s_out - s_in) / speed))
+
+    kept_candidates = [c for c in candidates if _out_len(c[1], c[2], c[3]) >= MIN_CLIP_OUTPUT_FRAMES]
+    if not kept_candidates and candidates:
+        kept_candidates = [max(candidates, key=lambda c: _out_len(c[1], c[2], c[3]))]
+
+    clips: list[dict] = []
+    index: list[tuple[int, int, int, float]] = []   # (src_in, src_out, out_start, speed)
+    out_cursor = 0
+    for seg, s_in, s_out, speed in kept_candidates:
+        clips.append({"src_in": s_in, "src_out": s_out, "speed": speed,
+                      # canvas transform travels with every kept piece of the clip
+                      "tx_scale": min(3.0, max(0.5, float(seg.get("tx_scale") or 1.0))),
+                      "tx_x": min(0.5, max(-0.5, float(seg.get("tx_x") or 0.0))),
+                      "tx_y": min(0.5, max(-0.5, float(seg.get("tx_y") or 0.0)))})
+        index.append((s_in, s_out, out_cursor, speed))
+        out_cursor += _out_len(s_in, s_out, speed)
     total_frames = out_cursor
 
     def map_point(f: int) -> int | None:
