@@ -30,6 +30,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
                      style_capabilities, TWEAK_OP_TYPES)
 from app import audio as audio_mod
+from app import knowledge as knowledge_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -2094,6 +2095,7 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
         job["status"] = "mock_ready"
         job["clips"][0]["status"] = "ready"
         job["edl"] = _apply_edit_prefs(_mock_edl(job["style"], job.get("script") or {}), prefs)
+        job["knowledge_version"] = knowledge_mod.knowledge_version()
         job["words"] = job.get("words") or _mock_words(job.get("script") or {})
         return {"mode": "mock", "job_id": job_id, "status": "mock_ready", "clips": job["clips"]}
     _spawn(_run_edit(job_id, job.get("words") or []))
@@ -3114,6 +3116,8 @@ async def _run_edit(job_id: str, words: list[dict]):
         _audio_block["gain"] = audio_mod.gain_db(
             job.get("loudness_lufs"), target_lufs=float(_audio_block.get("lufs_target") or -14.0))
         job["edl"] = edl_data
+        # P2.2: stamp which KB version steered this edit → A/B + revert + eval scorecard.
+        job["knowledge_version"] = knowledge_mod.knowledge_version()
 
         job["status"] = "rendering"
         await _render_all_clips(job_id)
