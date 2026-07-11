@@ -2712,12 +2712,56 @@ def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
         # a word ("clean up the audio") so it requires explicit caption context.
         if word in low and (style != "clean" or "caption" in low):
             return f"Switched your captions to the {style} style.", [{"type": "set_caption_style", "style": style}]
+    # Caption OPTION phrases (position / size / case / color / grouping) — caption context
+    # required so "make the top clip bigger" doesn't rewrite captions. Checked BEFORE the
+    # on/off toggles: "captions one word at a time" contains the substring "captions on".
+    if "caption" in low:
+        if any(p in low for p in ("at the top", "to the top", "up top")):
+            return "Captions moved to the top.", [{"type": "set_caption_options", "position": "top"}]
+        if any(p in low for p in ("in the middle", "to the middle", "center of the screen")):
+            return "Captions centered.", [{"type": "set_caption_options", "position": "middle"}]
+        if any(p in low for p in ("at the bottom", "to the bottom", "down low")):
+            return "Captions moved back to the bottom.", [{"type": "set_caption_options", "position": "bottom"}]
+        if any(p in low for p in ("bigger", "larger", "huge")):
+            return "Captions bumped up a size.", [{"type": "set_caption_options", "size": "large"}]
+        if any(p in low for p in ("smaller", "tinier", "less big")):
+            return "Captions taken down a size.", [{"type": "set_caption_options", "size": "small"}]
+        if any(p in low for p in ("uppercase", "all caps", "capital")):
+            return "Captions set to ALL CAPS.", [{"type": "set_caption_options", "uppercase": True}]
+        if any(p in low for p in ("one word at a time", "word by word", "single word")):
+            return "Captions now show one word at a time.", [{"type": "set_caption_options", "grouping": "word"}]
+        if any(p in low for p in ("in phrases", "few words", "chunks")):
+            return "Captions grouped into short phrases.", [{"type": "set_caption_options", "grouping": "phrase"}]
+        for name, hexv in (("yellow", "#FFD60A"), ("gold", "#FFD60A"), ("green", "#34D399"),
+                           ("pink", "#F472B6"), ("blue", "#60A5FA"), ("white", "default")):
+            if name in low:
+                return (f"Caption highlight set to {name}.",
+                        [{"type": "set_caption_options", "accent": hexv}])
     if any(p in low for p in ("captions off", "no captions", "remove captions", "remove the captions")):
         return "Captions are off for this clip.", [{"type": "set_captions_enabled", "enabled": False}]
     if any(p in low for p in ("captions on", "add captions", "turn on captions")):
         return "Captions are back on.", [{"type": "set_captions_enabled", "enabled": True}]
-    return ("I can change caption styles, cut or restore sections, add punch-ins or b-roll, "
-            "and undo tweaks — tell me what to change."), []
+    # Whole-video looks — distinctive names fire alone; ambiguous ones need color context.
+    if any(p in low for p in ("black and white", "grayscale", "monochrome")):
+        return "Switched to a black & white look.", [{"type": "set_filter", "name": "mono"}]
+    if "vivid" in low or "more punch" in low:
+        return "Cranked up a vivid look.", [{"type": "set_filter", "name": "vivid"}]
+    if "cinematic" in low or "film look" in low:
+        return "Applied a film look.", [{"type": "set_filter", "name": "film"}]
+    if "golden" in low:
+        return "Applied a golden-hour look.", [{"type": "set_filter", "name": "golden"}]
+    if any(p in low for p in ("no filter", "remove filter", "remove the filter", "normal colors")):
+        return "Filter removed.", [{"type": "set_filter", "name": "none"}]
+    if any(k in low for k in ("filter", "look", "tone")) and "warm" in low:
+        return "Warmed the look up.", [{"type": "set_filter", "name": "warm"}]
+    if any(k in low for k in ("filter", "look", "tone")) and any(k in low for k in ("cool", "cold")):
+        return "Cooled the look down.", [{"type": "set_filter", "name": "cool"}]
+    if any(p in low for p in ("add a transition", "add transitions", "fade between")):
+        return "Added a fade between your first two clips.", [
+            {"type": "set_transition", "after_segment": 0, "style": "fade_black"}]
+    return ("I can change caption styles, size, position and color, apply filters, add "
+            "transitions and text, speed clips up, cut or restore sections, add punch-ins "
+            "or b-roll, and undo tweaks — tell me what to change."), []
 
 
 # ---------------------------------------------------------------------------

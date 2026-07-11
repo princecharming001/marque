@@ -2,6 +2,8 @@ import React from "react";
 import { AbsoluteFill, useCurrentFrame, interpolate } from "remotion";
 import { CutVideo } from "../components/CutVideo";
 import { AudioMix } from "../components/AudioMix";
+import { TextStickers } from "../components/TextStickers";
+import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
@@ -24,9 +26,11 @@ export const TalkingHead: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   return (
     <AbsoluteFill style={{ background: "#000" }}>
       <AbsoluteFill style={{ transform: `scale(${scale})` }}>
-        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} />
+        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
       </AbsoluteFill>
-      {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
+      {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
+      {edl && <TextStickers overlays={edl.overlays} />}
+      {edl && <Grade look={edl.look} transitions={edl.transitions} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

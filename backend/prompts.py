@@ -631,7 +631,11 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
             "type": "object", "additionalProperties": False,
             "required": ["type", "style", "enabled", "start_frame", "end_frame",
                          "scale", "text", "query", "value", "kind", "frames",
-                         "order", "url", "volume"],
+                         "order", "url", "volume",
+                         "position", "size", "accent", "uppercase", "font", "grouping",
+                         "index", "speed", "after_segment", "name", "intensity",
+                         "brightness", "contrast", "saturation", "temperature", "vignette",
+                         "color", "bg", "off_x", "off_y"],
             "properties": {
                 "type": {"type": "string", "enum": TWEAK_OP_TYPES},
                 "style": {"type": ["string", "null"]},
@@ -649,6 +653,28 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
                 "order": {"type": ["array", "null"], "items": {"type": "integer"}},
                 "url": {"type": ["string", "null"]},
                 "volume": {"type": ["number", "null"]},
+                # set_caption_options knobs (any subset; null = leave unchanged)
+                "position": {"type": ["string", "null"]},
+                "size": {"type": ["string", "null"]},
+                "accent": {"type": ["string", "null"]},
+                "uppercase": {"type": ["boolean", "null"]},
+                "font": {"type": ["string", "null"]},
+                "grouping": {"type": ["string", "null"]},
+                # speed / transition / look / sticker knobs (null = unused)
+                "index": {"type": ["integer", "null"]},
+                "speed": {"type": ["number", "null"]},
+                "after_segment": {"type": ["integer", "null"]},
+                "name": {"type": ["string", "null"]},
+                "intensity": {"type": ["number", "null"]},
+                "brightness": {"type": ["number", "null"]},
+                "contrast": {"type": ["number", "null"]},
+                "saturation": {"type": ["number", "null"]},
+                "temperature": {"type": ["number", "null"]},
+                "vignette": {"type": ["number", "null"]},
+                "color": {"type": ["string", "null"]},
+                "bg": {"type": ["string", "null"]},
+                "off_x": {"type": ["number", "null"]},
+                "off_y": {"type": ["number", "null"]},
             },
         }},
     },
@@ -684,7 +710,19 @@ def tweak_prompt(edl: dict, transcript_words: list[dict], instruction: str,
         "edit. Translate their request into zero or more typed operations from this fixed vocabulary — "
         "you NEVER write edit data yourself, the server applies ops deterministically:\n"
         "- set_caption_style {style: clean|bold-word|karaoke}\n"
+        "- set_caption_options {position: top|middle|bottom, size: small|medium|large, "
+        "accent: '#RRGGBB' or 'default', uppercase: bool, font: inter|archivo|baloo, "
+        "grouping: word|phrase|line} — any subset; accent colors the active word / karaoke fill\n"
         "- set_captions_enabled {enabled}\n"
+        "- set_segment_speed {index, speed: 0.5-3.0} — play one clip faster or slower\n"
+        "- set_segment_transform {index, scale: 0.5-3.0, off_x/off_y: -0.5..0.5} — zoom/reposition "
+        "one clip on the canvas (any subset)\n"
+        "- set_transition {after_segment: index, style: none|fade_black|fade_white|flash, frames?: 4-30} "
+        "— a dip where that clip hands off to the next; 'none' removes it\n"
+        "- set_filter {name: none|vivid|film|mono|golden|warm|cool, intensity: 0-1} — whole-video color look\n"
+        "- set_adjust {brightness|contrast|saturation|temperature: -0.5..0.5, vignette: 0..1} — any subset\n"
+        "- add_text_sticker {start_frame, end_frame, text, color?: '#RRGGBB', bg?: none|box, "
+        "font?: inter|archivo|baloo} — free-position on-screen text (not a caption)\n"
         "- cut_range {start_frame, end_frame} — remove a section of footage\n"
         "- restore_range {start_frame, end_frame} — bring back previously cut footage\n"
         "- remove_overlays {kind: punch_in|text_card|all, start_frame?, end_frame?}\n"

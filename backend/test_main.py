@@ -1048,7 +1048,7 @@ def test_render_plan_no_cuts_is_identity():
         "overlays": [], "broll": [], "layout": {"style": "talking_head"},
     }
     p = build_render_plan(edl)
-    assert p["clips"] == [{"src_in": 0, "src_out": 300}]
+    assert p["clips"] == [{"src_in": 0, "src_out": 300, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}]
     assert p["total_frames"] == 300
     assert [c["frame"] for c in p["captions"]] == [0, 150]
 
@@ -1072,7 +1072,7 @@ def test_render_plan_drop_shifts_later_captions():
     words = {c["word"]: c["frame"] for c in p["captions"]}
     assert words == {"before": 50, "after": 150}
     # clips reflect the two kept intervals around the drop
-    assert p["clips"] == [{"src_in": 0, "src_out": 100}, {"src_in": 150, "src_out": 300}]
+    assert p["clips"] == [{"src_in": 0, "src_out": 100, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}, {"src_in": 150, "src_out": 300, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}]
 
 
 def test_render_plan_overlay_remapped_and_clamped():
@@ -4585,3 +4585,215 @@ def test_reference_and_format_reach_the_prompts():
     # and without a reference the block is absent
     _, bare = prompts.edl_prompt("fast_cuts", words, {}, {})
     assert "REFERENCE REEL" not in bare
+
+
+# ---------------------------------------------------------------------------
+# set_caption_options — position/size/accent/case/font tuning under the style.
+# ---------------------------------------------------------------------------
+
+def _caption_edl() -> dict:
+    return {"style": "talking_head", "format_id": "myth-buster",
+            "segments": [{"src_in": 0, "src_out": 300}], "drops": [],
+            "captions": [{"word": "hello", "frame": 10}],
+            "overlays": [], "broll": [],
+            "layout": {"style": "talking_head", "panels": 1, "panel_boundaries": []},
+            "audio": {"lufs_target": -14.0}}
+
+
+def test_set_caption_options_partial_merge_and_validation():
+    from app.edl import apply_edl_ops
+    edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options",
+                                               "position": "top", "size": "large"}], [])
+    assert res[0]["applied"] is True
+    assert edl["caption_options"]["position"] == "top"
+    assert edl["caption_options"]["size"] == "large"
+    assert edl["caption_options"]["uppercase"] is False          # untouched default
+    # Second op merges — position survives a size-only change
+    edl, res = apply_edl_ops(edl, [{"type": "set_caption_options", "uppercase": True,
+                                    "accent": "#34D399", "font": "archivo"}], [])
+    assert res[0]["applied"] is True
+    o = edl["caption_options"]
+    assert o["position"] == "top" and o["uppercase"] is True
+    assert o["accent"] == "#34D399" and o["font"] == "archivo"
+    # 'default' resets accent to the style's own color
+    edl, res = apply_edl_ops(edl, [{"type": "set_caption_options", "accent": "default"}], [])
+    assert res[0]["applied"] is True and edl["caption_options"]["accent"] is None
+
+
+def test_set_caption_options_rejects_bad_values_whole():
+    from app.edl import apply_edl_ops
+    for bad in ({"position": "underneath"}, {"size": "jumbo"},
+                {"accent": "yellowish"}, {"font": "comic-sans"}, {}):
+        edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options", **bad}], [])
+        assert res[0]["applied"] is False
+        assert "caption_options" not in edl or not edl.get("caption_options")
+
+
+def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
+    from app.edl import EDL, build_render_plan
+    edl_dict = _caption_edl()
+    edl_dict["caption_options"] = {"position": "middle", "size": "small",
+                                   "accent": "#60A5FA", "uppercase": True, "font": "baloo"}
+    # Pydantic round-trip (the tweak flow does this on every edit) must keep them
+    dumped = EDL(**edl_dict).model_dump()
+    assert dumped["caption_options"]["position"] == "middle"
+    plan = build_render_plan(dumped)
+    assert plan["caption_options"] == {"position": "middle", "size": "small",
+                                       "pos_y": None, "scale": None,
+                                       "accent": "#60A5FA", "uppercase": True, "font": "baloo",
+                                       "grouping": "line"}
+    # and an EDL without options ships fully-defaulted values (render bridge
+    # must never see undefined keys)
+    plan2 = build_render_plan(EDL(**_caption_edl()).model_dump())
+    assert plan2["caption_options"] == {"position": "bottom", "size": "medium",
+                                        "pos_y": None, "scale": None,
+                                        "accent": None, "uppercase": False, "font": "inter",
+                                        "grouping": "line"}
+
+
+def test_mock_tweak_grammar_caption_options():
+    reply, ops = main._mock_tweak("put the captions at the top")
+    assert ops == [{"type": "set_caption_options", "position": "top"}]
+    reply, ops = main._mock_tweak("make the captions bigger")
+    assert ops == [{"type": "set_caption_options", "size": "large"}]
+    reply, ops = main._mock_tweak("captions in all caps please")
+    assert ops == [{"type": "set_caption_options", "uppercase": True}]
+    reply, ops = main._mock_tweak("make the captions green")
+    assert ops == [{"type": "set_caption_options", "accent": "#34D399"}]
+    reply, ops = main._mock_tweak("show captions one word at a time")
+    assert ops == [{"type": "set_caption_options", "grouping": "word"}]
+    # no caption context → the option grammar must NOT fire
+    reply, ops = main._mock_tweak("make the top clip bigger")
+    assert ops == []
+
+
+# ---------------------------------------------------------------------------
+# Feature pack 1 — speed, transitions, look (filter/adjust), text stickers.
+# ---------------------------------------------------------------------------
+
+def _fp_edl(**over) -> dict:
+    base = {"style": "talking_head", "format_id": "myth-buster",
+            "segments": [{"src_in": 0, "src_out": 300}, {"src_in": 300, "src_out": 600}],
+            "drops": [], "captions": [{"word": "hi", "frame": 400}],
+            "overlays": [], "broll": [],
+            "layout": {"style": "talking_head", "panels": 1, "panel_boundaries": []},
+            "audio": {"lufs_target": -14.0}}
+    base.update(over)
+    return base
+
+
+def test_segment_speed_remaps_output_time():
+    from app.edl import apply_edl_ops, build_render_plan
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_segment_speed", "index": 0, "speed": 2.0}], [])
+    assert res[0]["applied"] is True
+    plan = build_render_plan(edl)
+    # clip 0 at 2x: 300 source frames → 150 output; total 150 + 300
+    assert plan["clips"][0]["speed"] == 2.0
+    assert plan["total_frames"] == 450
+    # caption at source 400 (inside clip 1 @1x): output = 150 + (400-300) = 250
+    assert plan["captions"][0]["frame"] == 250
+    # out-of-range speed rejected whole
+    _, res = apply_edl_ops(edl, [{"type": "set_segment_speed", "index": 0, "speed": 9}], [])
+    assert res[0]["applied"] is False
+    _, res = apply_edl_ops(edl, [{"type": "set_segment_speed", "index": 7, "speed": 1.5}], [])
+    assert res[0]["applied"] is False
+
+
+def test_transition_anchors_to_leading_segment_end():
+    from app.edl import apply_edl_ops, build_render_plan
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_transition", "after_segment": 0,
+                                          "style": "fade_white", "frames": 18}], [])
+    assert res[0]["applied"] is True
+    plan = build_render_plan(edl)
+    assert plan["transitions"] == [{"at_frame": 300, "style": "fade_white", "frames": 18}]
+    # style 'none' removes it; the FINAL clip's boundary emits nothing
+    edl, _ = apply_edl_ops(edl, [{"type": "set_transition", "after_segment": 0, "style": "none"}], [])
+    edl, _ = apply_edl_ops(edl, [{"type": "set_transition", "after_segment": 1, "style": "flash"}], [])
+    plan = build_render_plan(edl)
+    assert plan["transitions"] == []
+    # trimming the leading clip moves the anchor with it
+    edl, _ = apply_edl_ops(edl, [{"type": "set_transition", "after_segment": 0, "style": "fade_black"},
+                                 {"type": "cut_range", "start_frame": 200, "end_frame": 300}], [])
+    plan = build_render_plan(edl)
+    assert plan["transitions"][0]["at_frame"] == 200
+
+
+def test_filter_and_adjust_compose_in_look():
+    from app.edl import apply_edl_ops, build_render_plan
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_filter", "name": "film", "intensity": 0.6}], [])
+    assert res[0]["applied"] is True
+    edl, res = apply_edl_ops(edl, [{"type": "set_adjust", "brightness": 0.2, "vignette": 2.0}], [])
+    assert res[0]["applied"] is True
+    look = build_render_plan(edl)["look"]
+    assert look["filter"] == "film" and look["intensity"] == 0.6
+    assert look["adjust"]["brightness"] == 0.2
+    assert look["adjust"]["vignette"] == 1.0            # clamped
+    assert look["adjust"]["contrast"] == 0.0            # untouched default
+    # removing the filter keeps the manual adjust knobs
+    edl, _ = apply_edl_ops(edl, [{"type": "set_filter", "name": "none"}], [])
+    look = build_render_plan(edl)["look"]
+    assert look["filter"] is None and look["adjust"]["brightness"] == 0.2
+    # unknown names / empty adjust rejected
+    _, res = apply_edl_ops(edl, [{"type": "set_filter", "name": "instagram1977"}], [])
+    assert res[0]["applied"] is False
+    _, res = apply_edl_ops(edl, [{"type": "set_adjust"}], [])
+    assert res[0]["applied"] is False
+
+
+def test_text_sticker_add_edit_and_render_plan_fields():
+    from app.edl import apply_edl_ops, build_render_plan, EDL
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "add_text_sticker", "start_frame": 30,
+                                          "end_frame": 120, "text": "WAIT FOR IT",
+                                          "pos_x": 0.5, "pos_y": 0.25, "color": "#FFD60A",
+                                          "bg": "box", "font": "archivo"}], [])
+    assert res[0]["applied"] is True
+    ov = edl["overlays"][0]
+    assert ov["type"] == "text_sticker" and ov["pos_y"] == 0.25 and ov["bg"] == "box"
+    # canvas drag/pinch/rotate via edit_overlay
+    edl, res = apply_edl_ops(edl, [{"type": "edit_overlay", "index": 0,
+                                    "pos_x": 0.3, "pos_y": 0.7, "scale": 1.6, "rotation": -10}], [])
+    assert res[0]["applied"] is True
+    ov = edl["overlays"][0]
+    assert (ov["pos_x"], ov["pos_y"], ov["scale"], ov["rotation"]) == (0.3, 0.7, 1.6, -10.0)
+    # pydantic round-trip keeps sticker fields; plan carries them to the renderer
+    dumped = EDL(**edl).model_dump()
+    plan = build_render_plan(dumped)
+    po = plan["overlays"][0]
+    assert po["type"] == "text_sticker" and po["pos_y"] == 0.7 and po["font"] == "archivo"
+    # stickers are style-agnostic — fast_cuts accepts them too
+    edl2, res = apply_edl_ops(_fp_edl(style="fast_cuts"),
+                              [{"type": "add_text_sticker", "start_frame": 0, "end_frame": 60,
+                                "text": "DAY ONE"}], [])
+    assert res[0]["applied"] is True
+
+
+def test_mock_tweak_grammar_filters_and_transitions():
+    _, ops = main._mock_tweak("make it black and white")
+    assert ops == [{"type": "set_filter", "name": "mono"}]
+    _, ops = main._mock_tweak("give it a cinematic film look")
+    assert ops == [{"type": "set_filter", "name": "film"}]
+    _, ops = main._mock_tweak("add a transition between the clips")
+    assert ops == [{"type": "set_transition", "after_segment": 0, "style": "fade_black"}]
+    _, ops = main._mock_tweak("warm it up a bit")       # no filter/look context → no op
+    assert ops == []
+
+
+def test_segment_transform_op_and_render_plan():
+    from app.edl import apply_edl_ops, build_render_plan, EDL
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_segment_transform", "index": 0,
+                                          "scale": 1.4, "off_x": 0.1, "off_y": -0.2}], [])
+    assert res[0]["applied"] is True
+    # partial: later scale-only change keeps the offsets
+    edl, res = apply_edl_ops(edl, [{"type": "set_segment_transform", "index": 0, "scale": 2.0}], [])
+    assert res[0]["applied"] is True
+    seg = edl["segments"][0]
+    assert (seg["tx_scale"], seg["tx_x"], seg["tx_y"]) == (2.0, 0.1, -0.2)
+    # out-of-range clamps; unknown index rejects
+    edl, res = apply_edl_ops(edl, [{"type": "set_segment_transform", "index": 0, "scale": 99}], [])
+    assert res[0]["applied"] is True and edl["segments"][0]["tx_scale"] == 3.0
+    _, res = apply_edl_ops(edl, [{"type": "set_segment_transform", "index": 5, "scale": 1.2}], [])
+    assert res[0]["applied"] is False
+    # round-trips + reaches every kept piece in the plan
+    plan = build_render_plan(EDL(**edl).model_dump())
+    assert plan["clips"][0]["tx_scale"] == 3.0 and plan["clips"][0]["tx_y"] == -0.2
+    assert plan["clips"][1]["tx_scale"] == 1.0            # untouched clip stays identity

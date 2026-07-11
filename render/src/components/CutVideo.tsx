@@ -1,12 +1,11 @@
 import React from "react";
 import { Series, OffthreadVideo } from "remotion";
-import { Clip, VolumeRange, volumeAt } from "../types";
+import { Clip, VolumeRange, volumeAt, Look } from "../types";
 
 // The actual cut: stitches the kept source intervals (`clips`, source frames) back to
 // back on the output timeline via <Series>. OffthreadVideo trimBefore/trimAfter select
-// the source range; the Series.Sequence duration is that range's length (no speed
-// change), so the concatenation IS the trimmed edit. This is what makes the "AI editor"
-// actually remove filler/dead-air instead of just overlaying effects on the raw take.
+// the source range; the Series.Sequence duration is that range's length divided by the
+// clip's playback speed, so the concatenation IS the trimmed (and retimed) edit.
 // Rendered as a sibling of captions/overlays (not their parent), so those keep using the
 // global output frame from useCurrentFrame().
 //
@@ -18,6 +17,11 @@ import { Clip, VolumeRange, volumeAt } from "../types";
 // src_in/src_out's contract, so `trimBefore={c.src_in} trimAfter={c.src_out}` below
 // is correct as written. Do not "fix" this without re-reading that file.
 //
+// SPEED: per-clip playbackRate (CapCut Speed → Normal). Output duration of a clip is
+// round(kept/speed) — the SAME formula build_render_plan uses for its out_cursor, so
+// caption/overlay output coords stay aligned with what actually plays. clipOutFrames
+// is the single source of that formula on the TS side.
+//
 // volumeRanges (OUTPUT coords, from the plan's audio block) drive per-range source
 // volume — mutes and duck-downs from the manual editor. Each Series.Sequence knows its
 // own output offset (cumulative durations), so localFrame + outStart = output frame.
@@ -25,40 +29,76 @@ import { Clip, VolumeRange, volumeAt } from "../types";
 // other interval convention in this codebase (segments/drops/kept-intervals) —
 // verified, not an off-by-one (G10).
 //
-// G10: outStart/outCursor here (Math.max(1, src_out-src_in) per clip, running total)
-// MUST stay identical to FastCuts.tsx's cutStarts computation — that file duplicates
-// this formula to place its cut-flash at the same boundaries. Traced by hand against
-// a degenerate zero-length clip and confirmed byte-identical; if you change this
-// formula, change FastCuts.tsx's identically or the flash will visibly drift.
+// G10: outStart/outCursor here MUST stay identical to FastCuts.tsx's cutStarts
+// computation — that file duplicates this formula (via clipOutFrames) to place its
+// cut-flash at the same boundaries. If you change this formula, change that usage too.
+export const clipOutFrames = (c: Clip): number =>
+  Math.max(1, Math.round((c.src_out - c.src_in) / (c.speed || 1)));
+
+// The whole-video color grade as a CSS filter chain: named preset (blended toward
+// identity by intensity) composed with the manual Adjust knobs. Empty look → "".
+export const lookFilterCSS = (look: Look | null | undefined): string => {
+  if (!look) return "";
+  const parts: string[] = [];
+  const t = Math.min(1, Math.max(0, look.intensity ?? 1));
+  const lerp = (from: number, to: number) => from + (to - from) * t;
+  switch (look.filter) {
+    case "vivid": parts.push(`saturate(${lerp(1, 1.35)}) contrast(${lerp(1, 1.08)})`); break;
+    case "film": parts.push(`contrast(${lerp(1, 1.12)}) saturate(${lerp(1, 0.85)}) sepia(${lerp(0, 0.18)})`); break;
+    case "mono": parts.push(`grayscale(${t}) contrast(${lerp(1, 1.05)})`); break;
+    case "golden": parts.push(`sepia(${lerp(0, 0.35)}) saturate(${lerp(1, 1.2)}) brightness(${lerp(1, 1.05)})`); break;
+    case "warm": parts.push(`sepia(${lerp(0, 0.25)}) saturate(${lerp(1, 1.1)})`); break;
+    case "cool": parts.push(`hue-rotate(${lerp(0, -10)}deg) saturate(${lerp(1, 1.05)}) brightness(${lerp(1, 1.02)})`); break;
+  }
+  const a = look.adjust;
+  if (a) {
+    if (a.brightness) parts.push(`brightness(${1 + a.brightness})`);
+    if (a.contrast) parts.push(`contrast(${1 + a.contrast})`);
+    if (a.saturation) parts.push(`saturate(${1 + a.saturation})`);
+    if (a.temperature > 0) parts.push(`sepia(${a.temperature * 0.5})`);
+    else if (a.temperature < 0) parts.push(`hue-rotate(${a.temperature * 24}deg)`);
+  }
+  return parts.join(" ");
+};
+
 export const CutVideo: React.FC<{
   sourceUrl: string;
   clips: Clip[];
   volumeRanges?: VolumeRange[] | null;
+  look?: Look | null;
   style?: React.CSSProperties;
-}> = ({ sourceUrl, clips, volumeRanges, style }) => {
+}> = ({ sourceUrl, clips, volumeRanges, look, style }) => {
   if (!sourceUrl || clips.length === 0) {
     return <div style={{ width: "100%", height: "100%", background: "#111" }} />;
   }
+  const filter = lookFilterCSS(look);
   let outCursor = 0;
   const withOffsets = clips.map((c) => {
     const outStart = outCursor;
-    outCursor += Math.max(1, c.src_out - c.src_in);
+    outCursor += clipOutFrames(c);
     return { clip: c, outStart };
   });
   return (
     <Series>
       {withOffsets.map(({ clip: c, outStart }, i) => (
-        <Series.Sequence key={i} durationInFrames={Math.max(1, c.src_out - c.src_in)}>
+        <Series.Sequence key={i} durationInFrames={clipOutFrames(c)}>
           <OffthreadVideo
             src={sourceUrl}
             trimBefore={c.src_in}
             trimAfter={c.src_out}
+            playbackRate={c.speed || 1}
             volume={
               volumeRanges && volumeRanges.length > 0
                 ? (localF) => volumeAt(outStart + localF, volumeRanges)
                 : undefined
             }
-            style={{ width: "100%", height: "100%", objectFit: "cover", ...style }}
+            style={{ width: "100%", height: "100%", objectFit: "cover",
+                     // Canvas transform: translate in unscaled units, then zoom
+                     // (CSS transform lists apply right-to-left).
+                     ...(c.tx_scale !== 1 || c.tx_x !== 0 || c.tx_y !== 0
+                       ? { transform: `translate(${(c.tx_x ?? 0) * 100}%, ${(c.tx_y ?? 0) * 100}%) scale(${c.tx_scale ?? 1})` }
+                       : {}),
+                     ...(filter ? { filter } : {}), ...style }}
           />
         </Series.Sequence>
       ))}

@@ -32,6 +32,26 @@ struct WireOp: Equatable {
     static func reorder(_ order: [Int]) -> WireOp { WireOp(type: "reorder_segments", order: order) }
     static func captionsEnabled(_ on: Bool) -> WireOp { WireOp(type: "set_captions_enabled", bool: ["enabled": on]) }
     static func captionStyle(_ style: String) -> WireOp { WireOp(type: "set_caption_style", s: ["style": style]) }
+    /// Partial caption-options update — only the provided keys change (backend parity).
+    /// `accent` uses "default" to reset to the style's own color; posY/scale are the
+    /// continuous canvas drag/pinch overrides.
+    static func captionOptions(position: String? = nil, size: String? = nil,
+                               posY: Double? = nil, scale: Double? = nil,
+                               accent: String? = nil, uppercase: Bool? = nil,
+                               font: String? = nil, grouping: String? = nil) -> WireOp {
+        var s: [String: String] = [:]
+        if let position { s["position"] = position }
+        if let size { s["size"] = size }
+        if let accent { s["accent"] = accent }
+        if let font { s["font"] = font }
+        if let grouping { s["grouping"] = grouping }
+        var d: [String: Double] = [:]
+        if let posY { d["pos_y"] = posY }
+        if let scale { d["scale"] = scale }
+        var b: [String: Bool] = [:]
+        if let uppercase { b["uppercase"] = uppercase }
+        return WireOp(type: "set_caption_options", d: d, s: s, bool: b)
+    }
     static func editCaption(frame: Int, word: String) -> WireOp { WireOp(type: "edit_caption", i: ["frame": frame], s: ["word": word]) }
     static func addPunchIn(_ a: Int, _ b: Int, scale: Double) -> WireOp { WireOp(type: "add_punch_in", i: ["start_frame": a, "end_frame": b], d: ["scale": scale]) }
     static func addTextCard(_ a: Int, _ b: Int, text: String) -> WireOp { WireOp(type: "add_text_card", i: ["start_frame": a, "end_frame": b], s: ["text": text]) }
@@ -43,6 +63,48 @@ struct WireOp: Equatable {
     static func setMusic(url: String, volume: Double, duck: Bool) -> WireOp { WireOp(type: "set_music", d: ["volume": volume], s: ["url": url], bool: ["enabled": true, "duck_voice": duck]) }
     static func removeMusic() -> WireOp { WireOp(type: "set_music", bool: ["enabled": false]) }
     static func splitFraction(_ v: Double) -> WireOp { WireOp(type: "set_split_fraction", d: ["value": v]) }
+    static func segmentSpeed(_ index: Int, _ speed: Double) -> WireOp { WireOp(type: "set_segment_speed", i: ["index": index], d: ["speed": speed]) }
+    /// Canvas transform of the clip itself (partial: only provided values change).
+    static func segmentTransform(_ index: Int, scale: Double? = nil,
+                                 offX: Double? = nil, offY: Double? = nil) -> WireOp {
+        var d: [String: Double] = [:]
+        if let scale { d["scale"] = scale }
+        if let offX { d["off_x"] = offX }
+        if let offY { d["off_y"] = offY }
+        return WireOp(type: "set_segment_transform", i: ["index": index], d: d)
+    }
+    static func transition(after: Int, style: String, frames: Int = 12) -> WireOp { WireOp(type: "set_transition", i: ["after_segment": after, "frames": frames], s: ["style": style]) }
+    static func filter(_ name: String?, intensity: Double = 1.0) -> WireOp { WireOp(type: "set_filter", d: ["intensity": intensity], s: ["name": name ?? "none"]) }
+    static func adjust(brightness: Double? = nil, contrast: Double? = nil, saturation: Double? = nil,
+                       temperature: Double? = nil, vignette: Double? = nil) -> WireOp {
+        var d: [String: Double] = [:]
+        if let brightness { d["brightness"] = brightness }
+        if let contrast { d["contrast"] = contrast }
+        if let saturation { d["saturation"] = saturation }
+        if let temperature { d["temperature"] = temperature }
+        if let vignette { d["vignette"] = vignette }
+        return WireOp(type: "set_adjust", d: d)
+    }
+    static func addTextSticker(_ a: Int, _ b: Int, text: String,
+                               posX: Double = 0.5, posY: Double = 0.35) -> WireOp {
+        WireOp(type: "add_text_sticker", i: ["start_frame": a, "end_frame": b],
+               d: ["pos_x": posX, "pos_y": posY, "scale": 1.0], s: ["text": text])
+    }
+    /// Sticker placement/look tweaks (canvas drag/pinch/rotate + styling), partial.
+    static func editSticker(index: Int, posX: Double? = nil, posY: Double? = nil,
+                            scale: Double? = nil, rotation: Double? = nil,
+                            color: String? = nil, bg: String? = nil, font: String? = nil) -> WireOp {
+        var d: [String: Double] = [:]
+        if let posX { d["pos_x"] = posX }
+        if let posY { d["pos_y"] = posY }
+        if let scale { d["scale"] = scale }
+        if let rotation { d["rotation"] = rotation }
+        var s: [String: String] = [:]
+        if let color { s["color"] = color }
+        if let bg { s["bg"] = bg }
+        if let font { s["font"] = font }
+        return WireOp(type: "edit_overlay", i: ["index": index], d: d, s: s)
+    }
 }
 
 // MARK: - LocalEDLEngine — deterministic Swift port of the subset of apply_edl_ops (app/edl.py:569)
@@ -107,6 +169,79 @@ enum LocalEDLEngine {
         case "set_caption_style":
             guard let style = op.s["style"], ["clean", "bold-word", "karaoke"].contains(style) else { return nil }
             d.captionStyle = style
+        case "set_caption_options":
+            // Partial merge with whole-op rejection on a bad value (backend parity).
+            // A discrete position/size word CLEARS its continuous drag/pinch override
+            // so the newest intent always wins.
+            var o = d.captionOptions
+            var changed = false
+            if let v = op.s["position"] { guard ["top", "middle", "bottom"].contains(v) else { return nil }; o.position = v; o.posY = nil; changed = true }
+            if let v = op.s["size"] { guard ["small", "medium", "large"].contains(v) else { return nil }; o.size = v; o.scale = nil; changed = true }
+            if let v = op.d["pos_y"] { o.posY = min(0.85, max(0.15, v)); changed = true }
+            if let v = op.d["scale"] { o.scale = min(2.0, max(0.5, v)); changed = true }
+            if let v = op.s["font"] { guard ["inter", "archivo", "baloo"].contains(v) else { return nil }; o.font = v; changed = true }
+            if let v = op.s["grouping"] { guard ["word", "phrase", "line"].contains(v) else { return nil }; o.grouping = v; changed = true }
+            if let v = op.s["accent"] {
+                if v == "default" { o.accent = nil; changed = true }
+                else {
+                    guard v.count == 7, v.hasPrefix("#"),
+                          v.dropFirst().allSatisfy({ $0.isHexDigit }) else { return nil }
+                    o.accent = v; changed = true
+                }
+            }
+            if let v = op.bool["uppercase"] { o.uppercase = v; changed = true }
+            guard changed else { return nil }
+            d.captionOptions = o
+        case "set_segment_transform":
+            guard let idx = op.i["index"], d.segments.indices.contains(idx), !op.d.isEmpty else { return nil }
+            if let v = op.d["scale"] { d.segments[idx].txScale = min(3.0, max(0.5, v)) }
+            if let v = op.d["off_x"] { d.segments[idx].txX = min(0.5, max(-0.5, v)) }
+            if let v = op.d["off_y"] { d.segments[idx].txY = min(0.5, max(-0.5, v)) }
+        case "set_segment_speed":
+            guard let idx = op.i["index"], d.segments.indices.contains(idx),
+                  let speed = op.d["speed"], (0.5...3.0).contains(speed) else { return nil }
+            d.segments[idx].speed = speed
+        case "set_transition":
+            guard let idx = op.i["after_segment"], d.segments.indices.contains(idx),
+                  let style = op.s["style"],
+                  ["none", "fade_black", "fade_white", "flash"].contains(style) else { return nil }
+            d.transitions.removeAll { $0.afterSegment == idx }
+            if style != "none" {
+                d.transitions.append(EditorTransition(afterSegment: idx, style: style,
+                                                      frames: min(30, max(4, op.i["frames"] ?? 12))))
+            }
+        case "set_filter":
+            let name = op.s["name"] ?? "none"
+            if name == "none" { d.look.filter = nil }
+            else {
+                guard ["vivid", "film", "mono", "golden", "warm", "cool"].contains(name) else { return nil }
+                d.look.filter = name
+                d.look.intensity = min(1.0, max(0.0, op.d["intensity"] ?? 1.0))
+            }
+        case "set_adjust":
+            guard !op.d.isEmpty else { return nil }
+            var a = d.look.adjust
+            for (k, v) in op.d {
+                switch k {
+                case "brightness": a.brightness = min(0.5, max(-0.5, v))
+                case "contrast": a.contrast = min(0.5, max(-0.5, v))
+                case "saturation": a.saturation = min(0.5, max(-0.5, v))
+                case "temperature": a.temperature = min(0.5, max(-0.5, v))
+                case "vignette": a.vignette = min(1.0, max(0.0, v))
+                default: return nil
+                }
+            }
+            d.look.adjust = a
+        case "add_text_sticker":
+            let text = (op.s["text"] ?? "").trimmingCharacters(in: .whitespaces)
+            guard !text.isEmpty, let (a, b) = clamp(op.i["start_frame"] ?? 0, op.i["end_frame"] ?? 0) else { return nil }
+            d.overlays.append(EditorOverlay(
+                type: "text_sticker", srcIn: a, srcOut: b,
+                scale: min(3.0, max(0.4, op.d["scale"] ?? 1.0)), text: String(text.prefix(120)),
+                posX: min(0.95, max(0.05, op.d["pos_x"] ?? 0.5)),
+                posY: min(0.92, max(0.08, op.d["pos_y"] ?? 0.5)),
+                rotation: min(45, max(-45, op.d["rotation"] ?? 0)),
+                color: op.s["color"], bg: op.s["bg"] ?? "none", font: op.s["font"] ?? "inter"))
         case "set_captions_enabled":
             // Enabling is a logged no-op locally (the server rebuilds captions from the
             // transcript on render); the view shows a live preview from its `words` array.
@@ -135,10 +270,18 @@ enum LocalEDLEngine {
             d.overlays.append(EditorOverlay(type: "text_card", srcIn: a, srcOut: b, scale: 1.0, text: String(text.prefix(80))))
         case "edit_overlay":
             guard let idx = op.i["index"], d.overlays.indices.contains(idx) else { return nil }
-            if let text = op.s["text"] { d.overlays[idx].text = String(text.prefix(80)) }
+            if let text = op.s["text"] { d.overlays[idx].text = String(text.prefix(120)) }
             if let fi = op.i["frame_in"], let fo = op.i["frame_out"], let (a, b) = clamp(fi, fo) {
                 d.overlays[idx].srcIn = a; d.overlays[idx].srcOut = b
             }
+            // text_sticker placement/look (canvas drag/pinch/rotate + styling)
+            if let v = op.d["pos_x"] { d.overlays[idx].posX = min(0.95, max(0.05, v)) }
+            if let v = op.d["pos_y"] { d.overlays[idx].posY = min(0.92, max(0.08, v)) }
+            if let v = op.d["scale"] { d.overlays[idx].scale = min(3.0, max(0.4, v)) }
+            if let v = op.d["rotation"] { d.overlays[idx].rotation = min(45, max(-45, v)) }
+            if let v = op.s["color"] { d.overlays[idx].color = v == "default" ? nil : v }
+            if let v = op.s["bg"], ["none", "box"].contains(v) { d.overlays[idx].bg = v }
+            if let v = op.s["font"], ["inter", "archivo", "baloo"].contains(v) { d.overlays[idx].font = v }
         case "remove_overlays":
             let kind = op.s["kind"] ?? "all"
             let a = op.i["start_frame"]; let b = op.i["end_frame"]

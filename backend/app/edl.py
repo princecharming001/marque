@@ -26,11 +26,24 @@ def snap_to_word(ms: int, words: list[dict], snap: str = "start") -> int:
 class Segment(BaseModel):
     src_in: int   # frame
     src_out: int  # frame (exclusive)
+    # Playback rate for this clip (CapCut "Speed → Normal"). Output duration =
+    # kept_frames / speed; every source→output remap divides by it. 1.0 = untouched.
+    speed: float = 1.0
+    # Canvas transform (CapCut: pinch the preview to zoom the clip, drag to
+    # reposition). scale is a zoom factor; off_x/off_y are offsets as fractions
+    # of frame size. Identity (1, 0, 0) = untouched.
+    tx_scale: float = 1.0
+    tx_x: float = 0.0
+    tx_y: float = 0.0
 
     @model_validator(mode="after")
     def check_order(self):
         if self.src_out <= self.src_in:
             raise ValueError(f"src_out {self.src_out} must be > src_in {self.src_in}")
+        self.speed = min(3.0, max(0.5, self.speed or 1.0))
+        self.tx_scale = min(3.0, max(0.5, self.tx_scale or 1.0))
+        self.tx_x = min(0.5, max(-0.5, self.tx_x or 0.0))
+        self.tx_y = min(0.5, max(-0.5, self.tx_y or 0.0))
         return self
 
 
@@ -46,11 +59,47 @@ class CaptionWord(BaseModel):
 
 
 class Overlay(BaseModel):
-    type: str     # punch_in | text_card
+    type: str     # punch_in | text_card | text_sticker
     src_in: int
     src_out: int
-    scale: float = 1.08   # for punch_in
-    text: str = ""        # for text_card
+    scale: float = 1.08   # punch_in zoom factor; text_sticker size multiplier
+    text: str = ""        # text_card / text_sticker content
+    # text_sticker placement + look (TikTok text tool: drag anywhere, pinch, rotate).
+    # Fractions of frame size for position; defaults center. Ignored by other types.
+    pos_x: float = 0.5
+    pos_y: float = 0.5
+    rotation: float = 0.0            # degrees
+    color: Optional[str] = None      # #RRGGBB; None = white
+    bg: str = "none"                 # none | box (dark label plate behind the text)
+    font: str = "inter"              # inter | archivo | baloo
+
+
+class Transition(BaseModel):
+    """A boundary treatment where one clip hands off to the next (CapCut drag-a-
+    transition-between-clips). Anchored to the SOURCE segment whose end it follows,
+    so trims keep it attached; deleting that segment drops it. v1 styles need no
+    video overlap (they composite a color/flash dip over the boundary)."""
+    after_segment: int               # source index of the leading segment
+    style: str = "fade_black"        # fade_black | fade_white | flash
+    frames: int = 12                 # total dip duration, centered on the boundary
+
+
+class Adjust(BaseModel):
+    """Manual color knobs (CapCut Adjust), each -0.5..0.5 except vignette 0..1.
+    Rendered as a CSS filter chain + vignette overlay; 0 = untouched."""
+    brightness: float = 0.0
+    contrast: float = 0.0
+    saturation: float = 0.0
+    temperature: float = 0.0         # + warm / - cool
+    vignette: float = 0.0
+
+
+class Look(BaseModel):
+    """Whole-video color treatment: a named filter preset blended by intensity,
+    composed with manual Adjust knobs (preset first, knobs on top)."""
+    filter: Optional[str] = None     # vivid | film | mono | golden | warm | cool
+    intensity: float = 1.0           # 0..1 preset strength
+    adjust: Adjust = Adjust()
 
 
 class BRoll(BaseModel):
@@ -122,6 +171,25 @@ class Audio(BaseModel):
     volume_ranges: list[VolumeRange] = []
 
 
+class CaptionOptions(BaseModel):
+    """Rendering knobs for burned-in captions, composable UNDER caption_style (the
+    preset picks the look; these tune it). All defaulted so old EDLs round-trip
+    unchanged; accent=None means 'the style's own default color'.
+
+    Position/size have TWO representations (TikTok model — drag/pinch on the canvas):
+    continuous `pos_y`/`scale` from direct manipulation override the discrete
+    `position`/`size` words when set; a later discrete op (chat: "captions at the
+    bottom") clears its continuous override so the newest intent always wins."""
+    position: str = "bottom"          # top | middle | bottom
+    size: str = "medium"              # small | medium | large
+    pos_y: Optional[float] = None     # caption block center, fraction of frame height (clamped 0.15-0.85)
+    scale: Optional[float] = None     # font-size multiplier from pinch (clamped 0.5-2.0)
+    accent: Optional[str] = None      # #RRGGBB for the hot word / karaoke fill; None = style default
+    uppercase: bool = False           # force ALL CAPS
+    font: str = "inter"               # inter | archivo | baloo (mirrors render/src fonts)
+    grouping: str = "line"            # word | phrase (~3 words) | line (sliding window)
+
+
 class EDL(BaseModel):
     style: str
     format_id: str
@@ -144,6 +212,9 @@ class EDL(BaseModel):
     # silently drops unknown keys on the EDL(**data) → model_dump() round-trip —
     # which the tweak flow does on every edit, and would otherwise lose them.
     caption_style: Optional[str] = None              # clean | bold-word | karaoke
+    caption_options: Optional[CaptionOptions] = None # position/size/accent/case/font tuning
+    transitions: list[Transition] = []               # boundary dips between clips
+    look: Optional[Look] = None                      # whole-video filter + adjust
     trim_aggressiveness: Optional[str] = None        # aggressive | None
     # Playback order of segments as a PERMUTATION of indices. Segments themselves
     # stay monotonic in source coords (the validator below is untouched) — physical
@@ -315,22 +386,29 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     else:
         ordered_segments = sorted(segments, key=lambda s: s["src_in"])
 
-    # cumulative output offset per kept interval, per segment IN PLAYBACK ORDER
+    # cumulative output offset per kept interval, per segment IN PLAYBACK ORDER.
+    # Each interval carries its segment's playback speed: output duration =
+    # round(kept/speed), and every source→output mapping divides by it.
     clips: list[dict] = []
-    index: list[tuple[int, int, int]] = []   # (src_in, src_out, out_start)
+    index: list[tuple[int, int, int, float]] = []   # (src_in, src_out, out_start, speed)
     out_cursor = 0
     for seg in ordered_segments:
+        speed = min(3.0, max(0.5, float(seg.get("speed") or 1.0)))
         for s_in, s_out in _kept_intervals([seg], drops):
-            clips.append({"src_in": s_in, "src_out": s_out})
-            index.append((s_in, s_out, out_cursor))
-            out_cursor += s_out - s_in
+            clips.append({"src_in": s_in, "src_out": s_out, "speed": speed,
+                          # canvas transform travels with every kept piece of the clip
+                          "tx_scale": min(3.0, max(0.5, float(seg.get("tx_scale") or 1.0))),
+                          "tx_x": min(0.5, max(-0.5, float(seg.get("tx_x") or 0.0))),
+                          "tx_y": min(0.5, max(-0.5, float(seg.get("tx_y") or 0.0)))})
+            index.append((s_in, s_out, out_cursor, speed))
+            out_cursor += max(1, round((s_out - s_in) / speed))
     total_frames = out_cursor
 
     def map_point(f: int) -> int | None:
         """Source frame → output frame, or None if f lands in a cut region."""
-        for s_in, s_out, out_start in index:
+        for s_in, s_out, out_start, speed in index:
             if s_in <= f < s_out:
-                return out_start + (f - s_in)
+                return out_start + round((f - s_in) / speed)
         return None
 
     def _map_range_merged(a: int, b: int) -> list[list[int]]:
@@ -339,10 +417,11 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         genuinely non-adjacent pieces (a reorder scattering the range across the
         output) are kept separate rather than collapsed to the longest."""
         spans = []
-        for s_in, s_out, out_start in index:
+        for s_in, s_out, out_start, speed in index:
             lo, hi = max(a, s_in), min(b, s_out)
             if lo < hi:
-                spans.append((out_start + (lo - s_in), out_start + (hi - s_in)))
+                spans.append((out_start + round((lo - s_in) / speed),
+                              out_start + round((hi - s_in) / speed)))
         if not spans:
             return []
         spans.sort()
@@ -376,10 +455,11 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         """Source [a,b) → EVERY output piece (unmerged). Volume ranges need this —
         a mute must not swallow reordered content that lands between its pieces."""
         pieces = []
-        for s_in, s_out, out_start in index:
+        for s_in, s_out, out_start, speed in index:
             lo, hi = max(a, s_in), min(b, s_out)
             if lo < hi:
-                pieces.append((out_start + (lo - s_in), out_start + (hi - s_in)))
+                pieces.append((out_start + round((lo - s_in) / speed),
+                               out_start + round((hi - s_in) / speed)))
         return sorted(pieces)
 
     captions = []
@@ -405,8 +485,33 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
                 "type": o.get("type", "punch_in"),
                 "frame_in": lo, "frame_out": hi,
                 "scale": o.get("scale", 1.08), "text": o.get("text", ""),
+                # text_sticker placement/look — defaults for older overlay dicts.
+                "pos_x": o.get("pos_x", 0.5), "pos_y": o.get("pos_y", 0.5),
+                "rotation": o.get("rotation", 0.0), "color": o.get("color"),
+                "bg": o.get("bg", "none"), "font": o.get("font", "inter"),
             })
     overlays.sort(key=lambda o: o["frame_in"])       # ascending output order (D1, same reorder hazard)
+
+    # Boundary transitions → output anchor frames. Anchored to the leading SOURCE
+    # segment: the dip centers where that segment's last kept footage ends. Dropped
+    # when the segment has no kept footage or is the final clip (nothing to hand to).
+    transitions_out = []
+    seg_count = len(segments)
+    for t in edl.get("transitions") or []:
+        si = t.get("after_segment", -1)
+        if not (0 <= si < seg_count):
+            continue
+        seg = segments[si]
+        pieces = map_range_pieces(seg["src_in"], seg["src_out"])
+        if not pieces:
+            continue
+        end = max(hi for _, hi in pieces)
+        if end >= total_frames:                       # final clip — no next clip to dip into
+            continue
+        transitions_out.append({"at_frame": end,
+                                "style": t.get("style", "fade_black"),
+                                "frames": max(4, min(30, int(t.get("frames") or 12)))})
+    transitions_out.sort(key=lambda t: t["at_frame"])
 
     broll = []
     for b in edl.get("broll") or []:
@@ -488,6 +593,11 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         # `or "clean"` (not a dict default): the key is now always present from
         # model_dump() with value None when unset.
         "caption_style": edl.get("caption_style") or "clean",
+        # Always a fully-populated dict (defaults filled) so the render bridge's
+        # TS interface never sees undefined keys.
+        "caption_options": CaptionOptions(**(edl.get("caption_options") or {})).model_dump(),
+        "transitions": transitions_out,
+        "look": Look(**(edl.get("look") or {})).model_dump(),
         "audio": audio_plan,
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
         "total_frames": max(1, total_frames),
@@ -503,11 +613,13 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 TWEAK_OP_TYPES = [
-    "set_caption_style", "set_captions_enabled", "cut_range", "restore_range",
-    "remove_overlays", "add_punch_in", "add_text_card", "add_broll",
-    "remove_broll", "set_split_fraction", "trim_start", "trim_end", "undo",
-    "reorder_segments", "set_music", "set_segment_volume", "mute_range",
+    "set_caption_style", "set_caption_options", "set_captions_enabled",
+    "cut_range", "restore_range",
+    "remove_overlays", "add_punch_in", "add_text_card", "add_text_sticker",
+    "add_broll", "remove_broll", "set_split_fraction", "trim_start", "trim_end",
+    "undo", "reorder_segments", "set_music", "set_segment_volume", "mute_range",
     "split_segment", "edit_caption", "edit_overlay",
+    "set_segment_speed", "set_segment_transform", "set_transition", "set_filter", "set_adjust",
 ]
 
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
@@ -593,6 +705,47 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     applied = True
                 else:
                     reason = f"unknown caption style '{style}'"
+
+            elif t == "set_caption_options":
+                # Partial merge: only the keys present in the op change; every
+                # provided value is validated (one bad value rejects the op whole,
+                # so a typo can't half-apply).
+                cur = dict(edl.get("caption_options") or {})
+                allowed = {"position": ("top", "middle", "bottom"),
+                           "size": ("small", "medium", "large"),
+                           "font": ("inter", "archivo", "baloo"),
+                           "grouping": ("word", "phrase", "line")}
+                changed, bad = [], ""
+                for key, values in allowed.items():
+                    v = op.get(key)
+                    if v is None:
+                        continue
+                    if v in values:
+                        cur[key] = v
+                        changed.append(key)
+                    else:
+                        bad = f"unknown {key} '{v}'"
+                        break
+                if not bad and op.get("accent") is not None:
+                    accent = op.get("accent")
+                    if accent == "default":              # chat-friendly reset
+                        cur["accent"] = None
+                        changed.append("accent")
+                    elif isinstance(accent, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", accent):
+                        cur["accent"] = accent
+                        changed.append("accent")
+                    else:
+                        bad = f"bad accent '{accent}' (want #RRGGBB)"
+                if not bad and op.get("uppercase") is not None:
+                    cur["uppercase"] = bool(op.get("uppercase"))
+                    changed.append("uppercase")
+                if bad:
+                    reason = bad
+                elif changed:
+                    edl["caption_options"] = CaptionOptions(**cur).model_dump()
+                    applied = True
+                else:
+                    reason = "no caption option given"
 
             elif t == "set_captions_enabled":
                 if op.get("enabled") is False:
@@ -693,6 +846,134 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     edl.setdefault("overlays", []).append(
                         {"type": "text_card", "src_in": r[0], "src_out": r[1], "scale": 1.0, "text": text[:80]})
                     applied = True
+
+            elif t == "add_text_sticker":
+                # Style-AGNOSTIC free-position text (the TikTok text tool) — every
+                # composition renders it, unlike the style-gated text_card slab.
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                text = (op.get("text") or "").strip()
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                elif not text:
+                    reason = "text sticker needs text"
+                else:
+                    color = op.get("color")
+                    if color is not None and not (isinstance(color, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", color)):
+                        color = None
+                    edl.setdefault("overlays", []).append({
+                        "type": "text_sticker", "src_in": r[0], "src_out": r[1],
+                        "scale": min(3.0, max(0.4, float(op.get("scale") or 1.0))),
+                        "text": text[:120],
+                        "pos_x": min(0.95, max(0.05, float(op.get("pos_x") or 0.5))),
+                        "pos_y": min(0.92, max(0.08, float(op.get("pos_y") or 0.5))),
+                        "rotation": max(-45.0, min(45.0, float(op.get("rotation") or 0.0))),
+                        "color": color,
+                        "bg": op.get("bg") if op.get("bg") in ("none", "box") else "none",
+                        "font": op.get("font") if op.get("font") in ("inter", "archivo", "baloo") else "inter",
+                    })
+                    applied = True
+
+            elif t == "set_segment_transform":
+                # Canvas drag/pinch on the video itself (partial merge; identity resets).
+                idx = op.get("index")
+                segs = edl.get("segments") or []
+                if not (isinstance(idx, int) and 0 <= idx < len(segs)):
+                    reason = f"no segment at index {idx}"
+                else:
+                    changed = False
+                    for key, lo_v, hi_v in (("tx_scale", 0.5, 3.0), ("tx_x", -0.5, 0.5), ("tx_y", -0.5, 0.5)):
+                        # ops carry the short names scale/off_x/off_y
+                        short = {"tx_scale": "scale", "tx_x": "off_x", "tx_y": "off_y"}[key]
+                        v = op.get(short)
+                        if v is None:
+                            continue
+                        try:
+                            segs[idx][key] = min(hi_v, max(lo_v, float(v)))
+                            changed = True
+                        except (TypeError, ValueError):
+                            reason = f"bad {short} value"
+                            changed = False
+                            break
+                    if changed:
+                        applied = True
+                    elif not reason:
+                        reason = "no transform value given"
+
+            elif t == "set_segment_speed":
+                idx = op.get("index")
+                segs = edl.get("segments") or []
+                if not (isinstance(idx, int) and 0 <= idx < len(segs)):
+                    reason = f"no segment at index {idx}"
+                else:
+                    try:
+                        speed = float(op.get("speed") or 1.0)
+                    except (TypeError, ValueError):
+                        speed = 0.0
+                    if not (0.5 <= speed <= 3.0):
+                        reason = f"speed {op.get('speed')} out of range (0.5–3.0)"
+                    else:
+                        segs[idx]["speed"] = speed
+                        applied = True
+
+            elif t == "set_transition":
+                idx = op.get("after_segment")
+                segs = edl.get("segments") or []
+                style_v = op.get("style") or "fade_black"
+                if not (isinstance(idx, int) and 0 <= idx < len(segs)):
+                    reason = f"no segment at index {idx}"
+                elif style_v not in ("none", "fade_black", "fade_white", "flash"):
+                    reason = f"unknown transition '{style_v}'"
+                else:
+                    trans = [tr for tr in (edl.get("transitions") or []) if tr.get("after_segment") != idx]
+                    if style_v != "none":
+                        trans.append({"after_segment": idx, "style": style_v,
+                                      "frames": max(4, min(30, int(op.get("frames") or 12)))})
+                    edl["transitions"] = trans
+                    applied = True
+
+            elif t == "set_filter":
+                name = op.get("name")
+                if name in (None, "", "none"):
+                    look = dict(edl.get("look") or {})
+                    look["filter"] = None
+                    edl["look"] = Look(**look).model_dump()
+                    applied = True
+                elif name not in ("vivid", "film", "mono", "golden", "warm", "cool"):
+                    reason = f"unknown filter '{name}'"
+                else:
+                    look = dict(edl.get("look") or {})
+                    look["filter"] = name
+                    try:
+                        look["intensity"] = min(1.0, max(0.0, float(op.get("intensity") if op.get("intensity") is not None else 1.0)))
+                    except (TypeError, ValueError):
+                        look["intensity"] = 1.0
+                    edl["look"] = Look(**look).model_dump()
+                    applied = True
+
+            elif t == "set_adjust":
+                # Partial merge of the manual color knobs; anything absent stays put.
+                look = dict(edl.get("look") or {})
+                adjust = dict(look.get("adjust") or {})
+                changed = False
+                for knob, lo_v, hi_v in (("brightness", -0.5, 0.5), ("contrast", -0.5, 0.5),
+                                         ("saturation", -0.5, 0.5), ("temperature", -0.5, 0.5),
+                                         ("vignette", 0.0, 1.0)):
+                    v = op.get(knob)
+                    if v is None:
+                        continue
+                    try:
+                        adjust[knob] = min(hi_v, max(lo_v, float(v)))
+                        changed = True
+                    except (TypeError, ValueError):
+                        reason = f"bad {knob} value"
+                        changed = False
+                        break
+                if changed:
+                    look["adjust"] = adjust
+                    edl["look"] = Look(**look).model_dump()
+                    applied = True
+                elif not reason:
+                    reason = "no adjust knob given"
 
             elif t == "add_broll":
                 if edl.get("style") not in _BROLL_STYLES:
@@ -844,7 +1125,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     ov = ovs[idx]
                     changed = False
                     if op.get("text") is not None:
-                        ov["text"] = str(op["text"])[:80]
+                        ov["text"] = str(op["text"])[:120]
                         changed = True
                     fi, fo = op.get("frame_in"), op.get("frame_out")
                     if fi is not None or fo is not None:
@@ -855,7 +1136,32 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         else:
                             ov["src_in"], ov["src_out"] = r
                             changed = True
-                    if changed:
+                    # text_sticker placement/look (canvas drag/pinch/rotate + styling).
+                    for key, lo_v, hi_v in (("pos_x", 0.05, 0.95), ("pos_y", 0.08, 0.92),
+                                            ("scale", 0.4, 3.0), ("rotation", -45.0, 45.0)):
+                        v = op.get(key)
+                        if v is None:
+                            continue
+                        try:
+                            ov[key] = min(hi_v, max(lo_v, float(v)))
+                            changed = True
+                        except (TypeError, ValueError):
+                            reason = f"bad {key} value"
+                    if op.get("color") is not None:
+                        c = op.get("color")
+                        if c == "default":
+                            ov["color"] = None
+                            changed = True
+                        elif isinstance(c, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", c):
+                            ov["color"] = c
+                            changed = True
+                    if op.get("bg") in ("none", "box"):
+                        ov["bg"] = op["bg"]
+                        changed = True
+                    if op.get("font") in ("inter", "archivo", "baloo"):
+                        ov["font"] = op["font"]
+                        changed = True
+                    if changed and not reason:
                         applied = True
                     elif not reason:
                         reason = "nothing to change"

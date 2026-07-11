@@ -232,6 +232,67 @@ extension ProEditorView {
         mutate([.addTextCard(a, b, text: t)], rejectMsg: "Text cards aren't supported for this style.")
     }
 
+    // MARK: FP1 — speed / transitions / look / text stickers
+
+    func setSpeed(_ segIdx: Int, _ speed: Double) {
+        mutate([.segmentSpeed(segIdx, (speed * 10).rounded() / 10)],
+               rejectMsg: "Speed must be between 0.5x and 3x.")
+    }
+
+    func setTransition(after segIdx: Int, style: String) {
+        mutate([.transition(after: segIdx, style: style)])
+    }
+
+    func setFilter(_ name: String?) {
+        mutate([.filter(name)])
+    }
+
+    func setAdjust(brightness: Double? = nil, contrast: Double? = nil, saturation: Double? = nil,
+                   temperature: Double? = nil, vignette: Double? = nil) {
+        mutate([.adjust(brightness: brightness, contrast: contrast, saturation: saturation,
+                        temperature: temperature, vignette: vignette)])
+    }
+
+    /// "Add text" (TikTok text tool): a 3s sticker at the playhead, upper third, then
+    /// selected so the canvas drag/pinch + styling controls are immediately live.
+    func addTextSticker(_ text: String) {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, let (a, b) = insertWindow(len: 90) else { return }
+        mutate([.addTextSticker(a, b, text: t)])
+        if let idx = session?.draft.overlays.lastIndex(where: { $0.type == "text_sticker" && $0.srcIn == a }) {
+            selectedSeg = nil
+            selectedOverlay = idx
+        }
+    }
+
+    /// Canvas drag end → one position op (one gesture = one undo step).
+    func commitStickerMove(_ idx: Int, x: Double, y: Double) {
+        mutate([.editSticker(index: idx, posX: x, posY: y)])
+    }
+
+    func commitStickerScale(_ idx: Int, scale: Double) {
+        mutate([.editSticker(index: idx, scale: scale)])
+    }
+
+    func setStickerStyle(_ idx: Int, color: String? = nil, bg: String? = nil, font: String? = nil) {
+        mutate([.editSticker(index: idx, color: color, bg: bg, font: font)])
+    }
+
+    /// Video canvas gesture end → one transform op for that clip.
+    func commitVideoTransform(_ segIdx: Int, scale: Double? = nil,
+                              offX: Double? = nil, offY: Double? = nil) {
+        mutate([.segmentTransform(segIdx, scale: scale, offX: offX, offY: offY)])
+    }
+
+    /// Caption canvas drag end → pos_y op; pinch end → scale op.
+    func commitCaptionPosY(_ y: Double) {
+        mutate([.captionOptions(posY: y)])
+    }
+
+    func commitCaptionScale(_ s: Double) {
+        mutate([.captionOptions(scale: s)])
+    }
+
     // MARK: Effects-mode actions
 
     func addPunchInOnHook() {
@@ -286,7 +347,8 @@ extension ProEditorView {
     }
 
     func beginOverlayTextEdit(_ idx: Int) {
-        guard let o = session?.draft.overlays[safe: idx], o.type == "text_card" else { return }
+        guard let o = session?.draft.overlays[safe: idx],
+              o.type == "text_card" || o.type == "text_sticker" else { return }
         editDraft = o.text
         editingOverlayIndex = idx
     }

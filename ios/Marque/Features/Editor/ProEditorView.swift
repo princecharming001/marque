@@ -12,7 +12,7 @@ struct ProEditorView: View {
     let clip: Clip
 
     enum Phase: Equatable { case loading, editing, applying, rendering, failed(String) }
-    enum Mode: String, CaseIterable { case edit = "Edit", sound = "Sound", text = "Text", effects = "Effects" }
+    enum Mode: String, CaseIterable { case edit = "Edit", sound = "Sound", text = "Text", effects = "Effects", filters = "Filters" }
 
     @State var phase: Phase = .loading
     @State var session: EditorSession?
@@ -32,6 +32,7 @@ struct ProEditorView: View {
     @State var transient: String?
     @State var showMusicSheet = false
     @State var showTextCardAlert = false
+    @State var showStickerInput = false
     @State var editDraft = ""
     @State var editingPhrase: CaptionPhrase?     // phrase-level caption edit in flight
     @State var showCaptionList = false           // the batch caption list editor
@@ -44,6 +45,22 @@ struct ProEditorView: View {
     @State private var clipVolDraft: Double = 1.0
     // UX-7: X on a dirty session confirms before discarding.
     @State private var confirmDiscard = false
+    // FP1: transition boundary selection (source segIdx of the leading clip).
+    @State var selectedBoundary: Int? = nil
+    // FP1: speed panel target + slider draft (one op per gesture, UX-4 pattern).
+    @State var speedPanelSeg: Int? = nil
+    @State private var speedDraft: Double = 1.0
+    // FP1: adjust-knob slider drafts (commit on release).
+    @State private var adjustDraft: Double = 0
+    // FP1: canvas gestures — live drafts for caption drag/pinch + sticker drag/pinch.
+    @State var capDragY: Double? = nil
+    @State var capPinch: Double? = nil
+    @State var stickerDrag: (idx: Int, x: Double, y: Double)? = nil
+    @State var stickerPinch: (idx: Int, scale: Double)? = nil
+    // FP1b: the VIDEO itself is canvas-interactable — tap selects the clip under the
+    // playhead, drag repositions it, pinch zooms it (CapCut preview transform).
+    @State var videoDrag: (seg: Int, x: Double, y: Double)? = nil
+    @State var videoPinch: (seg: Int, scale: Double)? = nil
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -82,6 +99,8 @@ struct ProEditorView: View {
         .sheet(isPresented: $showMusicSheet) { musicSheet }
         .marqueInput($showTextCardAlert, title: "Text card", placeholder: "Card text",
                      text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
+        .marqueInput($showStickerInput, title: "Add text", placeholder: "Say something",
+                     text: $editDraft, confirm: "Add") { addTextSticker(editDraft) }
         .marqueInput(Binding(get: { editingPhrase != nil }, set: { if !$0 { editingPhrase = nil } }),
                      title: "Edit caption", placeholder: "Caption text", text: $editDraft) { commitPhraseEdit() }
         .marqueInput(Binding(get: { editingOverlayIndex != nil }, set: { if !$0 { editingOverlayIndex = nil } }),
@@ -229,6 +248,8 @@ struct ProEditorView: View {
                         }
                     }
                 case .text:
+                    drawerButton("Add text", "plus.square") { editDraft = ""; showStickerInput = true }
+                        .accessibilityIdentifier("editorPro.addSticker")
                     // #1: caption on/off reads the tracked state (captions can be turned back ON).
                     drawerButton(captionsOn ? "Captions on" : "Captions off",
                                  captionsOn ? "captions.bubble.fill" : "captions.bubble") { toggleCaptions(!captionsOn) }
@@ -241,6 +262,7 @@ struct ProEditorView: View {
                     if captionsOn {
                         ForEach(["clean", "bold-word", "karaoke"], id: \.self) { st in
                             drawerButton(st.capitalized, "textformat", active: session?.draft.captionStyle == st) { setCaptionStyle(st) }
+                                .accessibilityIdentifier("editorPro.capStyle.\(st)")
                         }
                     }
                     // #5: text card is only supported for green-screen / duet styles — gate the
@@ -257,10 +279,170 @@ struct ProEditorView: View {
                     if !punchInsSupported && !(caps?["broll"] ?? false) {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
+                case .filters:
+                    // Whole-video looks (CapCut Filters): preset chips; Adjust knobs sit
+                    // in the second row below.
+                    let active = session?.draft.look.filter
+                    drawerButton("None", "circle.slash", active: active == nil) { setFilter(nil) }
+                        .accessibilityIdentifier("editorPro.filter.none")
+                    ForEach([("Vivid", "vivid"), ("Film", "film"), ("Mono", "mono"),
+                             ("Golden", "golden"), ("Warm", "warm"), ("Cool", "cool")], id: \.1) { label, v in
+                        drawerButton(label, "camera.filters", active: active == v) { setFilter(v) }
+                            .accessibilityIdentifier("editorPro.filter.\(v)")
+                    }
                 }
             }.padding(.horizontal, Space.md)
         }
         .frame(height: 52).background(Palette.ink.opacity(0.25))
+        // The caption customizer (research round: preset + accent/size/position/case/
+        // grouping/font are the knobs creators actually touch) — its own row so the
+        // presets row stays scannable.
+        if mode == .text, captionsOn {
+            captionOptionsRow
+        }
+        // CapCut Speed → Normal: slider + chips, committed as ONE op on release (UX-4).
+        if let seg = speedPanelSeg {
+            speedRow(seg)
+        }
+        // CapCut Adjust: manual color knobs under the filter presets.
+        if mode == .filters {
+            adjustRow
+        }
+    }
+
+    private func speedRow(_ seg: Int) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: Space.md) {
+            Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+            Slider(value: $speedDraft, in: 0.5...3.0, onEditingChanged: { editing in
+                if !editing { setSpeed(seg, speedDraft) }
+            })
+            .frame(maxWidth: 150).tint(Palette.accent)
+            .accessibilityIdentifier("editorPro.speedSlider")
+            Text(String(format: "%.1fx", speedDraft))
+                .font(.system(size: 12, weight: .bold)).monospacedDigit().foregroundStyle(.white)
+                .frame(width: 38)
+            ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { v in
+                let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
+                Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
+                    Text(v.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0fx", v) : String(format: "%.1fx", v))
+                        .font(.system(size: 11, weight: active ? .bold : .medium))
+                        .foregroundStyle(active ? Palette.ink : .white)
+                        .padding(.horizontal, 9).frame(height: 28)
+                        .background(active ? Palette.onInk : Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.speed.\(v)")
+            }
+        }
+        .padding(.horizontal, Space.md)
+        }
+        .frame(height: 44).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.ink.opacity(0.25))
+        .accessibilityIdentifier("editorPro.speedRow")
+    }
+
+    private var adjustRow: some View {
+        let a = session?.draft.look.adjust ?? EditorAdjust()
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.md) {
+                adjustKnob("Bright", value: a.brightness, range: -0.5...0.5) { setAdjust(brightness: $0) }
+                adjustKnob("Contrast", value: a.contrast, range: -0.5...0.5) { setAdjust(contrast: $0) }
+                adjustKnob("Color", value: a.saturation, range: -0.5...0.5) { setAdjust(saturation: $0) }
+                adjustKnob("Warmth", value: a.temperature, range: -0.5...0.5) { setAdjust(temperature: $0) }
+                adjustKnob("Vignette", value: a.vignette, range: 0...1) { setAdjust(vignette: $0) }
+            }
+            .padding(.horizontal, Space.md)
+        }
+        .frame(height: 52)
+        .background(Palette.ink.opacity(0.25))
+        .accessibilityIdentifier("editorPro.adjustRow")
+    }
+
+    /// One labeled mini-slider; the op commits on release (UX-4). Local @State per
+    /// knob would fight SwiftUI identity in the scroll row, so a tiny wrapper view.
+    private func adjustKnob(_ label: String, value: Double, range: ClosedRange<Double>,
+                            commit: @escaping (Double) -> Void) -> some View {
+        AdjustKnob(label: label, initial: value, range: range, commit: commit)
+    }
+
+    private var captionOptionsRow: some View {
+        let o = session?.draft.captionOptions ?? EditorCaptionOptions()
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.sm) {
+                // Accent swatches — one accent per video (slash = the style's default color).
+                colorSwatch(nil, active: o.accent == nil)
+                ForEach(["#FFD60A", "#34D399", "#F472B6", "#60A5FA"], id: \.self) { hex in
+                    colorSwatch(hex, active: o.accent == hex)
+                }
+                optDivider
+                // Size + position moved ONTO the canvas (TikTok model): drag the caption
+                // to place it, pinch to resize. The hint earns its row space once.
+                Text("Drag caption to move · pinch to resize")
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
+                    .accessibilityIdentifier("editorPro.capHint")
+                optDivider
+                optChip("AA", active: o.uppercase) { mutate([.captionOptions(uppercase: !o.uppercase)]) }
+                    .accessibilityIdentifier("editorPro.capCase")
+                optDivider
+                // Grouping (word-by-word / ~3-word phrases / running line)
+                ForEach([("Word", "word"), ("Phrase", "phrase"), ("Line", "line")], id: \.1) { label, v in
+                    optChip(label, active: o.grouping == v) { mutate([.captionOptions(grouping: v)]) }
+                        .accessibilityIdentifier("editorPro.capGroup.\(v)")
+                }
+                optDivider
+                // Fonts (curated: clean sans / heavy impact / rounded)
+                ForEach([("Inter", "inter"), ("Impact", "archivo"), ("Round", "baloo")], id: \.1) { label, v in
+                    optChip(label, active: o.font == v) { mutate([.captionOptions(font: v)]) }
+                        .accessibilityIdentifier("editorPro.capFont.\(v)")
+                }
+            }
+            .padding(.horizontal, Space.md)
+        }
+        .frame(height: 44)
+        .background(Palette.ink.opacity(0.25))
+        .accessibilityIdentifier("editorPro.captionOptions")
+    }
+
+    private var optDivider: some View {
+        Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1, height: 20)
+    }
+
+    private func optChip(_ label: String, active: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
+                .foregroundStyle(active ? Palette.ink : .white)
+                .padding(.horizontal, 10).frame(height: 28)
+                .background(active ? Palette.onInk : Color.white.opacity(0.12))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func colorSwatch(_ hex: String?, active: Bool) -> some View {
+        Button {
+            mutate([.captionOptions(accent: hex ?? "default")])
+        } label: {
+            ZStack {
+                Circle().fill(hex.map { colorFromHex($0) } ?? Color.white.opacity(0.15))
+                    .frame(width: 24, height: 24)
+                if hex == nil {
+                    Image(systemName: "slash.circle").font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .overlay(Circle().strokeBorder(active ? Palette.accent : Color.white.opacity(0.25),
+                                           lineWidth: active ? 2 : 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("editorPro.capAccent.\(hex ?? "default")")
+    }
+
+    func colorFromHex(_ hex: String) -> Color {
+        var v: UInt64 = 0
+        Scanner(string: String(hex.dropFirst())).scanHexInt64(&v)
+        return Color(hex: UInt(v))
     }
 
     private func drawerButton(_ label: String, _ icon: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
@@ -282,19 +464,56 @@ struct ProEditorView: View {
         ZStack {
             // Video + captions scale together during a punch-in window (L1 preview of the
             // rendered zoom); the play/time controls below stay unscaled.
+            GeometryReader { canvasGeo in
             ZStack {
-                if let player, !player.placeholder {
-                    PlayerLayerView(player: player.player)
-                } else {
-                    // Placeholder mode (keyless mock clip has no source video) — still fully editable.
-                    Rectangle().fill(Palette.ink.opacity(0.85))
-                        .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.white.opacity(0.3)))
+                Group {
+                    if let player, !player.placeholder {
+                        PlayerLayerView(player: player.player)
+                    } else {
+                        // Placeholder mode (keyless mock clip has no source video) — still fully editable.
+                        Rectangle().fill(Palette.ink.opacity(0.85))
+                            .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.white.opacity(0.3)))
+                    }
+                }
+                // Canvas transform preview of the clip under the playhead (CapCut model):
+                // drag repositions, pinch zooms; the render applies the same math per clip.
+                .scaleEffect(liveVideoScale)
+                .offset(x: liveVideoOffX * canvasGeo.size.width,
+                        y: liveVideoOffY * canvasGeo.size.height)
+                // L1 look preview — SwiftUI approximations of the render's CSS filter chain.
+                .saturation(lookSaturation)
+                .contrast(lookContrast)
+                .brightness(lookBrightness)
+                .hueRotation(.degrees(lookHueDegrees))
+                .overlay {
+                    if let v = session?.draft.look.adjust.vignette, v > 0 {
+                        RadialGradient(colors: [.clear, .black.opacity(0.55 * v)],
+                                       center: .center, startRadius: 90, endRadius: 320)
+                            .allowsHitTesting(false)
+                    }
+                }
+                // Selection affordance on the CANVAS when the playhead clip is selected —
+                // the dashed frame invites drag/pinch (TikTok/CapCut selection box).
+                .overlay {
+                    if let sel = selectedSeg, sel == clipUnderPlayhead {
+                        RoundedRectangle(cornerRadius: 4)
+                            .strokeBorder(videoDrag != nil || videoPinch != nil ? Palette.accent : Color.white.opacity(0.55),
+                                          style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                            .padding(2)
+                            .allowsHitTesting(false)
+                            .accessibilityIdentifier("editorPro.videoSelection")
+                    }
                 }
                 captionSimOverlay
                 textCardSimOverlay
+                stickerSimOverlay
             }
             .scaleEffect(currentPunchScale)
             .animation(.easeInOut(duration: 0.25), value: currentPunchScale)
+            // Video canvas gestures: LOW priority — stickers/captions grab theirs first.
+            .gesture(videoCanvasDrag(canvasGeo.size))
+            .simultaneousGesture(videoCanvasPinch())
+            }
             VStack {
                 Spacer()
                 HStack {
@@ -314,8 +533,74 @@ struct ProEditorView: View {
         .frame(maxWidth: .infinity)
         .frame(maxHeight: .infinity)          // fill remaining space so the toolbar pins to the bottom (CapCut layout)
         .contentShape(Rectangle())
-        .onTapGesture { player?.togglePlay() }
+        // CapCut convention: tapping the canvas SELECTS the clip under the playhead
+        // (the selection box + drag/pinch appear); play stays on the play button.
+        .onTapGesture { canvasTapSelect() }
         .clipped()
+    }
+
+    /// The source segment index whose footage is under the playhead right now.
+    var clipUnderPlayhead: Int? {
+        guard let d = session?.draft else { return nil }
+        let f = playheadSourceFrame
+        let order = d.segmentOrder ?? Array(d.segments.indices)
+        return order.first { i in d.segments[safe: i].map { f >= $0.srcIn && f < $0.srcOut } ?? false }
+    }
+
+    private func canvasTapSelect() {
+        player?.pause()
+        guard let idx = clipUnderPlayhead else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            selectedOverlay = nil; selectedBoundary = nil
+            selectedSeg = (selectedSeg == idx) ? nil : idx
+        }
+        bumpHaptic()
+    }
+
+    private var liveVideoScale: Double {
+        guard let idx = clipUnderPlayhead, let seg = session?.draft.segments[safe: idx] else { return 1 }
+        if let p = videoPinch, p.seg == idx { return p.scale }
+        return seg.txScale
+    }
+    private var liveVideoOffX: Double {
+        guard let idx = clipUnderPlayhead, let seg = session?.draft.segments[safe: idx] else { return 0 }
+        if let dr = videoDrag, dr.seg == idx { return dr.x }
+        return seg.txX
+    }
+    private var liveVideoOffY: Double {
+        guard let idx = clipUnderPlayhead, let seg = session?.draft.segments[safe: idx] else { return 0 }
+        if let dr = videoDrag, dr.seg == idx { return dr.y }
+        return seg.txY
+    }
+
+    /// Drag the selected clip around the canvas → one set_segment_transform op.
+    private func videoCanvasDrag(_ size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { g in
+                guard let idx = clipUnderPlayhead, selectedSeg == idx,
+                      let seg = session?.draft.segments[safe: idx] else { return }
+                videoDrag = (idx,
+                             min(0.5, max(-0.5, seg.txX + g.translation.width / max(1, size.width))),
+                             min(0.5, max(-0.5, seg.txY + g.translation.height / max(1, size.height))))
+            }
+            .onEnded { _ in
+                if let d = videoDrag { commitVideoTransform(d.seg, offX: d.x, offY: d.y); bumpHaptic() }
+                videoDrag = nil
+            }
+    }
+
+    /// Pinch the selected clip to zoom it → one set_segment_transform op.
+    private func videoCanvasPinch() -> some Gesture {
+        MagnificationGesture()
+            .onChanged { v in
+                guard let idx = clipUnderPlayhead, selectedSeg == idx,
+                      let seg = session?.draft.segments[safe: idx] else { return }
+                videoPinch = (idx, min(3.0, max(0.5, seg.txScale * v)))
+            }
+            .onEnded { _ in
+                if let p = videoPinch { commitVideoTransform(p.seg, scale: p.scale); bumpHaptic() }
+                videoPinch = nil
+            }
     }
 
     private var timeReadout: String {
@@ -324,17 +609,185 @@ struct ProEditorView: View {
         return "\(fmt(cur)) / \(fmt(tot))"
     }
 
+    // MARK: FP1 — look preview approximation (maps the render's CSS chain to SwiftUI)
+
+    private var lookVals: (sat: Double, con: Double, bri: Double, hue: Double) {
+        guard let look = session?.draft.look else { return (1, 1, 0, 0) }
+        var sat = 1.0, con = 1.0, bri = 0.0, hue = 0.0
+        let t = min(1, max(0, look.intensity))
+        func lerp(_ a: Double, _ b: Double) -> Double { a + (b - a) * t }
+        switch look.filter {
+        case "vivid": sat = lerp(1, 1.35); con = lerp(1, 1.08)
+        case "film": con = lerp(1, 1.12); sat = lerp(1, 0.85)
+        case "mono": sat = lerp(1, 0.0); con = lerp(1, 1.05)
+        case "golden": sat = lerp(1, 1.2); bri = lerp(0, 0.05); hue = lerp(0, -6)
+        case "warm": sat = lerp(1, 1.1); hue = lerp(0, -8)
+        case "cool": sat = lerp(1, 1.05); hue = lerp(0, 10); bri = lerp(0, 0.02)
+        default: break
+        }
+        let a = look.adjust
+        bri += a.brightness * 0.6
+        con *= (1 + a.contrast)
+        sat *= (1 + a.saturation)
+        hue += a.temperature < 0 ? -a.temperature * 20 : -a.temperature * 14
+        return (sat, con, bri, hue)
+    }
+    private var lookSaturation: Double { lookVals.sat }
+    private var lookContrast: Double { lookVals.con }
+    private var lookBrightness: Double { lookVals.bri }
+    private var lookHueDegrees: Double { lookVals.hue }
+
+    // MARK: FP1 — text stickers on the canvas (drag anywhere / pinch / tap-select)
+
+    @ViewBuilder private var stickerSimOverlay: some View {
+        if let d = session?.draft {
+            GeometryReader { geo in
+                let f = playheadSourceFrame
+                ForEach(Array(d.overlays.enumerated()), id: \.offset) { idx, o in
+                    if o.type == "text_sticker", o.srcIn <= f, f < o.srcOut {
+                        stickerView(idx: idx, o: o, geo: geo.size)
+                    }
+                }
+            }
+        }
+    }
+
+    private func stickerView(idx: Int, o: EditorOverlay, geo: CGSize) -> some View {
+        let selected = selectedOverlay == idx
+        let liveX = stickerDrag?.idx == idx ? stickerDrag!.x : o.posX
+        let liveY = stickerDrag?.idx == idx ? stickerDrag!.y : o.posY
+        let liveScale = stickerPinch?.idx == idx ? stickerPinch!.scale : o.scale
+        return Text(o.text)
+            .font(simCaptionFont(o.font, size: 24 * liveScale, heavy: true))
+            .foregroundStyle(o.color.map { colorFromHex($0) } ?? .white)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, o.bg == "box" ? 10 : 2).padding(.vertical, o.bg == "box" ? 5 : 2)
+            .background(o.bg == "box" ? Color.black.opacity(0.65) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(selected ? Palette.accent : .clear,
+                              style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
+            .shadow(radius: o.bg == "box" ? 0 : 3)
+            .rotationEffect(.degrees(o.rotation))
+            .position(x: liveX * geo.width, y: liveY * geo.height)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { g in
+                        stickerDrag = (idx,
+                                       min(0.95, max(0.05, o.posX + g.translation.width / max(1, geo.width))),
+                                       min(0.92, max(0.08, o.posY + g.translation.height / max(1, geo.height))))
+                        if selectedOverlay != idx { selectedOverlay = idx; selectedSeg = nil }
+                    }
+                    .onEnded { _ in
+                        if let s = stickerDrag, s.idx == idx { commitStickerMove(idx, x: s.x, y: s.y) }
+                        stickerDrag = nil
+                    })
+            .simultaneousGesture(
+                MagnificationGesture()
+                    .onChanged { v in stickerPinch = (idx, min(3.0, max(0.4, o.scale * v))) }
+                    .onEnded { _ in
+                        if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
+                        stickerPinch = nil
+                    })
+            .onTapGesture {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    selectedSeg = nil
+                    selectedOverlay = (selectedOverlay == idx) ? nil : idx
+                }
+            }
+            .accessibilityIdentifier("editorPro.sticker.\(idx)")
+    }
+
     // MARK: caption + punch-in local sim (L1 fidelity)
 
+    /// Discrete position → the canvas Y fraction it anchors at (mirrors the render).
+    private func discreteCaptionY(_ position: String) -> Double {
+        switch position { case "top": return 0.18; case "middle": return 0.50; default: return 0.80 }
+    }
+
+    /// The caption block on the canvas — DIRECTLY MANIPULABLE (TikTok model): drag
+    /// vertically to place it (snaps to top/middle/bottom anchors), pinch to resize.
+    /// One gesture = one committed op = one undo step.
     @ViewBuilder private var captionSimOverlay: some View {
-        if let d = session?.draft, !d.captions.isEmpty, let word = currentCaptionWord(d) {
-            VStack { Spacer()
-                Text(word).font(.system(size: 20, weight: .heavy))
-                    .foregroundStyle(.white).shadow(radius: 4)
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(d.captionStyle == "bold-word" ? Color.black.opacity(0.5) : .clear)
-                    .padding(.bottom, 60)
+        if let d = session?.draft, !d.captions.isEmpty, let group = currentCaptionGroup(d) {
+            GeometryReader { geo in
+                let o = d.captionOptions
+                let discreteMult = o.size == "small" ? 0.78 : o.size == "large" ? 1.24 : 1.0
+                let effScale = capPinch ?? o.scale ?? discreteMult
+                let base: CGFloat = d.captionStyle == "bold-word" ? 30 : 17
+                let effY = capDragY ?? o.posY ?? discreteCaptionY(o.position)
+                let interacting = capDragY != nil || capPinch != nil
+                HStack(spacing: 5) {
+                    ForEach(Array(group.words.enumerated()), id: \.offset) { i, w in
+                        Text(o.uppercase || d.captionStyle == "bold-word" ? w.uppercased() : w)
+                            .font(simCaptionFont(o.font, size: base * effScale,
+                                                 heavy: d.captionStyle == "bold-word"))
+                            .foregroundStyle(simCaptionColor(d, isHot: i == group.activeInGroup,
+                                                             spoken: i <= group.activeInGroup))
+                            .opacity(d.captionStyle == "clean" && i != group.activeInGroup ? 0.55 : 1)
+                            .shadow(radius: 4)
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .accessibilityIdentifier("editorPro.captionSim")
+                // Selection affordance: dashed bounds in Text mode invite the drag;
+                // accent while a gesture is live (TikTok's selection box).
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(interacting ? Palette.accent
+                                              : (mode == .text ? Color.white.opacity(0.35) : .clear),
+                                  style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
+                .position(x: geo.size.width / 2, y: effY * geo.size.height)
+                .highPriorityGesture(
+                    DragGesture(minimumDistance: 3)
+                        .onChanged { g in
+                            let start = o.posY ?? discreteCaptionY(o.position)
+                            var y = start + g.translation.height / max(1, geo.size.height)
+                            // Snap to the three anchors (Edits' guide-line behavior).
+                            for anchor in [0.18, 0.50, 0.80] where abs(y - anchor) < 0.025 { y = anchor }
+                            capDragY = min(0.85, max(0.15, y))
+                        }
+                        .onEnded { _ in
+                            if let y = capDragY { commitCaptionPosY(y); bumpHaptic() }
+                            capDragY = nil
+                        })
+                .simultaneousGesture(
+                    MagnificationGesture()
+                        .onChanged { v in
+                            let start = o.scale ?? discreteMult
+                            capPinch = min(2.0, max(0.5, start * v))
+                        }
+                        .onEnded { _ in
+                            if let s = capPinch { commitCaptionScale(s); bumpHaptic() }
+                            capPinch = nil
+                        })
+                // Guide line while snapped to an anchor (yellow safe-zone line, Edits-style)
+                .overlay {
+                    if let y = capDragY, [0.18, 0.50, 0.80].contains(y) {
+                        Rectangle().fill(Color(hex: 0xFFD60A).opacity(0.8))
+                            .frame(height: 1)
+                            .position(x: geo.size.width / 2, y: y * geo.size.height)
+                            .allowsHitTesting(false)
+                    }
+                }
             }
+        }
+    }
+
+    /// L1 approximations of the three render fonts (Inter / Archivo Black / Baloo 2).
+    private func simCaptionFont(_ font: String, size: CGFloat, heavy: Bool) -> Font {
+        switch font {
+        case "archivo": return .system(size: size, weight: .black)
+        case "baloo": return .system(size: size, weight: heavy ? .heavy : .bold, design: .rounded)
+        default: return .system(size: size, weight: heavy ? .heavy : .semibold)
+        }
+    }
+
+    private func simCaptionColor(_ d: EditorDocument, isHot: Bool, spoken: Bool) -> Color {
+        let accent = d.captionOptions.accent.map { colorFromHex($0) }
+        switch d.captionStyle {
+        case "karaoke": return spoken ? (accent ?? Color(hex: 0xFFD60A)) : .white
+        case "bold-word": return accent ?? .white
+        default: return isHot ? (accent ?? .white) : .white
         }
     }
 
@@ -366,16 +819,30 @@ struct ProEditorView: View {
         }
     }
 
-    private func currentCaptionWord(_ d: EditorDocument) -> String? {
+    /// The words visible at the playhead under the draft's grouping mode, plus which of
+    /// them is the active one. nil during silences (UX-3) or before the first word.
+    private func currentCaptionGroup(_ d: EditorDocument) -> (words: [String], activeInGroup: Int)? {
         let srcFrame = secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
-        guard let cap = d.captions.last(where: { $0.frame <= srcFrame }) else { return nil }
-        // UX-3: bound the word's display window with the transcript so the last word
-        // doesn't burn on screen through every silence.
+        guard let activeIdx = d.captions.lastIndex(where: { $0.frame <= srcFrame }) else { return nil }
+        let cap = d.captions[activeIdx]
+        // UX-3: bound the display window with the transcript so the last word doesn't
+        // burn on screen through every silence.
         if let span = words.first(where: { $0.startFrame == cap.frame }) ?? words.last(where: { $0.startFrame <= cap.frame }),
            srcFrame > span.endFrame + 15 {
             return nil
         }
-        return cap.word
+        if d.captionStyle == "bold-word" { return ([cap.word], 0) }
+        let lo: Int, hi: Int
+        switch d.captionOptions.grouping {
+        case "word": lo = activeIdx; hi = activeIdx
+        case "phrase":
+            lo = (activeIdx / 3) * 3
+            hi = min(d.captions.count - 1, lo + 2)
+        default:
+            lo = max(0, activeIdx - 2)
+            hi = min(d.captions.count - 1, activeIdx + 2)
+        }
+        return (d.captions[lo...hi].map(\.word), activeIdx - lo)
     }
 
     // (internal: +Actions' split-at-playhead reads it too)
@@ -429,6 +896,15 @@ struct ProEditorView: View {
                 // Voice strip tap = select that clip in Sound mode — volume + mute right there.
                 mode = .sound
                 withAnimation(.easeOut(duration: 0.15)) { selectedOverlay = nil; selectedSeg = segIdx }
+            },
+            selectedBoundary: selectedBoundary,
+            onTapBoundary: { leading in
+                player?.pause()
+                withAnimation(.easeOut(duration: 0.15)) {
+                    selectedSeg = nil; selectedOverlay = nil; speedPanelSeg = nil
+                    selectedBoundary = (selectedBoundary == leading) ? nil : leading
+                }
+                bumpHaptic()
             }
         )
         .frame(height: timelineHeight)
@@ -438,7 +914,30 @@ struct ProEditorView: View {
     // MARK: context strip (selection actions)
 
     @ViewBuilder private var contextStrip: some View {
-        if let ov = selectedOverlay, let overlay = session?.draft.overlays[safe: ov] {
+        if let b = selectedBoundary {
+            // Boundary selected: the transition styles (CapCut's between-clips picker).
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) {
+                    Text("TRANSITION").font(AppFont.micro).tracking(Track.label)
+                        .foregroundStyle(.white.opacity(0.5))
+                    ForEach([("None", "none"), ("Fade", "fade_black"), ("White", "fade_white"), ("Flash", "flash")], id: \.1) { label, v in
+                        let active = (session?.draft.transitions.first { $0.afterSegment == b }?.style ?? "none") == v
+                        Button { setTransition(after: b, style: v); bumpHaptic() } label: {
+                            Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
+                                .foregroundStyle(active ? Palette.ink : .white)
+                                .padding(.horizontal, 12).frame(height: 30)
+                                .background(active ? Palette.onInk : Color.white.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("editorPro.ctx.transition.\(v)")
+                    }
+                }
+                .padding(.horizontal, Space.md)
+            }
+            .frame(height: 44)
+            .background(Palette.ink.opacity(0.4))
+        } else if let ov = selectedOverlay, let overlay = session?.draft.overlays[safe: ov] {
             // Overlay selected (chip lane): the strip swaps to overlay ops. Scrolls —
             // the zoom controls (intensity + duration + delete) overflow a fixed row.
             ScrollView(.horizontal, showsIndicators: false) {
@@ -466,7 +965,8 @@ struct ProEditorView: View {
                         Text(String(format: "%.1fs", framesToSeconds(overlay.srcOut - overlay.srcIn)))
                             .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).monospacedDigit()
                     } else {
-                        Text("Text card").font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
+                        Text(overlay.type == "text_sticker" ? "Text" : "Text card")
+                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
                     }
                 }
                 .padding(.horizontal, Space.md)
@@ -485,6 +985,15 @@ struct ProEditorView: View {
         HStack(spacing: Space.lg) {
             contextButton("Split", "square.split.2x1") { if let s = seg { splitSelected(s); bumpHaptic() } }
                 .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
+            contextButton("Speed", "gauge.with.needle") {
+                if let s = seg {
+                    speedDraft = session?.draft.segments[safe: s]?.speed ?? 1.0
+                    withAnimation(.easeOut(duration: 0.15)) { speedPanelSeg = (speedPanelSeg == s) ? nil : s }
+                    bumpHaptic()
+                }
+            }
+            .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
+            .accessibilityIdentifier("editorPro.ctx.speed")
             contextButton("Delete", "trash") { if let s = seg { deleteSelected(s); bumpHaptic() } }
                 .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
             // I-7: explicit reorder (drag-to-reorder fights the timeline's other gestures).
@@ -547,11 +1056,35 @@ struct ProEditorView: View {
         Mode.allCases.filter { $0 != .effects || punchInsSupported || (caps?["broll"] ?? false) }
     }
     private func iconFor(_ m: Mode) -> String {
-        switch m { case .edit: "scissors"; case .sound: "music.note"; case .text: "textformat"; case .effects: "sparkles" }
+        switch m { case .edit: "scissors"; case .sound: "music.note"; case .text: "textformat"; case .effects: "sparkles"; case .filters: "camera.filters" }
     }
 
     private func openModeDrawer(_ m: Mode) {
         // Sound mode no longer auto-pops the music sheet — the timeline's "+ Add sound"
         // lane and the drawer button advertise it (empty lanes advertise themselves).
+    }
+}
+
+// One labeled Adjust mini-slider (CapCut Adjust knobs). Owns its drag draft so the
+// row doesn't re-init mid-gesture; commits ONE op on release (UX-4 invariant).
+private struct AdjustKnob: View {
+    let label: String
+    let initial: Double
+    let range: ClosedRange<Double>
+    let commit: (Double) -> Void
+    @State private var value: Double = 0
+    @State private var seeded = false
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Slider(value: $value, in: range, onEditingChanged: { editing in
+                if !editing { commit(value) }
+            })
+            .frame(width: 104).tint(Palette.accent)
+            Text("\(label) \(value == 0 ? "" : String(format: "%+.0f", value * 100))")
+                .font(.system(size: 9)).foregroundStyle(.white.opacity(0.65))
+        }
+        .onAppear { if !seeded { value = initial; seeded = true } }
+        .accessibilityIdentifier("editorPro.adjust.\(label.lowercased())")
     }
 }

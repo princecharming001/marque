@@ -1,7 +1,9 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { CutVideo } from "../components/CutVideo";
+import { CutVideo, clipOutFrames } from "../components/CutVideo";
 import { AudioMix } from "../components/AudioMix";
+import { TextStickers } from "../components/TextStickers";
+import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
 
@@ -25,17 +27,19 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const cutStarts: number[] = [];
   for (const c of clips) {
     if (acc > 0) cutStarts.push(acc);   // skip the very first (frame 0)
-    acc += Math.max(1, c.src_out - c.src_in);
+    acc += clipOutFrames(c);            // G10: MUST match CutVideo's outCursor formula
   }
   const flashing = cutStarts.some((s) => frame >= s && frame < s + 2);
 
   return (
     <AbsoluteFill style={{ background: "#000" }}>
-      <CutVideo sourceUrl={sourceUrl} clips={clips} volumeRanges={edl?.audio?.volume_ranges} />
+      <CutVideo sourceUrl={sourceUrl} clips={clips} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
       {flashing && (
         <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.18 }} />
       )}
-      {edl && <Captions captions={edl.captions} style={edl.caption_style} />}
+      {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
+      {edl && <TextStickers overlays={edl.overlays} />}
+      {edl && <Grade look={edl.look} transitions={edl.transitions} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

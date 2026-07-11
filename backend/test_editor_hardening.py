@@ -866,7 +866,7 @@ def test_reorder_remaps_captions_with_segment():
     edl = _base_edl(captions=[{"word": "moved", "frame": 150}],
                     segment_order=[1, 0, 2])
     plan = build_render_plan(edl)
-    assert plan["clips"][0] == {"src_in": 100, "src_out": 200}   # segment 1 plays first
+    assert plan["clips"][0] == {"src_in": 100, "src_out": 200, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}   # segment 1 plays first
     assert plan["captions"][0]["frame"] == 50
 
 
@@ -924,7 +924,7 @@ def test_reorder_with_drops_composes():
                     segment_order=[1, 0, 2])
     plan = build_render_plan(edl)
     # Segment 1 (100-200) minus drop (100-150) = kept (150-200) plays first.
-    assert plan["clips"][0] == {"src_in": 150, "src_out": 200}
+    assert plan["clips"][0] == {"src_in": 150, "src_out": 200, "speed": 1.0, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}
     assert plan["total_frames"] == 50 + 100 + 100
 
 
@@ -1444,10 +1444,11 @@ def test_fuzz_random_op_sequences_preserve_invariants():
 
 _TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "broll",
                         "react_source", "react_schedule", "layout", "caption_style",
-                        "audio", "total_frames"}
-_TS_CLIP_KEYS = {"src_in", "src_out"}
+                        "caption_options", "transitions", "look", "audio", "total_frames"}
+_TS_CLIP_KEYS = {"src_in", "src_out", "speed", "tx_scale", "tx_x", "tx_y"}
 _TS_CAPTION_KEYS = {"word", "frame"}
-_TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text"}
+_TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
+                    "pos_x", "pos_y", "rotation", "color", "bg", "font"}
 _TS_BROLL_KEYS = {"frame_in", "frame_out", "cue_text", "asset_id", "broll_query",
                   "source", "resolved_url"}
 _TS_LAYOUT_KEYS = {"style", "panels", "panel_boundaries", "split_fraction"}

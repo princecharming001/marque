@@ -1,0 +1,84 @@
+appId: com.getmarque.app
+name: FP1 — speed, transitions, filters, text stickers, caption drag
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+# SPEED: select clip 0 → Speed → 2x chip; badge + shorter cell
+- tapOn: { id: "editorPro.clip.0" }
+- tapOn: { id: "editorPro.ctx.speed" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.speedRow" }
+    timeout: 4000
+- tapOn: { id: "editorPro.speed.2.0" }
+- takeScreenshot: /tmp/fp-01-speed
+# TRANSITION: boundary diamond → Fade
+- tapOn: { id: "editorPro.boundary.0" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.ctx.transition.fade_black" }
+    timeout: 4000
+- tapOn: { id: "editorPro.ctx.transition.fade_black" }
+- takeScreenshot: /tmp/fp-02-transition
+# FILTERS: Film preset + a warm adjust
+- tapOn: { id: "editorPro.mode.filters" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.filter.film" }
+    timeout: 4000
+- tapOn: { id: "editorPro.filter.film" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.adjustRow" }
+    timeout: 4000
+- takeScreenshot: /tmp/fp-03-filter
+# TEXT STICKER: add → drag on canvas
+- tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.addSticker" }
+- tapOn: { id: "dialog.input" }
+- inputText: "WAIT FOR IT"
+- tapOn: { id: "dialog.add" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.sticker.1" }
+    timeout: 4000
+- takeScreenshot: /tmp/fp-04-sticker
+- swipe:
+    from: { id: "editorPro.sticker.1" }
+    direction: DOWN
+    duration: 600
+- takeScreenshot: /tmp/fp-05-sticker-moved
+# VIDEO CANVAS: tap the preview → clip selection box → drag the video itself
+- tapOn:
+    point: "50%,30%"
+- extendedWaitUntil:
+    visible: { id: "editorPro.videoSelection" }
+    timeout: 4000
+- swipe:
+    start: "50%, 30%"
+    end: "65%, 38%"
+    duration: 600
+- takeScreenshot: /tmp/fp-05b-video-moved
+- tapOn:
+    point: "50%,30%"
+# CAPTION DRAG: pull the caption block up
+- swipe:
+    from: { id: "editorPro.captionSim" }
+    direction: UP
+    duration: 600
+- takeScreenshot: /tmp/fp-06-caption-dragged
+# SAVE → render → back on clip sheet; reopen and confirm persistence
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil:
+    visible: { id: "clip.editManual" }
+    timeout: 90000
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- takeScreenshot: /tmp/fp-07-reopened

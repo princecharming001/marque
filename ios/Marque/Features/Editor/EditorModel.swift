@@ -18,7 +18,18 @@ func secondsToFrame(_ s: Double) -> Int { Int((s * kEditorFPS).rounded(.toNeares
 struct EditorSegment: Equatable {
     var srcIn: Int
     var srcOut: Int
+    var speed: Double = 1.0            // playback rate; output duration = frames/speed
+    // Canvas transform (pinch-zoom / drag the clip on the preview). Identity = untouched.
+    var txScale: Double = 1.0
+    var txX: Double = 0.0
+    var txY: Double = 0.0
     var frames: Int { max(0, srcOut - srcIn) }
+}
+
+/// Speed-aware output length of a frame count — the Swift twin of the backend's
+/// round(kept/speed) (banker's rounding on both sides so coords agree).
+func outputFrames(_ frames: Int, speed: Double) -> Int {
+    max(1, Int((Double(frames) / max(0.5, speed)).rounded(.toNearestOrEven)))
 }
 
 struct EditorDrop: Equatable {
@@ -33,17 +44,57 @@ struct EditorCaption: Equatable {
 }
 
 struct EditorOverlay: Equatable {
-    var type: String        // "punch_in" | "text_card"
+    var type: String        // "punch_in" | "text_card" | "text_sticker"
     var srcIn: Int
     var srcOut: Int
     var scale: Double
     var text: String
+    // text_sticker placement + look (fractions of frame; ignored by other types)
+    var posX: Double = 0.5
+    var posY: Double = 0.5
+    var rotation: Double = 0
+    var color: String? = nil
+    var bg: String = "none"          // none | box
+    var font: String = "inter"
+}
+
+struct EditorTransition: Equatable {
+    var afterSegment: Int            // source index of the leading segment
+    var style: String                // fade_black | fade_white | flash
+    var frames: Int
+}
+
+struct EditorAdjust: Equatable {
+    var brightness: Double = 0
+    var contrast: Double = 0
+    var saturation: Double = 0
+    var temperature: Double = 0
+    var vignette: Double = 0
+    var isNeutral: Bool { self == EditorAdjust() }
+}
+
+struct EditorLook: Equatable {
+    var filter: String? = nil        // vivid | film | mono | golden | warm | cool
+    var intensity: Double = 1.0
+    var adjust = EditorAdjust()
 }
 
 struct EditorMusic: Equatable {
     var url: String
     var volume: Double
     var duckVoice: Bool
+}
+
+// Caption tuning knobs under the style preset (mirror of backend CaptionOptions).
+struct EditorCaptionOptions: Equatable {
+    var position: String = "bottom"    // top | middle | bottom
+    var size: String = "medium"        // small | medium | large
+    var posY: Double? = nil            // canvas-drag override (fraction of height); nil = word
+    var scale: Double? = nil           // pinch override (font multiplier); nil = word
+    var accent: String? = nil          // #RRGGBB; nil = the style's own default
+    var uppercase: Bool = false
+    var font: String = "inter"         // inter | archivo | baloo
+    var grouping: String = "line"      // word | phrase | line
 }
 
 struct EditorVolumeRange: Equatable {
@@ -56,6 +107,7 @@ struct EditorDocument: Equatable {
     var style: String = "talking_head"
     var formatId: String = "myth-buster"
     var captionStyle: String = "clean"
+    var captionOptions = EditorCaptionOptions()
     var segments: [EditorSegment] = []
     var drops: [EditorDrop] = []
     var captions: [EditorCaption] = []
@@ -64,6 +116,8 @@ struct EditorDocument: Equatable {
     var music: EditorMusic? = nil
     var segmentOrder: [Int]? = nil        // permutation of segment indices; nil = source order
     var speechFrames: [Int] = []          // for the L1 music duck-under-voice sim
+    var transitions: [EditorTransition] = []
+    var look = EditorLook()
 
     // MARK: JSON <-> document (parses the GET /v1/clips/{id} `edl` object)
 
@@ -73,9 +127,23 @@ struct EditorDocument: Equatable {
         style = edl["style"] as? String ?? "talking_head"
         formatId = edl["format_id"] as? String ?? "myth-buster"
         captionStyle = edl["caption_style"] as? String ?? "clean"
+        if let co = edl["caption_options"] as? [String: Any] {
+            captionOptions = EditorCaptionOptions(
+                position: co["position"] as? String ?? "bottom",
+                size: co["size"] as? String ?? "medium",
+                posY: co["pos_y"] as? Double,
+                scale: co["scale"] as? Double,
+                accent: co["accent"] as? String,
+                uppercase: co["uppercase"] as? Bool ?? false,
+                font: co["font"] as? String ?? "inter",
+                grouping: co["grouping"] as? String ?? "line")
+        }
         segments = (edl["segments"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
-            return EditorSegment(srcIn: a, srcOut: b)
+            return EditorSegment(srcIn: a, srcOut: b, speed: $0["speed"] as? Double ?? 1.0,
+                                 txScale: $0["tx_scale"] as? Double ?? 1.0,
+                                 txX: $0["tx_x"] as? Double ?? 0.0,
+                                 txY: $0["tx_y"] as? Double ?? 0.0)
         }
         drops = (edl["drops"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
@@ -88,10 +156,33 @@ struct EditorDocument: Equatable {
         overlays = (edl["overlays"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
             return EditorOverlay(type: $0["type"] as? String ?? "punch_in", srcIn: a, srcOut: b,
-                                 scale: ($0["scale"] as? Double) ?? 1.08, text: $0["text"] as? String ?? "")
+                                 scale: ($0["scale"] as? Double) ?? 1.08, text: $0["text"] as? String ?? "",
+                                 posX: $0["pos_x"] as? Double ?? 0.5,
+                                 posY: $0["pos_y"] as? Double ?? 0.5,
+                                 rotation: $0["rotation"] as? Double ?? 0,
+                                 color: $0["color"] as? String,
+                                 bg: $0["bg"] as? String ?? "none",
+                                 font: $0["font"] as? String ?? "inter")
         }
         if let order = edl["segment_order"] as? [Int] { segmentOrder = order }
         speechFrames = edl["speech_frames"] as? [Int] ?? []
+        transitions = (edl["transitions"] as? [[String: Any]] ?? []).compactMap {
+            guard let a = $0["after_segment"] as? Int else { return nil }
+            return EditorTransition(afterSegment: a, style: $0["style"] as? String ?? "fade_black",
+                                    frames: $0["frames"] as? Int ?? 12)
+        }
+        if let lk = edl["look"] as? [String: Any] {
+            var adj = EditorAdjust()
+            if let a = lk["adjust"] as? [String: Any] {
+                adj = EditorAdjust(brightness: a["brightness"] as? Double ?? 0,
+                                   contrast: a["contrast"] as? Double ?? 0,
+                                   saturation: a["saturation"] as? Double ?? 0,
+                                   temperature: a["temperature"] as? Double ?? 0,
+                                   vignette: a["vignette"] as? Double ?? 0)
+            }
+            look = EditorLook(filter: lk["filter"] as? String,
+                              intensity: lk["intensity"] as? Double ?? 1.0, adjust: adj)
+        }
         if let audio = edl["audio"] as? [String: Any] {
             if let m = audio["music"] as? [String: Any], let url = m["url"] as? String, !url.isEmpty {
                 music = EditorMusic(url: url, volume: (m["volume"] as? Double) ?? 0.15,
@@ -107,28 +198,38 @@ struct EditorDocument: Equatable {
 
     // MARK: Derived timeline (port of _kept_intervals + segment_order walk, edl.py:277-317)
 
-    /// Kept source intervals in PLAY order — segments (in segment_order) minus drops.
-    var keptIntervals: [(srcIn: Int, srcOut: Int)] {
+    /// Kept source intervals in PLAY order — segments (in segment_order) minus drops —
+    /// each carrying its segment's playback speed (output duration = kept/speed).
+    var keptIntervalsWithSpeed: [(srcIn: Int, srcOut: Int, speed: Double)] {
         let order = segmentOrder ?? Array(segments.indices)
         let dropRanges = drops.filter { $0.srcOut > $0.srcIn }
             .map { ($0.srcIn, $0.srcOut) }.sorted { $0.0 < $1.0 }
-        var out: [(Int, Int)] = []
+        var out: [(Int, Int, Double)] = []
         for idx in order where segments.indices.contains(idx) {
+            let speed = min(3.0, max(0.5, segments[idx].speed))
             var cur = segments[idx].srcIn
             let end = segments[idx].srcOut
             for (dIn, dOut) in dropRanges {
                 if dOut <= cur || dIn >= end { continue }
-                if dIn > cur { out.append((cur, min(dIn, end))) }
+                if dIn > cur { out.append((cur, min(dIn, end), speed)) }
                 cur = max(cur, dOut)
                 if cur >= end { break }
             }
-            if cur < end { out.append((cur, end)) }
+            if cur < end { out.append((cur, end, speed)) }
         }
-        return out.filter { $0.1 > $0.0 }.map { (srcIn: $0.0, srcOut: $0.1) }
+        return out.filter { $0.1 > $0.0 }.map { (srcIn: $0.0, srcOut: $0.1, speed: $0.2) }
+    }
+
+    var keptIntervals: [(srcIn: Int, srcOut: Int)] {
+        keptIntervalsWithSpeed.map { (srcIn: $0.srcIn, srcOut: $0.srcOut) }
     }
 
     var totalKeptFrames: Int { keptIntervals.reduce(0) { $0 + ($1.srcOut - $1.srcIn) } }
-    var outputSeconds: Double { framesToSeconds(totalKeptFrames) }
+    /// True OUTPUT frame count — speed-adjusted (the twin of the backend's out_cursor).
+    var totalOutputFrames: Int {
+        keptIntervalsWithSpeed.reduce(0) { $0 + outputFrames($1.srcOut - $1.srcIn, speed: $1.speed) }
+    }
+    var outputSeconds: Double { framesToSeconds(totalOutputFrames) }
 
     /// The kept sub-range of a segment after drops: first & last kept SOURCE frame and the kept
     /// frame count. The timeline renders cells at this size (not raw srcOut-srcIn) so a trim —
@@ -149,14 +250,18 @@ struct EditorDocument: Equatable {
         return kept > 0 ? (first, last, kept) : nil
     }
 
-    /// Output-time (seconds) -> source-time (seconds). The Swift twin of map_point (edl.py).
+    /// Output-time (seconds) -> source-time (seconds). The Swift twin of map_point
+    /// (edl.py) — speed-aware: output frames inside an interval advance speed× in source.
     func sourceSeconds(forOutput outputSec: Double) -> Double {
         var acc = 0
         let target = secondsToFrame(outputSec)
-        for iv in keptIntervals {
-            let len = iv.srcOut - iv.srcIn
-            if target < acc + len { return framesToSeconds(iv.srcIn + (target - acc)) }
-            acc += len
+        for iv in keptIntervalsWithSpeed {
+            let outLen = outputFrames(iv.srcOut - iv.srcIn, speed: iv.speed)
+            if target < acc + outLen {
+                let srcOffset = Int((Double(target - acc) * iv.speed).rounded(.toNearestOrEven))
+                return framesToSeconds(min(iv.srcOut - 1, iv.srcIn + srcOffset))
+            }
+            acc += outLen
         }
         return framesToSeconds(keptIntervals.last?.srcOut ?? 0)
     }
@@ -168,11 +273,12 @@ struct EditorDocument: Equatable {
     func outputSpan(srcIn: Int, srcOut: Int) -> (start: Double, end: Double)? {
         var acc = 0
         var found: (Int, Int)? = nil
-        for iv in keptIntervals {
+        for iv in keptIntervalsWithSpeed {
             let a = max(iv.srcIn, srcIn), b = min(iv.srcOut, srcOut)
+            let outLen = outputFrames(iv.srcOut - iv.srcIn, speed: iv.speed)
             if b > a {
-                let start = acc + (a - iv.srcIn)
-                let end = start + (b - a)
+                let start = acc + Int((Double(a - iv.srcIn) / iv.speed).rounded(.toNearestOrEven))
+                let end = start + outputFrames(b - a, speed: iv.speed)
                 if let f = found {
                     if f.1 == start { found = (f.0, end) }   // contiguous in output — merge
                     else { break }                            // discontiguous — first span wins
@@ -180,9 +286,44 @@ struct EditorDocument: Equatable {
                     found = (start, end)
                 }
             }
-            acc += iv.srcOut - iv.srcIn
+            acc += outLen
         }
         guard let f = found else { return nil }
         return (framesToSeconds(f.0), framesToSeconds(f.1))
+    }
+
+    /// Output boundary (seconds) where this segment's last kept footage ends — the
+    /// anchor a transition dip centers on. nil when the segment keeps nothing.
+    func outputBoundary(afterSegment idx: Int) -> Double? {
+        guard segments.indices.contains(idx) else { return nil }
+        var acc = 0
+        var best: Int? = nil
+        let order = segmentOrder ?? Array(segments.indices)
+        for (walkPos, segIdx) in order.enumerated() where segments.indices.contains(segIdx) {
+            _ = walkPos
+            for iv in keptIntervalsForSegment(segIdx) {
+                let outLen = outputFrames(iv.1 - iv.0, speed: min(3.0, max(0.5, segments[segIdx].speed)))
+                if segIdx == idx { best = acc + outLen }
+                acc += outLen
+            }
+        }
+        guard let b = best, b < totalOutputFrames else { return nil }   // final clip: no dip
+        return framesToSeconds(b)
+    }
+
+    /// This segment's kept sub-intervals in play position (helper for outputBoundary).
+    private func keptIntervalsForSegment(_ idx: Int) -> [(Int, Int)] {
+        let s = segments[idx]
+        let dropRanges = drops.filter { $0.srcOut > $0.srcIn }.map { ($0.srcIn, $0.srcOut) }.sorted { $0.0 < $1.0 }
+        var out: [(Int, Int)] = []
+        var cur = s.srcIn
+        for (dIn, dOut) in dropRanges {
+            if dOut <= cur || dIn >= s.srcOut { continue }
+            if dIn > cur { out.append((cur, min(dIn, s.srcOut))) }
+            cur = max(cur, dOut)
+            if cur >= s.srcOut { break }
+        }
+        if cur < s.srcOut { out.append((cur, s.srcOut)) }
+        return out.filter { $0.1 > $0.0 }
     }
 }

@@ -17,7 +17,7 @@ final class EditorPlayerController {
     var currentOutputTime: Double = 0        // seconds along the OUTPUT (edited) timeline
     var totalOutputTime: Double = 0
 
-    private var intervals: [(srcIn: Int, srcOut: Int)] = []
+    private var intervals: [(srcIn: Int, srcOut: Int, speed: Double)] = []
     private var timeObserver: Any?
     private var boundaryObserver: Any?
     private var placeholderClock: Timer?         // I-7: synthetic playhead for keyless mode
@@ -46,7 +46,7 @@ final class EditorPlayerController {
 
     /// Rebuild the interval map after any draft change; preserves the playhead when possible.
     func update(document: EditorDocument) {
-        intervals = document.keptIntervals
+        intervals = document.keptIntervalsWithSpeed
         totalOutputTime = document.outputSeconds
         currentOutputTime = min(currentOutputTime, totalOutputTime)
         // UX-3: preview honors the draft's audio — mute/volume ranges + the picked music.
@@ -122,7 +122,11 @@ final class EditorPlayerController {
         }
         guard !intervals.isEmpty else { return }
         isPlaying = true
-        seek(toOutput: currentOutputTime) { [weak self] in self?.player.play() }
+        seek(toOutput: currentOutputTime) { [weak self] in
+            guard let self else { return }
+            self.player.play()
+            self.applyRate(atSourceFrame: secondsToFrame(self.player.currentTime().seconds))
+        }
         musicPlayer?.play()
         installBoundaryObserver()
     }
@@ -171,9 +175,12 @@ final class EditorPlayerController {
         var acc = 0
         let target = secondsToFrame(outputSec)
         for iv in intervals {
-            let len = iv.srcOut - iv.srcIn
-            if target < acc + len { return framesToSeconds(iv.srcIn + (target - acc)) }
-            acc += len
+            let outLen = outputFrames(iv.srcOut - iv.srcIn, speed: iv.speed)
+            if target < acc + outLen {
+                let srcOffset = Int((Double(target - acc) * iv.speed).rounded(.toNearestOrEven))
+                return framesToSeconds(min(iv.srcOut - 1, iv.srcIn + srcOffset))
+            }
+            acc += outLen
         }
         return framesToSeconds(intervals.last?.srcOut ?? 0)
     }
@@ -184,8 +191,11 @@ final class EditorPlayerController {
         let srcFrame = secondsToFrame(srcSec)
         var acc = 0
         for iv in intervals {
-            if srcFrame >= iv.srcIn && srcFrame < iv.srcOut { return framesToSeconds(acc + (srcFrame - iv.srcIn)) }
-            acc += iv.srcOut - iv.srcIn
+            if srcFrame >= iv.srcIn && srcFrame < iv.srcOut {
+                let outOffset = Int((Double(srcFrame - iv.srcIn) / iv.speed).rounded(.toNearestOrEven))
+                return framesToSeconds(acc + outOffset)
+            }
+            acc += outputFrames(iv.srcOut - iv.srcIn, speed: iv.speed)
         }
         return currentOutputTime
     }
@@ -199,6 +209,7 @@ final class EditorPlayerController {
             // If we've run past the current kept interval, jump to the next one.
             let srcFrame = secondsToFrame(srcSec)
             self.applyVolume(atSourceFrame: srcFrame)      // UX-3: live mute/volume/duck
+            self.applyRate(atSourceFrame: srcFrame)        // per-clip speed in preview
             if let iv = self.currentInterval(srcFrame: srcFrame), srcFrame >= iv.srcOut - 1 {
                 self.advanceToNextInterval(after: iv)
                 return
@@ -220,16 +231,26 @@ final class EditorPlayerController {
         }
     }
 
-    private func currentInterval(srcFrame: Int) -> (srcIn: Int, srcOut: Int)? {
+    private func currentInterval(srcFrame: Int) -> (srcIn: Int, srcOut: Int, speed: Double)? {
         intervals.first { srcFrame >= $0.srcIn && srcFrame < $0.srcOut }
     }
 
-    private func advanceToNextInterval(after iv: (srcIn: Int, srcOut: Int)) {
+    /// Set the player rate to the interval's speed (CapCut per-clip speed in preview).
+    private func applyRate(atSourceFrame f: Int) {
+        guard isPlaying else { return }
+        let speed = currentInterval(srcFrame: f)?.speed ?? 1.0
+        if abs(Double(player.rate) - speed) > 0.01 { player.rate = Float(speed) }
+    }
+
+    private func advanceToNextInterval(after iv: (srcIn: Int, srcOut: Int, speed: Double)) {
         guard let i = intervals.firstIndex(where: { $0.srcIn == iv.srcIn && $0.srcOut == iv.srcOut }) else { return }
         if i + 1 < intervals.count {
             let next = intervals[i + 1]
             player.seek(to: CMTime(seconds: framesToSeconds(next.srcIn), preferredTimescale: 600),
-                        toleranceBefore: .zero, toleranceAfter: .zero)
+                        toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                guard let self, self.isPlaying else { return }
+                self.player.rate = Float(next.speed)      // carry the next clip's speed
+            }
         } else {
             pause(); currentOutputTime = totalOutputTime   // UX-6: park at the end
         }

@@ -23,6 +23,10 @@ struct EditorTimeline: View {
     var onTapPhrase: (CaptionPhrase) -> Void = { _ in }
     var onTapMusic: () -> Void = {}
     var onTapVoice: (Int) -> Void = { _ in }
+    // Transition diamonds at clip boundaries (CapCut's between-clips square): tapping
+    // one selects that boundary; the context strip offers the dip styles.
+    var selectedBoundary: Int? = nil          // source segIdx of the LEADING clip
+    var onTapBoundary: (Int) -> Void = { _ in }
 
     @State private var dragBaseOffset: CGFloat?
     @GestureState private var pinch: CGFloat = 1
@@ -33,19 +37,23 @@ struct EditorTimeline: View {
     @State private var snapTick = 0
     @State private var lastSnapIndex: Int? = nil
 
-    // Play-order clips = (sourceSegmentIndex, KEPT bounds after drops, kept frame count).
+    // Play-order clips = (sourceSegmentIndex, KEPT bounds after drops, kept frame count, speed).
     // Using kept bounds (not raw srcIn/srcOut) means a trim — which drops an interior range
     // without moving the segment boundary — visibly shrinks the cell + its duration label.
-    private var clips: [(segIdx: Int, srcIn: Int, srcOut: Int, keptFrames: Int)] {
+    // Cell WIDTH reflects OUTPUT duration (kept/speed) so a sped-up clip visibly shortens.
+    private var clips: [(segIdx: Int, srcIn: Int, srcOut: Int, keptFrames: Int, speed: Double)] {
         let order = document.segmentOrder ?? Array(document.segments.indices)
         return order.compactMap { idx in
             guard let kb = document.keptBounds(ofSegment: idx) else { return nil }   // fully-dropped → hidden
-            return (idx, kb.first, kb.last, kb.frames)
+            return (idx, kb.first, kb.last, kb.frames, min(3.0, max(0.5, document.segments[idx].speed)))
         }
     }
 
     private var totalSeconds: Double { document.outputSeconds }
     private func width(_ frames: Int) -> CGFloat { CGFloat(framesToSeconds(frames)) * pointsPerSecond }
+    private func width(_ frames: Int, speed: Double) -> CGFloat {
+        CGFloat(framesToSeconds(outputFrames(frames, speed: speed))) * pointsPerSecond
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -58,9 +66,10 @@ struct EditorTimeline: View {
                     ruler(width: geo.size.width)
                     HStack(spacing: 3) {
                         ForEach(Array(clips.enumerated()), id: \.offset) { pos, c in
-                            clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut, keptFrames: c.keptFrames)
+                            clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut, keptFrames: c.keptFrames, speed: c.speed)
                         }
                     }
+                    .overlay(alignment: .topLeading) { transitionDiamonds }
                     // CapCut lane order: captions directly under video, then effects, then audio.
                     if captionsOn, !phrases.isEmpty { captionLane }
                     if !document.overlays.isEmpty { overlayLane }   // zoom blocks + text cards
@@ -87,6 +96,36 @@ struct EditorTimeline: View {
                 }
             }
             .sensoryFeedback(.selection, trigger: snapTick)
+        }
+    }
+
+    /// One diamond per clip boundary, centered on the seam. Filled accent when that
+    /// boundary carries a transition; hollow otherwise. Tap → boundary selection.
+    @ViewBuilder private var transitionDiamonds: some View {
+        let cs = clips
+        ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: 1, height: 1)
+            ForEach(0..<max(0, cs.count - 1), id: \.self) { i in
+                let x = cs[0...i].reduce(CGFloat(0)) { acc, c in
+                    acc + max(30, width(previewFrames(segIdx: c.segIdx, base: c.keptFrames,
+                                                      srcIn: c.srcIn, srcOut: c.srcOut), speed: c.speed)) + 3
+                } - 1.5
+                let leading = cs[i].segIdx
+                let has = document.transitions.contains { $0.afterSegment == leading }
+                let selected = selectedBoundary == leading
+                Button { onTapBoundary(leading) } label: {
+                    Image(systemName: has ? "square.fill" : "square")
+                        .font(.system(size: 8, weight: .bold))
+                        .rotationEffect(.degrees(45))
+                        .foregroundStyle(selected ? Palette.night : (has ? Palette.night : .white.opacity(0.8)))
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(selected ? Palette.accent : (has ? Color(hex: 0xFFD60A) : Color.black.opacity(0.6))))
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .offset(x: x - 9, y: 19)
+                .accessibilityIdentifier("editorPro.boundary.\(i)")
+            }
         }
     }
 
@@ -119,10 +158,10 @@ struct EditorTimeline: View {
         return min(maxGrow, max(30, adjusted))
     }
 
-    @ViewBuilder private func clipCell(pos: Int, segIdx: Int, srcIn: Int, srcOut: Int, keptFrames: Int) -> some View {
+    @ViewBuilder private func clipCell(pos: Int, segIdx: Int, srcIn: Int, srcOut: Int, keptFrames: Int, speed: Double) -> some View {
         let frames = previewFrames(segIdx: segIdx, base: keptFrames, srcIn: srcIn, srcOut: srcOut)
         let trimming = trimPreview?.segIdx == segIdx
-        let w = max(30, width(frames))
+        let w = max(30, width(frames, speed: speed))
         let selected = selectedSeg == segIdx
         // I-7: dim the other clips when one is selected so the target is unmistakable.
         let dimmed = selectedSeg != nil && !selected
@@ -137,11 +176,22 @@ struct EditorTimeline: View {
         // Duration label — every editor shows clip lengths; hide on slivers.
         .overlay(alignment: .bottomTrailing) {
             if w >= 44 {
-                Text(String(format: "%.1fs", Double(frames) / 30.0))
+                Text(String(format: "%.1fs", Double(outputFrames(frames, speed: speed)) / 30.0))
                     .font(.system(size: 8, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(.white.opacity(0.9))
                     .padding(.horizontal, 4).padding(.vertical, 1.5)
                     .background(Color.black.opacity(0.45)).clipShape(Capsule())
+                    .padding(3)
+            }
+        }
+        // Speed badge — a retimed clip must say so (CapCut shows "2x" on the cell).
+        .overlay(alignment: .topLeading) {
+            if abs(speed - 1.0) > 0.01 {
+                Text(String(format: speed.truncatingRemainder(dividingBy: 1) == 0 ? "%.0fx" : "%.1fx", speed))
+                    .font(.system(size: 8, weight: .bold)).monospacedDigit()
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 4).padding(.vertical, 1.5)
+                    .background(Color(hex: 0xFFD60A)).clipShape(Capsule())
                     .padding(3)
             }
         }
@@ -150,7 +200,7 @@ struct EditorTimeline: View {
         // Floating duration badge while trimming — the live feedback that was missing.
         .overlay(alignment: edgeAlignment) {
             if trimming {
-                Text(String(format: "%.1fs", Double(frames) / 30.0))
+                Text(String(format: "%.1fs", Double(outputFrames(frames, speed: speed)) / 30.0))
                     .font(.system(size: 11, weight: .bold)).monospacedDigit()
                     .foregroundStyle(.black)
                     .padding(.horizontal, 7).padding(.vertical, 3)
@@ -197,7 +247,7 @@ struct EditorTimeline: View {
             ForEach(Array(clips.enumerated()), id: \.offset) { _, c in
                 let frames = previewFrames(segIdx: c.segIdx, base: c.keptFrames, srcIn: c.srcIn, srcOut: c.srcOut)
                 VoiceStrip(srcIn: c.srcIn, srcOut: c.srcOut,
-                           width: max(30, width(frames)),
+                           width: max(30, width(frames, speed: c.speed)),
                            volume: effectiveVolume(srcIn: c.srcIn, srcOut: c.srcOut),
                            speechFrames: speechFrameSet)
                     .onTapGesture { onTapVoice(c.segIdx) }
@@ -312,7 +362,7 @@ struct EditorTimeline: View {
         var acc = 0.0
         var out: [Double] = [0]
         for c in clips {
-            acc += framesToSeconds(c.keptFrames)
+            acc += framesToSeconds(outputFrames(c.keptFrames, speed: c.speed))
             out.append(acc)
         }
         return out

@@ -1,0 +1,57 @@
+appId: com.getmarque.app
+name: Caption customizer — knobs render, sim reacts, save round-trips
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+# Text mode → the caption options row appears under the presets row
+- tapOn: { id: "editorPro.mode.text" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.captionOptions" }
+    timeout: 4000
+- takeScreenshot: /tmp/cap-01-row
+# Karaoke style (scroll the presets row first — Add text lengthened it) + knobs:
+# green accent, ALL CAPS, word-by-word, Impact font; size/position are canvas
+# gestures now (covered by the drag below + feature-pack.yaml).
+- swipe:
+    start: "85%, 81%"
+    end: "15%, 81%"
+    duration: 400
+- tapOn: { id: "editorPro.capStyle.karaoke" }
+- tapOn: { id: "editorPro.capAccent.#34D399" }
+- tapOn: { id: "editorPro.capCase" }
+- swipe:
+    start: "85%, 86%"
+    end: "15%, 86%"
+    duration: 400
+- tapOn: { id: "editorPro.capGroup.word" }
+- tapOn: { id: "editorPro.capFont.archivo" }
+- swipe:
+    from: { id: "editorPro.captionSim" }
+    direction: UP
+    duration: 600
+- takeScreenshot: /tmp/cap-02-knobs
+# Save → non-structural ops → Render → keyless tweak applies → back on the clip sheet
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil:
+    visible: { id: "clip.editManual" }
+    timeout: 90000
+# Reopen: options must have round-tripped through the server EDL
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.mode.text" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.captionOptions" }
+    timeout: 4000
+- takeScreenshot: /tmp/cap-03-reopened
