@@ -1314,3 +1314,255 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
         results.append({"type": t, "applied": applied, "reason": reason})
 
     return edl, results
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — "LLM decides, code assembles". assemble_edl() turns a typed EDIT PLAN
+# (prompts.EDIT_PLAN_JSON_SCHEMA) into a full EDL. The model never authors captions,
+# filler drops, or b-roll frame math again — those are enforced here in code.
+# ---------------------------------------------------------------------------
+
+# B-roll grammar (frames @30fps) — the numbers live in knowledge/broll.md; mirrored here
+# because the assembler must ENFORCE them, not just prompt for them.
+_BROLL_JCUT_LEAD = 12
+_BROLL_MIN_HOLD, _BROLL_MAX_HOLD = 60, 90     # 2–3s
+_BROLL_MIN_SPACING = 90                        # ≥3s between cutaways
+_BROLL_HOOK_PROTECT = 90                        # no b-roll over the hook (face styles)
+_BROLL_CTA_PROTECT = 60                         # …or the CTA
+_FACELESS_STYLES = {"faceless"}                # b-roll IS the visual channel → hook coverage ok
+_PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
+_PUNCH_HOLD = 30
+_TEXTCARD_HOLD = 60
+
+
+def _clamp_range(a: int, b: int, lo: int, hi: int) -> tuple[int, int] | None:
+    a, b = max(lo, min(a, hi)), max(lo, min(b, hi))
+    if b <= a:
+        return None
+    return a, b
+
+
+def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
+                 prefs: dict | None = None, brief: dict | None = None) -> EDL:
+    """Pure function: (typed plan, transcript words) -> a valid EDL.
+
+    Guarantees the LLM cannot violate:
+      - captions ALWAYS derived from the cleaned word list (never from the plan);
+      - deterministic filler/dead-air drops always win (strip_fillers);
+      - cut boundaries snap to word boundaries (±3 frames via snap_to_word);
+      - b-roll grammar enforced in code (J-cut lead, 2–3s holds, ≥3s spacing, hook/CTA
+        protection for face styles);
+      - min-clip guard + clamps + layout synthesis + speech_frames regeneration.
+    """
+    plan = plan or {}
+    prefs = prefs or {}
+    total = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000)) if words else 30000
+
+    # --- drops: deterministic fillers + editorial cuts, all snapped + clamped ---
+    clean_words, filler_drops = strip_fillers(words)
+    drops: list[dict] = [d.model_dump() for d in filler_drops]
+    if prefs.get("filler_trim") == "off":
+        drops = []
+    for c in (plan.get("cuts") or []):
+        rng = c.get("range") or []
+        if len(rng) != 2:
+            continue
+        s_in = snap_to_word(_frame_to_ms(rng[0]), words, "start")
+        s_out = snap_to_word(_frame_to_ms(rng[1]), words, "end")
+        cl = _clamp_range(s_in, s_out, 0, total)
+        if cl:
+            reason = c.get("reason") or "false_start"
+            reason = reason if reason in ("filler", "dead_air", "false_start") else "false_start"
+            drops.append({"src_in": cl[0], "src_out": cl[1], "reason": reason})
+    # brief editorial cuts (flub/ramble/tangent) also honored
+    for cr in ((brief or {}).get("cut_regions") or []):
+        if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
+            cl = _clamp_range(cr["start_frame"], cr["end_frame"], 0, total)
+            if cl:
+                drops.append({"src_in": cl[0], "src_out": cl[1], "reason": "false_start"})
+    drops = _coalesce_drops(drops)
+
+    # --- segments: keeps (or whole take), snapped/clamped/merged, monotonic ---
+    keeps = []
+    for k in (plan.get("keeps") or []):
+        if len(k) == 2:
+            cl = _clamp_range(snap_to_word(_frame_to_ms(k[0]), words, "start"),
+                              snap_to_word(_frame_to_ms(k[1]), words, "end"), 0, total)
+            if cl:
+                keeps.append(cl)
+    if not keeps:
+        keeps = [(0, total)]
+    keeps.sort()
+    merged = [list(keeps[0])]
+    for a, b in keeps[1:]:
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+
+    # --- open_on: pull a buried hook forward by dropping the pre-hook intro ---
+    open_on = plan.get("open_on") or {}
+    hook_start = open_on.get("start")
+    if isinstance(hook_start, int) and hook_start > _BROLL_HOOK_PROTECT and merged and hook_start < merged[-1][1]:
+        # only when the hook sits meaningfully after the first kept frame
+        if hook_start > merged[0][0] + _BROLL_HOOK_PROTECT:
+            drops.append({"src_in": merged[0][0], "src_out": hook_start, "reason": "false_start"})
+            drops = _coalesce_drops(drops)
+
+    segments = [{"src_in": a, "src_out": b} for a, b in merged]
+
+    # --- captions: ALWAYS from the cleaned words (never the plan) ---
+    captions = [
+        {"word": w["word"], "frame": ms_to_frame(w.get("start_ms", 0)),
+         "end_frame": ms_to_frame(w["end_ms"]) if w.get("end_ms") else None}
+        for w in clean_words if w.get("word")
+    ]
+
+    # --- b-roll: grammar enforced in code ---
+    broll: list[dict] = []
+    if prefs.get("broll") is not False:
+        face_style = style not in _FACELESS_STYLES
+        last_out = None
+        for b in (plan.get("broll") or []):
+            rng = b.get("range") or []
+            if len(rng) != 2:
+                continue
+            cue_f = int(rng[0])
+            s_in = max(0, cue_f - _BROLL_JCUT_LEAD)                 # J-cut lead
+            hold = max(_BROLL_MIN_HOLD, min(_BROLL_MAX_HOLD, int(rng[1]) - int(rng[0]) or _BROLL_MIN_HOLD))
+            s_out = min(total, s_in + hold)
+            if face_style and s_in < _BROLL_HOOK_PROTECT:           # protect the hook face
+                continue
+            if face_style and s_out > total - _BROLL_CTA_PROTECT:   # protect the CTA face
+                continue
+            if last_out is not None and s_in - last_out < _BROLL_MIN_SPACING:   # spacing
+                continue
+            if s_out - s_in < _BROLL_MIN_HOLD:
+                continue
+            broll.append({"src_in": s_in, "src_out": s_out, "cue_text": b.get("cue", ""),
+                          "broll_query": b.get("query") or b.get("cue", ""),
+                          "source": b.get("source") if b.get("source") in ("stock", "own_media") else "stock"})
+            last_out = s_out
+
+    # --- overlays: punch-ins + text cards ---
+    overlays: list[dict] = []
+    if prefs.get("punch_ins") is not False and style in _PUNCH_STYLES:
+        for p in (plan.get("punch_ins") or []):
+            f = int(p.get("frame", 0))
+            cl = _clamp_range(f, f + _PUNCH_HOLD, 0, total)
+            if cl:
+                scale = max(_PUNCH_SCALE_MIN, min(_PUNCH_SCALE_MAX, float(p.get("scale") or 1.08)))
+                overlays.append({"type": "punch_in", "src_in": cl[0], "src_out": cl[1],
+                                 "scale": scale, "text": ""})
+    if style in _TEXTCARD_STYLES:
+        for tc in (plan.get("text_cards") or []):
+            f = int(tc.get("frame", 0))
+            cl = _clamp_range(f, f + _TEXTCARD_HOLD, 0, total)
+            if cl and tc.get("text"):
+                overlays.append({"type": "text_card", "src_in": cl[0], "src_out": cl[1],
+                                 "scale": 1.0, "text": str(tc["text"])[:200]})
+
+    # --- caption plan → options/style (prefs override) ---
+    cp = plan.get("caption_plan") or {}
+    caption_style = prefs.get("caption_style") or cp.get("style") or "clean"
+    grouping = cp.get("grouping") if cp.get("grouping") in ("word", "phrase", "line") else "phrase"
+    caption_options = {"grouping": grouping,
+                       "highlight_words": [str(w).lower() for w in (cp.get("highlight_words") or [])][:12]}
+    if prefs.get("auto_captions") is False:
+        captions = []
+
+    # --- segment_order: only a valid permutation of the segment count ---
+    order = plan.get("order")
+    segment_order = None
+    if isinstance(order, list) and len(order) == len(segments) and sorted(order) == list(range(len(segments))):
+        segment_order = order
+
+    # --- layout synthesis ---
+    layout = {"style": style}
+    if style == "split_three":
+        layout["panels"] = 3
+
+    edl = EDL(
+        style=style, format_id=format_id or "myth-buster",
+        segments=[Segment(**s) for s in segments],
+        drops=[Drop(**d) for d in drops],
+        captions=[CaptionWord(**c) for c in captions],
+        speech_frames=[ms_to_frame(w.get("start_ms", 0)) for w in clean_words if w.get("word")],
+        overlays=[Overlay(**o) for o in overlays],
+        broll=[BRoll(**b) for b in broll],
+        layout=Layout(**layout),
+        audio=Audio(lufs_target=-14.0),
+        caption_style=caption_style,
+        caption_options=CaptionOptions(**caption_options),
+        segment_order=segment_order,
+    )
+    return edl
+
+
+def _frame_to_ms(frame: int) -> int:
+    """Inverse of ms_to_frame (30fps) — for snapping plan frame anchors back to words."""
+    return int(round(frame * 1000.0 / 30.0))
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — deterministic invariant checker (the edl_verify_prompt checklist as code).
+# Returns hard-issue strings; empty == pass. The LLM verify is reserved for reorder
+# coherence only (a judgment call code can't make).
+# ---------------------------------------------------------------------------
+
+def check_edl_invariants(edl: dict, words: list[dict] | None = None) -> list[str]:
+    issues: list[str] = []
+    segments = edl.get("segments") or []
+    drops = edl.get("drops") or []
+    last_frame = ms_to_frame(max((w.get("end_ms", 0) for w in (words or [])), default=30000)) if words else None
+
+    if not segments:
+        issues.append("no segments")
+        return issues
+
+    # segment/drop sanity + bounds
+    prev_out = -1
+    for i, s in enumerate(segments):
+        if s["src_out"] <= s["src_in"]:
+            issues.append(f"segment {i} has src_out<=src_in")
+        if last_frame is not None and s["src_out"] > last_frame + 1:
+            issues.append(f"segment {i} extends past source last frame")
+        if s["src_in"] < prev_out:
+            issues.append(f"segment {i} overlaps the previous segment")
+        prev_out = max(prev_out, s["src_out"])
+    for j, d in enumerate(drops):
+        if d["src_out"] <= d["src_in"]:
+            issues.append(f"drop {j} has src_out<=src_in")
+
+    # kept intervals for the "falls outside every kept segment" checks
+    kept = _kept_intervals(segments, drops)
+    def _in_kept(f: int) -> bool:
+        return any(a <= f < b for a, b in kept)
+
+    for k, ov in enumerate(edl.get("overlays") or []):
+        if not (_in_kept(ov["src_in"]) or any(a <= ov["src_out"] <= b for a, b in kept)):
+            issues.append(f"overlay {k} window falls outside every kept segment")
+    for m, b in enumerate(edl.get("broll") or []):
+        if not (_in_kept(b["src_in"]) or any(a <= b["src_out"] <= b2 for a, b2 in kept)):
+            issues.append(f"broll {m} window falls outside every kept segment")
+
+    # total kept duration plausibility (<3s is almost always a bug)
+    kept_frames = sum(b - a for a, b in kept)
+    if kept_frames < 90:
+        issues.append(f"kept duration {kept_frames}f < 3s")
+
+    # style-specific
+    style = edl.get("style")
+    if style != "duet_split" and (edl.get("react_source") or edl.get("react_schedule")):
+        issues.append("react_source/schedule present on a non-duet style")
+    if style == "split_three":
+        panels = (edl.get("layout") or {}).get("panels")
+        if panels != 3:
+            issues.append("split_three must have panels=3")
+
+    # segment_order must be a permutation
+    order = edl.get("segment_order")
+    if order is not None and sorted(order) != list(range(len(segments))):
+        issues.append("segment_order is not a valid permutation")
+
+    return issues

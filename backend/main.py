@@ -28,7 +28,8 @@ from contextlib import asynccontextmanager
 
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
-                     style_capabilities, TWEAK_OP_TYPES)
+                     style_capabilities, TWEAK_OP_TYPES,
+                     assemble_edl, check_edl_invariants)
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
@@ -3040,6 +3041,59 @@ async def _run_pipeline(job_id: str):
     await _run_edit(job_id, words)
 
 
+EDL_AUTHOR = os.environ.get("EDL_AUTHOR", "legacy").lower()   # plan | legacy (P3.3 rollout flag)
+
+
+async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[dict],
+                               prefs: dict, emphasis_spans: list | None) -> tuple[dict | None, bool]:
+    """P3 authoring path: the LLM emits a typed EDIT PLAN; code assembles the EDL. The
+    assembler can't emit an invalid EDL, so verification is deterministic (check_edl_
+    invariants) with the LLM reserved for reorder coherence only.
+
+    Returns (edl_dict | None, llm_contributed). `llm_contributed` is False when the LLM was
+    absent/down/returned nothing — the assembled EDL is then a generic whole-take cut, so the
+    caller flags `ai_edit_unavailable` (F13: never silently hand back an untailored edit).
+    None edl_dict means even assembly failed → caller uses the safe default."""
+    brief = job.get("edit_brief")
+    format_id = script.get("formatId", "myth-buster")
+    plan: dict = {}
+    if ANTHROPIC_KEY and AI_QUALITY:
+        try:
+            sys, usr = prompts.edit_plan_prompt(
+                style, words, script, job["brand"], brief=brief, dossier=job.get("dossier"),
+                emphasis_spans=emphasis_spans, custom_instructions=job.get("custom_instructions", ""),
+                reference=job.get("reference_reel") or None,
+                video_type=(brief or {}).get("video_type", ""))
+            plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
+        except HTTPException:
+            plan = {}
+    if not isinstance(plan, dict):
+        plan = {}
+    llm_contributed = bool(plan)   # a real plan came back → the edit is tailored
+    try:
+        edl_obj = assemble_edl(plan, words, style, format_id, prefs=prefs, brief=brief)
+    except Exception as e:
+        logging.warning("assemble_edl failed (%s) → safe default", e)
+        return None, llm_contributed
+    edl_data = edl_obj.model_dump()
+
+    # Deterministic verify. The assembler produces structurally-valid EDLs by construction,
+    # so only HARD structural issues (overlaps, out-of-bounds, invalid perm) justify bailing
+    # to the safe default — the "kept duration <3s" advisory is legitimate for a short take
+    # and bailing there would only lose the assembler's brief-cut folds for nothing.
+    issues = check_edl_invariants(edl_data, words)
+    hard = [i for i in issues if "kept duration" not in i]
+    if hard:
+        logging.warning("assemble_edl hard invariant issues %s → safe default", hard[:4])
+        return None, llm_contributed
+    # LLM verify reserved for reorder coherence — only when a non-identity reorder exists.
+    order = edl_data.get("segment_order")
+    if order is not None and order != list(range(len(edl_data.get("segments") or []))):
+        edl_data = await verify_and_repair_edl(style, edl_data, words, script,
+                                               emphasis_spans=emphasis_spans)
+    return edl_data, llm_contributed
+
+
 async def _run_edit(job_id: str, words: list[dict]):
     """Edit + render from an already-transcribed job. Shared by the full pipeline and
     the analyze-first /confirm stage. Always leaves the job + clips terminal."""
@@ -3081,60 +3135,71 @@ async def _run_edit(job_id: str, words: list[dict]):
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         used_safe_default = False
-        try:
-            # P0.9: author the EDL via structured outputs on Sonnet at temperature 0 —
-            # deterministic, no free-form JSON-parse failures, a real editing model instead
-            # of Haiku at temp 1.0. Falls back to the safe-default edit on LLM failure.
-            edl_data = await anthropic_json(system, user, prompts.EDL_JSON_SCHEMA,
-                                            SONNET, 4000, temperature=0.0)
-        except HTTPException:
-            # LLM down ≠ pipeline dead: the safe default edit (full footage +
-            # caption timing + deterministic filler cuts) still renders fine.
-            edl_data = None
-
-        if edl_data:
+        if EDL_AUTHOR == "plan":
+            # P3.3: LLM emits a typed plan; code assembles the EDL (captions, filler drops,
+            # brief cuts, b-roll grammar, prefs all enforced inside assemble_edl). No legacy
+            # post-processing needed — go straight to the shared render tail.
+            edl_data, llm_contributed = await _author_edl_via_plan(job, style, script, words, prefs, emphasis_spans)
+            if edl_data is None:
+                used_safe_default = True
+                total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
+                edl_data = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words).model_dump()
+            elif not llm_contributed:
+                # assembled a valid edit, but the LLM never contributed a plan → the creator
+                # got a generic whole-take cut, not a tailored edit (F13: surface it).
+                used_safe_default = True
+        else:
             try:
-                edl_obj = EDL(**edl_data)
-                edl_obj, issues = validate_and_repair(edl_obj)
-                edl_data = edl_obj.model_dump()
-            except Exception:
+                # P0.9: author the EDL via structured outputs on Sonnet at temperature 0 —
+                # deterministic, no free-form JSON-parse failures, a real editing model instead
+                # of Haiku at temp 1.0. Falls back to the safe-default edit on LLM failure.
+                edl_data = await anthropic_json(system, user, prompts.EDL_JSON_SCHEMA,
+                                                SONNET, 4000, temperature=0.0)
+            except HTTPException:
+                # LLM down ≠ pipeline dead: the safe default edit (full footage +
+                # caption timing + deterministic filler cuts) still renders fine.
+                edl_data = None
+
+            if edl_data:
+                try:
+                    edl_obj = EDL(**edl_data)
+                    edl_obj, issues = validate_and_repair(edl_obj)
+                    edl_data = edl_obj.model_dump()
+                except Exception:
+                    used_safe_default = True
+                    total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
+                    edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
+                    edl_data = edl_obj.model_dump()
+            else:
                 used_safe_default = True
                 total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
                 edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
                 edl_data = edl_obj.model_dump()
-        else:
-            used_safe_default = True
-            total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
-            edl_obj = safe_default_edl(style, script.get("formatId", "myth-buster"), total_frames, words)
-            edl_data = edl_obj.model_dump()
 
-        # F13: this used to be a silent degradation — the creator got a generic
-        # "keep everything, strip fillers" cut instead of a tailored AI edit with
-        # zero indication anything was different.
+            # Analyze-first: fold the edit brief's editorial cut_regions (flub/ramble/
+            # tangent — filler/dead-air are already deterministic) into the drops before
+            # the merge, so the confirmed edit reflects what the analysis found.
+            brief = job.get("edit_brief")
+            if brief:
+                for cr in brief.get("cut_regions", []):
+                    if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
+                        reason = "false_start" if cr["reason"] == "flub" else "off_topic"
+                        edl_data.setdefault("drops", []).append(
+                            {"src_in": cr["start_frame"], "src_out": cr["end_frame"], "reason": reason})
+            # Merge the deterministic filler drops in as source of truth (unless the
+            # creator turned trimming off), then self-verify + repair the EDL once.
+            if prefs.get("filler_trim") != "off":
+                edl_data["drops"] = _merge_drops(edl_data.get("drops", []),
+                                                 [d.model_dump() for d in filler_drops])
+            edl_data = await verify_and_repair_edl(style, edl_data, words, script,
+                                                   emphasis_spans=emphasis_spans)
+            edl_data = _apply_edit_prefs(edl_data, prefs, emphasis_spans=emphasis_spans)
+
+        # F13: safe-default degradation is surfaced, not silent (both author paths).
         if used_safe_default:
             for c in job["clips"]:
                 c.setdefault("warnings", []).append(
                     "ai_edit_unavailable: used a safe default cut (full take, fillers stripped)")
-
-        # Analyze-first: fold the edit brief's editorial cut_regions (flub/ramble/
-        # tangent — filler/dead-air are already deterministic) into the drops before
-        # the merge, so the confirmed edit reflects what the analysis found.
-        brief = job.get("edit_brief")
-        if brief:
-            for cr in brief.get("cut_regions", []):
-                if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
-                    reason = "false_start" if cr["reason"] == "flub" else "off_topic"
-                    edl_data.setdefault("drops", []).append(
-                        {"src_in": cr["start_frame"], "src_out": cr["end_frame"], "reason": reason})
-        # Merge the deterministic filler drops in as source of truth (unless the
-        # creator turned trimming off), then self-verify + repair the EDL once.
-        if prefs.get("filler_trim") != "off":
-            edl_data["drops"] = _merge_drops(edl_data.get("drops", []),
-                                             [d.model_dump() for d in filler_drops])
-        edl_data = await verify_and_repair_edl(style, edl_data, words, script,
-                                               emphasis_spans=emphasis_spans)
-
-        edl_data = _apply_edit_prefs(edl_data, prefs, emphasis_spans=emphasis_spans)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole

@@ -971,6 +971,99 @@ EDL_JSON_SCHEMA = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# Phase 3 — "LLM decides, code assembles". The model emits TYPED DECISIONS (this
+# schema), never a raw EDL; assemble_edl() (app/edl.py) turns them into the EDL.
+# Captions are NEVER authored here — the assembler always derives them from the
+# cleaned word list. Every frame the plan cites must exist in its inputs.
+# ---------------------------------------------------------------------------
+_RANGE = {"type": "array", "items": _INT, "minItems": 2, "maxItems": 2}
+EDIT_PLAN_JSON_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["open_on", "keeps", "cuts", "order", "punch_ins", "broll",
+                 "caption_plan", "text_cards", "music", "pacing_intent"],
+    "properties": {
+        "open_on": {"type": "object", "additionalProperties": False,
+                    "required": ["start", "end", "why"],
+                    "properties": {"start": _INT, "end": _INT, "why": _STR}},
+        "keeps": {"type": "array", "items": _RANGE},
+        "cuts": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["range", "reason", "quote"],
+            "properties": {"range": _RANGE,
+                           "reason": {"type": "string",
+                                      "enum": ["filler", "dead_air", "false_start", "ramble", "tangent", "off_topic"]},
+                           "quote": _STR}}},
+        "order": {"type": "array", "items": _INT},
+        "punch_ins": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["frame", "scale", "why"],
+            "properties": {"frame": _INT, "scale": _NUM, "why": _STR}}},
+        "broll": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["range", "cue", "query", "source"],
+            "properties": {"range": _RANGE, "cue": _STR, "query": _STR,
+                           "source": {"type": "string", "enum": ["stock", "own_media"]}}}},
+        "caption_plan": {"type": "object", "additionalProperties": False,
+            "required": ["style", "grouping", "highlight_words"],
+            "properties": {"style": {"type": "string", "enum": ["clean", "bold-word", "karaoke"]},
+                           "grouping": {"type": "string", "enum": ["word", "phrase", "line"]},
+                           "highlight_words": {"type": "array", "items": _STR}}},
+        "text_cards": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["frame", "text"],
+            "properties": {"frame": _INT, "text": _STR}}},
+        "music": {"type": "object", "additionalProperties": False,
+                  "required": ["wanted", "vibe"],
+                  "properties": {"wanted": {"type": "boolean"}, "vibe": _STR}},
+        "pacing_intent": _STR,
+    },
+}
+
+
+def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, brand: dict,
+                     brief: dict | None = None, dossier: dict | None = None,
+                     emphasis_spans: list | None = None, custom_instructions: str = "",
+                     reference: dict | None = None, video_type: str = "") -> tuple[str, str]:
+    """P3.1: ask the model for a typed EDIT PLAN (not an EDL). The assembler owns all
+    mechanics (captions, filler drops, b-roll grammar, min-clip, layout); the model owns
+    the editorial JUDGMENT (what to open on, what to cut and why, order, where punch-ins /
+    b-roll / text cards go, caption + music intent)."""
+    last_frame = ms_to_frame(max((w.get("end_ms", 0) for w in transcript_words), default=30000)) \
+        if transcript_words else 30000
+    kb_block = _kb.digest(style, video_type or (brief or {}).get("video_type", ""), "edit_plan")
+    brief_line = f"\nEDIT BRIEF (your editorial guide):\n{json.dumps(brief)[:2500]}\n" if brief else ""
+    dossier_block = _dossier_block(dossier)
+    dossier_line = f"\n{dossier_block}\n" if dossier_block else ""
+    ref_block = _reference_reel_block(reference)
+    ref_line = f"\n{ref_block}\n" if ref_block else ""
+    emph_line = f"\nHigh-emphasis regions (good punch-in targets): {_span_lines(emphasis_spans)}\n" if emphasis_spans else ""
+    custom_line = f"\nCREATOR'S CUSTOM INSTRUCTIONS (honor verbatim): {custom_instructions}\n" if custom_instructions else ""
+    system = (
+        "You are an elite short-form editor. Output a typed EDIT PLAN as JSON — DECISIONS ONLY, not an EDL. "
+        "The assembler turns your plan into the final cut, so you never write caption arrays, filler drops, or "
+        "frame math for b-roll holds — you make the editorial calls.\n\n"
+        "GROUNDING: cite only [fN] frames that appear in the transcript/brief/dossier below; quote the "
+        "creator's VERBATIM words in cuts. Absence is valid — empty arrays beat forced findings.\n"
+        "PLAN FIELDS: open_on (the hook — pull a buried hook forward if the strongest line lands late), "
+        "keeps (source ranges to keep), cuts (flub/ramble/tangent/false_start with a verbatim quote — do NOT "
+        "list filler/dead-air, those are automatic), order (permutation of kept-segment indices; identity if "
+        "no reorder), punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), broll "
+        "(source range + cue + search query; the assembler enforces J-cut lead, 2–3s holds, spacing, and "
+        "hook/CTA protection), caption_plan (style/grouping/highlight_words), text_cards, music (wanted+vibe), "
+        "pacing_intent (one line).\n\n"
+        f"{kb_block}\n\n"
+        "Reply with ONLY the JSON object. No prose, no code fences."
+    )
+    user = (
+        f"{brand_block(brand)}\nStyle: {style}\nSource last frame: {last_frame} (30fps)."
+        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}\n"
+        f"Frame-anchored transcript:\n{_frame_anchored_transcript(transcript_words)}\n\n"
+        "Produce the edit plan JSON."
+    )
+    return system, user
+
+
 SCRIPT_JSON_ELEMENT = {
     "type": "object", "additionalProperties": False,
     "required": ["title", "summary", "hook", "hookSignal", "formatId", "body", "cta",
