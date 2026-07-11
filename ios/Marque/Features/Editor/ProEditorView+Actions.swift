@@ -244,8 +244,22 @@ extension ProEditorView {
         mutate([.transition(after: segIdx, style: style)])
     }
 
+    /// R10: retime an existing transition (0.1–1.5s → 4–45 frames).
+    func setTransitionDuration(after segIdx: Int, seconds: Double) {
+        guard let t = session?.draft.transitions.first(where: { $0.afterSegment == segIdx }) else { return }
+        let frames = min(45, max(4, Int((seconds * 30).rounded())))
+        mutate([.transition(after: segIdx, style: t.style, frames: frames)])
+    }
+
     func setFilter(_ name: String?) {
         mutate([.filter(name)])
+        filterIntensityDraft = 1.0
+    }
+
+    /// R10: filter strength (0–1) — re-emits the look op with the new intensity.
+    func setFilterIntensity(_ v: Double) {
+        guard let f = session?.draft.look.filter else { return }
+        mutate([.filter(f, intensity: v)])
     }
 
     func setAdjust(brightness: Double? = nil, contrast: Double? = nil, saturation: Double? = nil,
@@ -263,6 +277,49 @@ extension ProEditorView {
         if let idx = session?.draft.overlays.lastIndex(where: { $0.type == "text_sticker" && $0.srcIn == a }) {
             selectedSeg = nil
             selectedOverlay = idx
+        }
+    }
+
+    // MARK: R10 — keyboard-first text + canvas corner handles
+
+    /// "Add text" (keyboard-first): drop a draft sticker at the playhead, select it, and
+    /// focus an on-canvas TextField immediately — no detour through a dialog (CapCut/TikTok).
+    func startTextEntry() {
+        player?.pause()
+        guard let (a, b) = insertWindow(len: 90) else { return }
+        mutate([.addTextSticker(a, b, text: "Text")])
+        guard let idx = session?.draft.overlays.lastIndex(where: { $0.type == "text_sticker" && $0.srcIn == a }) else { return }
+        selectedSeg = nil; selectedOverlay = idx
+        beginTypingSticker(idx, seed: "")   // start empty → placeholder shows; blank discards
+    }
+
+    /// Re-enter typing on an existing sticker (corner ✎).
+    func beginTypingSticker(_ idx: Int, seed: String? = nil) {
+        guard let o = session?.draft.overlays[safe: idx], o.type == "text_sticker" else { return }
+        editDraft = seed ?? o.text
+        typingSticker = idx
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            stickerFieldFocused = true
+        }
+    }
+
+    /// Commit the live-typed text; empty text removes the sticker (CapCut discards blank text).
+    func commitTyping(_ idx: Int) {
+        typingSticker = nil
+        stickerFieldFocused = false
+        let t = editDraft.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { deleteOverlay(idx); return }
+        if session?.draft.overlays[safe: idx]?.text != t { mutate([.editOverlayText(index: idx, text: t)]) }
+    }
+
+    /// Duplicate a text sticker slightly offset (corner ⧉).
+    func duplicateSticker(_ idx: Int) {
+        guard let o = session?.draft.overlays[safe: idx], o.type == "text_sticker" else { return }
+        mutate([.addTextSticker(o.srcIn, o.srcOut, text: o.text,
+                                posX: min(0.9, o.posX + 0.05), posY: min(0.9, o.posY + 0.05))])
+        if let ni = session?.draft.overlays.lastIndex(where: { $0.type == "text_sticker" }) {
+            selectedOverlay = ni
         }
     }
 
@@ -298,7 +355,14 @@ extension ProEditorView {
 
     func addStockRoll(_ query: String) {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty, let (aF, bF) = insertWindow(len: 90) else { return }
+        guard !q.isEmpty else { return }
+        // Replace flow: swap the source in the existing roll's window.
+        if let ri = replacingRoll, let r = session?.draft.broll[safe: ri] {
+            replacingRoll = nil
+            mutate([.removeBroll(r.srcIn, r.srcOut), .addBroll(r.srcIn, r.srcOut, query: q)])
+            selectLastRoll(); return
+        }
+        guard let (aF, bF) = insertWindow(len: 90) else { return }
         mutate([.addBroll(aF, bF, query: q)], rejectMsg: "Couldn't add that clip here.")
         selectLastRoll()
     }
@@ -316,6 +380,14 @@ extension ProEditorView {
         let path = MediaStore.save(data, ext: ext)
         guard let url = await LiveClipEngine.uploadMedia(path: path, filename: "roll.\(ext)") else {
             flashPublic("Couldn't upload that media — check your connection.")
+            return
+        }
+        // Replace flow: swap the source in the existing roll's window.
+        if let ri = replacingRoll, let r = session?.draft.broll[safe: ri] {
+            replacingRoll = nil
+            mutate([.removeBroll(r.srcIn, r.srcOut), .addMediaRoll(r.srcIn, r.srcOut, url: url)])
+            localMediaPreviews[url] = path; selectLastRoll()
+            withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
             return
         }
         guard let (aF, bF) = insertWindow(len: 90) else { return }
@@ -347,6 +419,46 @@ extension ProEditorView {
         let readd: WireOp = (r.source == "own_media" && r.resolvedURL != nil)
             ? .addMediaRoll(r.srcIn, newOut, url: r.resolvedURL!)
             : .addBroll(r.srcIn, newOut, query: r.cueText)
+        mutate([.removeBroll(r.srcIn, r.srcOut), readd])
+        selectLastRoll()
+    }
+
+    /// Drag-trim a roll edge (bracket handle) — retrim the window as remove+re-add,
+    /// carrying the roll's local preview path across so the sim keeps showing it.
+    func trimRoll(_ idx: Int, edge: TrimEdge, deltaFrames: Int) {
+        guard let r = session?.draft.broll[safe: idx] else { return }
+        let extent = session?.draft.segments.map(\.srcOut).max() ?? r.srcOut
+        var a = r.srcIn, b = r.srcOut
+        if edge == .leading { a = max(0, min(b - 15, r.srcIn + deltaFrames)) }
+        else { b = min(extent, max(a + 15, r.srcOut + deltaFrames)) }
+        guard a != r.srcIn || b != r.srcOut else { return }
+        readdRoll(r, a: a, b: b)
+    }
+
+    /// Duplicate a roll one window-length later (CapCut Duplicate).
+    func duplicateRoll(_ idx: Int) {
+        guard let r = session?.draft.broll[safe: idx] else { return }
+        let extent = session?.draft.segments.map(\.srcOut).max() ?? r.srcOut
+        let len = r.srcOut - r.srcIn
+        let a = min(extent - 15, r.srcOut), b = min(extent, r.srcOut + len)
+        guard b > a else { flashPublic("No room to duplicate here."); return }
+        let op: WireOp = (r.source == "own_media" && r.resolvedURL != nil)
+            ? .addMediaRoll(a, b, url: r.resolvedURL!) : .addBroll(a, b, query: r.cueText)
+        mutate([op])
+        selectLastRoll()
+    }
+
+    /// Replace a roll's source — reopen the media panel remembering which roll to swap.
+    func replaceRoll(_ idx: Int) {
+        replacingRoll = idx
+        player?.pause()
+        withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
+    }
+
+    /// Shared remove+re-add for a roll at a new [a,b), preserving own-media preview.
+    private func readdRoll(_ r: EditorBroll, a: Int, b: Int) {
+        let readd: WireOp = (r.source == "own_media" && r.resolvedURL != nil)
+            ? .addMediaRoll(a, b, url: r.resolvedURL!) : .addBroll(a, b, query: r.cueText)
         mutate([.removeBroll(r.srcIn, r.srcOut), readd])
         selectLastRoll()
     }

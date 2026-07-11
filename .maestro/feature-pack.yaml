@@ -38,12 +38,13 @@ name: FP1 — speed, transitions, filters, text stickers, caption drag
     visible: { id: "editorPro.adjustRow" }
     timeout: 4000
 - takeScreenshot: /tmp/fp-03-filter
-# TEXT STICKER: add → drag on canvas
+# TEXT STICKER: keyboard-first add (types straight on the canvas), then commit + drag
 - tapOn: { id: "editorPro.mode.text" }
 - tapOn: { id: "editorPro.addSticker" }
-- tapOn: { id: "dialog.input" }
 - inputText: "WAIT FOR IT"
-- tapOn: { id: "dialog.add" }
+# commit-on-blur: a neutral canvas tap dismisses the field and commits the text
+- tapOn:
+    point: "50%,42%"
 - extendedWaitUntil:
     visible: { id: "editorPro.sticker.1" }
     timeout: 4000
@@ -64,14 +65,9 @@ name: FP1 — speed, transitions, filters, text stickers, caption drag
     end: "65%, 38%"
     duration: 600
 - takeScreenshot: /tmp/fp-05b-video-moved
-- tapOn:
-    point: "50%,30%"
-# CAPTION DRAG: pull the caption block up
-- swipe:
-    from: { id: "editorPro.captionSim" }
-    direction: UP
-    duration: 600
-- takeScreenshot: /tmp/fp-06-caption-dragged
+# TRANSPORT: named undo brings the video reframe back (caption drag lives in caption-options)
+- tapOn: { id: "editorPro.undo" }
+- takeScreenshot: /tmp/fp-06-undo
 # SAVE → render → back on clip sheet; reopen and confirm persistence
 - tapOn: { id: "editorPro.save" }
 - extendedWaitUntil:

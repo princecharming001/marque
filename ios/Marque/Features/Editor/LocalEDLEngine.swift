@@ -210,7 +210,7 @@ enum LocalEDLEngine {
             d.transitions.removeAll { $0.afterSegment == idx }
             if style != "none" {
                 d.transitions.append(EditorTransition(afterSegment: idx, style: style,
-                                                      frames: min(30, max(4, op.i["frames"] ?? 12))))
+                                                      frames: min(45, max(4, op.i["frames"] ?? 12))))
             }
         case "set_filter":
             let name = op.s["name"] ?? "none"

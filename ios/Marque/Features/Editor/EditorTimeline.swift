@@ -32,6 +32,9 @@ struct EditorTimeline: View {
     var onTapBroll: (Int) -> Void = { _ in }
     var onTapAddMedia: () -> Void = {}
     var showRollsAdd: Bool = false            // empty-lane "+ Add b-roll" affordance
+    var rollThumbs: [String: String] = [:]    // roll url → local file path (own-media preview)
+    var onTrimRoll: (Int, TrimEdge, Int) -> Void = { _, _, _ in }   // drag-trim a roll window
+    var showVoice: Bool = true                // R10: collapse the voice lane when idle
 
     @State private var dragBaseOffset: CGFloat?
     @GestureState private var pinch: CGFloat = 1
@@ -82,7 +85,7 @@ struct EditorTimeline: View {
                     if !document.overlays.isEmpty { overlayLane }   // zoom blocks + text cards
                     if !document.broll.isEmpty { rollsLane }         // media rolls, stacked on overlap
                     else if showRollsAdd { rollsAddLane }            // empty lane advertises itself
-                    voiceLane                                        // original voice as a waveform strip
+                    if showVoice { voiceLane }                       // original voice (collapses when idle)
                     if musicName != nil || showMusicAdd { musicLane }
                 }
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
@@ -245,7 +248,7 @@ struct EditorTimeline: View {
             if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 20) }
             if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 18) }
             else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 18) }
-            gutterIcon("waveform").frame(height: 16)
+            if showVoice { gutterIcon("waveform").frame(height: 16) }
             if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 16) }
         }
         .padding(.leading, 3)
@@ -322,24 +325,51 @@ struct EditorTimeline: View {
         let w = max(34, CGFloat(span.end - span.start) * pointsPerSecond - 1.5)
         let selected = selectedBroll == idx
         let letter = String(UnicodeScalar(UInt8(66 + min(idx, 24))))   // B, C, D, …
-        return HStack(spacing: 3) {
-            Image(systemName: roll.source == "own_media" ? "photo.fill" : "film.fill")
-                .font(.system(size: 8, weight: .semibold))
-            Text(w > 64 ? "\(letter)-roll" : letter)
-                .font(.system(size: 9, weight: .bold))
-            if w > 120, !roll.cueText.isEmpty {
-                Text(roll.cueText).font(.system(size: 8)).lineLimit(1).opacity(0.8)
+        // Own-media rolls show the imported frame as the strip fill (CapCut overlay-track
+        // read); stock rolls keep the amber tint + film icon + cue text.
+        let thumbPath = roll.resolvedURL.flatMap { rollThumbs[$0] }
+        return ZStack {
+            if let thumbPath {
+                RollThumb(path: thumbPath).frame(width: w, height: 16).clipped()
+                Color.black.opacity(0.15)
+            } else {
+                Color(hex: 0xB56635).opacity(selected ? 1 : 0.9)
             }
+            HStack(spacing: 3) {
+                Image(systemName: roll.source == "own_media" ? "photo.fill" : "film.fill")
+                    .font(.system(size: 8, weight: .semibold))
+                Text(w > 64 ? "\(letter)-roll" : letter).font(.system(size: 9, weight: .bold))
+                if w > 120, thumbPath == nil, !roll.cueText.isEmpty {
+                    Text(roll.cueText).font(.system(size: 8)).lineLimit(1).opacity(0.8)
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.white).shadow(radius: thumbPath != nil ? 2 : 0)
+            .padding(.horizontal, 5).frame(width: w, alignment: .leading)
         }
-        .foregroundStyle(selected ? Palette.night : .white)
-        .padding(.horizontal, 5)
         .frame(width: w, height: 16, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 4)
-            .fill(selected ? Color(hex: 0xE8925A) : Color(hex: 0xB56635).opacity(0.9)))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
-            .strokeBorder(selected ? Color.white : .clear, lineWidth: 1.2))
+            .strokeBorder(selected ? Color(hex: 0x30D6C4) : Color.white.opacity(0.15),
+                          lineWidth: selected ? 2 : 0.5))
+        // Selected rolls get real bracket handles — drag to retrim the window (CapCut).
+        .overlay(alignment: .leading) { if selected { rollTrimHandle(.leading, idx: idx) } }
+        .overlay(alignment: .trailing) { if selected { rollTrimHandle(.trailing, idx: idx) } }
         .onTapGesture { onTapBroll(idx) }
         .accessibilityIdentifier("editorPro.roll.\(idx)")
+    }
+
+    /// A roll's edge bracket — commits a retrim on release (no live rubber-band on the
+    /// thin strip; the clip trim keeps the full rubber-band).
+    private func rollTrimHandle(_ edge: TrimEdge, idx: Int) -> some View {
+        TrimBracket(edge: edge, height: 16)
+            .contentShape(Rectangle().inset(by: -16))
+            .highPriorityGesture(
+                DragGesture()
+                    .onEnded { g in
+                        onTrimRoll(idx, edge, secondsToFrame(Double(g.translation.width / pointsPerSecond)))
+                    })
+            .accessibilityIdentifier("editorPro.rollTrim.\(edge == .leading ? "left" : "right")")
     }
 
     // MARK: Caption track — one white phrase clip per caption group (CapCut's text lane).
@@ -446,9 +476,7 @@ struct EditorTimeline: View {
     }
 
     private func trimHandle(_ edge: TrimEdge, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
-        RoundedRectangle(cornerRadius: 3).fill(Palette.accent)
-            .frame(width: 10, height: 56)
-            .overlay(Image(systemName: "chevron.compact.\(edge == .leading ? "left" : "right")").font(.system(size: 10)).foregroundStyle(.black))
+        TrimBracket(edge: edge, height: 56)
             .contentShape(Rectangle().inset(by: -14))     // 44pt-ish hit target
             .highPriorityGesture(
                 DragGesture()
@@ -508,6 +536,42 @@ struct EditorTimeline: View {
                 player.seek(toOutput: target)
             }
             .onEnded { _ in dragBaseOffset = nil; lastSnapIndex = nil }
+    }
+}
+
+// CapCut trim bracket: a white rounded cap (rounded only on its outer edge) with a dark
+// grip notch, used at the edges of a selected clip or roll.
+struct TrimBracket: View {
+    let edge: TrimEdge
+    var height: CGFloat = 56
+    var body: some View {
+        ZStack {
+            UnevenRoundedRectangle(
+                topLeadingRadius: edge == .leading ? 5 : 0,
+                bottomLeadingRadius: edge == .leading ? 5 : 0,
+                bottomTrailingRadius: edge == .trailing ? 5 : 0,
+                topTrailingRadius: edge == .trailing ? 5 : 0,
+                style: .continuous)
+                .fill(Color.white)
+            Capsule().fill(Palette.night.opacity(0.55))
+                .frame(width: 2, height: min(height - 6, 14))
+        }
+        .frame(width: 11, height: height)
+    }
+}
+
+// A roll's own-media preview frame, loaded once from the local file.
+struct RollThumb: View {
+    let path: String
+    @State private var img: UIImage?
+    var body: some View {
+        Group {
+            if let img { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
+            else { Color(hex: 0xB56635).opacity(0.9) }
+        }
+        .task(id: path) {
+            if img == nil, let i = UIImage(contentsOfFile: MediaStore.url(for: path).path) { img = i }
+        }
     }
 }
 

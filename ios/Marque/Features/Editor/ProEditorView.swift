@@ -68,9 +68,22 @@ struct ProEditorView: View {
     @State var showStockInput = false
     @State var mediaPickerItem: PhotosPickerItem? = nil
     @State var uploadingMedia = false
+    @State var replacingRoll: Int? = nil          // roll index being swapped via the media panel
     // url → local file path, so the player sim can show freshly-imported media
     // before the server round-trip.
     @State var localMediaPreviews: [String: String] = [:]
+    // R10: CapCut transport row + reclaimed layout.
+    @State var showFullscreen = false            // fullScreenCover preview (transport ⛶)
+    @State var timelineExtra: CGFloat = 0         // drag-handle divider: extra timeline height
+    @State private var timelineExtraBase: CGFloat = 0
+    @State var toast: String? = nil              // named-undo / completion toast text
+    @State private var toastTick = 0             // drives auto-dismiss
+    // R10: filter intensity (client-side preview blend; also written to the look op).
+    @State var filterIntensityDraft: Double = 1.0
+    @State private var filterPreviewImage: UIImage? = nil   // representative frame for filter cards
+    // R10: keyboard-first text — the sticker index being live-typed (bound TextField).
+    @State var typingSticker: Int? = nil
+    @FocusState var stickerFieldFocused: Bool
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -118,12 +131,20 @@ struct ProEditorView: View {
         .marqueInput(Binding(get: { editingOverlayIndex != nil }, set: { if !$0 { editingOverlayIndex = nil } }),
                      title: "Edit text card", placeholder: "Text", text: $editDraft) { commitOverlayTextEdit() }
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)   // I-7 haptics
+        .fullScreenCover(isPresented: $showFullscreen) { fullscreenPreview }
         .onChange(of: mediaPickerItem) { _, item in
             if let item { Task { await importRollMedia(item) } }
         }
         .task { await load() }
         .onChange(of: phase) { _, p in
             if p == .editing, !coachShown { showCoach = true }
+        }
+        .onChange(of: mode) { _, m in
+            if m == .filters, filterPreviewImage == nil { Task { await loadFilterPreview() } }
+        }
+        // R10: keyboard-first text commits when the on-canvas field loses focus.
+        .onChange(of: stickerFieldFocused) { _, focused in
+            if !focused, let idx = typingSticker { commitTyping(idx) }
         }
         .onDisappear { applyTask?.cancel(); player?.teardown() }
     }
@@ -180,15 +201,7 @@ struct ProEditorView: View {
             } label: { Image(systemName: "xmark") }.tint(.white)
                 .accessibilityIdentifier("editorPro.close")
         }
-        ToolbarItemGroup(placement: .principal) {
-            if phase == .editing, let session {
-                // UX-8: undo/redo can change segment/overlay indices — clear stale selections.
-                Button { session.undo(); selectedSeg = nil; selectedOverlay = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.backward") }
-                    .tint(.white).disabled(!session.canUndo).accessibilityIdentifier("editorPro.undo")
-                Button { session.redo(); selectedSeg = nil; selectedOverlay = nil; refreshPlayer() } label: { Image(systemName: "arrow.uturn.forward") }
-                    .tint(.white).disabled(!session.canRedo).accessibilityIdentifier("editorPro.redo")
-            }
-        }
+        // R10: undo/redo moved to the transport strip (CapCut keeps them by the play head).
         ToolbarItem(placement: .topBarTrailing) {
             if phase == .editing {
                 // #11: overlay/caption/music edits re-render (~1 min); structural cuts apply
@@ -222,6 +235,7 @@ struct ProEditorView: View {
             } else if showMediaPanel {
                 mediaPanel
             } else {
+                transportRow                       // R10: CapCut transport strip + divider
                 timelinePane
                 contextStrip
                 modeDrawer
@@ -229,6 +243,48 @@ struct ProEditorView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    /// R10: the CapCut/TikTok transport strip — a drag-handle divider (pull up for more
+    /// timeline), then time readout · play · undo · redo · fullscreen. Replaces the play/time
+    /// controls that used to float ON the canvas (CapCut keeps the picture clean).
+    private var transportRow: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(Color.white.opacity(0.25)).frame(width: 40, height: 4)
+                .padding(.vertical, 5)
+                .contentShape(Rectangle().inset(by: -14))
+                .gesture(DragGesture()
+                    .onChanged { g in timelineExtra = min(180, max(0, timelineExtraBase - g.translation.height)) }
+                    .onEnded { _ in timelineExtraBase = timelineExtra })
+                .accessibilityIdentifier("editorPro.timelineDivider")
+            HStack(spacing: Space.lg) {
+                Text(timeReadout).font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.85))
+                    .accessibilityIdentifier("editorPro.timeReadout")
+                Spacer()
+                Button { player?.togglePlay() } label: {
+                    Image(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill")
+                        .font(.system(size: 17))
+                }
+                .tint(.white).accessibilityIdentifier("editorPro.playPause")
+                Spacer()
+                Button { doUndo() } label: { Image(systemName: "arrow.uturn.backward") }
+                    .tint(.white).disabled(!(session?.canUndo ?? false))
+                    .opacity((session?.canUndo ?? false) ? 1 : 0.35)
+                    .accessibilityIdentifier("editorPro.undo")
+                Button { doRedo() } label: { Image(systemName: "arrow.uturn.forward") }
+                    .tint(.white).disabled(!(session?.canRedo ?? false))
+                    .opacity((session?.canRedo ?? false) ? 1 : 0.35)
+                    .accessibilityIdentifier("editorPro.redo")
+                Button { player?.pause(); showFullscreen = true } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }
+                .tint(.white).accessibilityIdentifier("editorPro.fullscreen")
+            }
+            .font(.system(size: 15))
+            .padding(.horizontal, Space.md).frame(height: 32)
+        }
+        .background(Palette.night)
     }
 
     /// An object selection (roll/boundary/overlay) swaps the palette row out for
@@ -240,7 +296,8 @@ struct ProEditorView: View {
     @ViewBuilder private var modeDrawer: some View {
         // Edit mode has no palette (its tools live in the always-on context strip),
         // and an object selection replaces the palette with its context tools.
-        if mode != .edit, !objectSelectionActive {
+        // Filters mode gets visual thumbnail cards instead of the chip drawer.
+        if mode != .edit, mode != .filters, !objectSelectionActive {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.md) {
                 switch mode {
@@ -273,7 +330,7 @@ struct ProEditorView: View {
                         }
                     }
                 case .text:
-                    drawerButton("Add text", "plus.square") { editDraft = ""; showStickerInput = true }
+                    drawerButton("Add text", "plus.square") { startTextEntry() }
                         .accessibilityIdentifier("editorPro.addSticker")
                     // #1: caption on/off reads the tracked state (captions can be turned back ON).
                     drawerButton(captionsOn ? "Captions on" : "Captions off",
@@ -311,20 +368,16 @@ struct ProEditorView: View {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
                 case .filters:
-                    // Whole-video looks (CapCut Filters): preset chips; Adjust knobs sit
-                    // in the second row below.
-                    let active = session?.draft.look.filter
-                    drawerButton("None", "circle.slash", active: active == nil) { setFilter(nil) }
-                        .accessibilityIdentifier("editorPro.filter.none")
-                    ForEach([("Vivid", "vivid"), ("Film", "film"), ("Mono", "mono"),
-                             ("Golden", "golden"), ("Warm", "warm"), ("Cool", "cool")], id: \.1) { label, v in
-                        drawerButton(label, "camera.filters", active: active == v) { setFilter(v) }
-                            .accessibilityIdentifier("editorPro.filter.\(v)")
-                    }
+                    EmptyView()   // filters render as visual cards below, not chips
                 }
             }.padding(.horizontal, Space.md)
         }
         .frame(height: 52).background(Palette.ink.opacity(0.25))
+        }
+        // Filters: visual thumbnail cards (real frame through each look) + intensity.
+        if mode == .filters, !objectSelectionActive {
+            filterCardsRow
+            if session?.draft.look.filter != nil { filterIntensityRow }
         }
         // The caption customizer (research round: preset + accent/size/position/case/
         // grouping/font are the knobs creators actually touch) — its own row so the
@@ -340,6 +393,79 @@ struct ProEditorView: View {
         if mode == .filters {
             adjustRow
         }
+    }
+
+    /// CapCut filter cards — each shows a representative frame with the look applied, a name
+    /// footer, a leading None card, and an accent border on the active one.
+    private var filterCardsRow: some View {
+        let active = session?.draft.look.filter
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.sm) {
+                filterCard(nil, label: "None", active: active == nil)
+                ForEach([("Vivid", "vivid"), ("Film", "film"), ("Mono", "mono"),
+                         ("Golden", "golden"), ("Warm", "warm"), ("Cool", "cool")], id: \.1) { label, v in
+                    filterCard(v, label: label, active: active == v)
+                }
+            }
+            .padding(.horizontal, Space.md)
+        }
+        .frame(height: 74).background(Palette.ink.opacity(0.25))
+        .accessibilityIdentifier("editorPro.filterCards")
+    }
+
+    private func filterCard(_ filter: String?, label: String, active: Bool) -> some View {
+        let p = filterParams(filter, intensity: 1.0)
+        return Button { setFilter(filter); bumpHaptic() } label: {
+            VStack(spacing: 3) {
+                ZStack {
+                    Group {
+                        if let img = filterPreviewImage {
+                            Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            LinearGradient(colors: [Color(hex: 0x4A5568), Color(hex: 0x8B95A5)],
+                                           startPoint: .top, endPoint: .bottom)
+                        }
+                    }
+                    .frame(width: 46, height: 42).clipped()
+                    .saturation(p.sat).contrast(p.con).brightness(p.bri).hueRotation(.degrees(p.hue))
+                    if filter == nil {
+                        Image(systemName: "slash.circle").font(.system(size: 15))
+                            .foregroundStyle(.white.opacity(0.85))
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.18), lineWidth: active ? 2 : 1))
+                Text(label).font(.system(size: 9, weight: active ? .bold : .regular))
+                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.7))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("editorPro.filter.\(filter ?? "none")")
+    }
+
+    private var filterIntensityRow: some View {
+        HStack(spacing: Space.md) {
+            Text("INTENSITY").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+            Slider(value: $filterIntensityDraft, in: 0...1, onEditingChanged: { editing in
+                if editing { filterIntensityDraft = session?.draft.look.intensity ?? 1.0 }
+                else { setFilterIntensity(filterIntensityDraft) }
+            }).tint(Palette.accent)
+            Text("\(Int(filterIntensityDraft * 100))")
+                .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.white).frame(width: 30)
+        }
+        .padding(.horizontal, Space.md).frame(height: 38)
+        .background(Palette.ink.opacity(0.25))
+        .onAppear { filterIntensityDraft = session?.draft.look.intensity ?? 1.0 }
+        .accessibilityIdentifier("editorPro.filterIntensity")
+    }
+
+    /// Grab a representative frame for the filter cards (middle of the first kept interval).
+    private func loadFilterPreview() async {
+        guard let fs = filmstrip else { return }
+        let startFrame = session?.draft.keptIntervals.first?.srcIn ?? 30
+        let sec = Double(startFrame + 15) / 30.0
+        if let img = await fs.thumbnail(atSourceSecond: sec) { filterPreviewImage = img }
     }
 
     private func speedRow(_ seg: Int) -> some View {
@@ -547,20 +673,20 @@ struct ProEditorView: View {
             .gesture(videoCanvasDrag(canvasGeo.size))
             .simultaneousGesture(videoCanvasPinch())
             }
-            VStack {
-                Spacer()
-                HStack {
-                    Button { player?.togglePlay() } label: {
-                        Image(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill")
-                            .font(.system(size: 16)).foregroundStyle(.white)
-                            .frame(width: 40, height: 40).background(.black.opacity(0.4)).clipShape(Circle())
-                    }.accessibilityIdentifier("editorPro.playPause")
+            // R10: play/time controls moved to the transport strip (CapCut keeps the
+            // picture clean); a toast surfaces mid-canvas for undo/redo/completion.
+            if let toast {
+                VStack {
                     Spacer()
-                    Text(timeReadout).font(AppFont.caption.monospacedDigit()).foregroundStyle(.white)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(.black.opacity(0.4)).clipShape(Capsule())
-                        .accessibilityIdentifier("editorPro.timeReadout")
-                }.padding(Space.md)
+                    Text(toast)
+                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .background(.black.opacity(0.78)).clipShape(Capsule())
+                        .padding(.bottom, 24)
+                        .transition(.opacity)
+                        .accessibilityIdentifier("editorPro.toast")
+                }
+                .allowsHitTesting(false)
             }
         }
         .frame(maxWidth: .infinity)
@@ -642,14 +768,105 @@ struct ProEditorView: View {
         return "\(fmt(cur)) / \(fmt(tot))"
     }
 
+    // MARK: R10 — transport helpers (named undo/redo toasts + fullscreen preview)
+
+    func doUndo() {
+        guard let t = session?.undo() else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
+        }
+        refreshPlayer(); bumpHaptic()
+        showToast("Undo: \(opDisplayName(t))")
+    }
+
+    func doRedo() {
+        guard let t = session?.redo() else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
+        }
+        refreshPlayer(); bumpHaptic()
+        showToast("Redo: \(opDisplayName(t))")
+    }
+
+    /// A capsule toast over the canvas (CapCut's "Undo: Split" pattern), auto-dismissed.
+    func showToast(_ msg: String) {
+        withAnimation(.easeOut(duration: 0.15)) { toast = msg }
+        toastTick += 1
+        let mine = toastTick
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            if toastTick == mine { withAnimation(.easeOut(duration: 0.2)) { toast = nil } }
+        }
+    }
+
+    /// Friendly op names for the undo/redo toast.
+    func opDisplayName(_ type: String) -> String {
+        switch type {
+        case "cut_range": return "Trim"
+        case "restore_range": return "Restore"
+        case "split_segment": return "Split clip"
+        case "reorder_segments": return "Reorder"
+        case "mute_range": return "Mute"
+        case "set_segment_volume": return "Volume"
+        case "set_segment_speed": return "Speed"
+        case "set_transition": return "Transition"
+        case "set_filter": return "Filter"
+        case "set_adjust": return "Adjust"
+        case "add_text_sticker": return "Add text"
+        case "add_text_card": return "Text card"
+        case "add_punch_in": return "Zoom"
+        case "add_broll": return "Add b-roll"
+        case "remove_broll": return "Remove b-roll"
+        case "remove_overlays": return "Remove"
+        case "edit_overlay": return "Edit"
+        case "edit_caption": return "Caption"
+        case "set_caption_style", "set_caption_options": return "Caption style"
+        case "set_captions_enabled": return "Captions"
+        case "set_music": return "Music"
+        case "set_segment_transform": return "Reframe"
+        default: return "Edit"
+        }
+    }
+
+    /// R10: the transport ⛶ — the picture full-screen with a minimal play/close overlay.
+    private var fullscreenPreview: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let player, !player.placeholder {
+                PlayerLayerView(player: player.player)
+                    .aspectRatio(9.0/16.0, contentMode: .fit)
+            } else {
+                Image(systemName: "film").font(.system(size: 48)).foregroundStyle(.white.opacity(0.3))
+            }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button { player?.pause(); showFullscreen = false } label: {
+                        Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white).frame(width: 40, height: 40)
+                            .background(.black.opacity(0.4)).clipShape(Circle())
+                    }.padding(Space.md)
+                }
+                Spacer()
+                Button { player?.togglePlay() } label: {
+                    Image(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill")
+                        .font(.system(size: 22)).foregroundStyle(.white)
+                        .frame(width: 56, height: 56).background(.black.opacity(0.4)).clipShape(Circle())
+                }.padding(.bottom, Space.xl)
+            }
+        }
+    }
+
     // MARK: FP1 — look preview approximation (maps the render's CSS chain to SwiftUI)
 
-    private var lookVals: (sat: Double, con: Double, bri: Double, hue: Double) {
-        guard let look = session?.draft.look else { return (1, 1, 0, 0) }
+    /// The SwiftUI filter params for a given look — shared by the live preview AND the
+    /// filter thumbnail cards (so a card looks exactly like the applied result).
+    func filterParams(_ filter: String?, intensity: Double,
+                      adjust: EditorAdjust = EditorAdjust()) -> (sat: Double, con: Double, bri: Double, hue: Double) {
         var sat = 1.0, con = 1.0, bri = 0.0, hue = 0.0
-        let t = min(1, max(0, look.intensity))
+        let t = min(1, max(0, intensity))
         func lerp(_ a: Double, _ b: Double) -> Double { a + (b - a) * t }
-        switch look.filter {
+        switch filter {
         case "vivid": sat = lerp(1, 1.35); con = lerp(1, 1.08)
         case "film": con = lerp(1, 1.12); sat = lerp(1, 0.85)
         case "mono": sat = lerp(1, 0.0); con = lerp(1, 1.05)
@@ -658,12 +875,16 @@ struct ProEditorView: View {
         case "cool": sat = lerp(1, 1.05); hue = lerp(0, 10); bri = lerp(0, 0.02)
         default: break
         }
-        let a = look.adjust
-        bri += a.brightness * 0.6
-        con *= (1 + a.contrast)
-        sat *= (1 + a.saturation)
-        hue += a.temperature < 0 ? -a.temperature * 20 : -a.temperature * 14
+        bri += adjust.brightness * 0.6
+        con *= (1 + adjust.contrast)
+        sat *= (1 + adjust.saturation)
+        hue += adjust.temperature < 0 ? -adjust.temperature * 20 : -adjust.temperature * 14
         return (sat, con, bri, hue)
+    }
+
+    private var lookVals: (sat: Double, con: Double, bri: Double, hue: Double) {
+        guard let look = session?.draft.look else { return (1, 1, 0, 0) }
+        return filterParams(look.filter, intensity: look.intensity, adjust: look.adjust)
     }
     private var lookSaturation: Double { lookVals.sat }
     private var lookContrast: Double { lookVals.con }
@@ -795,48 +1016,114 @@ struct ProEditorView: View {
 
     private func stickerView(idx: Int, o: EditorOverlay, geo: CGSize) -> some View {
         let selected = selectedOverlay == idx
+        let typing = typingSticker == idx
         let liveX = stickerDrag?.idx == idx ? stickerDrag!.x : o.posX
         let liveY = stickerDrag?.idx == idx ? stickerDrag!.y : o.posY
         let liveScale = stickerPinch?.idx == idx ? stickerPinch!.scale : o.scale
-        return Text(o.text)
-            .font(simCaptionFont(o.font, size: 24 * liveScale, heavy: true))
-            .foregroundStyle(o.color.map { colorFromHex($0) } ?? .white)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, o.bg == "box" ? 10 : 2).padding(.vertical, o.bg == "box" ? 5 : 2)
-            .background(o.bg == "box" ? Color.black.opacity(0.65) : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(selected ? Palette.accent : .clear,
-                              style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
-            .shadow(radius: o.bg == "box" ? 0 : 3)
-            .rotationEffect(.degrees(o.rotation))
-            .position(x: liveX * geo.width, y: liveY * geo.height)
+        let fontSize = 24 * liveScale
+        return Group {
+            if typing {
+                // Keyboard-first: type directly on the canvas (CapCut/TikTok).
+                TextField("Text", text: $editDraft, axis: .vertical)
+                    .focused($stickerFieldFocused)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: geo.width * 0.8)
+                    .submitLabel(.done)
+                    .onSubmit { commitTyping(idx) }
+            } else {
+                Text(o.text)
+            }
+        }
+        .font(simCaptionFont(o.font, size: fontSize, heavy: true))
+        .foregroundStyle(o.color.map { colorFromHex($0) } ?? .white)
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, o.bg == "box" ? 10 : 2).padding(.vertical, o.bg == "box" ? 5 : 2)
+        .background(o.bg == "box" ? Color.black.opacity(0.65) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(selected ? Palette.accent : .clear,
+                          style: StrokeStyle(lineWidth: 1.5, dash: typing ? [] : [4, 3])))
+        // Corner action handles (CapCut selection box): ✕ delete · ✎ edit · ⧉ dup · resize.
+        .overlay { if selected && !typing { stickerCornerHandles(idx: idx, o: o) } }
+        .shadow(radius: o.bg == "box" ? 0 : 3)
+        .rotationEffect(.degrees(o.rotation))
+        .position(x: liveX * geo.width, y: liveY * geo.height)
+        .highPriorityGestureIf(!typing,
+            DragGesture(minimumDistance: 2)
+                .onChanged { g in
+                    stickerDrag = (idx,
+                                   min(0.95, max(0.05, o.posX + g.translation.width / max(1, geo.width))),
+                                   min(0.92, max(0.08, o.posY + g.translation.height / max(1, geo.height))))
+                    if selectedOverlay != idx { selectedOverlay = idx; selectedSeg = nil }
+                }
+                .onEnded { _ in
+                    if let s = stickerDrag, s.idx == idx { commitStickerMove(idx, x: s.x, y: s.y) }
+                    stickerDrag = nil
+                })
+        .simultaneousGestureIf(!typing,
+            MagnificationGesture()
+                .onChanged { v in stickerPinch = (idx, min(3.0, max(0.4, o.scale * v))) }
+                .onEnded { _ in
+                    if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
+                    stickerPinch = nil
+                })
+        .onTapGesture {
+            if typing { return }
+            withAnimation(.easeOut(duration: 0.15)) {
+                selectedSeg = nil
+                selectedOverlay = (selectedOverlay == idx) ? nil : idx
+            }
+        }
+        .accessibilityIdentifier("editorPro.sticker.\(idx)")
+    }
+
+    /// The four corner controls on a selected sticker (CapCut/TikTok selection box).
+    private func stickerCornerHandles(idx: Int, o: EditorOverlay) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                stickerHandle("xmark") { deleteOverlay(idx); bumpHaptic() }
+                    .accessibilityIdentifier("editorPro.sticker.\(idx).delete")
+                Spacer(minLength: 0)
+                stickerHandle("pencil") { beginTypingSticker(idx); bumpHaptic() }
+                    .accessibilityIdentifier("editorPro.sticker.\(idx).edit")
+            }
+            Spacer(minLength: 0)
+            HStack(spacing: 0) {
+                stickerHandle("plus.square.on.square") { duplicateSticker(idx); bumpHaptic() }
+                    .accessibilityIdentifier("editorPro.sticker.\(idx).dup")
+                Spacer(minLength: 0)
+                stickerResizeGrip(idx: idx, o: o)
+            }
+        }
+        .padding(-13)   // push handles just outside the text bounds, onto the corners
+    }
+
+    private func stickerHandle(_ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Palette.night).frame(width: 22, height: 22)
+                .background(Circle().fill(.white))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// One-finger scale (bottom-right grip): drag distance grows/shrinks the sticker.
+    private func stickerResizeGrip(idx: Int, o: EditorOverlay) -> some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.night)
+            .frame(width: 22, height: 22).background(Circle().fill(.white))
+            .contentShape(Rectangle().inset(by: -10))
             .highPriorityGesture(
-                DragGesture(minimumDistance: 2)
+                DragGesture()
                     .onChanged { g in
-                        stickerDrag = (idx,
-                                       min(0.95, max(0.05, o.posX + g.translation.width / max(1, geo.width))),
-                                       min(0.92, max(0.08, o.posY + g.translation.height / max(1, geo.height))))
-                        if selectedOverlay != idx { selectedOverlay = idx; selectedSeg = nil }
+                        let delta = (g.translation.width + g.translation.height) / 200.0
+                        stickerPinch = (idx, min(3.0, max(0.4, o.scale + delta)))
                     }
-                    .onEnded { _ in
-                        if let s = stickerDrag, s.idx == idx { commitStickerMove(idx, x: s.x, y: s.y) }
-                        stickerDrag = nil
-                    })
-            .simultaneousGesture(
-                MagnificationGesture()
-                    .onChanged { v in stickerPinch = (idx, min(3.0, max(0.4, o.scale * v))) }
                     .onEnded { _ in
                         if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
                         stickerPinch = nil
                     })
-            .onTapGesture {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    selectedSeg = nil
-                    selectedOverlay = (selectedOverlay == idx) ? nil : idx
-                }
-            }
-            .accessibilityIdentifier("editorPro.sticker.\(idx)")
+            .accessibilityIdentifier("editorPro.sticker.\(idx).resize")
     }
 
     // MARK: caption + punch-in local sim (L1 fidelity)
@@ -1019,9 +1306,15 @@ struct ProEditorView: View {
         } else if mode == .edit || mode == .effects {
             h += 20                                                        // "+ Add b-roll" strip
         }
-        h += 18                                                            // voice lane (always)
+        if showVoiceLane { h += 18 }                                       // voice lane (collapses when idle)
         if session?.draft.music != nil || mode == .sound { h += 20 }
-        return h + 8
+        return h + 8 + timelineExtra          // R10: drag-handle divider grows the pane
+    }
+
+    /// R10: the voice waveform lane collapses when idle — it appears in Sound mode or once
+    /// any clip's volume has been touched (muted / adjusted), so the idle timeline stays lean.
+    private var showVoiceLane: Bool {
+        mode == .sound || !(session?.draft.volumeRanges.isEmpty ?? true)
     }
 
     private var timelinePane: some View {
@@ -1065,7 +1358,10 @@ struct ProEditorView: View {
                 bumpHaptic()
             },
             onTapAddMedia: { player?.pause(); withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true } },
-            showRollsAdd: mode == .edit || mode == .effects
+            showRollsAdd: mode == .edit || mode == .effects,
+            rollThumbs: localMediaPreviews,
+            onTrimRoll: { idx, edge, delta in trimRoll(idx, edge: edge, deltaFrames: delta); bumpHaptic() },
+            showVoice: showVoiceLane
         )
         .frame(height: timelineHeight)
         .background(Palette.ink.opacity(0.6))
@@ -1073,23 +1369,49 @@ struct ProEditorView: View {
 
     // MARK: context strip (selection actions)
 
+    /// R10: CapCut back chevron — pops the selection context back to the mode's root row.
+    private func backChevron(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: "chevron.left").font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white).frame(width: 30, height: 34)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("editorPro.ctx.back")
+    }
+
+    func clearSelection() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil
+            selectedBoundary = nil; speedPanelSeg = nil
+        }
+        bumpHaptic()
+    }
+
     @ViewBuilder private var contextStrip: some View {
         if let ri = selectedBroll, let roll = session?.draft.broll[safe: ri] {
-            HStack(spacing: Space.lg) {
-                contextButton("Delete", "trash") { deleteRoll(ri); bumpHaptic() }
-                    .accessibilityIdentifier("editorPro.ctx.deleteRoll")
-                contextButton("Shorter", "minus") { adjustRoll(ri, deltaFrames: -15); bumpHaptic() }
-                contextButton("Longer", "plus") { adjustRoll(ri, deltaFrames: 15); bumpHaptic() }
-                Spacer()
-                Text(roll.source == "own_media" ? "Your media" : roll.cueText)
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+            // Roll rail (CapCut overlay clip): Replace / Duplicate / trim / Delete, scrollable.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.lg) {
+                    backChevron { clearSelection() }
+                    contextButton("Replace", "arrow.triangle.2.circlepath") { replaceRoll(ri); bumpHaptic() }
+                    contextButton("Duplicate", "plus.square.on.square") { duplicateRoll(ri); bumpHaptic() }
+                    contextButton("Shorter", "minus") { adjustRoll(ri, deltaFrames: -15); bumpHaptic() }
+                    contextButton("Longer", "plus") { adjustRoll(ri, deltaFrames: 15); bumpHaptic() }
+                    contextButton("Delete", "trash") { deleteRoll(ri); bumpHaptic() }
+                        .accessibilityIdentifier("editorPro.ctx.deleteRoll")
+                    Text(roll.source == "own_media" ? "Your media" : roll.cueText)
+                        .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                }
+                .padding(.horizontal, Space.md)
             }
-            .frame(height: 44).padding(.horizontal, Space.md)
+            .frame(height: 44)
             .background(Palette.ink.opacity(0.4))
         } else if let b = selectedBoundary {
-            // Boundary selected: the transition styles (CapCut's between-clips picker).
+            // Boundary selected: the transition styles (CapCut's between-clips picker) + duration.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.sm) {
+                    backChevron { clearSelection() }
                     Text("TRANSITION").font(AppFont.micro).tracking(Track.label)
                         .foregroundStyle(.white.opacity(0.5))
                     ForEach([("None", "none"), ("Fade", "fade_black"), ("White", "fade_white"), ("Flash", "flash")], id: \.1) { label, v in
@@ -1104,6 +1426,18 @@ struct ProEditorView: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("editorPro.ctx.transition.\(v)")
                     }
+                    // Duration (0.1–1.5s) — only meaningful once a transition is set.
+                    if let t = session?.draft.transitions.first(where: { $0.afterSegment == b }) {
+                        optDivider
+                        Text("DUR").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                        Slider(value: Binding(
+                            get: { Double(t.frames) / 30.0 },
+                            set: { setTransitionDuration(after: b, seconds: $0) }), in: 0.1...1.5)
+                            .frame(width: 90).tint(Palette.accent)
+                            .accessibilityIdentifier("editorPro.transitionDuration")
+                        Text(String(format: "%.1fs", Double(t.frames) / 30.0))
+                            .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    }
                 }
                 .padding(.horizontal, Space.md)
             }
@@ -1114,6 +1448,7 @@ struct ProEditorView: View {
             // the zoom controls (intensity + duration + delete) overflow a fixed row.
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.lg) {
+                    backChevron { clearSelection() }
                     contextButton("Delete", "trash") { deleteOverlay(ov); bumpHaptic() }
                         .accessibilityIdentifier("editorPro.ctx.deleteOverlay")
                     if overlay.type == "text_card" {
@@ -1155,7 +1490,11 @@ struct ProEditorView: View {
         // the creator discovers what's possible instead of staring at a hint sentence.
         let seg = selectedSeg
         HStack(spacing: Space.lg) {
-            if mode == .edit {
+            // A selected clip gets a back chevron to deselect (CapCut drill-out); with none
+            // selected the Add-media button leads the root Edit rail.
+            if seg != nil {
+                backChevron { clearSelection() }
+            } else if mode == .edit {
                 contextButton("Add", "plus.rectangle.on.rectangle") {
                     player?.pause()
                     withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
@@ -1247,6 +1586,17 @@ struct ProEditorView: View {
     private func openModeDrawer(_ m: Mode) {
         // Sound mode no longer auto-pops the music sheet — the timeline's "+ Add sound"
         // lane and the drawer button advertise it (empty lanes advertise themselves).
+    }
+}
+
+// R10: conditionally attach a gesture (SwiftUI has no optional-gesture overload) — used to
+// drop the sticker drag/pinch while its TextField is being typed into.
+extension View {
+    @ViewBuilder func highPriorityGestureIf<G: Gesture>(_ on: Bool, _ g: G) -> some View {
+        if on { highPriorityGesture(g) } else { self }
+    }
+    @ViewBuilder func simultaneousGestureIf<G: Gesture>(_ on: Bool, _ g: G) -> some View {
+        if on { simultaneousGesture(g) } else { self }
     }
 }
 

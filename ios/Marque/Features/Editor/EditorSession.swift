@@ -52,18 +52,23 @@ final class EditorSession {
         return true
     }
 
-    func undo() {
-        guard let step = undoStack.popLast() else { return }
+    /// Returns the primary op type of the step that was undone (for a named toast), nil if nothing.
+    @discardableResult
+    func undo() -> String? {
+        guard let step = undoStack.popLast() else { return nil }
         redoStack.append(Step(doc: draft, ops: step.ops))
         draft = step.doc
         if !opLog.isEmpty { opLog.removeLast() }
+        return step.ops.first?.type
     }
 
-    func redo() {
-        guard let step = redoStack.popLast() else { return }
+    @discardableResult
+    func redo() -> String? {
+        guard let step = redoStack.popLast() else { return nil }
         undoStack.append(Step(doc: draft, ops: step.ops))
         draft = step.doc
         opLog.append(step.ops)
+        return step.ops.first?.type
     }
 
     /// The wire payload for Save — the op log flattened in order.
