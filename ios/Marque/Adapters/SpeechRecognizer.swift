@@ -195,8 +195,13 @@ final class SpeechRecognizer {
     }
 
     private func deactivateSession() {
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            // Restore the app's .playback baseline (set at launch in MarqueApp.init) —
+            // otherwise the session is left on .playAndRecord and the next reel/clip
+            // preview reactivates under that category instead of a clean playback one.
+            try session.setCategory(.playback, mode: .moviePlayback)
         } catch {
             // Best-effort — deactivation can fail mid-route-change; never crash for it.
         }

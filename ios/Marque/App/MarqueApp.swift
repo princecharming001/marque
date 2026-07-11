@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 @main
 struct MarqueApp: App {
@@ -15,6 +16,14 @@ struct MarqueApp: App {
             UserDefaults.standard.removeObject(forKey: "mock.subscribed")
             UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
         }
+        // Without an explicit category, iOS defaults every AVPlayer to .soloAmbient,
+        // which the hardware ring/silent switch silences — reel previews (Home,
+        // Library) played fine on screen but made no sound whenever the phone was on
+        // silent. .playback matches TikTok/Instagram: audio plays regardless of the
+        // switch. Voice dictation/TTS still borrow the session temporarily and
+        // restore this baseline when they're done (SpeechRecognizer, VoicePlayback).
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? AVAudioSession.sharedInstance().setActive(true)
     }
 
     var body: some Scene {
