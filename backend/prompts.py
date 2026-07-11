@@ -531,9 +531,35 @@ def _frame_anchored_transcript(words: list[dict], phrase_len: int = 8) -> str:
     return "\n".join(lines) or "(no transcript available)"
 
 
+def _dossier_block(dossier: dict | None) -> str:
+    """Compact, frame-anchored dossier for the brief/edit prompts (P1.3). Empty when absent."""
+    if not dossier:
+        return ""
+    lines = [f"VIDEO DOSSIER (provider={dossier.get('provider')}, {dossier.get('version')}) — "
+             "the ONLY source of visual facts; never invent beyond it:"]
+    ff = dossier.get("first_frame") or {}
+    if ff.get("desc"):
+        lines.append(f"- first frame: {ff['desc']} (pattern_interrupt={ff.get('pattern_interrupt')}, "
+                     f"score={ff.get('score')})")
+    fr = dossier.get("framing") or {}
+    if fr.get("shot") or fr.get("quality_flags"):
+        lines.append(f"- framing: shot={fr.get('shot')} eye_contact={fr.get('eye_contact')} "
+                     f"lighting={fr.get('lighting')} stability={fr.get('stability')} "
+                     f"flags={fr.get('quality_flags')}")
+    for ev in (dossier.get("visual_events") or [])[:8]:
+        lines.append(f"- [f{ev.get('f0')}-{ev.get('f1')}] {ev.get('kind')}: {ev.get('desc')}")
+    for op in (dossier.get("broll_visual_opportunities") or [])[:6]:
+        lines.append(f"- b-roll cue [f{op.get('f0')}-{op.get('f1')}]: {op.get('cue')} — {op.get('why')}")
+    for g in (dossier.get("gaffes") or [])[:5]:
+        lines.append(f"- gaffe [f{g.get('f0')}-{g.get('f1')}]: {g.get('desc')}")
+    for dc in (dossier.get("delivery_curve") or [])[:6]:
+        lines.append(f"- energy [f{dc.get('f0')}-{dc.get('f1')}]: {dc.get('energy')} ({dc.get('note')})")
+    return "\n".join(lines)
+
+
 def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
                       brand: dict | None = None, edit_format: str = "",
-                      reference: dict | None = None) -> tuple[str, str]:
+                      reference: dict | None = None, dossier: dict | None = None) -> tuple[str, str]:
     """Analyze a raw talking-head transcript BEFORE editing → a grounded edit brief
     (Loop F). Adapted to Yunicorn's short-form talking-head ICP from Palo's creative-
     review doctrine: every claim is grounded in a real frame anchor + a verbatim quote,
@@ -542,6 +568,14 @@ def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
     (no vision) — never describe visuals you can't see."""
     brand = brand or {}
     total_f = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=0)) if words else 0
+    # P1.3: with a dossier, visual reasoning is grounded in it (not forbidden); without one,
+    # the old transcript-only discipline holds ("you cannot see the video").
+    visual_clause = (
+        "- VISUAL FACTS come ONLY from the VIDEO DOSSIER below — cite its [fN] anchors and never "
+        "invent framing, on-screen text, or b-roll beyond what it states. Absence in the dossier is valid.\n"
+        if dossier else
+        "- TRANSCRIPT ONLY: never mention visuals, framing, or on-screen text — you cannot see the video.\n"
+    )
     system = (
         "You are Yunicorn's edit analyst. You read the TRANSCRIPT of a creator's raw short-form "
         "talking-head take (which may be tightly scripted OR completely off-the-cuff) and produce an "
@@ -550,7 +584,7 @@ def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
         "- Cite frames only from the [fN] anchors in the transcript, and quote the creator's VERBATIM words.\n"
         "- ABSENCE IS VALID. If there are no flubs, no rambles, no b-roll moments — return empty arrays. "
         "Forced findings are worse than none.\n"
-        "- TRANSCRIPT ONLY: never mention visuals, framing, or on-screen text — you cannot see the video.\n"
+        f"{visual_clause}"
         "- No audience psychology ('creates curiosity'); describe the MECHANIC ('the payoff is withheld until fN').\n\n"
         "HOOK: the best opening moment is the line that promises a payoff the viewer must keep watching to see "
         "(all_scores rubric). Pick 1-3 hook_candidates; the strongest may be BURIED later in the take.\n"
@@ -573,8 +607,10 @@ def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
                     f"and inferred.style MUST be \"{spec['style']}\"): {spec['label']} — {spec['brief_hint']}\n")
     ref_block = _reference_reel_block(reference)
     ref_line = f"\n{ref_block}\n" if ref_block else ""
+    dossier_block = _dossier_block(dossier)
+    dossier_line = f"\n{dossier_block}\n" if dossier_block else ""
     user = (
-        f"{brand_block(brand)}{fmt_line}{ref_line}{custom_line}\n"
+        f"{brand_block(brand)}{fmt_line}{ref_line}{dossier_line}{custom_line}\n"
         f"Total frames: {total_f} (30fps).\n"
         f"TRANSCRIPT (frame-anchored):\n{_frame_anchored_transcript(words)}\n\n"
         "Produce the edit brief JSON."
