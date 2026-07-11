@@ -1903,12 +1903,28 @@ MUSIC_TRACKS = [
 ]
 
 
-def _apply_edit_prefs(edl: dict, prefs: dict) -> dict:
+def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None) -> dict:
     """Post-process an EDL per the creator's editing preferences."""
     if not edl or not prefs:
         return edl
     if prefs.get("auto_captions") is False:
         edl["captions"] = []
+    # P0.9: the b-roll / punch-in toggles were WRITTEN into prefs but never read here, so
+    # turning them off did nothing. Now they actually strip (off) or synthesize (on).
+    if prefs.get("broll") is False:
+        edl["broll"] = []
+    if prefs.get("punch_ins") is False:
+        edl["overlays"] = [o for o in (edl.get("overlays") or []) if o.get("type") != "punch_in"]
+    elif prefs.get("punch_ins") is True:
+        overlays = edl.get("overlays") or []
+        has_punch = any(o.get("type") == "punch_in" for o in overlays)
+        # punch_ins ON but the edit produced none → synthesize one on the top emphasis span
+        # (only for styles that actually render punch-ins).
+        if not has_punch and emphasis_spans and style_capabilities(edl.get("style", "")).get("punch_ins"):
+            s_in, s_out = emphasis_spans[0][0], emphasis_spans[0][1]
+            overlays.append({"type": "punch_in", "src_in": s_in,
+                             "src_out": min(s_out, s_in + 60), "scale": 1.08, "text": ""})
+            edl["overlays"] = overlays
     style = prefs.get("caption_style")
     if style in ("clean", "bold-word", "karaoke") and edl.get("captions") is not None:
         # Falsy-check, not setdefault: caption_style is now a real EDL model field,
@@ -2999,12 +3015,21 @@ async def _run_edit(job_id: str, words: list[dict]):
                 hints.append("Filler trimming is OFF — output an empty drops array.")
             elif trim == "aggressive":
                 hints.append("Filler trimming is AGGRESSIVE — also drop dead-air gaps > 200ms and hesitations.")
+            # P0.9: steer the author on the b-roll / punch-in toggles (post-processing in
+            # _apply_edit_prefs enforces them regardless, but hinting avoids wasted output).
+            if prefs.get("broll") is False:
+                hints.append("B-roll is OFF — output an empty broll array.")
+            if prefs.get("punch_ins") is False:
+                hints.append("Punch-ins are OFF — do not add any punch_in overlays.")
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         used_safe_default = False
         try:
-            edl_text = await anthropic(system, user, model=HAIKU, max_tokens=4000)
-            edl_data = extract_json(edl_text, array=False)
+            # P0.9: author the EDL via structured outputs on Sonnet at temperature 0 —
+            # deterministic, no free-form JSON-parse failures, a real editing model instead
+            # of Haiku at temp 1.0. Falls back to the safe-default edit on LLM failure.
+            edl_data = await anthropic_json(system, user, prompts.EDL_JSON_SCHEMA,
+                                            SONNET, 4000, temperature=0.0)
         except HTTPException:
             # LLM down ≠ pipeline dead: the safe default edit (full footage +
             # caption timing + deterministic filler cuts) still renders fine.
@@ -3052,7 +3077,7 @@ async def _run_edit(job_id: str, words: list[dict]):
         edl_data = await verify_and_repair_edl(style, edl_data, words, script,
                                                emphasis_spans=emphasis_spans)
 
-        edl_data = _apply_edit_prefs(edl_data, prefs)
+        edl_data = _apply_edit_prefs(edl_data, prefs, emphasis_spans=emphasis_spans)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole
