@@ -1411,6 +1411,15 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
 
     segments = [{"src_in": a, "src_out": b} for a, b in merged]
 
+    # --- P4.2 loop-friendly ending: trim trailing dead-air after the last spoken word to
+    # ≤10 frames so the autoplay loop cuts clean back to the first frame. Only trims the
+    # final segment's tail, never below the last word (and never inverts the segment). ---
+    if clean_words:
+        last_word_end = ms_to_frame(clean_words[-1].get("end_ms") or clean_words[-1].get("start_ms", 0))
+        tail = segments[-1]
+        if tail["src_out"] - last_word_end > 10 and last_word_end + 10 > tail["src_in"]:
+            tail["src_out"] = min(tail["src_out"], last_word_end + 10)
+
     # --- captions: ALWAYS from the cleaned words (never the plan) ---
     captions = [
         {"word": w["word"], "frame": ms_to_frame(w.get("start_ms", 0)),

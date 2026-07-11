@@ -19,9 +19,18 @@ export const TalkingHead: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   );
   // Ramp over ~8 frames with interpolate — a CSS `transition` is a no-op in a
   // frame-by-frame render, so it would snap the zoom instead of easing it.
+  // P4.2: ease the EXIT too (was a hard snap back to 1.0 at frame_out). r clamps the
+  // ramp so short windows still get a symmetric ease without colliding keyframes.
   const scale = punchIn
-    ? interpolate(frame, [punchIn.frame_in, punchIn.frame_in + 8], [1, punchIn.scale],
-        { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    ? (() => {
+        const r = Math.min(8, (punchIn.frame_out - punchIn.frame_in) / 2);
+        return interpolate(
+          frame,
+          [punchIn.frame_in, punchIn.frame_in + r, punchIn.frame_out - r, punchIn.frame_out],
+          [1, punchIn.scale, punchIn.scale, 1],
+          { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
+        );
+      })()
     : 1.0;
 
   return (
