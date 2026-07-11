@@ -96,6 +96,16 @@ def _reference_reel_block(reference: dict | None) -> str:
     lines.append(
         "Match its PACING, ENERGY, and caption vibe in your choices (cut density, hook placement, "
         "overlay usage). NEVER copy its wording — the creator's own words are the material.")
+    # P2.3: MEASURED patterns from running the reel through the dossier adapter — concrete
+    # targets to match, not vibes. Present only when the reel had a playable URL.
+    pat = reference.get("patterns")
+    if isinstance(pat, dict) and pat:
+        lines.append(
+            f"MEASURED patterns to match: cut density ≈ {pat.get('cut_density_per_s')}/s "
+            f"({pat.get('cuts')} cuts), captions={pat.get('caption_style')}, "
+            f"overlays={pat.get('overlay_usage')}, hook layers={pat.get('hook_layers')} "
+            f"(pattern_interrupt={pat.get('hook_pattern_interrupt')}), "
+            f"energy curve={pat.get('energy_curve')}.")
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
