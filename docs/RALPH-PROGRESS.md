@@ -21,7 +21,7 @@ Swift via backend↔Swift golden parity fixtures + line-by-line mirror review.
 
 ## Phase 0 — Render + wiring fixes (no new vendors)
 
-- [ ] P0.1 — iOS 1080p HEVC duration-driven bitrate upload ladder (`LiveClipEngine.swift` MediaCompressor; server-drivable `maxUploadBytes`)
+- [x] P0.1 — iOS 1080p HEVC duration-driven bitrate upload ladder + server-driven cap. MediaCompressor now transcodes ≤150s takes to native-1080p HEVC (AVAssetReader→AVAssetWriter, explicit AVVideoAverageBitRateKey, ≤90s→3.8Mbps / 90–150s→2.6Mbps, cap-budget clamp w/ 8% mux margin, short-edge capped at 1080); >150s + overshoot/failure fall to the 720p→540p preset ladder. `max_upload_bytes` added to all mint responses (env `MAX_UPLOAD_BYTES`), threaded into all 3 `forUpload` callers. Evidence: `make test` 480 passed (incl. new `test_mint_upload_url_cap_is_env_driven` + cap assert on `test_mint_upload_url`); iOS `dev.sh build` BUILD SUCCEEDED (Swift compiled on this Mac — stronger than golden-parity).
 - [ ] P0.2 — render encode quality: `crf 17`, `jpegQuality 95`, env knobs (`lambda-render.ts`, `remotion.config.ts`)
 - [ ] P0.3 — 12-frame min-clip guard in kept intervals + Swift mirror + golden tests (`edl.py`, `LocalEDLEngine.swift`)
 - [ ] P0.4 — FastCuts flash → 0.10 opacity over 3 frames, rate-limited ≥45 output frames (`FastCuts.tsx`)

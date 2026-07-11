@@ -69,6 +69,10 @@ APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+# The client compresses each take to fit under this cap before upload. Server-driven
+# (returned in every mint response) so raising the Supabase storage tier is a
+# backend-only change — the iOS upload ladder reads it and targets a bitrate to fit.
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "48000000"))
 # Inference-time quality gate (generate -> judge -> targeted self-repair). On by
 # default; set AI_QUALITY=0 to fall back to raw single-shot generation.
 AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
@@ -1831,6 +1835,7 @@ async def _mint_supabase_upload(filename: str) -> dict | None:
         "upload_url": f"{base}/storage/v1{signed_path}",
         "key": key,
         "public_url": f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}",
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
     }
 
 
@@ -1846,7 +1851,8 @@ async def mint_upload_url(req: UploadMintRequest):
         # this apart from a live mint and fall back to local/mock clips instead of
         # creating a live job whose source can never be fetched.
         key = f"mock/{uuid.uuid4()}/{req.filename}"
-        return {"mode": "mock", "upload_url": "", "key": key, "public_url": ""}
+        return {"mode": "mock", "upload_url": "", "key": key, "public_url": "",
+                "max_upload_bytes": MAX_UPLOAD_BYTES}
     # P-06 NOTE (removal-or-fix): this hand-rolled AWS4 presigner below is DEAD in
     # practice — R2 was never provisioned (R2_ACCESS_KEY unset everywhere; Supabase
     # Storage above is the real path) and it has never been exercised against a live
@@ -1879,7 +1885,8 @@ async def mint_upload_url(req: UploadMintRequest):
                   f"&X-Amz-Credential={R2_ACCESS_KEY}%2F{scope}"
                   f"&X-Amz-Date={date_str}&X-Amz-Expires=3600"
                   f"&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature={sig}")
-    return {"mode": "live", "upload_url": upload_url, "key": key, "public_url": public_url}
+    return {"mode": "live", "upload_url": upload_url, "key": key, "public_url": public_url,
+            "max_upload_bytes": MAX_UPLOAD_BYTES}
 
 
 # Server-side music catalog (same tracks the iOS Sound-mode ships) — the source for

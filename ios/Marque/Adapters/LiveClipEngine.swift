@@ -31,7 +31,8 @@ struct LiveClipEngine: ClipEngineProtocol {
             // local rough-cut preview. Fall back to the original if compression
             // fails (an oversize original just fails the upload → mock fallback).
             let original = MediaStore.url(for: footagePath)
-            let compressed = await MediaCompressor.forUpload(original)
+            let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
+            let compressed = await MediaCompressor.forUpload(original, maxBytes: cap)
             let toUpload = compressed ?? original
             let ok = await Self.uploadFootage(to: uploadURLString, fileURL: toUpload)
             if let compressed { try? FileManager.default.removeItem(at: compressed) }
@@ -94,7 +95,8 @@ struct LiveClipEngine: ClipEngineProtocol {
         var toUpload = original
         var cleanup: URL? = nil
         if filename.lowercased().hasSuffix(".mov") || filename.lowercased().hasSuffix(".mp4") {
-            if let compressed = await MediaCompressor.forUpload(original) { toUpload = compressed; cleanup = compressed }
+            let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
+            if let compressed = await MediaCompressor.forUpload(original, maxBytes: cap) { toUpload = compressed; cleanup = compressed }
         }
         let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
         if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
@@ -111,7 +113,8 @@ struct LiveClipEngine: ClipEngineProtocol {
             return publicURL                                  // mock mint or no footage: no bytes to move
         }
         let original = MediaStore.url(for: footagePath)
-        let compressed = await MediaCompressor.forUpload(original)
+        let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
+        let compressed = await MediaCompressor.forUpload(original, maxBytes: cap)
         let toUpload = compressed ?? original
         let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
         if let compressed { try? FileManager.default.removeItem(at: compressed) }
@@ -143,37 +146,173 @@ struct LiveClipEngine: ClipEngineProtocol {
     }
 }
 
-// Compresses a recorded take so it fits object storage before upload. The raw
-// camera file is full device bitrate (a 60–90s 1080p take is often 80–150MB);
-// the current Supabase free-tier cap is ~50MB. 720p is the quality target; if a
-// long take is still oversize at 720p it retries at 540p so a recording is never
-// silently dropped for being too big. Raising the storage limit later lets this
-// target a higher preset (or be removed) with no other change.
+// Compresses a recorded take so it fits object storage before upload. The raw camera
+// file is full device bitrate (a 60–90s 1080p take is often 80–150MB); the cap is
+// server-driven (mint response `max_upload_bytes`, default ~48MB).
+//
+// P0.1 — quality ladder: the old path compressed to 720p/540p, which the render then
+// UPSCALED to 1080p — soft faces, b-roll sharper than the speaker. Now short/medium
+// takes transcode to 1080p HEVC at an explicit bitrate that fits the cap (native
+// resolution preserved, no upscale), and only genuinely long takes (>150s, where a
+// fitting 1080p bitrate would look worse than clean 720p) fall to the export-preset
+// ladder. The preset ladder also stays as the safety net if the 1080p transcode
+// overshoots the cap or the writer fails.
 enum MediaCompressor {
-    private static let maxUploadBytes = 48_000_000   // safety margin under the ~50MB cap
+    static let defaultMaxUploadBytes = 48_000_000
+    private static let audioBps = 96_000            // AAC voice budget subtracted from the cap
+    private static let longTakeThresholdSec = 150.0 // above this, 1080p bitrate would be too low → 720p ladder
 
-    static func forUpload(_ source: URL) async -> URL? {
+    /// `maxBytes` comes from the mint response so raising the storage tier is backend-only.
+    static func forUpload(_ source: URL, maxBytes: Int = defaultMaxUploadBytes) async -> URL? {
         // OPT-7: skip re-encoding entirely when the source already fits — short takes
         // upload as-is instead of paying a full export on the critical path.
         let srcSize = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int
-        if let srcSize, srcSize <= maxUploadBytes { return nil }   // caller uploads the original
+        if let srcSize, srcSize <= maxBytes { return nil }   // caller uploads the original
 
-        // OPT-7: pick the preset up front from a duration × bitrate estimate — a long
-        // take that will obviously blow the cap at 720p (~2.5Mbps) goes straight to
-        // 540p instead of paying a full wasted 720p export first. The retry ladder
-        // stays as the safety net for estimate misses.
+        let asset = AVURLAsset(url: source)
+        let seconds = CMTimeGetSeconds(asset.duration)
+
+        // 1080p HEVC path for takes short enough that a cap-fitting bitrate still looks
+        // good. Budget = the cap's bits/sec minus audio, held under the cap with an 8%
+        // muxing-overhead margin; capped at a duration-tiered target so short takes don't
+        // get a needlessly huge bitrate.
+        if seconds.isFinite, seconds > 0, seconds <= longTakeThresholdSec {
+            let capBudgetBps = Int(Double(maxBytes) * 8.0 / seconds) - audioBps
+            let tierTarget = seconds <= 90 ? 3_800_000 : 2_600_000   // ≤90s vs 90–150s
+            let videoBps = max(1_200_000, min(tierTarget, Int(Double(capBudgetBps) * 0.92)))
+            if let out = await transcodeHEVC(asset, videoBps: videoBps),
+               let size = fileSize(out), size <= maxBytes {
+                return out
+            }
+            // Overshoot or writer failure → fall through to the preset ladder safety net.
+        }
+
+        // Long takes, or a 1080p transcode that overshot: the export-preset ladder
+        // (720p → 540p). A take that will obviously blow the cap at 720p (~2.5Mbps) skips
+        // straight to 540p instead of paying a wasted 720p export first.
         var presets = [AVAssetExportPreset1280x720, AVAssetExportPreset960x540]
-        let seconds = CMTimeGetSeconds(AVURLAsset(url: source).duration)
-        if seconds.isFinite, seconds * 2_500_000 / 8 > Double(maxUploadBytes) {
+        if seconds.isFinite, seconds * 2_500_000 / 8 > Double(maxBytes) {
             presets = [AVAssetExportPreset960x540]
         }
         for preset in presets {
             guard let out = await export(source, preset: preset) else { continue }
-            let size = (try? FileManager.default.attributesOfItem(atPath: out.path))?[.size] as? Int
-            if let size, size <= maxUploadBytes { return out }
+            if let size = fileSize(out), size <= maxBytes { return out }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
         return nil
+    }
+
+    private static func fileSize(_ url: URL) -> Int? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
+    }
+
+    /// Native-resolution HEVC transcode at an explicit average bitrate (AVAssetReader →
+    /// AVAssetWriter). Preserves the source dimensions + orientation so 1080p stays 1080p
+    /// (the whole point — no upscale in the render). Re-encodes audio to AAC at `audioBps`.
+    private static func transcodeHEVC(_ asset: AVURLAsset, videoBps: Int) async -> URL? {
+        guard let vTrack = asset.tracks(withMediaType: .video).first else { return nil }
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        guard let reader = try? AVAssetReader(asset: asset),
+              let writer = try? AVAssetWriter(outputURL: out, fileType: .mov) else { return nil }
+
+        // Decode video to biplanar 420 (video range), then re-encode HEVC at target bitrate.
+        let readerVideoOut = AVAssetReaderTrackOutput(
+            track: vTrack,
+            outputSettings: [kCVPixelBufferPixelFormatTypeKey as String:
+                                kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange])
+        readerVideoOut.alwaysCopiesSampleData = false
+        guard reader.canAdd(readerVideoOut) else { return nil }
+        reader.add(readerVideoOut)
+
+        // Encode at native size, but cap the short edge at 1080 so a >1080 source (e.g. a
+        // 4K capture) is downscaled to true 1080p rather than starved of bitrate at 4K.
+        let (outW, outH) = cappedDimensions(width: abs(vTrack.naturalSize.width),
+                                            height: abs(vTrack.naturalSize.height), cap: 1080)
+        let writerVideoIn = AVAssetWriterInput(mediaType: .video, outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: outW,
+            AVVideoHeightKey: outH,
+            AVVideoCompressionPropertiesKey: [
+                AVVideoAverageBitRateKey: videoBps,
+                AVVideoMaxKeyFrameIntervalKey: 60,
+                AVVideoExpectedSourceFrameRateKey: 30,
+            ],
+        ])
+        writerVideoIn.expectsMediaDataInRealTime = false
+        writerVideoIn.transform = vTrack.preferredTransform   // preserve orientation
+        guard writer.canAdd(writerVideoIn) else { return nil }
+        writer.add(writerVideoIn)
+
+        // Audio: re-encode to AAC at the voice budget (nil if the take has no audio track).
+        var readerAudioOut: AVAssetReaderTrackOutput?
+        var writerAudioIn: AVAssetWriterInput?
+        if let aTrack = asset.tracks(withMediaType: .audio).first {
+            let aOut = AVAssetReaderTrackOutput(
+                track: aTrack,
+                outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM])
+            aOut.alwaysCopiesSampleData = false
+            let aIn = AVAssetWriterInput(mediaType: .audio, outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVNumberOfChannelsKey: 1,
+                AVSampleRateKey: 44_100,
+                AVEncoderBitRateKey: audioBps,
+            ])
+            aIn.expectsMediaDataInRealTime = false
+            if reader.canAdd(aOut), writer.canAdd(aIn) {
+                reader.add(aOut); writer.add(aIn)
+                readerAudioOut = aOut; writerAudioIn = aIn
+            }
+        }
+
+        guard reader.startReading(), writer.startWriting() else {
+            try? FileManager.default.removeItem(at: out); return nil
+        }
+        writer.startSession(atSourceTime: .zero)
+
+        // Pump video + (optional) audio inputs concurrently; resume once both drain.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await pump(writerVideoIn, from: readerVideoOut) }
+            if let aIn = writerAudioIn, let aOut = readerAudioOut {
+                group.addTask { await pump(aIn, from: aOut) }
+            }
+        }
+
+        guard reader.status == .completed else {
+            writer.cancelWriting(); try? FileManager.default.removeItem(at: out); return nil
+        }
+        await writer.finishWriting()
+        guard writer.status == .completed else {
+            try? FileManager.default.removeItem(at: out); return nil
+        }
+        return out
+    }
+
+    /// Native dimensions with the short edge capped at `cap`, rounded to even numbers
+    /// (H.265 encoders require even width/height). Aspect ratio preserved.
+    private static func cappedDimensions(width: CGFloat, height: CGFloat, cap: CGFloat) -> (Int, Int) {
+        let shortEdge = min(width, height)
+        let scale = shortEdge > cap ? cap / shortEdge : 1.0
+        func even(_ v: CGFloat) -> Int { let n = Int((v * scale).rounded()); return n - (n % 2) }
+        return (max(2, even(width)), max(2, even(height)))
+    }
+
+    /// Drain one reader output into one writer input, honoring back-pressure.
+    private static func pump(_ input: AVAssetWriterInput, from output: AVAssetReaderTrackOutput) async {
+        let queue = DispatchQueue(label: "mediacompressor.pump.\(UUID().uuidString)")
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            input.requestMediaDataWhenReady(on: queue) {
+                while input.isReadyForMoreMediaData {
+                    guard let sample = output.copyNextSampleBuffer() else {
+                        input.markAsFinished(); cont.resume(); return
+                    }
+                    // append returns false if the writer failed mid-stream — stop cleanly
+                    // (finishWriting will then report a non-.completed status → caller drops it).
+                    if !input.append(sample) {
+                        input.markAsFinished(); cont.resume(); return
+                    }
+                }
+            }
+        }
     }
 
     private static func export(_ source: URL, preset: String) async -> URL? {

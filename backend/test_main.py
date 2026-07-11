@@ -638,6 +638,17 @@ def test_mint_upload_url():
     assert "key" in b
     assert "public_url" in b
     assert b["mode"] in ("live", "mock")
+    # P0.1: the cap is server-driven so the iOS upload ladder can target a fitting
+    # bitrate — every mint response (mock or live) must carry it.
+    assert b["max_upload_bytes"] == main.MAX_UPLOAD_BYTES
+
+
+def test_mint_upload_url_cap_is_env_driven(monkeypatch):
+    # Raising the Supabase tier is backend-only: bump MAX_UPLOAD_BYTES, the client fits to it.
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 96_000_000)
+    b = client.post("/v1/uploads/mint",
+                    json={"filename": "test.mov", "content_type": "video/quicktime"}).json()
+    assert b["max_upload_bytes"] == 96_000_000
 
 
 def test_mint_upload_url_mock_returns_empty_urls_when_no_storage(monkeypatch):
