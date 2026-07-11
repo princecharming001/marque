@@ -3,6 +3,7 @@ import { AbsoluteFill, useCurrentFrame, interpolate } from "remotion";
 import { CutVideo } from "../components/CutVideo";
 import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
+import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
@@ -28,6 +29,7 @@ export const TalkingHead: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       <AbsoluteFill style={{ transform: `scale(${scale})` }}>
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
       </AbsoluteFill>
+      {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}

@@ -3,6 +3,7 @@ import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { CutVideo } from "../components/CutVideo";
 import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
+import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
@@ -30,6 +31,7 @@ export const SplitThree: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
             textShadow: "0 1px 4px rgba(0,0,0,0.8)" }}>{labels[i]}</div>
         </div>
       ))}
+      {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}

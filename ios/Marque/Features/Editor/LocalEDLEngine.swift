@@ -59,6 +59,8 @@ struct WireOp: Equatable {
     static func editOverlayText(index: Int, text: String) -> WireOp { WireOp(type: "edit_overlay", i: ["index": index], s: ["text": text]) }
     static func removeOverlay(kind: String, _ a: Int, _ b: Int) -> WireOp { WireOp(type: "remove_overlays", i: ["start_frame": a, "end_frame": b], s: ["kind": kind]) }
     static func addBroll(_ a: Int, _ b: Int, query: String) -> WireOp { WireOp(type: "add_broll", i: ["start_frame": a, "end_frame": b], s: ["query": query]) }
+    /// The creator's own photo/video as a roll — direct URL (already uploaded).
+    static func addMediaRoll(_ a: Int, _ b: Int, url: String) -> WireOp { WireOp(type: "add_broll", i: ["start_frame": a, "end_frame": b], s: ["url": url]) }
     static func removeBroll(_ a: Int, _ b: Int) -> WireOp { WireOp(type: "remove_broll", i: ["start_frame": a, "end_frame": b]) }
     static func setMusic(url: String, volume: Double, duck: Bool) -> WireOp { WireOp(type: "set_music", d: ["volume": volume], s: ["url": url], bool: ["enabled": true, "duck_voice": duck]) }
     static func removeMusic() -> WireOp { WireOp(type: "set_music", bool: ["enabled": false]) }
@@ -296,8 +298,23 @@ enum LocalEDLEngine {
                 d.music = EditorMusic(url: url, volume: min(1.0, max(0.0, op.d["volume"] ?? 0.15)),
                                       duckVoice: op.bool["duck_voice"] ?? true)
             } else { return nil }
-        case "add_broll", "remove_broll", "set_split_fraction":
-            break   // no local visual sim in v1 — applied server-side on Save; return doc unchanged-but-dirty
+        case "add_broll":
+            // Media rolls are style-universal (every composition draws BrollLayer).
+            let query = (op.s["query"] ?? "").trimmingCharacters(in: .whitespaces)
+            let url = (op.s["url"] ?? "").trimmingCharacters(in: .whitespaces)
+            guard query.isEmpty == false || url.isEmpty == false,
+                  let (a, b) = clamp(op.i["start_frame"] ?? 0, op.i["end_frame"] ?? 0) else { return nil }
+            d.broll.append(EditorBroll(srcIn: a, srcOut: b,
+                                       cueText: query.isEmpty ? "your media" : query,
+                                       source: url.isEmpty ? "stock" : "own_media",
+                                       resolvedURL: url.isEmpty ? nil : url))
+        case "remove_broll":
+            let a = op.i["start_frame"]; let b = op.i["end_frame"]
+            let before = d.broll.count
+            d.broll.removeAll { r in a == nil || b == nil || !(r.srcOut <= a! || r.srcIn >= b!) }
+            guard d.broll.count < before else { return nil }
+        case "set_split_fraction":
+            break   // no local visual sim — applied server-side on Save; return doc unchanged-but-dirty
         default:
             return nil
         }

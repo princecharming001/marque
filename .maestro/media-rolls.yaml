@@ -1,0 +1,50 @@
+appId: com.getmarque.app
+name: R9 — media rolls lane + add-media panel
+---
+- launchApp:
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- tapOn: { id: "editorPro.coachDismiss", optional: true }
+# ADD MEDIA: Edit drawer → media panel
+- tapOn: { id: "editorPro.addMediaBtn" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.mediaPanel" }
+    timeout: 4000
+- takeScreenshot: /tmp/mr-01-media-panel
+# STOCK CLIP: describe it → roll appears in the rolls lane, selected
+- tapOn: "Stock clip"
+- tapOn: { id: "dialog.input" }
+- inputText: "city skyline at dusk"
+- tapOn: { id: "dialog.add" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.roll.0" }
+    timeout: 4000
+- takeScreenshot: /tmp/mr-02-roll-strip
+# CONTEXT STRIP on the selected roll: stretch it longer
+- tapOn: "Longer"
+- takeScreenshot: /tmp/mr-03-roll-longer
+# CANVAS SIM: the roll window under the playhead previews on the video
+- extendedWaitUntil:
+    visible: { id: "editorPro.rollSim" }
+    timeout: 4000
+# SAVE → server round-trip → reopen: the roll persisted
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil:
+    visible: { id: "clip.editManual" }
+    timeout: 90000
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil:
+    visible: { id: "editorPro.playPause" }
+    timeout: 12000
+- extendedWaitUntil:
+    visible: { id: "editorPro.roll.0" }
+    timeout: 6000
+- takeScreenshot: /tmp/mr-04-roll-persisted

@@ -1814,11 +1814,27 @@ def test_apply_ops_overlays_broll_split_trims():
     # add punch-in with clamped scale
     edl, res = apply_edl_ops(edl, [{"type": "add_punch_in", "start_frame": 60, "end_frame": 120, "scale": 9}], [])
     assert res[0]["applied"] and edl["overlays"][0]["scale"] == 1.35
-    # b-roll refused on talking_head, allowed on faceless
-    _, res = apply_edl_ops(_tweak_edl(), [{"type": "add_broll", "start_frame": 30, "end_frame": 90, "query": "city"}], [])
-    assert not res[0]["applied"] and "style" in res[0]["reason"]
+    # b-roll is universal (Round 9): every style takes a stock query…
+    edl_th, res = apply_edl_ops(_tweak_edl(), [{"type": "add_broll", "start_frame": 30, "end_frame": 90, "query": "city"}], [])
+    assert res[0]["applied"] and edl_th["broll"][0]["broll_query"] == "city"
+    assert edl_th["broll"][0]["source"] == "stock" and edl_th["broll"][0]["resolved_url"] is None
     edl_f, res = apply_edl_ops(_tweak_edl("faceless"), [{"type": "add_broll", "start_frame": 30, "end_frame": 90, "query": "city"}], [])
     assert res[0]["applied"] and edl_f["broll"][0]["broll_query"] == "city"
+    # …or the creator's own media by direct url (own_media, pre-resolved)
+    edl_m, res = apply_edl_ops(_tweak_edl(), [{"type": "add_broll", "start_frame": 30, "end_frame": 90,
+                                               "url": "https://cdn.example.com/roll.jpg"}], [])
+    assert res[0]["applied"]
+    assert edl_m["broll"][0]["source"] == "own_media"
+    assert edl_m["broll"][0]["resolved_url"] == "https://cdn.example.com/roll.jpg"
+    # non-http url refused; so is a windowless / queryless-urlless op
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "add_broll", "start_frame": 30, "end_frame": 90,
+                                           "url": "file:///etc/passwd"}], [])
+    assert not res[0]["applied"]
+    _, res = apply_edl_ops(_tweak_edl(), [{"type": "add_broll", "start_frame": 30, "end_frame": 90}], [])
+    assert not res[0]["applied"]
+    # remove_broll clears any roll overlapping the window
+    edl_r, res = apply_edl_ops(edl_m, [{"type": "remove_broll", "start_frame": 0, "end_frame": 900}], [])
+    assert res[0]["applied"] and edl_r["broll"] == []
     # split fraction only for duet
     _, res = apply_edl_ops(_tweak_edl(), [{"type": "set_split_fraction", "value": 0.5}], [])
     assert not res[0]["applied"]
@@ -3006,7 +3022,7 @@ def test_next_idea_llm_keeps_deterministic_grounding(monkeypatch):
 def test_editor_capabilities_endpoint():
     caps = client.get("/v1/editor/capabilities").json()["capabilities"]
     assert caps["talking_head"]["punch_ins"] is True and caps["fast_cuts"]["punch_ins"] is False
-    assert caps["broll_cutaway"]["broll"] is True and caps["talking_head"]["broll"] is False
+    assert all(c["broll"] for c in caps.values())   # Round 9: b-roll is universal
     assert caps["green_screen"]["text_cards"] is True
     assert all(c["music"] and c["captions"] for c in caps.values())   # style-agnostic ops
 

@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import PhotosUI
 
 // MARK: - ProEditorView — the CapCut/TikTok-style direct-manipulation editor.
 // Loads the clip's server EDL + transcript, edits a local draft (instant preview via
@@ -61,6 +62,15 @@ struct ProEditorView: View {
     // playhead, drag repositions it, pinch zooms it (CapCut preview transform).
     @State var videoDrag: (seg: Int, x: Double, y: Double)? = nil
     @State var videoPinch: (seg: Int, scale: Double)? = nil
+    // FP1c: media rolls — selection, the add-media panel, photo/video import.
+    @State var selectedBroll: Int? = nil
+    @State var showMediaPanel = false
+    @State var showStockInput = false
+    @State var mediaPickerItem: PhotosPickerItem? = nil
+    @State var uploadingMedia = false
+    // url → local file path, so the player sim can show freshly-imported media
+    // before the server round-trip.
+    @State var localMediaPreviews: [String: String] = [:]
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -101,11 +111,16 @@ struct ProEditorView: View {
                      text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
         .marqueInput($showStickerInput, title: "Add text", placeholder: "Say something",
                      text: $editDraft, confirm: "Add") { addTextSticker(editDraft) }
+        .marqueInput($showStockInput, title: "Stock clip", placeholder: "What should it show?",
+                     text: $editDraft, confirm: "Add") { addStockRoll(editDraft) }
         .marqueInput(Binding(get: { editingPhrase != nil }, set: { if !$0 { editingPhrase = nil } }),
                      title: "Edit caption", placeholder: "Caption text", text: $editDraft) { commitPhraseEdit() }
         .marqueInput(Binding(get: { editingOverlayIndex != nil }, set: { if !$0 { editingOverlayIndex = nil } }),
                      title: "Edit text card", placeholder: "Text", text: $editDraft) { commitOverlayTextEdit() }
         .sensoryFeedback(.impact(weight: .light), trigger: hapticTick)   // I-7 haptics
+        .onChange(of: mediaPickerItem) { _, item in
+            if let item { Task { await importRollMedia(item) } }
+        }
         .task { await load() }
         .onChange(of: phase) { _, p in
             if p == .editing, !coachShown { showCoach = true }
@@ -204,6 +219,8 @@ struct ProEditorView: View {
                 // CapCut pattern: the caption list replaces the timeline pane inline —
                 // a system sheet here is invisible to accessibility/automation.
                 captionListPanel
+            } else if showMediaPanel {
+                mediaPanel
             } else {
                 timelinePane
                 contextStrip
@@ -219,6 +236,13 @@ struct ProEditorView: View {
             HStack(spacing: Space.md) {
                 switch mode {
                 case .edit:
+                    // The fast add-media path lives here too, not just the track-end "+" —
+                    // the tile sits at the timeline's end, off-screen until you scrub there.
+                    drawerButton("Add media", "plus.rectangle.on.rectangle") {
+                        player?.pause()
+                        withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
+                    }
+                    .accessibilityIdentifier("editorPro.addMediaBtn")
                     Text("Trim with the handles · Split cuts at the playhead · Move ◀ ▶ reorders")
                         .font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
                 case .sound:
@@ -275,8 +299,14 @@ struct ProEditorView: View {
                     // #8: fall back to the LOCAL style capability when the server caps didn't
                     // load (keyless/network hiccup) so Zoom doesn't silently vanish.
                     if punchInsSupported { drawerButton("Add zoom", "plus.magnifyingglass") { addPunchInOnHook() }.accessibilityIdentifier("editorPro.addPunchIn") }
-                    if caps?["broll"] ?? false { drawerButton("Add b-roll", "photo.on.rectangle") { addBroll("relevant") }.accessibilityIdentifier("editorPro.addBroll") }
-                    if !punchInsSupported && !(caps?["broll"] ?? false) {
+                    // B-roll is universal now (Round 9) — the button opens the media panel
+                    // so the creator picks stock vs their own photo/video.
+                    drawerButton("Add b-roll", "photo.on.rectangle") {
+                        player?.pause()
+                        withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
+                    }
+                    .accessibilityIdentifier("editorPro.addBroll")
+                    if !punchInsSupported && !(caps?["broll"] ?? true) {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
                 case .filters:
@@ -504,6 +534,7 @@ struct ProEditorView: View {
                             .accessibilityIdentifier("editorPro.videoSelection")
                     }
                 }
+                rollSimOverlay
                 captionSimOverlay
                 textCardSimOverlay
                 stickerSimOverlay
@@ -636,6 +667,114 @@ struct ProEditorView: View {
     private var lookContrast: Double { lookVals.con }
     private var lookBrightness: Double { lookVals.bri }
     private var lookHueDegrees: Double { lookVals.hue }
+
+    // MARK: FP1c — the add-media panel (replaces the timeline pane; sheets are
+    // invisible to accessibility/automation, and this reads cleaner anyway).
+
+    var mediaPanel: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Text("Add media").font(AppFont.headline).foregroundStyle(.white)
+                HStack {
+                    Spacer()
+                    Button { withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false } } label: {
+                        Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                            .padding(.horizontal, Space.md).padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editorPro.mediaPanel.cancel")
+                }
+            }
+            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+
+            VStack(spacing: Space.sm) {
+                PhotosPicker(selection: $mediaPickerItem, matching: .any(of: [.images, .videos])) {
+                    mediaRow("Photo or video", "photo.on.rectangle.angled",
+                             "Drop your own shot over the cut")
+                }
+                .accessibilityIdentifier("editorPro.media.photo")
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
+                    editDraft = ""; showStockInput = true
+                } label: {
+                    mediaRow("Stock clip", "film.stack", "Describe it — we find the footage")
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.media.stock")
+                Button {
+                    withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
+                    showMusicSheet = true
+                } label: {
+                    mediaRow("Music", "music.note", "A track under the whole cut")
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.media.music")
+                if uploadingMedia {
+                    HStack(spacing: Space.sm) {
+                        ProgressView().tint(Palette.accent)
+                        Text("Adding your media…").font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                    }
+                    .padding(.top, Space.sm)
+                }
+            }
+            .padding(.horizontal, Space.lg)
+            Spacer(minLength: 0)
+        }
+        .frame(height: 300, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background(Palette.ink.opacity(0.6))
+        .accessibilityIdentifier("editorPro.mediaPanel")
+    }
+
+    private func mediaRow(_ title: String, _ icon: String, _ subtitle: String) -> some View {
+        HStack(spacing: Space.md) {
+            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Palette.accent)
+                .frame(width: 34)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(AppFont.headline).foregroundStyle(.white)
+                Text(subtitle).font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(.horizontal, Space.md).padding(.vertical, 10)
+        .background(Color.white.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .contentShape(Rectangle())
+    }
+
+    // MARK: FP1c — media roll preview on the canvas (full-frame, under captions,
+    // exactly where BrollLayer renders it).
+
+    @ViewBuilder private var rollSimOverlay: some View {
+        if let d = session?.draft {
+            let f = playheadSourceFrame
+            if let idx = d.broll.firstIndex(where: { $0.srcIn <= f && f < $0.srcOut }) {
+                let roll = d.broll[idx]
+                Group {
+                    if let url = roll.resolvedURL, let path = localMediaPreviews[url],
+                       let img = UIImage(contentsOfFile: MediaStore.url(for: path).path) {
+                        Image(uiImage: img).resizable().scaledToFill()
+                    } else {
+                        ZStack {
+                            Rectangle().fill(Color(hex: 0xB56635).opacity(0.30))
+                            VStack(spacing: 6) {
+                                Image(systemName: roll.source == "own_media" ? "photo" : "film")
+                                    .font(.system(size: 26)).foregroundStyle(.white.opacity(0.8))
+                                Text(roll.source == "own_media" ? "Your media" : roll.cueText)
+                                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.8))
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+                .allowsHitTesting(false)
+                .clipped()
+                .accessibilityIdentifier("editorPro.rollSim")
+            }
+        }
+    }
 
     // MARK: FP1 — text stickers on the canvas (drag anywhere / pinch / tap-select)
 
@@ -870,6 +1009,12 @@ struct ProEditorView: View {
         var h: CGFloat = 12 + 2 + 56 + 8                                  // ruler + video + padding
         if captionsOn, !phrases.isEmpty { h += 20 }
         if !(session?.draft.overlays.isEmpty ?? true) { h += 22 }
+        if let rolls = session?.draft.broll, !rolls.isEmpty {
+            // Matches rollsLane's stacking: 18pt per row, second row only on overlap.
+            let sorted = rolls.sorted { $0.srcIn < $1.srcIn }
+            let overlaps = zip(sorted, sorted.dropFirst()).contains { $0.srcOut > $1.srcIn }
+            h += overlaps ? 38 : 20
+        }
         h += 18                                                            // voice lane (always)
         if session?.draft.music != nil || mode == .sound { h += 20 }
         return h + 8
@@ -901,11 +1046,21 @@ struct ProEditorView: View {
             onTapBoundary: { leading in
                 player?.pause()
                 withAnimation(.easeOut(duration: 0.15)) {
-                    selectedSeg = nil; selectedOverlay = nil; speedPanelSeg = nil
+                    selectedSeg = nil; selectedOverlay = nil; speedPanelSeg = nil; selectedBroll = nil
                     selectedBoundary = (selectedBoundary == leading) ? nil : leading
                 }
                 bumpHaptic()
-            }
+            },
+            selectedBroll: selectedBroll,
+            onTapBroll: { idx in
+                player?.pause()
+                withAnimation(.easeOut(duration: 0.15)) {
+                    selectedSeg = nil; selectedOverlay = nil; selectedBoundary = nil
+                    selectedBroll = (selectedBroll == idx) ? nil : idx
+                }
+                bumpHaptic()
+            },
+            onTapAddMedia: { player?.pause(); withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true } }
         )
         .frame(height: timelineHeight)
         .background(Palette.ink.opacity(0.6))
@@ -914,7 +1069,19 @@ struct ProEditorView: View {
     // MARK: context strip (selection actions)
 
     @ViewBuilder private var contextStrip: some View {
-        if let b = selectedBoundary {
+        if let ri = selectedBroll, let roll = session?.draft.broll[safe: ri] {
+            HStack(spacing: Space.lg) {
+                contextButton("Delete", "trash") { deleteRoll(ri); bumpHaptic() }
+                    .accessibilityIdentifier("editorPro.ctx.deleteRoll")
+                contextButton("Shorter", "minus") { adjustRoll(ri, deltaFrames: -15); bumpHaptic() }
+                contextButton("Longer", "plus") { adjustRoll(ri, deltaFrames: 15); bumpHaptic() }
+                Spacer()
+                Text(roll.source == "own_media" ? "Your media" : roll.cueText)
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+            }
+            .frame(height: 44).padding(.horizontal, Space.md)
+            .background(Palette.ink.opacity(0.4))
+        } else if let b = selectedBoundary {
             // Boundary selected: the transition styles (CapCut's between-clips picker).
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.sm) {

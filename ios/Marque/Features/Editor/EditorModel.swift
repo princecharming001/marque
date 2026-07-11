@@ -58,6 +58,18 @@ struct EditorOverlay: Equatable {
     var font: String = "inter"
 }
 
+// One media roll (B-roll/C-roll…): a photo/video window over the base cut.
+// `localPath` is set for freshly-imported media so the player sim can show it
+// before the uploaded URL round-trips through the server.
+struct EditorBroll: Equatable {
+    var srcIn: Int
+    var srcOut: Int
+    var cueText: String = ""
+    var source: String = "stock"        // stock | own_media
+    var resolvedURL: String? = nil
+    var localPath: String? = nil        // sim-only, never serialized
+}
+
 struct EditorTransition: Equatable {
     var afterSegment: Int            // source index of the leading segment
     var style: String                // fade_black | fade_white | flash
@@ -118,6 +130,7 @@ struct EditorDocument: Equatable {
     var speechFrames: [Int] = []          // for the L1 music duck-under-voice sim
     var transitions: [EditorTransition] = []
     var look = EditorLook()
+    var broll: [EditorBroll] = []
 
     // MARK: JSON <-> document (parses the GET /v1/clips/{id} `edl` object)
 
@@ -166,6 +179,13 @@ struct EditorDocument: Equatable {
         }
         if let order = edl["segment_order"] as? [Int] { segmentOrder = order }
         speechFrames = edl["speech_frames"] as? [Int] ?? []
+        broll = (edl["broll"] as? [[String: Any]] ?? []).compactMap {
+            guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
+            return EditorBroll(srcIn: a, srcOut: b,
+                               cueText: $0["cue_text"] as? String ?? "",
+                               source: $0["source"] as? String ?? "stock",
+                               resolvedURL: $0["resolved_url"] as? String)
+        }
         transitions = (edl["transitions"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["after_segment"] as? Int else { return nil }
             return EditorTransition(afterSegment: a, style: $0["style"] as? String ?? "fade_black",

@@ -83,6 +83,24 @@ struct LiveClipEngine: ClipEngineProtocol {
     /// URL ("" on the keyless/mock backend — no storage, mock brief still works),
     /// or nil on a hard failure (backend unreachable / upload failed) so the caller
     /// falls back to the local mock pipeline instead of creating a doomed live job.
+    /// Upload any media file (photo or video) for a roll — mintAndUpload with a
+    /// caller-chosen filename (content-type follows it) and no compressor for images.
+    static func uploadMedia(path: String, filename: String) async -> String? {
+        guard let mintData = await BackendClient.shared.mintUploadURL(filename: filename) else { return nil }
+        let uploadURLString = mintData["upload_url"] as? String ?? ""
+        let publicURL = mintData["public_url"] as? String ?? ""
+        guard !uploadURLString.isEmpty else { return publicURL }     // mock mint: nothing to move
+        let original = MediaStore.url(for: path)
+        var toUpload = original
+        var cleanup: URL? = nil
+        if filename.lowercased().hasSuffix(".mov") || filename.lowercased().hasSuffix(".mp4") {
+            if let compressed = await MediaCompressor.forUpload(original) { toUpload = compressed; cleanup = compressed }
+        }
+        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
+        if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
+        return ok ? publicURL : nil
+    }
+
     static func mintAndUpload(footagePath: String?) async -> String? {
         guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else {
             return nil                                        // backend unreachable

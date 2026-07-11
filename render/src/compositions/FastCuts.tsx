@@ -3,6 +3,7 @@ import { AbsoluteFill, useCurrentFrame } from "remotion";
 import { CutVideo, clipOutFrames } from "../components/CutVideo";
 import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
+import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { CompositionProps } from "../types";
@@ -37,6 +38,7 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       {flashing && (
         <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.18 }} />
       )}
+      {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}

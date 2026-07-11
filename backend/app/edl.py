@@ -635,7 +635,7 @@ def style_capabilities(style: str) -> dict:
     """Which optional edit ops a style can actually render — the iOS editor queries this
     to hide toggles that would be silent no-ops (audit D4)."""
     return {
-        "broll": style in _BROLL_STYLES,
+        "broll": True,   # BrollLayer is drawn by every composition now
         "punch_ins": style in _PUNCH_STYLES,
         "text_cards": style in _TEXTCARD_STYLES,
         # music/captions/volume/trim/cut/reorder are style-agnostic
@@ -976,21 +976,28 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     reason = "no adjust knob given"
 
             elif t == "add_broll":
-                if edl.get("style") not in _BROLL_STYLES:
-                    reason = "b-roll isn't rendered in this video style"
+                # Media rolls are UNIVERSAL now — every composition draws BrollLayer,
+                # so the old _BROLL_STYLES gate is gone. Two flavors: a stock QUERY
+                # (Pexels-resolved at render) or the creator's OWN media via a direct
+                # `url` (photo/video already uploaded by the app).
+                r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
+                query = (op.get("query") or "").strip()
+                url = (op.get("url") or "").strip()
+                if r is None:
+                    reason = "invalid or out-of-bounds range"
+                elif not query and not url:
+                    reason = "b-roll needs a search query or a media url"
+                elif url and not url.lower().startswith(("http://", "https://")):
+                    reason = "media url must be http(s)"
                 else:
-                    r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
-                    query = (op.get("query") or "").strip()
-                    if r is None:
-                        reason = "invalid or out-of-bounds range"
-                    elif not query:
-                        reason = "b-roll needs a search query"
-                    else:
-                        edl.setdefault("broll", []).append(
-                            {"src_in": r[0], "src_out": r[1], "cue_text": query,
-                             "asset_id": None, "broll_query": query, "source": "stock",
-                             "resolved_url": None})
-                        applied = True
+                    edl.setdefault("broll", []).append(
+                        {"src_in": r[0], "src_out": r[1],
+                         "cue_text": query or "your media",
+                         "asset_id": None,
+                         "broll_query": query or None,
+                         "source": "own_media" if url else "stock",
+                         "resolved_url": url or None})
+                    applied = True
 
             elif t == "remove_broll":
                 ranged = op.get("start_frame") is not None and op.get("end_frame") is not None

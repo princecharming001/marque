@@ -27,6 +27,10 @@ struct EditorTimeline: View {
     // one selects that boundary; the context strip offers the dip styles.
     var selectedBoundary: Int? = nil          // source segIdx of the LEADING clip
     var onTapBoundary: (Int) -> Void = { _ in }
+    // Media rolls (B-roll/C-roll…) + the "+" add-media tile at the track end.
+    var selectedBroll: Int? = nil
+    var onTapBroll: (Int) -> Void = { _ in }
+    var onTapAddMedia: () -> Void = {}
 
     @State private var dragBaseOffset: CGFloat?
     @GestureState private var pinch: CGFloat = 1
@@ -68,11 +72,14 @@ struct EditorTimeline: View {
                         ForEach(Array(clips.enumerated()), id: \.offset) { pos, c in
                             clipCell(pos: pos, segIdx: c.segIdx, srcIn: c.srcIn, srcOut: c.srcOut, keptFrames: c.keptFrames, speed: c.speed)
                         }
+                        addMediaTile
                     }
                     .overlay(alignment: .topLeading) { transitionDiamonds }
-                    // CapCut lane order: captions directly under video, then effects, then audio.
+                    // CapCut lane order: captions under video, then effects, then media
+                    // rolls (B/C/D…), then the audio lanes.
                     if captionsOn, !phrases.isEmpty { captionLane }
                     if !document.overlays.isEmpty { overlayLane }   // zoom blocks + text cards
+                    if !document.broll.isEmpty { rollsLane }         // media rolls, stacked on overlap
                     voiceLane                                        // original voice as a waveform strip
                     if musicName != nil || showMusicAdd { musicLane }
                 }
@@ -222,6 +229,73 @@ struct EditorTimeline: View {
 
     private var edgeAlignment: Alignment {
         (trimPreview?.edge == .leading) ? .topLeading : .topTrailing
+    }
+
+    /// CapCut's "+" at the end of the main track — the fast path to add media.
+    private var addMediaTile: some View {
+        Button(action: onTapAddMedia) {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.white.opacity(0.12))
+                .frame(width: 40, height: 56)
+                .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.white))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("editorPro.addMedia")
+    }
+
+    // MARK: Media rolls lane — every photo/video window as a labeled strip
+    // (B-roll, C-roll, …). Overlapping rolls stack onto a second row so each
+    // stays visible and tappable (the TikTok multi-layer read).
+    private var rollsLane: some View {
+        let rolls = document.broll
+        // Greedy row assignment: a roll overlapping the previous row's occupant
+        // moves down one row (max 2 rows keeps the lane compact).
+        var rowEnd: [Double] = []
+        var placed: [(idx: Int, roll: EditorBroll, span: (start: Double, end: Double), row: Int)] = []
+        for (i, r) in rolls.enumerated() {
+            guard let span = document.outputSpan(srcIn: r.srcIn, srcOut: r.srcOut) else { continue }
+            var row = 0
+            while row < rowEnd.count, span.start < rowEnd[row] - 0.01 { row += 1 }
+            row = min(row, 1)
+            if row >= rowEnd.count { rowEnd.append(span.end) } else { rowEnd[row] = max(rowEnd[row], span.end) }
+            placed.append((i, r, span, row))
+        }
+        let rows = min(2, max(1, (placed.map(\.row).max() ?? 0) + 1))
+        return ZStack(alignment: .topLeading) {
+            Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
+                              height: CGFloat(rows) * 18)
+            ForEach(placed, id: \.idx) { p in
+                rollStrip(p.idx, p.roll, p.span)
+                    .offset(x: CGFloat(p.span.start) * pointsPerSecond, y: CGFloat(p.row) * 18 + 1)
+            }
+        }
+        .frame(height: CGFloat(rows) * 18, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func rollStrip(_ idx: Int, _ roll: EditorBroll, _ span: (start: Double, end: Double)) -> some View {
+        let w = max(34, CGFloat(span.end - span.start) * pointsPerSecond - 1.5)
+        let selected = selectedBroll == idx
+        let letter = String(UnicodeScalar(UInt8(66 + min(idx, 24))))   // B, C, D, …
+        return HStack(spacing: 3) {
+            Image(systemName: roll.source == "own_media" ? "photo.fill" : "film.fill")
+                .font(.system(size: 8, weight: .semibold))
+            Text(w > 64 ? "\(letter)-roll" : letter)
+                .font(.system(size: 9, weight: .bold))
+            if w > 120, !roll.cueText.isEmpty {
+                Text(roll.cueText).font(.system(size: 8)).lineLimit(1).opacity(0.8)
+            }
+        }
+        .foregroundStyle(selected ? Palette.night : .white)
+        .padding(.horizontal, 5)
+        .frame(width: w, height: 16, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 4)
+            .fill(selected ? Color(hex: 0xE8925A) : Color(hex: 0xB56635).opacity(0.9)))
+        .overlay(RoundedRectangle(cornerRadius: 4)
+            .strokeBorder(selected ? Color.white : .clear, lineWidth: 1.2))
+        .onTapGesture { onTapBroll(idx) }
+        .accessibilityIdentifier("editorPro.roll.\(idx)")
     }
 
     // MARK: Caption track — one white phrase clip per caption group (CapCut's text lane).

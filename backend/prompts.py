@@ -728,7 +728,7 @@ def tweak_prompt(edl: dict, transcript_words: list[dict], instruction: str,
         "- remove_overlays {kind: punch_in|text_card|all, start_frame?, end_frame?}\n"
         "- add_punch_in {start_frame, end_frame, scale 1.02-1.35}\n"
         "- add_text_card {start_frame, end_frame, text}\n"
-        "- add_broll {start_frame, end_frame, query} (only broll_cutaway/faceless styles)\n"
+        "- add_broll {start_frame, end_frame, query OR url} — stock clip by search query, or the creator's own photo/video by direct url; any style\n"
         "- remove_broll {start_frame?, end_frame?}\n"
         "- set_split_fraction {value 0.3-0.75} (duet only)\n"
         "- reorder_segments {order: [int,...]} — reorder the kept segments (a permutation of their indices)\n"

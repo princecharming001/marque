@@ -3,6 +3,7 @@ import { AbsoluteFill, Sequence, OffthreadVideo, Img, Freeze, useCurrentFrame, i
 import { CutVideo } from "../components/CutVideo";
 import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
+import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { CompositionProps, ReactWindow } from "../types";
@@ -22,7 +23,8 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
     return (
       <AbsoluteFill style={{ background: "#000" }}>
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
-        {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
+        {edl && <BrollLayer broll={edl.broll} />}
+      {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
         {edl && <TextStickers overlays={edl.overlays} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
       <AudioMix audio={edl?.audio} />
@@ -84,6 +86,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         </div>
       </div>
 
+      {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}

@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import PhotosUI
 
 extension ProEditorView {
 
@@ -293,6 +294,69 @@ extension ProEditorView {
         mutate([.captionOptions(scale: s)])
     }
 
+    // MARK: FP1c — media rolls (B-roll/C-roll…)
+
+    func addStockRoll(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty, let (aF, bF) = insertWindow(len: 90) else { return }
+        mutate([.addBroll(aF, bF, query: q)], rejectMsg: "Couldn't add that clip here.")
+        selectLastRoll()
+    }
+
+    /// Photo/video from the library → save → upload → own-media roll at the playhead.
+    func importRollMedia(_ item: PhotosPickerItem) async {
+        uploadingMedia = true
+        defer { uploadingMedia = false; mediaPickerItem = nil }
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            flashPublic("Couldn't load that media — try another.")
+            return
+        }
+        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+        let ext = isVideo ? "mov" : "jpg"
+        let path = MediaStore.save(data, ext: ext)
+        guard let url = await LiveClipEngine.uploadMedia(path: path, filename: "roll.\(ext)") else {
+            flashPublic("Couldn't upload that media — check your connection.")
+            return
+        }
+        guard let (aF, bF) = insertWindow(len: 90) else { return }
+        mutate([.addMediaRoll(aF, bF, url: url)])
+        localMediaPreviews[url] = path              // instant canvas preview
+        selectLastRoll()
+        withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
+    }
+
+    private func selectLastRoll() {
+        if let idx = session?.draft.broll.indices.last {
+            selectedSeg = nil; selectedOverlay = nil; selectedBoundary = nil
+            selectedBroll = idx
+        }
+    }
+
+    func deleteRoll(_ idx: Int) {
+        guard let r = session?.draft.broll[safe: idx] else { return }
+        mutate([.removeBroll(r.srcIn, r.srcOut)])
+        selectedBroll = nil
+    }
+
+    /// Grow/shrink a roll's tail — expressed as remove+re-add (no edit op exists).
+    func adjustRoll(_ idx: Int, deltaFrames: Int) {
+        guard let r = session?.draft.broll[safe: idx] else { return }
+        let extent = session?.draft.segments.map(\.srcOut).max() ?? r.srcOut
+        let newOut = min(extent, max(r.srcIn + 15, r.srcOut + deltaFrames))
+        guard newOut != r.srcOut else { flashPublic("That's as short as a roll gets."); return }
+        let readd: WireOp = (r.source == "own_media" && r.resolvedURL != nil)
+            ? .addMediaRoll(r.srcIn, newOut, url: r.resolvedURL!)
+            : .addBroll(r.srcIn, newOut, query: r.cueText)
+        mutate([.removeBroll(r.srcIn, r.srcOut), readd])
+        selectLastRoll()
+    }
+
+    /// flash() is private to this file's little world; a public door for panel flows.
+    func flashPublic(_ msg: String) {
+        transient = msg
+        Task { try? await Task.sleep(nanoseconds: 2_500_000_000); if transient == msg { transient = nil } }
+    }
+
     // MARK: Effects-mode actions
 
     func addPunchInOnHook() {
@@ -331,11 +395,6 @@ extension ProEditorView {
         guard newOut != o.srcOut else { flash("That's as short as a zoom gets.") ; return }
         mutate([.editOverlay(index: idx, frameIn: o.srcIn, frameOut: newOut)])
     }
-    func addBroll(_ query: String) {
-        guard let (a, b) = insertWindow(len: 90) else { return }
-        mutate([.addBroll(a, b, query: query)], rejectMsg: "B-roll isn't supported for this style.")
-    }
-
     // MARK: Overlay chip-lane actions
 
     /// Delete exactly this overlay (remove_overlays scoped to its kind + exact frames —
