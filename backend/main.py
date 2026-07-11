@@ -2509,7 +2509,7 @@ def _mock_edl(style: str, script: dict) -> dict:
         "style": style, "format_id": script.get("formatId", "myth-buster"),
         "segments": [{"src_in": 0, "src_out": 720}],
         "drops": [{"src_in": 45, "src_out": 51, "reason": "filler"}],
-        "captions": [{"word": w, "frame": i*20}
+        "captions": [{"word": w, "frame": i*20, "end_frame": i*20 + 18}
                      for i, w in enumerate(script.get("hook", "Great hook").split()[:8])],
         # Punch-ins only for styles whose composition draws them (mirrors _PUNCH_STYLES) —
         # a recap/faceless mock shouldn't carry a zoom the caps say isn't supported.
@@ -2533,7 +2533,7 @@ def _demo_editor_edl(style: str, script: dict) -> dict:
                      {"src_in": 240, "src_out": 480},
                      {"src_in": 480, "src_out": 720}],
         "drops": [{"src_in": 300, "src_out": 312, "reason": "filler"}],
-        "captions": [{"word": w, "frame": i * 22} for i, w in enumerate(hook)],
+        "captions": [{"word": w, "frame": i * 22, "end_frame": i * 22 + 20} for i, w in enumerate(hook)],
         "overlays": [{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}],
         "broll": [], "layout": {"style": style, "panels": 1, "panel_boundaries": []},
         "audio": {"lufs_target": -14.0},

@@ -49,8 +49,14 @@ const CAPTION_SAFE_TOP = 280;
 const DEFAULTS: CaptionOptions = {
   position: "bottom", size: "medium", pos_y: null, scale: null,
   accent: null, uppercase: false, font: "inter",
-  grouping: "line", highlight_words: [],
+  grouping: "phrase", highlight_words: [],   // P0.7: phrase default (stable 3-word chunks)
 };
+
+// P0.7 hide timing. A word with no end_frame is assumed to last this many frames.
+const DEFAULT_WORD_FRAMES = 15;
+const HIDE_AFTER_LAST = 12;    // hide the block this long after the last word ends
+const SILENCE_GAP = 30;        // hide during gaps longer than this between words
+const wordEnd = (c: CaptionWord): number => c.end_frame ?? c.frame + DEFAULT_WORD_FRAMES;
 
 // CapCut keyword highlight: a word whose normalized form is in highlight_words
 // renders in the accent color (default gold) regardless of active state.
@@ -70,6 +76,7 @@ const posYPct = (opts: CaptionOptions): number | null =>
   opts.pos_y == null ? null : Math.min(0.84, Math.max(0.16, opts.pos_y)) * 100;
 
 const PHRASE_LEN = 3;
+const LINE_LEN = 5;   // P0.7: `line` = stable 5-word chunks (was a sliding window)
 
 // The visible index window for the active word under a grouping mode.
 // line = the legacy sliding window; phrase = fixed ~3-word chunks (the OpusClip
@@ -83,7 +90,12 @@ function groupBounds(
     const start = Math.floor(activeIdx / PHRASE_LEN) * PHRASE_LEN;
     return { start, end: Math.min(count - 1, start + PHRASE_LEN - 1) };
   }
-  return { start: Math.max(0, activeIdx - lineBack), end: Math.min(count - 1, activeIdx + lineAhead) };
+  // P0.7: `line` mode is now stable fixed chunks (like phrase but wider) instead of a
+  // per-frame sliding window that reflowed text on every frame. lineBack/lineAhead retained
+  // for signature compatibility but no longer drive a jittery window.
+  void lineBack; void lineAhead;
+  const start = Math.floor(activeIdx / LINE_LEN) * LINE_LEN;
+  return { start, end: Math.min(count - 1, start + LINE_LEN - 1) };
 }
 
 const SIZE_MULT: Record<CaptionOptions["size"], number> = {
@@ -115,6 +127,17 @@ export const Captions: React.FC<Props> = ({ captions, style = "clean", options }
     else break;
   }
   if (activeIdx < 0) return null;
+
+  // P0.7: hide the block after the last word ends (+12 frames) so it doesn't burn on
+  // screen through the outro, and during long (>30-frame) silences between words so a
+  // trailing word doesn't hang there through a pause.
+  const last = captions[captions.length - 1];
+  if (frame > wordEnd(last) + HIDE_AFTER_LAST) return null;
+  const next = captions[activeIdx + 1];
+  if (next && frame > wordEnd(captions[activeIdx]) &&
+      frame < next.frame && next.frame - wordEnd(captions[activeIdx]) > SILENCE_GAP) {
+    return null;
+  }
 
   if (style === "bold-word") return <BoldWord word={captions[activeIdx].word} opts={opts} />;
   if (style === "karaoke") return <Karaoke captions={captions} activeIdx={activeIdx} opts={opts} />;

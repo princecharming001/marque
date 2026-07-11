@@ -109,7 +109,7 @@ struct EditorCaptionOptions: Equatable {
     var accent: String? = nil          // #RRGGBB; nil = the style's own default
     var uppercase: Bool = false
     var font: String = "inter"         // inter | archivo | baloo
-    var grouping: String = "line"      // word | phrase | line
+    var grouping: String = "phrase"    // word | phrase (DEFAULT, P0.7) | line — mirrors edl.py
     var highlightWords: [String] = []  // normalized keywords painted in the accent color
 }
 
@@ -153,7 +153,7 @@ struct EditorDocument: Equatable {
                 accent: co["accent"] as? String,
                 uppercase: co["uppercase"] as? Bool ?? false,
                 font: co["font"] as? String ?? "inter",
-                grouping: co["grouping"] as? String ?? "line",
+                grouping: co["grouping"] as? String ?? "phrase",
                 highlightWords: co["highlight_words"] as? [String] ?? [])
         }
         segments = (edl["segments"] as? [[String: Any]] ?? []).compactMap {

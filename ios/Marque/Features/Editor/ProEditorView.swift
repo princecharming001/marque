@@ -1279,9 +1279,9 @@ struct ProEditorView: View {
         case "phrase":
             lo = (activeIdx / 3) * 3
             hi = min(d.captions.count - 1, lo + 2)
-        default:
-            lo = max(0, activeIdx - 2)
-            hi = min(d.captions.count - 1, activeIdx + 2)
+        default:   // "line" — P0.7: stable 5-word chunks (mirrors Captions.tsx), not sliding
+            lo = (activeIdx / 5) * 5
+            hi = min(d.captions.count - 1, lo + 4)
         }
         return (d.captions[lo...hi].map(\.word), activeIdx - lo)
     }

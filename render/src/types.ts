@@ -8,7 +8,7 @@ export interface Clip {
   // Canvas transform (pinch-zoom / drag-reposition of the clip itself)
   tx_scale: number; tx_x: number; tx_y: number;
 }
-export interface CaptionWord { word: string; frame: number; }
+export interface CaptionWord { word: string; frame: number; end_frame?: number; }
 export interface Overlay {
   type: string; frame_in: number; frame_out: number; scale: number; text: string;
   // text_sticker placement + look (fractions of frame size; ignored by other types)

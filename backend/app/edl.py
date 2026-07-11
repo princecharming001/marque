@@ -60,7 +60,11 @@ class Drop(BaseModel):
 
 class CaptionWord(BaseModel):
     word: str
-    frame: int    # start frame for active-word highlight
+    frame: int                        # start frame for active-word highlight
+    end_frame: Optional[int] = None   # P0.7: word END frame (from AssemblyAI end_ms).
+                                      # Lets Captions.tsx hide the block after the last word
+                                      # and during long silences. Additive + optional so old
+                                      # EDLs round-trip unchanged (None → frame-based fallback).
 
 
 class Overlay(BaseModel):
@@ -191,7 +195,9 @@ class CaptionOptions(BaseModel):
     accent: Optional[str] = None      # #RRGGBB for the hot word / karaoke fill; None = style default
     uppercase: bool = False           # force ALL CAPS
     font: str = "inter"               # inter | archivo | baloo (mirrors render/src fonts)
-    grouping: str = "line"            # word | phrase (~3 words) | line (sliding window)
+    grouping: str = "phrase"          # word | phrase (~3 words, DEFAULT) | line (stable chunks)
+                                      # P0.7: default is `phrase` — stable 3-word chunks read
+                                      # better than the old sliding `line` window.
     highlight_words: list[str] = []   # normalized lowercase words rendered in the accent color
                                       # (CapCut "auto-highlight keywords")
 
@@ -293,7 +299,8 @@ def safe_default_edl(style: str, format_id: str, total_frames: int,
     """Fallback EDL: keep the whole take, strip filler words, add timed captions."""
     segments = [Segment(src_in=0, src_out=total_frames)]
     captions = [
-        CaptionWord(word=w["word"], frame=ms_to_frame(w.get("start_ms", 0)))
+        CaptionWord(word=w["word"], frame=ms_to_frame(w.get("start_ms", 0)),
+                    end_frame=ms_to_frame(w["end_ms"]) if w.get("end_ms") else None)
         for w in words
         if w.get("word", "").lower().strip(".,!?") not in FILLER_WORDS
     ]
@@ -490,7 +497,14 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     for c in edl.get("captions") or []:
         of = map_point(c["frame"])
         if of is not None:
-            captions.append({"word": c["word"], "frame": of})
+            cap = {"word": c["word"], "frame": of}
+            # P0.7: remap the word END through the same source→output mapping. If the end
+            # lands inside a cut (None) or before the start, clamp to start+1 so the block
+            # still has a positive on-screen span.
+            if c.get("end_frame") is not None:
+                oe = map_point(c["end_frame"])
+                cap["end_frame"] = oe if (oe is not None and oe > of) else of + 1
+            captions.append(cap)
     # Sort by OUTPUT frame (D1): captions are emitted in source-list order, but under a
     # reorder_segments the played order differs — and Captions.tsx scans with an early
     # `break` that assumes ascending frames, so an unsorted list drops the first-played
@@ -809,7 +823,8 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     else:
                         kept, _ = strip_fillers(words)
                         edl["captions"] = [
-                            {"word": w["word"], "frame": ms_to_frame(w.get("start_ms", 0))}
+                            {"word": w["word"], "frame": ms_to_frame(w.get("start_ms", 0)),
+                             "end_frame": ms_to_frame(w["end_ms"]) if w.get("end_ms") else None}
                             for w in kept if w.get("word")
                         ]
                         applied = True
