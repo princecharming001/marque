@@ -311,6 +311,58 @@ _CLAUDE_FRAMES_SCHEMA = {
 # Mock (keyless pipeline path + tests)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Reference-reel patterns (P2.3) — run a trending reel through the SAME adapter,
+# cached per URL (TL indexing latency is fine here: it's background/async), and
+# distill MEASURED patterns the brief + edit-plan can be told to match.
+# ---------------------------------------------------------------------------
+
+_reference_dossier_cache: dict[str, dict | None] = {}
+
+
+async def dossier_for_reference(url: str, duration_ms: int = 0) -> dict | None:
+    """generate_dossier for a reference reel, cached per URL (one-time cost)."""
+    if not url:
+        return None
+    if url in _reference_dossier_cache:
+        return _reference_dossier_cache[url]
+    d = await generate_dossier(url, duration_ms)
+    _reference_dossier_cache[url] = d
+    return d
+
+
+def reference_patterns(dossier: dict | None, duration_ms: int = 0) -> dict | None:
+    """Distill a reel's dossier into measured patterns (cut density, caption style,
+    overlay usage, hook layers, energy curve). Pure function → keyless-testable."""
+    if not dossier:
+        return None
+    spans = (dossier.get("scenes") or []) + (dossier.get("visual_events") or [])
+    max_f = max((s.get("f1", 0) for s in spans), default=0)
+    dur_f = ms_to_frame(duration_ms) if duration_ms else max_f
+    dur_f = max(1, dur_f)
+    cuts = len(dossier.get("scenes") or []) or len(dossier.get("visual_events") or [])
+    cut_density = round(cuts / (dur_f / 30.0), 2) if dur_f else 0.0   # cuts per second
+    ost = dossier.get("on_screen_text") or []
+    curve = dossier.get("delivery_curve") or []
+    energies = [c.get("energy") for c in curve if isinstance(c.get("energy"), (int, float))]
+    ff = dossier.get("first_frame") or {}
+    hook_layers = sum([
+        bool(ff.get("pattern_interrupt")),                 # visual layer
+        bool(ost),                                         # text overlay layer
+        (energies[0] >= 0.6 if energies else False),       # energetic vocal open
+    ])
+    return {
+        "cut_density_per_s": cut_density,
+        "cuts": cuts,
+        "caption_style": "heavy" if len(ost) >= 3 else ("some" if ost else "none"),
+        "overlay_usage": len(dossier.get("visual_events") or []),
+        "hook_layers": hook_layers,
+        "hook_pattern_interrupt": bool(ff.get("pattern_interrupt")),
+        "energy_open": energies[0] if energies else None,
+        "energy_curve": [round(e, 2) for e in energies][:8],
+    }
+
+
 def mock_dossier(duration_ms: int) -> dict:
     """A deterministic dossier for the keyless mock pipeline (no vendor calls)."""
     dur_f = ms_to_frame(duration_ms or 30000)

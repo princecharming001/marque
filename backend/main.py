@@ -2601,7 +2601,31 @@ def _clean_reference_reel(reel: dict | None) -> dict:
     keys = ("id", "creator_handle", "platform", "title", "hook_text",
             "why_trending", "format_id", "style")
     out = {k: str(reel[k])[:220] for k in keys if isinstance(reel.get(k), (str, int)) and str(reel[k]).strip()}
+    # P2.3: a playable reel URL (validated http[s]) flows through so the dossier adapter can
+    # measure its patterns. Kept separate from the text fields; never trusted for anything but
+    # the dossier fetch.
+    vu = reel.get("video_url")
+    if isinstance(vu, str) and vu[:8].lower().startswith(("http://", "https:/")):
+        out["video_url"] = vu[:500]
     return out if out.get("title") or out.get("creator_handle") else {}
+
+
+async def _resolve_reference_patterns(job: dict) -> None:
+    """P2.3: if the reference reel has a playable URL and a dossier provider is on, measure
+    its patterns (cached per URL) and stash them on the reel for the prompts. Fully fail-soft
+    — any error leaves the reel's text-only mimic context untouched."""
+    reel = job.get("reference_reel") or {}
+    url = reel.get("video_url")
+    if not url or (dossier_mod.VIDEO_UNDERSTANDING or "off").lower() == "off":
+        return
+    try:
+        d = await dossier_mod.dossier_for_reference(url, int(job.get("reference_duration_ms") or 0))
+        pat = dossier_mod.reference_patterns(d, int(job.get("reference_duration_ms") or 0))
+        if pat:
+            reel["patterns"] = pat
+            job["reference_reel"] = reel
+    except Exception as e:
+        logging.warning("reference patterns: %s", e)
 
 
 def _mock_edit_brief(words: list[dict], transcript: str = "", custom_instructions: str = "",
@@ -2975,6 +2999,7 @@ async def _run_analysis(job_id: str) -> None:
         job["status"] = "analyzing"
         for c in job["clips"]:
             c["status"] = "analyzing"
+        await _resolve_reference_patterns(job)   # P2.3: measure the reference reel (cached)
         transcript_text = " ".join(w.get("word", "") for w in words)
         brief = await _generate_edit_brief(words, transcript_text,
                                            job.get("custom_instructions", ""), job.get("brand") or {},
