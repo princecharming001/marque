@@ -40,7 +40,7 @@ export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       <div style={{ position: "absolute", left: "4%", right: "4%", bottom: "3%", height: "54%",
         borderRadius: 28, overflow: "hidden", boxShadow: "0 16px 50px rgba(0,0,0,0.5)",
         border: "3px solid rgba(255,255,255,0.9)" }}>
-        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
+        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
       </div>
       {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}

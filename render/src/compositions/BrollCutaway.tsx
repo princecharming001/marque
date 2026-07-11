@@ -14,7 +14,7 @@ import { CompositionProps } from "../types";
 // (a J-cut: the picture changes, the audio doesn't). Captions stay on top of everything.
 export const BrollCutaway: React.FC<CompositionProps> = ({ sourceUrl, edl }) => (
   <AbsoluteFill style={{ background: "#000" }}>
-    <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
+    <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
     {edl && <BrollLayer broll={edl.broll} />}
     {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
     {edl && <TextStickers overlays={edl.overlays} />}

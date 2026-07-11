@@ -163,15 +163,14 @@ class VolumeRange(BaseModel):
 
 
 class Audio(BaseModel):
-    # G4 (deliberately deferred, not a bug): -14 LUFS matches TikTok/YouTube's
-    # published loudness targets, but nothing in the pipeline actually MEASURES
-    # or normalizes to it yet — real loudness normalization needs either an
-    # ffmpeg loudnorm two-pass (analyze then apply gain) in the render bridge,
-    # or an equivalent Lambda-side audio analysis step; neither exists today.
-    # The field is captured end-to-end (Pydantic → render plan → AudioPlan in
-    # types.ts) so the contract is ready for that work, but it currently has NO
-    # effect on the mix. Documented + pinned rather than silently ignored.
+    # P0.6: loudness normalization is now live. app/audio.probe_loudness measures the
+    # take's integrated LUFS (ffmpeg loudnorm analysis pass) during _run_analysis, and
+    # _run_edit sets `gain` = clamp(lufs_target − measured, ±12dB). The render applies it
+    # as a linear multiplier 10^(gain/20) on the source audio (CutVideo.tsx). `gain` is
+    # ADDITIVE + OPTIONAL (default 0.0 = untouched), so old EDLs round-trip unchanged and
+    # a box without ffmpeg / an unmeasurable take just leaves it at 0.
     lufs_target: float = -14.0
+    gain: float = 0.0            # dB gain applied to source audio (loudness normalization)
     music: Optional[MusicTrack] = None
     volume_ranges: list[VolumeRange] = []
 
@@ -592,6 +591,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
 
     audio_plan = {
         "lufs_target": audio_src.get("lufs_target", -14.0),
+        "gain": float(audio_src.get("gain") or 0.0),   # P0.6: loudness-normalization dB
         "music": audio_src.get("music"),
         "volume_ranges": volume_ranges_out,
         "speech_frames": speech_frames_out,

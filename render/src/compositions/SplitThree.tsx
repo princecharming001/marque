@@ -25,7 +25,7 @@ export const SplitThree: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
           flex: 1, position: "relative", borderBottom: i < 2 ? "2px solid #333" : "none",
           opacity: active === i ? 1 : 0.4, transition: "opacity 0.3s", overflow: "hidden",
         }}>
-          <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
+          <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
           <div style={{ position: "absolute", top: 8, left: 12, color: "white",
             fontFamily: "system-ui", fontSize: 22, fontWeight: 700,
             textShadow: "0 1px 4px rgba(0,0,0,0.8)" }}>{labels[i]}</div>

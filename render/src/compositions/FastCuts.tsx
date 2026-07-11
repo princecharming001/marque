@@ -53,7 +53,7 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
 
   return (
     <AbsoluteFill style={{ background: "#000" }}>
-      <CutVideo sourceUrl={sourceUrl} clips={clips} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} />
+      <CutVideo sourceUrl={sourceUrl} clips={clips} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
       {flashOpacity > 0 && (
         <div style={{ position: "absolute", inset: 0, background: "white", opacity: flashOpacity }} />
       )}

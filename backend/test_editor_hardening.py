@@ -1456,7 +1456,7 @@ _TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
 _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
 _TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
-_TS_AUDIO_PLAN_KEYS = {"lufs_target", "music", "volume_ranges", "speech_frames"}
+_TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames"}
 
 
 def test_render_plan_matches_typescript_contract_exactly():
