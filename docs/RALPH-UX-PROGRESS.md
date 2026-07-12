@@ -76,10 +76,10 @@ Progress tracker for the Ralph loop executing `docs/PLAN-UX-FIXES.md`.
 
 ## FINAL gauntlet
 
-- [ ] UX-F.1 One clean full run: backend suite keyless + eval + render build:bridge, all green.
-- [ ] UX-F.2 End-to-end mock walkthrough: auto_confirm submit (keyless) → mock_ready clips tracked; examples endpoint per format; feed with why_picked; devices upsert; tweak preview path (mocked).
-- [ ] UX-F.3 Write docs/RALPH-UX-REPORT.md: what shipped per fix, evidence index, deferred manual steps (real-device APNs E2E with the user's .p8 key; TestFlight push primer flow; on-device playback checks), known gaps.
-- [ ] FINAL — print `ALL_UX_FIXES_COMPLETE`.
+- [x] UX-F.1 — one clean run: backend **610 passed** keyless · edl_eval PASS (5 good, 8 bad — baseline-identical) · run_eval PASS · render build:bridge rc=0 · iOS BUILD SUCCEEDED.
+- [x] UX-F.2 — `test_ux_gauntlet.py` end-to-end keyless walkthrough green: devices upsert → auto_confirm submit (mock_ready, format toggles honored, EDL built) → all-4-formats SAMPLE-flagged examples → why_picked on every feed pick → preview tweak (ops echoed, EDL byte-identical, apply commits once) → token enabled for live push.
+- [x] UX-F.3 — `docs/RALPH-UX-REPORT.md` written (per-fix summary, evidence index, deferred manual steps, known gaps).
+- [x] FINAL — `ALL_UX_FIXES_COMPLETE`.
 
 ---
 
