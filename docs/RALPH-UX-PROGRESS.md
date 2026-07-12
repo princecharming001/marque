@@ -7,7 +7,7 @@ Progress tracker for the Ralph loop executing `docs/PLAN-UX-FIXES.md`.
 (system python3 is 3.9 and fails collection), Swift CAN be compiled here via `cd ios && ./scripts/dev.sh build`
 — stronger than mirror-review. Keyless remains the CI contract for the backend suite.
 
-**Baseline (recorded at orientation):** _pending_
+**Baseline (recorded at orientation, off main f6e1bf9):** backend `pytest` keyless **569 passed** · `python -m eval.edl_eval` **PASS (5 good, 8 bad)** — no dimension may regress below this.
 
 ---
 
