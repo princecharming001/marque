@@ -16,12 +16,47 @@ from functools import lru_cache
 
 _KB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "knowledge")
 
-# Which KB domains each call needs (plan §Phase 2 loader).
+# Which KB domains each call needs (plan §Phase 2 loader; UX-E2 v2 routing:
+# EDL stage → pacing + transitions (+ the matching format playbook section, injected
+# separately); brief → hooks + retention + hook visual grammar; review → rubric +
+# sound design).
 _CALL_FILES = {
-    "brief": ["retention", "hooks"],
-    "edit_plan": ["pacing", "broll", "captions"],
-    "review": ["review_rubric"],
+    "brief": ["retention", "hooks", "hook_visual"],
+    "edit_plan": ["pacing", "transitions", "broll", "captions"],
+    "review": ["review_rubric", "sound_design"],
 }
+
+# Engine style → EDIT_FORMATS key, for the per-format playbook section
+# (mirrors prompts.EDIT_FORMATS style mapping).
+_STYLE_TO_FORMAT = {
+    "talking_head": "talking_head",
+    "broll_cutaway": "talking_head_broll",
+    "fast_cuts": "recap_music",
+    "faceless": "recap_voiceover",
+}
+
+
+def _playbook_section(style: str) -> str:
+    """UX-E2: the matching format playbook's '## <key>' section from
+    format_playbooks.md — the most call-specific craft the EDL stage gets."""
+    key = _STYLE_TO_FORMAT.get((style or "").strip().lower())
+    if not key:
+        return ""
+    text = _read("format_playbooks")
+    lines = text.splitlines()
+    out: list[str] = []
+    capturing = False
+    for line in lines:
+        if line.startswith("## "):
+            capturing = line.strip() == f"## {key}"
+            if capturing:
+                out.append(f"FORMAT PLAYBOOK ({key}):")
+            continue
+        if capturing and line.strip():
+            out.append(line)
+        elif capturing and out and not line.strip() and out[-1] == "":
+            break
+    return "\n".join(out).strip()
 
 # Rough token budget (chars ≈ 4/token). Trim the assembled digest to stay in band.
 _MAX_TOKENS = 1000
@@ -95,6 +130,10 @@ def digest(style: str, video_type: str, call: str) -> str:
         note = _style_note(style)
         if note:
             parts.append(f"STYLE pacing for {style}: {note}")
+    if call == "edit_plan":
+        pb = _playbook_section(style)
+        if pb:
+            parts.append(pb)          # the format's own playbook — before the domain files
     for name in files:
         body = _read(name).strip()
         if body:

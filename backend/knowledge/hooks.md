@@ -26,3 +26,9 @@ The more layers present in the first second, the higher the retention. Aim for �
 If the result/claim/curiosity line is not in the first ~90 output frames, restructure so it
 opens the edit (drop or reorder the intro). See retention.md → buried hooks. Protect the hook's
 face time — never cover it with b-roll (see broll.md).
+
+## Timing the layers (v2)
+
+- Aim ≥3 of the five layers inside the FIRST second; the audio layer (music entry /
+  bass hit) must land inside 1–1.5s — it sits inside the retention-prediction window.
+- The visual layer is frame-1 motion (see hook_visual.md): never a static settling shot.

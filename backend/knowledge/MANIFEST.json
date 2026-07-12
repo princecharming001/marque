@@ -1,6 +1,6 @@
 {
-  "version": "kb-2026.07",
-  "description": "Marque editing-craft knowledge base v1 — operational rules with numbers, consumed by app/knowledge.py digest() and stamped into job['knowledge_version'] for A/B + revert.",
+  "version": "kb-2026.08",
+  "description": "Marque editing-craft knowledge base v2 \u2014 operational rules with numbers, consumed by app/knowledge.py digest() and stamped into job['knowledge_version'] for A/B + revert. v2 adds transitions / sound design / hook visual grammar / per-format playbooks (researched + distilled 2026-07).",
   "files": [
     "retention.md",
     "hooks.md",
@@ -8,6 +8,10 @@
     "broll.md",
     "captions.md",
     "audio.md",
-    "review_rubric.md"
+    "review_rubric.md",
+    "transitions.md",
+    "sound_design.md",
+    "hook_visual.md",
+    "format_playbooks.md"
   ]
 }

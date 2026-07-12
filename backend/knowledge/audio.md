@@ -25,3 +25,9 @@
 - Music-loop seams should not click; a hard `<Audio loop>` is acceptable when the track has no
   reliable loop period (equal-power crossfade needs the loop length, which CORS-blocked catalog
   tracks don't expose — see AudioMix.tsx). Prefer tracks authored to loop.
+
+## SFX budget (v2)
+
+- Talking-head: 3–5 SFX per 30s on load-bearing beats only; montage may ride cuts
+  <0.8s with whooshes. Full rules in sound_design.md — SFX match the visual action,
+  never cover a spoken load-bearing word.
