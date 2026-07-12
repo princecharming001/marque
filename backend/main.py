@@ -557,11 +557,17 @@ async def next_idea(creator_id: str = "default", niche: str = ""):
         _creator_niche[creator_id] = niche
     niche = niche or _creator_niche.get(creator_id, "")
     insight = await _coach_insight(creator_id)
-    idea = prompts.mock_next_idea(niche, insight)
+    # UX-G1: the idea's TOPIC comes from the same Thompson source as the feed — the
+    # top arm's pillar steers, its (honest, deterministic) reason grounds when no
+    # settled insight exists yet.
+    arms = await _top_arms(creator_id, niche)
+    pillar = (arms[0].get("pillar") or "") if arms else ""
+    arm_reason = (arms[0].get("reason") or "") if arms else ""
+    idea = prompts.mock_next_idea(niche, insight, pillar=pillar, arm_reason=arm_reason)
     mode = "mock"
     if ANTHROPIC_KEY and AI_QUALITY:
         try:
-            sys, usr = prompts.next_idea_prompt(niche, insight)
+            sys, usr = prompts.next_idea_prompt(niche, insight, pillar=pillar)
             data = extract_json(await anthropic(sys, usr, HAIKU, 700), array=False) or {}
             beats = [str(b)[:200] for b in (data.get("beats") or []) if str(b).strip()][:5]
             if data.get("title") and data.get("hook") and len(beats) >= 3:
@@ -5053,16 +5059,17 @@ def _cold_recommendations(niche: str) -> list[dict]:
     return arms
 
 
-@app.get("/v1/recommendations")
-async def get_recommendations(niche: str = "", creator_id: str = "default"):
-    """Return top 3 Thompson-sampled arms for the creator's home feed."""
+async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
+    """UX-G1: the top Thompson-sampled (pillar, style) arms with their HUMAN reason —
+    factored from get_recommendations so the feed + next-idea consume the same source
+    of judgment instead of rotating templates. Cold start (no arm data) falls back to
+    the honest niche-prior recommendations."""
     await _ensure_arms_loaded(creator_id)
     if niche:
         _creator_niche[creator_id] = niche              # remember for cold-arm Beta seeding
     stats = _arm_stats.get(creator_id, {})
-
     if not stats:
-        return {"mode": "mock", "arms": _cold_recommendations(niche)}
+        return _cold_recommendations(niche)
 
     mean_raw = _creator_mean_raw(creator_id)
     styles = list(prompts.ACTIVE_STYLES)     # only recommend styles the app actually offers
@@ -5090,6 +5097,15 @@ async def get_recommendations(niche: str = "", creator_id: str = "default"):
         arms.append({"pillar": pillar, "style": style, "score": round(pillar_score + style_score, 3),
                      "reason": reason})
 
+    return arms
+
+
+@app.get("/v1/recommendations")
+async def get_recommendations(niche: str = "", creator_id: str = "default"):
+    """Return top 3 Thompson-sampled arms for the creator's home feed."""
+    arms = await _top_arms(creator_id, niche)
+    if not _arm_stats.get(creator_id):
+        return {"mode": "mock", "arms": arms}
     return {"mode": "live" if _supabase_client else "mock", "arms": arms}
 
 
@@ -6343,7 +6359,8 @@ def _clamp_title(title: str, limit: int = 42) -> str:
 
 
 async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
-                              watched: str, cursor: int) -> tuple[list[dict], int | None]:
+                              watched: str, cursor: int,
+                              why_picked: str = "") -> tuple[list[dict], int | None]:
     """Shared item-composition body — the fast path, the cached path, and the
     background full-quality refresh all emit byte-identical FeedResp shapes.
     B-7: scripts whose fingerprint the creator dismissed are dropped here (serve-time)."""
@@ -6354,6 +6371,8 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
             continue                          # creator disliked a near-identical pick
         if isinstance(s, dict) and s.get("title"):
             s = {**s, "title": _clamp_title(str(s["title"]))}
+        if isinstance(s, dict) and why_picked and not s.get("why_picked"):
+            s = {**s, "why_picked": why_picked}   # UX-G1: every pick says WHY it's here
         items.append({"type": "script", "script": s})
 
     reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
@@ -6370,23 +6389,37 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
 
 
 def _feed_sreq(niche: str, audience: str, known_for: str, goal: str, styles: str,
-               cursor: int, creator_id: str, memory: dict | None) -> "ScriptRequest":
+               cursor: int, creator_id: str, memory: dict | None,
+               arms: list[dict] | None = None) -> tuple["ScriptRequest", str]:
+    """UX-G1: build the page's script request FROM the creator's top arms (pillar +
+    style chosen by the bandit, with its human reason as why_picked) — template
+    rotation only when the arms are exhausted/absent. Returns (sreq, why_picked)."""
     allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
+    arm = arms[cursor] if arms and cursor < len(arms) else None
+    if arm and arm.get("pillar"):
+        pillar = arm["pillar"]
+        style = arm["style"] if arm.get("style") in allowed else allowed[cursor % len(allowed)]
+        why_picked = arm.get("reason") or f"From your '{pillar}' pillar"
+    else:
+        pillar = _feed_topics(niche, cursor)
+        style = allowed[cursor % len(allowed)]
+        why_picked = f"From your '{pillar}' pillar"
     return ScriptRequest(
         niche=niche, audience=audience, known_for=known_for, goal=goal,
-        pillar=_feed_topics(niche, cursor), pillar_summary="Daily feed suggestion",
-        style=allowed[cursor % len(allowed)], count=3, creator_id=creator_id,
+        pillar=pillar, pillar_summary="Daily feed suggestion",
+        style=style, count=3, creator_id=creator_id,
         memory=memory or {},                  # B-6: picks personalized by yap-session memory
-    )
+    ), why_picked
 
 
 async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
-                             watched: str, cursor: int) -> None:
+                             watched: str, cursor: int, why_picked: str = "") -> None:
     """Background upgrade: run the full quality-gated pipeline and overwrite the
     cache entry so the NEXT fetch for this key is both instant and high-quality."""
     try:
         script_result = await scripts(sreq)
-        items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
+        items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
+                                                       why_picked=why_picked)
         _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
                             "mode": script_result.get("mode", "mock"), "ts": time.time()}
         _cap_evict(_feed_cache, _FEED_CACHE_CAP)
@@ -6397,7 +6430,7 @@ async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creato
 
 
 async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
-                              watched: str, cursor: int) -> None:
+                              watched: str, cursor: int, why_picked: str = "") -> None:
     """B-5: warm the NEXT page (fast single-call path) so "Load more" is a cache hit
     instead of a ~10-18s live generation. Re-checks freshness inside the task so it never
     clobbers a fresher entry (e.g. a background Opus upgrade that landed meanwhile)."""
@@ -6406,7 +6439,8 @@ async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creat
         if existing and (time.time() - existing["ts"]) < _FEED_CACHE_TTL_S:
             return                            # already warm (a real fetch beat us here)
         script_result = await _fast_feed_scripts(sreq)
-        items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
+        items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
+                                                       why_picked=why_picked)
         if key not in _feed_cache:            # don't overwrite a fresher/higher-quality entry
             _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
                                 "mode": script_result.get("mode", "mock"), "ts": time.time()}
@@ -6418,7 +6452,7 @@ async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creat
 
 
 def _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                         cursor, memory, next_cursor) -> None:
+                         cursor, memory, next_cursor, arms=None) -> None:
     """Spawn a prefetch of cursor+1 so the next "Load more" is instant. Guarded by
     _feed_refreshing (single writer per key; the current page holds cursor, prefetch
     holds cursor+1 — disjoint). No-op when the next page is already cached/exhausted."""
@@ -6429,8 +6463,9 @@ def _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, w
     if nkey in _feed_cache or nkey in _feed_refreshing:
         return
     _feed_refreshing.add(nkey)
-    nsreq = _feed_sreq(niche, audience, known_for, goal, styles, next_cursor, creator_id, memory)
-    _spawn(_prefetch_feed_page(nkey, nsreq, niche, creator_id, watched, next_cursor))
+    nsreq, nwhy = _feed_sreq(niche, audience, known_for, goal, styles, next_cursor, creator_id,
+                             memory, arms=arms)
+    _spawn(_prefetch_feed_page(nkey, nsreq, niche, creator_id, watched, next_cursor, why_picked=nwhy))
 
 
 async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str, goal: str,
@@ -6442,26 +6477,31 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
 
     cached = _feed_cache.get(key)
     fresh_enough = cached and (time.time() - cached["ts"]) < _FEED_CACHE_TTL_S
+    # UX-G1: the bandit's judgment (or honest cold-start priors) picks the page's
+    # pillar/style and explains WHY — fetched once, threaded through every path.
+    arms = await _top_arms(creator_id, niche)
     if cached and fresh_enough and not fresh:
         _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                             cursor, memory, cached["next_cursor"])
+                             cursor, memory, cached["next_cursor"], arms=arms)
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
-    sreq = _feed_sreq(niche, audience, known_for, goal, styles, cursor, creator_id, memory)
+    sreq, why_picked = _feed_sreq(niche, audience, known_for, goal, styles, cursor, creator_id,
+                                  memory, arms=arms)
 
     if cached and not fresh:
         # Stale-while-revalidate: serve the last good page instantly, upgrade in the background.
         if key not in _feed_refreshing:
             _feed_refreshing.add(key)
-            _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+            _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor, why_picked=why_picked))
         _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                             cursor, memory, cached["next_cursor"])
+                             cursor, memory, cached["next_cursor"], arms=arms)
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
     # No cache yet (first-ever fetch) — fast single-call path so the client never waits
     # on the full 4-6-call quality gate for its very first paint.
     script_result = await _fast_feed_scripts(sreq)
-    items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor)
+    items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
+                                                   why_picked=why_picked)
     _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
                         "mode": script_result.get("mode", "mock"), "ts": time.time()}
     _cap_evict(_feed_cache, _FEED_CACHE_CAP)
@@ -6469,10 +6509,10 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     # page 0 → background full-quality OPUS upgrade for the SECOND fetch.
     if cursor == 0 and key not in _feed_refreshing:
         _feed_refreshing.add(key)
-        _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor))
+        _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor, why_picked=why_picked))
     # B-5: always warm the next page so "Load more" is instant at any depth.
     _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                         cursor, memory, next_cursor)
+                         cursor, memory, next_cursor, arms=arms)
 
     return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
 

@@ -56,6 +56,14 @@ struct ScriptReaderView: View {
                     Spacer()
                 }
 
+                // UX-G2: WHY the feed picked this script — the bandit's honest reason.
+                if !live.whyPicked.isEmpty {
+                    Text(live.whyPicked)
+                        .font(AppFont.micro).tracking(0.2)
+                        .foregroundStyle(Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 // Body + shot plan
                 bodySection
 

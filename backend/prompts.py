@@ -1902,7 +1902,8 @@ _SIGNAL_HOOK_TEMPLATES = {
 }
 
 
-def mock_next_idea(niche: str, insight: dict | None) -> dict:
+def mock_next_idea(niche: str, insight: dict | None,
+                   pillar: str = "", arm_reason: str = "") -> dict:
     """Deterministic next-video idea — the keyless mock AND the LLM-degrade fallback.
     Grounding is honest by construction: the creator's own arm label (which carries the
     real lift) when one is grounded, else an explicit niche-prior framing. Never a
@@ -1926,20 +1927,25 @@ def mock_next_idea(niche: str, insight: dict | None) -> dict:
     slug = match_niche(niche)
     signal, fmt = p["signals"][0], p["formats"][0]
     where = slug.replace("_", " ") if slug != "default" else "short-form"
+    # UX-G1: when the Thompson arms picked a pillar, the idea builds on it and the
+    # arm's own (already-honest, deterministic) reason grounds the suggestion.
+    title = (f"{pillar}: one filmable angle" if pillar
+             else f"A {fmt.replace('-', ' ')} to open your data loop")
+    grounding = arm_reason or (f"Niche baseline ({where}) — no settled performance data yet; "
+                               "your own results take over as soon as they land.")
     return {
-        "title": f"A {fmt.replace('-', ' ')} to open your data loop",
+        "title": title,
         "hook": _SIGNAL_HOOK_TEMPLATES.get(signal, _SIGNAL_HOOK_TEMPLATES["curiosity"]),
         "beats": [
             f"Open with a {signal} hook — it tends to over-index in {where}.",
             f"Structure it as a {fmt.replace('-', ' ')}: {p['note'].split(';')[0]}.",
             "Close with a direct CTA so the post settles with a clean signal.",
         ],
-        "grounding": f"Niche baseline ({where}) — no settled performance data yet; "
-                     "your own results take over as soon as they land.",
+        "grounding": grounding,
     }
 
 
-def next_idea_prompt(niche: str, insight: dict | None) -> tuple[str, str]:
+def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "") -> tuple[str, str]:
     """Talking-head next-video ideation (adapted from Palo's ideate/video-to-brief
     doctrine): one idea, concrete beats, hook-first. Same number discipline as the
     coach — the model may reference the provided strength but NEVER invents a stat;
@@ -1959,7 +1965,8 @@ def next_idea_prompt(niche: str, insight: dict | None) -> tuple[str, str]:
                     f"(band={insight['band']}, {insight['confidence']}).")
     else:
         strength = f"No settled performance data yet.\n{niche_prior_block(niche)}"
-    user = f"Creator niche: {niche or 'general'}.\n{strength}\nSuggest the one idea."
+    pillar_line = f"\nBuild it inside their content pillar: '{pillar}'." if pillar else ""
+    user = f"Creator niche: {niche or 'general'}.\n{strength}{pillar_line}\nSuggest the one idea."
     return system, user
 
 

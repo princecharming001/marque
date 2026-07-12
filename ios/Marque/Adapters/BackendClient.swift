@@ -118,7 +118,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                       hook: primary, altHooks: (dto.altHooks ?? []).map(hook),
                       body: dto.body, cta: dto.cta, shotPlan: dto.shotPlan ?? [],
                       targetSeconds: dto.targetSeconds ?? Catalog.format(fid).targetSeconds,
-                      predictedScore: min(100, max(0, dto.predictedScore ?? 80)))
+                      predictedScore: min(100, max(0, dto.predictedScore ?? 80)),
+                      whyPicked: dto.why_picked ?? "")
     }
 
     // MARK: DTOs
@@ -129,6 +130,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let hook: String; let hookSignal: String?; let formatId: String?
         let body: String; let cta: String; let shotPlan: [String]?
         let targetSeconds: Int?; let predictedScore: Int?; let altHooks: [HookDTO]?; let style: String?
+        let why_picked: String?     // UX-G2: optional — absent on old backends
     }
     struct PillarDTO: Decodable {
         let name: String; let summary: String?; let angle: String?
