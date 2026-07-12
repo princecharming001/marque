@@ -378,13 +378,24 @@ extension BackendClient {
                           customInstructions: String = "",
                           reactSourceURL: String = "",
                           editFormat: String = "",
-                          referenceReel: ReelItem? = nil) async -> AnalyzeJobResponse? {
+                          referenceReel: ReelItem? = nil,
+                          autoConfirm: Bool = false,
+                          toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
         var body: [String: Any] = [
             "analyze_first": true,
             "source_url": sourceURL,
             "custom_instructions": customInstructions,
             "edit_prefs": editPrefs,
+            "creator_id": creatorId,
         ]
+        // UX-B1b one-tap submit: run the whole pipeline (no brief_ready stop); the
+        // response then carries the clips array for immediate tracking.
+        if autoConfirm {
+            body["auto_confirm"] = true
+            if let t = toggles {
+                body["toggles"] = ["broll": t.broll, "punch_ins": t.punchIns, "music": t.music]
+            }
+        }
         // The creator's explicit cut treatment — pins the engine style server-side
         // (brief inference never overrides an explicit pick).
         if !editFormat.isEmpty { body["edit_format"] = editFormat }
