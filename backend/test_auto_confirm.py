@@ -132,3 +132,36 @@ def test_live_transcription_failure_fails_job(monkeypatch):
     job = main._clip_jobs[job_id]
     assert job["status"] == "failed"
     assert job["error"] == "transcribe_submit_failed"
+
+
+# --- UX-D2: preview turns return the full typed ops; commit nothing ---------------
+
+def test_preview_tweak_returns_ops_and_commits_nothing(monkeypatch):
+    """A preview=1 tweak stages a candidate + returns full ops; the job EDL is
+    byte-identical after (discard = do nothing), and applying the returned ops via
+    the direct path commits exactly once."""
+    import copy as _copy
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve")
+    monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "k")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+    spawned = []
+    monkeypatch.setattr(main, "_spawn", lambda coro: (spawned.append(coro), coro.close()))
+
+    out = _submit()                                   # keyless mock_ready job w/ EDL
+    job_id = out["job_id"]
+    job = main._clip_jobs[job_id]
+    clip_id = job["clips"][0]["clip_id"]
+    before = _copy.deepcopy(job["edl"])
+
+    r = client.post(f"/v1/clips/{job_id}/tweak?preview=1",
+                    json={"clip_id": clip_id,
+                          "ops": [{"type": "set_caption_style", "style": "karaoke"}]}).json()
+    assert r["preview_requested"] is True
+    assert r["ops"] == [{"type": "set_caption_style", "style": "karaoke"}]   # full ops echoed
+    assert main._clip_jobs[job_id]["edl"] == before   # NOTHING committed (discard = no-op)
+    assert not main._clip_jobs[job_id]["tweaks"]      # preview stays out of history
+
+    # Apply = the returned ops through the direct path → committed exactly once.
+    r2 = client.post(f"/v1/clips/{job_id}/tweak", json={"clip_id": clip_id, "ops": r["ops"]}).json()
+    assert main._clip_jobs[job_id]["edl"]["caption_style"] == "karaoke"
+    assert r2["ops"] == []                            # non-preview turns don't echo ops

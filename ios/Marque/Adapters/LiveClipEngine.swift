@@ -570,4 +570,23 @@ extension BackendClient {
         }
         return dict
     }
+
+    /// UX-D2: one PREVIEW-FIRST tweak turn — the instruction path with ?preview=1.
+    /// The backend stages a candidate EDL (commits NOTHING), kicks a cheap proof
+    /// render, and returns the full typed `ops` so Apply can commit them later via
+    /// tweakClipOps. Same status-code copy as tweakClip.
+    func tweakClipPreview(jobId: String, clipId: String, instruction: String) async -> [String: Any] {
+        let body: [String: Any] = ["clip_id": clipId, "instruction": instruction]
+        let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak?preview=1", body)
+        if status == 404 {
+            return ["error": true, "reply": "This edit session has expired — re-submit the take to tweak it."]
+        }
+        if status == 409 {
+            return ["error": true, "reply": "Hold on — I'm still rendering your last tweak. Try again in a minute."]
+        }
+        guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["error": true, "reply": "I couldn't reach the editor — check your connection and try again."]
+        }
+        return dict
+    }
 }

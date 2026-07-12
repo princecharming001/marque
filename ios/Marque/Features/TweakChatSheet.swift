@@ -9,6 +9,8 @@ struct TweakChatSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let clip: Clip
+    // UX-D1: the detail-sheet affordance opens with the composer focused.
+    var autoFocus: Bool = false
 
     private struct Msg: Identifiable {
         enum Role { case user, assistant, status }
@@ -23,6 +25,11 @@ struct TweakChatSheet: View {
     @State private var rendering = false
     @State private var pollTask: Task<Void, Never>?
     @State private var sendTask: Task<Void, Never>?
+    @FocusState private var composerFocused: Bool
+    // UX-D2 preview-first: the staged (uncommitted) ops awaiting Apply/Discard, and
+    // whether a preview proof-render is on screen.
+    @State private var pendingOps: [[String: Any]] = []
+    @State private var previewLive = false
 
     private let starters: [(chip: String, message: String)] = [
         ("Karaoke captions", "Make the captions karaoke style"),
@@ -47,6 +54,7 @@ struct TweakChatSheet: View {
                                 Text("Thinking…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                             }
                         }
+                        if previewLive { applyDiscardBar }
                     }
                     .screenPadding().padding(.vertical, Space.lg)
                 }
@@ -70,7 +78,11 @@ struct TweakChatSheet: View {
             // keep running after dismissal and write to this view's dead @State.
             sendTask?.cancel(); sendTask = nil
             pollTask?.cancel(); pollTask = nil
+            // UX-D2: previews are look-don't-commit — dismissing discards the staged
+            // candidate (the server never installed it; just drop the local URL).
+            store.clearClipPreview(clip.id)
         }
+        .onAppear { if autoFocus { composerFocused = true } }
     }
 
     // MARK: rows
@@ -118,6 +130,7 @@ struct TweakChatSheet: View {
     private var composer: some View {
         HStack(spacing: Space.sm) {
             TextField("Change something…", text: $input, axis: .vertical)
+                .focused($composerFocused)
                 .font(AppFont.bodyL)
                 .lineLimit(1...4)
                 .padding(.horizontal, Space.md).padding(.vertical, 12)
@@ -147,24 +160,158 @@ struct TweakChatSheet: View {
 
     // MARK: actions
 
+    /// UX-D2: Apply / Discard for a staged preview — the whole point of preview-first:
+    /// see the change BEFORE committing a full render to it.
+    private var applyDiscardBar: some View {
+        HStack(spacing: Space.sm) {
+            Button { applyPreview() } label: {
+                Text("Apply this change")
+                    .font(AppFont.headline).foregroundStyle(Palette.onInk)
+                    .frame(maxWidth: .infinity).padding(.vertical, 12)
+                    .background(Palette.ink)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tweak.apply")
+            Button { discardPreview() } label: {
+                Text("Discard")
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .padding(.horizontal, Space.lg).padding(.vertical, 12)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("tweak.discard")
+        }
+    }
+
     private func send(_ text: String) {
         guard let jobId = clip.jobId, !sending else { return }
+        // A new instruction supersedes any staged preview — drop it first.
+        if previewLive || !pendingOps.isEmpty { discardPreview(quiet: true) }
         messages.append(Msg(role: .user, text: text))
         sending = true
         sendTask = Task {
-            let resp = await store.backend.tweakClip(jobId: jobId,
-                                                     clipId: clip.id.uuidString,
-                                                     instruction: text)
+            // UX-D2 preview-first: stage + proof-render without committing. The
+            // backend answers preview_requested=false when it can't preview
+            // (keyless, no renderer, undo, nothing changed) — then the classic
+            // direct-commit flow below is exactly what should happen, so retry
+            // the same instruction as a normal turn.
+            let resp = await store.backend.tweakClipPreview(jobId: jobId,
+                                                            clipId: clip.id.uuidString,
+                                                            instruction: text)
+            guard !Task.isCancelled else { return }
+            let reply = resp["reply"] as? String ?? "Something went sideways — try that again."
+            if resp["preview_requested"] as? Bool == true {
+                sending = false
+                messages.append(Msg(role: .assistant, text: reply))
+                pendingOps = (resp["ops"] as? [[String: Any]]) ?? []
+                rendering = true
+                messages.append(Msg(role: .status, text: "Rendering a quick preview — nothing is committed yet."))
+                startPreviewPolling(jobId: jobId)
+                return
+            }
+            if resp["error"] as? Bool == true {
+                sending = false
+                messages.append(Msg(role: .assistant, text: reply))
+                return
+            }
+            // No preview possible → today's direct flow, unchanged.
+            let direct = await store.backend.tweakClip(jobId: jobId,
+                                                       clipId: clip.id.uuidString,
+                                                       instruction: text)
             guard !Task.isCancelled else { return }
             sending = false
-            let reply = resp["reply"] as? String ?? "Something went sideways — try that again."
-            messages.append(Msg(role: .assistant, text: reply))
-            if resp["needs_render"] as? Bool == true {
+            let directReply = direct["reply"] as? String ?? "Something went sideways — try that again."
+            messages.append(Msg(role: .assistant, text: directReply))
+            if direct["needs_render"] as? Bool == true {
                 rendering = true
                 store.setClipRendering(clip.id)
                 messages.append(Msg(role: .status, text: "Re-editing your clip — this usually takes a minute or two."))
                 startPolling(jobId: jobId)
             }
+        }
+    }
+
+    /// Commit the previewed ops deterministically (the direct-ops path — no second
+    /// LLM interpretation) and ride the existing render poll.
+    private func applyPreview() {
+        guard let jobId = clip.jobId, !pendingOps.isEmpty else { discardPreview(); return }
+        let ops = pendingOps
+        pendingOps = []
+        previewLive = false
+        store.clearClipPreview(clip.id)
+        sending = true
+        sendTask = Task {
+            let resp = await store.backend.tweakClipOps(jobId: jobId,
+                                                        clipId: clip.id.uuidString, ops: ops)
+            guard !Task.isCancelled else { return }
+            sending = false
+            if resp["error"] as? Bool == true {
+                messages.append(Msg(role: .assistant,
+                                    text: resp["reply"] as? String ?? "Couldn't apply that — try again."))
+                return
+            }
+            messages.append(Msg(role: .status, text: "Applying it for real now."))
+            if resp["needs_render"] as? Bool == true {
+                rendering = true
+                store.setClipRendering(clip.id)
+                startPolling(jobId: jobId)
+            } else {
+                rendering = false
+                messages.append(Msg(role: .status, text: "Done — the change is saved."))
+            }
+        }
+    }
+
+    /// Drop the staged preview. The server committed NOTHING on a preview turn, so
+    /// this is purely local: clear the URL + ops.
+    private func discardPreview(quiet: Bool = false) {
+        pendingOps = []
+        previewLive = false
+        rendering = false
+        pollTask?.cancel(); pollTask = nil
+        store.clearClipPreview(clip.id)
+        if !quiet { messages.append(Msg(role: .status, text: "Discarded — your clip is untouched.")) }
+    }
+
+    /// UX-D2: watch MY clip's preview_status/preview_url (3s cadence) until the
+    /// proof render lands, then surface it on the detail player with a PREVIEW badge.
+    private func startPreviewPolling(jobId: String) {
+        pollTask?.cancel()
+        pollTask = Task {
+            for _ in 0..<40 {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { return }
+                guard let result = await store.backend.pollClipJob(jobId: jobId),
+                      let jobClips = result["clips"] as? [[String: Any]],
+                      let mine = jobClips.first(where: {
+                          UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id
+                      })
+                else { continue }
+                let status = mine["preview_status"] as? String
+                if status == "ready", let url = mine["preview_url"] as? String, !url.isEmpty {
+                    store.setClipPreview(clip.id, url: url)
+                    previewLive = true
+                    rendering = false
+                    messages.append(Msg(role: .status,
+                                        text: "Preview is up — check the player, then apply or discard."))
+                    pollTask = nil
+                    return
+                }
+                if status == "failed" {
+                    rendering = false
+                    messages.append(Msg(role: .status,
+                                        text: "Preview didn't render — you can still apply the change directly."))
+                    previewLive = true          // apply/discard remain available
+                    pollTask = nil
+                    return
+                }
+            }
+            rendering = false
+            previewLive = !pendingOps.isEmpty   // let Apply/Discard resolve a slow preview
+            messages.append(Msg(role: .status, text: "Preview is taking a while — you can apply or discard anyway."))
+            pollTask = nil
         }
     }
 
