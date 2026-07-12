@@ -668,7 +668,7 @@ final class AppStore {
         if tagged.contains(where: { $0.status == .rendering }) {
             Task { await pollJob(jobId: jobId, clipIds: tagged.map { $0.id }) }
         } else {
-            notifyClipsReady(count: tagged.filter { $0.status == .ready }.count)
+            notifyClipsReady(count: tagged.filter { $0.status == .ready }.count, jobId: jobId)
         }
         bumpDailyStreak()
         save()
@@ -793,7 +793,7 @@ final class AppStore {
             // ready; the .ready count guard keeps failed/empty jobs silent either way.)
             if done && status != "failed" {
                 let readyCount = clips.filter { clipIds.contains($0.id) && $0.status == .ready }.count
-                notifyClipsReady(count: readyCount)
+                notifyClipsReady(count: readyCount, jobId: jobId)
             }
         }
     }
@@ -1074,35 +1074,47 @@ final class AppStore {
         center.add(UNNotificationRequest(identifier: "marque.daily", content: content, trigger: trigger))
     }
 
+    /// UX-B2b: drives the branded PushPrimerSheet (RootView presents it). Set at the
+    /// first clips-ready moment when permission is still undetermined — replacing the
+    /// old cold system prompt with an explain-then-ask flow.
+    var showPushPrimer = false
+
     /// "Your edited clips landed" nudge — called from both completion paths (live pollJob
     /// and the mock render loop in makeClips). Fires only when ≥1 clip ended .ready; never
-    /// fires for drafts. Asks for permission on first use, mirroring the reminders pattern.
-    private func notifyClipsReady(count: Int) {
+    /// fires for drafts. UX-B2b: permission-undetermined now shows the branded primer
+    /// (never a cold system prompt), and the LOCAL notification stays as the fallback,
+    /// deduped by job id against any remote clips_ready push already received.
+    private func notifyClipsReady(count: Int, jobId: String? = nil) {
         guard count > 0 else { return }
+        // Dedup: the server already pushed for this job while we were foregrounded.
+        if let jobId, PushManager.shared?.receivedJobIds.contains(jobId) == true { return }
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             switch settings.authorizationStatus {
             case .notDetermined:
-                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    if granted { AppStore.postClipsReadyNotification() }
+                if PushPrimer.shouldShow(status: settings.authorizationStatus) {
+                    Task { @MainActor in self.showPushPrimer = true }
                 }
             case .denied:
                 break
             default:
-                AppStore.postClipsReadyNotification()
+                AppStore.postClipsReadyNotification(jobId: jobId)
             }
         }
     }
 
     /// Immediate local notification (nil trigger) — nonisolated so the notification-center
     /// completion handlers above can call it straight from their background queue.
-    private nonisolated static func postClipsReadyNotification() {
+    /// Identified by job id when known: repeats for the same job REPLACE, never stack,
+    /// and PushManager can dedup against a remote push via userInfo["job_id"].
+    private nonisolated static func postClipsReadyNotification(jobId: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = "Your clip is ready 🎬"
         content.body = "The AI finished editing — review it in your Library and schedule it."
         content.sound = .default
+        if let jobId { content.userInfo = ["job_id": jobId] }
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "marque.clipsReady.\(UUID().uuidString)",
+            UNNotificationRequest(identifier: "marque.clipsReady.\(jobId ?? UUID().uuidString)",
                                   content: content, trigger: nil))
     }
 

@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 import AVFoundation
 
 // Live clip engine: mints a signed upload URL, uploads the raw take to storage
@@ -422,6 +423,34 @@ extension BackendClient {
         }
         guard let data = await post("/v1/clips", body) else { return nil }
         return try? JSONDecoder().decode(AnalyzeJobResponse.self, from: data)
+    }
+
+    /// UX-B2b: register this device's APNs token (POST /v1/devices — idempotent
+    /// upsert). DEBUG builds run against the sandbox APNs gateway.
+    func registerDevice(token: String) async {
+        #if DEBUG
+        let environment = "sandbox"
+        #else
+        let environment = "prod"
+        #endif
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        let permission: String
+        switch settings.authorizationStatus {
+        case .authorized: permission = "authorized"
+        case .provisional: permission = "provisional"
+        case .denied: permission = "denied"
+        default: permission = "notDetermined"
+        }
+        let body: [String: Any] = [
+            "token": token,
+            "environment": environment,
+            "creator_id": creatorId,
+            "platform": "ios",
+            "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
+            "timezone": TimeZone.current.identifier,
+            "permission": permission,
+        ]
+        _ = await post("/v1/devices", body)
     }
 
     /// GET /v1/editor/capabilities → which optional edit ops each style can actually
