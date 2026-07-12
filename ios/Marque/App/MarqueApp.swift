@@ -9,6 +9,8 @@ struct MarqueApp: App {
     // UX-F1: the feed survives tab switches + relaunches (RootTabView is a ViewBuilder
     // switch, so HomeView is torn down per tab — a view-owned FeedStore lost everything).
     @State private var feed = FeedStore()
+    // UX-B2b: APNs registration + notification-tap routing.
+    @UIApplicationDelegateAdaptor(PushManager.self) private var pushManager
 
     init() {
         // Dev/Maestro hook: launch with -reset to wipe to first-run.
@@ -45,6 +47,11 @@ struct MarqueApp: App {
             .environment(router)
             .environment(tour)
             .environment(feed)
+            // UX-B2b: push-tap deeplinks route through the shared router; onOpenURL
+            // covers marque:// opens from outside (OAuth callbacks never reach here —
+            // ASWebAuthenticationSession consumes its own marque://auth-callback).
+            .onAppear { pushManager.onDeepLink = { url in router.handle(url: url) } }
+            .onOpenURL { url in router.handle(url: url) }
             .tint(Palette.accent)
             .preferredColorScheme(.light)
         }
@@ -76,6 +83,12 @@ struct RootView: View {
         .animation(Motion.calm, value: store.subscription.isSubscribed)
         .safeAreaInset(edge: .top) {
             if !net.isOnline { OfflineBanner() }
+        }
+        // UX-B2b: the branded push primer — explain-then-ask at the first
+        // clips-ready moment, never a cold system prompt.
+        .sheet(isPresented: Binding(get: { store.showPushPrimer },
+                                    set: { store.showPushPrimer = $0 })) {
+            PushPrimerSheet()
         }
         // C-03: retry transport-failed publishes when the app returns to the foreground
         // or the network comes back — a queued post lands the moment we can reach the API.

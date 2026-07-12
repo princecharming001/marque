@@ -106,6 +106,16 @@ struct ClipsSection: View {
             }
         }
         .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
+        // UX-B2b: a clips_ready push tap deep-links marque://library/clip/{id} —
+        // open that clip's detail the moment this section is on screen.
+        .onChange(of: router.pendingOpenClipId) { _, id in openPending(id) }
+        .onAppear { openPending(router.pendingOpenClipId) }
+    }
+
+    private func openPending(_ id: UUID?) {
+        guard let id, let clip = store.clips.first(where: { $0.id == id }) else { return }
+        router.pendingOpenClipId = nil
+        detail = clip
     }
 }
 
