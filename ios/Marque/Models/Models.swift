@@ -405,6 +405,9 @@ struct Clip: Codable, Hashable, Identifiable {
     // edit). Cleared on apply/discard/sheet-dismiss/remoteURL change; never written
     // with the snapshot save (set without save()). Optional-with-default → decode-safe.
     var previewURL: String? = nil
+    // Server's remaining-time estimate at submit ("Ready in ~N min" in the Library).
+    // Refreshed by pollJob; display derives the countdown from createdAt + this.
+    var etaSeconds: Int? = nil
     var createdAt: Date = Date()
 }
 
@@ -1016,9 +1019,11 @@ struct AnalyzeJobResponse: Codable {
     // UX-B1b: present ONLY on auto_confirm responses (old backends omit it — the
     // client then falls back to the brief flow).
     var clips: [ClipStub]? = nil
+    var etaSeconds: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case jobId = "job_id", status, mode, editBrief = "edit_brief", toggles, error, clips
+        case etaSeconds = "eta_seconds"
     }
 
     init() {}
@@ -1031,5 +1036,6 @@ struct AnalyzeJobResponse: Codable {
         toggles = try? c.decodeIfPresent(EditToggles.self, forKey: .toggles)
         error = try? c.decodeIfPresent(String.self, forKey: .error)
         clips = try? c.decodeIfPresent([ClipStub].self, forKey: .clips)
+        etaSeconds = try? c.decodeIfPresent(Int.self, forKey: .etaSeconds)
     }
 }
