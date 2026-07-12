@@ -47,6 +47,10 @@ struct RecordView: View {
     @State private var editFormat: EditFormat
     // "Match a vibe": per-format example reels + the one the creator picked to mimic.
     @State private var exampleReels: [ReelItem] = []
+    // UX-A3: mimic-card playback state — play only the cards actually on screen,
+    // and remember hard playback failures so those cards fall back to their poster.
+    @State private var visibleMimicIds: Set<String> = []
+    @State private var failedMimicIds: Set<String> = []
     @State private var referenceReel: ReelItem? = nil
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
@@ -467,6 +471,10 @@ struct RecordView: View {
 
     private func mimicCard(_ r: ReelItem, index: Int) -> some View {
         let selected = referenceReel?.id == r.id
+        // UX-A3: a mimic card should SHOW the vibe, not describe it — autoplay the
+        // reel muted + looping when we have real footage and the card is on screen;
+        // hard playback failure → poster fallback (never a dead black box).
+        let playable = !r.videoURL.isEmpty && !failedMimicIds.contains(r.id)
         return Button {
             withAnimation(.easeOut(duration: 0.15)) {
                 referenceReel = selected ? nil : r      // tap again to unpick
@@ -474,13 +482,21 @@ struct RecordView: View {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topTrailing) {
-                    AsyncImage(url: URL(string: r.thumbnailURL)) { img in
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } placeholder: {
-                        Rectangle().fill(Color.white.opacity(0.08))
-                            .overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
+                    if playable, visibleMimicIds.contains(r.id), let url = URL(string: r.videoURL) {
+                        FailableVideoPlayer(url: url, muted: true, showsControls: false) {
+                            failedMimicIds.insert(r.id)
+                        }
+                        .frame(width: 104, height: 130)
+                        .allowsHitTesting(false)         // the CARD is the tap target
+                    } else {
+                        AsyncImage(url: URL(string: r.thumbnailURL)) { img in
+                            img.resizable().aspectRatio(contentMode: .fill)
+                        } placeholder: {
+                            Rectangle().fill(Color.white.opacity(0.08))
+                                .overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
+                        }
+                        .frame(width: 104, height: 130).clipped()
                     }
-                    .frame(width: 104, height: 130).clipped()
                     if selected {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 16, weight: .bold))
@@ -488,12 +504,25 @@ struct RecordView: View {
                             .background(Circle().fill(.white).padding(2))
                             .padding(5)
                     }
+                    if r.sample {                        // honest: curated, not scraped
+                        Text("SAMPLE")
+                            .font(.system(size: 8, weight: .bold)).tracking(0.8)
+                            .foregroundStyle(.white.opacity(0.9))
+                            .padding(.horizontal, 5).padding(.vertical, 2)
+                            .background(Color.black.opacity(0.55))
+                            .clipShape(Capsule())
+                            .padding(5)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                .onAppear { visibleMimicIds.insert(r.id) }
+                .onDisappear { visibleMimicIds.remove(r.id) }
                 Text("@\(r.creatorHandle)")
                     .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
                     .lineLimit(1)
-                Text(r.title)
+                // Why THIS reel matches the picked treatment (falls back to why it trends).
+                Text(r.whyMatch.isEmpty ? r.whyTrending : r.whyMatch)
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
