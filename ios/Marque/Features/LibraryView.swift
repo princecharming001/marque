@@ -72,7 +72,7 @@ struct ClipsSection: View {
                             VStack(alignment: .leading, spacing: Space.xs) {
                                 SectionLabel(text: status.title)
                                 if status == .rendering {
-                                    Text("The AI is on it — you'll get a notification when it's done.")
+                                    Text(renderingEtaLine(group))
                                         .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                                 }
                             }
@@ -110,6 +110,20 @@ struct ClipsSection: View {
         // open that clip's detail the moment this section is on screen.
         .onChange(of: router.pendingOpenClipId) { _, id in openPending(id) }
         .onAppear { openPending(router.pendingOpenClipId) }
+    }
+
+    /// "Ready in about N min" — the server's estimate minus elapsed, floored at 1 min;
+    /// falls back to the generic line when no estimate exists (old backend).
+    private func renderingEtaLine(_ group: [Clip]) -> String {
+        let remaining = group.compactMap { c -> Int? in
+            guard let eta = c.etaSeconds else { return nil }
+            return max(0, eta - Int(Date().timeIntervalSince(c.createdAt)))
+        }.max()
+        guard let remaining else {
+            return "The AI is on it — you'll get a notification when it's done."
+        }
+        let mins = max(1, Int((Double(remaining) / 60.0).rounded(.up)))
+        return "The AI is editing — ready in about \(mins) min. We'll notify you."
     }
 
     private func openPending(_ id: UUID?) {

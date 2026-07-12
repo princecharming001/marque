@@ -47,6 +47,8 @@ struct RecordView: View {
     @State private var editFormat: EditFormat
     // "Match a vibe": per-format example reels + the one the creator picked to mimic.
     @State private var exampleReels: [ReelItem] = []
+    // Honest submit-failure surface (never fake-ready mock clips against a real backend).
+    @State private var submitFailedMessage: String? = nil
     // UX-A3: mimic-card playback state — play only the cards actually on screen,
     // and remember hard playback failures so those cards fall back to their poster.
     @State private var visibleMimicIds: Set<String> = []
@@ -206,9 +208,7 @@ struct RecordView: View {
                     Text("Microphone is off — your clip will have no sound. Enable mic access in Settings.")
                         .font(AppFont.caption).foregroundStyle(Palette.critical).multilineTextAlignment(.center)
                 }
-                if segments.count > 0 {
-                    Text("Take \(segments.count + 1)").font(AppFont.caption).foregroundStyle(.white.opacity(0.6))
-                }
+                takeSegmentsBar(liveTake: true)
                 speedControl
                 HStack(spacing: Space.xl) {
                     // Teleprompter scroll play/pause (does not stop recording).
@@ -233,6 +233,7 @@ struct RecordView: View {
                 }
             case .paused:
                 takeTimer
+                takeSegmentsBar(liveTake: false)
                 Text("Paused — flip the camera for a new angle, then resume. Your takes stitch into one clip.")
                     .font(AppFont.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
                 HStack(spacing: Space.xl) {
@@ -296,6 +297,15 @@ struct RecordView: View {
                 }
                 .task { await loadCapabilities() }
                 HStack(spacing: Space.lg) {
+                    // Multi-take: keep everything filmed so far and add one more take.
+                    // Device-only (the simulator path records no segments to extend).
+                    if camera.hasCamera && !segments.isEmpty {
+                        Button { addAnotherTake() } label: {
+                            Label("Add a take", systemImage: "plus.circle")
+                                .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                        }
+                        .accessibilityIdentifier("record.addTake")
+                    }
                     Button { reRecord() } label: {
                         Label("Re-record", systemImage: "arrow.counterclockwise")
                             .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
@@ -303,6 +313,12 @@ struct RecordView: View {
                     .accessibilityIdentifier("record.reRecord")
                     GhostButton(title: "Save as draft") { saveDraftAndClose() }
                         .accessibilityIdentifier("record.saveDraft")
+                }
+                if let msg = submitFailedMessage {
+                    Text(msg)
+                        .font(AppFont.caption).foregroundStyle(Palette.critical)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .multilineTextAlignment(.center)
                 }
                 Button { makeClips() } label: {
                     Text("Submit for editing")
@@ -728,6 +744,7 @@ struct RecordView: View {
     /// falls back to the legacy local mock pipeline — the creator is never stranded.
     private func makeClips() {
         guard submitTask == nil else { return }               // AF-I3: no double-submit
+        submitFailedMessage = nil
         phase = .analyzing
         // Keep the raw take in the Library so it can be re-cut later.
         if let footagePath {
@@ -760,7 +777,8 @@ struct RecordView: View {
                 if briefToggles.broll { store.primeBrollCorpus() }
                 store.trackSubmittedClips(jobId: resp.jobId, script: liveScript,
                                           footagePath: footagePath,
-                                          stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") })
+                                          stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
+                                          etaSeconds: resp.etaSeconds)
                 dismiss()
                 router.selectedTab = .library
                 router.showFilm = false
@@ -804,6 +822,17 @@ struct RecordView: View {
     /// would re-compress + re-upload the whole take just to hit the 426 cutover.
     private func fallbackToMock() async {
         guard !Task.isCancelled else { return }
+        // HONESTY FIX (the "ready clip plays raw footage" bug): against a REAL backend,
+        // a transport failure / stalled pipeline must NOT insert fake-"ready" mock clips
+        // whose video is the raw take — the creator sees a finished-looking clip that
+        // plays unedited footage. Instead: keep them on this screen with an honest error
+        // so they can retry (the take is already saved as Footage). The mock path stays
+        // for genuinely backendless demo/dev runs only.
+        if !AppConfig.backendBaseURL.isEmpty {
+            phase = .recorded
+            submitFailedMessage = "Couldn't reach the editor — your take is saved. Tap Submit to try again."
+            return
+        }
         await store.makeClips(from: liveScript, formats: [liveScript.formatId],
                               footagePath: footagePath,
                               reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -828,6 +857,41 @@ struct RecordView: View {
                 .accessibilityIdentifier("record.reactSource")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// TikTok-style take indicator: one pill per finished segment, plus a pulsing
+    /// red pill for the take being recorded right now. Shows only once takes exist.
+    @ViewBuilder private func takeSegmentsBar(liveTake: Bool) -> some View {
+        if !segments.isEmpty || liveTake {
+            HStack(spacing: 5) {
+                ForEach(0..<segments.count, id: \.self) { _ in
+                    Capsule().fill(.white.opacity(0.9)).frame(width: 22, height: 5)
+                }
+                if liveTake {
+                    Capsule().fill(Palette.critical).frame(width: 22, height: 5)
+                        .opacity(0.9)
+                }
+                if segments.count > 0 {
+                    Text(liveTake ? "Take \(segments.count + 1)" : "\(segments.count) take\(segments.count == 1 ? "" : "s")")
+                        .font(AppFont.micro).tracking(0.4)
+                        .foregroundStyle(.white.opacity(0.7))
+                        .padding(.leading, 4)
+                }
+            }
+            .accessibilityIdentifier("record.takesBar")
+        }
+    }
+
+    /// From the review screen: come back for ANOTHER take (device only). Existing
+    /// segments are preserved — Done re-stitches everything into one clip; the hoisted
+    /// upload restarts because the stitched footage is about to change.
+    private func addAnotherTake() {
+        uploadTask?.cancel()
+        uploadTask = nil
+        analyzeJobId = nil
+        submitFailedMessage = nil
+        footagePath = nil          // will be re-stitched from ALL segments on Done
+        phase = .paused
     }
 
     private func recordButton(active: Bool = false, _ action: @escaping () -> Void) -> some View {

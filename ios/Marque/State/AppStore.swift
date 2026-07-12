@@ -415,6 +415,7 @@ final class AppStore {
                 starterScriptsState = .ready
                 save()
                 notifyScriptsReady()
+                warmFeed()          // ideas/reels generating BEFORE Home ever mounts
                 return true
             }
             if s.status == "failed" {
@@ -444,6 +445,7 @@ final class AppStore {
         starterScriptsState = .ready
         save()
         notifyScriptsReady()
+        warmFeed()          // ideas/reels generating BEFORE Home ever mounts
     }
 
     func retryStarterScripts() {
@@ -671,7 +673,8 @@ final class AppStore {
     /// the job, streak + celebration. Factored from confirmClips so the one-tap submit
     /// (auto_confirm create response) lands clips through the exact same path.
     func trackSubmittedClips(jobId: String, script: Script, footagePath: String?,
-                             stubs: [(id: String, format: String, ready: Bool)]) {
+                             stubs: [(id: String, format: String, ready: Bool)],
+                             etaSeconds: Int? = nil) {
         let tagged = stubs.map { stub -> Clip in
             let clipId = UUID(uuidString: stub.id) ?? UUID()
             let formatId = stub.format.isEmpty ? script.formatId : stub.format
@@ -684,6 +687,7 @@ final class AppStore {
                          seconds: Catalog.format(formatId).targetSeconds,
                          jobId: jobId)
             c.localVideoPath = footagePath
+            if !stub.ready { c.etaSeconds = etaSeconds }   // "Ready in ~N min" in the Library
             return c
         }
         clips.insert(contentsOf: tagged, at: 0)
@@ -787,6 +791,7 @@ final class AppStore {
             guard let result = maybeResult,
                   let jobClips = result["clips"] as? [[String: Any]] else { continue }
             let status = result["status"] as? String ?? ""
+            let etaSeconds = result["eta_seconds"] as? Int
             let jobError = result["error"] as? String
             let jobErrorDetail = result["error_detail"] as? String
             for jobClip in jobClips {
@@ -801,6 +806,7 @@ final class AppStore {
                 if let backendId = UUID(uuidString: clipIdStr),
                    let idx = clips.firstIndex(where: { $0.id == backendId }) {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
+                    clips[idx].etaSeconds = clipStatus == "ready" || clipStatus == "failed" ? nil : etaSeconds
                     if let url = renderURL { updateRemoteURL(url, at: idx) }
                     if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed" ? clipError : nil
@@ -887,7 +893,10 @@ final class AppStore {
 
         let post = ScheduledPost(clipId: clip.id, caption: caption ?? clip.caption,
                                  platforms: platforms, date: date, autoCaptions: autoCaptions,
-                                 mediaURL: clip.remoteURL ?? clip.localVideoPath)
+                                 // Publish the RENDER only. localVideoPath is always the
+                                 // raw take (and a local file path — unpostable anyway);
+                                 // falling back to it could publish unedited footage.
+                                 mediaURL: clip.remoteURL)
         // Only OAuth-linked accounts (non-empty accountId) can actually be posted to.
         var scheduled = post
         let outcome = await publisher.schedule(post, accountIds: publishAccountIds(for: platforms))
@@ -1178,18 +1187,29 @@ final class AppStore {
     /// Onboarding digest completion — fires so users who backgrounded the app during
     /// plan-building ("feel free to close the app") come back at the right moment.
     private func notifyScriptsReady() {
+        // NEVER a cold system prompt here: this fires mid-ONBOARDING (starter digest
+        // completion, over PlanBuildingView) — before the user has seen a single idea
+        // or reel. Undetermined permission → skip silently; the branded PushPrimerSheet
+        // asks at the first clips-ready moment instead, with the value already proven.
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             switch settings.authorizationStatus {
-            case .notDetermined:
-                center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
-                    if granted { AppStore.postScriptsReadyNotification() }
-                }
-            case .denied:
-                break
-            default:
+            case .authorized, .provisional:
                 AppStore.postScriptsReadyNotification()
+            default:
+                break
             }
+        }
+    }
+
+    /// Fire-and-forget server-side feed warm: one fetchFeed(cursor:0) call primes the
+    /// backend _feed_cache (the 10-18s generation happens NOW, during onboarding's
+    /// plan-ready moment) so HomeView's first load is a warm-cache hit. The response
+    /// is deliberately discarded — FeedStore remains the single owner of feed state.
+    private func warmFeed() {
+        Task { [weak self] in
+            guard let self else { return }
+            _ = await self.backend.fetchFeed(brand: self.brand, memory: self.memory, cursor: 0)
         }
     }
 
