@@ -374,35 +374,50 @@ struct ChatVideoAnalysisCard: View {
 
 // MARK: - Suggested chips (vertical card stack above the composer)
 
+/// One-tap suggested next messages. Tap sends; LONG-PRESS loads the chip into the
+/// composer for editing — so a suggestion can seed a custom answer instead of
+/// forcing a verbatim pick. The hint line keeps "you can just type" discoverable.
 struct ChatSuggestedChips: View {
     let chips: [String]
     let onTap: (String) -> Void
+    var onEdit: ((String) -> Void)? = nil
+
+    @State private var pressed: String?
 
     var body: some View {
         VStack(spacing: 8) {
             ForEach(chips, id: \.self) { chip in
-                Button { onTap(chip) } label: {
-                    HStack(spacing: Space.sm) {
-                        Text(chip)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Palette.textPrimary)
-                            .multilineTextAlignment(.leading)
-                        Spacer(minLength: Space.sm)
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(Palette.textTertiary)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: 44)
-                    .background(Palette.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(Palette.hairline, lineWidth: 1))
-                    .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                HStack(spacing: Space.sm) {
+                    Text(chip)
+                        .font(AppFont.callout)
+                        .foregroundStyle(Palette.textPrimary)
+                        .multilineTextAlignment(.leading)
+                    Spacer(minLength: Space.sm)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Palette.textTertiary)
                 }
-                .buttonStyle(PressableStyle(dim: 0.7))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: 44)
+                .background(Palette.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .opacity(pressed == chip ? 0.7 : 1)
+                .onTapGesture { onTap(chip) }
+                .onLongPressGesture(minimumDuration: 0.35, perform: {
+                    (onEdit ?? onTap)(chip)
+                }, onPressingChanged: { down in
+                    pressed = down ? chip : nil
+                })
+            }
+            if onEdit != nil {
+                Text("Tap to send — hold to edit, or just type")
+                    .font(AppFont.micro)
+                    .foregroundStyle(Palette.textTertiary)
             }
         }
     }

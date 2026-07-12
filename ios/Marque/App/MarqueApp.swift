@@ -6,6 +6,9 @@ struct MarqueApp: App {
     @State private var store = AppStore()
     @State private var router = AppRouter()
     @State private var tour = TourManager()
+    // UX-F1: the feed survives tab switches + relaunches (RootTabView is a ViewBuilder
+    // switch, so HomeView is torn down per tab — a view-owned FeedStore lost everything).
+    @State private var feed = FeedStore()
 
     init() {
         // Dev/Maestro hook: launch with -reset to wipe to first-run.
@@ -41,6 +44,7 @@ struct MarqueApp: App {
             .environment(store)
             .environment(router)
             .environment(tour)
+            .environment(feed)
             .tint(Palette.accent)
             .preferredColorScheme(.light)
         }
@@ -52,6 +56,7 @@ struct MarqueApp: App {
 // is literally saving the plan the digest just built.
 struct RootView: View {
     @Environment(AppStore.self) private var store
+    @Environment(FeedStore.self) private var feed
     @StateObject private var net = NetworkMonitor()
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
@@ -75,7 +80,12 @@ struct RootView: View {
         // C-03: retry transport-failed publishes when the app returns to the foreground
         // or the network comes back — a queued post lands the moment we can reach the API.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await store.retryPendingPublishes() } }
+            if phase == .active {
+                Task { await store.retryPendingPublishes() }
+                // UX-F2: foregrounding with a >15min-stale feed → silent revalidate
+                // (no skeletons; the snapshot keeps painting until fresh data lands).
+                Task { await feed.revalidateIfStale(store: store) }
+            }
         }
         .onChange(of: net.isOnline) { _, online in
             if online { Task { await store.retryPendingPublishes() } }

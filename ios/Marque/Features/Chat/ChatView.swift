@@ -45,7 +45,14 @@ struct ChatView: View {
                     messageArea
                 }
                 if showChips {
-                    ChatSuggestedChips(chips: chat.chips) { chat.send($0, store: store) }
+                    ChatSuggestedChips(chips: chat.chips,
+                                       onTap: { chat.send($0, store: store) },
+                                       onEdit: { text in
+                                           // Seed the composer with the chip so the creator can
+                                           // customize their answer instead of sending verbatim.
+                                           draft = text
+                                           composerFocused = true
+                                       })
                         .padding(.horizontal, 16)
                         .padding(.bottom, 4)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))

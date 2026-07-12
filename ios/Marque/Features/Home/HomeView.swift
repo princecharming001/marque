@@ -8,7 +8,10 @@ struct HomeView: View {
     @Environment(AppRouter.self) private var router
     @Environment(TourManager.self) private var tour
     @State private var showVoice = false
-    @State private var feed = FeedStore()
+    // UX-F1: app-owned (MarqueApp) so the feed survives tab switches — a view-owned
+    // @State store was torn down with HomeView on every RootTabView switch, forcing
+    // skeletons + a refetch every time the creator came back to Home.
+    @Environment(FeedStore.self) private var feed
     @State private var selectedReel: ReelItem?
     @State private var peekedScript: Script?    // tapped pick card → full script sheet
 
