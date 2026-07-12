@@ -381,7 +381,34 @@ struct Clip: Codable, Hashable, Identifiable {
     // I-6: "imported" for clips brought in from Photos (schedulable without filming on
     // Yunicorn). Optional-with-default → Snapshot-safe both directions.
     var source: String? = nil
+    // UX-C2: locally cached copy of the SERVER render (downloaded on .ready), distinct
+    // from localVideoPath which is ALWAYS the raw take. Optional-with-default →
+    // Snapshot-safe both directions. Invalidated whenever remoteURL changes.
+    var renderLocalPath: String? = nil
     var createdAt: Date = Date()
+}
+
+// UX-C1: playback gating. The library bug: LocalVideoPlayer prefers `path` over
+// `remoteURL`, and localVideoPath is ALWAYS the raw take — so a server-rendered clip
+// (with captions/cuts/b-roll) silently played the unedited footage. These accessors are
+// the single source of truth for "what file does this clip play/share/poster".
+extension Clip {
+    /// True when the backend produced a render for this clip: it went through a clip
+    /// job (not imported from Photos) and the server handed back a render URL.
+    var isServerRendered: Bool {
+        jobId != nil && source != "imported" && !(remoteURL ?? "").isEmpty
+    }
+
+    /// Local file to play: for server-rendered clips ONLY the cached render qualifies
+    /// (never the raw take); drafts/imported clips stay local-first on the raw file.
+    var playbackLocalPath: String? {
+        isServerRendered ? renderLocalPath : localVideoPath
+    }
+
+    /// Remote URL to stream when no acceptable local file exists.
+    var playbackRemoteURL: String? {
+        isServerRendered ? remoteURL : (localVideoPath == nil ? remoteURL : nil)
+    }
 }
 
 enum SocialPlatform: String, CaseIterable, Codable, Identifiable {

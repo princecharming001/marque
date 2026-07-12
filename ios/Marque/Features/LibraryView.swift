@@ -121,7 +121,7 @@ struct ClipCell: View {
 
             HStack(spacing: Space.md) {
                 ZStack {
-                    LocalThumbnail(path: clip.thumbnailPath ?? clip.localVideoPath, isVideo: true)
+                    LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true)
                         .frame(width: 54, height: 72)
                     if clip.status == .rendering { ProgressView().tint(Palette.accent) }
                 }
@@ -158,7 +158,7 @@ struct ClipGridCell: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             // Thumbnail
-            LocalThumbnail(path: clip.thumbnailPath ?? clip.localVideoPath, isVideo: true)
+            LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true)
                 .aspectRatio(9/16, contentMode: .fill)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
 
@@ -218,9 +218,11 @@ struct ClipDetailSheet: View {
     private var isDraft: Bool { clip.status == .draft }
 
     // A shareable file/URL for export to Photos, Messages, the platform apps, etc.
+    // UX-C1: for server-rendered clips share the RENDER (cached file, else its URL) —
+    // never the raw take, which is what localVideoPath always is.
     private var shareURL: URL? {
-        if let p = current.localVideoPath { return MediaStore.url(for: p) }
-        if let r = current.remoteURL, let u = URL(string: r) { return u }
+        if let p = current.playbackLocalPath { return MediaStore.url(for: p) }
+        if let r = current.playbackRemoteURL, let u = URL(string: r) { return u }
         return nil
     }
 
@@ -229,9 +231,12 @@ struct ClipDetailSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     ZStack {
-                        LocalVideoPlayer(path: current.localVideoPath, remoteURL: current.remoteURL)
-                            // Re-create the player when a tweak lands a NEW render URL.
-                            .id(current.remoteURL ?? current.localVideoPath ?? "")
+                        // UX-C1: play the RENDER for server-rendered clips (cached file
+                        // first, stream fallback); raw take only for drafts/imported.
+                        LocalVideoPlayer(path: current.playbackLocalPath, remoteURL: current.playbackRemoteURL)
+                            // Re-create the player when a tweak lands a NEW render URL
+                            // or the render cache download completes.
+                            .id((current.remoteURL ?? "") + (current.renderLocalPath ?? "") + (current.localVideoPath ?? ""))
                         if current.status == .rendering {
                             Rectangle().fill(.black.opacity(0.45))
                             VStack(spacing: Space.sm) {

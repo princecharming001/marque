@@ -19,6 +19,7 @@ struct ReelDetailSheet: View {
     }
     @State private var phase: Phase = .detail
     @State private var playbackFailed = false      // W2-4: 403/expired CDN URL → fall back to the hook panel
+    @State private var thumbFailed = false         // expired thumbnail CDN URL → fall back to the hook panel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,9 +128,59 @@ struct ReelDetailSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                     .strokeBorder(Palette.hairline, lineWidth: 1))
+        } else if !reel.thumbnailURL.isEmpty && !thumbFailed, let url = URL(string: reel.thumbnailURL) {
+            // No playable footage but we do have the platform thumbnail (the same
+            // one the feed's ReelCard shows) — a real preview beats a text panel.
+            thumbnailPanel(url)
         } else {
             hookPanel
         }
+    }
+
+    /// Thumbnail preview: the reel's cover image at 9:16 with the hook over a
+    /// bottom scrim. If the (scraped, expiring) CDN image fails, flip to the
+    /// typographic hook panel — never a dead gray box (same posture as W2-4).
+    private func thumbnailPanel(_ url: URL) -> some View {
+        ZStack {
+            Palette.surfaceRaised          // ground while the image loads
+            AsyncImage(url: url) { imgPhase in
+                switch imgPhase {
+                case .success(let img):
+                    img.resizable().scaledToFill()
+                case .failure:
+                    Color.clear.onAppear { thumbFailed = true }
+                default:
+                    ProgressView().tint(Palette.textTertiary)
+                }
+            }
+            LinearGradient(stops: [.init(color: .black.opacity(0.30), location: 0),
+                                   .init(color: .clear, location: 0.24),
+                                   .init(color: .clear, location: 0.58),
+                                   .init(color: .black.opacity(0.60), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 5) {
+                    Image(systemName: platformGlyph).font(.system(size: 10, weight: .semibold))
+                    Text("@\(reel.creatorHandle)").font(AppFont.micro).tracking(0.4).lineLimit(1)
+                }
+                .foregroundStyle(.white.opacity(0.85))
+                Spacer(minLength: 0)
+                Text(reel.hookText)
+                    .font(Typeface.display(22))
+                    .tracking(Track.title)
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .shadow(color: .black.opacity(0.35), radius: 6, y: 1)
+            }
+            .padding(Space.lg)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }
+        .aspectRatio(9.0 / 16.0, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 
     /// No footage in mock mode — the hook *is* the media. Larger cut of the ReelCard look.

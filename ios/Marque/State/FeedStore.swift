@@ -3,8 +3,10 @@ import Observation
 
 // The Home daily feed's own state: mixed pages of scripts + influencer reels + a trend,
 // split into section buckets with independent "load more" cursors. Kept separate from
-// AppStore because the feed is ephemeral browse-state (re-fetched, not persisted) —
-// only what the creator *saves* graduates into AppStore.readiedScripts.
+// AppStore because the feed is browse-state — but (UX-F2) it is no longer ephemeral:
+// a disk snapshot (Documents/marque.feed.v1.json) makes Home paint instantly on
+// tab-switch/relaunch, with a silent background revalidate replacing it when fresh
+// data lands. Only what the creator *saves* still graduates into AppStore.readiedScripts.
 @MainActor
 @Observable
 final class FeedStore {
@@ -14,7 +16,7 @@ final class FeedStore {
     var trend: TrendItem? = nil
 
     // Loading flags
-    var isLoading = false                 // initial page
+    var isLoading = false                 // initial page (drives skeletons — never set when cache painted)
     var isLoadingMoreScripts = false      // "More" pill in the picks carousel
     var isLoadingMoreReels = false        // "Load more reels" under the grid
 
@@ -25,11 +27,92 @@ final class FeedStore {
     // One-shot poller that swaps mock first-paint picks for the real AI ones when ready.
     private var aiUpgradeTask: Task<Void, Never>? = nil
 
+    // MARK: UX-F2 — disk snapshot (instant paint)
+
+    /// Everything needed to repaint Home exactly as it last looked.
+    struct FeedSnapshot: Codable {
+        var scripts: [Script] = []
+        var reels: [ReelItem] = []
+        var trend: TrendItem? = nil
+        var feedCursor: Int = 0
+        var reelCursor: Int = 1
+        var savedAt: Date = Date()
+    }
+
+    /// True when init painted from disk — revalidates are then SILENT (no skeletons).
+    private(set) var paintedFromDisk = false
+    /// When the buckets last came from the network (drives the >15min staleness rule).
+    private var lastFreshLoadAt: Date? = nil
+    private var saveTask: Task<Void, Never>? = nil
+
+    private static var snapshotURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("marque.feed.v1.json")
+    }
+
+    init() {
+        // Instant paint: restore the last feed before any network work.
+        if let data = try? Data(contentsOf: Self.snapshotURL),
+           let snap = try? JSONDecoder().decode(FeedSnapshot.self, from: data),
+           !snap.scripts.isEmpty || !snap.reels.isEmpty {
+            scriptItems = snap.scripts
+            reelItems = snap.reels
+            trend = snap.trend
+            feedCursor = snap.feedCursor
+            reelCursor = snap.reelCursor
+            lastFreshLoadAt = snap.savedAt
+            paintedFromDisk = true
+        }
+    }
+
+    /// Debounced snapshot write — called after any ingest/refresh/dismiss mutation.
+    private func scheduleSave() {
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let snap = FeedSnapshot(scripts: self.scriptItems, reels: self.reelItems,
+                                    trend: self.trend, feedCursor: self.feedCursor,
+                                    reelCursor: self.reelCursor, savedAt: self.lastFreshLoadAt ?? Date())
+            if let data = try? JSONEncoder().encode(snap) {
+                try? data.write(to: Self.snapshotURL, options: .atomic)
+            }
+        }
+    }
+
+    /// UX-F2: foregrounding with a stale feed (>15 min) → silent revalidate.
+    func revalidateIfStale(store: AppStore) async {
+        guard let last = lastFreshLoadAt, Date().timeIntervalSince(last) > 15 * 60,
+              !isLoading else { return }
+        await silentRevalidate(store: store)
+    }
+
+    /// Re-fetch page 0 WITHOUT skeletons; replace the buckets only on success.
+    private func silentRevalidate(store: AppStore) async {
+        guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0) else { return }
+        scriptItems = []; reelItems = []; trend = nil
+        ingest(page.entries, includeReels: true, store: store)
+        feedCursor = page.nextCursor ?? -1
+        reelCursor = 1
+        lastFreshLoadAt = Date()
+        loadedOnce = true
+        scheduleSave()
+        if page.mode == "mock" { scheduleAIUpgrade(store: store) }
+    }
+
     // MARK: Initial load
 
     func loadInitial(store: AppStore) async {
         guard !loadedOnce, !isLoading else { return }
         loadedOnce = true
+
+        // Cache painted → this is a background REVALIDATE, not a first load: no
+        // skeletons, keep showing the snapshot until fresh data actually arrives.
+        if paintedFromDisk {
+            await silentRevalidate(store: store)
+            return
+        }
+
         isLoading = true
         defer { isLoading = false }
 
@@ -40,6 +123,8 @@ final class FeedStore {
         ingest(page.entries, includeReels: true, store: store)
         feedCursor = page.nextCursor ?? -1
         reelCursor = 1                    // page 0's reels arrived inside the feed
+        lastFreshLoadAt = Date()
+        scheduleSave()
 
         // First paint can be the instant "mock" fallback while the server generates the
         // real AI picks in the background (~60-90s). Silently re-fetch a couple times to
@@ -75,12 +160,14 @@ final class FeedStore {
         guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: feedCursor) else { return }
         ingest(page.entries, includeReels: false, store: store)
         feedCursor = page.nextCursor ?? -1
+        scheduleSave()
     }
 
     // MARK: I-2 — dismiss a pick (✗): remove it, learn from it, top up so the row never empties.
     func dismiss(_ s: Script, store: AppStore) {
         scriptItems.removeAll { $0.id == s.id }
         store.dismissPick(s)
+        scheduleSave()
         if scriptItems.count < 3, feedCursor >= 0 {
             Task { await loadMoreScripts(store: store) }
         }
@@ -96,6 +183,7 @@ final class FeedStore {
         guard let result = await store.backend.fetchReels(brand: store.brand, cursor: reelCursor) else { return }
         for r in result.reels { appendReel(r) }
         reelCursor = result.nextCursor ?? -1
+        scheduleSave()
     }
 
     // MARK: Pull-to-refresh — full reset + reload
@@ -110,6 +198,7 @@ final class FeedStore {
         isLoadingMoreScripts = false
         isLoadingMoreReels = false
         loadedOnce = false
+        paintedFromDisk = false           // an explicit refresh may show skeletons again
         await loadInitial(store: store)
     }
 
@@ -136,6 +225,7 @@ final class FeedStore {
         }
         guard !fresh.isEmpty else { return }
         scriptItems = fresh
+        scheduleSave()
     }
 
     private func appendScript(_ s: Script, store: AppStore) {

@@ -711,7 +711,8 @@ final class AppStore {
                           let idx = clips.firstIndex(where: { $0.id == backendId }) else { continue }
                     clips[idx].status = clipStatus == "ready" ? .ready
                                       : clipStatus == "failed" ? .failed : .rendering
-                    if let url = jobClip["render_url"] as? String { clips[idx].remoteURL = url }
+                    if let url = jobClip["render_url"] as? String { updateRemoteURL(url, at: idx) }
+                    if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed"
                         ? (jobClip["error"] as? String ?? result["error"] as? String) : nil
                     clips[idx].lastErrorDetail = clipStatus == "failed"
@@ -760,7 +761,8 @@ final class AppStore {
                 if let backendId = UUID(uuidString: clipIdStr),
                    let idx = clips.firstIndex(where: { $0.id == backendId }) {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
-                    if let url = renderURL { clips[idx].remoteURL = url }
+                    if let url = renderURL { updateRemoteURL(url, at: idx) }
+                    if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed" ? clipError : nil
                     clips[idx].lastErrorDetail = clipStatus == "failed" ? clipErrorDetail : nil
                     // H10: non-fatal warnings apply regardless of status (a
@@ -906,8 +908,81 @@ final class AppStore {
     func applyTweakResult(_ clipId: UUID, remoteURL: String?) {
         if let idx = clips.firstIndex(where: { $0.id == clipId }) {
             clips[idx].status = .ready
-            if let remoteURL, !remoteURL.isEmpty { clips[idx].remoteURL = remoteURL }
+            if let remoteURL, !remoteURL.isEmpty { updateRemoteURL(remoteURL, at: idx) }
             save()
+            cacheRender(clipId: clipId)
+        }
+    }
+
+    // MARK: UX-C2 — render caching (the Library plays the render, instantly + offline)
+
+    /// Single-flight guard: clip ids with a render download currently in flight.
+    private var renderCacheInFlight: Set<UUID> = []
+    /// Renders larger than this stream instead of caching (keeps Documents sane).
+    private static let renderCacheMaxBytes: Int64 = 200 * 1024 * 1024
+
+    /// Reflect a (possibly new) render URL on a clip. When the URL actually CHANGES
+    /// (tweak re-render), the cached render file + its poster are stale — invalidate
+    /// both so playback never shows the previous edit.
+    private func updateRemoteURL(_ url: String, at idx: Int) {
+        guard clips[idx].remoteURL != url else { return }
+        clips[idx].remoteURL = url
+        if let old = clips[idx].renderLocalPath {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: old))
+        }
+        clips[idx].renderLocalPath = nil
+        if clips[idx].jobId != nil, clips[idx].source != "imported" {
+            clips[idx].thumbnailPath = nil          // poster belonged to the old render/raw take
+        }
+    }
+
+    /// Background-download the server render for a ready clip into the app container,
+    /// then regenerate the poster from the RENDER (not the raw take). Fail-soft: any
+    /// miss (network, size cap, bad file) leaves the clip streaming from remoteURL
+    /// exactly as before — this is purely an upgrade path.
+    func cacheRender(clipId: UUID) {
+        guard let idx = clips.firstIndex(where: { $0.id == clipId }),
+              clips[idx].status == .ready,
+              clips[idx].isServerRendered,
+              clips[idx].renderLocalPath == nil,
+              let urlStr = clips[idx].remoteURL, let url = URL(string: urlStr),
+              !renderCacheInFlight.contains(clipId) else { return }
+        renderCacheInFlight.insert(clipId)
+        Task { [weak self] in
+            defer { self?.renderCacheInFlight.remove(clipId) }
+            guard let self else { return }
+            do {
+                let (tmp, response) = try await URLSession.shared.download(from: url)
+                var size = response.expectedContentLength          // -1 when unknown
+                if size < 0 {
+                    let attrs = try? FileManager.default.attributesOfItem(atPath: tmp.path)
+                    size = (attrs?[.size] as? Int64) ?? 0
+                }
+                guard size <= Self.renderCacheMaxBytes,
+                      (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                      let data = try? Data(contentsOf: tmp) else {
+                    try? FileManager.default.removeItem(at: tmp)
+                    return                              // too big / bad response → keep streaming
+                }
+                try? FileManager.default.removeItem(at: tmp)
+                let path = MediaStore.save(data, ext: "mp4")
+                // Poster from the actual render, off the main actor.
+                let posterData: Data? = await Task.detached(priority: .utility) {
+                    MediaStore.poster(for: MediaStore.url(for: path))?.jpegData(compressionQuality: 0.7)
+                }.value
+                // Re-locate the clip (it may have moved) and confirm the URL didn't
+                // change mid-download (a tweak landing during the fetch wins).
+                guard let i = self.clips.firstIndex(where: { $0.id == clipId }),
+                      self.clips[i].remoteURL == urlStr else {
+                    try? FileManager.default.removeItem(at: MediaStore.url(for: path))
+                    return
+                }
+                self.clips[i].renderLocalPath = path
+                if let posterData { self.clips[i].thumbnailPath = MediaStore.save(posterData, ext: "jpg") }
+                self.save()
+            } catch {
+                // fail-soft: streaming continues from remoteURL
+            }
         }
     }
 
