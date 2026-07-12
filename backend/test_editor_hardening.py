@@ -404,8 +404,26 @@ def test_watchdog_fails_ancient_inflight_job():
     main._clip_jobs[job_id]["created_at"] = time.time() - (main.RENDER_WATCHDOG_S * 2 + 60)
     r = client.get(f"/v1/clips/{job_id}")
     body = r.json()
-    assert body["status"] == "failed" and body["error"] == "render_stalled"
+    assert body["status"] == "failed" and body["error"] == "pipeline_interrupted"
     main._clip_jobs.pop(job_id, None)
+
+
+def test_watchdog_covers_analyzing_and_processing():
+    """The prod gap (2026-07-12): a deploy restart mid-analysis stranded a job in
+    'analyzing' FOREVER — that status (and the one-tap 'processing') was missing from
+    the job-level watchdog set."""
+    for status in ("analyzing", "processing"):
+        job_id = f"stuck-{status}-test"
+        main._clip_jobs[job_id] = {
+            "job_id": job_id, "status": status,
+            "created_at": time.time() - (main.RENDER_WATCHDOG_S * 2 + 60),
+            "clips": [{"clip_id": "c1", "format": "myth-buster", "status": status}],
+            "edl": None, "words": [], "edl_history": [], "tweaks": [],
+        }
+        body = client.get(f"/v1/clips/{job_id}").json()
+        assert body["status"] == "failed", status
+        assert body["error"] == "pipeline_interrupted", status
+        main._clip_jobs.pop(job_id, None)
 
 
 def test_rerender_never_strands(monkeypatch):

@@ -35,6 +35,7 @@ from app import audio as audio_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
 from app import push as push_mod
+from app import higgsfield as higgsfield_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -74,6 +75,7 @@ POSTFORME_BASE = os.environ.get("POSTFORME_BASE", "https://api.postforme.dev/v1"
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 BROLL_CANDIDATES = int(os.environ.get("BROLL_CANDIDATES", "6"))   # P4.1: Pexels per_page for vision re-rank
+_HIGGSFIELD_MAX_PER_JOB = int(os.environ.get("HIGGSFIELD_MAX_PER_JOB", "2"))  # credit + latency cap
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # The client compresses each take to fit under this cap before upload. Server-driven
@@ -2088,7 +2090,8 @@ async def create_clip_job(req: ClipJobRequest):
         job["status"] = "processing"
         _spawn(_run_auto_pipeline(job_id))
         _spawn(_persist_clip_job(job_id))
-        return {"mode": "live", "job_id": job_id, "status": "processing", "clips": job["clips"]}
+        return {"mode": "live", "job_id": job_id, "status": "processing", "clips": job["clips"],
+                "eta_seconds": _job_eta_seconds(job)}
 
     # Analyze-first (Loop F): analyze the raw take → edit brief, STOP at brief_ready.
     # The creator reviews the brief + toggles, then calls /confirm to edit + render.
@@ -2151,6 +2154,9 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         # than the rendered output, so it needs it and previously had no way
         # to get it from this endpoint at all.
         "source_url": job.get("source_url"),
+        # UX: honest remaining-time estimate for the poller ("Ready in ~2 min");
+        # None once the job is terminal.
+        "eta_seconds": _job_eta_seconds(job),
     }
     if job.get("edit_brief"):                     # analyze-first: surface the brief + toggles
         out["edit_brief"] = job["edit_brief"]
@@ -3004,6 +3010,26 @@ def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
         clip["error_detail"] = detail[:300]
 
 
+# Stage-based remaining-time estimate (seconds) for the full live pipeline:
+# transcribe ~60 + brief ~45 + edit ~45 + render ~90 ≈ 240s end to end. Honest rough
+# numbers (the app shows "~N min"), clamped so a slow stage never shows 0 then hangs.
+_STAGE_ETA_S = {
+    "processing": 240, "transcribing": 240, "analyzing": 180,
+    "brief_ready": 150, "editing": 130, "rendering": 90,
+}
+
+
+def _job_eta_seconds(job: dict) -> int | None:
+    """Remaining-time estimate for a non-terminal job, or None once terminal.
+    Stage baseline minus elapsed-in-pipeline, floored at 20s (never promise 0)."""
+    base = _STAGE_ETA_S.get(job.get("status") or "")
+    if base is None:
+        return None
+    elapsed = max(0.0, time.time() - float(job.get("created_at") or time.time()))
+    # Elapsed time already ate into the earlier stages' share of the estimate.
+    return max(20, int(base - min(elapsed, base - 20)))
+
+
 def _fail_job(job: dict, code: str, detail: str = "", stage: str = "") -> None:
     """Fail the job AND every non-terminal clip — nothing is ever left mid-flight."""
     job["status"] = "failed"
@@ -3072,9 +3098,14 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
                 c["preview_status"] = "failed"
                 c["preview_error"] = f"preview exceeded {int(budget)}s watchdog"
-        if job.get("status") in ("transcribing", "editing", "rendering") \
+        # "analyzing" and "processing" (one-tap submit) were MISSING from this set — a
+        # deploy restart mid-analysis stranded the job in "analyzing" forever (observed
+        # in prod 2026-07-12: job 2b0fc44c). Now every non-terminal pipeline stage is
+        # watchdogged; the app's retry endpoint restarts a failed pipeline cleanly.
+        if job.get("status") in ("transcribing", "analyzing", "processing", "editing", "rendering") \
                 and now - job.get("created_at", now) > budget * 2:
-            _fail_job(job, "render_stalled", "job exceeded the pipeline watchdog")
+            _fail_job(job, "pipeline_interrupted",
+                      "the edit was interrupted (server restart or stall) — retry to restart it")
 
 
 async def _transcribe_job(job_id: str) -> list[dict]:
@@ -4846,8 +4877,9 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None) -> dict:
     a-roll palette/energy (falls back to top-1). Cached by query so re-renders don't re-hit
     Pexels/vision. No-op without PEXELS_KEY."""
     broll = edl.get("broll") or []
-    if not broll or not PEXELS_KEY:
+    if not broll or not (PEXELS_KEY or higgsfield_mod.CONFIGURED):
         return edl
+    generated_count = 0
     for b in broll:
         if b.get("resolved_url") or b.get("source") == "own_media":
             continue
@@ -4859,6 +4891,12 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None) -> dict:
             continue
         candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
         url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
+        # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
+        # of silently dropping the cutaway. Capped per job (credits + ~1-2 min latency
+        # per generation); cached per query like every other resolution. Fail-soft.
+        if not url and higgsfield_mod.CONFIGURED and generated_count < _HIGGSFIELD_MAX_PER_JOB:
+            generated_count += 1
+            url = await higgsfield_mod.generate_broll(b.get("cue_text") or query)
         if url:
             _broll_url_cache[query] = url
             _cap_evict(_broll_url_cache, 10_000)
