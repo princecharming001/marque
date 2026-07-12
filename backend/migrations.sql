@@ -119,3 +119,19 @@ ALTER TABLE reels_cache ENABLE ROW LEVEL SECURITY;
 -- ground honest "+N% lift" + "seen in N settled posts" claims) untouched.
 ALTER TABLE arm_stats ADD COLUMN IF NOT EXISTS fb_n       DOUBLE PRECISION DEFAULT 0;
 ALTER TABLE arm_stats ADD COLUMN IF NOT EXISTS fb_sum_y   DOUBLE PRECISION DEFAULT 0;
+
+-- UX-B2a: APNs device tokens (token-based .p8 push). One row per (token, environment);
+-- re-registration re-enables (disabled_at cleared). Soft-disable on 410/BadDeviceToken.
+CREATE TABLE IF NOT EXISTS device_tokens (
+    creator_id   TEXT NOT NULL,
+    token        TEXT NOT NULL,
+    environment  TEXT NOT NULL CHECK (environment IN ('sandbox', 'prod')),
+    platform     TEXT DEFAULT 'ios',
+    app_version  TEXT DEFAULT '',
+    timezone     TEXT DEFAULT '',
+    permission   TEXT DEFAULT '',
+    last_seen_at TIMESTAMPTZ DEFAULT NOW(),
+    disabled_at  TIMESTAMPTZ,
+    UNIQUE (token, environment)
+);
+ALTER TABLE device_tokens ENABLE ROW LEVEL SECURITY;
