@@ -301,3 +301,32 @@ class SupabaseClient:
         except Exception:
             return None
         return rows[0]["state"] if rows and rows[0].get("state") else None
+
+    # --- device_tokens (UX-B2a APNs) ------------------------------------------
+
+    async def upsert_device_token(self, row: dict) -> bool:
+        payload = {k: row.get(k) for k in ("creator_id", "token", "environment", "platform",
+                                           "app_version", "timezone", "permission")}
+        payload["last_seen_at"] = "now()"
+        payload["disabled_at"] = None            # re-registration re-enables
+        r = await self._request(
+            "POST", "/device_tokens", params={"on_conflict": "token,environment"}, json=payload,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_device_tokens(self, creator_id: str) -> list[dict]:
+        r = await self._request("GET", "/device_tokens",
+                                params={"creator_id": f"eq.{creator_id}", "disabled_at": "is.null"})
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            return r.json()
+        except ValueError:
+            return []
+
+    async def disable_device_token(self, token: str, environment: str) -> bool:
+        r = await self._request("PATCH", "/device_tokens",
+                                params={"token": f"eq.{token}", "environment": f"eq.{environment}"},
+                                json={"disabled_at": "now()"},
+                                headers={"Prefer": "return=minimal"})
+        return bool(r and r.status_code < 300)

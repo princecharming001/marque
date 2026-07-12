@@ -33,6 +33,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
+from app import push as push_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -124,6 +125,7 @@ _creator_niche: dict[str, str] = {}
 _supabase_client: SupabaseClient | None = (
     SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if (SUPABASE_URL and SUPABASE_KEY) else None
 )
+push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supabase is wired
 
 
 async def _persist_creator(creator_id: str, **fields):
@@ -929,6 +931,17 @@ class ClipJobRequest(BaseModel):
 class ConfirmRequest(BaseModel):
     toggles: dict = {}                  # broll/punch_ins/music (captions + cuts are always-on)
     custom_instructions: str = ""
+
+
+class DeviceRegisterRequest(BaseModel):
+    """UX-B2a: APNs device registration (POST /v1/devices)."""
+    token: str
+    environment: str = "sandbox"        # sandbox | prod (DEBUG builds → sandbox)
+    creator_id: str = "default"
+    platform: str = "ios"
+    app_version: str = ""
+    timezone: str = ""
+    permission: str = ""                # authorized | denied | provisional | notDetermined
 
 
 class TweakRequest(BaseModel):
@@ -2051,6 +2064,21 @@ async def create_clip_job(req: ClipJobRequest):
     _spawn(_run_analysis(job_id))
     _spawn(_persist_clip_job(job_id))
     return {"mode": "live", "job_id": job_id, "status": "analyzing"}
+
+
+@app.post("/v1/devices")
+async def register_device(req: DeviceRegisterRequest):
+    """UX-B2a: APNs device registration — idempotent (token, environment) upsert;
+    re-registering re-enables a soft-disabled token. Works keyless (in-memory) so the
+    app's registration path never errors in dev."""
+    if not req.token.strip():
+        raise HTTPException(status_code=422, detail="token required")
+    row = await push_mod.upsert_device(
+        creator_id=req.creator_id, token=req.token.strip(), environment=req.environment,
+        platform=req.platform, app_version=req.app_version,
+        timezone=req.timezone, permission=req.permission)
+    return {"ok": True, "environment": row["environment"],
+            "push_configured": push_mod.PUSH_CONFIGURED}
 
 
 @app.get("/v1/clips/{job_id}")
@@ -3349,6 +3377,13 @@ async def _run_edit(job_id: str, words: list[dict]):
         # unconditional ready-set is how "ready" jobs with zero playable clips
         # reached the app.
         job["status"] = "ready" if any(c["status"] == "ready" for c in job["clips"]) else "failed"
+        # UX-B2a: one push per JOB, first ready-landing only (push_sent flag) — a
+        # tweak re-render goes through _rerender_clip, never here, so it can't push.
+        if job["status"] == "ready" and job.get("creator_id") and not job.get("push_sent"):
+            job["push_sent"] = True
+            ready_clips = [c for c in job["clips"] if c["status"] == "ready"]
+            _spawn(push_mod.send_clips_ready(job["creator_id"],
+                                             ready_clips[0]["clip_id"], len(ready_clips)))
         if job["status"] == "failed" and not job.get("error"):
             first = next((c for c in job["clips"] if c.get("error")), None)
             job["error"] = (first or {}).get("error", "render_no_output")
