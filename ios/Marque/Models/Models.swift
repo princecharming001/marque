@@ -398,6 +398,10 @@ struct Clip: Codable, Hashable, Identifiable {
     // from localVideoPath which is ALWAYS the raw take. Optional-with-default →
     // Snapshot-safe both directions. Invalidated whenever remoteURL changes.
     var renderLocalPath: String? = nil
+    // UX-D2: TRANSIENT low-res tweak-preview URL (the staged, uncommitted candidate
+    // edit). Cleared on apply/discard/sheet-dismiss/remoteURL change; never written
+    // with the snapshot save (set without save()). Optional-with-default → decode-safe.
+    var previewURL: String? = nil
     var createdAt: Date = Date()
 }
 

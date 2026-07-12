@@ -243,10 +243,31 @@ struct ClipDetailSheet: View {
                     ZStack {
                         // UX-C1: play the RENDER for server-rendered clips (cached file
                         // first, stream fallback); raw take only for drafts/imported.
-                        LocalVideoPlayer(path: current.playbackLocalPath, remoteURL: current.playbackRemoteURL)
-                            // Re-create the player when a tweak lands a NEW render URL
-                            // or the render cache download completes.
-                            .id((current.remoteURL ?? "") + (current.renderLocalPath ?? "") + (current.localVideoPath ?? ""))
+                        // UX-D2: a staged tweak PREVIEW (uncommitted candidate) wins over
+                        // everything while it exists — badged so it can't be mistaken
+                        // for the committed cut.
+                        LocalVideoPlayer(path: current.previewURL == nil ? current.playbackLocalPath : nil,
+                                         remoteURL: current.previewURL ?? current.playbackRemoteURL)
+                            // Re-create the player when a tweak lands a NEW render URL,
+                            // the render cache download completes, or a preview stages.
+                            .id((current.previewURL ?? "") + (current.remoteURL ?? "")
+                                + (current.renderLocalPath ?? "") + (current.localVideoPath ?? ""))
+                        if current.previewURL != nil {
+                            VStack {
+                                HStack {
+                                    Text("PREVIEW")
+                                        .font(.system(size: 10, weight: .bold)).tracking(1.0)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(Palette.accent.opacity(0.9))
+                                        .clipShape(Capsule())
+                                    Spacer()
+                                }
+                                Spacer()
+                            }
+                            .padding(Space.sm)
+                            .allowsHitTesting(false)
+                        }
                         if current.status == .rendering {
                             Rectangle().fill(.black.opacity(0.45))
                             VStack(spacing: Space.sm) {
@@ -257,6 +278,27 @@ struct ClipDetailSheet: View {
                     }
                     .frame(height: 340)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+
+                    // UX-D1: the tweak chat is the clip's front door, not a buried menu
+                    // entry — an input-shaped affordance right under the player.
+                    if current.status == .ready && current.isServerRendered {
+                        Button { showTweak = true } label: {
+                            HStack(spacing: Space.sm) {
+                                Image(systemName: "wand.and.stars")
+                                    .font(.system(size: 14)).foregroundStyle(Palette.accent)
+                                Text("Tell the editor what to change…")
+                                    .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, Space.md).padding(.vertical, 12)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous)
+                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("clip.tweakAffordance")
+                    }
                     HStack(spacing: Space.sm) {
                         FormatTag(formatId: clip.formatId)
                         Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
@@ -389,7 +431,10 @@ struct ClipDetailSheet: View {
                            confirm: "Delete", destructive: true) {
                 store.deleteClip(clip); dismiss()
             }
-            .sheet(isPresented: $showTweak) { TweakChatSheet(clip: clip) }
+            .sheet(isPresented: $showTweak) {
+                TweakChatSheet(clip: clip, autoFocus: true)
+                    .presentationDetents([.medium, .large])   // UX-D1: chat over the player
+            }
             .fullScreenCover(isPresented: $showEditor) { ProEditorView(clip: clip) }
         }
     }

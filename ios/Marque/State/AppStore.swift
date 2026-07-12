@@ -947,8 +947,23 @@ final class AppStore {
             try? FileManager.default.removeItem(at: MediaStore.url(for: old))
         }
         clips[idx].renderLocalPath = nil
+        clips[idx].previewURL = nil                 // UX-D2: a landed render outdates any preview
         if clips[idx].jobId != nil, clips[idx].source != "imported" {
             clips[idx].thumbnailPath = nil          // poster belonged to the old render/raw take
+        }
+    }
+
+    // MARK: UX-D2 — transient tweak-preview state (never persisted: no save() calls)
+
+    func setClipPreview(_ clipId: UUID, url: String) {
+        if let idx = clips.firstIndex(where: { $0.id == clipId }) {
+            clips[idx].previewURL = url
+        }
+    }
+
+    func clearClipPreview(_ clipId: UUID) {
+        if let idx = clips.firstIndex(where: { $0.id == clipId }), clips[idx].previewURL != nil {
+            clips[idx].previewURL = nil
         }
     }
 

@@ -2525,7 +2525,11 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
     return {"mode": mode, "reply": reply, "applied": applied, "skipped": skipped,
             "changed": changed, "needs_render": needs_render, "clip_status": clip["status"],
             "undo_available": bool(job["edl_history"]), "degraded": degraded,
-            "preview_requested": preview_requested}
+            "preview_requested": preview_requested,
+            # UX-D2: on a preview turn the client needs the FULL typed ops (applied[]
+            # carries only result stubs) so "Apply" can re-submit them deterministically
+            # via the direct-ops path. Additive; empty on non-preview turns.
+            "ops": edit_ops if preview_requested else []}
 
 
 def _mark_tweak_render_failed(job: dict, clip: dict, err: str) -> None:
