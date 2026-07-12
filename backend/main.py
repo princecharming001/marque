@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import json
+import math
 import re
 import copy
 import time
@@ -1727,25 +1728,61 @@ def _format_example_reels(fmt: str, niche: str) -> list[dict]:
 
 @app.get("/v1/reels/examples")
 async def reels_examples(format: str = "talking_head", niche: str = ""):
-    """Example reels for one edit format — what the creator's cut could feel like.
-    Real niche reels of the matching engine style lead when cached; curated
-    exemplars guarantee at least 3 cards. The picked reel returns to POST /v1/clips
-    as `reference_reel` and steers the brief + EDL prompts."""
+    """UX-A2: example reels for one edit format — what the creator's cut could feel
+    like. Matching ladder: `edit_format` classification (dossier beats heuristic) →
+    legacy engine-style match. Ranked by engagement + recency of work done (transcribed)
+    + durable (re-hosted) playable URL; playable cards take the top slots. LIVE MODE
+    NEVER PADS WITH FABRICATED CARDS — fewer real beats fake. The keyless/no-match
+    fallback returns curated exemplars honestly flagged `sample: true`. Every card
+    carries `selection_reason`. The picked reel returns to POST /v1/clips as
+    `reference_reel` and steers the brief + EDL prompts."""
     fmt = format if format in prompts.EDIT_FORMATS else "talking_head"
     target_style = prompts.EDIT_FORMATS[fmt]["style"]
     out: list[dict] = []
     if niche:
         try:
             entry = await _prev_reels_entry(_niche_reels_cache, _niche_cache_key(niche))
-            for r in (entry or {}).get("reels") or []:
-                if r.get("style") == target_style and r.get("title") and len(out) < 6:
-                    out.append({**r, "edit_format": fmt})
+            reels = (entry or {}).get("reels") or []
+
+            def _tier(r: dict) -> int | None:
+                if r.get("edit_format") == fmt:
+                    return 0 if r.get("fmt_source") == "dossier" else 1
+                if r.get("style") == target_style:
+                    return 2                        # legacy style match, weakest signal
+                return None
+
+            sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
+            def _rank(pair: tuple[int, dict]):
+                t, r = pair
+                eng = math.log10(max(10, (r.get("views") or 0) or (r.get("likes") or 0) * 10))
+                bonus = (1.5 if r.get("transcribed") else 0.0) \
+                      + (2.0 if (r.get("video_url") or "").startswith(sb_base) else 0.0)
+                return (t, -(eng + bonus))
+
+            cands = sorted(((t, r) for r in reels
+                            if r.get("title") and (t := _tier(r)) is not None), key=_rank)
+            ranked = [r for _, r in cands]
+            # Top slots require a PLAYABLE card — unplayable ones sink, never lead.
+            ranked = [r for r in ranked if r.get("video_url")] \
+                   + [r for r in ranked if not r.get("video_url")]
+            reason = {0: "Watched it — this reel cuts exactly like this treatment",
+                      1: "Caption + pacing match this treatment",
+                      2: "Same engine style in your niche"}
+            tier_by_id = {r.get("id"): t for t, r in cands}
+            for r in ranked[:6]:
+                out.append({**r, "edit_format": r.get("edit_format") or fmt, "sample": False,
+                            "selection_reason": f"{reason[tier_by_id.get(r.get('id'), 2)]} · "
+                                                f"{_compact_count(r.get('views') or 0)} views"})
         except Exception:
-            pass                                   # examples must never 500 over a cache hiccup
-    mode = "live" if out else "mock"
-    if len(out) < 3:
-        out.extend(_format_example_reels(fmt, niche)[: 6 - len(out)])
-    return {"mode": mode, "format": fmt, "reels": out[:6]}
+            out = []                               # examples must never 500 over a cache hiccup
+    if out:
+        # LIVE: real matches only — even if fewer than 3. Honesty beats volume.
+        return {"mode": "live", "format": fmt, "reels": out[:6]}
+    fab = _format_example_reels(fmt, niche)[:6]
+    for r in fab:
+        r["sample"] = True
+        r["selection_reason"] = "Curated sample — no live reels matched this treatment yet"
+    return {"mode": "mock", "format": fmt, "reels": fab}
 
 
 # ---------------------------------------------------------------------------
@@ -5630,6 +5667,87 @@ def _compact_count(n: int) -> str:
     return str(n)
 
 
+# UX-A1: which EDIT TREATMENT (prompts.EDIT_FORMATS key) a real post most resembles.
+# Human "why this matches" copy per treatment — shown on the mimic cards.
+_WHY_MATCH = {
+    "talking_head": "Straight to camera — the take itself carries it.",
+    "talking_head_broll": "Spoken take with cutaways landing on the visual words.",
+    "recap_music": "Montage on a track — barely any talking, hard cuts.",
+    "recap_voiceover": "A voice narrates over the footage — no face on screen.",
+}
+
+
+def _classify_edit_format(post: dict) -> tuple[str, str]:
+    """UX-A1 tier-1 heuristic: classify a scraped post into an edit treatment
+    (EDIT_FORMATS key, engine style) from caption/hashtags/duration/transcript/views.
+    Free + deterministic; the dossier tier-2 pass upgrades the top reels by actually
+    watching them and overrides this."""
+    cap = (post.get("caption") or "").strip()
+    low = cap.lower()
+    transcript = (post.get("transcript") or "").strip()
+    dur = float(post.get("duration_s") or 0)
+    words = len(transcript.split())
+    musicish = any(t in low for t in ("#montage", "#edit", "#recap", "#aesthetic", "#asmr",
+                                      "sound on", "🎵", "#transition", "#fyp"))
+    # Short-or-no speech + short duration + music-ish caption → music recap.
+    if (words < 12 and dur and dur <= 20) or (musicish and words < 25):
+        return "recap_music", "fast_cuts"
+    # Existing faceless signal (media with a near-empty caption) + real narration.
+    if dur and len(cap) < 15 and words >= 12:
+        return "recap_voiceover", "faceless"
+    # Spoken take + a visual-noun-dense caption → talking head with b-roll cutaways.
+    visual_nouns = ("desk", "setup", "gym", "kitchen", "recipe", "routine", "travel",
+                    "room", "car", "studio", "office", "screen", "tutorial",
+                    "how i", "how to", "day in", "before", "after")
+    if words >= 25 and any(t in low for t in visual_nouns):
+        return "talking_head_broll", "broll_cutaway"
+    return "talking_head", "talking_head"
+
+
+_REEL_CLASSIFY_TOP_K = int(os.environ.get("REEL_CLASSIFY_TOP_K", "8"))
+
+
+def _classify_from_dossier(dossier: dict | None, post: dict) -> tuple[str, str] | None:
+    """UX-A1 tier 2: classify by WATCHING (the dossier adapter's measured signals).
+    None → keep the tier-1 heuristic."""
+    if not dossier:
+        return None
+    pat = dossier_mod.reference_patterns(dossier, int(float(post.get("duration_s") or 0) * 1000))
+    if not pat:
+        return None
+    words = len((post.get("transcript") or "").split())
+    eye_contact = bool((dossier.get("framing") or {}).get("eye_contact"))
+    if not eye_contact:
+        # no face → voiceover recap when narrated, music recap when not
+        return ("recap_voiceover", "faceless") if words >= 12 else ("recap_music", "fast_cuts")
+    if pat.get("cut_density_per_s", 0) >= 0.8 and words < 25:
+        return "recap_music", "fast_cuts"
+    if len(dossier.get("broll_visual_opportunities") or []) >= 2 or pat.get("cuts", 0) >= 4:
+        return "talking_head_broll", "broll_cutaway"
+    return "talking_head", "talking_head"
+
+
+async def _dossier_classify_reels(posts: list[dict]) -> None:
+    """UX-A1 tier 2: run the dossier adapter over the top-K engagement-sorted reels
+    that lack a dossier classification. Fully fail-soft (keyless/off → no-op); results
+    are set on the POST dicts so _reel_from_post + the carry-forward persist them —
+    the watch cost is paid once per reel, ever."""
+    if (dossier_mod.VIDEO_UNDERSTANDING or "off").lower() == "off":
+        return
+    for p in posts[:_REEL_CLASSIFY_TOP_K]:
+        if p.get("fmt_source") == "dossier" or not p.get("video_url"):
+            continue
+        try:
+            d = await dossier_mod.dossier_for_reference(
+                p["video_url"], int(float(p.get("duration_s") or 0) * 1000))
+            fs = _classify_from_dossier(d, p)
+            if fs:
+                p["edit_format"], p["fmt_source"] = fs[0], "dossier"
+                p["why_match"] = f"Watched it: {_WHY_MATCH[fs[0]].lower()}"
+        except Exception as e:
+            logging.warning("dossier reel classify failed: %s", e)
+
+
 def _heuristic_reel_annotation(post: dict) -> dict:
     """Deterministic format/style/why/hook inference from a real post's caption +
     stats. Free (no LLM), so a reel refresh costs only the Apify scrape — respects
@@ -5692,6 +5810,13 @@ def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: b
         "format_id": ann["format_id"],
         "style": ann["style"],
         "from_watched": watched,
+        # UX-A1 (additive): the edit TREATMENT this reel matches. Tier-2 dossier
+        # results (set on the post dict by _dossier_classify_reels / carried forward
+        # by _merge_prev_reel_work) win over the tier-1 heuristic.
+        "edit_format": post.get("edit_format") or _classify_edit_format(post)[0],
+        "fmt_source": post.get("fmt_source") or "heuristic",
+        "why_match": post.get("why_match")
+                     or _WHY_MATCH.get(post.get("edit_format") or _classify_edit_format(post)[0], ""),
     }
 
 
@@ -5707,6 +5832,7 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
         prev = await _prev_reels_entry(_watched_reels_cache, key)
         _merge_prev_reel_work(posts, (prev or {}).get("reels") or [], handle=handle)
         posts = await _transcribe_top_posts(posts, top_n=2)
+        await _dossier_classify_reels(posts[:6])      # UX-A1 tier 2 (fail-soft)
         reels = [_reel_from_post(p, handle, platform, i, True) for i, p in enumerate(posts[:6])]
         entry = {"reels": reels, "ts": time.time()}
         _watched_reels_cache[key] = entry
@@ -5781,6 +5907,12 @@ def _merge_prev_reel_work(posts: list[dict], prev_reels: list[dict], handle: str
             u = old.get(field) or ""
             if sb_base and u.startswith(sb_base):     # durable URLs never expire — keep them
                 p[field] = u
+        # UX-A1: a dossier classification is paid-for work — carry it forward so the
+        # watch cost is once per reel, ever (tier-1 heuristics recompute for free).
+        if old.get("fmt_source") == "dossier":
+            p["edit_format"] = old.get("edit_format")
+            p["fmt_source"] = "dossier"
+            p["why_match"] = old.get("why_match")
 
 
 async def _prev_reels_entry(cache: dict, key: str) -> dict | None:
@@ -5865,6 +5997,10 @@ async def _refresh_niche_reels(niche: str) -> None:
         # PHASE 2 — enrich: real spoken transcript for the top reels, then durable media.
         posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
         await _rehost_reel_media(posts)
+        # UX-A1 tier 2: classify the top-K by WATCHING (dossier adapter, fail-soft).
+        # After transcription so the transcript-length signal is real; before the final
+        # write so the classification persists via the reels cache.
+        await _dossier_classify_reels(posts)
         if posts:
             await _write_niche_reels(key, posts, partial=False)
     except Exception as e:
