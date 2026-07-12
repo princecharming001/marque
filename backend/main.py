@@ -916,6 +916,14 @@ class ClipJobRequest(BaseModel):
     # Optional reference reel this cut should FEEL like — pacing/energy/caption
     # vibe, never the words. Whitelisted before storage (_clean_reference_reel).
     reference_reel: dict = {}
+    # UX-B1a one-tap submit: run the WHOLE pipeline (transcribe → brief → confirm-
+    # defaults → edit → render) without stopping at brief_ready. The response then
+    # includes the clips array so the client can track/poll immediately. `toggles`
+    # (broll/punch_ins/music) are applied as if the creator confirmed them; None →
+    # the edit format's defaults. creator_id keys push notifications + learning.
+    auto_confirm: bool = False
+    toggles: dict | None = None
+    creator_id: str = "default"
 
 
 class ConfirmRequest(BaseModel):
@@ -1970,8 +1978,15 @@ async def create_clip_job(req: ClipJobRequest):
             "error": "update_required",
             "message": "Please update Yunicorn — the editor now analyzes your video first."})
     job_id = str(uuid.uuid4())
-    clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "queued"}
-             for f in (req.formats or ["myth-buster"])]
+    # UX-B1a: one-tap submits render ONCE (same as confirm's no-fan-out rule), and the
+    # clip id must be minted NOW — the create response returns it for tracking, so the
+    # pipeline must never swap it out mid-flight.
+    if req.auto_confirm:
+        clips = [{"clip_id": str(uuid.uuid4()),
+                  "format": (req.formats or ["myth-buster"])[0], "status": "queued"}]
+    else:
+        clips = [{"clip_id": str(uuid.uuid4()), "format": f, "status": "queued"}
+                 for f in (req.formats or ["myth-buster"])]
     # An explicit edit format pins the engine style from the start — inference
     # (brief/confirm) must never override the creator's choice.
     edit_format = req.edit_format if req.edit_format in prompts.EDIT_FORMATS else ""
@@ -1992,7 +2007,32 @@ async def create_clip_job(req: ClipJobRequest):
         "created_at": time.time(),
     }
     job["custom_instructions"] = req.custom_instructions
+    job["creator_id"] = req.creator_id                       # UX-B1a: keys push + learning
+    if req.toggles:
+        job["toggles"] = req.toggles                          # explicit beats every default
     _clip_jobs[job_id] = job
+
+    # UX-B1a one-tap submit: no brief_ready stop — the whole pipeline runs and the
+    # response includes the clips array so the client tracks + polls immediately.
+    if req.auto_confirm:
+        if not ASSEMBLY_KEY:
+            # Keyless: immediate mock_ready with real clips, mirroring confirm's mock
+            # branch so the client's tracking path is identical to live.
+            job["words"] = _mock_words(req.script or {})
+            total_f = ms_to_frame(max((w["end_ms"] for w in job["words"]), default=0))
+            brief = _mock_edit_brief(job["words"], " ".join(w["word"] for w in job["words"]),
+                                     req.custom_instructions, edit_format=edit_format)
+            job["edit_brief"] = _resolve_strategy(brief, total_f)
+            prefs = _apply_confirm_to_job(job, toggles=req.toggles or None, reset_clips=False)
+            job["status"] = "mock_ready"
+            job["clips"][0]["status"] = "ready"
+            job["edl"] = _apply_edit_prefs(_mock_edl(job["style"], job.get("script") or {}), prefs)
+            job["knowledge_version"] = knowledge_mod.knowledge_version()
+            return {"mode": "mock", "job_id": job_id, "status": "mock_ready", "clips": job["clips"]}
+        job["status"] = "processing"
+        _spawn(_run_auto_pipeline(job_id))
+        _spawn(_persist_clip_job(job_id))
+        return {"mode": "live", "job_id": job_id, "status": "processing", "clips": job["clips"]}
 
     # Analyze-first (Loop F): analyze the raw take → edit brief, STOP at brief_ready.
     # The creator reviews the brief + toggles, then calls /confirm to edit + render.
@@ -2053,6 +2093,42 @@ async def get_clip_job(job_id: str, include_words: int = 0):
     return out
 
 
+def _apply_confirm_to_job(job: dict, toggles: dict | None = None,
+                          custom_instructions: str = "", reset_clips: bool = True) -> dict:
+    """UX-B1a: the confirm MUTATION, extracted verbatim from confirm_clip_job so the
+    one-tap auto pipeline applies identical semantics. Resolves toggles (explicit →
+    stored → defaults), pins style (explicit edit_format beats brief inference), fills
+    script.formatId, folds toggles into edit_prefs, and (reset_clips) collapses to ONE
+    render per confirmed edit — no N-format fan-out (audit D5). The auto pipeline passes
+    reset_clips=False because its clip ids were minted at create time and already
+    returned to the client for tracking. Returns the updated prefs dict."""
+    brief = job.get("edit_brief") or {}
+    edit_format = job.get("edit_format", "")
+    toggles = toggles or job.get("toggles") or _default_toggles(brief, edit_format)
+    job["toggles"] = toggles
+    if custom_instructions:
+        job["custom_instructions"] = custom_instructions
+    inf = brief.get("inferred") or {}
+    if edit_format in prompts.EDIT_FORMATS:
+        # The creator picked this cut treatment at submit — it PINS the style; the
+        # brief's inference only fills in when no explicit format was chosen.
+        job["style"] = prompts.EDIT_FORMATS[edit_format]["style"]
+    else:
+        job["style"] = inf.get("style") if inf.get("style") in STYLES else (job.get("style") or "talking_head")
+    fmt = inf.get("format_id") if inf.get("format_id") in FORMAT_IDS else "myth-buster"
+    job.setdefault("script", {})
+    if isinstance(job["script"], dict):
+        job["script"].setdefault("formatId", fmt)
+    prefs = dict(job.get("edit_prefs") or {})
+    prefs.update({"broll": bool(toggles.get("broll")), "punch_ins": bool(toggles.get("punch_ins")),
+                  "music": bool(toggles.get("music"))})
+    job["edit_prefs"] = prefs
+    if reset_clips:
+        # ONE render per confirmed edit — no N-format fan-out (audit D5).
+        job["clips"] = [{"clip_id": str(uuid.uuid4()), "format": fmt, "status": "queued"}]
+    return prefs
+
+
 @app.post("/v1/clips/{job_id}/confirm")
 async def confirm_clip_job(job_id: str, req: ConfirmRequest):
     """Analyze-first phase 2: the creator reviewed the brief + toggles → edit + render.
@@ -2071,28 +2147,8 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
     if not brief:
         raise HTTPException(status_code=409, detail="no edit brief — analyze the video first")
 
-    edit_format = job.get("edit_format", "")
-    toggles = req.toggles or job.get("toggles") or _default_toggles(brief, edit_format)
-    job["toggles"] = toggles
-    if req.custom_instructions:
-        job["custom_instructions"] = req.custom_instructions
-    inf = brief.get("inferred") or {}
-    if edit_format in prompts.EDIT_FORMATS:
-        # The creator picked this cut treatment at submit — it PINS the style; the
-        # brief's inference only fills in when no explicit format was chosen.
-        job["style"] = prompts.EDIT_FORMATS[edit_format]["style"]
-    else:
-        job["style"] = inf.get("style") if inf.get("style") in STYLES else (job.get("style") or "talking_head")
-    fmt = inf.get("format_id") if inf.get("format_id") in FORMAT_IDS else "myth-buster"
-    job.setdefault("script", {})
-    if isinstance(job["script"], dict):
-        job["script"].setdefault("formatId", fmt)
-    prefs = dict(job.get("edit_prefs") or {})
-    prefs.update({"broll": bool(toggles.get("broll")), "punch_ins": bool(toggles.get("punch_ins")),
-                  "music": bool(toggles.get("music"))})
-    job["edit_prefs"] = prefs
-    # ONE render per confirmed edit — no N-format fan-out (audit D5).
-    job["clips"] = [{"clip_id": str(uuid.uuid4()), "format": fmt, "status": "queued"}]
+    prefs = _apply_confirm_to_job(job, toggles=req.toggles or None,
+                                  custom_instructions=req.custom_instructions)
 
     if not ASSEMBLY_KEY:
         job["status"] = "mock_ready"
@@ -2984,25 +3040,30 @@ async def _dossier_job(job_id: str) -> dict | None:
     return d
 
 
-async def _run_analysis(job_id: str) -> None:
-    """Analyze-first phase 1: transcribe → edit brief → stop at 'brief_ready' (no EDL
-    or render yet). ALWAYS leaves the job terminal-or-brief_ready."""
+async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> list[dict]:
+    """UX-B1a: the shared middle of both analyze paths — transcribe (+ loudness +
+    dossier in ONE parallel gather, exactly as before) → reference patterns → edit
+    brief. Returns the transcript words. Transcription errors always propagate
+    (callers fail the job as today); brief errors propagate for the analyze-first
+    flow (brief_ready IS the product there) but with briefless_on_error=True the
+    one-tap pipeline proceeds with edit_brief=None instead — a briefless auto edit
+    still beats a dead job."""
     job = _clip_jobs[job_id]
+    # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
+    # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
+    # gain. transcribe raising propagates to the caller; probe never raises.
+    words, lufs, dossier = await asyncio.gather(
+        _transcribe_job(job_id),
+        audio_mod.probe_loudness(job.get("source_url") or ""),
+        _dossier_job(job_id))
+    job["loudness_lufs"] = lufs
+    job["dossier"] = dossier
+    job["status"] = "analyzing"
+    for c in job["clips"]:
+        c["status"] = "analyzing"
+    await _resolve_reference_patterns(job)   # P2.3: measure the reference reel (cached)
+    transcript_text = " ".join(w.get("word", "") for w in words)
     try:
-        # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
-        # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
-        # gain. transcribe raising propagates to the handler below; probe never raises.
-        words, lufs, dossier = await asyncio.gather(
-            _transcribe_job(job_id),
-            audio_mod.probe_loudness(job.get("source_url") or ""),
-            _dossier_job(job_id))
-        job["loudness_lufs"] = lufs
-        job["dossier"] = dossier
-        job["status"] = "analyzing"
-        for c in job["clips"]:
-            c["status"] = "analyzing"
-        await _resolve_reference_patterns(job)   # P2.3: measure the reference reel (cached)
-        transcript_text = " ".join(w.get("word", "") for w in words)
         brief = await _generate_edit_brief(words, transcript_text,
                                            job.get("custom_instructions", ""), job.get("brand") or {},
                                            edit_format=job.get("edit_format", ""),
@@ -3010,6 +3071,20 @@ async def _run_analysis(job_id: str) -> None:
                                            dossier=job.get("dossier"))
         total_f = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=0))
         job["edit_brief"] = _resolve_strategy(brief, total_f)
+    except Exception as e:
+        if not briefless_on_error:
+            raise
+        logging.warning("auto pipeline: brief failed (%s) — proceeding briefless", e)
+        job["edit_brief"] = None
+    return words
+
+
+async def _run_analysis(job_id: str) -> None:
+    """Analyze-first phase 1: transcribe → edit brief → stop at 'brief_ready' (no EDL
+    or render yet). ALWAYS leaves the job terminal-or-brief_ready."""
+    job = _clip_jobs[job_id]
+    try:
+        await _analyze_to_brief(job_id)
         job["status"] = "brief_ready"
     except PipelineError as e:
         _fail_job(job, e.code, e.detail, e.stage)
@@ -3017,6 +3092,29 @@ async def _run_analysis(job_id: str) -> None:
         _fail_job(job, "internal_error", str(e))
     finally:
         _spawn(_persist_clip_job(job_id))
+
+
+async def _run_auto_pipeline(job_id: str) -> None:
+    """UX-B1a one-tap submit: the analyze-first pipeline WITHOUT the brief_ready stop —
+    transcribe → brief (briefless on failure) → confirm defaults auto-applied → edit →
+    render. Clip ids were minted at create and already returned to the client, so the
+    confirm mutation runs with reset_clips=False. Always leaves the job terminal."""
+    job = _clip_jobs[job_id]
+    try:
+        await _analyze_to_brief(job_id, briefless_on_error=True)
+    except PipelineError as e:
+        _fail_job(job, e.code, e.detail, e.stage)
+        _spawn(_persist_clip_job(job_id))
+        return
+    except Exception as e:
+        _fail_job(job, "internal_error", str(e))
+        _spawn(_persist_clip_job(job_id))
+        return
+    # Toggles: client-explicit (stored at create) → edit-format defaults → brief
+    # heuristics — the same ladder confirm uses, via the same helper.
+    _apply_confirm_to_job(job, toggles=job.get("toggles"), reset_clips=False)
+    _spawn(_persist_clip_job(job_id))
+    await _run_edit(job_id, job.get("words") or [])
 
 
 async def _run_pipeline(job_id: str):
