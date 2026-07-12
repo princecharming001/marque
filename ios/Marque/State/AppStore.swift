@@ -178,8 +178,31 @@ final class AppStore {
 
     /// Stable per-user tag Post for Me stores against the linked account so we can find it
     /// again. One account per (user, platform); relinking the same platform replaces it.
-    func socialExternalId(platform: String) -> String {
-        "\(auth.state?.userId ?? "anon")_\(platform)"
+    // Post for Me requires the external_id to be UNIQUE PER ACCOUNT. Deriving it as
+    // "\(userId)_\(platform)" collapsed every PRE-AUTH connect (the connect-first
+    // onboarding step, where auth.state is nil) to the shared literal "anon_instagram",
+    // so two separate Yunicorn accounts — or the same IG connected to two accounts —
+    // collided ("External Id already exists"). Fix: a fresh unique tag per connect
+    // ATTEMPT, stable for the auth-url → poll pair; the resulting spc_ account id is
+    // what we persist + publish with, so the tag only needs to survive one attempt.
+    private var pendingConnectExternalId: [String: String] = [:]
+
+    /// Begin a connect attempt: mint + stash the tag both the auth-url and the follow-up
+    /// poll will use. Signed in → stable per-account tag; pre-auth → unique per attempt so
+    /// two onboarding accounts can never share one tag.
+    private func beginConnectSession(platform: String) -> String {
+        let ext: String
+        if let uid = auth.state?.userId, !uid.isEmpty {
+            ext = "\(uid)_\(platform)"
+        } else {
+            ext = "anon-\(UUID().uuidString.prefix(12).lowercased())_\(platform)"
+        }
+        pendingConnectExternalId[platform] = ext
+        return ext
+    }
+
+    private func connectExternalId(platform: String) -> String {
+        pendingConnectExternalId[platform] ?? beginConnectSession(platform: platform)
     }
 
     /// The Post for Me account ids to publish `platforms` to (OAuth-linked accounts only).
@@ -194,7 +217,7 @@ final class AppStore {
     /// its own fixed success page, so we confirm the link by polling instead of a callback.
     func socialAuthURL(platform: String) async -> URL? {
         let s = await backend.socialAuthURL(platform: platform,
-                                            externalId: socialExternalId(platform: platform),
+                                            externalId: beginConnectSession(platform: platform),
                                             redirectURL: "")
         return s.flatMap(URL.init(string:))
     }
@@ -205,7 +228,7 @@ final class AppStore {
     @discardableResult
     func refreshLinkedAccount(platform: String, retries: Int = 4) async -> Bool {
         for attempt in 0..<max(1, retries) {
-            let linked = await backend.socialAccounts(externalId: socialExternalId(platform: platform))
+            let linked = await backend.socialAccounts(externalId: connectExternalId(platform: platform))
             if var acct = linked.first(where: { $0.platform == platform && $0.canPublish }) {
                 // Post for Me returns username + photo but no follower/bio — enrich from the
                 // public profile for display + voice learning, keeping the spc_ accountId.
@@ -217,6 +240,7 @@ final class AppStore {
                     if acct.displayName.isEmpty { acct.displayName = preview.displayName }
                 }
                 addConnectedAccount(acct)
+                pendingConnectExternalId[platform] = nil   // attempt done; next connect mints fresh
                 return true
             }
             if attempt < retries - 1 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
