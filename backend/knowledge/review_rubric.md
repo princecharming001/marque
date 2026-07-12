@@ -28,3 +28,10 @@ the self-review loop (SELF_REVIEW) and the eval scorecard judge both use this ru
 
 `{score_0_100, issues: [{code, frame, fix_op}]}` where `fix_op` is drawn from the tweak-envelope
 op set so it can be applied via `apply_edl_ops` before one final render.
+
+## v2 additions
+
+7. **Transition restraint**: ≤2–3 styled transitions per 30s, ≥90f apart, none mid-thought.
+   Fail → `transition_spam`.
+8. **Sound discipline**: SFX within budget (3–5/30s talking-head), first sound ≤1.5s,
+   no SFX over load-bearing words, beat-timed cuts when music present. Fail → `sound_design`.

@@ -55,3 +55,34 @@ def test_edit_brief_prompt_embeds_kb_block():
     assert "EDITING KNOWLEDGE BASE" in system
     # brief call pulls retention + hooks
     assert "retention" in system.lower() and "hook" in system.lower()
+
+
+# --- UX-E2/E3: KB v2 routing + budgets ------------------------------------------
+
+def test_kb_v2_version():
+    kb._read.cache_clear(); kb.knowledge_version.cache_clear()
+    assert kb.knowledge_version() == "kb-2026.08"
+
+
+def test_edit_plan_digest_routes_playbook_and_transitions():
+    for style, key in kb._STYLE_TO_FORMAT.items():
+        d = kb.digest(style, "entertainment", "edit_plan")
+        assert f"FORMAT PLAYBOOK ({key})" in d, f"{style} missing its playbook"
+    assert "transition" in kb.digest("talking_head", "", "edit_plan").lower()
+
+
+def test_brief_digest_routes_hook_visual():
+    d = kb.digest("talking_head", "", "brief")
+    assert "hook" in d.lower() and "Frame 1" in d
+
+
+def test_review_digest_routes_sound_design():
+    d = kb.digest("talking_head", "", "review")
+    assert "SFX" in d and "rubric" in d.lower()
+
+
+def test_v2_token_budgets_hold_all_calls():
+    for call in ("brief", "edit_plan", "review"):
+        for style in kb._STYLE_TO_FORMAT:
+            d = kb.digest(style, "education", call)
+            assert len(d) // 4 <= kb._MAX_TOKENS + 50, f"{call}/{style} over budget"

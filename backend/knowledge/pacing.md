@@ -38,3 +38,9 @@ Cut cadence should track the dossier `delivery_curve`, not a fixed metronome:
 - Trim any inter-word gap > 350ms (talking_head/vlog) or > 80ms (fast_cuts/faceless beat seams).
 - No single static frame held > 3s without motion (see retention.md — motion floor).
 - Loop-friendly ending: trim trailing dead-air to ≤ 10 frames so the last frame cuts clean to the first.
+
+## Cut grammar (v2)
+
+- Prefer INVISIBLE edits: cut on action (2–4 frames after movement starts) and J/L split
+  edits (~8–14 frame overlaps) before any styled transition — see transitions.md.
+- When music is present, cuts land ON the beat; half-beat only in double-time sections.
