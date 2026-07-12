@@ -264,10 +264,33 @@ struct RecordView: View {
                         if liveScript.style == VideoStyle.duetSplit.rawValue {
                             reactSourceField
                         }
+                        // UX-B1b: the recorded screen is now the SINGLE context screen —
+                        // toggles + instructions live here (moved from the brief screen)
+                        // so submit goes straight to the render with no approve stop.
+                        VStack(spacing: Space.xs) {
+                            if briefCapability("broll") {
+                                briefToggleRow("B-roll cutaways", isOn: $briefToggles.broll)
+                            }
+                            if briefCapability("punch_ins") {
+                                briefToggleRow("Punch-ins for emphasis", isOn: $briefToggles.punchIns)
+                            }
+                            briefToggleRow("Background music", isOn: $briefToggles.music)
+                        }
+                        TextField("Anything specific? (optional)", text: $customInstructions, axis: .vertical)
+                            .font(AppFont.callout).foregroundStyle(.white)
+                            .lineLimit(1...3)
+                            .padding(Space.md)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .accessibilityIdentifier("record.customInstructions")
                     }
                 }
                 .frame(maxHeight: 560)
-                .task(id: editFormat) { await loadExamples() }
+                .task(id: editFormat) {
+                    briefToggles = editFormat.defaultToggles     // UX-B1b: reseed per treatment
+                    await loadExamples()
+                }
+                .task { await loadCapabilities() }
                 HStack(spacing: Space.lg) {
                     Button { reRecord() } label: {
                         Label("Re-record", systemImage: "arrow.counterclockwise")
@@ -357,13 +380,9 @@ struct RecordView: View {
                     briefToggleRow("Background music", isOn: $briefToggles.music)
                 }
 
-                TextField("Anything specific? (optional)", text: $customInstructions, axis: .vertical)
-                    .font(AppFont.callout).foregroundStyle(.white)
-                    .lineLimit(1...3)
-                    .padding(Space.md)
-                    .background(Color.white.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                    .accessibilityIdentifier("record.customInstructions")
+                // UX-B1b: the customInstructions TextField moved to the recorded
+                // (single-context) screen; anything typed there still flows through
+                // this fallback path's confirm call.
             }
         }
         .frame(maxHeight: 320)
@@ -697,11 +716,29 @@ struct RecordView: View {
                     customInstructions: customInstructions,
                     reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                     editFormat: editFormat.rawValue,
-                    referenceReel: referenceReel) else {
+                    referenceReel: referenceReel,
+                    autoConfirm: true,                        // UX-B1b: one-tap submit
+                    toggles: briefToggles) else {
                 await fallbackToMock()
                 return
             }
             analyzeJobId = resp.jobId
+            // UX-B1b: a clips array in the create response = the new one-tap backend —
+            // the pipeline is already running; track the clips and go straight to the
+            // Library (no approve stop). Streak/celebration ride trackSubmittedClips.
+            if let stubs = resp.clips, !stubs.isEmpty {
+                guard !Task.isCancelled else { return }
+                if briefToggles.broll { store.primeBrollCorpus() }
+                store.trackSubmittedClips(jobId: resp.jobId, script: liveScript,
+                                          footagePath: footagePath,
+                                          stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") })
+                dismiss()
+                router.selectedTab = .library
+                router.showFilm = false
+                return
+            }
+            // Old backend (no clips in the response) → the existing analyze/brief
+            // approve flow, fully intact.
             if let b = resp.editBrief {                       // keyless: brief is immediate
                 brief = b
                 briefToggles = resp.toggles ?? EditToggles()

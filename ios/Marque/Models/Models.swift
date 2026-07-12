@@ -328,6 +328,19 @@ enum EditFormat: String, CaseIterable, Codable, Identifiable {
         default: return .talkingHead
         }
     }
+
+    /// UX-B1b: this treatment's default toggles — MIRRORS backend
+    /// prompts.EDIT_FORMATS[*]["toggles"] exactly (the server re-derives the same
+    /// defaults when the client omits toggles, so drift here would only ever show
+    /// a misleading pre-submit state, never change the edit).
+    var defaultToggles: EditToggles {
+        switch self {
+        case .talkingHead:      return EditToggles(broll: false, punchIns: true,  music: false)
+        case .talkingHeadBroll: return EditToggles(broll: true,  punchIns: true,  music: false)
+        case .recapMusic:       return EditToggles(broll: false, punchIns: false, music: true)
+        case .recapVoiceover:   return EditToggles(broll: false, punchIns: false, music: false)
+        }
+    }
 }
 
 struct Script: Codable, Hashable, Identifiable {
@@ -956,6 +969,9 @@ struct EditToggles: Codable, Hashable {
     enum CodingKeys: String, CodingKey { case broll, punchIns = "punch_ins", music }
 
     init() {}
+    init(broll: Bool, punchIns: Bool, music: Bool) {
+        self.broll = broll; self.punchIns = punchIns; self.music = music
+    }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         broll = (try? c.decodeIfPresent(Bool.self, forKey: .broll)) ?? false
@@ -966,15 +982,32 @@ struct EditToggles: Codable, Hashable {
 
 /// Decoded response for the analyze-first pair (POST /v1/clips + GET /v1/clips/{id}).
 struct AnalyzeJobResponse: Codable {
+    /// UX-B1b: a clip in an auto_confirm create response — enough to track + poll.
+    struct ClipStub: Codable {
+        var clipId: String = ""
+        var format: String = ""
+        var status: String = ""
+        enum CodingKeys: String, CodingKey { case clipId = "clip_id", format, status }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            clipId = (try? c.decodeIfPresent(String.self, forKey: .clipId)) ?? ""
+            format = (try? c.decodeIfPresent(String.self, forKey: .format)) ?? ""
+            status = (try? c.decodeIfPresent(String.self, forKey: .status)) ?? ""
+        }
+    }
+
     var jobId: String = ""
     var status: String = ""
     var mode: String = "mock"
     var editBrief: EditBrief? = nil
     var toggles: EditToggles? = nil
     var error: String? = nil
+    // UX-B1b: present ONLY on auto_confirm responses (old backends omit it — the
+    // client then falls back to the brief flow).
+    var clips: [ClipStub]? = nil
 
     enum CodingKeys: String, CodingKey {
-        case jobId = "job_id", status, mode, editBrief = "edit_brief", toggles, error
+        case jobId = "job_id", status, mode, editBrief = "edit_brief", toggles, error, clips
     }
 
     init() {}
@@ -986,5 +1019,6 @@ struct AnalyzeJobResponse: Codable {
         editBrief = try? c.decodeIfPresent(EditBrief.self, forKey: .editBrief)
         toggles = try? c.decodeIfPresent(EditToggles.self, forKey: .toggles)
         error = try? c.decodeIfPresent(String.self, forKey: .error)
+        clips = try? c.decodeIfPresent([ClipStub].self, forKey: .clips)
     }
 }

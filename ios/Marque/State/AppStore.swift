@@ -595,13 +595,17 @@ final class AppStore {
                          customInstructions: String = "",
                          reactSourceURL: String = "",
                          editFormat: String = "",
-                         referenceReel: ReelItem? = nil) async -> AnalyzeJobResponse? {
+                         referenceReel: ReelItem? = nil,
+                         autoConfirm: Bool = false,
+                         toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
         return await backend.createAnalyzeJob(sourceURL: publicURL, script: script,
                                               customInstructions: customInstructions,
                                               reactSourceURL: reactSourceURL,
                                               editFormat: editFormat,
-                                              referenceReel: referenceReel)
+                                              referenceReel: referenceReel,
+                                              autoConfirm: autoConfirm,
+                                              toggles: toggles)
     }
 
     /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min
@@ -631,16 +635,28 @@ final class AppStore {
             await makeClips(from: script, formats: [script.formatId], footagePath: footagePath)
             return
         }
-        let tagged = clipDicts.map { d -> Clip in
-            let clipId = UUID(uuidString: d["clip_id"] as? String ?? "") ?? UUID()
-            let formatId = d["format"] as? String ?? script.formatId
-            let ready = (d["status"] as? String) == "ready"
+        trackSubmittedClips(jobId: jobId, script: script, footagePath: footagePath,
+                            stubs: clipDicts.map { d in
+                                (id: d["clip_id"] as? String ?? "",
+                                 format: d["format"] as? String ?? "",
+                                 ready: (d["status"] as? String) == "ready")
+                            })
+    }
+
+    /// UX-B1b: the shared "clips are now in flight" tail — insert tracked clips, poll
+    /// the job, streak + celebration. Factored from confirmClips so the one-tap submit
+    /// (auto_confirm create response) lands clips through the exact same path.
+    func trackSubmittedClips(jobId: String, script: Script, footagePath: String?,
+                             stubs: [(id: String, format: String, ready: Bool)]) {
+        let tagged = stubs.map { stub -> Clip in
+            let clipId = UUID(uuidString: stub.id) ?? UUID()
+            let formatId = stub.format.isEmpty ? script.formatId : stub.format
             var c = Clip(id: clipId, scriptId: script.id, formatId: formatId,
                          formatName: Catalog.format(formatId).name,
                          title: script.title.isEmpty ? script.hook.text : script.title,
                          caption: script.cta,
                          predictedScore: script.predictedScore,
-                         status: ready ? .ready : .rendering,
+                         status: stub.ready ? .ready : .rendering,
                          seconds: Catalog.format(formatId).targetSeconds,
                          jobId: jobId)
             c.localVideoPath = footagePath
