@@ -684,6 +684,10 @@ struct ReelItem: Codable, Hashable, Identifiable {
     var style: String = "talking_head"
     var fromWatched: Bool = false
     var transcribed: Bool = false   // real spoken transcript vs caption fallback
+    // UX-A3 (all optional-with-default → Snapshot/decode-safe both directions):
+    var editFormat: String = ""     // the edit TREATMENT this reel matches (EDIT_FORMATS key)
+    var whyMatch: String = ""       // human "why this matches the treatment" line
+    var sample: Bool = false        // true = curated exemplar, not a live scraped reel
 }
 
 enum SavedScriptSource: String, Codable {

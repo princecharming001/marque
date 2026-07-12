@@ -621,6 +621,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let views: Int?; let likes: Int?; let why_trending: String?
         let format_id: String?; let style: String?; let from_watched: Bool?
         let transcribed: Bool?      // true = real spoken transcript, false = caption fallback
+        // UX-A3: optional — absent on old backends, decode stays safe.
+        let edit_format: String?; let why_match: String?; let sample: Bool?
     }
     private struct TrendDTO: Decodable { let title: String; let why: String; let formatId: String? }
     private struct FeedItemDTO: Decodable {
@@ -638,7 +640,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                  thumbnailURL: d.thumbnail_url ?? "", videoURL: d.video_url ?? "",
                  views: d.views ?? 0, likes: d.likes ?? 0, whyTrending: d.why_trending ?? "",
                  formatId: d.format_id ?? "myth-buster", style: d.style ?? "talking_head",
-                 fromWatched: d.from_watched ?? false, transcribed: d.transcribed ?? false)
+                 fromWatched: d.from_watched ?? false, transcribed: d.transcribed ?? false,
+                 editFormat: d.edit_format ?? "", whyMatch: d.why_match ?? "",
+                 sample: d.sample ?? false)
     }
 
     private func watchedParam(_ brand: BrandGraph) -> String {

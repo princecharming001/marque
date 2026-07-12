@@ -339,45 +339,5 @@ struct ReelDetailSheet: View {
     }
 }
 
-// W2-4: an AVPlayer wrapper that reports playback failure (a 403/expired scraped CDN URL)
-// so the caller can fall back to the hook panel instead of showing a dead black player.
-private struct FailableVideoPlayer: UIViewControllerRepresentable {
-    let url: URL
-    let onFailure: () -> Void
-
-    func makeCoordinator() -> Coordinator { Coordinator(onFailure: onFailure) }
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let item = AVPlayerItem(url: url)
-        let player = AVPlayer(playerItem: item)
-        context.coordinator.observe(item, player: player)
-        let vc = AVPlayerViewController()
-        vc.player = player
-        vc.videoGravity = .resizeAspectFill      // fill the 9:16 frame, no letterbox bars
-        player.play()                            // autoplay — no tap-to-start
-        return vc
-    }
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {}
-
-    final class Coordinator: NSObject {
-        let onFailure: () -> Void
-        private var obs: NSKeyValueObservation?
-        private var loop: NSObjectProtocol?
-        private weak var player: AVPlayer?
-        init(onFailure: @escaping () -> Void) { self.onFailure = onFailure }
-        func observe(_ item: AVPlayerItem, player: AVPlayer) {
-            self.player = player
-            obs = item.observe(\.status) { [weak self] it, _ in
-                if it.status == .failed { DispatchQueue.main.async { self?.onFailure() } }
-            }
-            // Loop like the platforms do — a reel that ends and sits on a black
-            // frame reads as broken.
-            loop = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
-                    self?.player?.seek(to: .zero)
-                    self?.player?.play()
-                }
-        }
-        deinit { if let loop { NotificationCenter.default.removeObserver(loop) } }
-    }
-}
+// UX-A3: FailableVideoPlayer moved to DesignSystem/FailableVideoPlayer.swift
+// (shared with the mimic cards; identical behavior, + muted/showsControls params).
