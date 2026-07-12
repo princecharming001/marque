@@ -358,6 +358,9 @@ struct Script: Codable, Hashable, Identifiable {
     var targetSeconds: Int
     var predictedScore: Int
     var approved: Bool = false
+    // UX-G2: WHY the feed picked this (the bandit arm's honest reason / pillar line).
+    // Optional-with-default → Snapshot-safe both directions.
+    var whyPicked: String = ""
     var createdAt: Date = Date()
 }
 

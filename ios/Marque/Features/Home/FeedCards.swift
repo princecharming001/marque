@@ -49,6 +49,13 @@ struct ScriptFeedCard: View {
                 .font(AppFont.serifM).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            // UX-G2: WHY this pick is here — the bandit's honest reason, micro type.
+            if !script.whyPicked.isEmpty {
+                Text(script.whyPicked)
+                    .font(AppFont.micro).tracking(0.2)
+                    .foregroundStyle(Palette.textTertiary)
+                    .lineLimit(2)
+            }
             Spacer(minLength: 0)
             HStack(spacing: Space.sm) {
                 Button(action: onFilm) {
