@@ -73,3 +73,53 @@ def test_suggest_pipeline_filters_and_persists(monkeypatch):
     assert len(briefs) == 2                                   # #2 filtered out
     assert len(store.upserts) == 2
     assert {b["title"] for b in briefs} == {"Chess idea 0", "Chess idea 2"}
+
+
+# --- spitfire chain + parser ---------------------------------------------------
+
+_BLOCK = "<OPEN>\nTITLE: {t}\nSUMMARY: s{t}\nBEGINNING: b{t}\nMIDDLE: m{t}\nEND: e{t}\n<CLOSE>"
+
+
+def test_parse_thinking_output_legacy_and_new():
+    legacy = ideas.parse_thinking_output(_BLOCK.format(t="A"))
+    assert legacy["title"] == "A" and legacy["beginning"] == "bA" and legacy["ending"] == "eA"
+    new = ideas.parse_thinking_output("<OPEN>\nTITLE: X\nCONTENT: hello world\n<CLOSE>")
+    assert new["title"] == "X" and new["content"] == "hello world"
+    assert ideas.parse_thinking_output("no tags here") is None
+    assert ideas.parse_thinking_output("<CLOSE>garbage<OPEN>") is None   # inverted
+
+
+def test_parse_all_and_ranking():
+    text = _BLOCK.format(t="A") + "\n" + _BLOCK.format(t="B") + "\n" + _BLOCK.format(t="C")
+    cands = ideas.parse_all(text)
+    assert [c["title"] for c in cands] == ["A", "B", "C"]
+    assert ideas._parse_ranking("[3] > [1] > [2]", 3) == [2, 0, 1]
+    assert ideas._parse_ranking("garbage", 3) == [0, 1, 2]              # identity fallback
+    assert ideas._parse_ranking("[2]", 3) == [1, 0, 2]                  # missing appended
+
+
+def test_spitfire_keyless_returns_mock_briefs():
+    briefs = _run(ideas.spitfire(None, "c1", BRAND))
+    assert len(briefs) == 3 and all(b["source"] == "spitfire" for b in briefs)
+
+
+def test_spitfire_pipeline_ranks_and_budgets(monkeypatch):
+    calls = {"n": 0}
+    three = _BLOCK.format(t="A") + _BLOCK.format(t="B") + _BLOCK.format(t="C")
+
+    async def fake_cached(system, user, model, max_tokens=0, temperature=None):
+        calls["n"] += 1
+        if "ideation engine" in system:
+            return three                                   # generator
+        if "Critique each candidate" in system:
+            return "crit"
+        if "Rewrite the idea" in system:
+            return three                                   # editor (same 3 blocks)
+        if "Rank the ideas" in system:
+            return "[2] > [3] > [1]"                        # -> B, C, A
+        return None
+    monkeypatch.setattr(ideas, "anthropic_cached", fake_cached)
+
+    briefs = _run(ideas.spitfire(FakeStore(), "c1", BRAND))
+    assert [b["title"] for b in briefs] == ["B", "C", "A"]
+    assert calls["n"] == 4                                  # ideate chain budget <= 4
