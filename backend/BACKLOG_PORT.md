@@ -32,7 +32,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] tests: reconcile golden, ledger, drop-insight, flag/keyless guards (test_palo_memory.py 9 green; +4 port_eval golden)
 
 ## Phase 2 — idea bank / reel suggestions  (flag: IDEA_BANK)
-- [ ] `app/ideas.py` — onboarding idea prompts + IdeaSet + HAIKU eval gate → `briefs`
+- [x] `app/ideas.py` — onboarding idea prompts (verbatim) + IdeaSet + HAIKU eval gate → `briefs`; keyless mock + eval pass-through; flag IDEA_BANK (test_palo_ideas.py 6 green; +2 port_eval; full suite 875)
 - [ ] spitfire Generator→Critic→Editor→Ranker (Anthropic-only) + `parse_thinking_output`
 - [ ] `_spawn()` on dossier/scan events + `/internal/cron/ideate` route (tier cadence)
 - [ ] feed integration: pulse judge + ideate-rank into `/v1/feed`
