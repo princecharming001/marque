@@ -198,3 +198,76 @@ async def scan_and_write(store, creator_id: str, snapshot: dict,
     cards for delivery."""
     events = await deterministic_events(store, creator_id, snapshot)
     return await write_insights(store, creator_id, events, brand)
+
+
+# --- delivery + settle bridge + cron (box 4) ----------------------------------
+async def deliver_insights(store, creator_id: str, new_cards: list[dict]) -> int:
+    """APNs-push each new card (deeplink + seed opens chat pre-seeded — the insight→
+    converse bridge) and mark it delivered. Keyless push (no APNs) still marks the card
+    delivered so the in-app feed shows it. Returns #pushes accepted."""
+    if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS) or store is None:
+        return 0
+    from app import push
+    sent = 0
+    for card in new_cards:
+        try:
+            n = await push.send_insight(creator_id, card.get("title", ""),
+                                        card.get("description", ""), card.get("id", ""),
+                                        card.get("conversation_seed"))
+            sent += n
+            await store.mark_insight_delivered(card.get("id"))
+        except Exception as e:
+            logging.warning("[track_insights] deliver failed: %s", e)
+    return sent
+
+
+def _snapshot_from_metrics(rows: list[dict]) -> dict:
+    """Aggregate metrics_ts rows into a scan snapshot: latest views per post + prior
+    reads as history, channel average, totals. Pure (rows are captured_at-asc)."""
+    posts: dict[str, list[float]] = {}
+    followers = 0.0
+    for r in rows:
+        if r.get("metric") != "views":
+            continue
+        if r.get("entity_type") == "account":
+            followers = float(r.get("value", 0))
+            continue
+        posts.setdefault(str(r.get("entity_id")), []).append(float(r.get("value", 0)))
+    videos = [{"id": pid, "views": vals[-1], "history": vals[:-1]}
+              for pid, vals in posts.items() if vals]
+    latest = [v["views"] for v in videos]
+    channel_avg = sum(latest) / len(latest) if latest else 0.0
+    return {"total_views": sum(latest), "followers": followers,
+            "channel_avg": channel_avg, "videos": videos}
+
+
+def settle_candidates(rows: list[dict], channel_avg: float) -> list[tuple[str, float]]:
+    """Bridge metrics → bandit outcome_y: latest views per post normalized to [0,1]
+    against 2× channel average. Feeds the existing settle path. Pure."""
+    snap = _snapshot_from_metrics(rows)
+    avg = channel_avg or snap["channel_avg"]
+    out = []
+    for v in snap["videos"]:
+        y = 0.5 if avg <= 0 else max(0.0, min(1.0, v["views"] / (2.0 * avg)))
+        out.append((v["id"], round(y, 4)))
+    return out
+
+
+async def run_insights_cron(store, now_epoch: float) -> int:
+    """Full sweep: poll metrics → build snapshot → detect + write cards → deliver. Returns
+    total pushes delivered across the fleet. Flag-gated + keyless no-op."""
+    if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS) or store is None:
+        return 0
+    from app import metrics_pollers, tiers
+    delivered = 0
+    for c in await store.load_all_creators():
+        cid = c.get("creator_id")
+        if not cid:
+            continue
+        tier = await tiers.tier_for(cid, store)
+        await metrics_pollers.poll_creator(store, cid, tier, c.get("handle", ""))
+        snapshot = _snapshot_from_metrics(await store.load_metrics(cid))
+        brand = {"niche": c.get("niche", "")}
+        cards = await scan_and_write(store, cid, snapshot, brand)
+        delivered += await deliver_insights(store, cid, cards)
+    return delivered

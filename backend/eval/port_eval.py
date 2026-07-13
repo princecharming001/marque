@@ -88,6 +88,11 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("insight.dedup", _ti._dedup_hash("c1", _e) == _ti._dedup_hash("c1", _e)
                 and _ti._dedup_hash("c1", _e) != _ti._dedup_hash("c2", _e)))
     out.append(("insight.card", "100,000 views" in _ti._template_card(_e)["title"]))
+    _rows = [{"entity_type": "post", "entity_id": "p1", "metric": "views", "value": 100},
+             {"entity_type": "post", "entity_id": "p1", "metric": "views", "value": 900}]
+    out.append(("insight.snapshot", _ti._snapshot_from_metrics(_rows)["videos"][0]["history"] == [100]))
+    out.append(("insight.settle", _ti.settle_candidates(
+        [{"entity_type": "post", "entity_id": "p1", "metric": "views", "value": 1000}], 500) == [("p1", 1.0)]))
 
     return out
 

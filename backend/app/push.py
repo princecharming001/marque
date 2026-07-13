@@ -163,3 +163,33 @@ async def send_clips_ready(creator_id: str, clip_id: str, count: int = 1) -> int
         else:
             log.warning("apns: %s → %s %s", row["token"][:8], status, text[:120])
     return sent
+
+
+async def send_insight(creator_id: str, title: str, body: str, insight_id: str = "",
+                       seed: dict | None = None) -> int:
+    """Palo port: a proactive insight push. The deeplink + seed open the chat pre-seeded
+    from the tapped insight (the insight→converse bridge). Keyless / no tokens → 0."""
+    if not PUSH_CONFIGURED or not creator_id:
+        return 0
+    jwt_token = _provider_jwt()
+    if not jwt_token:
+        return 0
+    payload = {
+        "aps": {"alert": {"title": title[:120], "body": body[:180]},
+                "sound": "default", "thread-id": "insights", "category": "insight"},
+        "deeplink": f"marque://chat?insight={insight_id}",
+        "insight_id": insight_id, "seed": seed or {},
+    }
+    sent = 0
+    for row in await tokens_for(creator_id):
+        host = _HOSTS.get(row.get("environment", "sandbox"), _HOSTS["sandbox"])
+        try:
+            status, text = await _post_apns(host, row["token"], payload, jwt_token)
+        except Exception as e:
+            log.warning("apns insight: send failed (%s)", e)
+            continue
+        if status == 200:
+            sent += 1
+        elif status == 410 or (status == 400 and "BadDeviceToken" in text):
+            await _disable(row["token"], row.get("environment", "sandbox"))
+    return sent
