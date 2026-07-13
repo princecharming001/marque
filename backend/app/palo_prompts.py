@@ -151,3 +151,57 @@ def idea_eval_prompt(creator_topic: str, creator_format: str, ideas: list[dict])
               .replace("{creator_format}", creator_format or "unknown")
               .replace("{generated_ideas}", ideas_text))
     return system, "Evaluate each idea."
+
+
+# --- spitfire overnight-ideate chain (overnight_ideate/components/prompts.py) --
+# Generator -> Critic -> Editor -> Ranker, each in Palo's exact <OPEN>…<CLOSE> block
+# format so parse_thinking_output can read it back. Title <35, summary <100 chars.
+_SPITFIRE_FORMAT = """CRITICAL: use this EXACT format per idea, precise spacing/newlines:
+<OPEN>
+TITLE: X
+SUMMARY: Y
+BEGINNING: A
+MIDDLE: B
+END: C
+<CLOSE>"""
+
+
+def spitfire_generator_prompt(channel_analysis: str, exemplar: str, n: int = 3) -> tuple[str, str]:
+    system = (f"You are a viral short-form ideation engine. Using the channel's own "
+              f"analysis and one of its popular videos as a structural template, produce "
+              f"{n} distinct viral-ready ideas that adapt what already works for THIS "
+              f"channel. Each: a short attention-grabbing TITLE (<35 chars) aligned with "
+              f"the channel's successful titles; a SUMMARY (<100 chars) conveying the core "
+              f"hook; then a beginning/middle/end that create an open loop, escalate, and "
+              f"pay off decisively. No em dashes.\n\n"
+              f"<channel_analysis>{channel_analysis or '(none)'}</channel_analysis>\n"
+              f"<popular_video>{exemplar or '(none)'}</popular_video>\n\n{_SPITFIRE_FORMAT}")
+    return system, f"Generate {n} ideas, each in its own <OPEN>…<CLOSE> block."
+
+
+def spitfire_critic_prompt(candidates_text: str, channel_analysis: str) -> tuple[str, str]:
+    system = ("Critique each candidate idea on THREE axes, briefly: (1) AI-slop check — "
+              "is it generic/templated?; (2) virality — is the hook/tension/payoff real?; "
+              "(3) channel alignment — does it fit THIS channel's identity? Be specific and "
+              "terse; name the single biggest fix for each.\n\n"
+              f"<channel_analysis>{channel_analysis or '(none)'}</channel_analysis>\n"
+              f"<candidates>{candidates_text}</candidates>")
+    return system, "Critique each candidate."
+
+
+def spitfire_editor_prompt(candidate_text: str, critique: str, channel_analysis: str) -> tuple[str, str]:
+    system = ("Rewrite the idea to amplify its strengths and fix the critique's single "
+              "biggest issue. Keep the essence of the title. Do not blandify. Output the "
+              "SAME format.\n\n"
+              f"<channel_analysis>{channel_analysis or '(none)'}</channel_analysis>\n"
+              f"<idea>{candidate_text}</idea>\n<critique>{critique or '(none)'}</critique>\n\n"
+              f"{_SPITFIRE_FORMAT}")
+    return system, "Rewrite the idea in the exact format."
+
+
+def spitfire_ranker_prompt(candidates_text: str, channel_analysis: str, critiques: str) -> tuple[str, str]:
+    system = ("Rank the ideas best-to-worst for THIS channel by expected performance. "
+              "Output ONLY the ranking as indices, e.g. '[3] > [1] > [2]'. No prose.\n\n"
+              f"<channel_analysis>{channel_analysis or '(none)'}</channel_analysis>\n"
+              f"<candidates>{candidates_text}</candidates>\n<critiques>{critiques or '(none)'}</critiques>")
+    return system, "Output the ranking only."

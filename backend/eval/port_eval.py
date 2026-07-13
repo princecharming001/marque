@@ -61,6 +61,9 @@ def _checks() -> list[tuple[str, bool]]:
     _bf = ideas.to_briefs("c1", _mi)
     out.append(("ideas.briefs", len(_bf) == 3 and _bf[0]["score"] > _bf[2]["score"]
                 and len({b["id"] for b in _bf}) == 3))
+    _p = ideas.parse_thinking_output("<OPEN>\nTITLE: X\nSUMMARY: s\nBEGINNING: b\nMIDDLE: m\nEND: e\n<CLOSE>")
+    out.append(("ideas.parse", _p is not None and _p["title"] == "X" and _p["ending"] == "e"))
+    out.append(("ideas.rank", ideas._parse_ranking("[3] > [1] > [2]", 3) == [2, 0, 1]))
 
     return out
 
