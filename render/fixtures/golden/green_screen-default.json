@@ -1,0 +1,108 @@
+{
+  "id": "green_screen-default",
+  "sourceUrl": "__SOURCE__",
+  "formatId": "myth-buster",
+  "edl": {
+    "style": "green_screen",
+    "format_id": "myth-buster",
+    "clips": [
+      {
+        "src_in": 0,
+        "src_out": 150,
+        "speed": 1.0,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0
+      }
+    ],
+    "captions": [
+      {
+        "word": "hello",
+        "frame": 5,
+        "end_frame": 18
+      },
+      {
+        "word": "world",
+        "frame": 20,
+        "end_frame": 33
+      },
+      {
+        "word": "this",
+        "frame": 35,
+        "end_frame": 48
+      },
+      {
+        "word": "is",
+        "frame": 50,
+        "end_frame": 63
+      },
+      {
+        "word": "a",
+        "frame": 65,
+        "end_frame": 78
+      },
+      {
+        "word": "test",
+        "frame": 80,
+        "end_frame": 93
+      }
+    ],
+    "overlays": [
+      {
+        "type": "text_card",
+        "frame_in": 10,
+        "frame_out": 100,
+        "scale": 1.0,
+        "text": "Original post being reacted to",
+        "pos_x": 0.5,
+        "pos_y": 0.5,
+        "rotation": 0.0,
+        "color": null,
+        "bg": "none",
+        "font": "inter"
+      }
+    ],
+    "broll": [],
+    "react_source": null,
+    "react_schedule": [],
+    "layout": {
+      "style": "green_screen",
+      "panels": 1,
+      "panel_boundaries": [],
+      "split_fraction": 0.58
+    },
+    "caption_style": "clean",
+    "caption_options": {
+      "position": "bottom",
+      "size": "medium",
+      "pos_y": null,
+      "scale": null,
+      "accent": null,
+      "uppercase": false,
+      "font": "inter",
+      "grouping": "phrase",
+      "highlight_words": []
+    },
+    "transitions": [],
+    "look": {
+      "filter": null,
+      "intensity": 1.0,
+      "adjust": {
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "saturation": 0.0,
+        "temperature": 0.0,
+        "vignette": 0.0
+      }
+    },
+    "audio": {
+      "lufs_target": -14.0,
+      "gain": 0.0,
+      "music": null,
+      "volume_ranges": [],
+      "speech_frames": []
+    },
+    "total_frames": 150,
+    "schema_version": 1
+  }
+}
