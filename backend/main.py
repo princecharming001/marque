@@ -3436,7 +3436,40 @@ async def _run_pipeline(job_id: str):
     await _run_edit(job_id, words)
 
 
-EDL_AUTHOR = os.environ.get("EDL_AUTHOR", "legacy").lower()   # plan | legacy (P3.3 rollout flag)
+EDL_AUTHOR = os.environ.get("EDL_AUTHOR", "legacy").lower()   # plan | legacy | shadow (P3.3 rollout flag)
+
+
+async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str, script: dict,
+                           words: list[dict], prefs: dict, emphasis_spans: list | None) -> None:
+    """P6 de-risking gate for flipping EDL_AUTHOR's default to "plan": with
+    EDL_AUTHOR=shadow, the LEGACY author still ships (unchanged behavior) but
+    this ALSO authors the same take via the plan path (with the SAME job
+    context — brand/brief/dossier/custom_instructions/reference — so it's a
+    fair comparison, not the plan author working blind) and logs a structured
+    diff — real-traffic evidence gathered with zero user-facing risk. Always
+    fire-and-forget (_spawn) so a slow/failing shadow run can never add latency
+    or fail the real pipeline; every failure mode here is swallowed into a log
+    line, never raised."""
+    try:
+        plan_edl, llm_contributed = await _author_edl_via_plan(
+            job, style, script, words, prefs, emphasis_spans)
+        legacy_issues = check_edl_invariants(legacy_edl, words)
+        legacy_kept = _kept_frames(legacy_edl)
+        legacy_drops = len(legacy_edl.get("drops") or [])
+        if plan_edl is None:
+            logging.info("[shadow] job=%s plan_author_failed=true legacy_issues=%d legacy_kept=%d legacy_drops=%d",
+                        job_id, len(legacy_issues), legacy_kept, legacy_drops)
+            return
+        plan_issues = check_edl_invariants(plan_edl, words)
+        plan_kept = _kept_frames(plan_edl)
+        plan_drops = len(plan_edl.get("drops") or [])
+        logging.info(
+            "[shadow] job=%s llm_contributed=%s legacy_issues=%d plan_issues=%d "
+            "legacy_kept=%d plan_kept=%d legacy_drops=%d plan_drops=%d",
+            job_id, llm_contributed, len(legacy_issues), len(plan_issues),
+            legacy_kept, plan_kept, legacy_drops, plan_drops)
+    except Exception as e:
+        logging.info("[shadow] job=%s shadow_diff_failed=%s", job_id, str(e)[:200])
 
 
 async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[dict],
@@ -3636,17 +3669,33 @@ async def _run_edit(job_id: str, words: list[dict]):
             for c in job["clips"]:
                 c.setdefault("warnings", []).append(
                     "ai_edit_unavailable: used a safe default cut (full take, fillers stripped)")
+        # P6 de-risking: EDL_AUTHOR=shadow ships legacy (this branch already ran it)
+        # but also fires a fire-and-forget plan-author attempt + structured diff log,
+        # gathering real-traffic evidence before flipping the default. Zero effect on
+        # what ships; zero added latency (never awaited).
+        if EDL_AUTHOR == "shadow":
+            _spawn(_log_shadow_diff(job_id, job, copy.deepcopy(edl_data), style, script,
+                                    words, prefs, emphasis_spans))
         # Retention-editor upgrade: deterministic post-passes applied to WHATEVER EDL
         # either author path produced — so both the plan path and the legacy
         # direct-EDL author benefit identically. Flag-gated (RETENTION_PASSES env,
         # default off = today's behavior unchanged); every pass is individually
         # fail-soft (app/retention.py _safe_pass), so this can never turn a working
-        # pipeline run into a failure. hints={} until WS6 plumbs the plan author's
-        # typed decisions through — every pass has a style-driven default for that case.
+        # pipeline run into a failure.
+        # hints: until WS6 plumbs the plan author's own typed pacing/interrupt_density/
+        # hook_text/end_card decisions through, the only signal available to EITHER
+        # path is the edit brief's `pacing.energy` (already authored today, shared
+        # context for both author paths) — a low-energy/rambling brief lifts the
+        # global pace more (retention.PACING_LIFT_MULT["medium"]) than a naturally
+        # energetic one (every pass still has its own style-driven default when
+        # there's no brief at all, e.g. the safe-default path).
+        brief_pacing = (job.get("edit_brief") or {}).get("pacing") or {}
+        retention_hints = ({"pacing": {"lift": "medium" if brief_pacing.get("energy") == "low" else "subtle"}}
+                           if brief_pacing.get("energy") else {})
         trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
         edl_data = retention_mod.apply_retention_passes(
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
-            dossier=job.get("dossier"), hints={}, script=script, level=trim_level)
+            dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole

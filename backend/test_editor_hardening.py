@@ -221,6 +221,94 @@ def test_run_edit_calls_retention_passes_with_the_authored_edl(monkeypatch):
     assert calls[0]["hints"] == {}
 
 
+def test_run_edit_derives_pacing_lift_hint_from_the_brief(monkeypatch):
+    # WS0/WS7: until the plan author's own typed pacing decision exists (WS6),
+    # a low-energy edit brief is the one signal available to EITHER author path
+    # for a stronger-than-default pace lift.
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        monkeypatch.setattr(main, k, "x")
+    words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
+             for i, w in enumerate("one two three four".split())]
+    job_id = seed_clip_job(source_url="mock://x", words=words, status="editing", edl=None,
+                           clips=[{"clip_id": "c1", "format": "myth-buster", "status": "queued"}],
+                           edit_brief={"pacing": {"energy": "low", "read": "rambling"}})
+
+    async def no_llm(*a, **k):
+        raise main.HTTPException(status_code=502, detail="keyless")
+    monkeypatch.setattr(main, "anthropic", no_llm)
+
+    async def bridge(*args, timeout_s=None, **kwargs):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_): return None
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+
+    calls = []
+    real = main.retention_mod.apply_retention_passes
+    def spy(edl_data, w, **kwargs):
+        calls.append(kwargs)
+        return real(edl_data, w, **kwargs)
+    monkeypatch.setattr(main.retention_mod, "apply_retention_passes", spy)
+
+    asyncio.run(main._run_edit(job_id, words))
+    assert len(calls) == 1
+    assert calls[0]["hints"] == {"pacing": {"lift": "medium"}}
+
+
+def test_shadow_mode_fires_a_background_diff_without_shipping_it(monkeypatch):
+    # P6: EDL_AUTHOR=shadow must ship LEGACY unchanged while firing a fire-and-
+    # forget plan-author comparison. The spawned coroutine must never be awaited
+    # inline (no added latency) and must never raise even if the plan author path
+    # itself blows up.
+    monkeypatch.setattr(main, "EDL_AUTHOR", "shadow")
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        monkeypatch.setattr(main, k, "x")
+    words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
+             for i, w in enumerate("one two three four".split())]
+    job_id = seed_clip_job(source_url="mock://x", words=words, status="editing", edl=None,
+                           clips=[{"clip_id": "c1", "format": "myth-buster", "status": "queued"}])
+
+    async def no_llm(*a, **k):
+        raise main.HTTPException(status_code=502, detail="keyless")
+    monkeypatch.setattr(main, "anthropic", no_llm)
+
+    async def bridge(*args, timeout_s=None, **kwargs):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_): return None
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+
+    shadow_calls = []
+    real_log_shadow_diff = main._log_shadow_diff
+    async def spy_log_shadow_diff(*a, **k):
+        shadow_calls.append((a, k))
+        return await real_log_shadow_diff(*a, **k)
+    monkeypatch.setattr(main, "_log_shadow_diff", spy_log_shadow_diff)
+
+    asyncio.run(main._run_edit(job_id, words))
+    # legacy shipped normally (status reached ready) regardless of the shadow run
+    assert main._clip_jobs[job_id]["status"] == "ready"
+    assert len(shadow_calls) == 1   # the shadow-diff call fired exactly once, specifically
+
+
+def test_log_shadow_diff_never_raises_when_plan_author_fails(monkeypatch):
+    async def failing_plan_author(*a, **k):
+        raise RuntimeError("simulated plan-author crash")
+    monkeypatch.setattr(main, "_author_edl_via_plan", failing_plan_author)
+    job = {"brand": {}, "edit_brief": None, "dossier": None}
+    legacy_edl = {"style": "talking_head", "format_id": "x",
+                 "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"}}
+    # Must complete without raising — every failure mode is swallowed into a log line.
+    asyncio.run(main._log_shadow_diff("job1", job, legacy_edl, "talking_head",
+                                      {"formatId": "x"}, [], {}, []))
+
+
 def test_pipeline_broll_resolve_failure_is_a_warning_not_a_failure(monkeypatch):
     # B-05: a b-roll resolve blow-up must degrade to a warning, never fail the clip job.
     job_id = _renderable_job(monkeypatch)
