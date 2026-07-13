@@ -270,6 +270,31 @@ async def run_ideate_for(store, creator_id: str, brand: dict, tier: str,
         return 0
 
 
+async def brief_feed_items(store, creator_id: str, limit: int = 6,
+                           min_score: float = 0.0) -> list[dict]:
+    """Stored briefs as feed items, ranked by score (the ideate-rank) and gated by a
+    min-score threshold (pulse-judge-lite). Flag-gated + keyless => empty (the feed then
+    shows only its script items, unchanged)."""
+    if not palo_flags.enabled(palo_flags.IDEA_BANK) or store is None or not creator_id:
+        return []
+    briefs = await store.load_briefs(creator_id, status="new", limit=limit * 2)
+    items = [{"id": b.get("id"), "kind": "idea", "source": "idea_bank",
+              "title": b.get("title", ""), "summary": b.get("summary", ""),
+              "score": b.get("score", 0), "brief_id": b.get("id")}
+             for b in briefs if float(b.get("score", 0) or 0) >= min_score]
+    return items[:limit]
+
+
+def merge_briefs_into_feed(items: list, brief_items: list[dict], max_briefs: int = 3) -> list:
+    """Prepend up to `max_briefs` score-ranked idea items ahead of the script feed,
+    deduped by id. Pure — the /v1/feed integration point."""
+    if not brief_items:
+        return items
+    seen = {i.get("id") for i in items if isinstance(i, dict)}
+    fresh = [b for b in brief_items if b.get("id") not in seen][:max_briefs]
+    return fresh + list(items)
+
+
 async def run_ideate_cron(store, now_epoch: float) -> int:
     """Sweep every creator, generating for those whose tier cadence is due. Returns the
     total briefs written across the fleet. Flag-gated + keyless no-op."""

@@ -7112,20 +7112,50 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
 
 
+async def _merge_briefs(result: dict, creator_id: str, cursor: int) -> dict:
+    """Palo port (flag IDEA_BANK, OFF): prepend the idea bank's ranked briefs onto the
+    first feed page. No-op off / on later pages, so paginated fetches don't duplicate."""
+    if not palo_flags.enabled(palo_flags.IDEA_BANK) or cursor or not isinstance(result, dict):
+        return result
+    try:
+        briefs = await ideas.brief_feed_items(_palo_store, creator_id)
+        result["items"] = ideas.merge_briefs_into_feed(result.get("items", []), briefs)
+    except Exception as e:
+        logging.warning("[feed] idea-bank merge failed: %s", e)
+    return result
+
+
 @app.get("/v1/feed")
 async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
                known_for: str = "", goal: str = "Grow my audience",
                styles: str = "", watched: str = "", cursor: int = 0, fresh: int = 0):
-    return await _feed_impl(creator_id, niche, audience, known_for, goal, styles, watched,
-                            cursor, fresh, None)
+    result = await _feed_impl(creator_id, niche, audience, known_for, goal, styles, watched,
+                              cursor, fresh, None)
+    return await _merge_briefs(result, creator_id, cursor)
 
 
 @app.post("/v1/feed")
 async def feed_post(req: FeedRequest):
     """B-6: memory-personalized feed. Same response shape as GET; the creator's yap-session
     memory feeds the script prompt so Today's picks reflect what they told the orb."""
-    return await _feed_impl(req.creator_id, req.niche, req.audience, req.known_for, req.goal,
-                            req.styles, req.watched, req.cursor, req.fresh, req.memory)
+    result = await _feed_impl(req.creator_id, req.niche, req.audience, req.known_for, req.goal,
+                              req.styles, req.watched, req.cursor, req.fresh, req.memory)
+    return await _merge_briefs(result, req.creator_id, req.cursor)
+
+
+class _IdeasRequest(BaseModel):
+    creator_id: str = "default"
+    limit: int = 12
+
+
+@app.post("/v1/ideas")
+async def ideas_bank(req: _IdeasRequest):
+    """The creator's idea bank (Palo port, flag IDEA_BANK). Ranked briefs the app can
+    render as a dedicated 'ideas' surface. Off / keyless => empty."""
+    if not palo_flags.enabled(palo_flags.IDEA_BANK):
+        return {"mode": "off", "briefs": []}
+    briefs = await ideas.brief_feed_items(_palo_store, req.creator_id, limit=req.limit)
+    return {"mode": "live" if _palo_store else "mock", "briefs": briefs}
 
 
 @app.post("/v1/feed/feedback")
