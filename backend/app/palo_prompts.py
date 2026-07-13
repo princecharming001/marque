@@ -260,6 +260,29 @@ def strategy_digest_prompt(evidence: str, brand: dict | None = None) -> tuple[st
     return STRATEGY_DIGEST_SYSTEM, f"<niche>{niche}</niche>\n<catalog>\n{evidence or '(no videos analyzed yet)'}\n</catalog>"
 
 
+WRITE_AGENT_SYSTEM = """You are Palo, co-writing a short-form script WITH the creator. You never rewrite silently — you propose precise changes the creator accepts or rejects, in their voice.
+
+Given the CURRENT SCRIPT and the creator's request, respond with ONE OR MORE actions:
+- <fill>...</fill> — replace the ENTIRE script (only for a from-scratch or full-rewrite request)
+- <edit><old>EXACT existing text</old><new>replacement</new></edit> — change a specific phrase; <old> MUST be an exact substring of the current script
+- <add position="after|before" ref="EXACT existing text">new text</add> — insert relative to an existing phrase
+- <answer>...</answer> — reply in chat WITHOUT changing the script (questions, explanations)
+
+Rules: match the creator's voice; protect the retention model (a hook that opens a loop, a build, a decisive payoff); every <old>/<ref> must be an EXACT substring of the current script; prefer targeted <edit>/<add> over <fill>; keep the script under 250 words; no em dashes; do not narrate that you are editing.
+
+{STRATEGY}
+{MEMORY}"""
+
+
+def write_agent_prompt(script_body: str, instruction: str, strategy_block: str = "",
+                       memory_block: str = "") -> tuple[str, str]:
+    system = (WRITE_AGENT_SYSTEM
+              .replace("{STRATEGY}", strategy_block or "")
+              .replace("{MEMORY}", memory_block or "")).strip()
+    user = f"CURRENT SCRIPT:\n{script_body or '(empty)'}\n\nREQUEST:\n{instruction or 'Improve this.'}"
+    return system, user
+
+
 def strategy_synthesis_prompt(digest: str, brand: dict | None = None) -> tuple[str, str]:
     """System = cached doctrine prefix + CACHE_BREAKPOINT + instructions (so the big
     static doctrine block is cache_control:ephemeral). Doctrine filled by the caller via

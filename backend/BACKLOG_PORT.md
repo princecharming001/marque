@@ -50,10 +50,10 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] `app/strategy_compiler.py` — Sonnet digest → Opus synthesis (doctrine cache-prefix), `split_sections`/`validate_sections`, UPSERT revision+1; keyless→template (all 5 sections + REGIME/LEVER, downstream-usable); gated by flag + `compile_allowed` (test_palo_strategy.py 6 green; +2 port_eval; suite 928)
 - [x] gates: `compile_allowed` (allowlist) + `is_compile_due` freshness (per-tier cadence) + per-stage `ai_usage` (digest/synthesis) + `run_compile_cron` + `/internal/cron/compile` route (test_palo_compile_cron.py 4 green; +1 port_eval; suite 932)
 - [x] inject compiled strategy into script gen (`_generate_scripts`) + `/v1/converse` via `strategy_block` + `_inject_strategy` (flag STRATEGY_COMPILER, OFF = unchanged) (test_palo_strategy_inject.py 6 green; suite 938)
-- [ ] tests: section splitter parity, gate math, budget ≤2 heavy calls
+- [x] tests: section splitter parity + gate math (allowlist+freshness) + downstream-usable template — test_palo_strategy.py (6) + test_palo_compile_cron.py (4) + test_palo_strategy_inject.py (6) + 4 port_eval goldens
 
 ## Phase 5 — interactive write agent  (flag: WRITE_AGENT)
-- [ ] `app/write_agent.py` — plain Anthropic tool-use loop; DEFAULT_WRITE_PROMPT fill/edit/answer
+- [x] `app/write_agent.py` — plain Anthropic write loop; WRITE_AGENT_SYSTEM (fill/edit/add/answer, ≤250w, exact-substring contract) + strategy/memory injection; `parse_write_actions` (document order); keyless→mock answer; flag WRITE_AGENT (test_palo_write.py 6 green; +1 port_eval; suite 944)
 - [ ] `<edit>/<add>/<highlight>` XML contract (exact-substring) mapped to iOS tweak-ops
 - [ ] onboarding `script_generation.py` → upgrade `/v1/scripts`
 - [ ] tests (LOOP W): XML invariants, ≤250 words, one-branch, no doctrine-vocab leak

@@ -107,6 +107,12 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("strategy.freshness", _sc.is_compile_due(_t.GROWTH, None, 1e7) is True
                 and _sc.is_compile_due(_t.STUDIO, _sc._now_iso(), 0) is False))
 
+    # Phase 5 — write agent action parsing
+    from app import write_agent as _wa
+    _acts = _wa.parse_write_actions("<edit><old>a</old><new>b</new></edit><answer>hi</answer>")
+    out.append(("write.parse", [a["op"] for a in _acts] == ["edit", "answer"]
+                and _acts[0]["old"] == "a" and _acts[0]["new"] == "b"))
+
     return out
 
 
