@@ -225,3 +225,47 @@ def insight_card_prompt(event: dict, recent_titles: list[str], brand: dict | Non
     user = (f"<niche>{niche}</niche>\n<event>{event}</event>\n"
             f"<recent_insights_do_not_repeat>\n{recents}\n</recent_insights_do_not_repeat>")
     return INSIGHT_DISCOVERY_SYSTEM, user
+
+
+# --- strategy compiler (strategy/compiler.py: Sonnet digest -> Opus synthesis) --
+STRATEGY_DIGEST_SYSTEM = """You are analyzing a creator's video catalog to extract what actually drives their performance. Given per-video analysis blocks (best-performing first, with view counts), produce a tight EVIDENCE DIGEST: the 3-5 winning patterns — hooks, structures, pacing, subjects — that separate their top videos from the rest, each with a specific example. Note what the weakest videos share too. No fluff, no hedging. This digest feeds a strategy synthesis step, so be concrete and honest about the signal (say so if the catalog is too thin to conclude)."""
+
+# Doctrine prefix goes in the cached block; instructions + digest are dynamic. The
+# section headers below MUST match prompt_assembly._SECTION_HEADER_TO_PLACEHOLDER and
+# carry REGIME:/LEVER: so infer_craft_regime can read them.
+_STRATEGY_SYNTH_INSTRUCTIONS = """You are Palo's strategist. From the creator's evidence digest, write their compiled strategy as markdown with EXACTLY these sections and headers:
+
+## Insights
+3-5 bullets: what works for THIS creator specifically, each grounded in the digest.
+
+## Plan
+REGIME: sub-breakout | breakout | scaling   (pick one from their scale + trajectory)
+LEVER: the single growth lever that regime calls for
+Then 1-2 lines on the priority focus for the next month.
+
+## Buckets
+The content buckets (repeatable formats) they should make.
+
+## Brand Bets
+The signature moves to double down on — what makes them unmistakably them.
+
+## Not-Doing
+What to stop or avoid (off-niche chasing, formats that underperform for them).
+
+Ground every claim in the digest. No em dashes. Collaborative voice."""
+
+
+def strategy_digest_prompt(evidence: str, brand: dict | None = None) -> tuple[str, str]:
+    niche = (brand or {}).get("niche", "")
+    return STRATEGY_DIGEST_SYSTEM, f"<niche>{niche}</niche>\n<catalog>\n{evidence or '(no videos analyzed yet)'}\n</catalog>"
+
+
+def strategy_synthesis_prompt(digest: str, brand: dict | None = None) -> tuple[str, str]:
+    """System = cached doctrine prefix + CACHE_BREAKPOINT + instructions (so the big
+    static doctrine block is cache_control:ephemeral). Doctrine filled by the caller via
+    prompt_assembly.replace_doctrine_blocks."""
+    from app.palo_llm import CACHE_BREAKPOINT
+    system = "{DOCTRINE_CORE}\n" + CACHE_BREAKPOINT + "\n" + _STRATEGY_SYNTH_INSTRUCTIONS
+    niche = (brand or {}).get("niche", "")
+    user = f"<niche>{niche}</niche>\n<evidence_digest>\n{digest or '(none)'}\n</evidence_digest>"
+    return system, user
