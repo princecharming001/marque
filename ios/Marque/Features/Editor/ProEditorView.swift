@@ -648,6 +648,10 @@ struct ProEditorView: View {
             // rendered zoom); the play/time controls below stay unscaled.
             GeometryReader { canvasGeo in
             ZStack {
+                // Formatting fix #1: style-aware framing backdrop (the colored/placeholder
+                // zone behind the framed card for green_screen/duet_split) — EmptyView for
+                // the other styles. See framingStyle/framingBackdrop below.
+                framingBackdrop(canvasGeo.size)
                 Group {
                     if let player, !player.placeholder {
                         PlayerLayerView(player: player.player)
@@ -686,10 +690,23 @@ struct ProEditorView: View {
                             .accessibilityIdentifier("editorPro.videoSelection")
                     }
                 }
+                // Formatting fix #1: constrain the player into the real composition's card/
+                // band for the 2 styles whose render frames the source video into a sub-
+                // region (green_screen, duet_split); every other style (incl. split_three,
+                // which dims/lines the SAME full-frame track — see framingChrome) passes
+                // through unmodified. L1 fidelity, not pixel-perfect.
+                .proEditorPlayerFraming(style: framingStyle, canvas: canvasGeo.size)
+                // Dividers/dimming — drawn UNDER the caption/sticker/text-card sim overlays
+                // below, matching the real compositions where Captions/TextStickers paint
+                // above the video panels and are never dimmed by the panel highlighting.
+                framingChrome(canvasGeo.size)
                 rollSimOverlay
                 captionSimOverlay
                 textCardSimOverlay
                 stickerSimOverlay
+                // Formatting fix #11: transition dip (fade_black/fade_white/flash) — full-
+                // screen, topmost, matching Grade.tsx's own paint order (above captions).
+                transitionSimOverlay
             }
             .scaleEffect(currentPunchScale)
             .animation(.easeInOut(duration: 0.25), value: currentPunchScale)
@@ -720,6 +737,136 @@ struct ProEditorView: View {
         // (the selection box + drag/pinch appear); play stays on the play button.
         .onTapGesture { canvasTapSelect() }
         .clipped()
+    }
+
+    // MARK: Formatting fix #1 — style-aware composition framing (L1 fidelity)
+    //
+    // 3 of the 7 render compositions (render/src/compositions/{GreenScreen,DuetSplit,
+    // SplitThree}.tsx) look nothing like a full-frame player; the local preview used to show
+    // the same plain full-frame surface for every style regardless. This section adds a
+    // rough (not pixel-perfect) approximation of each real layout so a formatting mistake is
+    // visible before the server render, not just after. Every other style (talking_head,
+    // faceless, fast_cuts, broll_cutaway) is completely untouched — framingStyle is nil.
+
+    /// nil for the 4 styles that render full-frame; otherwise the draft's own style string.
+    private var framingStyle: String? {
+        guard let s = session?.draft.style,
+              ["green_screen", "duet_split", "split_three"].contains(s) else { return nil }
+        return s
+    }
+
+    /// Backdrop shown BEHIND the framed player — the colored/placeholder zone the real
+    /// composition paints outside the video card. EmptyView for every other style.
+    @ViewBuilder private func framingBackdrop(_ canvas: CGSize) -> some View {
+        switch framingStyle {
+        case "green_screen":
+            // GreenScreen.tsx: AbsoluteFill background behind the reference-text zone
+            // (top ~45%) and the speaker card (bottom 54%, added by proEditorPlayerFraming).
+            Color(hex: 0x0F3460)
+                .frame(width: canvas.width, height: canvas.height)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("editorPro.framing.green_screen")
+        case "duet_split":
+            // DuetSplit.tsx's TOP panel (the reacted-to clip) — the local sim has no react
+            // source to actually show, so a dark placeholder stands in (same treatment the
+            // app already uses for a sourceless player, just labeled for this band).
+            let h = canvas.height * editorDuetSplitFraction
+            ZStack {
+                // Same "no source to show" treatment as the placeholder player below —
+                // this band has no react clip to render client-side.
+                Rectangle().fill(Palette.ink.opacity(0.85))
+                Image(systemName: "film")
+                    .font(.system(size: 32)).foregroundStyle(.white.opacity(0.3))
+            }
+            .frame(width: canvas.width, height: h)
+            .position(x: canvas.width / 2, y: h / 2)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("editorPro.framing.duet_split")
+        default:
+            EmptyView()
+        }
+    }
+
+    /// Foreground chrome (dividers / dimming). Drawn UNDER the caption/sticker/text-card sim
+    /// overlays (see playerSurface) so those stay crisp — matches the real compositions,
+    /// where Captions/TextStickers paint above the video panels uninvolved in the highlight.
+    @ViewBuilder private func framingChrome(_ canvas: CGSize) -> some View {
+        switch framingStyle {
+        case "duet_split":
+            // The hairline between DuetSplit.tsx's top/bottom panels.
+            Rectangle().fill(Color.white.opacity(0.14))
+                .frame(width: canvas.width, height: 2)
+                .position(x: canvas.width / 2, y: canvas.height * editorDuetSplitFraction)
+                .allowsHitTesting(false)
+        case "split_three":
+            splitThreeChrome(canvas)
+        default:
+            EmptyView()
+        }
+    }
+
+    /// SplitThree.tsx: three equal horizontal panels of the SAME cut track; the "active"
+    /// third is left clear while the other two dim. Approximated as chrome drawn over the
+    /// single existing player (tripling the video view is a much larger lift for an L1
+    /// preview) — divider lines + dimming still telegraph the real 3-panel layout.
+    private func splitThreeChrome(_ canvas: CGSize) -> some View {
+        let thirdH = canvas.height / 3
+        let totalOut = max(1, session?.draft.totalOutputFrames ?? 1)
+        let third = max(1, totalOut / 3)
+        // Mirrors SplitThree.tsx exactly: Math.min(2, Math.floor(frame / third)) — evaluated
+        // against the player's current OUTPUT frame, the same coordinate space the render uses.
+        let active = min(2, secondsToFrame(player?.currentOutputTime ?? 0) / third)
+        return ZStack {
+            ForEach(0..<3, id: \.self) { i in
+                if i != active {
+                    Rectangle().fill(Color.black.opacity(0.45))
+                        .frame(width: canvas.width, height: thirdH)
+                        .position(x: canvas.width / 2, y: thirdH * (CGFloat(i) + 0.5))
+                }
+            }
+            Rectangle().fill(Color.white.opacity(0.18)).frame(width: canvas.width, height: 2)
+                .position(x: canvas.width / 2, y: thirdH)
+            Rectangle().fill(Color.white.opacity(0.18)).frame(width: canvas.width, height: 2)
+                .position(x: canvas.width / 2, y: thirdH * 2)
+        }
+        .allowsHitTesting(false)
+        .accessibilityIdentifier("editorPro.framing.split_three")
+    }
+
+    // MARK: Formatting fix #11 — transition dip local sim (L1 fidelity)
+
+    /// L1 sim of Grade.tsx's boundary transition dip: a full-screen color overlay whose
+    /// opacity ramps 0→1→0 centered on the OUTPUT frame where the transition's leading
+    /// segment finishes playing.
+    @ViewBuilder private var transitionSimOverlay: some View {
+        if let d = session?.draft, let dip = currentTransitionDip(d) {
+            Rectangle().fill(dip.color)
+                .opacity(dip.opacity)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("editorPro.transitionDip")
+        }
+    }
+
+    /// Finds the transition (if any) whose ramp window contains the current OUTPUT frame, and
+    /// the color/opacity Grade.tsx would paint there. Ports Grade.tsx's exact ramp math
+    /// (`half = max(2, frames/2)`, `ramp = 1 - dist/half`, flash = white @ ramp*0.9) rather
+    /// than inventing a new curve. The frame anchor comes from
+    /// `EditorDocument.outputBoundary(afterSegment:)` — an existing helper already defined
+    /// (by its own doc comment) as "the anchor a transition dip centers on" — so no new
+    /// source→output mapping needed here.
+    private func currentTransitionDip(_ d: EditorDocument) -> (color: Color, opacity: Double)? {
+        let outFrame = secondsToFrame(player?.currentOutputTime ?? 0)
+        for t in d.transitions {
+            guard let boundarySec = d.outputBoundary(afterSegment: t.afterSegment) else { continue }
+            let atFrame = secondsToFrame(boundarySec)
+            let half = max(2.0, Double(t.frames) / 2.0)
+            let dist = abs(Double(outFrame - atFrame))
+            guard dist <= half else { continue }
+            let ramp = 1 - dist / half
+            if t.style == "flash" { return (.white, ramp * 0.9) }
+            return (t.style == "fade_white" ? .white : .black, ramp)
+        }
+        return nil
     }
 
     /// The source segment index whose footage is under the playhead right now.
@@ -1641,7 +1788,46 @@ extension View {
     @ViewBuilder func simultaneousGestureIf<G: Gesture>(_ on: Bool, _ g: G) -> some View {
         if on { simultaneousGesture(g) } else { self }
     }
+
+    /// Formatting fix #1: constrains the player view into the real composition's card/band
+    /// for the 2 styles whose render frames the source video into a sub-region (green_screen,
+    /// duet_split); every other style (incl. split_three, which dims/lines the SAME full-frame
+    /// track rather than showing a distinct panel — see framingChrome) passes `self` through
+    /// unmodified. Uses `.frame()/.position()` — never `.scaleEffect()`/other transforms — so
+    /// the drag/pinch gestures already attached higher up the canvas ZStack keep working
+    /// exactly as before (they key off `canvasGeo.size`, which this doesn't change).
+    @ViewBuilder func proEditorPlayerFraming(style: String?, canvas: CGSize) -> some View {
+        switch style {
+        case "green_screen":
+            // GreenScreen.tsx: speaker card inset 4% left/right, 3% from the bottom, 54% tall.
+            let w = canvas.width * 0.92
+            let h = canvas.height * 0.54
+            let card = CGRect(x: canvas.width * 0.04, y: canvas.height * 0.97 - h, width: w, height: h)
+            self
+                .frame(width: card.width, height: card.height)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.9), lineWidth: 2)
+                )
+                .position(x: card.midX, y: card.midY)
+        case "duet_split":
+            // DuetSplit.tsx: the creator's BOTTOM panel — full width, height = 1-topFrac.
+            let h = canvas.height * (1 - editorDuetSplitFraction)
+            self
+                .frame(width: canvas.width, height: h)
+                .position(x: canvas.width / 2, y: canvas.height - h / 2)
+        default:
+            self
+        }
+    }
 }
+
+/// DuetSplit.tsx: `edl.layout.split_fraction` sizes the top (reacted-to) band server-side;
+/// EditorDocument carries no client-side layout field today, so this mirrors the render's
+/// own fallback default exactly (`?? 0.58`). Shared by the framing backdrop/chrome (above)
+/// and the player-framing modifier (below) so both sides of the divider always agree.
+private let editorDuetSplitFraction: Double = 0.58
 
 // One labeled Adjust mini-slider (CapCut Adjust knobs). Owns its drag draft so the
 // row doesn't re-init mid-gesture; commits ONE op on release (UX-4 invariant).

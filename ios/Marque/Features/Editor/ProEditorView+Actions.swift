@@ -562,19 +562,58 @@ extension ProEditorView {
     }
 
     /// Detect filler words + long pauses from the transcript word timings.
+    ///
+    /// Formatting fix #10: mirrors backend/app/edl.py's ALWAYS_FILLERS / DISCOURSE_MARKERS /
+    /// strip_fillers clause-boundary rule (not byte-identical — the goal is correctness, not
+    /// parity). The old version cut every listed word UNCONDITIONALLY, which flagged real
+    /// content ("turn RIGHT here", "I feel like it WORKS") as filler. Now:
+    ///   - ALWAYS-fillers (pure hesitation sounds) are cut wherever they appear;
+    ///   - DISCOURSE markers are cut ONLY at a clause boundary — the first transcript word,
+    ///     after a real pause (≥ clauseGapFrames since the previous word's end), or right
+    ///     after another word already flagged as filler (so "um, so, ..." chains cut whole);
+    ///   - "you" + "know" (small gap) is flagged as a bigram (the "you know" discourse tic);
+    ///     either word alone is content and is never flagged.
     func cleanupTargets() -> [CleanupTarget] {
-        let fillers: Set<String> = ["um", "uh", "uhh", "like", "you", "know", "so", "basically",
-                                    "literally", "actually", "right", "okay", "ok", "yeah", "yep",
-                                    "well", "hmm", "er", "erm", "mmm"]
+        // Pure hesitation sounds — never real words, safe to cut wherever they appear.
+        let alwaysFillers: Set<String> = ["um", "uh", "uhh", "er", "erm", "hmm", "mmm"]
+        // Filler ONLY when it opens a clause; otherwise legitimate content.
+        let discourseMarkers: Set<String> = ["like", "so", "basically", "literally", "actually",
+                                             "right", "okay", "ok", "yeah", "yep", "well"]
+        // ~267ms @ 30fps (kEditorFPS) — a word starting this long after the previous one's
+        // end reads as a fresh clause, not a continuation of the same breath.
+        let clauseGapFrames = 8
+
         var out: [CleanupTarget] = []
         var id = 0
         let sorted = words.sorted { $0.startFrame < $1.startFrame }
+        var prevWasFiller = false
         for (i, w) in sorted.enumerated() {
             let norm = w.text.lowercased().filter { $0.isLetter }
-            if fillers.contains(norm) {
+            let gapBefore: Int? = i > 0 ? w.startFrame - sorted[i - 1].endFrame : nil
+            let clauseBoundary = i == 0 || prevWasFiller || (gapBefore.map { $0 >= clauseGapFrames } ?? false)
+
+            var isFiller = alwaysFillers.contains(norm)
+                || (discourseMarkers.contains(norm) && clauseBoundary)
+
+            // "you know" bigram: flag BOTH words only when they're adjacent with a small
+            // gap. A standalone "you" or "know" is content and must not be flagged.
+            if !isFiller, norm == "you", i + 1 < sorted.count {
+                let next = sorted[i + 1]
+                let nextNorm = next.text.lowercased().filter { $0.isLetter }
+                if nextNorm == "know", next.startFrame - w.endFrame < clauseGapFrames { isFiller = true }
+            }
+            if !isFiller, norm == "know", i > 0 {
+                let prev = sorted[i - 1]
+                let prevNorm = prev.text.lowercased().filter { $0.isLetter }
+                if prevNorm == "you", w.startFrame - prev.endFrame < clauseGapFrames { isFiller = true }
+            }
+
+            if isFiller {
                 out.append(CleanupTarget(id: id, label: "“\(w.text)”", detail: "filler word",
                                          srcIn: w.startFrame, srcOut: w.endFrame, kind: "filler")); id += 1
             }
+            prevWasFiller = isFiller
+
             if i + 1 < sorted.count {
                 let gap = sorted[i + 1].startFrame - w.endFrame
                 if gap > 24 {   // > ~0.8s of silence
