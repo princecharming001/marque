@@ -10,7 +10,9 @@ import re
 # the Lambda logs on a mismatch — catching "backend deployed, site not redeployed"
 # prop-drift that otherwise fails silently. BUMP BOTH SIDES together when the plan
 # shape changes.
-PLAN_SCHEMA_VERSION = 1
+# v2 (P4): added end_card, progress_bar, audio.sfx — all additive/defaulted, so a
+# stale v1 site just never renders them (no crash), and checkPlanSchema still warns.
+PLAN_SCHEMA_VERSION = 2
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -132,6 +134,16 @@ class Overlay(BaseModel):
     font: str = "inter"              # inter | archivo | baloo
 
 
+class EndCard(BaseModel):
+    """P4: a tail-of-video CTA card (dark fill + text + optional @handle), mutually
+    exclusive with a loop-friendly trimmed tail (trim_loop_tail) — place_end_card
+    enforces that. Tail-anchored, not source-anchored: build_render_plan appends
+    its `frames` to total_frames rather than remapping a src_in/src_out window."""
+    text: str = ""
+    frames: int = 75             # ~2.5s @ 30fps
+    show_handle: bool = True
+
+
 class Transition(BaseModel):
     """A boundary treatment where one clip hands off to the next (CapCut drag-a-
     transition-between-clips). Anchored to the SOURCE segment whose end it follows,
@@ -215,6 +227,19 @@ class VolumeRange(BaseModel):
         return self
 
 
+class SfxCue(BaseModel):
+    """P4: one deterministically-authored sound effect one-shot (whoosh/pop/hit),
+    anchored to a SOURCE frame like everything else in the EDL (a transition point,
+    an interrupt punch start, the hook overlay) — build_render_plan maps it through
+    the same map_point as captions/speech_frames, so it silently disappears if the
+    anchor frame gets cut. `url` is resolved from SFX_ASSETS (main.py) by
+    synthesize_sfx at authoring time, not by build_render_plan."""
+    src_in: int
+    kind: str             # whoosh | pop | hit
+    gain: float = 0.7
+    url: Optional[str] = None
+
+
 class Audio(BaseModel):
     # P0.6: loudness normalization is now live. app/audio.probe_loudness measures the
     # take's integrated LUFS (ffmpeg loudnorm analysis pass) during _run_analysis, and
@@ -226,6 +251,7 @@ class Audio(BaseModel):
     gain: float = 0.0            # dB gain applied to source audio (loudness normalization)
     music: Optional[MusicTrack] = None
     volume_ranges: list[VolumeRange] = []
+    sfx: list[SfxCue] = []        # P4: deterministic SFX one-shots (see SfxCue)
 
 
 class CaptionOptions(BaseModel):
@@ -277,6 +303,8 @@ class EDL(BaseModel):
     transitions: list[Transition] = []               # boundary dips between clips
     look: Optional[Look] = None                      # whole-video filter + adjust
     trim_aggressiveness: Optional[str] = None        # aggressive | None
+    end_card: Optional[EndCard] = None                # P4: tail CTA card (see EndCard)
+    progress_bar: bool = False                        # P4: thin watch-progress bar overlay
     # Playback order of segments as a PERMUTATION of indices. Segments themselves
     # stay monotonic in source coords (the validator below is untouched) — physical
     # reordering would break every source-coord invariant; the render plan walks
@@ -883,13 +911,46 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
                          (map_point(f) for f in (edl.get("speech_frames") or []))
                          if f is not None]
 
+    # P4: SFX cues map through map_point exactly like speech_frames (a single
+    # source-frame anchor, not a range) — a cue anchored to a punch-in/transition
+    # that later gets cut just silently disappears rather than firing at the
+    # wrong moment. Cues synthesize_sfx couldn't resolve a URL for (no hosted
+    # asset configured for that kind) are dropped here too — fail-soft, same
+    # philosophy as unresolved b-roll above.
+    sfx_out = []
+    for cue in audio_src.get("sfx") or []:
+        url = cue.get("url")
+        if not url:
+            continue
+        of = map_point(cue["src_in"])
+        if of is None:
+            continue
+        sfx_out.append({"frame": of, "kind": cue.get("kind", ""),
+                        "gain": float(cue.get("gain") or 0.7), "url": url})
+
     audio_plan = {
         "lufs_target": audio_src.get("lufs_target", -14.0),
         "gain": float(audio_src.get("gain") or 0.0),   # P0.6: loudness-normalization dB
         "music": audio_src.get("music"),
         "volume_ranges": volume_ranges_out,
         "speech_frames": speech_frames_out,
+        "sfx": sfx_out,
     }
+
+    # P4: end_card is TAIL-anchored (not source-coord), so it skips map_point
+    # entirely — it always starts exactly where the last kept clip ends and
+    # extends the OUTPUT total_frames by its own length. Computed here (after
+    # every other pass already used the pre-extension `total_frames` for its
+    # own bounds checks, e.g. the transitions_out "final clip" check above) so
+    # extending it can't retroactively change any earlier decision.
+    end_card_src = edl.get("end_card")
+    end_card_out = None
+    tail_frames = 0
+    if end_card_src and (end_card_src.get("text") or "").strip():
+        ec_frames = max(30, min(150, int(end_card_src.get("frames") or 75)))
+        end_card_out = {"text": end_card_src["text"], "start_frame": total_frames,
+                        "frames": ec_frames, "show_handle": bool(end_card_src.get("show_handle", True))}
+        tail_frames = ec_frames
 
     return {
         "style": edl.get("style", "talking_head"),
@@ -918,8 +979,12 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         "transitions": transitions_out,
         "look": Look(**(edl.get("look") or {})).model_dump(),
         "audio": audio_plan,
+        "end_card": end_card_out,                       # P4: None when absent (G1: key always present)
+        "progress_bar": bool(edl.get("progress_bar", False)),   # P4
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
-        "total_frames": max(1, total_frames),
+        # +tail_frames: the end-card's own duration, appended AFTER every other
+        # computation above already used the pre-extension total_frames.
+        "total_frames": max(1, total_frames + tail_frames),
         # #19: contract version — the compositions warn if this ≠ their compiled value.
         "schema_version": PLAN_SCHEMA_VERSION,
     }

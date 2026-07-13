@@ -1590,7 +1590,8 @@ def test_fuzz_random_op_sequences_preserve_invariants():
 _TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "broll",
                         "react_source", "react_schedule", "layout", "caption_style",
                         "caption_options", "transitions", "look", "audio", "total_frames",
-                        "schema_version"}   # #19: contract-drift stamp (mirrors types.ts)
+                        "schema_version",
+                        "end_card", "progress_bar"}   # P4 (schema v2)
 _TS_CLIP_KEYS = {"src_in", "src_out", "speed", "tx_scale", "tx_x", "tx_y"}
 _TS_CAPTION_KEYS = {"word", "frame", "end_frame"}
 _TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
@@ -1602,7 +1603,9 @@ _TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
 _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
 _TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
-_TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames"}
+_TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames", "sfx"}
+_TS_END_CARD_KEYS = {"text", "start_frame", "frames", "show_handle"}   # P4
+_TS_SFX_KEYS = {"frame", "kind", "gain", "url"}                        # P4
 
 
 def test_render_plan_matches_typescript_contract_exactly():
@@ -1626,7 +1629,10 @@ def test_render_plan_matches_typescript_contract_exactly():
         "audio": {"lufs_target": -14.0,
                  "music": {"url": "https://cdn/t.mp3", "query": None, "volume": 0.2,
                           "duck_voice": True},
-                 "volume_ranges": [{"src_in": 0, "src_out": 30, "volume": 0.0}]},
+                 "volume_ranges": [{"src_in": 0, "src_out": 30, "volume": 0.0}],
+                 "sfx": [{"src_in": 20, "kind": "pop", "gain": 0.7, "url": "https://cdn/pop.mp3"}]},
+        "end_card": {"text": "Follow for more", "frames": 60, "show_handle": True},
+        "progress_bar": True,
     }
     plan = build_render_plan(edl)
 
@@ -1647,6 +1653,10 @@ def test_render_plan_matches_typescript_contract_exactly():
     assert set(plan["audio"]["music"].keys()) == _TS_MUSIC_KEYS
     for vr in plan["audio"]["volume_ranges"]:
         assert set(vr.keys()) == _TS_VOLUME_RANGE_KEYS
+    for s in plan["audio"]["sfx"]:
+        assert set(s.keys()) == _TS_SFX_KEYS
+    assert set(plan["end_card"].keys()) == _TS_END_CARD_KEYS
+    assert plan["progress_bar"] is True
 
 
 def test_render_plan_matches_contract_with_all_optionals_absent():
@@ -1665,7 +1675,93 @@ def test_render_plan_matches_contract_with_all_optionals_absent():
     assert plan["react_source"] is None and plan["react_schedule"] == []
     assert set(plan["audio"].keys()) == _TS_AUDIO_PLAN_KEYS
     assert plan["audio"]["music"] is None and plan["audio"]["volume_ranges"] == []
+    assert plan["audio"]["sfx"] == []
+    assert plan["end_card"] is None and plan["progress_bar"] is False
     assert isinstance(plan["total_frames"], int) and plan["total_frames"] >= 1
+
+
+# ---- P4: end_card extends total_frames AFTER every other pass's bounds checks
+# already ran against the pre-extension value (transitions_out's "final clip has
+# no dip" check in particular) — these guard that ordering directly. ----
+
+def test_end_card_extends_total_frames_by_its_own_length():
+    from app.edl import build_render_plan
+    edl_no_card = {"style": "talking_head", "format_id": "x",
+                  "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"}}
+    base_total = build_render_plan(edl_no_card)["total_frames"]
+
+    edl_with_card = {**edl_no_card, "end_card": {"text": "Follow along", "frames": 60}}
+    plan = build_render_plan(edl_with_card)
+    assert plan["total_frames"] == base_total + 60
+    assert plan["end_card"] == {"text": "Follow along", "start_frame": base_total,
+                                "frames": 60, "show_handle": True}
+
+
+def test_end_card_with_blank_text_is_dropped():
+    # A whitespace-only/empty text means "no card wanted" — must not silently add
+    # 75 dead frames of an invisible card.
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "x",
+          "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"},
+          "end_card": {"text": "   ", "frames": 75}}
+    plan = build_render_plan(edl)
+    assert plan["end_card"] is None
+    assert plan["total_frames"] == 300
+
+
+def test_end_card_frames_clamped_to_sane_range():
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "x",
+          "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"},
+          "end_card": {"text": "hi", "frames": 5000}}
+    plan = build_render_plan(edl)
+    assert plan["end_card"]["frames"] == 150   # clamped to the max, not the requested 5000
+
+
+def test_end_card_does_not_affect_transitions_final_clip_check():
+    # The transitions_out "final clip — no next clip to dip into" check
+    # (edl.py ~827) MUST use the PRE-extension total_frames — otherwise adding an
+    # end_card would retroactively make the real final clip's transition think
+    # it isn't final anymore and grow a spurious dip into the end-card's own tail.
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "x",
+          "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"},
+          "transitions": [{"after_segment": 0, "style": "fade_black", "frames": 12}],
+          "end_card": {"text": "Follow along", "frames": 60}}
+    plan = build_render_plan(edl)
+    assert plan["transitions"] == []   # still correctly recognized as the final clip
+
+
+def test_sfx_cue_maps_through_source_to_output_frame():
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "x",
+          "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"},
+          "audio": {"sfx": [{"src_in": 100, "kind": "whoosh", "gain": 0.7, "url": "https://cdn/w.mp3"}]}}
+    plan = build_render_plan(edl)
+    assert plan["audio"]["sfx"] == [{"frame": 100, "kind": "whoosh", "gain": 0.7, "url": "https://cdn/w.mp3"}]
+
+
+def test_sfx_cue_dropped_when_anchor_frame_is_cut():
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "x",
+          "segments": [{"src_in": 0, "src_out": 300}],
+          "drops": [{"src_in": 90, "src_out": 110, "reason": "filler"}],
+          "layout": {"style": "talking_head"},
+          "audio": {"sfx": [{"src_in": 100, "kind": "whoosh", "gain": 0.7, "url": "https://cdn/w.mp3"}]}}
+    plan = build_render_plan(edl)
+    assert plan["audio"]["sfx"] == []
+
+
+def test_sfx_cue_dropped_when_url_unresolved():
+    # synthesize_sfx couldn't resolve a hosted asset for this kind — fail-soft
+    # (same philosophy as unresolved b-roll: skip the layer, never emit a
+    # None-URL render instruction the composition would crash trying to play).
+    from app.edl import build_render_plan
+    edl = {"style": "talking_head", "format_id": "x",
+          "segments": [{"src_in": 0, "src_out": 300}], "layout": {"style": "talking_head"},
+          "audio": {"sfx": [{"src_in": 100, "kind": "whoosh", "gain": 0.7, "url": None}]}}
+    plan = build_render_plan(edl)
+    assert plan["audio"]["sfx"] == []
 
 
 def test_render_plan_contract_holds_for_every_composition_style():

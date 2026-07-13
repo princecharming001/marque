@@ -6,6 +6,8 @@ import { TextStickers } from "../components/TextStickers";
 import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions, FONTS } from "../components/Captions";
+import { ProgressBar } from "../components/ProgressBar";
+import { EndCard } from "../components/EndCard";
 import { CompositionProps, ReactWindow } from "../types";
 import { LAYOUT, cardFit } from "../layout";
 
@@ -25,9 +27,11 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       <AbsoluteFill style={{ background: "#000" }}>
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
         {edl && <BrollLayer broll={edl.broll} />}
+        {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
         {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+        {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
       </AbsoluteFill>
     );
@@ -107,9 +111,11 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       </div>
 
       {edl && <BrollLayer broll={edl.broll} />}
+      {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

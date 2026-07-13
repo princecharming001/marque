@@ -7,6 +7,8 @@ import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions, FONTS } from "../components/Captions";
 import { usePunchScale } from "../components/PunchZoom";
+import { ProgressBar } from "../components/ProgressBar";
+import { EndCard } from "../components/EndCard";
 import { CompositionProps } from "../types";
 import { LAYOUT, cardFit } from "../layout";
 
@@ -61,9 +63,11 @@ export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         </AbsoluteFill>
       </div>
       {edl && <BrollLayer broll={edl.broll} />}
+      {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

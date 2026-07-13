@@ -6,6 +6,8 @@ import { TextStickers } from "../components/TextStickers";
 import { Grade } from "../components/Grade";
 import { BrollLayer } from "../components/BrollLayer";
 import { Captions } from "../components/Captions";
+import { ProgressBar } from "../components/ProgressBar";
+import { EndCard } from "../components/EndCard";
 import { CompositionProps } from "../types";
 
 // Faceless / voiceover: NO face on screen — full-frame b-roll under the creator's
@@ -33,9 +35,11 @@ export const Faceless: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
           <BrollLayer broll={edl.broll} />
         </AbsoluteFill>
       )}
+      {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

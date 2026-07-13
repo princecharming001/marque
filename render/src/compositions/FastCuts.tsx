@@ -6,6 +6,8 @@ import { TextStickers } from "../components/TextStickers";
 import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
+import { ProgressBar } from "../components/ProgressBar";
+import { EndCard } from "../components/EndCard";
 import { CompositionProps } from "../types";
 
 // Punchy cut track with a 2-frame white flash at every real cut boundary. The boundaries
@@ -58,9 +60,11 @@ export const FastCuts: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         <div style={{ position: "absolute", inset: 0, background: "white", opacity: flashOpacity }} />
       )}
       {edl && <BrollLayer broll={edl.broll} />}
+      {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

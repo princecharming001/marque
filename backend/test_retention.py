@@ -533,3 +533,339 @@ def test_interrupts_applied_via_orchestrator():
     edl = _bare_edl("talking_head", total_frames)
     out = retention.apply_retention_passes(edl, words, style="talking_head")
     assert len(out["overlays"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# WS4b — align_emphasis
+# ---------------------------------------------------------------------------
+
+def test_align_emphasis_ranks_top_n_by_span_length():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    spans = [(50, 60), (150, 170), (300, 350), (450, 530), (600, 750)]   # lens: 10,20,50,80,150
+    out = retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=spans)
+    punch_starts = {o["src_in"] for o in out["overlays"] if o["type"] == "punch_in"}
+    assert punch_starts == {600, 450, 300}   # top 3 by length
+    assert 150 not in punch_starts and 50 not in punch_starts
+
+
+def test_align_emphasis_highlight_words_uses_longest_word_in_span():
+    words = _words(("a", 20000, 20100), ("supercalifragilistic", 20100, 20400), ("ok", 20400, 20500))
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    span = (ms_to_frame(20000), ms_to_frame(20500))
+    out = retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=[span])
+    assert "supercalifragilistic" in out["caption_options"]["highlight_words"]
+
+
+def test_align_emphasis_skips_punch_for_non_punch_style():
+    words = _steady_words(30000)
+    edl = _bare_edl("fast_cuts", ms_to_frame(30000))   # not in _PUNCH_STYLES
+    out = retention.align_emphasis(edl, words, style="fast_cuts", emphasis_spans=[(300, 350)])
+    assert out["overlays"] == []
+
+
+def test_align_emphasis_skips_punch_when_overlay_already_near():
+    words = _steady_words(30000)
+    existing = {"type": "punch_in", "src_in": 310, "src_out": 340, "scale": 1.08, "text": ""}
+    edl = _bare_edl("talking_head", ms_to_frame(30000), overlays=[existing])
+    out = retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=[(300, 350)])
+    assert out["overlays"] == [existing]
+
+
+def test_align_emphasis_noop_with_no_spans():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    out = retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=[])
+    assert out == edl
+
+
+def test_align_emphasis_does_not_mutate_input():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    original_overlays = edl["overlays"]
+    retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=[(300, 350)])
+    assert edl["overlays"] is original_overlays and edl["overlays"] == []
+
+
+def test_align_emphasis_output_passes_invariants():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    out = retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=[(300, 350)])
+    assert check_edl_invariants(out) == []
+
+
+def test_align_emphasis_highlight_words_capped():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    caption_options={"highlight_words": [f"w{i}" for i in range(12)]})
+    out = retention.align_emphasis(edl, words, style="talking_head", emphasis_spans=[(300, 350)])
+    assert len(out["caption_options"]["highlight_words"]) == 12   # already at cap
+
+
+def test_align_emphasis_applied_via_orchestrator():
+    retention._ENV_PASSES = "emphasis"
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    out = retention.apply_retention_passes(edl, words, style="talking_head",
+                                           emphasis_spans=[(300, 350)])
+    assert any(o["type"] == "punch_in" for o in out["overlays"])
+
+
+# ---------------------------------------------------------------------------
+# WS4a — place_hook_overlay
+# ---------------------------------------------------------------------------
+
+def test_hook_overlay_uses_hint_text():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.place_hook_overlay(edl, words, style="talking_head",
+                                       hints={"hook_text": "This changes everything"})
+    hook = next(o for o in out["overlays"] if o["type"] == "text_sticker")
+    assert hook["text"] == "This changes everything"
+    assert hook["src_in"] == 0   # first kept frame (no drops)
+
+
+def test_hook_overlay_falls_back_to_script_hook():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    script = {"hook": "You will not believe what happened next today"}
+    out = retention.place_hook_overlay(edl, words, style="talking_head", hints={}, script=script)
+    hook = next(o for o in out["overlays"] if o["type"] == "text_sticker")
+    assert hook["text"] == "You will not believe what happened"   # first 6 words
+
+
+def test_hook_overlay_noop_with_no_text():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.place_hook_overlay(edl, words, style="talking_head", hints={}, script={})
+    assert out["overlays"] == []
+
+
+def test_hook_overlay_skips_duet_split():
+    words = _steady_words(10000)
+    edl = _bare_edl("duet_split", ms_to_frame(10000))
+    out = retention.place_hook_overlay(edl, words, style="duet_split",
+                                       hints={"hook_text": "Should never appear"})
+    assert out["overlays"] == []
+
+
+def test_hook_overlay_skips_when_overlay_already_occupies_open():
+    words = _steady_words(10000)
+    existing = {"type": "punch_in", "src_in": 10, "src_out": 40, "scale": 1.06, "text": ""}
+    edl = _bare_edl("talking_head", ms_to_frame(10000), overlays=[existing])
+    out = retention.place_hook_overlay(edl, words, style="talking_head",
+                                       hints={"hook_text": "Should never appear"})
+    assert out["overlays"] == [existing]
+
+
+def test_hook_overlay_positions_below_when_captions_on_top():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000), caption_options={"position": "top"})
+    out = retention.place_hook_overlay(edl, words, style="talking_head",
+                                       hints={"hook_text": "Hook text here"})
+    hook = next(o for o in out["overlays"] if o["type"] == "text_sticker")
+    assert hook["pos_y"] == 0.62
+
+
+def test_hook_overlay_does_not_mutate_input():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    original_overlays = edl["overlays"]
+    retention.place_hook_overlay(edl, words, style="talking_head", hints={"hook_text": "Hi"})
+    assert edl["overlays"] is original_overlays and edl["overlays"] == []
+
+
+def test_hook_overlay_output_passes_invariants():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.place_hook_overlay(edl, words, style="talking_head", hints={"hook_text": "Hi there"})
+    assert check_edl_invariants(out) == []
+
+
+def test_hook_overlay_applied_via_orchestrator_with_script_hook():
+    retention._ENV_PASSES = "structure"
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.apply_retention_passes(edl, words, style="talking_head",
+                                           script={"hook": "This one trick changes everything"})
+    assert any(o["type"] == "text_sticker" for o in out["overlays"])
+
+
+def test_hook_overlay_skipped_if_emphasis_punch_already_in_the_open_via_orchestrator():
+    # Ordering guarantee: align_emphasis runs BEFORE place_hook_overlay, so a punch
+    # it placed right at the start of the take correctly blocks the hook overlay
+    # from stacking a second competing "open" on top of it.
+    retention._ENV_PASSES = "emphasis,structure"
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.apply_retention_passes(
+        edl, words, style="talking_head", emphasis_spans=[(5, 40)],
+        hints={"hook_text": "Should be skipped"})
+    assert not any(o.get("text") == "Should be skipped" for o in out["overlays"])
+
+
+# ---------------------------------------------------------------------------
+# WS4c — place_end_card (+ orchestrator XOR with trim_loop_tail)
+# ---------------------------------------------------------------------------
+
+def test_end_card_stamped_when_hint_wanted_and_has_text():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.place_end_card(edl, words, style="talking_head",
+                                   hints={"end_card": {"wanted": True, "text": "Follow for more"}})
+    assert out["end_card"] == {"text": "Follow for more", "frames": 75, "show_handle": True}
+
+
+def test_end_card_noop_when_not_wanted():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.place_end_card(edl, words, style="talking_head",
+                                   hints={"end_card": {"wanted": False, "text": "Follow"}})
+    assert out.get("end_card") is None
+
+
+def test_end_card_noop_when_wanted_but_blank_text():
+    words = _steady_words(10000)
+    edl = _bare_edl("talking_head", ms_to_frame(10000))
+    out = retention.place_end_card(edl, words, style="talking_head",
+                                   hints={"end_card": {"wanted": True, "text": "   "}})
+    assert out.get("end_card") is None
+
+
+def test_end_card_skipped_for_fast_cuts_and_duet_split():
+    words = _steady_words(10000)
+    for style in ("fast_cuts", "duet_split"):
+        edl = _bare_edl(style, ms_to_frame(10000))
+        out = retention.place_end_card(edl, words, style=style,
+                                       hints={"end_card": {"wanted": True, "text": "Follow for more"}})
+        assert out.get("end_card") is None, style
+
+
+def test_end_card_xor_loop_tail_via_orchestrator():
+    retention._ENV_PASSES = "structure"
+    words = _words(("done", 0, 5000))
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": 250}])
+    out = retention.apply_retention_passes(
+        edl, words, style="talking_head",
+        hints={"end_card": {"wanted": True, "text": "Follow for more"}})
+    assert out["end_card"] == {"text": "Follow for more", "frames": 75, "show_handle": True}
+    assert out["segments"][0]["src_out"] == 250   # trim_loop_tail did NOT run
+
+
+def test_end_card_skip_style_still_gets_loop_tail_via_orchestrator():
+    # fast_cuts wants an end_card, but place_end_card itself skips fast_cuts (WS5:
+    # loop-friendly by design) — the orchestrator must fall through to
+    # trim_loop_tail instead of leaving NEITHER pass applied.
+    retention._ENV_PASSES = "structure"
+    words = _words(("done", 0, 5000))
+    edl = _base_edl(style="fast_cuts", segments=[{"src_in": 0, "src_out": 250}])
+    out = retention.apply_retention_passes(
+        edl, words, style="fast_cuts",
+        hints={"end_card": {"wanted": True, "text": "Follow for more"}})
+    assert out.get("end_card") is None
+    assert out["segments"][0]["src_out"] == ms_to_frame(5000) + 10   # trim_loop_tail DID run
+
+
+# ---------------------------------------------------------------------------
+# WS4d — synthesize_sfx
+# ---------------------------------------------------------------------------
+
+def test_sfx_places_whoosh_at_transitions():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    segments=[{"src_in": 0, "src_out": 450}, {"src_in": 450, "src_out": 900}],
+                    transitions=[{"after_segment": 0, "style": "fade_black", "frames": 12}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"whoosh": "https://cdn/w.mp3"})
+    assert out["audio"]["sfx"] == [{"src_in": 450, "kind": "whoosh", "gain": 0.7, "url": "https://cdn/w.mp3"}]
+
+
+def test_sfx_places_pop_at_punch_ins():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": 0.7, "url": "https://cdn/p.mp3"}]
+
+
+def test_sfx_skips_kind_with_no_resolved_url():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": None})
+    # No cue placed -> "audio" is left untouched entirely (not stamped with an
+    # empty sfx list) — build_render_plan already treats an absent audio/sfx key
+    # as [], so this is a valid no-op, not a missing key.
+    assert (out.get("audio") or {}).get("sfx", []) == []
+
+
+def test_sfx_noop_with_no_sfx_assets():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets=None)
+    assert (out.get("audio") or {}).get("sfx", []) == []
+
+
+def test_sfx_respects_min_spacing():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[
+                        {"type": "punch_in", "src_in": 300, "src_out": 320, "scale": 1.08, "text": ""},
+                        {"type": "punch_in", "src_in": 305, "src_out": 325, "scale": 1.10, "text": ""},
+                    ])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert len(out["audio"]["sfx"]) == 1   # 305 is within 15f of 300
+
+
+def test_sfx_respects_budget_per_30s():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)   # 900 frames -> budget = round(5 * 900/900) = 5
+    overlays = [{"type": "punch_in", "src_in": f, "src_out": f + 10, "scale": 1.08, "text": ""}
+               for f in range(50, total_frames - 50, 40)]   # far more than 5, well-spaced
+    edl = _bare_edl("talking_head", total_frames, overlays=overlays)
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert len(out["audio"]["sfx"]) == 5
+
+
+def test_sfx_skips_last_15_frames():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames,
+                    overlays=[{"type": "punch_in", "src_in": total_frames - 10,
+                              "src_out": total_frames - 2, "scale": 1.08, "text": ""}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert (out.get("audio") or {}).get("sfx", []) == []
+
+
+def test_sfx_noop_with_no_candidates():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000))
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"whoosh": "u", "pop": "u", "hit": "u"})
+    assert (out.get("audio") or {}).get("sfx", []) == []
+
+
+def test_sfx_does_not_mutate_input():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    original_audio = edl.get("audio")
+    retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert edl.get("audio") == original_audio
+
+
+def test_sfx_output_passes_invariants():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert check_edl_invariants(out) == []
+
+
+def test_sfx_applied_via_orchestrator():
+    retention._ENV_PASSES = "sfx"
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    out = retention.apply_retention_passes(edl, words, style="talking_head",
+                                           sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": 0.7, "url": "https://cdn/p.mp3"}]

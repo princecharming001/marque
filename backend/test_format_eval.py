@@ -27,7 +27,7 @@ def test_load_fixtures_returns_full_corpus(tmp_path, monkeypatch):
     fixtures = format_eval._load_fixtures()
     expected_ids = set(build_corpus().keys())
     assert {fx["id"] for fx in fixtures} == expected_ids
-    assert len(fixtures) == 15
+    assert len(fixtures) == 17
 
 
 def test_load_fixtures_only_filters_to_one(tmp_path, monkeypatch):

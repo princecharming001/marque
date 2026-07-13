@@ -1,14 +1,14 @@
 {
-  "id": "fast_cuts-default",
+  "id": "adv-endcard-progressbar",
   "sourceUrl": "__SOURCE__",
   "formatId": "myth-buster",
   "edl": {
-    "style": "fast_cuts",
+    "style": "talking_head",
     "format_id": "myth-buster",
     "clips": [
       {
         "src_in": 0,
-        "src_out": 150,
+        "src_out": 90,
         "speed": 1.0,
         "tx_scale": 1.0,
         "tx_x": 0.0,
@@ -44,7 +44,7 @@
       {
         "word": "test",
         "frame": 80,
-        "end_frame": 93
+        "end_frame": 81
       }
     ],
     "overlays": [],
@@ -52,7 +52,7 @@
     "react_source": null,
     "react_schedule": [],
     "layout": {
-      "style": "fast_cuts",
+      "style": "talking_head",
       "panels": 1,
       "panel_boundaries": [],
       "split_fraction": 0.58
@@ -89,8 +89,13 @@
       "speech_frames": [],
       "sfx": []
     },
-    "end_card": null,
-    "progress_bar": false,
+    "end_card": {
+      "text": "Follow for more tips like this",
+      "start_frame": 90,
+      "frames": 60,
+      "show_handle": true
+    },
+    "progress_bar": true,
     "total_frames": 150,
     "schema_version": 2
   }

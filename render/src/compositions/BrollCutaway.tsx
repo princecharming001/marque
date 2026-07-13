@@ -7,6 +7,8 @@ import { Grade } from "../components/Grade";
 import { BrollLayer } from "../components/BrollLayer";
 import { Captions } from "../components/Captions";
 import { usePunchScale } from "../components/PunchZoom";
+import { ProgressBar } from "../components/ProgressBar";
+import { EndCard } from "../components/EndCard";
 import { CompositionProps } from "../types";
 
 // Talking-head A-roll is the spine (full-frame, its audio continuous). At each cue, a
@@ -23,9 +25,11 @@ export const BrollCutaway: React.FC<CompositionProps> = ({ sourceUrl, edl }) => 
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
       </AbsoluteFill>
       {edl && <BrollLayer broll={edl.broll} />}
+      {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>
   );

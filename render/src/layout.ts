@@ -9,6 +9,17 @@ import layoutJson from "./layout.json";
 
 export const LAYOUT = layoutJson;
 
+// P4: render-only (no backend/iOS mirror, no 3-way parity needed via
+// test_layout_parity.py) — nothing outside ProgressBar.tsx ever reads this
+// pixel value, unlike the LAYOUT constants above which exist specifically to
+// prevent cross-language drift on values multiple sides independently compute.
+export const PROGRESS_BAR_HEIGHT_PX = 4;
+
+// Watch-progress fraction, clamped to [0,1] — a render at frame 0 of a 0-length
+// plan (degenerate/empty edl) must not divide by zero or produce a negative bar.
+export const progressFraction = (frame: number, totalFrames: number): number =>
+  totalFrames > 0 ? Math.min(1, Math.max(0, frame / totalFrames)) : 0;
+
 export type CaptionPosition = "top" | "middle" | "bottom";
 export type FontKey = "inter" | "archivo" | "baloo";
 

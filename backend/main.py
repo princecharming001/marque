@@ -2005,6 +2005,21 @@ MUSIC_TRACKS = [
      "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/riceracer_assets/music/menu.ogg"},
 ]
 
+# P4: kind -> hosted one-shot SFX URL, read by retention.synthesize_sfx (passed in
+# as sfx_assets=SFX_ASSETS, never imported the other direction — main.py already
+# imports retention_mod). URLs are None until real royalty-free assets are sourced
+# and uploaded to Supabase public storage (see _rehost_media for the upload
+# mechanics this would reuse) — deliberately NOT filled with a guessed/invented
+# URL. synthesize_sfx and build_render_plan both already skip any cue whose kind
+# resolves to a falsy URL (same "clean backdrop beats fake copy" fail-soft
+# philosophy as unresolved b-roll/GreenScreen's text_card), so this dict existing
+# with None values is a fully safe, inert no-op today, not a broken half-feature.
+SFX_ASSETS: dict[str, str | None] = {
+    "whoosh": os.environ.get("SFX_URL_WHOOSH"),
+    "pop": os.environ.get("SFX_URL_POP"),
+    "hit": os.environ.get("SFX_URL_HIT"),
+}
+
 
 def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None) -> dict:
     """Post-process an EDL per the creator's editing preferences."""
@@ -3695,7 +3710,8 @@ async def _run_edit(job_id: str, words: list[dict]):
         trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
         edl_data = retention_mod.apply_retention_passes(
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
-            dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level)
+            dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
+            sfx_assets=SFX_ASSETS)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole

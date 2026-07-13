@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   LAYOUT, estTextWidth, fitTextBlock, boldWordFontSize, captionCenterY,
   clampSticker, captionBandRect, resolveStickerNudge, cardFit, karaokePop,
-  pitchCorrection, clampPosY,
+  pitchCorrection, clampPosY, progressFraction,
 } from "../layout";
 
 // ---- boldWordFontSize: shrinks to fit within the usable width, down to the floor ----
@@ -151,4 +151,24 @@ test("pitch correction is the inverse of speed", () => {
   assert.equal(pitchCorrection(2.0), 0.5);
   assert.equal(pitchCorrection(0.5), 2.0);
   assert.equal(pitchCorrection(0), 1.0); // guarded against div-by-zero
+});
+
+// ---- P4: progress bar fraction ----
+
+test("progress fraction is 0 at frame 0 and 1 at the last frame", () => {
+  assert.equal(progressFraction(0, 300), 0);
+  assert.equal(progressFraction(300, 300), 1);
+  assert.equal(progressFraction(150, 300), 0.5);
+});
+
+test("progress fraction clamps rather than exceeding 1 past the end", () => {
+  assert.equal(progressFraction(400, 300), 1);
+});
+
+test("progress fraction never goes negative for a negative frame", () => {
+  assert.equal(progressFraction(-5, 300), 0);
+});
+
+test("progress fraction is 0 for a degenerate zero-length plan (no div-by-zero)", () => {
+  assert.equal(progressFraction(0, 0), 0);
 });
