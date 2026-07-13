@@ -59,7 +59,19 @@ def _playbook_section(style: str) -> str:
     return "\n".join(out).strip()
 
 # Rough token budget (chars ≈ 4/token). Trim the assembled digest to stay in band.
-_MAX_TOKENS = 1000
+# P5: bumped 1000->2200. Every call type was ALREADY within a few hundred chars of
+# the old 4000 before this upgrade added content to pacing.md/retention.md/
+# sound_design.md — "brief" (retention+hooks+hook_visual) was silently truncating
+# hook_visual.md's content entirely once retention.md grew by even a couple
+# sentences (caught by test_brief_digest_routes_hook_visual). "edit_plan" was
+# ALREADY being trimmed pre-upgrade too (3961/4000 chars, silently cutting into
+# captions.md, the last file in its list), with no test catching it since nothing
+# asserted specific tail content survived — see
+# test_digest_has_headroom_before_trim_boundary, which now asserts real margin
+# directly for every (call, style) combo instead of relying on an incidental
+# content-presence check to notice. 1200 extra tokens is negligible added
+# cost/latency for every call type having comfortable, verified headroom.
+_MAX_TOKENS = 2200
 _CHARS_PER_TOKEN = 4
 
 

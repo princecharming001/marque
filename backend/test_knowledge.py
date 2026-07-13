@@ -35,6 +35,30 @@ def test_digest_within_token_budget_and_call_scoped():
            "LUFS" in kb._read("audio")
 
 
+# P5 regression guard: a KB edit that pushes a digest right up against the trim
+# boundary fails SILENTLY — whatever file is LAST in that call's _CALL_FILES list
+# just loses content, with no error, and the only way it surfaces is by accident
+# (test_brief_digest_routes_hook_visual happened to assert specific tail content).
+# This asserts real headroom directly so the NEXT KB edit that eats into it fails
+# here, with a clear message, instead of as a confusing "hook_visual content
+# missing" mystery two files removed from the one actually edited.
+_MIN_DIGEST_MARGIN_CHARS = 200
+
+
+def test_digest_has_headroom_before_trim_boundary():
+    styles = ["talking_head", "green_screen", "broll_cutaway", "split_three",
+             "duet_split", "faceless", "fast_cuts"]
+    budget_chars = kb._MAX_TOKENS * kb._CHARS_PER_TOKEN
+    tight = []
+    for call in ("brief", "edit_plan", "review"):
+        for style in styles:
+            d = kb.digest(style, "", call)
+            margin = budget_chars - len(d)
+            if margin < _MIN_DIGEST_MARGIN_CHARS:
+                tight.append(f"{call}/{style}: margin={margin}")
+    assert not tight, f"digest(s) within {_MIN_DIGEST_MARGIN_CHARS} chars of the trim boundary: {tight}"
+
+
 def test_edit_plan_digest_includes_pacing_for_video_type():
     d = kb.digest("faceless", "entertainment", "edit_plan")
     assert "PACING for video_type=entertainment" in d
@@ -61,7 +85,7 @@ def test_edit_brief_prompt_embeds_kb_block():
 
 def test_kb_v2_version():
     kb._read.cache_clear(); kb.knowledge_version.cache_clear()
-    assert kb.knowledge_version() == "kb-2026.08"
+    assert kb.knowledge_version() == "kb-2026.09"
 
 
 def test_edit_plan_digest_routes_playbook_and_transitions():

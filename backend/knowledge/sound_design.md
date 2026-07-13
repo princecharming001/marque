@@ -24,3 +24,12 @@
 ## Endings
 - No SFX in the last 15 frames except a soft close hit; trailing dead-air ≤10 frames
   (loop-friendly endings flow back into the opening beat).
+
+## Authoring (enforced in code — you don't place SFX yourself)
+
+SFX are synthesized DETERMINISTICALLY (app/retention.py `synthesize_sfx`), not authored
+per-clip: a whoosh lands at every transition/punch-in, budget-capped at ~5 per 30s of kept
+footage, ≥15 frames apart, none in the last 15 frames — matching the density budget above
+without needing an editorial decision from you. There is no `sfx` field in the plan schema;
+this section exists so you understand what's already happening to the sound, not so you
+configure it.

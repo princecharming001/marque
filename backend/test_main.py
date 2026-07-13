@@ -4763,6 +4763,110 @@ def test_apply_edit_prefs_music_respects_existing_track():
     assert out["audio"]["music"]["url"] == "keep://this.mp3"       # never clobber a chosen track
 
 
+# ---------------------------------------------------------------------------
+# P5 — plan-authored retention hints (pacing/interrupt_density/hook_text/
+# end_card) and music.vibe consumption, previously collected by the plan
+# schema then dropped on the floor once assemble_edl finished with the
+# mechanics fields.
+# ---------------------------------------------------------------------------
+
+def test_extract_plan_retention_hints_empty_plan_returns_empty_dict():
+    assert main._extract_plan_retention_hints({}) == {}
+
+
+def test_extract_plan_retention_hints_pulls_pacing():
+    plan = {"pacing": {"lift": "medium", "fast_forward_silences": True, "why": "rambling delivery"}}
+    hints = main._extract_plan_retention_hints(plan)
+    assert hints["pacing"] == {"lift": "medium", "fast_forward_silences": True}
+
+
+def test_extract_plan_retention_hints_ignores_invalid_pacing_lift():
+    plan = {"pacing": {"lift": "extreme", "fast_forward_silences": True, "why": "x"}}
+    assert "pacing" not in main._extract_plan_retention_hints(plan)
+
+
+def test_extract_plan_retention_hints_pulls_interrupt_density():
+    assert main._extract_plan_retention_hints({"interrupt_density": "dense"})["interrupt_density"] == "dense"
+
+
+def test_extract_plan_retention_hints_ignores_invalid_interrupt_density():
+    assert "interrupt_density" not in main._extract_plan_retention_hints({"interrupt_density": "chaotic"})
+
+
+def test_extract_plan_retention_hints_pulls_hook_text():
+    hints = main._extract_plan_retention_hints({"hook_text": "This changes everything"})
+    assert hints["hook_text"] == "This changes everything"
+
+
+def test_extract_plan_retention_hints_blank_hook_text_omitted():
+    assert "hook_text" not in main._extract_plan_retention_hints({"hook_text": "   "})
+    assert "hook_text" not in main._extract_plan_retention_hints({"hook_text": ""})
+
+
+def test_extract_plan_retention_hints_pulls_end_card_when_wanted_and_has_text():
+    plan = {"end_card": {"wanted": True, "text": "Follow for more"}}
+    assert main._extract_plan_retention_hints(plan)["end_card"] == {"wanted": True, "text": "Follow for more"}
+
+
+def test_extract_plan_retention_hints_end_card_not_wanted_omitted():
+    plan = {"end_card": {"wanted": False, "text": "Follow for more"}}
+    assert "end_card" not in main._extract_plan_retention_hints(plan)
+
+
+def test_extract_plan_retention_hints_end_card_wanted_but_blank_text_omitted():
+    plan = {"end_card": {"wanted": True, "text": "   "}}
+    assert "end_card" not in main._extract_plan_retention_hints(plan)
+
+
+def _music_edl(**over):
+    edl = {"style": "talking_head", "segments": [{"src_in": 0, "src_out": 300}]}
+    edl.update(over)
+    return edl
+
+
+def test_apply_plan_music_vibe_creator_off_wins_over_plan_wanted():
+    out = main._apply_plan_music_vibe(_music_edl(), {"music": False}, {"wanted": True, "vibe": "upbeat"})
+    assert out.get("audio", {}).get("music") is None
+
+
+def test_apply_plan_music_vibe_creator_on_wins_even_if_plan_not_wanted():
+    out = main._apply_plan_music_vibe(_music_edl(), {"music": True}, {"wanted": False, "vibe": ""})
+    assert out["audio"]["music"]["url"]
+
+
+def test_apply_plan_music_vibe_creator_unset_defers_to_plan_wanted():
+    out = main._apply_plan_music_vibe(_music_edl(), {}, {"wanted": True, "vibe": "chill"})
+    assert out["audio"]["music"]["url"] == main.MUSIC_TRACKS[1]["url"]   # chill = index 1
+
+
+def test_apply_plan_music_vibe_creator_unset_and_plan_not_wanted_noop():
+    out = main._apply_plan_music_vibe(_music_edl(), {}, {"wanted": False, "vibe": "upbeat"})
+    assert out.get("audio", {}).get("music") is None
+
+
+def test_apply_plan_music_vibe_picks_track_matching_vibe():
+    out = main._apply_plan_music_vibe(_music_edl(), {}, {"wanted": True, "vibe": "driving"})
+    assert out["audio"]["music"]["url"] == main.MUSIC_TRACKS[2]["url"]   # driving = index 2
+
+
+def test_apply_plan_music_vibe_unknown_vibe_falls_back_to_deterministic_pick():
+    edl = _music_edl(segments=[{"src_in": 0, "src_out": 300}, {"src_in": 300, "src_out": 600}])
+    out = main._apply_plan_music_vibe(edl, {}, {"wanted": True, "vibe": "epic"})
+    assert out["audio"]["music"]["url"] == main.MUSIC_TRACKS[2 % len(main.MUSIC_TRACKS)]["url"]
+
+
+def test_apply_plan_music_vibe_never_overrides_existing_track():
+    edl = _music_edl(audio={"lufs_target": -14.0,
+                            "music": {"url": "keep://this.mp3", "volume": 0.2, "duck_voice": True, "query": None}})
+    out = main._apply_plan_music_vibe(edl, {}, {"wanted": True, "vibe": "upbeat"})
+    assert out["audio"]["music"]["url"] == "keep://this.mp3"
+
+
+def test_apply_plan_music_vibe_montage_style_gets_louder_no_duck():
+    out = main._apply_plan_music_vibe(_music_edl(style="fast_cuts"), {}, {"wanted": True, "vibe": "upbeat"})
+    assert out["audio"]["music"]["volume"] == 0.3 and out["audio"]["music"]["duck_voice"] is False
+
+
 def test_default_toggles_seeded_by_format_else_vtype():
     assert main._default_toggles({}, "recap_music") == {"broll": False, "punch_ins": False, "music": True}
     legacy = main._default_toggles({"video_type": "story"}, "")

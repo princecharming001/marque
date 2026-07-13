@@ -39,6 +39,18 @@ Cut cadence should track the dossier `delivery_curve`, not a fixed metronome:
 - No single static frame held > 3s without motion (see retention.md — motion floor).
 - Loop-friendly ending: trim trailing dead-air to ≤ 10 frames so the last frame cuts clean to the first.
 
+## Silence policy v3 + interrupt density (enforced in code — state intent only)
+
+`pacing`/`interrupt_density` are editorial INTENT; app/retention.py enforces the exact
+numbers. lift: medium=dragging/rambling delivery, subtle=normal (default), none=already
+tight/high-energy. Global speed multiplier: none 1.00x, subtle 1.03x, medium 1.06x — plus an
+extra per-stretch speed-up on low-info spans (1.15–1.25x), spoken speech capped at 1.35x
+total, pitch-preserved. `fast_forward_silences: true` speeds through a pause (up to 3.0x)
+instead of hard-cutting it, for a pause worth keeping a SENSE of; duet_split never speeds.
+`interrupt_density`: dense=high-energy/entertainment (visual change ~every 2–3s), standard=
+default (~3–5s), calm=slower story/vlog content (~5–7s) — a floor the assembler fills, never
+a cap on real cuts already covering a stretch.
+
 ## Cut grammar (v2)
 
 - Prefer INVISIBLE edits: cut on action (2–4 frames after movement starts) and J/L split

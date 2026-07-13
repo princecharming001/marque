@@ -3466,7 +3466,7 @@ async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str,
     or fail the real pipeline; every failure mode here is swallowed into a log
     line, never raised."""
     try:
-        plan_edl, llm_contributed = await _author_edl_via_plan(
+        plan_edl, llm_contributed, _plan_data = await _author_edl_via_plan(
             job, style, script, words, prefs, emphasis_spans)
         legacy_issues = check_edl_invariants(legacy_edl, words)
         legacy_kept = _kept_frames(legacy_edl)
@@ -3488,15 +3488,19 @@ async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str,
 
 
 async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[dict],
-                               prefs: dict, emphasis_spans: list | None) -> tuple[dict | None, bool]:
+                               prefs: dict, emphasis_spans: list | None) -> tuple[dict | None, bool, dict]:
     """P3 authoring path: the LLM emits a typed EDIT PLAN; code assembles the EDL. The
     assembler can't emit an invalid EDL, so verification is deterministic (check_edl_
     invariants) with the LLM reserved for reorder coherence only.
 
-    Returns (edl_dict | None, llm_contributed). `llm_contributed` is False when the LLM was
-    absent/down/returned nothing — the assembled EDL is then a generic whole-take cut, so the
-    caller flags `ai_edit_unavailable` (F13: never silently hand back an untailored edit).
-    None edl_dict means even assembly failed → caller uses the safe default."""
+    Returns (edl_dict | None, llm_contributed, plan). `llm_contributed` is False when the LLM
+    was absent/down/returned nothing — the assembled EDL is then a generic whole-take cut, so
+    the caller flags `ai_edit_unavailable` (F13: never silently hand back an untailored edit).
+    None edl_dict means even assembly failed → caller uses the safe default. `plan` (P5) is the
+    raw typed plan dict ({} when the LLM didn't contribute) — assemble_edl already consumed
+    the mechanics fields (keeps/cuts/order/punch_ins/broll/caption_plan/text_cards); the
+    caller extracts the RETENTION fields (pacing/interrupt_density/hook_text/end_card/music)
+    from it since those are consumed downstream in the shared _run_edit tail, not here."""
     brief = job.get("edit_brief")
     format_id = script.get("formatId", "myth-buster")
     plan: dict = {}
@@ -3517,7 +3521,7 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
         edl_obj = assemble_edl(plan, words, style, format_id, prefs=prefs, brief=brief)
     except Exception as e:
         logging.warning("assemble_edl failed (%s) → safe default", e)
-        return None, llm_contributed
+        return None, llm_contributed, plan
     edl_data = edl_obj.model_dump()
 
     # Deterministic verify. The assembler produces structurally-valid EDLs by construction,
@@ -3542,13 +3546,86 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
         hard = [i for i in issues if "kept duration" not in i]
     if hard:
         logging.warning("assemble_edl hard invariant issues %s → safe default", hard[:4])
-        return None, llm_contributed
+        return None, llm_contributed, plan
     # LLM verify reserved for reorder coherence — only when a non-identity reorder exists.
     order = edl_data.get("segment_order")
     if order is not None and order != list(range(len(edl_data.get("segments") or []))):
         edl_data = await verify_and_repair_edl(style, edl_data, words, script,
                                                emphasis_spans=emphasis_spans)
-    return edl_data, llm_contributed
+    return edl_data, llm_contributed, plan
+
+
+# ---------------------------------------------------------------------------
+# P5: consume the plan author's own typed retention decisions (pacing/
+# interrupt_density/hook_text/end_card/music) — previously collected by the
+# schema but dropped on the floor once assemble_edl finished with the plan's
+# mechanics fields. Kept as standalone pure functions (not inlined in _run_edit)
+# so they're independently testable, matching _extract_emphasis_regions/
+# _merge_drops/_apply_edit_prefs' own pattern.
+# ---------------------------------------------------------------------------
+
+def _extract_plan_retention_hints(plan: dict) -> dict:
+    """Distill the raw plan dict into the hints shape apply_retention_passes
+    expects. {} (or a partial dict) for anything the LLM omitted/mistyped or
+    when the plan is empty (safe-default/legacy paths) — every retention pass
+    already treats a missing hint as "use the style default", so a partial
+    extraction here is never unsafe, just less-tailored."""
+    if not plan:
+        return {}
+    hints: dict = {}
+    pacing = plan.get("pacing")
+    if isinstance(pacing, dict) and pacing.get("lift") in ("none", "subtle", "medium"):
+        hints["pacing"] = {"lift": pacing["lift"],
+                           "fast_forward_silences": bool(pacing.get("fast_forward_silences"))}
+    density = plan.get("interrupt_density")
+    if density in ("calm", "standard", "dense"):
+        hints["interrupt_density"] = density
+    hook_text = (plan.get("hook_text") or "").strip()
+    if hook_text:
+        hints["hook_text"] = hook_text
+    end_card = plan.get("end_card")
+    if isinstance(end_card, dict) and end_card.get("wanted"):
+        text = (end_card.get("text") or "").strip()
+        if text:
+            hints["end_card"] = {"wanted": True, "text": text}
+    return hints
+
+
+# vibe -> MUSIC_TRACKS index: a fixed, deterministic map, not a search — the
+# catalog is small and was ALREADY ordered upbeat/chill/driving in anticipation
+# of exactly this lookup (see MUSIC_TRACKS above).
+_MUSIC_VIBE_TRACK_INDEX = {"upbeat": 0, "chill": 1, "driving": 2}
+
+
+def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None) -> dict:
+    """P5: honor the plan author's music{wanted,vibe} decision when the creator
+    hasn't explicitly toggled prefs.music either way. The creator's own toggle
+    always wins over the plan's suggestion: prefs.music is False -> never;
+    prefs.music is True -> always (vibe-matched if the plan supplied one, else
+    the existing deterministic segment-count pick); prefs.music unset -> defer
+    entirely to the plan. Never overrides music already set on the EDL (e.g. by
+    a prior tweak)."""
+    music_hint = music_hint or {}
+    creator_pref = prefs.get("music")
+    if creator_pref is False:
+        return edl_data
+    wants_music = True if creator_pref is True else bool(music_hint.get("wanted"))
+    if not wants_music:
+        return edl_data
+    audio = edl_data.get("audio")
+    if not isinstance(audio, dict):
+        audio = {"lufs_target": -14.0}
+        edl_data["audio"] = audio
+    if audio.get("music"):
+        return edl_data
+    idx = _MUSIC_VIBE_TRACK_INDEX.get(music_hint.get("vibe") or "")
+    if idx is None:
+        idx = len(edl_data.get("segments") or []) % len(MUSIC_TRACKS)   # deterministic fallback
+    track = MUSIC_TRACKS[idx % len(MUSIC_TRACKS)]
+    montage = edl_data.get("style") == "fast_cuts"
+    audio["music"] = {"url": track["url"], "query": None,
+                      "volume": 0.3 if montage else 0.12, "duck_voice": not montage}
+    return edl_data
 
 
 async def _run_edit(job_id: str, words: list[dict]):
@@ -3593,11 +3670,12 @@ async def _run_edit(job_id: str, words: list[dict]):
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         used_safe_default = False
+        plan_data: dict = {}   # P5: the plan path's own typed retention decisions (see below)
         if EDL_AUTHOR == "plan":
             # P3.3: LLM emits a typed plan; code assembles the EDL (captions, filler drops,
             # brief cuts, b-roll grammar, prefs all enforced inside assemble_edl). No legacy
             # post-processing needed — go straight to the shared render tail.
-            edl_data, llm_contributed = await _author_edl_via_plan(job, style, script, words, prefs, emphasis_spans)
+            edl_data, llm_contributed, plan_data = await _author_edl_via_plan(job, style, script, words, prefs, emphasis_spans)
             if edl_data is None:
                 used_safe_default = True
                 total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
@@ -3697,16 +3775,18 @@ async def _run_edit(job_id: str, words: list[dict]):
         # default off = today's behavior unchanged); every pass is individually
         # fail-soft (app/retention.py _safe_pass), so this can never turn a working
         # pipeline run into a failure.
-        # hints: until WS6 plumbs the plan author's own typed pacing/interrupt_density/
-        # hook_text/end_card decisions through, the only signal available to EITHER
-        # path is the edit brief's `pacing.energy` (already authored today, shared
-        # context for both author paths) — a low-energy/rambling brief lifts the
-        # global pace more (retention.PACING_LIFT_MULT["medium"]) than a naturally
-        # energetic one (every pass still has its own style-driven default when
-        # there's no brief at all, e.g. the safe-default path).
+        # hints: the edit brief's `pacing.energy` is a coarse fallback available to
+        # EITHER path (a low-energy/rambling brief lifts the global pace more —
+        # retention.PACING_LIFT_MULT["medium"] — than a naturally energetic one).
+        # P5: the plan path's own typed decisions (plan_data, {} for the legacy/
+        # safe-default paths) are a per-take editorial judgment and take priority
+        # over that coarse heuristic wherever the LLM actually supplied one — every
+        # pass still has its own style-driven default when neither is present.
         brief_pacing = (job.get("edit_brief") or {}).get("pacing") or {}
         retention_hints = ({"pacing": {"lift": "medium" if brief_pacing.get("energy") == "low" else "subtle"}}
                            if brief_pacing.get("energy") else {})
+        retention_hints.update(_extract_plan_retention_hints(plan_data))
+        edl_data = _apply_plan_music_vibe(edl_data, prefs, plan_data.get("music"))
         trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
         edl_data = retention_mod.apply_retention_passes(
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
