@@ -1457,9 +1457,13 @@ def test_strip_fillers_no_overlap_with_fillers_before_gap():
     # No two drops may overlap.
     for (a1, b1), (a2, b2) in zip(spans, spans[1:]):
         assert b1 <= a2, f"overlapping drops: {(a1, b1)} and {(a2, b2)}"
-    # The dead-air drop must start at the last filler's end (frame 18), not frame 15.
+    # #1b silence tightening: the dead-air drop no longer removes the WHOLE gap
+    # (frame 18-30) — it leaves a ~200ms residual pause (default keep_pause_frames=6,
+    # split 4 lead + 2 tail) so the cut doesn't read as a hard butt-splice. The drop
+    # must still start AT OR AFTER the last filler's end (frame 18), never before.
     dead = [(d.src_in, d.src_out) for d in drops if d.reason == "dead_air"]
-    assert dead == [(18, 30)]
+    assert dead == [(22, 28)]
+    assert dead[0][0] >= 18
 
 
 def test_strip_fillers_text_fallback_without_type():

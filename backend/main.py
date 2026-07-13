@@ -36,6 +36,7 @@ from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
 from app import push as push_mod
 from app import higgsfield as higgsfield_mod
+from app import retention as retention_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -3635,6 +3636,17 @@ async def _run_edit(job_id: str, words: list[dict]):
             for c in job["clips"]:
                 c.setdefault("warnings", []).append(
                     "ai_edit_unavailable: used a safe default cut (full take, fillers stripped)")
+        # Retention-editor upgrade: deterministic post-passes applied to WHATEVER EDL
+        # either author path produced — so both the plan path and the legacy
+        # direct-EDL author benefit identically. Flag-gated (RETENTION_PASSES env,
+        # default off = today's behavior unchanged); every pass is individually
+        # fail-soft (app/retention.py _safe_pass), so this can never turn a working
+        # pipeline run into a failure. hints={} until WS6 plumbs the plan author's
+        # typed decisions through — every pass has a style-driven default for that case.
+        trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
+        edl_data = retention_mod.apply_retention_passes(
+            edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
+            dossier=job.get("dossier"), hints={}, script=script, level=trim_level)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole

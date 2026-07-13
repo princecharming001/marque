@@ -182,6 +182,45 @@ def test_confirmed_edit_renders_exactly_once(monkeypatch):
     assert main._clip_jobs[job_id]["status"] == "ready"
 
 
+def test_run_edit_calls_retention_passes_with_the_authored_edl(monkeypatch):
+    # Retention-editor upgrade WS0: _run_edit must hand EVERY authored EDL (legacy
+    # or plan path) through apply_retention_passes before b-roll resolve / render,
+    # regardless of the RETENTION_PASSES flag (the flag lives inside
+    # apply_retention_passes itself — _run_edit always calls it).
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        monkeypatch.setattr(main, k, "x")
+    words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
+             for i, w in enumerate("one two three four".split())]
+    job_id = seed_clip_job(source_url="mock://x", words=words, status="editing", edl=None,
+                           clips=[{"clip_id": "c1", "format": "myth-buster", "status": "queued"}])
+
+    async def no_llm(*a, **k):
+        raise main.HTTPException(status_code=502, detail="keyless")
+    monkeypatch.setattr(main, "anthropic", no_llm)
+
+    async def bridge(*args, timeout_s=None, **kwargs):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_): return None
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+
+    calls = []
+    real = main.retention_mod.apply_retention_passes
+    def spy(edl_data, w, **kwargs):
+        calls.append(kwargs)
+        return real(edl_data, w, **kwargs)
+    monkeypatch.setattr(main.retention_mod, "apply_retention_passes", spy)
+
+    asyncio.run(main._run_edit(job_id, words))
+    assert len(calls) == 1
+    assert calls[0]["style"] == "talking_head"
+    assert calls[0]["level"] == "default"
+    assert calls[0]["hints"] == {}
+
+
 def test_pipeline_broll_resolve_failure_is_a_warning_not_a_failure(monkeypatch):
     # B-05: a b-roll resolve blow-up must degrade to a warning, never fail the clip job.
     job_id = _renderable_job(monkeypatch)
