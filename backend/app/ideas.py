@@ -225,6 +225,68 @@ async def spitfire(store, creator_id: str, brand: dict, exemplar: str = "",
         return to_briefs(creator_id, mock_ideas(brand)[:n], source="spitfire")
 
 
+# --- scheduling (tier cadence) -------------------------------------------------
+# Render hits /internal/cron/ideate daily; each creator's tier cadence decides whether
+# they're actually DUE, tracked by a per-creator watermark (metric_watermarks table).
+_IDEATE_INTERVAL_DAYS = {"nightly": 1.0, "daily": 1.0, "3xweek": 7.0 / 3.0,
+                         "weekly": 7.0, "biweekly": 14.0, "monthly": 30.0, "off": 0.0}
+
+
+def ideate_interval_days(schedule: str) -> float:
+    return _IDEATE_INTERVAL_DAYS.get(schedule, 0.0)
+
+
+def is_ideate_due(tier: str, last_epoch: float, now_epoch: float) -> bool:
+    from app import tiers
+    interval = ideate_interval_days(tiers.cadence(tier, "ideas"))
+    if interval <= 0:                       # 'off' cadence -> never
+        return False
+    if not last_epoch:                      # never generated -> due
+        return True
+    return (now_epoch - last_epoch) >= interval * 86400
+
+
+async def run_ideate_for(store, creator_id: str, brand: dict, tier: str,
+                         now_epoch: float, exemplar: str = "") -> int:
+    """Generate + persist a fresh idea batch for one creator IF their tier cadence says
+    they're due. The reusable primitive for both the cron and event-driven (_spawn on a
+    new dossier) triggers. Returns #briefs written (0 when not due / off / no store)."""
+    if not palo_flags.enabled(palo_flags.IDEA_BANK) or store is None or not creator_id:
+        return 0
+    try:
+        last = await store.get_watermark(creator_id, "ideate_last_run") or 0
+        if not is_ideate_due(tier, float(last), now_epoch):
+            return 0
+        briefs = await spitfire(store, creator_id, brand, exemplar)
+        for b in briefs:
+            try:
+                await store.upsert_brief(b)
+            except Exception as e:
+                logging.warning("[ideas] cron upsert_brief failed: %s", e)
+        await store.set_watermark(creator_id, "ideate_last_run", float(now_epoch))
+        return len(briefs)
+    except Exception as e:
+        logging.warning("[ideas] run_ideate_for failed: %s", e)
+        return 0
+
+
+async def run_ideate_cron(store, now_epoch: float) -> int:
+    """Sweep every creator, generating for those whose tier cadence is due. Returns the
+    total briefs written across the fleet. Flag-gated + keyless no-op."""
+    if not palo_flags.enabled(palo_flags.IDEA_BANK) or store is None:
+        return 0
+    from app import tiers
+    total = 0
+    for c in await store.load_all_creators():
+        cid = c.get("creator_id")
+        if not cid:
+            continue
+        tier = await tiers.tier_for(cid, store)
+        brand = {"niche": c.get("niche", ""), "goal": c.get("goal", "")}
+        total += await run_ideate_for(store, cid, brand, tier, now_epoch)
+    return total
+
+
 async def suggest_ideas(store, creator_id: str, brand: dict, source: str = "onboarding",
                         exemplars: str = "") -> list[dict]:
     """Full pipeline: generate → eval-filter → briefs → persist → return. Flag-gated.

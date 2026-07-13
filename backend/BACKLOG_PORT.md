@@ -34,7 +34,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 ## Phase 2 — idea bank / reel suggestions  (flag: IDEA_BANK)
 - [x] `app/ideas.py` — onboarding idea prompts (verbatim) + IdeaSet + HAIKU eval gate → `briefs`; keyless mock + eval pass-through; flag IDEA_BANK (test_palo_ideas.py 6 green; +2 port_eval; full suite 875)
 - [x] spitfire Generator→Critic→Editor→Ranker (Anthropic-only, ≤4 calls) + `parse_thinking_output` (verbatim port) + `parse_all` + `_parse_ranking`; keyless→mock (test_palo_ideas.py 10 green; +2 port_eval; suite 879)
-- [ ] `_spawn()` on dossier/scan events + `/internal/cron/ideate` route (tier cadence)
+- [x] `/internal/cron/ideate` route (token+flag guarded) + tier-cadence `is_ideate_due`/`run_ideate_for`/`run_ideate_cron` (watermark-tracked). `run_ideate_for` is the event-`_spawn` primitive (dossier-hook call folds into Phase 4). (test_palo_cron.py 7 green; +1 port_eval; suite 886)
 - [ ] feed integration: pulse judge + ideate-rank into `/v1/feed`
 - [ ] tests: parser golden, eval gate, budget ≤4, tier gating
 
