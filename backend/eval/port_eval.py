@@ -99,6 +99,11 @@ def _checks() -> list[tuple[str, bool]]:
     _blk = _da.dossier_to_analysis_block({"title": "T", "views": 1000,
         "dossier": {"first_frame": {"desc": "hook", "pattern_interrupt": True}}})
     out.append(("strategy.adapter", "T (1,000 views)" in _blk and "pattern interrupt" in _blk))
+    from app import strategy_compiler as _sc
+    _sm = _sc._template_strategy({"niche": "chess"})
+    out.append(("strategy.sections", _sc.validate_sections(_sm) is True
+                and _sc.validate_sections("## Insights\nx") is False))
+    out.append(("strategy.regime", prompt_assembly.infer_craft_regime(_sm).startswith("sub-breakout")))
 
     return out
 
