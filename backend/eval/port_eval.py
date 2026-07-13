@@ -67,6 +67,9 @@ def _checks() -> list[tuple[str, bool]]:
     from app import tiers as _t
     out.append(("ideas.cadence", ideas.is_ideate_due(_t.STUDIO, 0, 1e7) is True
                 and ideas.is_ideate_due(_t.STARTER, 1e7 - 3 * 86400, 1e7) is False))
+    _mg = ideas.merge_briefs_into_feed([{"id": "s1"}, {"id": "b2"}],
+                                       [{"id": "b1"}, {"id": "b2"}, {"id": "b3"}], max_briefs=2)
+    out.append(("ideas.feedmerge", [m["id"] for m in _mg] == ["b1", "b3", "s1", "b2"]))
 
     return out
 
