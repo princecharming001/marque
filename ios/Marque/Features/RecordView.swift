@@ -49,6 +49,10 @@ struct RecordView: View {
     @State private var exampleReels: [ReelItem] = []
     // Honest submit-failure surface (never fake-ready mock clips against a real backend).
     @State private var submitFailedMessage: String? = nil
+    // Which treatment the toggles were last seeded from (view re-creation must not reseed).
+    @State private var lastSeededFormat: EditFormat? = nil
+    // The take already saved to Footage (dedup across submit retries).
+    @State private var savedFootagePath: String? = nil
     // UX-A3: mimic-card playback state — play only the cards actually on screen,
     // and remember hard playback failures so those cards fall back to their poster.
     @State private var visibleMimicIds: Set<String> = []
@@ -292,7 +296,13 @@ struct RecordView: View {
                 }
                 .frame(maxHeight: 560)
                 .task(id: editFormat) {
-                    briefToggles = editFormat.defaultToggles     // UX-B1b: reseed per treatment
+                    // Reseed ONLY when the treatment actually changed — this task also
+                    // re-runs when the .recorded view is re-created (add-a-take, honest
+                    // submit-failure return) and must not wipe the creator's flips.
+                    if lastSeededFormat != editFormat {
+                        briefToggles = editFormat.defaultToggles
+                        lastSeededFormat = editFormat
+                    }
                     await loadExamples()
                 }
                 .task { await loadCapabilities() }
@@ -712,6 +722,7 @@ struct RecordView: View {
     private func reRecord() {
         uploadTask?.cancel()   // H-02: stale footage — restart the hoisted upload fresh
         uploadTask = nil
+        submitFailedMessage = nil
         analyzeJobId = nil
         brief = nil
         footagePath = nil
@@ -746,11 +757,14 @@ struct RecordView: View {
         guard submitTask == nil else { return }               // AF-I3: no double-submit
         submitFailedMessage = nil
         phase = .analyzing
-        // Keep the raw take in the Library so it can be re-cut later.
-        if let footagePath {
+        // Keep the raw take in the Library so it can be re-cut later — ONCE per take
+        // (the honest-failure path makes same-take retries possible; every retry was
+        // inserting a duplicate Footage row — review finding).
+        if let footagePath, footagePath != savedFootagePath {
             store.addFootage(path: footagePath, scriptId: liveScript.id,
                              title: liveScript.title.isEmpty ? liveScript.hook.text : liveScript.title,
                              seconds: liveScript.targetSeconds)
+            savedFootagePath = footagePath
         }
         submitTask = Task {
             defer { submitTask = nil }
@@ -829,6 +843,10 @@ struct RecordView: View {
         // so they can retry (the take is already saved as Footage). The mock path stays
         // for genuinely backendless demo/dev runs only.
         if !AppConfig.backendBaseURL.isEmpty {
+            // Reset the hoisted upload: when the FAILURE was the upload itself, retrying
+            // with the cached nil result could never succeed (review finding).
+            uploadTask?.cancel()
+            uploadTask = nil
             phase = .recorded
             submitFailedMessage = "Couldn't reach the editor — your take is saved. Tap Submit to try again."
             return

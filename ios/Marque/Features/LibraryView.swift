@@ -117,7 +117,10 @@ struct ClipsSection: View {
     private func renderingEtaLine(_ group: [Clip]) -> String {
         let remaining = group.compactMap { c -> Int? in
             guard let eta = c.etaSeconds else { return nil }
-            return max(0, eta - Int(Date().timeIntervalSince(c.createdAt)))
+            // Anchor at when the estimate was TAKEN — the server value is already
+            // remaining-from-then; subtracting since createdAt double-counted.
+            let anchor = c.etaSetAt ?? c.createdAt
+            return max(0, eta - Int(Date().timeIntervalSince(anchor)))
         }.max()
         guard let remaining else {
             return "The AI is on it — you'll get a notification when it's done."

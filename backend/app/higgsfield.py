@@ -60,8 +60,11 @@ async def _poll_request(request_id: str, deadline: float) -> dict | None:
         while loop.time() < deadline:
             r = await client.get(f"{HIGGSFIELD_BASE}/requests/{request_id}/status",
                                  headers=_auth_headers())
+            if r.status_code == 429 or r.status_code >= 500:
+                await asyncio.sleep(6)           # transient — keep polling until the deadline
+                continue
             if r.status_code >= 300:
-                return None
+                return None                       # genuine 4xx: the request is gone
             data = r.json()
             status = (data.get("status") or "").lower()
             if status == "completed":
@@ -109,7 +112,11 @@ async def generate_broll(cue: str, duration_s: int = 5) -> str | None:
         image_url = _first_image_url(img_done or {})
         if not image_url:
             return None
-        # 2) animate it
+        # 2) animate it — but never SUBMIT (and get billed) into a deadline that can't
+        # possibly finish; ~30s is the floor for any DoP job to come back.
+        if loop.time() > deadline - 30:
+            log.info("higgsfield: deadline nearly exhausted after t2i — skipping i2v")
+            return None
         vid_req = await _submit(_I2V_MODEL, {
             "image_url": image_url,
             "prompt": f"subtle cinematic motion, {cue.strip()}",

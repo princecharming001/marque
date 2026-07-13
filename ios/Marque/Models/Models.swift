@@ -405,9 +405,11 @@ struct Clip: Codable, Hashable, Identifiable {
     // edit). Cleared on apply/discard/sheet-dismiss/remoteURL change; never written
     // with the snapshot save (set without save()). Optional-with-default → decode-safe.
     var previewURL: String? = nil
-    // Server's remaining-time estimate at submit ("Ready in ~N min" in the Library).
-    // Refreshed by pollJob; display derives the countdown from createdAt + this.
+    // Server's remaining-time estimate ("Ready in ~N min" in the Library). Refreshed
+    // by the poll loops; the countdown anchors at etaSetAt (when the estimate was
+    // taken), NOT createdAt — the server value is already remaining-from-now.
     var etaSeconds: Int? = nil
+    var etaSetAt: Date? = nil
     var createdAt: Date = Date()
 }
 
