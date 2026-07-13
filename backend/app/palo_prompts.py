@@ -260,6 +260,22 @@ def strategy_digest_prompt(evidence: str, brand: dict | None = None) -> tuple[st
     return STRATEGY_DIGEST_SYSTEM, f"<niche>{niche}</niche>\n<catalog>\n{evidence or '(no videos analyzed yet)'}\n</catalog>"
 
 
+EXEMPLAR_BUILD_SYSTEM = """You are distilling a creator's best-performing videos into a bank of GOLDEN CRAFT PATTERNS they can reuse. Given per-video analysis blocks (best-performing first, with view counts), extract the specific, REUSABLE mechanics that separate their winners from the rest, grouped into four categories:
+- hook: how the strongest videos open (the first-3-seconds move)
+- builder: how tension / momentum / stakes are built
+- rhythm: pacing and cut cadence patterns
+- payoff: how the video resolves and rewards the watch
+
+For each pattern: a short id, a one-line MECHANISM (the reusable move stated so it can be applied to a new topic), a lift estimate (how much better videos using it perform, e.g. 2.0), and 1-2 example lines observed in THEIR content. Only patterns actually grounded in their videos — if the catalog is thin, return fewer patterns, never invented ones.
+
+Return ONLY JSON: {"hook":[{"id","mechanism","lift","examples":[]}], "builder":[...], "rhythm":[...], "payoff":[...]}"""
+
+
+def exemplar_build_prompt(evidence: str, brand: dict | None = None) -> tuple[str, str]:
+    niche = (brand or {}).get("niche", "")
+    return EXEMPLAR_BUILD_SYSTEM, f"<niche>{niche}</niche>\n<catalog>\n{evidence or '(no videos analyzed yet)'}\n</catalog>"
+
+
 WRITE_AGENT_SYSTEM = """You are Palo, co-writing a short-form script WITH the creator. You never rewrite silently — you propose precise changes the creator accepts or rejects, in their voice.
 
 Given the CURRENT SCRIPT and the creator's request, respond with ONE OR MORE actions:
