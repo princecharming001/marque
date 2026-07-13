@@ -12,7 +12,7 @@ Two tripwires, mirroring eval/golden.py's KNOWN_GOOD / KNOWN_BAD shape:
 """
 from __future__ import annotations
 
-from app.edl import ms_to_frame, strip_fillers, build_render_plan
+from app.edl import ms_to_frame, strip_fillers, strip_fillers_v2, build_render_plan
 from eval.edit_fixtures import FIXTURES, take_total_frames
 
 
@@ -20,7 +20,15 @@ def reference_edl(fx: dict) -> dict:
     """The EDL a good assembler should emit for this fixture."""
     words = fx["words"]
     total = take_total_frames(words)
-    kept, drops = strip_fillers(words)
+    # stutter-heavy needs the detect_disfluencies layer too: a word-repeat stutter
+    # ("I I") and a multi-word discourse phrase ("you know") are both invisible to
+    # strip_fillers' single-token lexicon. strip_fillers_v2 is exactly "strip_fillers
+    # + detect_disfluencies, merged" (app/edl.py) — what a competent editor's cut list
+    # actually covers for this kind of take.
+    if fx["category"] == "stutter-heavy":
+        kept, drops = strip_fillers_v2(words)
+    else:
+        kept, drops = strip_fillers(words)
     drop_dicts = [d.model_dump() for d in drops]
 
     # Buried hook: a good edit pulls the payoff forward by dropping the intro
@@ -116,5 +124,27 @@ def known_bad() -> list[dict]:
     edl4["segments"] = [{"src_in": 0, "src_out": 300}, {"src_in": 100, "src_out": 500}]
     cases.append({"code": "edl_invalid", "why": "overlapping segments",
                   "edl": edl4, "words": fx4["words"], "hook_ms": 0})
+
+    # 7. Residual filler: the stutter-heavy reference edit correctly drops its
+    #    lexicon filler ("um") — delete JUST that one drop (the stutter + "you know"
+    #    phrase drops are left intact, so this carries exactly one defect like every
+    #    other case here) and restore its caption, so "um" survives as a rendered
+    #    caption. check_residual_filler must catch it even though every other
+    #    invariant still passes clean.
+    fx5 = next(f for f in FIXTURES if f["category"] == "stutter-heavy")
+    edl5 = reference_edl(fx5)
+    um_word = next(w for w in fx5["words"] if w["word"] == "um")
+    um_frame = ms_to_frame(um_word["start_ms"])
+    edl5["drops"] = [d for d in edl5["drops"] if not (d["src_in"] <= um_frame < d["src_out"])]
+    # reference_edl() built captions from the FILTERED `kept` words, which excluded
+    # "um" — deleting the drop alone doesn't resurrect a caption that was never
+    # emitted, so add it back explicitly to make this a real repro of the bug
+    # (residual audio AND a lingering caption for it).
+    edl5["captions"] = sorted(
+        edl5["captions"] + [{"word": "um", "frame": um_frame,
+                             "end_frame": ms_to_frame(um_word["end_ms"])}],
+        key=lambda c: c["frame"])
+    cases.append({"code": "residual_filler", "why": "um survives after its drop is deleted",
+                  "edl": edl5, "words": fx5["words"], "hook_ms": 0})
 
     return cases

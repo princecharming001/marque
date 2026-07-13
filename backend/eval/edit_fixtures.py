@@ -101,6 +101,33 @@ _BURIED_HOOK = _take(
     wpm=145.0,
 )
 
+# --- Take 6: stutter-heavy — an exact word-repeat stutter ("I I", 40ms gap — well
+# inside the ~100ms window a real stutter lands in), a lexicon filler ("um") for a
+# residual-filler tripwire, and a "you know" discourse phrase sitting at a clause
+# boundary (a real pause right before it) rather than mid-sentence. The opening
+# line is deliberately an ordinary, never-dropped sentence (the stutter/phrase sit
+# further in) so hook_ms=0's "first kept word" fallback stays unambiguous — it
+# shouldn't land on a word only the disfluency-aware stripper (not the plain
+# lexicon one check_hook_timing's fallback uses) knows to cut. ---------------------
+_STUTTER_HEAVY = _take(
+    _sentence("here is the real reason most people never finish what they start")
+    + [("um", "filler")]
+    + _sentence("I I really think this comes down to one simple habit")
+    + [("you", "gap:400"), ("know", "")]
+    + _sentence("the biggest thing is just showing up every single day and being consistent")
+)
+
+# --- Take 7: long-pause — a creator who pauses a long time mid-take (2 gaps of
+# 2.2s/2.5s, each well past the dead-air threshold), otherwise normal-cadence
+# speech (default wpm, unlike the deliberately slow low-energy-01) -----------------
+_LONG_PAUSE = _take(
+    _sentence("here is something that took me way too long to actually learn")
+    + [("then", "gap:2200")]
+    + _sentence("patience is not passive it is the hardest skill in the entire game")
+    + [("still", "gap:2500")]
+    + _sentence("once you accept that everything gets so much easier to handle")
+)
+
 
 FIXTURES: list[dict] = [
     {"id": "scripted-01", "category": "scripted", "style": "talking_head",
@@ -116,6 +143,10 @@ FIXTURES: list[dict] = [
      # the real hook ("I doubled my income…") lands well after the intro throat-clearing
      "hook_ms": next((w["start_ms"] for w in _BURIED_HOOK if w["word"] == "doubled"), 6000),
      "words": _BURIED_HOOK},
+    {"id": "stutter-heavy-01", "category": "stutter-heavy", "style": "talking_head",
+     "source_key": "eval/stutter-heavy-01.mp4", "hook_ms": 0, "words": _STUTTER_HEAVY},
+    {"id": "long-pause-01", "category": "long-pause", "style": "talking_head",
+     "source_key": "eval/long-pause-01.mp4", "hook_ms": 0, "words": _LONG_PAUSE},
 ]
 
 
