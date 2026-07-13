@@ -43,6 +43,60 @@ def parse_write_actions(text: str) -> list[dict]:
     return [a for _, a in sorted(spans, key=lambda s: s[0])]
 
 
+def apply_actions(script_body: str, actions: list[dict]) -> tuple[str, list[dict]]:
+    """Apply actions to the script with Palo's EXACT-SUBSTRING contract: an <edit>/<add>
+    whose <old>/<ref> isn't an exact substring is SKIPPED (never a fuzzy match that could
+    corrupt the doc), and flagged applied=False so the client can surface it. Returns the
+    new body + per-action outcomes. This is what maps onto the iOS tweak-ops UI."""
+    doc = script_body or ""
+    outcomes: list[dict] = []
+    for a in actions:
+        op = a.get("op")
+        if op == "fill":
+            doc = a.get("content", "")
+            outcomes.append({**a, "applied": True})
+        elif op == "edit":
+            old, new = a.get("old", ""), a.get("new", "")
+            if old and old in doc:
+                doc = doc.replace(old, new, 1)
+                outcomes.append({**a, "applied": True})
+            else:
+                outcomes.append({**a, "applied": False, "reason": "old_text not an exact substring"})
+        elif op == "add":
+            ref, text, pos = a.get("ref", ""), a.get("text", ""), a.get("position", "after")
+            idx = doc.find(ref) if ref else -1
+            if idx != -1:
+                at = idx + len(ref) if pos == "after" else idx
+                ins = ("\n" + text) if pos == "after" else (text + "\n")
+                doc = doc[:at] + ins + doc[at:]
+                outcomes.append({**a, "applied": True})
+            else:
+                outcomes.append({**a, "applied": False, "reason": "ref not an exact substring"})
+        else:  # answer / highlight -> no document change
+            outcomes.append({**a, "applied": True})
+    return doc, outcomes
+
+
+# LOOP W firewall: internal scaffolding vocabulary that must never leak into the script.
+_LEAK_RE = re.compile(r"REGIME:|LEVER:|spine_map|creator_strategy|prior_recommendations|DOCTRINE_|<memory>")
+
+
+def check_invariants(script_body: str, actions: list[dict]) -> list[str]:
+    """LOOP W: the write agent's contract invariants. Empty list = clean."""
+    issues: list[str] = []
+    for a in actions:
+        if a.get("op") == "edit" and a.get("old") and a["old"] not in (script_body or ""):
+            issues.append("edit.old is not an exact substring")
+        if a.get("op") == "add" and a.get("ref") and a["ref"] not in (script_body or ""):
+            issues.append("add.ref is not an exact substring")
+    new_body, _ = apply_actions(script_body, actions)
+    if len(new_body.split()) > 250:
+        issues.append("script exceeds 250 words")
+    if _LEAK_RE.search(new_body):
+        issues.append("internal scaffolding vocabulary leaked into the script")
+    return issues
+
+
 async def _context_blocks(store, creator_id: str, instruction: str, brand: dict | None) -> tuple[str, str]:
     """(strategy_block, memory_block) — best-effort; each no-ops if its own flag is off."""
     strat = mem = ""

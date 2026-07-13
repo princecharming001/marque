@@ -112,6 +112,10 @@ def _checks() -> list[tuple[str, bool]]:
     _acts = _wa.parse_write_actions("<edit><old>a</old><new>b</new></edit><answer>hi</answer>")
     out.append(("write.parse", [a["op"] for a in _acts] == ["edit", "answer"]
                 and _acts[0]["old"] == "a" and _acts[0]["new"] == "b"))
+    _nb, _oc = _wa.apply_actions("hello world", [{"op": "edit", "old": "hello", "new": "hey"}])
+    out.append(("write.apply", _nb == "hey world" and _oc[0]["applied"] is True))
+    _skip = _wa.apply_actions("hello world", [{"op": "edit", "old": "nope", "new": "x"}])
+    out.append(("write.apply_skip", _skip[0] == "hello world" and _skip[1][0]["applied"] is False))
 
     return out
 
