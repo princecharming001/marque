@@ -31,10 +31,33 @@ run() {
 # --fast tier — keyless, every iteration of every loop runs this.
 # ---------------------------------------------------------------------------
 
+# LOOP C — fail the gate if any Palo landmine secret got copied into the port files
+# (Moonshot Kimi key, sk-… keys, RapidAPI keys, postgres creds). Scans ONLY the port's
+# own modules so it never trips on unrelated existing code; skips modules not yet built.
+secret_scan() {
+  local files
+  files=$(ls "$ROOT"/backend/app/palo_*.py "$ROOT"/backend/app/tiers.py \
+             "$ROOT"/backend/app/doctrine.py "$ROOT"/backend/app/prompt_store.py \
+             "$ROOT"/backend/app/prompt_assembly.py "$ROOT"/backend/app/ai_usage.py \
+             "$ROOT"/backend/app/ideas.py "$ROOT"/backend/app/memory_v2.py \
+             "$ROOT"/backend/app/recall_ledger.py "$ROOT"/backend/app/track_insights.py \
+             "$ROOT"/backend/app/metrics_pollers.py "$ROOT"/backend/app/strategy_compiler.py \
+             "$ROOT"/backend/app/dossier_adapter.py "$ROOT"/backend/app/write_agent.py \
+             "$ROOT"/backend/app/exemplar.py "$ROOT"/backend/eval/port_eval.py 2>/dev/null)
+  [ -z "$files" ] && return 0
+  if echo "$files" | xargs grep -InE 'Kimik2APIKey|sk-[A-Za-z0-9]{24,}|rapidapi[._-]?key[[:space:]]*[:=]|postgres(ql)?://[^[:space:]/]+:[^[:space:]@]+@'; then
+    echo "[gate] secrets:scan — Palo landmine secret found in port files ^"
+    return 1
+  fi
+  return 0
+}
+
 fast_tier() {
   run "backend:pytest"       bash -c "cd '$ROOT/backend' && .venv/bin/python -m pytest -q"
   run "backend:edl_eval"     bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.edl_eval"
   run "backend:run_eval"     bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.run_eval"
+  run "backend:port_eval"    bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.port_eval"
+  run "secrets:scan"         secret_scan
   run "render:typecheck"     bash -c "cd '$ROOT/render' && npx tsc --noEmit"
   run "render:build_bridge"  bash -c "cd '$ROOT/render' && npm run build:bridge"
   run "render:node_test"     bash -c "cd '$ROOT/render' && npm test"
