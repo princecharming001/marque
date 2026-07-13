@@ -55,8 +55,8 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 ## Phase 5 — interactive write agent  (flag: WRITE_AGENT)
 - [x] `app/write_agent.py` — plain Anthropic write loop; WRITE_AGENT_SYSTEM (fill/edit/add/answer, ≤250w, exact-substring contract) + strategy/memory injection; `parse_write_actions` (document order); keyless→mock answer; flag WRITE_AGENT (test_palo_write.py 6 green; +1 port_eval; suite 944)
 - [x] `apply_actions` exact-substring contract (non-substring edit/add SKIPPED, never fuzzy) + `check_invariants` (LOOP W: exact-substring, ≤250w, no scaffolding-vocab leak) + `/v1/write/turn` route (preview + accept/reject outcomes for iOS tweak-ops) (test_palo_write_apply.py 7 green; +2 port_eval; suite 951)
-- [ ] onboarding `script_generation.py` → upgrade `/v1/scripts`
-- [ ] tests (LOOP W): XML invariants, ≤250 words, one-branch, no doctrine-vocab leak
+- [x] onboarding `script_generation.py` → `script_from_brief` (brief beats → full script, strategy-injected, keyless→assembled) + `/v1/write/from-brief` route (test_palo_script_from_brief.py 5 green; +1 port_eval; suite 956)
+- [x] tests (LOOP W): XML invariants + ≤250 words + no scaffolding-vocab leak — test_palo_write_apply.py (7) + test_palo_write.py (6) + 4 port_eval goldens (write.parse/apply/apply_skip/leak_firewall)
 
 ## Phase 6 — exemplar bank  (flag: EXEMPLAR_BANK)
 - [ ] `app/exemplar.py` — retrieval/index (works with hand-seeded bank)

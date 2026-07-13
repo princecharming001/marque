@@ -16,8 +16,13 @@ import logging
 import re
 
 from app import palo_flags, palo_prompts
-from app.palo_llm import anthropic_cached
+from app.palo_llm import anthropic_cached, anthropic_cached_json
 from prompts import OPUS
+
+_SCRIPT_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["title", "script"],
+    "properties": {"title": {"type": "string"}, "script": {"type": "string"}},
+}
 
 _FILL_RE = re.compile(r"<fill>(?P<content>.*?)</fill>", re.DOTALL)
 _EDIT_RE = re.compile(r"<edit>\s*<old>(?P<old>.*?)</old>\s*<new>(?P<new>.*?)</new>\s*</edit>", re.DOTALL)
@@ -95,6 +100,41 @@ def check_invariants(script_body: str, actions: list[dict]) -> list[str]:
     if _LEAK_RE.search(new_body):
         issues.append("internal scaffolding vocabulary leaked into the script")
     return issues
+
+
+def _mock_script_from_brief(brief: dict) -> dict:
+    b = brief or {}
+    body = "\n".join(x for x in [b.get("beginning", ""), b.get("middle", ""),
+                                 b.get("ending", "")] if x) or b.get("summary", "")
+    return {"title": b.get("title", "Untitled"), "body": body or "Write your hook here."}
+
+
+async def script_from_brief(store, creator_id: str, brief: dict,
+                            brand: dict | None = None) -> dict:
+    """Turn a selected idea-bank brief into a full script (Palo onboarding first-script).
+    Strategy-injected; keyless ⇒ assemble the script from the brief beats. Flag WRITE_AGENT
+    (off ⇒ mock assembly so the brief still yields something usable)."""
+    if not palo_flags.enabled(palo_flags.WRITE_AGENT):
+        return {**_mock_script_from_brief(brief), "mode": "off"}
+    strat = ""
+    try:
+        from app import strategy_compiler
+        strat = await strategy_compiler.strategy_block(store, creator_id)
+    except Exception:
+        pass
+    system, user = palo_prompts.script_from_brief_prompt(brief, brand, strat)
+    from app.prompt_store import get_prompt
+    system = await get_prompt("palo.script.from_brief", system, store=store)
+    data = await anthropic_cached_json(system, user, _SCRIPT_SCHEMA, OPUS, max_tokens=1200)
+    if isinstance(data, dict) and data.get("script"):
+        try:
+            from app import ai_usage
+            await ai_usage.record(store, creator_id, "script.from_brief", OPUS, 2000, 600)
+        except Exception:
+            pass
+        return {"title": data.get("title", (brief or {}).get("title", "")),
+                "body": data["script"], "mode": "live"}
+    return {**_mock_script_from_brief(brief), "mode": "mock"}
 
 
 async def _context_blocks(store, creator_id: str, instruction: str, brand: dict | None) -> tuple[str, str]:

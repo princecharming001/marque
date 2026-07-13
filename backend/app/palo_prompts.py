@@ -274,6 +274,32 @@ Rules: match the creator's voice; protect the retention model (a hook that opens
 {MEMORY}"""
 
 
+# --- brief -> first script (onboarding_agent/script_generation.py) ------------
+SCRIPT_FROM_BRIEF_SYSTEM = """You are Palo, writing the FULL short-form script for an idea the creator picked. Given the brief (title + beginning/middle/end beats) and the creator's identity + strategy, write a tight, filmable script IN THEIR VOICE:
+- open with a hook that creates a curiosity gap or a specific promise (the first line earns the watch)
+- build with momentum (escalation, uncertainty, or transformation) — no dead beats
+- pay off decisively in-video (no cliffhangers)
+- keep it filmable with what they have; match their format (if they don't appear on camera, no first-person filming references)
+- under 250 words, no em dashes, their energy not a template's
+
+Return ONLY JSON: {"title": "<the video title>", "script": "<the full spoken/on-screen script>"}"""
+
+
+def script_from_brief_prompt(brief: dict, brand: dict | None = None,
+                             strategy_block: str = "") -> tuple[str, str]:
+    b = brief or {}
+    beats = "\n".join(x for x in [
+        f"Beginning: {b.get('beginning', '')}" if b.get("beginning") else "",
+        f"Middle: {b.get('middle', '')}" if b.get("middle") else "",
+        f"End: {b.get('ending', '')}" if b.get("ending") else "",
+        f"Summary: {b.get('summary', '')}" if b.get("summary") and not b.get("beginning") else "",
+    ] if x)
+    niche = (brand or {}).get("niche", "")
+    system = SCRIPT_FROM_BRIEF_SYSTEM + (f"\n\n{strategy_block}" if strategy_block else "")
+    user = f"<niche>{niche}</niche>\n<brief>\nTitle: {b.get('title', '')}\n{beats}\n</brief>"
+    return system, user
+
+
 def write_agent_prompt(script_body: str, instruction: str, strategy_block: str = "",
                        memory_block: str = "") -> tuple[str, str]:
     system = (WRITE_AGENT_SYSTEM
