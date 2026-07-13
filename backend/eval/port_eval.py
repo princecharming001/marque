@@ -78,6 +78,12 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("metrics.rows", len(_r) == 1 and _r[0]["metric"] == "views"
                 and _r[0]["source"] == "apify" and _r[0]["value"] == 100.0))
     out.append(("metrics.chain", _t.metrics_sources(_t.STUDIO) == ("ig_graph", "postforme", "apify")))
+    from app import track_insights as _ti
+    out.append(("insight.milestones", _ti.crossed_milestones(9000, 60000, _ti.VIEW_MILESTONES) == [10000, 25000, 50000]))
+    out.append(("insight.spike", _ti.detect_spike(30, [10, 10, 10]) is True
+                and _ti.detect_spike(20, [10, 10, 10]) is False))
+    out.append(("insight.underperformer", _ti.is_underperformer(50, 1000) is True
+                and _ti.is_underperformer(500, 1000) is False))
 
     return out
 

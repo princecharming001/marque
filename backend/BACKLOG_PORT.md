@@ -40,7 +40,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 
 ## Phase 3 — post-performance insights  (flag: TRACK_INSIGHTS)
 - [x] `app/metrics_pollers.py` — Apify(3a) / Post for Me(3b) / IG Graph(3c) fetchers → `metrics_ts`; `pick_source` walks the tier chain (first available), keyless→no-op (test_palo_metrics.py 7 green; +2 port_eval; suite 900)
-- [ ] `app/track_insights.py` — milestone ladders, watermark-first-run, median+MAD spike, underperformer skip
+- [x] `app/track_insights.py` — milestone ladders + watermark-first-run-ZERO + median+MAD ≥2.5x spike (≥2 reads) + underperformer-skip-before-work; LOOP I proves the 3 Palo bugs (test_palo_insights.py 8 green; +3 port_eval; suite 908)
 - [ ] Insight Discovery Engine prompt → `insight_feed` (dedup_hash), ≤50 anti-repetition context
 - [ ] deliver: APNs via `app/push.py` + bandit outcome settle + insight→converse seed
 - [ ] tests (LOOP I): day-1 zero insights, dedup blocks repeat, underperformer skips before LLM
