@@ -179,6 +179,19 @@ async def cron_compile(req: _CronRequest):
     return {"compiled": await strategy_compiler.run_compile_cron(_palo_store, time.time())}
 
 
+async def _inject_strategy(system: str, creator_id: str) -> str:
+    """Palo port (flag STRATEGY_COMPILER, OFF): append the creator's compiled strategy to
+    a system prompt so script gen + converse are shaped by the brain. No-op off/keyless."""
+    if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER):
+        return system
+    try:
+        block = await strategy_compiler.strategy_block(_palo_store, creator_id)
+        return f"{system}\n\n{block}" if block else system
+    except Exception as e:
+        logging.warning("[strategy] inject failed: %s", e)
+        return system
+
+
 async def _persist_creator(creator_id: str, **fields):
     """Best-effort durable write of per-creator brand facts (niche/goal). Absent
     `creators` table or any error is swallowed — this is opportunistic."""
@@ -1535,6 +1548,7 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
                                           req.media_context, req.posts or None,
                                           arm_stats=stats, memory=req.memory or None,
                                           mandated_hooks=mandated or None, emulation=emulation or None)
+        sys = await _inject_strategy(sys, req.creator_id)   # Palo port: brain shapes scripts
         out = await anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                                    OPUS, 3800, array_key="scripts")
         if not out:
@@ -5978,6 +5992,7 @@ async def converse(req: ConverseRequest):
         _inject = "\n\n".join(b for b in (_mem_block, _led_block) if b)
         if _inject:
             system = f"{system}\n\n{_inject}"
+    system = await _inject_strategy(system, req.creator_id)   # Palo port: brain shapes converse
     # No trends passed: mock_trends is hand-authored filler, and injecting it as
     # "Trending right now" into a LIVE strategist makes the model relay invented trend
     # claims as fact. Omit until a real trend source exists (audit B-10/F16).
