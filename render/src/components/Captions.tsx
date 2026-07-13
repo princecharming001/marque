@@ -4,6 +4,7 @@ import { loadFont as loadInter } from "@remotion/google-fonts/Inter";
 import { loadFont as loadArchivo } from "@remotion/google-fonts/ArchivoBlack";
 import { loadFont as loadBaloo } from "@remotion/google-fonts/Baloo2";
 import { CaptionWord, CaptionStyle, CaptionOptions } from "../types";
+import { karaokePop } from "../layout";
 
 interface Props { captions: CaptionWord[]; style?: CaptionStyle; options?: CaptionOptions | null; }
 
@@ -210,6 +211,7 @@ const BoldWord: React.FC<{ word: string; opts: CaptionOptions }> = ({ word, opts
 
 const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: CaptionOptions }> =
   ({ captions, activeIdx, opts }) => {
+  const frame = useCurrentFrame();
   const { start, end } = groupBounds(opts.grouping, activeIdx, captions.length, 3, 3);
   const fill = opts.accent ?? ACCENT;
   return (
@@ -217,14 +219,19 @@ const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Capt
       {captions.slice(start, end + 1).map((c, i) => {
         const idx = start + i;
         const spoken = idx <= activeIdx;
+        // Formatting fix #14: a CSS `transition` is a no-op in Remotion's frame-by-frame
+        // render (every frame is a fresh paint, nothing to transition FROM) — the old
+        // `transform: scale(1.08)` + `transition` snapped invisibly instead of popping.
+        // karaokePop computes the ramp per-frame from the active word's own start frame.
+        const pop = idx === activeIdx ? karaokePop(frame, c.frame) : 1;
         return (
           <span key={idx} style={{
             fontFamily: FONTS[opts.font], fontSize: 54 * sizeMult(opts),
             fontWeight: weightFor(opts.font, 700),
             color: spoken ? fill : "white",
             textShadow: "0 2px 8px rgba(0,0,0,0.85)",
-            transform: idx === activeIdx ? "scale(1.08)" : "scale(1)",
-            transition: "transform 0.05s, color 0.05s",
+            display: "inline-block",
+            transform: `scale(${pop})`,
           }}>{casing(c.word, opts)}</span>
         );
       })}

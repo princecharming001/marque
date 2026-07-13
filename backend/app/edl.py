@@ -35,6 +35,36 @@ DISCOURSE_MARKERS = frozenset({
 # single-token text they were compared against, so they're gone.)
 FILLER_WORDS = ALWAYS_FILLERS | DISCOURSE_MARKERS
 
+# Multi-word discourse phrases ("you know", "kind of", ...) — never content on their
+# own, but only really SAFE to cut without a pause on either side for the first two
+# (the "so"/"like" family already has clause-boundary logic; these need their own
+# guard since e.g. "kind of" is legitimately content in "what kind of dog is that").
+FILLER_PHRASES: tuple[tuple[str, ...], ...] = (
+    ("you", "know"), ("i", "mean"), ("kind", "of"), ("sort", "of"),
+    ("or", "whatever"), ("at", "the", "end", "of", "the", "day"),
+    ("if", "that", "makes", "sense"),
+)
+# These two are content FAR more often than they're filler ("what kind of dog",
+# "sort of blue") — require a pause on both sides even at the loosest trim level.
+_PHRASE_ALWAYS_PAUSE_FLANKED = frozenset({("kind", "of"), ("sort", "of")})
+# Never treat "you know" as filler right after these — "do you know", "did you know",
+# "don't you know", "you'd know" are genuine questions/claims, not verbal filler.
+_YOU_KNOW_GUARD_PRECEDING = frozenset({"do", "does", "did", "don't", "you'd", "didn't"})
+# Trailing discourse words dropped off the END of a take/clause ("...so yeah.").
+TRAILING_DISCOURSE = frozenset({"so", "yeah", "right", "okay", "ok", "cool", "alright", "anyway"})
+
+# #1a: trim-aggressiveness levels — the single source of truth for every filler/
+# silence knob (was previously just a hint the LLM prompt carried with no code-side
+# effect; `trim_aggressiveness="aggressive"` used to be a complete no-op). Every
+# level's gap_ms also drives strip_fillers' dead-air detection.
+TRIM_LEVELS: dict[str, dict[str, float]] = {
+    "conservative": {"gap_ms": 450, "keep_pause_frames": 7, "stutter_ms": 250, "phrase_mode": 0, "conf_cut": 0.0},
+    "default":      {"gap_ms": 350, "keep_pause_frames": 6, "stutter_ms": 350, "phrase_mode": 1, "conf_cut": 0.35},
+    "aggressive":   {"gap_ms": 250, "keep_pause_frames": 4, "stutter_ms": 450, "phrase_mode": 2, "conf_cut": 0.50},
+}
+# phrase_mode: 0 = clause-boundary only, 1 = clause-boundary OR pause-flanked,
+# 2 = any pause-flanked occurrence (still never bare mid-sentence).
+
 def ms_to_frame(ms: int) -> int:
     return round(ms / MS_PER_FRAME)
 
@@ -373,8 +403,10 @@ def clamp_edl_to_source(edl_data: dict, total_frames: int) -> dict:
 
 
 def strip_fillers(words: list[dict], gap_ms: int = 300,
-                  use_disfluency_type: bool = True) -> tuple[list[dict], list[Drop]]:
-    """Remove filler words and dead-air gaps; return clean word list + drop list.
+                  use_disfluency_type: bool = True,
+                  keep_pause_frames: int = 6) -> tuple[list[dict], list[Drop]]:
+    """Remove filler words and tighten (not eliminate) dead-air gaps; return clean
+    word list + drop list.
 
     Disfluency detection is the SOURCE OF TRUTH: when AssemblyAI is asked for
     `disfluencies` it tags filler tokens with `type == "filler"`, which is far more
@@ -384,7 +416,15 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
       - DISCOURSE_MARKERS (so/like/right/...) cut ONLY at a clause boundary —
         first word, after a ≥250ms pause, or immediately after another filler.
         Mid-sentence they are content ("turn right here", "I feel like it works");
-        cutting them deleted meaning and left mid-phrase jump cuts."""
+        cutting them deleted meaning and left mid-phrase jump cuts.
+
+    #1b silence tightening: a gap longer than gap_ms is no longer removed WHOLE —
+    a hard butt-splice between two words with zero air between them reads as an
+    obvious edit. Instead `keep_pause_frames` (~200ms at the default level) of
+    natural pause survives, split roughly 2/3 before the cut and 1/3 after (so the
+    residual breathes right up to the next word's onset rather than lingering after
+    the previous one). Below ~4 remaining frames of droppable middle the tighten is
+    skipped entirely — not enough room to matter, and forcing it risks a click."""
     kept, drops = [], []
     prev_end = 0
     prev_was_filler = False
@@ -400,7 +440,13 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
                      or (text in DISCOURSE_MARKERS and clause_boundary))
         # Dead air before this word (measured from the previous word's end, filler or not).
         if prev_end > 0 and start - prev_end > gap_ms:
-            drops.append(Drop(src_in=ms_to_frame(prev_end), src_out=ms_to_frame(start), reason="dead_air"))
+            gap_start_f, gap_end_f = ms_to_frame(prev_end), ms_to_frame(start)
+            lead = max(1, round(keep_pause_frames * 2 / 3))
+            tail = max(1, keep_pause_frames - lead)
+            drop_start, drop_end = gap_start_f + lead, gap_end_f - tail
+            if drop_end - drop_start >= 4:
+                drops.append(Drop(src_in=drop_start, src_out=drop_end, reason="dead_air"))
+            # else: too little room to usefully tighten — leave the natural gap as-is.
         if is_filler:
             drops.append(Drop(src_in=ms_to_frame(start), src_out=ms_to_frame(end), reason="filler"))
         else:
@@ -410,6 +456,156 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
         # overlap the filler drops (violates the non-overlapping-drops invariant).
         prev_end = end
         prev_was_filler = is_filler
+    return kept, drops
+
+
+def _norm_word(text: str) -> str:
+    return text.lower().strip(".,!?-")
+
+
+def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]:
+    """#1c: layered ON TOP of strip_fillers (never replaces it — callers that need
+    both use strip_fillers_v2 below). Catches what the single-token lexicon can't:
+    multi-word discourse phrases, stutters/word-repeats, false starts, and trailing
+    "so yeah"-style sign-offs — plus a confidence-aware cut for near-silent garbles.
+    Pure and side-effect-free; never mutates `words`."""
+    cfg = TRIM_LEVELS.get(level, TRIM_LEVELS["default"])
+    phrase_mode = int(cfg["phrase_mode"])
+    stutter_ms = cfg["stutter_ms"]
+    conf_cut = cfg["conf_cut"]
+    n = len(words)
+    norms = [_norm_word(w.get("word", "")) for w in words]
+    drops: list[Drop] = []
+
+    def pause_before(i: int) -> float:
+        if i <= 0:
+            return 10_000.0
+        return words[i].get("start_ms", 0) - words[i - 1].get("end_ms", 0)
+
+    def pause_after(i: int) -> float:
+        if i >= n - 1:
+            return 10_000.0
+        return words[i + 1].get("start_ms", 0) - words[i].get("end_ms", 0)
+
+    # --- multi-word phrases ---
+    i = 0
+    while i < n:
+        matched = None
+        for phrase in FILLER_PHRASES:
+            m = len(phrase)
+            if i + m <= n and tuple(norms[i:i + m]) == phrase:
+                matched = phrase
+                break
+        if matched:
+            m = len(matched)
+            flanked = pause_before(i) >= 120 and pause_after(i + m - 1) >= 120
+            at_clause = (i == 0 or pause_before(i) >= 250
+                         or (i > 0 and norms[i - 1] in ALWAYS_FILLERS))
+            allow = flanked if (phrase_mode >= 2 or matched in _PHRASE_ALWAYS_PAUSE_FLANKED) \
+                else (at_clause or (phrase_mode >= 1 and flanked))
+            guarded = matched == ("you", "know") and i > 0 and norms[i - 1] in _YOU_KNOW_GUARD_PRECEDING
+            if allow and not guarded:
+                drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
+                                  src_out=ms_to_frame(words[i + m - 1].get("end_ms", 0)),
+                                  reason="filler"))
+                i += m
+                continue
+        i += 1
+
+    # --- stutter / word-repeat ---
+    i = 0
+    while i < n - 1:
+        gap = words[i + 1].get("start_ms", 0) - words[i].get("end_ms", 0)
+        same = norms[i] == norms[i + 1] and norms[i] != ""
+        partial = (not same and norms[i] and norms[i + 1]
+                   and (words[i].get("word", "").endswith("-")
+                        or (len(norms[i]) >= 2 and norms[i + 1].startswith(norms[i]))))
+        if (same or partial) and gap <= stutter_ms:
+            drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
+                              src_out=ms_to_frame(words[i].get("end_ms", 0)), reason="filler"))
+            i += 1
+            continue
+        # bigram restart: "I think— I think" — same two-word run repeats within 1200ms.
+        if i + 3 < n:
+            first_pair = (norms[i], norms[i + 1])
+            second_pair = (norms[i + 2], norms[i + 3])
+            restart_gap = words[i + 2].get("start_ms", 0) - words[i + 1].get("end_ms", 0)
+            if first_pair == second_pair and first_pair[0] and restart_gap <= 1200:
+                drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
+                                  src_out=ms_to_frame(words[i + 1].get("end_ms", 0)), reason="filler"))
+                i += 2
+                continue
+        i += 1
+
+    # --- false start: a short fragment (≤4 words) opening at take-start or after a
+    # real pause, itself followed by a real pause, whose restart echoes it ---
+    i = 0
+    while i < n:
+        if not (i == 0 or pause_before(i) >= 500):
+            i += 1
+            continue
+        for frag_len in range(1, 5):
+            j = i + frag_len
+            if j >= n or pause_after(j - 1) < 300:
+                continue
+            frag_start_words = set(norms[i:min(i + 2, j)])
+            restart_words = set(norms[j:j + 2])
+            if frag_start_words and frag_start_words & restart_words:
+                drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
+                                  src_out=ms_to_frame(words[j - 1].get("end_ms", 0)), reason="false_start"))
+                i = j
+                break
+        else:
+            i += 1
+            continue
+        continue
+
+    # --- trailing discourse sign-off ("...so yeah.") ---
+    if n:
+        j = n - 1
+        run_start = n
+        while j >= 0 and (n - 1 - j) < 3 and norms[j] in TRAILING_DISCOURSE:
+            run_start = j
+            j -= 1
+        if run_start < n and pause_before(run_start) >= 400:
+            drops.append(Drop(src_in=ms_to_frame(words[run_start].get("start_ms", 0)),
+                              src_out=ms_to_frame(words[n - 1].get("end_ms", 0)), reason="filler"))
+
+    # --- confidence-aware cut: short, unemphasized, low-confidence garbles ---
+    if conf_cut > 0:
+        for idx, w in enumerate(words):
+            dur = w.get("end_ms", 0) - w.get("start_ms", 0)
+            conf = w.get("confidence", 1.0)
+            if conf < conf_cut and 0 < dur <= 250 and not w.get("is_emphasized"):
+                drops.append(Drop(src_in=ms_to_frame(w.get("start_ms", 0)),
+                                  src_out=ms_to_frame(w.get("end_ms", 0)), reason="filler"))
+
+    return drops
+
+
+def strip_fillers_v2(words: list[dict], level: str = "default") -> tuple[list[dict], list[Drop]]:
+    """#1d: strip_fillers (lexicon + tightened dead-air) plus detect_disfluencies
+    (phrases/stutters/false-starts/trailing sign-offs/confidence), merged and
+    recomputed against the same word list so `kept` reflects BOTH passes.
+
+    `kept` is derived from FRAME COVERAGE against the final coalesced drop set, not
+    from each drop's `reason` tag — _coalesce_drops merges adjacent/overlapping
+    drops and keeps only the EARLIER one's reason, so a stutter-dropped word
+    immediately following a tightened dead-air gap can end up inside a span still
+    labeled "dead_air". Reason-filtering `kept` would wrongly leave that word in
+    the transcript (a caption for audio that's actually been cut); any drop that
+    fully contains a word's frame span means that word's audio is gone from the
+    delivered output, full stop, regardless of which reason label survived."""
+    cfg = TRIM_LEVELS.get(level, TRIM_LEVELS["default"])
+    _, base_drops = strip_fillers(words, gap_ms=int(cfg["gap_ms"]),
+                                  keep_pause_frames=int(cfg["keep_pause_frames"]))
+    extra_drops = detect_disfluencies(words, level)
+    drops = _coalesce_drops([d.model_dump() for d in base_drops] + [d.model_dump() for d in extra_drops])
+    drops = [Drop(**d) for d in drops]
+    dropped_ranges = [(d.src_in, d.src_out) for d in drops]
+    kept = [w for w in words if not any(
+        ms_to_frame(w.get("start_ms", 0)) >= lo and ms_to_frame(w.get("end_ms", w.get("start_ms", 0) + 100)) <= hi
+        for lo, hi in dropped_ranges)]
     return kept, drops
 
 
