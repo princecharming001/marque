@@ -947,7 +947,11 @@ TWEAK_OP_TYPES = [
 _BROLL_STYLES = {"broll_cutaway", "faceless"}
 # G-04: only these styles' Remotion comps actually DRAW punch-in / text-card overlays;
 # an op for any other style spends a re-render for a pixel-identical video, so gate it.
-_PUNCH_STYLES = {"talking_head", "duet_split"}
+# WS3 (retention-editor upgrade): expanded from {talking_head, duet_split} once
+# PunchZoom.tsx landed in GreenScreen/BrollCutaway (inner-card/spine zoom) and
+# SplitThree (whole-canvas zoom) — fast_cuts/faceless still excluded (fast_cuts'
+# native cut cadence doesn't want a zoom on top; faceless has no face to zoom).
+_PUNCH_STYLES = {"talking_head", "duet_split", "green_screen", "broll_cutaway", "split_three"}
 _TEXTCARD_STYLES = {"green_screen", "duet_split"}
 _MIN_DURATION_FRAMES = 60   # never let trims/cuts leave less than ~2s of footage
 

@@ -27,7 +27,7 @@ import os
 
 from app.edl import (
     ALWAYS_FILLERS, TRIM_LEVELS, ms_to_frame, _frame_to_ms, snap_to_word,
-    detect_disfluencies, split_segment_in_place,
+    detect_disfluencies, split_segment_in_place, _PUNCH_STYLES,
     _kept_intervals, _kept_frames, _coalesce_drops, _norm_word,
     _MIN_DURATION_FRAMES, MIN_CLIP_OUTPUT_FRAMES, check_edl_invariants,
 )
@@ -399,8 +399,189 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# WS3 — pattern-interrupt scheduler. Reuses the existing `punch_in` Overlay —
+# no schema change. Guarantees a visual event at least every N OUTPUT frames
+# (style/density-dependent) by inserting a punch_in (or, for faceless — no face
+# to zoom — a text_sticker keyword pop) into any gap that exceeds it. Runs LAST
+# in apply_retention_passes so it sees every event pacing/hook/sfx already
+# placed and never double-covers them.
 # ---------------------------------------------------------------------------
+
+_INTERRUPT_CADENCE = {
+    "talking_head": 120, "green_screen": 120, "split_three": 120,
+    "broll_cutaway": 150, "faceless": 90,
+    # fast_cuts / duet_split: native cadence already high enough — skip entirely.
+}
+_DENSITY_MULT = {"calm": 1.5, "standard": 1.0, "dense": 0.75}
+_INTERRUPT_CADENCE_FLOOR = 60
+_INTERRUPT_HOOK_GUARD = 45     # never insert in the first ~1.5s of OUTPUT
+_INTERRUPT_CTA_GUARD = 60      # never insert in the last ~2s of OUTPUT
+_INTERRUPT_MIN_SPACING = 60    # from any existing overlay/broll edge
+_INTERRUPT_MAX_PER_CLIP = 12
+_INTERRUPT_HOLD_FRAMES = 75    # max width of a synthesized punch/pop window
+_INTERRUPT_SCALES = (1.06, 1.10)   # alternates, so consecutive cuts read as multi-cam
+
+
+def _build_output_index(segments: list[dict], drops: list[dict],
+                        play_order: list[int]) -> tuple[list[tuple[int, int, int, float]], int]:
+    """[(src_in, src_out, out_start, speed), ...] in PLAY order — a standalone
+    source<->output mapping (mirrors the index build_render_plan constructs
+    internally) so the interrupt scheduler can reason about OUTPUT-frame gaps
+    without needing build_render_plan's full remap of captions/overlays/broll."""
+    index: list[tuple[int, int, int, float]] = []
+    out_cursor = 0
+    for i in play_order:
+        seg = segments[i]
+        speed = float(seg.get("speed") or 1.0)
+        for lo, hi in _segment_kept_ranges(seg, drops):
+            index.append((lo, hi, out_cursor, speed))
+            out_cursor += max(1, round((hi - lo) / speed))
+    return index, out_cursor
+
+
+def _src_to_out(index: list[tuple[int, int, int, float]], src_frame: int) -> int | None:
+    for lo, hi, out_start, speed in index:
+        if lo <= src_frame < hi:
+            return out_start + round((src_frame - lo) / speed)
+    return None
+
+
+def _out_to_src(index: list[tuple[int, int, int, float]], out_frame: int) -> int | None:
+    for lo, hi, out_start, speed in index:
+        out_len = max(1, round((hi - lo) / speed))
+        if out_start <= out_frame < out_start + out_len:
+            return lo + round((out_frame - out_start) * speed)
+    return None
+
+
+def _overlay_out_windows(edl: dict, index: list[tuple[int, int, int, float]]) -> list[tuple[int, int]]:
+    """Existing overlay/b-roll windows mapped to OUTPUT coords — these already
+    count as "a visual event is happening here" and must never be double-covered
+    by a synthesized punch/pop landing inside or too close to one."""
+    windows: list[tuple[int, int]] = []
+    for o in (edl.get("overlays") or []) + (edl.get("broll") or []):
+        a, b = _src_to_out(index, o["src_in"]), _src_to_out(index, o.get("src_out", o["src_in"] + 1) - 1)
+        if a is not None:
+            windows.append((a, (b if b is not None else a) + 1))
+    return sorted(windows)
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Union-merge overlapping/adjacent (a, b) ranges — so two overlays that
+    happen to touch or overlap read as ONE occupied stretch, not two separate
+    windows with a (nonexistent) gap between them."""
+    out: list[tuple[int, int]] = []
+    for a, b in sorted(ranges):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
+                        prefs: dict | None = None, hints: dict | None = None) -> dict:
+    """Guarantee a visual change at least every N output frames (N by style x
+    density) by inserting punch_in overlays (text_sticker keyword pops for
+    faceless, which has no face to zoom) into gaps left uncovered by cuts,
+    speed changes, or any overlay/b-roll already placed. Skips fast_cuts and
+    duet_split entirely (native cut cadence / play-freeze rhythm already carries
+    this). Alternates punch scale between two values so consecutive insertions
+    read as a "multi-cam" cut rather than a repeated zoom."""
+    edl = copy.deepcopy(edl)
+    prefs = prefs or {}
+    hints = hints or {}
+    if style not in _INTERRUPT_CADENCE or prefs.get("punch_ins") is False:
+        return edl
+    segments = edl.get("segments") or []
+    if not segments:
+        return edl
+    drops = edl.get("drops") or []
+    play_order = _play_order(edl)
+    index, total_out = _build_output_index(segments, drops, play_order)
+    if total_out <= _INTERRUPT_HOOK_GUARD + _INTERRUPT_CTA_GUARD:
+        return edl   # too short a take to meaningfully schedule interrupts
+
+    density = hints.get("interrupt_density") or "standard"
+    cadence = max(_INTERRUPT_CADENCE_FLOOR,
+                 int(_INTERRUPT_CADENCE[style] * _DENSITY_MULT.get(density, 1.0)))
+
+    # "Events" = cut boundaries (every kept-range's own out_start — a new piece
+    # starting IS a visual change; instantaneous) plus existing overlay/b-roll
+    # windows (these have DURATION — the entire window counts as covered, not
+    # just its two endpoints, so they're kept as ranges, never flattened to
+    # loose points that a naive gap-walk could schedule an insert BETWEEN).
+    cut_points = sorted({out_start for _, _, out_start, _ in index} | {total_out})
+    occupied = _merge_ranges(_overlay_out_windows(edl, index))
+
+    words_by_out = sorted(
+        (_src_to_out(index, ms_to_frame(w["start_ms"])), w) for w in words
+        if _src_to_out(index, ms_to_frame(w["start_ms"])) is not None)
+
+    can_punch = style in _PUNCH_STYLES
+    inserted = 0
+    scale_i = 0
+    last_event_out = 0
+    new_overlays: list[dict] = []
+
+    def _try_insert(anchor_target: int, ceiling: int) -> int | None:
+        """Insert one punch/pop anchored at the next caption word on/after
+        `anchor_target`, provided it stays clear of `ceiling` (the next real
+        event) and the guards. Returns the new `last_event_out` on success."""
+        nonlocal inserted, scale_i
+        anchor = next((out for out, _ in words_by_out if out >= anchor_target), None)
+        if anchor is None or anchor >= ceiling - 6 or anchor - last_event_out < _INTERRUPT_MIN_SPACING:
+            return None
+        out_hi = min(anchor + _INTERRUPT_HOLD_FRAMES, ceiling - 6)
+        src_lo, src_hi = _out_to_src(index, anchor), _out_to_src(index, max(anchor + 1, out_hi))
+        if src_lo is None or src_hi is None or src_hi <= src_lo:
+            return None
+        if can_punch:
+            new_overlays.append({"type": "punch_in", "src_in": src_lo, "src_out": src_hi,
+                                 "scale": _INTERRUPT_SCALES[scale_i % 2], "text": ""})
+        else:
+            word_text = next((w["word"] for out, w in words_by_out if out == anchor), "")
+            if not word_text:
+                return None
+            new_overlays.append({"type": "text_sticker", "src_in": src_lo, "src_out": src_hi,
+                                 "scale": 1.0, "text": word_text[:24],
+                                 "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0,
+                                 "color": None, "bg": "box", "font": "inter"})
+        inserted += 1
+        scale_i += 1
+        return out_hi
+
+    # Forward-progress state machine: at every step, either an existing event
+    # (cut point or occupied overlay/b-roll window) arrives before cadence would
+    # be exceeded — consume it and move on — or cadence IS exceeded with nothing
+    # else covering that stretch, so insert a new punch/pop there. `_ITER_CAP`
+    # is a hard backstop (never hit in practice — every branch strictly advances
+    # `last_event_out`) so a future edit here can't ever infinite-loop.
+    _ITER_CAP = 4 * _INTERRUPT_MAX_PER_CLIP + len(cut_points) + len(occupied) + 4
+    for _ in range(_ITER_CAP):
+        if last_event_out >= total_out - _INTERRUPT_CTA_GUARD or inserted >= _INTERRUPT_MAX_PER_CLIP:
+            break
+        next_cut = next((p for p in cut_points if p > last_event_out), total_out)
+        next_occ = next(((a, b) for a, b in occupied if b > last_event_out), None)
+        if next_occ is not None and next_occ[0] <= last_event_out + cadence:
+            # an overlay/b-roll window arrives before cadence is exceeded — it
+            # counts as the visual event; jump past its far edge.
+            last_event_out = max(last_event_out, next_occ[1])
+            continue
+        if next_cut - last_event_out <= cadence:
+            last_event_out = next_cut   # a cut arrives in time — it counts as the event
+            continue
+        # cadence exceeded with nothing else covering it — insert here. The
+        # ceiling is whichever comes first: the next cut or the next occupied
+        # window's start (never insert past either).
+        ceiling = min(next_cut, next_occ[0] if next_occ else total_out)
+        anchor_target = max(last_event_out + cadence, _INTERRUPT_HOOK_GUARD)
+        new_last = _try_insert(anchor_target, ceiling)
+        last_event_out = new_last if new_last is not None else ceiling
+
+    if new_overlays:
+        edl["overlays"] = (edl.get("overlays") or []) + new_overlays
+    return edl
 
 def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
                            prefs: dict | None = None, emphasis_spans: list | None = None,
@@ -424,10 +605,16 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         edl = _safe_pass("plan_pacing", edl, plan_pacing, words, style=style,
                          emphasis_spans=emphasis_spans, dossier=dossier, hints=hints)
 
-    # WS4 align_emphasis/hook/end_card, WS3 interrupts, WS4 sfx land here in that
-    # order as their own tasks — each gated on its own `enabled` name.
+    # WS4 align_emphasis/hook/end_card land here as their own task — gated on
+    # its own `enabled` name, between pacing and structure.
 
     if "structure" in enabled:
         edl = _safe_pass("trim_loop_tail", edl, trim_loop_tail, words)
+
+    # interrupts runs LAST (per WS3): it needs to see every event pacing/
+    # structure/sfx already placed so it never double-covers them.
+    if "interrupts" in enabled:
+        edl = _safe_pass("schedule_interrupts", edl, schedule_interrupts, words,
+                         style=style, prefs=prefs, hints=hints)
 
     return edl
