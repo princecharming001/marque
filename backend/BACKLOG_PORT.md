@@ -36,10 +36,10 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] spitfire Generator→Critic→Editor→Ranker (Anthropic-only, ≤4 calls) + `parse_thinking_output` (verbatim port) + `parse_all` + `_parse_ranking`; keyless→mock (test_palo_ideas.py 10 green; +2 port_eval; suite 879)
 - [x] `/internal/cron/ideate` route (token+flag guarded) + tier-cadence `is_ideate_due`/`run_ideate_for`/`run_ideate_cron` (watermark-tracked). `run_ideate_for` is the event-`_spawn` primitive (dossier-hook call folds into Phase 4). (test_palo_cron.py 7 green; +1 port_eval; suite 886)
 - [x] feed integration: `brief_feed_items` (ideate-rank + pulse-judge-lite min-score) merged into `/v1/feed` first page (dedup, cap, no re-inject on pagination) + `/v1/ideas` bank route; flag-gated (test_palo_feed.py 7 green; +1 port_eval; suite 893)
-- [ ] tests: parser golden, eval gate, budget ≤4, tier gating
+- [x] tests: parser golden + eval gate + budget ≤4 + tier gating — covered by test_palo_ideas.py (10) + test_palo_cron.py (7) + test_palo_feed.py (7) + 7 port_eval goldens
 
 ## Phase 3 — post-performance insights  (flag: TRACK_INSIGHTS)
-- [ ] `app/metrics_pollers.py` — Apify(3a) → Post for Me(3b) → IG Graph(3c) → `metrics_ts`, source per tier chain
+- [x] `app/metrics_pollers.py` — Apify(3a) / Post for Me(3b) / IG Graph(3c) fetchers → `metrics_ts`; `pick_source` walks the tier chain (first available), keyless→no-op (test_palo_metrics.py 7 green; +2 port_eval; suite 900)
 - [ ] `app/track_insights.py` — milestone ladders, watermark-first-run, median+MAD spike, underperformer skip
 - [ ] Insight Discovery Engine prompt → `insight_feed` (dedup_hash), ≤50 anti-repetition context
 - [ ] deliver: APNs via `app/push.py` + bandit outcome settle + insight→converse seed

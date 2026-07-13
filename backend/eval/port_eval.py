@@ -71,6 +71,14 @@ def _checks() -> list[tuple[str, bool]]:
                                        [{"id": "b1"}, {"id": "b2"}, {"id": "b3"}], max_briefs=2)
     out.append(("ideas.feedmerge", [m["id"] for m in _mg] == ["b1", "b3", "s1", "b2"]))
 
+    # Phase 3 — metric pollers (deterministic row shaping + tier chain order)
+    from app import metrics_pollers as _mp
+    _r = _mp.poll_apify("c1", "h", captured_at="T") if False else _mp._rows(
+        "c1", "p1", {"views": 100, "likes": None}, "apify", "T")
+    out.append(("metrics.rows", len(_r) == 1 and _r[0]["metric"] == "views"
+                and _r[0]["source"] == "apify" and _r[0]["value"] == 100.0))
+    out.append(("metrics.chain", _t.metrics_sources(_t.STUDIO) == ("ig_graph", "postforme", "apify")))
+
     return out
 
 
