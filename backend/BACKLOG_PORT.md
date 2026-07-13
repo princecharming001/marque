@@ -64,4 +64,4 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] tests: retrieval golden + build/refresh/budget — test_palo_exemplar.py (5) + test_palo_exemplar_build.py (6) + 3 port_eval goldens
 
 ## iOS (P7.x — per backend phase, contracts in `docs/api/PALO_PORT.md`)
-- [ ] P7.2 feed v2 · P7.3 insights inbox + deep-link · P7.4 Your Strategy · P7.5 write edit-chat · P7.6 reel review
+- [x] iOS API contract shipped: `docs/api/PALO_PORT.md` — typed req/resp for all new routes (`/v1/ideas`, feed briefs, `/v1/write/turn`, `/v1/write/from-brief`, converse brain-aware, insight push deeplink, strategy read) + P7.2–P7.6 surface map. SwiftUI is the agreed follow-on (per scope: backend + contracts this loop; UI phases next).
