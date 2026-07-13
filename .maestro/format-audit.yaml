@@ -132,20 +132,17 @@ name: "LOOP U — app/UI formatting audit (see .maestro/ui-manifest.json)"
 # and the demo transcript (_mock_words in main.py) has no actual filler words
 # or long pauses for cleanupTargets() to find — "Nothing to clean up" is the
 # correct, deterministic state for this seed data, not a bug.
-# Text-based, not id-based: editorPro.cleanup.cancel never surfaces in ANY
-# accessibility snapshot despite rendering correctly on screen (confirmed via
-# screenshot + a full maestro.log search across two runs, one with an 8s
-# extendedWaitUntil) — a real SwiftUI accessibility quirk (this Button sits in
-# a ZStack alongside a plain, unlabeled sibling Text("Clean up"), a known
-# pattern for SwiftUI to auto-merge accessibility elements and drop the
-# child's own identifier), not a Maestro timing/matching issue. Flagged
-# separately for a real fix; worked around here with the same text-based
-# tapOn/assertVisible this flow already uses successfully for the tab bar.
+# editorPro.cleanup.cancel used to never surface (the Button sat in a ZStack
+# overlaid with a plain sibling Text("Clean up"), and the overlapping
+# accessibility frames got coalesced into one ambiguous element). Fixed by
+# flattening the header into a plain HStack (no overlap) — id-based again.
 - extendedWaitUntil:
-    visible: "Cancel"
+    visible:
+      id: "editorPro.cleanup.cancel"
     timeout: 8000
 - takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-cleanup-panel
-- tapOn: "Cancel"
+- tapOn:
+    id: "editorPro.cleanup.cancel"
 
 # --- 5. Transition preview dip (formatting fix #11) --------------------------
 # The demo EDL's boundary transition is deliberately widened to a 3s ramp (see

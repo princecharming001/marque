@@ -643,15 +643,17 @@ extension ProEditorView {
         let keep = targets.filter { !cleanupSkip.contains($0.id) }
         let secs = Double(keep.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
         return VStack(spacing: 0) {
-            ZStack {
+            // Header was a ZStack (centered title overlaid by a trailing-Cancel HStack).
+            // Flattening it to a plain HStack (below) removed a theoretical frame overlap,
+            // but wasn't the actual bug — see the .accessibilityElement(children: .contain)
+            // at the bottom of this view for the real root cause and fix.
+            HStack {
                 Text("Clean up").font(AppFont.headline).foregroundStyle(.white)
-                HStack {
-                    Spacer()
-                    Button { withAnimation(.easeOut(duration: 0.15)) { showCleanup = false } } label: {
-                        Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
-                            .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
-                    }.buttonStyle(.plain).accessibilityIdentifier("editorPro.cleanup.cancel")
-                }
+                Spacer()
+                Button { withAnimation(.easeOut(duration: 0.15)) { showCleanup = false } } label: {
+                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                        .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("editorPro.cleanup.cancel")
             }
             .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
 
@@ -700,6 +702,19 @@ extension ProEditorView {
         .frame(height: 340, alignment: .top)
         .frame(maxWidth: .infinity)
         .background(Palette.ink.opacity(0.6))
+        // Root cause of editorPro.cleanup.cancel never surfacing (confirmed via a live
+        // `maestro hierarchy` dump while this panel was on screen): without an explicit
+        // .accessibilityElement(children:), applying .accessibilityIdentifier directly to
+        // a plain container broadcasts that SAME identifier onto every one of its
+        // flattened descendant accessibility elements — the dump showed the title Text,
+        // the Cancel Button, AND the "Nothing to clean up" message ALL reporting
+        // resource-id "editorPro.cleanupPanel", clobbering the Button's own identifier
+        // even though it was set correctly in code. `.accessibilityElement(children:
+        // .contain)` makes this VStack a real container instead, so each child's own
+        // identifier surfaces on its own — verified by re-dumping the hierarchy after
+        // adding this line (editorPro.cleanup.cancel then showed up correctly) and by a
+        // full .maestro/format-audit.yaml re-run.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.cleanupPanel")
     }
 
