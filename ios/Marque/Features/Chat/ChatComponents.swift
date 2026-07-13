@@ -388,6 +388,9 @@ struct ChatSuggestedChips: View {
     let chips: [String]
     let onTap: (String) -> Void
     var onEdit: ((String) -> Void)? = nil
+    /// Claude-style final option: opens the composer empty for a fully custom answer
+    /// (the suggested choices never cover everything — e.g. specific client details).
+    var onOther: (() -> Void)? = nil
 
     @State private var pressed: String?
 
@@ -420,6 +423,30 @@ struct ChatSuggestedChips: View {
                 }, onPressingChanged: { down in
                     pressed = down ? chip : nil
                 })
+            }
+            if let onOther {
+                // Deliberately quieter than the real choices (dashed hairline, tertiary
+                // text) — an escape hatch, not another suggestion. Focuses the empty
+                // composer; never auto-sends.
+                HStack(spacing: Space.sm) {
+                    Image(systemName: "keyboard")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Palette.textTertiary)
+                    Text("Type my own answer")
+                        .font(AppFont.callout)
+                        .foregroundStyle(Palette.textSecondary)
+                    Spacer(minLength: Space.sm)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: 44)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
+                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .onTapGesture { onOther() }
+                .accessibilityIdentifier("chat.chip.other")
             }
             if onEdit != nil {
                 Text("Tap to send — hold to edit, or just type")

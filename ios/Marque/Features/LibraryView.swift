@@ -297,8 +297,12 @@ struct ClipDetailSheet: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
 
                     // UX-D1: the tweak chat is the clip's front door, not a buried menu
-                    // entry — an input-shaped affordance right under the player.
-                    if current.status == .ready && current.isServerRendered {
+                    // entry — an input-shaped affordance right under the player. This is
+                    // the ONLY AI-tweak entry point, so it gates on jobId (any live
+                    // server job can be tweaked), not isServerRendered — the stricter
+                    // gate left clips with a jobId but no remote render URL (e.g. the
+                    // demo clip) with no AI entry at all once the duplicate button went.
+                    if current.status == .ready && clip.jobId != nil && !isDraft {
                         Button { showTweak = true } label: {
                             HStack(spacing: Space.sm) {
                                 Image(systemName: "wand.and.stars")
@@ -359,18 +363,15 @@ struct ClipDetailSheet: View {
                     }
 
                     // Edit tooling — only for server-edited clips whose job is still
-                    // alive (jobId == nil means the offline mock engine).
+                    // alive (jobId == nil means the offline mock engine). AI tweaks have
+                    // exactly ONE entry point: the input-shaped affordance under the
+                    // player above (a second "Tweak with AI" button here opened the
+                    // identical sheet — pure duplication, removed).
                     if !isDraft, clip.jobId != nil, current.status == .ready || current.status == .rendering {
-                        HStack(spacing: Space.sm) {
-                            GhostButton(title: "Edit manually", systemImage: "slider.horizontal.3") {
-                                showEditor = true
-                            }
-                            .accessibilityIdentifier("clip.editManual")
-                            GhostButton(title: "Tweak with AI", systemImage: "wand.and.stars") {
-                                showTweak = true
-                            }
-                            .accessibilityIdentifier("clip.tweak")
+                        GhostButton(title: "Edit manually", systemImage: "slider.horizontal.3") {
+                            showEditor = true
                         }
+                        .accessibilityIdentifier("clip.editManual")
                     }
 
                     if isDraft {

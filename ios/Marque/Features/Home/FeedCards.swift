@@ -21,7 +21,11 @@ struct ScriptFeedCard: View {
     var onDismiss: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
+        // spacing sm (not md) + height 260 (not 190): the old fixed 190pt frame was
+        // SHORTER than the card's own minimum content (tag row + 2-3 line title +
+        // why-picked + buttons ≈ 250-260pt), so the clipShape cut the Film-this/save
+        // row clean off — the "formatting is wrong on Today's Picks" bug.
+        VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: Space.sm) {
                 FormatTag(formatId: script.formatId)
                 Spacer()
@@ -76,7 +80,7 @@ struct ScriptFeedCard: View {
             }
         }
         .padding(Space.lg)
-        .frame(width: 260, height: 190, alignment: .topLeading)
+        .frame(width: 260, height: 260, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
@@ -371,7 +375,7 @@ struct FeedSkeletonCard: View {
             SkeletonBlock(cornerRadius: Radius.pill).frame(width: 96, height: 30) // CTA pill
         }
         .padding(Space.lg)
-        .frame(width: 260, height: 190, alignment: .topLeading)
+        .frame(width: 260, height: 260, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)

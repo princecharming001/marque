@@ -31,9 +31,21 @@ struct HomeView: View {
             }
             .screenPadding()
             .padding(.top, Space.lg)
-            .padding(.bottom, 140)
+            .padding(.bottom, MarqueTabBar.clearance + Space.xxl)
         }
         .background(Palette.canvas.ignoresSafeArea())
+        // The nav bar is hidden, so scrolled content ran straight under the system
+        // clock ("STEAL TH[3:55]ESE"). A canvas fade over the status-bar band keeps
+        // that region legible without blocking touches or reserving layout space.
+        .overlay(alignment: .top) {
+            GeometryReader { geo in
+                LinearGradient(colors: [Palette.canvas, Palette.canvas.opacity(0)],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(height: geo.safeAreaInsets.top + 14)
+            }
+            .ignoresSafeArea(edges: .top)
+            .allowsHitTesting(false)
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showVoice) { VoiceSessionView() }
@@ -173,7 +185,7 @@ struct HomeView: View {
                     Text("More").font(AppFont.callout).foregroundStyle(Palette.textPrimary)
                 }
             }
-            .frame(width: 96, height: 190)
+            .frame(width: 96, height: 260)   // matches ScriptFeedCard's height
             .background(Palette.surfaceRaised)
             .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
@@ -198,7 +210,7 @@ struct HomeView: View {
             Spacer(minLength: 0)
         }
         .padding(Space.lg)
-        .frame(width: 260, height: 190, alignment: .topLeading)
+        .frame(width: 260, height: 260, alignment: .topLeading)   // matches ScriptFeedCard
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
