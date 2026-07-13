@@ -131,6 +131,13 @@ _supabase_client: SupabaseClient | None = (
 )
 push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supabase is wired
 
+# --- Palo port (branch palo-port) — memory/ledger store. None keyless => every ported
+# path is a pure no-op; all capabilities gated OFF by app.palo_flags (PALO_PORT unset).
+from app import memory_v2, palo_flags, recall_ledger  # noqa: E402
+from app.palo_persistence import make_store  # noqa: E402
+
+_palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
+
 
 async def _persist_creator(creator_id: str, **fields):
     """Best-effort durable write of per-creator brand facts (niche/goal). Absent
@@ -5919,6 +5926,18 @@ async def converse(req: ConverseRequest):
 
     stats = await _arms_for_prompt(req.creator_id)
     system = prompts.converse_system(req.mode, persona=req.persona, response_length=req.response_length)
+    # Palo port (flag MEMORY_V2, default OFF): inject compounding memory + the never-
+    # re-pitch ledger into the strategist's system prompt. Defined unconditionally so the
+    # write-side hooks below can reuse it; zero added work/latency when the flag is off.
+    _last_user = next((m.get("content", "") for m in reversed(req.messages)
+                       if m.get("role") == "user"), "")
+    if palo_flags.enabled(palo_flags.MEMORY_V2):
+        _mem_block = memory_v2.memory_block(
+            await memory_v2.retrieve(_palo_store, req.creator_id, _last_user))
+        _led_block = await recall_ledger.ledger_block(_palo_store, req.creator_id)
+        _inject = "\n\n".join(b for b in (_mem_block, _led_block) if b)
+        if _inject:
+            system = f"{system}\n\n{_inject}"
     # No trends passed: mock_trends is hand-authored filler, and injecting it as
     # "Trending right now" into a LIVE strategist makes the model relay invented trend
     # claims as fact. Omit until a real trend source exists (audit B-10/F16).
@@ -5955,6 +5974,11 @@ async def converse(req: ConverseRequest):
         payload = {"edit_instructions": (intent_args.get("instructions") or "").strip()}
 
     chips = [c for c in (envelope.get("chips") or []) if isinstance(c, str) and c.strip()][:3]
+    # Palo port (flag MEMORY_V2, default OFF): fire-and-forget learn from this turn —
+    # extract stable memories + record what was proposed (never re-pitch). Off the hot path.
+    if palo_flags.enabled(palo_flags.MEMORY_V2):
+        _spawn(memory_v2.remember(_palo_store, req.creator_id, _last_user, envelope["reply"]))
+        _spawn(recall_ledger.record(_palo_store, req.creator_id, _last_user, envelope["reply"]))
     return {"mode": "live", "reply": envelope["reply"],
             "memory_updates": _sanitize_memory_updates(envelope.get("memory_updates")),
             "intent": intent, "payload": payload, "suggested_chips": chips}

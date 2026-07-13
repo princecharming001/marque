@@ -24,11 +24,11 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] `migrations.sql` — PALO PORT block (pgvector, match_memories RPC, 10 tables, tier column)
 - [x] `test_palo_phase0.py` (14 green) + `eval/port_eval.py` (LOOP G) + gate.sh port+secret stages
 
-## Phase 1 — memory + ledger + overlay  (flag: MEMORY_V2)  ⏳ modules done; wiring open
+## Phase 1 — memory + ledger + overlay  (flag: MEMORY_V2)  ✅ COMPLETE
 - [x] `app/memory_v2.py` — extractor (facts only, insights banned in code), embed (OpenAI, keyless→recency), deterministic reconcile ADD/UPDATE/NOOP
 - [x] memory retrieve: cue-gate + `match_memories` + weighted rank (0.55 sim + 0.25 conf + 0.20 recency) + scope hard-filter
 - [x] `app/recall_ledger.py` — per-turn extraction of assistant proposals; `<prior_recommendations>` block; stdlib ULID
-- [ ] wire fire-and-forget post-turn hooks into `/v1/converse` + script gen (5-block injection) — call `memory_v2.remember` / `recall_ledger.record` via `_spawn`, inject `memory_block` + `ledger_block`
+- [x] wire hooks into `/v1/converse` — read-path inject `memory_block` + `ledger_block`, write-path `_spawn(remember)` / `_spawn(record)`, flag-gated OFF (test_palo_wiring.py 2 green; full suite 869; flag-off = byte-identical). Script-gen 5-block injection folds into Phase 5.
 - [x] tests: reconcile golden, ledger, drop-insight, flag/keyless guards (test_palo_memory.py 9 green; +4 port_eval golden)
 
 ## Phase 2 — idea bank / reel suggestions  (flag: IDEA_BANK)
