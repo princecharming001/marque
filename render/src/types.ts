@@ -64,7 +64,16 @@ export interface VolumeRange { frame_in: number; frame_out: number; volume: numb
 // future loudness-normalization work, but nothing in the compositions reads it
 // today — real LUFS normalization needs an ffmpeg loudnorm pass or equivalent,
 // which doesn't exist in this render bridge yet. Not a bug; documented.
-export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; }
+// P4: one deterministically-authored SFX one-shot, already resolved to an
+// output frame + hosted URL by build_render_plan (a cue whose kind had no
+// configured asset, or whose anchor frame got cut, never reaches this list).
+export interface SfxCue { frame: number; kind: string; gain: number; url: string; }
+export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; sfx: SfxCue[]; }
+
+// P4: a tail-of-video CTA card. Tail-anchored (not a source-coord remap) —
+// start_frame is where the last kept clip ends, and total_frames on the plan
+// already includes its `frames` (build_render_plan extends it there).
+export interface EndCardPlan { text: string; start_frame: number; frames: number; show_handle: boolean; }
 
 export interface RenderPlan {
   style: string;
@@ -81,6 +90,8 @@ export interface RenderPlan {
   transitions?: TransitionPlan[];
   look?: Look | null;
   audio?: AudioPlan | null;
+  end_card?: EndCardPlan | null;   // P4
+  progress_bar?: boolean;          // P4
   total_frames: number;
   // #19: backend build_render_plan's contract version — compared against
   // PLAN_SCHEMA_VERSION below to detect backend/site deploy skew.
@@ -90,7 +101,8 @@ export interface RenderPlan {
 // #19: keep in lockstep with backend edl.py PLAN_SCHEMA_VERSION. Bump BOTH when the
 // render-plan shape changes so a half-deploy (backend updated, Remotion site stale)
 // surfaces as a logged warning instead of a silently-wrong render.
-export const PLAN_SCHEMA_VERSION = 1;
+// v2 (P4): added end_card, progress_bar, audio.sfx.
+export const PLAN_SCHEMA_VERSION = 2;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a

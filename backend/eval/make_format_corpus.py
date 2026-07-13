@@ -173,6 +173,24 @@ def build_corpus() -> dict[str, dict]:
                            "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0}],
                  captions=[]))
 
+    # --- adversarial: end_card + progress_bar (P4 schema v2 regression guard) ---
+    fixtures["adv-endcard-progressbar"] = _fixture(
+        "adv-endcard-progressbar",
+        _base_edl("talking_head", 90,
+                 end_card={"text": "Follow for more tips like this", "frames": 60, "show_handle": True},
+                 progress_bar=True))
+
+    # --- adversarial: SFX cues (P4 schema v2 regression guard) — url resolves to the
+    # same local source video every other placeholder-url fixture uses, so the render
+    # actually plays a real, reachable audio file rather than a dead link.
+    fixtures["adv-sfx-cues"] = _fixture(
+        "adv-sfx-cues",
+        _base_edl("talking_head", 150,
+                 audio={"lufs_target": -14.0, "gain": 0.0, "music": None, "volume_ranges": [],
+                       "speech_frames": [],
+                       "sfx": [{"src_in": 30, "kind": "whoosh", "gain": 0.7, "url": PLACEHOLDER_SOURCE},
+                              {"src_in": 90, "kind": "pop", "gain": 0.7, "url": PLACEHOLDER_SOURCE}]}))
+
     return fixtures
 
 

@@ -96,9 +96,12 @@
       "gain": 0.0,
       "music": null,
       "volume_ranges": [],
-      "speech_frames": []
+      "speech_frames": [],
+      "sfx": []
     },
+    "end_card": null,
+    "progress_bar": false,
     "total_frames": 90,
-    "schema_version": 1
+    "schema_version": 2
   }
 }

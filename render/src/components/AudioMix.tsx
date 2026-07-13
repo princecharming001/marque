@@ -1,5 +1,5 @@
 import React from "react";
-import { Audio, useVideoConfig } from "remotion";
+import { Audio, Sequence, useVideoConfig } from "remotion";
 import { AudioPlan } from "../types";
 
 // Background-music layer.
@@ -29,16 +29,36 @@ const DUCK_RAMP = 8;      // ramp between full and ducked across this many frame
 const DUCK_FACTOR = 0.35;
 const FADE = 20;          // composition-level fade in / out
 
+// P4: SFX one-shots — build_render_plan has already resolved each cue to an
+// output frame + hosted URL (an unresolved kind, or one whose anchor frame
+// got cut, never reaches this list — see synthesize_sfx/build_render_plan).
+// Each cue is its own Sequence so it plays exactly once starting at its frame,
+// independent of the looping music track above.
+const SfxLayer: React.FC<{ sfx: AudioPlan["sfx"] }> = ({ sfx }) => (
+  <>
+    {sfx.map((cue, i) => (
+      <Sequence key={i} from={cue.frame} layout="none">
+        <Audio src={cue.url} volume={cue.gain} />
+      </Sequence>
+    ))}
+  </>
+);
+
 export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
   const music = audio?.music;
   const { durationInFrames } = useVideoConfig();
-  if (!music || !music.url) return null;
+  const sfx = audio?.sfx ?? [];
+
+  // P4: music and SFX are independent layers — a clip with SFX cues but no
+  // (or unset) music must still hear them, so this can no longer early-return
+  // just because there's no music track.
+  if ((!music || !music.url) && sfx.length === 0) return null;
 
   const frames = (audio?.speech_frames ?? []).slice().sort((a, b) => a - b);
   // Smoothed duck: full duck within DUCK_WINDOW of speech, easing back to full across
   // DUCK_RAMP frames (instead of the old hard 35%/100% step that pumped on every word).
   const duckAt = (f: number): number => {
-    if (!music.duck_voice || frames.length === 0) return 1;
+    if (!music || !music.duck_voice || frames.length === 0) return 1;
     let nearest = Infinity;
     for (const cf of frames) {
       const d = Math.abs(cf - f);
@@ -60,6 +80,11 @@ export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
   };
 
   return (
-    <Audio src={music.url} loop volume={(f) => music.volume * duckAt(f) * envAt(f)} />
+    <>
+      {music && music.url && (
+        <Audio src={music.url} loop volume={(f) => music.volume * duckAt(f) * envAt(f)} />
+      )}
+      {sfx.length > 0 && <SfxLayer sfx={sfx} />}
+    </>
   );
 };

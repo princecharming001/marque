@@ -12,14 +12,14 @@ in a fixed order from `apply_retention_passes`, each independently gated by the
 `check_edl_invariants` issue introduced by a pass reverts that pass's output to
 its input rather than ever failing the pipeline. "Degrade, never break."
 
-Pass order (each a separate task in the upgrade — filled in incrementally):
-  1. sweep_residual_fillers  (WS1 — implemented)
-  2. plan_pacing             (WS2 — implemented)
-  3. align_emphasis          (WS4 — TODO)
-  4. place_hook_overlay / trim_loop_tail / place_end_card  (trim_loop_tail: WS1,
-     implemented; hook/end_card: WS4, TODO)
-  5. schedule_interrupts     (WS3 — TODO, runs last so it sees all prior events)
-  6. synthesize_sfx          (WS4 — TODO)
+Pass order (all implemented as of P4):
+  1. sweep_residual_fillers  (WS1)
+  2. plan_pacing             (WS2)
+  3. align_emphasis          (WS4b — ranks emphasis spans, highlight_words + punch_in)
+  4. place_hook_overlay / trim_loop_tail (XOR) place_end_card  (WS1 loop-tail;
+     WS4a/4c hook + end-card)
+  5. schedule_interrupts     (WS3 — after 3/4 so it never double-covers their overlays)
+  6. synthesize_sfx          (WS4d — last of all, sees every overlay/transition)
 """
 from __future__ import annotations
 import copy
@@ -33,8 +33,8 @@ from app.edl import (
 )
 
 # csv of pass names to run; "" (default) = everything off = today's live behavior.
-# "all" enables every implemented pass. Individual names: filler, pacing, interrupts,
-# sfx, structure (hook/end_card/loop_tail).
+# "all" enables every implemented pass. Individual names: filler, pacing, emphasis,
+# interrupts, sfx, structure (hook/end_card/loop_tail).
 _ENV_PASSES = os.environ.get("RETENTION_PASSES", "")
 
 
@@ -43,7 +43,7 @@ def _enabled_passes() -> set[str]:
     if not raw:
         return set()
     if raw == "all":
-        return {"filler", "pacing", "interrupts", "sfx", "structure"}
+        return {"filler", "pacing", "emphasis", "interrupts", "sfx", "structure"}
     return {p.strip() for p in raw.split(",") if p.strip()}
 
 
@@ -399,6 +399,139 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
 
 
 # ---------------------------------------------------------------------------
+# WS4a/4b — hook overlay + emphasis alignment. Both reuse EXISTING overlay
+# types (text_sticker, punch_in) and caption_options.highlight_words — no
+# schema change. Run BEFORE schedule_interrupts (WS3) so these overlays count
+# as existing events the interrupt scheduler must not double-cover, and
+# align_emphasis runs before place_hook_overlay/place_end_card so a hook
+# overlay synthesized moments later can't collide with an emphasis punch that
+# happens to land at the very start of the take.
+# ---------------------------------------------------------------------------
+
+_EMPHASIS_TOP_N = 3
+_EMPHASIS_PUNCH_GUARD_FRAMES = 30   # skip inserting a punch within this many frames of an existing overlay
+_EMPHASIS_HIGHLIGHT_CAP = 12
+_HOOK_OVERLAY_HOLD_FRAMES = 45
+_HOOK_SKIP_STYLES = {"duet_split"}   # the reacted-to clip owns the open
+
+
+def align_emphasis(edl: dict, words: list[dict], *, style: str,
+                   emphasis_spans: list[tuple[int, int]] | None = None) -> dict:
+    """WS4b: rank emphasis spans and give the strongest few real visual/caption
+    weight instead of just the single span `_apply_edit_prefs` already
+    fallback-punches. Ranked by SPAN LENGTH — `_extract_emphasis_regions`
+    (main.py) merges overlapping is_emphasized/auto-highlight spans before this
+    ever sees them, which loses which signal produced each span, so length is
+    the only honest ranking signal left; a documented simplification, not an
+    oversight. Top 3 each get: (a) their longest word appended to
+    caption_options.highlight_words (capped), (b) a punch_in over the span if
+    the style renders punch-ins and nothing already occupies it within
+    _EMPHASIS_PUNCH_GUARD_FRAMES (avoids duplicating _apply_edit_prefs' own
+    single-span fallback punch, and avoids stacking two punches on one beat)."""
+    edl = copy.deepcopy(edl)
+    emphasis_spans = emphasis_spans or []
+    if not emphasis_spans or not words:
+        return edl
+
+    ranked = sorted(emphasis_spans, key=lambda s: s[1] - s[0], reverse=True)[:_EMPHASIS_TOP_N]
+    caption_opts = dict(edl.get("caption_options") or {})
+    highlight_words = list(caption_opts.get("highlight_words") or [])
+    overlays = list(edl.get("overlays") or [])
+    can_punch = style in _PUNCH_STYLES
+
+    def _occupied_near(lo: int, hi: int) -> bool:
+        return any(not (o["src_out"] <= lo - _EMPHASIS_PUNCH_GUARD_FRAMES or
+                       o["src_in"] >= hi + _EMPHASIS_PUNCH_GUARD_FRAMES) for o in overlays)
+
+    for s_in, s_out in ranked:
+        span_words = [w for w in words if s_in <= ms_to_frame(w.get("start_ms", 0))
+                      and ms_to_frame(w.get("end_ms", 0)) <= s_out]
+        if span_words:
+            longest = max(span_words, key=lambda w: len(w.get("word") or ""))
+            norm = _norm_word(longest.get("word") or "")
+            if norm and norm not in highlight_words and len(highlight_words) < _EMPHASIS_HIGHLIGHT_CAP:
+                highlight_words.append(norm)
+        if can_punch and not _occupied_near(s_in, s_out):
+            overlays.append({"type": "punch_in", "src_in": s_in,
+                             "src_out": min(s_out, s_in + 60), "scale": 1.08, "text": ""})
+
+    if highlight_words != (caption_opts.get("highlight_words") or []):
+        caption_opts["highlight_words"] = highlight_words
+        edl["caption_options"] = caption_opts
+    if len(overlays) > len(edl.get("overlays") or []):
+        edl["overlays"] = overlays
+    return edl
+
+
+def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
+                       hints: dict | None = None, script: dict | None = None) -> dict:
+    """WS4a: synthesize a hook-text text_sticker over the first ~1.5s so the
+    promise restates visually the instant the video opens (Hormozi/Submagic
+    pattern) — text_sticker renders in ALL 7 compositions (text_card only
+    renders in 2), so this is the one overlay type guaranteed to work
+    everywhere. Skipped for duet_split (the reacted-to clip owns the open),
+    when there's no candidate hook text, or when another overlay already
+    occupies the first 60 source-adjacent frames (never stack two competing
+    opens)."""
+    if style in _HOOK_SKIP_STYLES:
+        return edl
+    hints = hints or {}
+    hook_text = (hints.get("hook_text") or "").strip()
+    if not hook_text:
+        script_hook = ((script or {}).get("hook") or "").strip()
+        if script_hook:
+            hook_text = " ".join(script_hook.split()[:6])
+    if not hook_text:
+        return edl
+
+    edl = copy.deepcopy(edl)
+    segments = edl.get("segments") or []
+    if not segments:
+        return edl
+    kept = _kept_intervals(segments, edl.get("drops") or [])
+    if not kept:
+        return edl
+    first_kept = kept[0][0]
+
+    overlays = edl.get("overlays") or []
+    if any(o["src_in"] < first_kept + 60 for o in overlays):
+        return edl
+
+    caption_opts = edl.get("caption_options") or {}
+    pos_y = 0.62 if caption_opts.get("position") == "top" else 0.30
+    edl["overlays"] = overlays + [{
+        "type": "text_sticker", "src_in": first_kept, "src_out": first_kept + _HOOK_OVERLAY_HOLD_FRAMES,
+        "text": hook_text[:42], "scale": 1.05, "pos_x": 0.5, "pos_y": pos_y,
+        "rotation": 0.0, "color": None, "bg": "box", "font": "inter",
+    }]
+    return edl
+
+
+_END_CARD_SKIP_STYLES = {"fast_cuts", "duet_split"}   # WS5 matrix: loop-friendly / play-freeze own the close
+
+
+def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | None = None) -> dict:
+    """WS4c: stamp the plan author's end_card{wanted,text} hint onto the EDL's
+    end_card field. build_render_plan does the actual tail-frame-extension
+    arithmetic (it owns total_frames); this pass only decides WHETHER one is
+    wanted and what it says. Mutually exclusive with trim_loop_tail — enforced
+    by apply_retention_passes choosing one or the other, not by this function,
+    since that decision needs to see both hints at once. Skipped for fast_cuts
+    (WS5: loop-friendly by design, an end-card breaks the loop) and duet_split
+    (the play/freeze payoff punch owns the close, per the same matrix)."""
+    if style in _END_CARD_SKIP_STYLES:
+        return edl
+    hints = hints or {}
+    end_card_hint = hints.get("end_card") or {}
+    text = (end_card_hint.get("text") or "").strip()
+    if not end_card_hint.get("wanted") or not text:
+        return edl
+    edl = copy.deepcopy(edl)
+    edl["end_card"] = {"text": text, "frames": 75, "show_handle": True}
+    return edl
+
+
+# ---------------------------------------------------------------------------
 # WS3 — pattern-interrupt scheduler. Reuses the existing `punch_in` Overlay —
 # no schema change. Guarantees a visual event at least every N OUTPUT frames
 # (style/density-dependent) by inserting a punch_in (or, for faceless — no face
@@ -583,15 +716,93 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
         edl["overlays"] = (edl.get("overlays") or []) + new_overlays
     return edl
 
+
+# ---------------------------------------------------------------------------
+# WS4d — deterministic SFX placement [audio.sfx; schema v2]. Runs LAST of all
+# retention passes (after schedule_interrupts) so it sees every punch_in/hook
+# overlay everything else already placed.
+# ---------------------------------------------------------------------------
+
+_SFX_BUDGET_PER_30S = 5
+_SFX_MIN_SPACING_FRAMES = 15   # ~0.5s @ 30fps
+_SFX_END_GUARD_FRAMES = 15     # none in the last 15 source frames
+
+
+def synthesize_sfx(edl: dict, words: list[dict], *,
+                   sfx_assets: dict[str, str | None] | None = None) -> dict:
+    """WS4d: deterministically place SFX one-shots at transitions and at every
+    punch_in overlay (whichever pass placed it — align_emphasis, the interrupt
+    scheduler, or a hand-authored one), budget-capped at ~5 per 30s of KEPT
+    source, >=15f apart, none in the last 15f. Only emits a cue for a `kind`
+    that actually has a resolved URL in `sfx_assets` (main.py's SFX_ASSETS) —
+    build_render_plan drops any cue whose url is falsy too, so this is
+    belt-and-suspenders, not the only guard.
+
+    Simplification: every punch_in overlay is tagged "pop" regardless of which
+    pass created it (there's no provenance field on Overlay to distinguish
+    "emphasis punch" from "interrupt punch", and adding one purely for SFX
+    tagging isn't worth the schema surface) — transitions get "whoosh". The
+    plan's original hook/hit + emphasis/pop + interrupt/whoosh three-way split
+    is a sound-design nicety on top of this, not implemented here."""
+    edl = copy.deepcopy(edl)
+    sfx_assets = sfx_assets or {}
+    segments = edl.get("segments") or []
+    if not segments:
+        return edl
+    kept = _kept_intervals(segments, edl.get("drops") or [])
+    if not kept:
+        return edl
+
+    def _inside(f: int) -> bool:
+        return any(lo <= f < hi for lo, hi in kept)
+
+    total_kept_frames = sum(hi - lo for lo, hi in kept)
+    budget = max(1, round(_SFX_BUDGET_PER_30S * total_kept_frames / (30 * 30)))
+    last_frame = kept[-1][1]
+
+    candidates: set[tuple[int, str]] = set()
+    for t in edl.get("transitions") or []:
+        si = t.get("after_segment", -1)
+        if 0 <= si < len(segments):
+            candidates.add((segments[si]["src_out"], "whoosh"))
+    for o in edl.get("overlays") or []:
+        if o.get("type") == "punch_in":
+            candidates.add((o["src_in"], "pop"))
+
+    ordered = sorted(c for c in candidates if _inside(c[0]))
+    sfx: list[dict] = []
+    last_placed = -_SFX_MIN_SPACING_FRAMES
+    for f, kind in ordered:
+        if len(sfx) >= budget:
+            break
+        if f - last_placed < _SFX_MIN_SPACING_FRAMES or f >= last_frame - _SFX_END_GUARD_FRAMES:
+            continue
+        url = sfx_assets.get(kind)
+        if not url:
+            continue
+        sfx.append({"src_in": f, "kind": kind, "gain": 0.7, "url": url})
+        last_placed = f
+
+    if sfx:
+        audio = dict(edl.get("audio") or {})
+        audio["sfx"] = (audio.get("sfx") or []) + sfx
+        edl["audio"] = audio
+    return edl
+
+
 def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
                            prefs: dict | None = None, emphasis_spans: list | None = None,
                            dossier: dict | None = None, hints: dict | None = None,
-                           script: dict | None = None, level: str = "default") -> dict:
+                           script: dict | None = None, level: str = "default",
+                           sfx_assets: dict[str, str | None] | None = None) -> dict:
     """Entry point called once from `_run_edit`, after EITHER author path builds
     its EDL and before `_resolve_broll`/`build_render_plan`. `hints` carries the
     plan author's typed decisions (pacing/interrupt_density/hook_text/end_card/
     music) when available, or {} from the legacy path / safe-default (every pass
-    has a style-driven default so an empty hints dict is a fully valid input)."""
+    has a style-driven default so an empty hints dict is a fully valid input).
+    `sfx_assets` is main.py's SFX_ASSETS dict (kind -> hosted URL or None);
+    passed as a parameter rather than imported, since main.py already imports
+    THIS module and a reverse import would be circular."""
     prefs = prefs or {}
     hints = hints or {}
     enabled = _enabled_passes()
@@ -605,16 +816,37 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         edl = _safe_pass("plan_pacing", edl, plan_pacing, words, style=style,
                          emphasis_spans=emphasis_spans, dossier=dossier, hints=hints)
 
-    # WS4 align_emphasis/hook/end_card land here as their own task — gated on
-    # its own `enabled` name, between pacing and structure.
+    if "emphasis" in enabled:
+        edl = _safe_pass("align_emphasis", edl, align_emphasis, words,
+                         style=style, emphasis_spans=emphasis_spans)
 
     if "structure" in enabled:
-        edl = _safe_pass("trim_loop_tail", edl, trim_loop_tail, words)
+        # end_card XOR loop-tail: a wanted end_card means "hold on a final beat
+        # with a CTA", the opposite intent of a loop-friendly trimmed tail — the
+        # hint decides which one runs, never both. Styles place_end_card itself
+        # would skip (fast_cuts/duet_split, WS5) must still get their loop-tail
+        # trim — checking the style here too, not just the hint, so those
+        # styles never fall through to NEITHER pass firing.
+        end_card_hint = hints.get("end_card") or {}
+        wants_end_card = (bool(end_card_hint.get("wanted"))
+                         and bool((end_card_hint.get("text") or "").strip())
+                         and style not in _END_CARD_SKIP_STYLES)
+        if wants_end_card:
+            edl = _safe_pass("place_end_card", edl, place_end_card, words, style=style, hints=hints)
+        else:
+            edl = _safe_pass("trim_loop_tail", edl, trim_loop_tail, words)
+        edl = _safe_pass("place_hook_overlay", edl, place_hook_overlay, words,
+                         style=style, hints=hints, script=script)
 
-    # interrupts runs LAST (per WS3): it needs to see every event pacing/
-    # structure/sfx already placed so it never double-covers them.
+    # interrupts runs after emphasis/structure (per WS3): it needs to see every
+    # event they already placed so it never double-covers them.
     if "interrupts" in enabled:
         edl = _safe_pass("schedule_interrupts", edl, schedule_interrupts, words,
                          style=style, prefs=prefs, hints=hints)
+
+    # sfx runs LAST of all: it sees every transition/overlay every prior pass
+    # (including interrupts) placed.
+    if "sfx" in enabled:
+        edl = _safe_pass("synthesize_sfx", edl, synthesize_sfx, words, sfx_assets=sfx_assets)
 
     return edl

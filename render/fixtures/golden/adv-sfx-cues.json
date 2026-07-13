@@ -1,9 +1,9 @@
 {
-  "id": "fast_cuts-default",
+  "id": "adv-sfx-cues",
   "sourceUrl": "__SOURCE__",
   "formatId": "myth-buster",
   "edl": {
-    "style": "fast_cuts",
+    "style": "talking_head",
     "format_id": "myth-buster",
     "clips": [
       {
@@ -52,7 +52,7 @@
     "react_source": null,
     "react_schedule": [],
     "layout": {
-      "style": "fast_cuts",
+      "style": "talking_head",
       "panels": 1,
       "panel_boundaries": [],
       "split_fraction": 0.58
@@ -87,7 +87,20 @@
       "music": null,
       "volume_ranges": [],
       "speech_frames": [],
-      "sfx": []
+      "sfx": [
+        {
+          "frame": 30,
+          "kind": "whoosh",
+          "gain": 0.7,
+          "url": "__SOURCE__"
+        },
+        {
+          "frame": 90,
+          "kind": "pop",
+          "gain": 0.7,
+          "url": "__SOURCE__"
+        }
+      ]
     },
     "end_card": null,
     "progress_bar": false,

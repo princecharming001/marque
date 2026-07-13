@@ -117,6 +117,14 @@ struct WireOp: Equatable {
 // MARK: - LocalEDLEngine — deterministic Swift port of the subset of apply_edl_ops (app/edl.py:569)
 // the editor emits. The server remains authoritative (we reload after Save); this exists for
 // instant local preview + to keep op indices valid at their sequence position.
+//
+// P4 (schema v2): end_card, progress_bar, and audio.sfx are backend+render-only for v1 — they're
+// generation-time retention-pass decisions (app/retention.py place_end_card/synthesize_sfx), not
+// creator-facing tweak ops, so there's no WireOp for them and EditorDocument/EditorModel has no
+// mirror field either (same as react_source/react_schedule/speech_frames/trim_aggressiveness,
+// which are also backend-authored fields this editor never locally simulates). A future manual
+// toggle would need a real WireOp + EditorDocument field + this engine's local-preview branch,
+// same as any other creator-facing op.
 
 enum LocalEDLEngine {
     static let minDurationFrames = 60      // _MIN_DURATION_FRAMES (edl.py:519)
