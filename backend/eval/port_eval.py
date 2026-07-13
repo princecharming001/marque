@@ -54,6 +54,14 @@ def _checks() -> list[tuple[str, bool]]:
          {"value": "hi", "similarity": 0.95, "confidence": 0.9}])[0]["value"] == "hi"))
     out.append(("ledger.ulid", len(recall_ledger.new_ulid()) == 26))
 
+    # Phase 2 — idea bank parity (deterministic, no LLM)
+    from app import ideas
+    _mi = ideas.mock_ideas({"niche": "chess"})
+    out.append(("ideas.mock", len(_mi) == 3 and "chess" in _mi[0]["title"].lower()))
+    _bf = ideas.to_briefs("c1", _mi)
+    out.append(("ideas.briefs", len(_bf) == 3 and _bf[0]["score"] > _bf[2]["score"]
+                and len({b["id"] for b in _bf}) == 3))
+
     return out
 
 

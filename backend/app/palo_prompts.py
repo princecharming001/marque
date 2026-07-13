@@ -68,3 +68,86 @@ Return ONLY a JSON array (empty [] if nothing). Each item:
 def ledger_extract_prompt(user_msg: str, assistant_msg: str) -> tuple[str, str]:
     user = f"User:\n{user_msg}\n\nAssistant:\n{assistant_msg}\n\nExtract the assistant's proposals/decisions/verdicts as a JSON array."
     return LEDGER_EXTRACTION_SYSTEM, user
+
+
+# --- idea generation (onboarding_agent/idea_generation.py, verbatim) ----------
+IDEA_GENERATION_SYSTEM = """\
+<context>
+<creator_signals>{creator_signals}</creator_signals>
+<channel_identity>{channel_identity}</channel_identity>
+<exemplar_video_analyses>{exemplar_video_analyses}</exemplar_video_analyses>
+<creator_knowledge_level>{knowledge_level}</creator_knowledge_level>
+</context>
+
+<role>
+Produce 3 video ideas that make this creator stop and think "this actually gets what I do." If they're generic, the creator dismisses the product. If they're specific, surprising, and obviously filmable, the creator converts.
+</role>
+
+<core_principle>
+ADAPT PROVEN STRUCTURE. CHANGE THE CONTENT. The exemplar analyses are real videos that earned real views, each with a structural skeleton (how it opens, builds, pays off). Do NOT invent from scratch: take a proven structural formula and adapt the CONTENT to THIS creator's identity, niche, and voice. For each idea: pick an exemplar with a strong skeleton; identify how it opens / what creates tension / where escalation happens / the payoff mechanic; SWAP the content to this creator's niche keeping the skeleton; make it hyper-specific using creator_signals + channel_identity; write it in their energy; verify it's filmable.
+</core_principle>
+
+<idea_quality>
+1. THE TITLE IS THE PITCH — create an open loop the viewer NEEDS closed; strong titles create desire to watch, weak ones describe content.
+2. SPECIFICITY IS EVERYTHING — every idea needs a hyper-specific detail that makes it feel like a real video, not a template.
+3. BUILT-IN MOMENTUM — escalation, uncertainty, transformation, or conflict at every beat.
+4. THE PAYOFF EARNS THE WATCH — resolve decisively in THIS video, no cliffhangers.
+5. FILMABILITY — makeable with what they have; the best first idea is one they can film tomorrow.
+6. SHAREABILITY — "I need to send this to someone."
+7. VIEW CEILING — at least one idea uses the niche as the SETTING, not the SUBJECT.
+KNOWLEDGE CALIBRATION: none/basic — teach structure by demonstration, no jargon; intermediate/advanced — can reference mechanics and layer techniques.
+</idea_quality>
+
+<the_three_ideas>
+1. SAFEST BET — adapt the highest-performing exemplar's structure; most proven formula.
+2. CREATIVE STRETCH — a proven mechanic applied to an unexpected angle within the niche.
+3. HIGH CEILING — the structure with broadest breakout potential; connect the creator's world to a wider audience.
+Each idea adapts a DIFFERENT exemplar's structure.
+</the_three_ideas>
+
+<idea_format>
+TITLES: work as real YouTube/TikTok/Reels titles or spoken hooks; literal and specific; create a curiosity gap or specific promise; match the creator's tone; first person when the creator is on camera.
+CONTENT: 2-4 SHORT sentences — opening visual/hook, build mechanic, payoff (if not obvious), brief filmability note. Every sentence specific enough to film from.
+FORMAT MATCH: if the creator doesn't appear on camera, no first-person filming references; describe visual sequences, not spoken premises.
+</idea_format>
+
+<validation>
+Each idea must reference this creator's specific niche (if it could work for any creator, it fails), trace to a specific exemplar skeleton, and be picturable for a viewer of this creator. ANTI-PATTERN: a Minecraft PvP creator getting "I Tried Every Morning Routine Tip for 7 Days" — zero niche connection, a critical failure. No em dashes. Collaborative language ("we'll", not "I'll write for you").
+</validation>
+
+Return ONLY JSON matching the schema: 3 ideas (title + 2-4 sentence content) + a 1-2 sentence justification of the common structural thread."""
+
+
+def idea_generation_prompt(creator_signals: str, channel_identity: str,
+                           exemplar_analyses: str = "", knowledge_level: str = "basic") -> tuple[str, str]:
+    system = (IDEA_GENERATION_SYSTEM
+              .replace("{creator_signals}", creator_signals or "(none)")
+              .replace("{channel_identity}", channel_identity or "(none)")
+              .replace("{exemplar_video_analyses}", exemplar_analyses or "(no exemplars available — use your knowledge of what performs in this niche)")
+              .replace("{knowledge_level}", knowledge_level or "basic"))
+    return system, "Generate exactly 3 video ideas as JSON."
+
+
+# --- idea eval gate (onboarding_agent/idea_eval.py, verbatim) -----------------
+IDEA_EVAL_SYSTEM = """\
+<context>
+<creator_niche>{creator_topic} — {creator_format}</creator_niche>
+<ideas>{generated_ideas}</ideas>
+</context>
+<task>
+For each idea, answer: does this idea relate to the creator's specific niche and format?
+An idea PASSES if it's about the creator's topic (not a different niche), matches their format (a visual creator doesn't get a talking-head idea), and a viewer of this creator could picture them making it.
+An idea FAILS if it has zero connection to the stated niche, could apply to any creator, or requires a format the creator doesn't use.
+</task>
+Output JSON matching the schema exactly."""
+
+
+def idea_eval_prompt(creator_topic: str, creator_format: str, ideas: list[dict]) -> tuple[str, str]:
+    ideas_text = "".join(
+        f"\n[{i}] Title: {idea.get('title', '')}\nContent: {idea.get('content', '')}\n"
+        for i, idea in enumerate(ideas, 1))
+    system = (IDEA_EVAL_SYSTEM
+              .replace("{creator_topic}", creator_topic or "unknown")
+              .replace("{creator_format}", creator_format or "unknown")
+              .replace("{generated_ideas}", ideas_text))
+    return system, "Evaluate each idea."
