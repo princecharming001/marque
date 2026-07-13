@@ -104,6 +104,8 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("strategy.sections", _sc.validate_sections(_sm) is True
                 and _sc.validate_sections("## Insights\nx") is False))
     out.append(("strategy.regime", prompt_assembly.infer_craft_regime(_sm).startswith("sub-breakout")))
+    out.append(("strategy.freshness", _sc.is_compile_due(_t.GROWTH, None, 1e7) is True
+                and _sc.is_compile_due(_t.STUDIO, _sc._now_iso(), 0) is False))
 
     return out
 

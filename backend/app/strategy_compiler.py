@@ -12,19 +12,42 @@ the STRATEGY_COMPILER flag AND ai_usage.compile_allowed (allowlist default empty
 """
 from __future__ import annotations
 
+import calendar
 import logging
 import re
 import time
 
-from app import ai_usage, dossier_adapter, palo_flags, palo_prompts, prompt_assembly
+from app import ai_usage, dossier_adapter, palo_flags, palo_prompts, prompt_assembly, tiers
 from app.palo_llm import anthropic_cached
 from prompts import OPUS, SONNET
 
 _REQUIRED = ("Insights", "Plan", "Buckets", "Brand Bets", "Not-Doing")
+_COMPILE_INTERVAL_DAYS = {"weekly": 7.0, "biweekly": 14.0, "monthly": 30.0, "off": 0.0}
 
 
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _iso_to_epoch(s: str | None) -> float:
+    if not s:
+        return 0.0
+    try:
+        return float(calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ")))
+    except Exception:
+        return 0.0
+
+
+def is_compile_due(tier: str, last_updated_iso: str | None, now_epoch: float) -> bool:
+    """Freshness gate: has enough time passed for this tier's compile cadence? Never
+    compiled ⇒ due; 'off' cadence ⇒ never."""
+    interval = _COMPILE_INTERVAL_DAYS.get(tiers.cadence(tier, "compile"), 7.0)
+    if interval <= 0:
+        return False
+    last = _iso_to_epoch(last_updated_iso)
+    if not last:
+        return True
+    return (now_epoch - last) >= interval * 86400
 
 
 def split_sections(md: str) -> dict[str, str]:
@@ -99,3 +122,27 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
     except Exception as e:
         logging.warning("[strategy_compiler] compile failed: %s", e)
         return None
+
+
+async def run_compile_cron(store, now_epoch: float) -> int:
+    """Weekly sweep: compile the strategy for each creator that is allowlisted AND whose
+    tier-cadence freshness window has elapsed. The three gates (flag + allowlist + freshness)
+    keep the Opus bill bounded. Returns #compiled. Flag-gated + keyless no-op."""
+    if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or store is None:
+        return 0
+    compiled = 0
+    for c in await store.load_all_creators():
+        cid = c.get("creator_id")
+        if not cid:
+            continue
+        if not ai_usage.compile_allowed(cid, True):            # allowlist gate (cheap, first)
+            continue
+        tier = await tiers.tier_for(cid, store)
+        prev = await store.load_strategy(cid) or {}
+        if not is_compile_due(tier, prev.get("strategy_updated_at"), now_epoch):  # freshness
+            continue
+        # Videos (dossier list) are a data hookup from the creator's analyzed reels; [] here
+        # falls back to the template strategy until that source is wired.
+        if await compile_strategy(store, cid, [], {"niche": c.get("niche", "")}):
+            compiled += 1
+    return compiled

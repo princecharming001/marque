@@ -48,7 +48,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 ## Phase 4 — strategy compiler / brain  (flag: STRATEGY_COMPILER)
 - [x] `app/dossier_adapter.py` — dossier+transcript+metrics → compiler analysis block (RISK #1); `catalog_block` = metrics-ranked evidence pack; thin dossier degrades gracefully (test_palo_dossier_adapter.py 4 green; +1 port_eval; suite 922)
 - [x] `app/strategy_compiler.py` — Sonnet digest → Opus synthesis (doctrine cache-prefix), `split_sections`/`validate_sections`, UPSERT revision+1; keyless→template (all 5 sections + REGIME/LEVER, downstream-usable); gated by flag + `compile_allowed` (test_palo_strategy.py 6 green; +2 port_eval; suite 928)
-- [ ] gates: `compile_allowed` + freshness + per-stage `ai_usage`; weekly `/internal/cron/compile`
+- [x] gates: `compile_allowed` (allowlist) + `is_compile_due` freshness (per-tier cadence) + per-stage `ai_usage` (digest/synthesis) + `run_compile_cron` + `/internal/cron/compile` route (test_palo_compile_cron.py 4 green; +1 port_eval; suite 932)
 - [ ] inject `{STRATEGY_*}` into script gen + converse
 - [ ] tests: section splitter parity, gate math, budget ≤2 heavy calls
 
