@@ -669,9 +669,12 @@ extension ProEditorView {
     func save() {
         guard let session, session.isDirty, let jobId = clip.jobId, applyTask == nil else { dismiss(); return }
         let ops = session.flattenedOps()
-        // A structure-only change (all cut/restore/split/reorder) renders pixel-identically —
-        // commit without spending a render (defer_render).
-        let structural = ops.allSatisfy { ["cut_range", "restore_range", "split_segment", "reorder_segments", "mute_range", "set_segment_volume"].contains($0["type"] as? String ?? "") }
+        // defer_render is ONLY safe when the delivered MP4 is byte-for-byte unchanged.
+        // A pure split qualifies (it just adds a cut point; the same frames play in the
+        // same order). Cuts, restores, reorders, mutes and volume changes all change the
+        // output — deferring their render leaves the Library playing AND publishing the
+        // pre-edit video (audit #6/#43). Only defer a split-only batch.
+        let structural = !ops.isEmpty && ops.allSatisfy { ($0["type"] as? String) == "split_segment" }
         phase = .applying
         applyTask = Task {
             let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString, ops: ops, deferRender: structural)

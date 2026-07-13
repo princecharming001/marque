@@ -4,6 +4,14 @@ from pydantic import BaseModel, model_validator
 from typing import Optional
 import re
 
+# #19: version stamp for the render plan contract. build_render_plan stamps it into
+# every plan (→ inputProps.edl.schema_version); the Remotion compositions compare it
+# against their own compiled-in PLAN_SCHEMA_VERSION (render/src/types.ts) and warn in
+# the Lambda logs on a mismatch — catching "backend deployed, site not redeployed"
+# prop-drift that otherwise fails silently. BUMP BOTH SIDES together when the plan
+# shape changes.
+PLAN_SCHEMA_VERSION = 1
+
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
 # P0.3: a kept clip shorter than this in OUTPUT frames (12 = 400ms @ 30fps) reads as a
@@ -11,10 +19,21 @@ MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 # Mirrored in ios/.../EditorModel.swift keptIntervalsWithSpeed for preview parity.
 MIN_CLIP_OUTPUT_FRAMES = 12
 
-FILLER_WORDS = frozenset({
-    "um", "uh", "like", "you know", "so", "basically", "literally", "actually",
-    "right", "okay", "ok", "yeah", "yep", "well", "i mean", "kind of", "sort of",
+# Unambiguous fillers — never content words, safe to cut wherever they appear.
+ALWAYS_FILLERS = frozenset({"um", "uh"})
+# Discourse markers — filler ONLY at a clause boundary ("So, today we're..."), but
+# content mid-sentence ("turn right here", "I feel like this works"). The old
+# behavior cut EVERY occurrence, which deleted meaning-bearing words and littered
+# the take with mid-phrase jump cuts; strip_fillers now cuts these only when they
+# open a clause (first word, after a ≥250ms pause, or right after another filler).
+DISCOURSE_MARKERS = frozenset({
+    "like", "so", "basically", "literally", "actually",
+    "right", "okay", "ok", "yeah", "yep", "well",
 })
+# Legacy union — kept for callers/tests that treat "is this word ever a filler"
+# as a set-membership question. (Multi-word entries could never match the
+# single-token text they were compared against, so they're gone.)
+FILLER_WORDS = ALWAYS_FILLERS | DISCOURSE_MARKERS
 
 def ms_to_frame(ms: int) -> int:
     return round(ms / MS_PER_FRAME)
@@ -296,22 +315,61 @@ def validate_and_repair(edl: EDL) -> tuple[EDL, list[str]]:
 
 def safe_default_edl(style: str, format_id: str, total_frames: int,
                      words: list[dict]) -> EDL:
-    """Fallback EDL: keep the whole take, strip filler words, add timed captions."""
+    """Fallback EDL: keep the whole take, strip filler words, add timed captions.
+
+    The filler DROPS are included (not just filtered captions): the plan-author
+    path uses this EDL as-is and surfaces "safe default cut (fillers stripped)"
+    to the creator — without real drops that message was a lie (footage kept
+    every "um" while the captions pretended otherwise). The legacy path merges
+    the same deterministic drops afterwards; _merge_drops coalesces duplicates,
+    so including them here is idempotent there."""
     segments = [Segment(src_in=0, src_out=total_frames)]
+    clean_words, filler_drops = strip_fillers(words)
     captions = [
         CaptionWord(word=w["word"], frame=ms_to_frame(w.get("start_ms", 0)),
                     end_frame=ms_to_frame(w["end_ms"]) if w.get("end_ms") else None)
-        for w in words
-        if w.get("word", "").lower().strip(".,!?") not in FILLER_WORDS
+        for w in clean_words if w.get("word")
     ]
     return EDL(
         style=style,
         format_id=format_id,
         segments=segments,
+        drops=filler_drops,
         captions=captions,
         speech_frames=[c.frame for c in captions],
         layout=Layout(style=style),
     )
+
+
+def clamp_edl_to_source(edl_data: dict, total_frames: int) -> dict:
+    """Clamp every source-coordinate range in an LLM-authored EDL dict to the real
+    source extent. The legacy author path trusted the model's frame numbers —
+    a hallucinated src_out past the end of the video reached OffthreadVideo's
+    trimAfter and broke or froze the Lambda render. Mutates and returns edl_data.
+    Segments that vanish entirely (src_in beyond the source) are dropped; if ALL
+    of them vanish, one whole-take segment is substituted so the EDL stays valid."""
+    if total_frames <= 0:
+        return edl_data
+    segs = []
+    for s in edl_data.get("segments") or []:
+        s_in = max(0, min(int(s.get("src_in", 0)), total_frames - 1))
+        s_out = max(0, min(int(s.get("src_out", 0)), total_frames))
+        if s_out > s_in:
+            segs.append({**s, "src_in": s_in, "src_out": s_out})
+    edl_data["segments"] = segs or [{"src_in": 0, "src_out": total_frames}]
+    for key in ("drops", "overlays", "broll"):
+        kept_items = []
+        for item in edl_data.get(key) or []:
+            a = max(0, min(int(item.get("src_in", 0)), total_frames))
+            b = max(0, min(int(item.get("src_out", 0)), total_frames))
+            if b > a:
+                kept_items.append({**item, "src_in": a, "src_out": b})
+        if key in edl_data or kept_items:
+            edl_data[key] = kept_items
+    if edl_data.get("captions"):
+        edl_data["captions"] = [c for c in edl_data["captions"]
+                                if int(c.get("frame", 0)) < total_frames]
+    return edl_data
 
 
 def strip_fillers(words: list[dict], gap_ms: int = 300,
@@ -321,15 +379,25 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
     Disfluency detection is the SOURCE OF TRUTH: when AssemblyAI is asked for
     `disfluencies` it tags filler tokens with `type == "filler"`, which is far more
     reliable than string-matching (it catches false starts and context-dependent
-    "like"/"so"). We honor that tag first and fall back to the FILLER_WORDS lexicon
-    for legacy/mocked transcripts that carry no type."""
+    "like"/"so"). We honor that tag first, then the lexicon:
+      - ALWAYS_FILLERS (um/uh) cut wherever they appear;
+      - DISCOURSE_MARKERS (so/like/right/...) cut ONLY at a clause boundary —
+        first word, after a ≥250ms pause, or immediately after another filler.
+        Mid-sentence they are content ("turn right here", "I feel like it works");
+        cutting them deleted meaning and left mid-phrase jump cuts."""
     kept, drops = [], []
     prev_end = 0
+    prev_was_filler = False
     for w in words:
         text = w.get("word", "").lower().strip(".,!?")
         start = w.get("start_ms", 0)
         end = w.get("end_ms", start + 100)
-        is_filler = (use_disfluency_type and w.get("type") == "filler") or text in FILLER_WORDS
+        clause_boundary = (prev_end == 0                       # first word of the take
+                           or start - prev_end >= 250          # follows a real pause
+                           or prev_was_filler)                 # "um, so, ..." chains cut whole
+        is_filler = ((use_disfluency_type and w.get("type") == "filler")
+                     or text in ALWAYS_FILLERS
+                     or (text in DISCOURSE_MARKERS and clause_boundary))
         # Dead air before this word (measured from the previous word's end, filler or not).
         if prev_end > 0 and start - prev_end > gap_ms:
             drops.append(Drop(src_in=ms_to_frame(prev_end), src_out=ms_to_frame(start), reason="dead_air"))
@@ -341,6 +409,7 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
         # fillers before a gap makes the dead-air drop start at a stale prev_end and
         # overlap the filler drops (violates the non-overlapping-drops invariant).
         prev_end = end
+        prev_was_filler = is_filler
     return kept, drops
 
 
@@ -420,7 +489,18 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
 
     kept_candidates = [c for c in candidates if _out_len(c[1], c[2], c[3]) >= MIN_CLIP_OUTPUT_FRAMES]
     if not kept_candidates and candidates:
-        kept_candidates = [max(candidates, key=lambda c: _out_len(c[1], c[2], c[3]))]
+        longest = max(candidates, key=lambda c: _out_len(c[1], c[2], c[3]))
+        kept_candidates = [longest]
+        # #26: every kept interval is a sub-400ms sliver — the cut removed almost
+        # everything. We still deliver the longest (non-empty output beats a 1-frame
+        # render), but this is a degenerate edit, not a polished clip: surface it as a
+        # warning (same channel as broll_unresolved) so it never ships as a silent
+        # "ready" sub-second video.
+        if warnings is not None:
+            secs = _out_len(longest[1], longest[2], longest[3]) / 30.0
+            warnings.append(
+                f"degenerate_edit: every kept segment was a sub-400ms sliver; delivered "
+                f"the longest (~{secs:.1f}s) — the cut likely removed too much")
 
     clips: list[dict] = []
     index: list[tuple[int, int, int, float]] = []   # (src_in, src_out, out_start, speed)
@@ -436,10 +516,14 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     total_frames = out_cursor
 
     def map_point(f: int) -> int | None:
-        """Source frame → output frame, or None if f lands in a cut region."""
+        """Source frame → output frame, or None if f lands in a cut region.
+        Clamped INSIDE the clip's output span: at speed>1 the division can round
+        a tail-of-clip source frame to out_start+out_len (the NEXT clip's first
+        frame), sliding captions/speech_frames onto the wrong clip."""
         for s_in, s_out, out_start, speed in index:
             if s_in <= f < s_out:
-                return out_start + round((f - s_in) / speed)
+                return min(out_start + round((f - s_in) / speed),
+                           out_start + _out_len(s_in, s_out, speed) - 1)
         return None
 
     def _map_range_merged(a: int, b: int) -> list[list[int]]:
@@ -640,6 +724,8 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         "audio": audio_plan,
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
         "total_frames": max(1, total_frames),
+        # #19: contract version — the compositions warn if this ≠ their compiled value.
+        "schema_version": PLAN_SCHEMA_VERSION,
     }
 
 
@@ -870,22 +956,29 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
             elif t == "remove_overlays":
                 kind = op.get("kind") or "all"
                 r = None
-                if op.get("start_frame") is not None and op.get("end_frame") is not None:
+                ranged = op.get("start_frame") is not None and op.get("end_frame") is not None
+                if ranged:
                     r = clamp_range(op["start_frame"], op["end_frame"])
-                before = edl.get("overlays") or []
-
-                def keep(o):
-                    if kind != "all" and o.get("type") != kind:
-                        return True
-                    if r and (o["src_out"] <= r[0] or o["src_in"] >= r[1]):
-                        return True
-                    return False
-                after = [o for o in before if keep(o)]
-                if len(after) < len(before):
-                    edl["overlays"] = after
-                    applied = True
+                if ranged and r is None:
+                    # The creator scoped the removal to a range and the range is
+                    # garbage — failing open (r=None reads as "no range") would
+                    # silently wipe EVERY overlay of that kind instead.
+                    reason = "invalid or out-of-bounds range"
                 else:
-                    reason = "no matching overlays found"
+                    before = edl.get("overlays") or []
+
+                    def keep(o):
+                        if kind != "all" and o.get("type") != kind:
+                            return True
+                        if r and (o["src_out"] <= r[0] or o["src_in"] >= r[1]):
+                            return True
+                        return False
+                    after = [o for o in before if keep(o)]
+                    if len(after) < len(before):
+                        edl["overlays"] = after
+                        applied = True
+                    else:
+                        reason = "no matching overlays found"
 
             elif t == "add_punch_in":
                 r = clamp_range(op.get("start_frame") or 0, op.get("end_frame") or 0)
@@ -947,6 +1040,10 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                 if not (isinstance(idx, int) and 0 <= idx < len(segs)):
                     reason = f"no segment at index {idx}"
                 else:
+                    # ATOMIC (audit #9): stage into a copy and commit only if every
+                    # field validates — a later bad value used to leave earlier fields
+                    # already written into the persisted EDL while reporting applied=False.
+                    staged = dict(segs[idx])
                     changed = False
                     for key, lo_v, hi_v in (("tx_scale", 0.5, 3.0), ("tx_x", -0.5, 0.5), ("tx_y", -0.5, 0.5)):
                         # ops carry the short names scale/off_x/off_y
@@ -955,13 +1052,13 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         if v is None:
                             continue
                         try:
-                            segs[idx][key] = min(hi_v, max(lo_v, float(v)))
+                            staged[key] = min(hi_v, max(lo_v, float(v)))
                             changed = True
                         except (TypeError, ValueError):
                             reason = f"bad {short} value"
-                            changed = False
                             break
-                    if changed:
+                    if changed and not reason:
+                        segs[idx] = staged
                         applied = True
                     elif not reason:
                         reason = "no transform value given"
@@ -1138,6 +1235,16 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         new_order = [_remap(i) for i in play_order if i not in gone_set]
                         identity = list(range(len(segs)))
                         edl["segment_order"] = new_order if new_order != identity else None
+                        # #10: transitions anchor to a SOURCE segment index. Drop any whose
+                        # leading segment was fully consumed, and shift the survivors down so
+                        # a fade stays on the boundary the creator set (not a neighbour's).
+                        if edl.get("transitions"):
+                            edl["transitions"] = [
+                                {**tr, "after_segment": _remap(tr["after_segment"])}
+                                for tr in edl["transitions"]
+                                if isinstance(tr.get("after_segment"), int)
+                                and tr["after_segment"] not in gone_set
+                            ]
                     edl["segments"] = segs
                     segments = segs
                     applied = True
@@ -1151,8 +1258,12 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     reason = "at_frame must be strictly inside the segment"
                 else:
                     seg = segments[idx]
-                    halves = [{"src_in": seg["src_in"], "src_out": at},
-                              {"src_in": at, "src_out": seg["src_out"]}]
+                    # #45: both halves inherit the parent's per-segment settings (speed,
+                    # canvas transform, …) — otherwise splitting a sped-up / repositioned
+                    # clip silently resets it to defaults on the delivered render.
+                    carry = {k: v for k, v in seg.items() if k not in ("src_in", "src_out")}
+                    halves = [{**carry, "src_in": seg["src_in"], "src_out": at},
+                              {**carry, "src_in": at, "src_out": seg["src_out"]}]
                     new_segs = segments[:idx] + halves + segments[idx + 1:]
                     old_order = edl.get("segment_order")
                     if old_order:
@@ -1164,6 +1275,16 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                             if i == idx:
                                 new_order.append(idx + 1)
                         edl["segment_order"] = new_order
+                    # #10: the insert shifts every source index at/after idx by +1, so a
+                    # transition anchored there moves with the second half — otherwise the
+                    # fade jumps to the wrong boundary in the render.
+                    if edl.get("transitions"):
+                        edl["transitions"] = [
+                            {**tr, "after_segment": tr["after_segment"] + 1}
+                            if isinstance(tr.get("after_segment"), int) and tr["after_segment"] >= idx
+                            else tr
+                            for tr in edl["transitions"]
+                        ]
                     edl["segments"] = new_segs
                     segments = new_segs
                     applied = True
@@ -1196,7 +1317,11 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                 if not isinstance(idx, int) or not (0 <= idx < len(ovs)):
                     reason = "index out of range"
                 else:
-                    ov = ovs[idx]
+                    # ATOMIC (audit #9): stage into a copy; a later invalid field
+                    # (e.g. a bad pos_x) used to report applied=False yet leave the
+                    # earlier text/window edits written into the persisted EDL. Commit
+                    # the copy only when every provided field validated.
+                    ov = dict(ovs[idx])
                     changed = False
                     if op.get("text") is not None:
                         ov["text"] = str(op["text"])[:120]
@@ -1221,6 +1346,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                             changed = True
                         except (TypeError, ValueError):
                             reason = f"bad {key} value"
+                            break
                     if op.get("color") is not None:
                         c = op.get("color")
                         if c == "default":
@@ -1236,6 +1362,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         ov["font"] = op["font"]
                         changed = True
                     if changed and not reason:
+                        ovs[idx] = ov                    # commit atomically
                         applied = True
                     elif not reason:
                         reason = "nothing to change"
@@ -1356,7 +1483,10 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     """
     plan = plan or {}
     prefs = prefs or {}
-    total = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000)) if words else 30000
+    # No-words fallback is 30000 MS through the same conversion (=900 frames @30fps).
+    # A bare `30000` here was FRAMES — a 16-minute phantom timeline that minted
+    # 1000-second whole-take segments from an empty transcript.
+    total = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000)) if words else ms_to_frame(30000)
 
     # --- drops: deterministic fillers + editorial cuts, all snapped + clamped ---
     clean_words, filler_drops = strip_fillers(words)
@@ -1404,8 +1534,16 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     open_on = plan.get("open_on") or {}
     hook_start = open_on.get("start")
     if isinstance(hook_start, int) and hook_start > _BROLL_HOOK_PROTECT and merged and hook_start < merged[-1][1]:
-        # only when the hook sits meaningfully after the first kept frame
-        if hook_start > merged[0][0] + _BROLL_HOOK_PROTECT:
+        # only when the hook sits meaningfully after the first kept frame — and
+        # GUARDED: an LLM-hallucinated "hook" near the END of the take would
+        # delete almost everything in one drop (the <3s kept-duration invariant
+        # is deliberately soft, so nothing downstream catches it). Pulling a
+        # genuinely buried hook is the feature; the guard is on what REMAINS:
+        # refuse the pull if it would leave under ~6s of kept footage.
+        kept_span = sum(b - a for a, b in merged)
+        pre_hook_kept = sum(min(b, hook_start) - a for a, b in merged if a < hook_start)
+        if (hook_start > merged[0][0] + _BROLL_HOOK_PROTECT
+                and kept_span - pre_hook_kept >= 180):
             drops.append({"src_in": merged[0][0], "src_out": hook_start, "reason": "false_start"})
             drops = _coalesce_drops(drops)
 
@@ -1475,8 +1613,12 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     cp = plan.get("caption_plan") or {}
     caption_style = prefs.get("caption_style") or cp.get("style") or "clean"
     grouping = cp.get("grouping") if cp.get("grouping") in ("word", "phrase", "line") else "phrase"
+    # Same normalization the renderer applies (Captions.tsx normWord strips
+    # non-alphanumerics): plain .lower() left "A.I." as "a.i.", which the
+    # renderer's "ai" could never match — the highlight silently never fired.
+    _hw = [re.sub(r"[^a-z0-9]", "", str(w).lower()) for w in (cp.get("highlight_words") or [])]
     caption_options = {"grouping": grouping,
-                       "highlight_words": [str(w).lower() for w in (cp.get("highlight_words") or [])][:12]}
+                       "highlight_words": [w for w in _hw if w][:12]}
     if prefs.get("auto_captions") is False:
         captions = []
 
@@ -1491,6 +1633,31 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     if style == "split_three":
         layout["panels"] = 3
 
+    # --- duet_split: minimal play-then-freeze react schedule. The plan author has
+    # no react_schedule concept, and an empty schedule meant the top panel played
+    # its full audio over the creator's entire rebuttal. Grammar: play the claim
+    # for the first ~2.5s of kept footage (viewer hears what's being rebutted),
+    # then hold a freeze while the creator talks. Every window sits INSIDE one
+    # kept interval, so build_render_plan's length-preservation guard can never
+    # drop them (a window fully inside kept footage maps 1:1 to output).
+    react_schedule: list[ReactWindow] = []
+    if style == "duet_split":
+        kept_iv = _kept_intervals(segments, drops)
+        if kept_iv:
+            first_a, first_b = kept_iv[0]
+            play_end = min(first_a + 75, first_b)          # ≤2.5s of the claim
+            played = play_end - first_a                    # react-video cursor after play
+            if play_end > first_a:
+                react_schedule.append(ReactWindow(
+                    state="play", src_in=first_a, src_out=play_end,
+                    clip_from=0, audio_gain=1.0))
+            freeze_pieces = ([(play_end, first_b)] if first_b > play_end else []) \
+                + [(a, b) for a, b in kept_iv[1:]]
+            for a, b in freeze_pieces:
+                react_schedule.append(ReactWindow(
+                    state="freeze", src_in=a, src_out=b,
+                    clip_from=max(0, played), audio_gain=0.15))
+
     edl = EDL(
         style=style, format_id=format_id or "myth-buster",
         segments=[Segment(**s) for s in segments],
@@ -1499,6 +1666,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         speech_frames=[ms_to_frame(w.get("start_ms", 0)) for w in clean_words if w.get("word")],
         overlays=[Overlay(**o) for o in overlays],
         broll=[BRoll(**b) for b in broll],
+        react_schedule=react_schedule,
         layout=Layout(**layout),
         audio=Audio(lufs_target=-14.0),
         caption_style=caption_style,

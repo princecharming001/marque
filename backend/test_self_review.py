@@ -44,7 +44,7 @@ def test_self_review_high_score_no_revision(monkeypatch):
 
     async def fake_submit(url, edl, fmt, style, preview=False):
         return {"render_id": "r", "bucket_name": "b"}
-    async def fake_poll(rid, bkt):
+    async def fake_poll(rid, bkt, **kwargs):
         return "https://cdn/preview.mp4"
     async def fake_frames(url, n=6):
         return [b"jpeg1", b"jpeg2"]
@@ -70,7 +70,7 @@ def test_self_review_low_score_applies_fix_ops(monkeypatch):
 
     async def fake_submit(url, edl, fmt, style, preview=False):
         return {"render_id": "r", "bucket_name": "b"}
-    async def fake_poll(rid, bkt):
+    async def fake_poll(rid, bkt, **kwargs):
         return "https://cdn/preview.mp4"
     async def fake_frames(url, n=6):
         return [b"jpeg1", b"jpeg2"]
@@ -97,7 +97,7 @@ def test_self_review_ignores_non_tweak_ops(monkeypatch):
 
     async def fake_submit(url, edl, fmt, style, preview=False):
         return {"render_id": "r", "bucket_name": "b"}
-    async def fake_poll(rid, bkt):
+    async def fake_poll(rid, bkt, **kwargs):
         return "https://cdn/preview.mp4"
     async def fake_frames(url, n=6):
         return [b"jpeg"]
@@ -122,7 +122,7 @@ def test_self_review_no_frames_failsoft(monkeypatch):
 
     async def fake_submit(url, edl, fmt, style, preview=False):
         return {"render_id": "r", "bucket_name": "b"}
-    async def fake_poll(rid, bkt):
+    async def fake_poll(rid, bkt, **kwargs):
         return "https://cdn/preview.mp4"
     async def no_frames(url, n=6):
         return []

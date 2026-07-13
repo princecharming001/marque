@@ -1,6 +1,6 @@
 import React from "react";
 import { Series, OffthreadVideo } from "remotion";
-import { Clip, VolumeRange, volumeAt, Look } from "../types";
+import { Clip, VolumeRange, volumeAt, Look, pyRound } from "../types";
 
 // The actual cut: stitches the kept source intervals (`clips`, source frames) back to
 // back on the output timeline via <Series>. OffthreadVideo trimBefore/trimAfter select
@@ -32,8 +32,11 @@ import { Clip, VolumeRange, volumeAt, Look } from "../types";
 // G10: outStart/outCursor here MUST stay identical to FastCuts.tsx's cutStarts
 // computation — that file duplicates this formula (via clipOutFrames) to place its
 // cut-flash at the same boundaries. If you change this formula, change that usage too.
+// pyRound, NOT Math.round: build_render_plan's out_cursor uses Python round()
+// (half-to-even); Math.round is half-up, and the mismatch shifted every
+// boundary after a x.5-length clip by one frame (see pyRound in types.ts).
 export const clipOutFrames = (c: Clip): number =>
-  Math.max(1, Math.round((c.src_out - c.src_in) / (c.speed || 1)));
+  Math.max(1, pyRound((c.src_out - c.src_in) / (c.speed || 1)));
 
 // P0.8: a REAL temperature grade. The old warm=`sepia()` / cool=`hue-rotate()` are crude —
 // sepia desaturates + tints brown (not a white-balance) and hue-rotate spins every hue (a

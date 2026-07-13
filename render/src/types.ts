@@ -82,7 +82,46 @@ export interface RenderPlan {
   look?: Look | null;
   audio?: AudioPlan | null;
   total_frames: number;
+  // #19: backend build_render_plan's contract version — compared against
+  // PLAN_SCHEMA_VERSION below to detect backend/site deploy skew.
+  schema_version?: number;
 }
+
+// #19: keep in lockstep with backend edl.py PLAN_SCHEMA_VERSION. Bump BOTH when the
+// render-plan shape changes so a half-deploy (backend updated, Remotion site stale)
+// surfaces as a logged warning instead of a silently-wrong render.
+export const PLAN_SCHEMA_VERSION = 1;
+
+let _schemaWarned = false;
+// Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a
+// skew degrades to an observable warning, not a broken user render.
+export const checkPlanSchema = (plan: RenderPlan | null | undefined): void => {
+  if (!plan || _schemaWarned) return;
+  const got = plan.schema_version;
+  if (got !== undefined && got !== PLAN_SCHEMA_VERSION) {
+    _schemaWarned = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[marque] render plan schema_version ${got} != bundle ${PLAN_SCHEMA_VERSION} — ` +
+        `backend and Remotion site are out of sync; redeploy the site ` +
+        `(npx remotion lambda sites create).`,
+    );
+  }
+};
+
+// Python's round(): banker's rounding, half-to-EVEN. build_render_plan computes
+// every out_cursor / caption / overlay output coordinate with it, and the
+// compositions recompute clip durations locally — the two sides MUST round
+// identically or clip boundaries drift one frame at exact halves (e.g. a
+// speed-2.0 clip with an odd kept length: Python round(12.5)=12, JS
+// Math.round(12.5)=13), desyncing captions/overlays and truncating the tail.
+export const pyRound = (x: number): number => {
+  const f = Math.floor(x);
+  const diff = x - f;
+  if (diff > 0.5) return f + 1;
+  if (diff < 0.5) return f;
+  return f % 2 === 0 ? f : f + 1;
+};
 
 // Source-audio volume at an output frame (default 1.0 outside every range).
 export const volumeAt = (frame: number, ranges: VolumeRange[] | undefined | null): number => {
@@ -102,6 +141,9 @@ export type CompositionProps = {
 };
 
 // Duration resolver for calculateMetadata — falls back to 720 when no plan is passed
-// (e.g. the Remotion Studio default-props preview).
-export const planDuration = (props: CompositionProps): number =>
-  Math.max(1, props.edl?.total_frames ?? 720);
+// (e.g. the Remotion Studio default-props preview). Also the once-per-render chokepoint
+// where the plan/bundle schema version is checked (#19).
+export const planDuration = (props: CompositionProps): number => {
+  checkPlanSchema(props.edl);
+  return Math.max(1, props.edl?.total_frames ?? 720);
+};

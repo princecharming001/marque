@@ -169,7 +169,7 @@ def test_confirmed_edit_renders_exactly_once(monkeypatch):
     monkeypatch.setattr(main, "anthropic", no_llm)
     subs = {"n": 0}
 
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         if args[0] == "submit":
             subs["n"] += 1
             return {"renderId": "r1", "bucketName": "b"}
@@ -190,7 +190,7 @@ def test_pipeline_broll_resolve_failure_is_a_warning_not_a_failure(monkeypatch):
         raise RuntimeError("pexels exploded")
     monkeypatch.setattr(main, "_resolve_broll", boom)
 
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         if args[0] == "submit":
             return {"renderId": "r1", "bucketName": "b"}
         return {"done": True, "outputFile": "https://cdn/out.mp4"}
@@ -293,7 +293,7 @@ def _renderable_job(monkeypatch):
 def test_render_fatal_propagates_bridge_error(monkeypatch):
     job_id = _renderable_job(monkeypatch)
     calls = {"n": 0}
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         if args[0] == "submit":
             return {"renderId": "r1", "bucketName": "b"}
         return {"fatalErrorEncountered": True, "errors": [{"message": "boom composition"}]}
@@ -311,7 +311,7 @@ def test_render_fatal_propagates_bridge_error(monkeypatch):
 
 def test_render_submit_bridge_error(monkeypatch):
     job_id = _renderable_job(monkeypatch)
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         return {"_error": "node exploded"}
     monkeypatch.setattr(main, "_run_render_bridge", bridge)
     _run_pipeline_sync(job_id)
@@ -322,7 +322,7 @@ def test_render_submit_bridge_error(monkeypatch):
 
 def test_render_no_output_structured(monkeypatch):
     job_id = _renderable_job(monkeypatch)
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         if args[0] == "submit":
             return {"renderId": "r1", "bucketName": "b"}
         return {"done": True}                  # done but no outputFile
@@ -336,7 +336,7 @@ def test_render_no_output_structured(monkeypatch):
 
 
 def test_render_poll_stall_detection(monkeypatch):
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         return {"overallProgress": 0.4}        # frozen forever
     async def fast_sleep(_): pass
     monkeypatch.setattr(main, "_run_render_bridge", bridge)
@@ -350,7 +350,7 @@ def test_render_poll_stall_detection(monkeypatch):
 
 
 def test_render_poll_timeout(monkeypatch):
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         return {"overallProgress": 0.1}
     async def fast_sleep(_): pass
     monkeypatch.setattr(main, "_run_render_bridge", bridge)
@@ -366,7 +366,7 @@ def test_render_poll_timeout(monkeypatch):
 def test_bridge_subprocess_timeout(monkeypatch):
     class FakeProc:
         returncode = 0
-        async def communicate(self):
+        async def communicate(self, input=None):
             await asyncio.sleep(3600)
         def kill(self): self.killed = True
     async def fake_exec(*a, **k): return FakeProc()
@@ -1159,7 +1159,7 @@ def test_safe_default_fallback_warns_the_clip(monkeypatch):
     # silently substitute a generic safe-default cut with zero signal to the client
     # that they didn't get a tailored AI edit.
     job_id = _renderable_job(monkeypatch)
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         if args[0] == "submit":
             return {"renderId": "r1", "bucketName": "b"}
         return {"done": True, "outputFile": "https://cdn/out.mp4"}
@@ -1462,7 +1462,8 @@ def test_fuzz_random_op_sequences_preserve_invariants():
 
 _TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "broll",
                         "react_source", "react_schedule", "layout", "caption_style",
-                        "caption_options", "transitions", "look", "audio", "total_frames"}
+                        "caption_options", "transitions", "look", "audio", "total_frames",
+                        "schema_version"}   # #19: contract-drift stamp (mirrors types.ts)
 _TS_CLIP_KEYS = {"src_in", "src_out", "speed", "tx_scale", "tx_x", "tx_y"}
 _TS_CAPTION_KEYS = {"word", "frame", "end_frame"}
 _TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
@@ -1577,7 +1578,7 @@ def test_speech_frames_populated_from_transcript_in_live_pipeline(monkeypatch):
     # The LLM's own JSON never emits speech_frames (it's derived, not authored) —
     # _run_pipeline must (re-)populate it from the actual transcript regardless.
     job_id = _renderable_job(monkeypatch)
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         if args[0] == "submit":
             return {"renderId": "r1", "bucketName": "b"}
         return {"done": True, "outputFile": "https://cdn/out.mp4"}
@@ -1697,29 +1698,52 @@ def test_render_semaphore_caps_cross_job_concurrency(monkeypatch):
 # ---- G8: a cold-Lambda submit timeout is transient — one retry with double the
 # budget should recover instead of failing the clip outright ----
 
-def test_submit_retries_once_on_timeout_then_succeeds(monkeypatch):
+def test_submit_does_not_double_dispatch_on_timeout(monkeypatch):
+    # #18: renderMediaOnLambda DISPATCHES the render as part of the submit call, so a
+    # timed-out submit has most likely already started the render server-side. The old
+    # "retry once on timeout" therefore spun up a SECOND, orphaned Lambda render (billed,
+    # never polled). A timeout now fails cleanly in ONE attempt with a generous
+    # cold-start-covering budget; the clip-level retry/watchdog re-attempts — never a
+    # blind re-dispatch that could double-bill.
     monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
     calls = {"n": 0, "timeouts": []}
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         calls["n"] += 1
         calls["timeouts"].append(timeout_s)
-        if calls["n"] == 1:
-            return {"_error": "bridge timed out after 30s"}   # cold-start
+        return {"_error": "bridge timed out after 90s"}
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    try:
+        asyncio.run(main._submit_remotion_render(
+            "https://x/v.mov", {"style": "talking_head", "format_id": "x"}, "myth-buster", "talking_head"))
+        assert False, "should have raised bridge_error, not retried"
+    except main.PipelineError as e:
+        assert e.code == "bridge_error"
+    assert calls["n"] == 1                                        # NO second dispatch
+    assert calls["timeouts"][0] == main.RENDER_SUBMIT_TIMEOUT_S   # generous cold-start budget
+
+
+def test_submit_returns_total_frames_for_poll_scaling(monkeypatch):
+    # #17: the poll/stall budgets scale with the render's output length, so submit must
+    # hand the caller total_frames (from build_render_plan) to size them.
+    monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
+    async def bridge(*args, timeout_s=None, **kwargs):
         return {"renderId": "r1", "bucketName": "b1"}
     monkeypatch.setattr(main, "_run_render_bridge", bridge)
     out = asyncio.run(main._submit_remotion_render(
-        "https://x/v.mov", {"style": "talking_head", "format_id": "x"}, "myth-buster", "talking_head"))
-    assert out == {"render_id": "r1", "bucket_name": "b1", "plan_warnings": []}
-    assert calls["n"] == 2
-    assert calls["timeouts"][1] == main.BRIDGE_CALL_TIMEOUT_S * 2   # retry gets more room
+        "https://x/v.mov", {"style": "talking_head", "format_id": "x",
+                            "segments": [{"src_in": 0, "src_out": 300}]},
+        "myth-buster", "talking_head"))
+    assert out["render_id"] == "r1" and out["bucket_name"] == "b1"
+    assert out["total_frames"] == 300      # the kept-footage output length
 
 
 def test_submit_does_not_retry_on_a_non_timeout_bridge_error(monkeypatch):
     monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
     calls = {"n": 0}
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         calls["n"] += 1
         return {"_error": "composition not found"}
     monkeypatch.setattr(main, "_run_render_bridge", bridge)
@@ -1738,7 +1762,7 @@ def test_submit_passes_preview_flag_to_the_bridge(monkeypatch):
     monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
     seen = {}
-    async def bridge(*args, timeout_s=None):
+    async def bridge(*args, timeout_s=None, **kwargs):
         seen["args"] = args
         return {"renderId": "r1", "bucketName": "b1"}
     monkeypatch.setattr(main, "_run_render_bridge", bridge)

@@ -117,7 +117,11 @@ const ReactImage: React.FC<{ url: string; durationInFrames: number }> = ({ url, 
 // muted. Windows tile the whole top-panel timeline.
 const ReactVideo: React.FC<{ url: string; schedule: ReactWindow[] }> = ({ url, schedule }) => {
   if (schedule.length === 0) {
-    return <OffthreadVideo src={url} style={coverStyle} />;
+    // No play/freeze schedule (e.g. every window was cut-desynced away): keep the
+    // source visible but DUCKED — unmodified it played at full volume over the
+    // creator's entire voiceover, which is two people talking at once for the
+    // whole video. 0.12 matches the freeze-window duck level.
+    return <OffthreadVideo src={url} volume={0.12} style={coverStyle} />;
   }
   return (
     <>

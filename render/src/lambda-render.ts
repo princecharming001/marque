@@ -6,8 +6,12 @@
 // the compiled JS here instead of calling a REST endpoint.
 //
 // Usage:
-//   node dist/lambda-render.js submit <compositionId> <inputPropsJson> [preview]
+//   node dist/lambda-render.js submit <compositionId> <inputPropsJson|-> [preview]
 //     -> prints {"renderId": "...", "bucketName": "..."} to stdout
+//     -> inputPropsJson "-": read the props JSON from STDIN instead of argv.
+//        Linux caps a SINGLE argv string at 128KB (MAX_ARG_STRLEN) — a long
+//        take's caption-heavy render plan exceeds that and execve fails with
+//        E2BIG before node even starts. The backend always uses "-".
 //     -> preview="1": G9 cheap low-res proof render (half scale, higher CRF) —
 //        for the manual editor's "show me before I commit" HD-preview button;
 //        NOT the final render, and the backend never writes this to render_url.
@@ -31,10 +35,17 @@ const SERVE_URL = process.env.REMOTION_SERVE_URL || "";
 const JPEG_QUALITY = Number(process.env.REMOTION_JPEG_QUALITY || "95");
 const IMAGE_FORMAT = (process.env.REMOTION_IMAGE_FORMAT || "jpeg") as "jpeg" | "png";
 
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 async function submit(compositionId: string, inputPropsJson: string, preview?: string) {
   if (!FUNCTION_NAME) throw new Error("REMOTION_FUNCTION_NAME is not set");
   if (!SERVE_URL) throw new Error("REMOTION_SERVE_URL is not set");
-  const inputProps = JSON.parse(inputPropsJson);
+  const raw = inputPropsJson === "-" ? await readStdin() : inputPropsJson;
+  const inputProps = JSON.parse(raw);
   const isPreview = preview === "1";
   const { renderId, bucketName } = await renderMediaOnLambda({
     region: REGION,

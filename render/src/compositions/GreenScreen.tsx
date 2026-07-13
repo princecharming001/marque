@@ -20,9 +20,10 @@ import { CompositionProps } from "../types";
 export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const frame = useCurrentFrame();
   const textCards = (edl?.overlays ?? []).filter((o) => o.type === "text_card");
-  const activeCard = textCards.length
-    ? textCards.find((o) => frame >= o.frame_in && frame < o.frame_out)
-    : { text: "Reference post" } as { text: string };
+  // Only a REAL text card renders. The old fallback burned a literal
+  // "Reference post" placeholder into the delivered video whenever the EDL
+  // carried no text_card overlay — a clean backdrop beats fake copy.
+  const activeCard = textCards.find((o) => frame >= o.frame_in && frame < o.frame_out);
 
   return (
     <AbsoluteFill style={{ background: "#0f3460" }}>
