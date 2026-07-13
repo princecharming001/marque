@@ -5,8 +5,9 @@ import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
 import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
-import { Captions } from "../components/Captions";
+import { Captions, FONTS } from "../components/Captions";
 import { CompositionProps, ReactWindow } from "../types";
+import { LAYOUT, cardFit } from "../layout";
 
 // Stacked 9:16 react split. TOP panel = the reacted-to clip, driven by a play/freeze/duck
 // schedule (it plays with audio during "play" windows, freezes on a still + ducks audio
@@ -55,6 +56,12 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const frozenNow = schedule.some(
     (w) => w.state === "freeze" && frame >= w.frame_in && frame < w.frame_out
   );
+  // Formatting fix #9: shrink-to-fit + a hard line-clamp stop so a long pull-quote
+  // can't overflow the top panel.
+  const quoteUsablePx = LAYOUT.FRAME_W - 64 - 44; // left/right 32px inset minus internal padding
+  const quoteFit = activeCard
+    ? cardFit(activeCard.text, 30, quoteUsablePx, LAYOUT.QUOTE_MAX_LINES, LAYOUT.QUOTE_MIN_FONT)
+    : null;
 
   return (
     <AbsoluteFill style={{ background: "#000" }}>
@@ -67,18 +74,23 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         {/* frozen-state scrim so a paused source reads as intentional */}
         {frozenNow && <div style={{ position: "absolute", inset: 0,
           background: "rgba(10,12,20,0.32)" }} />}
-        {/* source attribution chip */}
+        {/* source attribution chip — moved down from top:24 (formatting fix #5: that
+            sat inside the platform's top status-bar/pill chrome on every host app) */}
         {react.credit_label ? (
-          <div style={{ position: "absolute", top: 24, left: 24, padding: "6px 14px",
+          <div style={{ position: "absolute", top: LAYOUT.CREDIT_CHIP_TOP_PX, left: 24, padding: "6px 14px",
             background: "rgba(0,0,0,0.55)", color: "white", borderRadius: 999,
-            fontFamily: "system-ui", fontSize: 26, fontWeight: 600 }}>{react.credit_label}</div>
+            fontFamily: FONTS.inter, fontSize: 26, fontWeight: 600 }}>{react.credit_label}</div>
         ) : null}
         {/* pull-quote of the exact claim being rebutted */}
-        {activeCard ? (
-          <div style={{ position: "absolute", left: 32, right: 32, bottom: 28,
+        {activeCard && quoteFit ? (
+          <div style={{
+            position: "absolute", left: 32, right: 32, bottom: 28,
             background: "white", borderRadius: 16, padding: "16px 22px", color: "#111",
-            fontFamily: "system-ui", fontSize: 30, fontWeight: 700, textAlign: "center",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.35)" }}>{activeCard.text}</div>
+            fontFamily: FONTS.inter, fontSize: quoteFit.fontSize, fontWeight: 700, textAlign: "center",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+            display: "-webkit-box", WebkitLineClamp: LAYOUT.QUOTE_MAX_LINES,
+            WebkitBoxOrient: "vertical", overflow: "hidden",
+          }}>{activeCard.text}</div>
         ) : null}
       </div>
 

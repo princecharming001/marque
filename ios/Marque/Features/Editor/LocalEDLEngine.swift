@@ -195,7 +195,7 @@ enum LocalEDLEngine {
             var changed = false
             if let v = op.s["position"] { guard ["top", "middle", "bottom"].contains(v) else { return nil }; o.position = v; o.posY = nil; changed = true }
             if let v = op.s["size"] { guard ["small", "medium", "large"].contains(v) else { return nil }; o.size = v; o.scale = nil; changed = true }
-            if let v = op.d["pos_y"] { o.posY = min(0.85, max(0.15, v)); changed = true }
+            if let v = op.d["pos_y"] { o.posY = min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, v)); changed = true }
             if let v = op.d["scale"] { o.scale = min(2.0, max(0.5, v)); changed = true }
             if let v = op.s["font"] { guard ["inter", "archivo", "baloo"].contains(v) else { return nil }; o.font = v; changed = true }
             if let v = op.s["grouping"] { guard ["word", "phrase", "line"].contains(v) else { return nil }; o.grouping = v; changed = true }
@@ -261,8 +261,8 @@ enum LocalEDLEngine {
             d.overlays.append(EditorOverlay(
                 type: "text_sticker", srcIn: a, srcOut: b,
                 scale: min(3.0, max(0.4, op.d["scale"] ?? 1.0)), text: String(text.prefix(120)),
-                posX: min(0.95, max(0.05, op.d["pos_x"] ?? 0.5)),
-                posY: min(0.92, max(0.08, op.d["pos_y"] ?? 0.5)),
+                posX: min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, op.d["pos_x"] ?? 0.5)),
+                posY: min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, op.d["pos_y"] ?? 0.5)),
                 rotation: min(45, max(-45, op.d["rotation"] ?? 0)),
                 color: op.s["color"], bg: op.s["bg"] ?? "none", font: op.s["font"] ?? "inter"))
         case "set_captions_enabled":
@@ -298,8 +298,8 @@ enum LocalEDLEngine {
                 d.overlays[idx].srcIn = a; d.overlays[idx].srcOut = b
             }
             // text_sticker placement/look (canvas drag/pinch/rotate + styling)
-            if let v = op.d["pos_x"] { d.overlays[idx].posX = min(0.95, max(0.05, v)) }
-            if let v = op.d["pos_y"] { d.overlays[idx].posY = min(0.92, max(0.08, v)) }
+            if let v = op.d["pos_x"] { d.overlays[idx].posX = min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, v)) }
+            if let v = op.d["pos_y"] { d.overlays[idx].posY = min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, v)) }
             if let v = op.d["scale"] { d.overlays[idx].scale = min(3.0, max(0.4, v)) }
             if let v = op.d["rotation"] { d.overlays[idx].rotation = min(45, max(-45, v)) }
             if let v = op.s["color"] { d.overlays[idx].color = v == "default" ? nil : v }

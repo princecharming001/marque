@@ -1077,8 +1077,8 @@ struct ProEditorView: View {
             DragGesture(minimumDistance: 2)
                 .onChanged { g in
                     stickerDrag = (idx,
-                                   min(0.95, max(0.05, o.posX + g.translation.width / max(1, geo.width))),
-                                   min(0.92, max(0.08, o.posY + g.translation.height / max(1, geo.height))))
+                                   min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, o.posX + g.translation.width / max(1, geo.width))),
+                                   min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, o.posY + g.translation.height / max(1, geo.height))))
                     if selectedOverlay != idx { selectedOverlay = idx; selectedSeg = nil }
                 }
                 .onEnded { _ in
@@ -1153,9 +1153,10 @@ struct ProEditorView: View {
 
     // MARK: caption + punch-in local sim (L1 fidelity)
 
-    /// Discrete position → the canvas Y fraction it anchors at (mirrors the render).
+    /// Discrete position → the canvas Y fraction it anchors at (mirrors the render's
+    /// LAYOUT.CAPTION_ANCHOR_Y via LayoutConstants).
     private func discreteCaptionY(_ position: String) -> Double {
-        switch position { case "top": return 0.18; case "middle": return 0.50; default: return 0.80 }
+        LayoutConstants.captionAnchorY[position] ?? LayoutConstants.captionAnchorY["bottom"]!
     }
 
     /// The caption block on the canvas — DIRECTLY MANIPULABLE (TikTok model): drag
@@ -1199,8 +1200,8 @@ struct ProEditorView: View {
                             let start = o.posY ?? discreteCaptionY(o.position)
                             var y = start + g.translation.height / max(1, geo.size.height)
                             // Snap to the three anchors (Edits' guide-line behavior).
-                            for anchor in [0.18, 0.50, 0.80] where abs(y - anchor) < 0.025 { y = anchor }
-                            capDragY = min(0.85, max(0.15, y))
+                            for anchor in LayoutConstants.captionAnchorY.values where abs(y - anchor) < 0.025 { y = anchor }
+                            capDragY = min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, y))
                         }
                         .onEnded { _ in
                             if let y = capDragY { commitCaptionPosY(y); bumpHaptic() }
@@ -1218,7 +1219,7 @@ struct ProEditorView: View {
                         })
                 // Guide line while snapped to an anchor (yellow safe-zone line, Edits-style)
                 .overlay {
-                    if let y = capDragY, [0.18, 0.50, 0.80].contains(y) {
+                    if let y = capDragY, LayoutConstants.captionAnchorY.values.contains(y) {
                         Rectangle().fill(Color(hex: 0xFFD60A).opacity(0.8))
                             .frame(height: 1)
                             .position(x: geo.size.width / 2, y: y * geo.size.height)
@@ -1281,11 +1282,20 @@ struct ProEditorView: View {
         let srcFrame = secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
         guard let activeIdx = d.captions.lastIndex(where: { $0.frame <= srcFrame }) else { return nil }
         let cap = d.captions[activeIdx]
-        // UX-3: bound the display window with the transcript so the last word doesn't
-        // burn on screen through every silence.
-        if let span = words.first(where: { $0.startFrame == cap.frame }) ?? words.last(where: { $0.startFrame <= cap.frame }),
-           srcFrame > span.endFrame + 15 {
-            return nil
+        // UX-3 / formatting fix #12: bound the display window with the transcript so a
+        // caption doesn't burn on screen through a silence — mirrors Captions.tsx's two-tier
+        // hide rule (thresholds unified via LayoutConstants; the transcript `words` array is
+        // this preview's stand-in for the render's own per-caption end_frame).
+        if let span = words.first(where: { $0.startFrame == cap.frame }) ?? words.last(where: { $0.startFrame <= cap.frame }) {
+            let isLastCaption = activeIdx == d.captions.count - 1
+            if isLastCaption, srcFrame > span.endFrame + LayoutConstants.captionHideAfterLast {
+                return nil
+            }
+            if let nextSpan = words.first(where: { $0.startFrame > span.startFrame }),
+               srcFrame > span.endFrame, srcFrame < nextSpan.startFrame,
+               nextSpan.startFrame - span.endFrame > LayoutConstants.captionSilenceGap {
+                return nil
+            }
         }
         if d.captionStyle == "bold-word" { return ([cap.word], 0) }
         let lo: Int, hi: Int

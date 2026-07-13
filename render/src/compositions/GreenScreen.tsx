@@ -5,8 +5,9 @@ import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
 import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
-import { Captions } from "../components/Captions";
+import { Captions, FONTS } from "../components/Captions";
 import { CompositionProps } from "../types";
+import { LAYOUT, cardFit } from "../layout";
 
 // Reaction / green-screen layout: a reference text card in the top of the backdrop, with
 // the cut speaker track in a rounded card filling the bottom ~55% of the frame.
@@ -24,17 +25,27 @@ export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   // "Reference post" placeholder into the delivered video whenever the EDL
   // carried no text_card overlay — a clean backdrop beats fake copy.
   const activeCard = textCards.find((o) => frame >= o.frame_in && frame < o.frame_out);
+  // Formatting fix #9: shrink-to-fit + a hard line-clamp stop so a long reference
+  // caption can't overflow the 45% band into the speaker card below it.
+  const cardUsablePx = LAYOUT.FRAME_W * 0.84; // ~92% width minus internal padding
+  const cardFontFit = activeCard
+    ? cardFit(activeCard.text, 40, cardUsablePx, LAYOUT.CARD_MAX_LINES, LAYOUT.CARD_MIN_FONT)
+    : null;
 
   return (
     <AbsoluteFill style={{ background: "#0f3460" }}>
       {/* Reference backdrop: text card centered in the top ~45% (clear of the speaker card). */}
       <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: "45%",
         display: "flex", alignItems: "center", justifyContent: "center", padding: "0 8%" }}>
-        {activeCard && (
-          <div style={{ background: "white", borderRadius: 20, padding: "28px 40px",
-            maxWidth: "92%", fontSize: 40, color: "#111", fontFamily: "system-ui",
+        {activeCard && cardFontFit && (
+          <div style={{
+            background: "white", borderRadius: 20, padding: "28px 40px",
+            maxWidth: "92%", fontSize: cardFontFit.fontSize, color: "#111", fontFamily: FONTS.inter,
             fontWeight: 700, textAlign: "center", lineHeight: 1.25,
-            boxShadow: "0 12px 40px rgba(0,0,0,0.35)" }}>{activeCard.text || "Reference post"}</div>
+            boxShadow: "0 12px 40px rgba(0,0,0,0.35)",
+            display: "-webkit-box", WebkitLineClamp: LAYOUT.CARD_MAX_LINES,
+            WebkitBoxOrient: "vertical", overflow: "hidden",
+          }}>{activeCard.text}</div>
         )}
       </div>
       {/* Speaker in a rounded, shadowed card filling the bottom 55% — no blend modes. */}
