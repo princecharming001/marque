@@ -124,6 +124,22 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
         return None
 
 
+async def strategy_block(store, creator_id: str) -> str:
+    """The compiled strategy as an injectable prompt block for script gen + converse, so
+    the brain actually shapes output. Flag-gated + keyless (no store / no strategy) => ''."""
+    if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or store is None or not creator_id:
+        return ""
+    try:
+        strat = await store.load_strategy(creator_id)
+    except Exception:
+        strat = None
+    md = (strat or {}).get("strategy_markdown", "") if strat else ""
+    if not md.strip():
+        return ""
+    return ("<creator_strategy>\nApply this compiled strategy to shape the output "
+            "(apply, don't recite):\n" + md.strip() + "\n</creator_strategy>")
+
+
 async def run_compile_cron(store, now_epoch: float) -> int:
     """Weekly sweep: compile the strategy for each creator that is allowlisted AND whose
     tier-cadence freshness window has elapsed. The three gates (flag + allowlist + freshness)
