@@ -133,7 +133,7 @@ push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supa
 
 # --- Palo port (branch palo-port) — memory/ledger store. None keyless => every ported
 # path is a pure no-op; all capabilities gated OFF by app.palo_flags (PALO_PORT unset).
-from app import ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, track_insights  # noqa: E402
+from app import ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, track_insights, write_agent  # noqa: E402
 from app.palo_persistence import make_store  # noqa: E402
 
 _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
@@ -7183,6 +7183,29 @@ async def feed_post(req: FeedRequest):
 class _IdeasRequest(BaseModel):
     creator_id: str = "default"
     limit: int = 12
+
+
+class _WriteRequest(BaseModel):
+    creator_id: str = "default"
+    script: dict = {}          # {title, body}
+    instruction: str = ""
+
+
+@app.post("/v1/write/turn")
+async def write_turn_route(req: _WriteRequest):
+    """Palo port (flag WRITE_AGENT): one co-writing turn. Returns the proposed actions
+    (exact-substring, accept/reject on iOS via the tweak-ops UI), a preview of the applied
+    script, and any chat answer. Off/keyless => a mock answer, no script change."""
+    if not palo_flags.enabled(palo_flags.WRITE_AGENT):
+        return {"mode": "off", "actions": [], "preview": req.script, "answer": ""}
+    body = (req.script or {}).get("body", "")
+    result = await write_agent.write_turn(_palo_store, req.creator_id, body, req.instruction)
+    actions = result.get("actions", [])
+    new_body, outcomes = write_agent.apply_actions(body, actions)
+    answer = next((a.get("text", "") for a in actions if a.get("op") == "answer"), "")
+    return {"mode": result.get("mode", "live"), "actions": outcomes,
+            "preview": {**(req.script or {}), "body": new_body},
+            "invariants": write_agent.check_invariants(body, actions), "answer": answer}
 
 
 @app.post("/v1/ideas")

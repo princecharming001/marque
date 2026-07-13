@@ -54,7 +54,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 
 ## Phase 5 — interactive write agent  (flag: WRITE_AGENT)
 - [x] `app/write_agent.py` — plain Anthropic write loop; WRITE_AGENT_SYSTEM (fill/edit/add/answer, ≤250w, exact-substring contract) + strategy/memory injection; `parse_write_actions` (document order); keyless→mock answer; flag WRITE_AGENT (test_palo_write.py 6 green; +1 port_eval; suite 944)
-- [ ] `<edit>/<add>/<highlight>` XML contract (exact-substring) mapped to iOS tweak-ops
+- [x] `apply_actions` exact-substring contract (non-substring edit/add SKIPPED, never fuzzy) + `check_invariants` (LOOP W: exact-substring, ≤250w, no scaffolding-vocab leak) + `/v1/write/turn` route (preview + accept/reject outcomes for iOS tweak-ops) (test_palo_write_apply.py 7 green; +2 port_eval; suite 951)
 - [ ] onboarding `script_generation.py` → upgrade `/v1/scripts`
 - [ ] tests (LOOP W): XML invariants, ≤250 words, one-branch, no doctrine-vocab leak
 
