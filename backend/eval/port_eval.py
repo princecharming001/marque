@@ -84,6 +84,10 @@ def _checks() -> list[tuple[str, bool]]:
                 and _ti.detect_spike(20, [10, 10, 10]) is False))
     out.append(("insight.underperformer", _ti.is_underperformer(50, 1000) is True
                 and _ti.is_underperformer(500, 1000) is False))
+    _e = {"type": "view_milestone", "value": 100000}
+    out.append(("insight.dedup", _ti._dedup_hash("c1", _e) == _ti._dedup_hash("c1", _e)
+                and _ti._dedup_hash("c1", _e) != _ti._dedup_hash("c2", _e)))
+    out.append(("insight.card", "100,000 views" in _ti._template_card(_e)["title"]))
 
     return out
 
