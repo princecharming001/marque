@@ -149,7 +149,20 @@ struct ProEditorView: View {
         .onChange(of: stickerFieldFocused) { _, focused in
             if !focused, let idx = typingSticker { commitTyping(idx) }
         }
-        .onDisappear { applyTask?.cancel(); player?.teardown() }
+        .onDisappear {
+            // #47: do NOT cancel a save that's already committing/rendering. Once Save
+            // fires, applyTask owns the server commit + render poll and writes the result
+            // back to the STORE (which outlives this view) via applyTweakResult — so the
+            // Library reflects the finished edit even after the editor closes. Cancelling
+            // here abandoned a render already committing server-side, stranding the Library
+            // on the pre-edit clip. Post-teardown writes to this view's @State are no-ops.
+            // Only a save still mid-flight is worth keeping; anything else has nothing to run.
+            switch phase {
+            case .applying, .rendering: break                 // let the commit + poll finish
+            default: applyTask?.cancel()
+            }
+            player?.teardown()
+        }
     }
 
     /// First-open orientation — three lines, one button, never again.
@@ -207,8 +220,9 @@ struct ProEditorView: View {
         // R10: undo/redo moved to the transport strip (CapCut keeps them by the play head).
         ToolbarItem(placement: .topBarTrailing) {
             if phase == .editing {
-                // #11: overlay/caption/music edits re-render (~1 min); structural cuts apply
-                // instantly. Label the cost so a text-card add isn't a surprise wait.
+                // Label the cost up front: nearly every edit re-renders (~1 min); only a
+                // pure split-only batch commits instantly (#6/#43). So a cut/overlay/caption
+                // shows "Render", a bare split shows "Save".
                 Button { save() } label: { Text(saveNeedsRender ? "Render" : "Save").fontWeight(.semibold) }
                     .tint(Palette.accent).disabled(!(session?.isDirty ?? false))
                     .accessibilityIdentifier("editorPro.save")
@@ -216,13 +230,14 @@ struct ProEditorView: View {
         }
     }
 
-    /// True when the pending edits include anything that re-renders server-side (overlays,
-    /// captions, music, b-roll) rather than the instant structural ops.
+    /// True when the save will re-render server-side. MUST mirror save()'s defer rule
+    /// (#6/#43): only a pure split-only batch renders pixel-identically and is deferred;
+    /// everything else — cuts, reorders, mutes, volume, captions, overlays, music, b-roll —
+    /// changes the delivered video and re-renders. Kept in lockstep so the button label
+    /// ("Render" vs "Save") never lies about what the tap actually costs.
     var saveNeedsRender: Bool {
-        let structural: Set = ["cut_range", "restore_range", "split_segment", "reorder_segments",
-                               "mute_range", "set_segment_volume"]
-        guard let ops = session?.flattenedOps() else { return false }
-        return ops.contains { !structural.contains($0["type"] as? String ?? "") }
+        guard let ops = session?.flattenedOps(), !ops.isEmpty else { return false }
+        return !ops.allSatisfy { ($0["type"] as? String) == "split_segment" }
     }
 
     // MARK: editing layout

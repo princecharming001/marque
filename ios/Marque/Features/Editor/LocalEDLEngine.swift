@@ -153,8 +153,13 @@ enum LocalEDLEngine {
             guard let idx = op.i["index"], let at = op.i["at_frame"], d.segments.indices.contains(idx),
                   d.segments[idx].srcIn < at, at < d.segments[idx].srcOut else { return nil }
             let seg = d.segments[idx]
-            let halves = [EditorSegment(srcIn: seg.srcIn, srcOut: at), EditorSegment(srcIn: at, srcOut: seg.srcOut)]
-            d.segments = Array(d.segments[..<idx]) + halves + Array(d.segments[(idx + 1)...])
+            // #45: both halves inherit the parent's speed + canvas transform (backend
+            // parity) — a bare EditorSegment(srcIn:srcOut:) reset them to defaults, so
+            // splitting a sped-up / repositioned clip changed the local preview and
+            // diverged from the delivered render.
+            var first = seg; first.srcOut = at
+            var second = seg; second.srcIn = at
+            d.segments = Array(d.segments[..<idx]) + [first, second] + Array(d.segments[(idx + 1)...])
             if let old = d.segmentOrder {
                 var newOrder: [Int] = []
                 for iVal in old {
@@ -162,6 +167,12 @@ enum LocalEDLEngine {
                     if iVal == idx { newOrder.append(idx + 1) }
                 }
                 d.segmentOrder = newOrder
+            }
+            // #10 (iOS mirror): the insert shifts source indices at/after idx by +1, so a
+            // transition anchored there moves with the second half — otherwise the local
+            // preview shows the fade on the wrong boundary vs the delivered render.
+            d.transitions = d.transitions.map {
+                var t = $0; if t.afterSegment >= idx { t.afterSegment += 1 }; return t
             }
         case "reorder_segments":
             guard let order = op.order, order.sorted() == Array(d.segments.indices) else { return nil }

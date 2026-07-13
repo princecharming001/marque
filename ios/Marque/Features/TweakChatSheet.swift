@@ -330,10 +330,28 @@ struct TweakChatSheet: View {
                           UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id
                       })
                 else { continue }
-                if (mine["status"] as? String) == "ready" {
+                let status = mine["status"] as? String
+                if status == "ready" {
+                    // The clip comes back "ready" even when the re-render FAILED — the
+                    // backend restores the previous good URL and flags last_render_failed.
+                    // Reporting "the new cut is live" there is a lie (audit #8/#44): the
+                    // player still shows the OLD cut. Surface the failure honestly.
                     store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String)
                     rendering = false
-                    messages.append(Msg(role: .status, text: "Done — the new cut is live."))
+                    if mine["last_render_failed"] as? Bool == true {
+                        messages.append(Msg(role: .status,
+                                            text: "That re-render didn't take — your previous cut is untouched. Try rewording the change."))
+                    } else {
+                        messages.append(Msg(role: .status, text: "Done — the new cut is live."))
+                    }
+                    pollTask = nil
+                    return
+                }
+                if status == "failed" {
+                    rendering = false
+                    messages.append(Msg(role: .status,
+                                        text: store.friendlyRenderError(mine["error"] as? String,
+                                                                        detail: mine["error_detail"] as? String)))
                     pollTask = nil
                     return
                 }

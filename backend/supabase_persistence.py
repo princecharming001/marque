@@ -292,14 +292,18 @@ class SupabaseClient:
         return bool(r and r.status_code < 300)
 
     async def load_clip_job(self, job_id: str) -> dict | None:
+        """None = the DB answered and no session exists. UNAVAILABLE = the DB
+        couldn't answer (transport dead after retries, non-200, bad body) — the
+        caller must NOT treat that as "session expired" (same contract as
+        load_post; see the _Unavailable docstring)."""
         r = await self._request("GET", "/clip_edit_sessions",
                                 params={"job_id": f"eq.{job_id}", "select": "state"})
         if not (r and r.status_code == 200):
-            return None
+            return UNAVAILABLE
         try:
             rows = r.json()
         except Exception:
-            return None
+            return UNAVAILABLE
         return rows[0]["state"] if rows and rows[0].get("state") else None
 
     # --- device_tokens (UX-B2a APNs) ------------------------------------------

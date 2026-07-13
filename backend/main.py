@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
                      style_capabilities, TWEAK_OP_TYPES,
-                     assemble_edl, check_edl_invariants)
+                     assemble_edl, check_edl_invariants, clamp_edl_to_source)
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
@@ -1000,9 +1000,31 @@ def _sweep_ttl_jobs(jobs: dict, ttl_s: float = _JOB_TTL_S) -> None:
     """Evict jobs older than ttl_s. Sweep-on-access (called from the GET poll
     endpoints) rather than a background timer — no extra event loop task, and
     the in-memory job stores are already accepted-orphaned-on-restart, so a
-    lazily-swept TTL is a strict improvement with zero new failure modes."""
+    lazily-swept TTL is a strict improvement with zero new failure modes.
+
+    Age is measured from the job's LATEST activity (created/stage-entry/restore),
+    not created_at alone: a session restored from Supabase days later keeps its
+    original created_at, and sweeping on that evicted the job on the very next
+    poll after restore — an in-flight re-render then wrote to an orphaned dict
+    (its "ready" never became visible) while the creator polled a 410. Jobs with
+    work actively in flight are never TTL-evicted at all; the stall watchdog
+    owns terminating runaway work, after which the TTL reaps them normally."""
     now = time.time()
-    dead = [jid for jid, j in jobs.items() if now - j.get("created_at", now) > ttl_s]
+    dead = []
+    for jid, j in jobs.items():
+        anchor = max(float(j.get("created_at") or now),
+                     float(j.get("stage_started_at") or 0.0),
+                     float(j.get("restored_at") or 0.0))
+        if now - anchor <= ttl_s:
+            continue
+        in_flight = (j.get("status") in ("transcribing", "analyzing", "processing",
+                                         "editing", "rendering")
+                     or any(c.get("status") == "rendering"
+                            or c.get("preview_status") == "rendering"
+                            for c in j.get("clips") or []))
+        if in_flight:
+            continue
+        dead.append(jid)
     for jid in dead:
         jobs.pop(jid, None)
         _expired_job_ids[jid] = now
@@ -1861,9 +1883,19 @@ async def _restore_clip_job(job_id: str) -> dict | None:
         state = await _supabase_client.load_clip_job(job_id)
     except Exception as e:
         logging.warning("supabase load_clip_job failed: %s", e)
-        return None
+        state = sp.UNAVAILABLE
+    # "The DB couldn't answer" is NOT "the session doesn't exist": mapping a
+    # transient Supabase outage to the caller's 404/410 made iOS declare the
+    # creator's edit session expired (a destructive, re-record-your-video UX)
+    # over a network blip. Surface 503 instead — the app's poll just tries again.
+    if state is sp.UNAVAILABLE:
+        raise HTTPException(status_code=503, detail="session_storage_unavailable")
     if not state:
         return None
+    # Restore stamps its own clock: TTL age is measured from latest activity, so
+    # a days-old session gets a fresh 24h in-memory lease instead of being
+    # re-evicted by the very next poll's sweep (see _sweep_ttl_jobs).
+    state["restored_at"] = time.time()
     # AF-3 (audit): setdefault, not assignment — two concurrent restorers (a tweak and
     # the 5s poll both missing memory after a restart) otherwise get two DIFFERENT dict
     # objects, and whichever assigned last silently discarded the other's mutations
@@ -2063,6 +2095,11 @@ async def create_clip_job(req: ClipJobRequest):
         # for undo, and the tweak chat history.
         "words": [], "edl_history": [], "tweaks": [],
         "created_at": time.time(),
+        # Remembered for retry: a failed one-tap job must restart through
+        # _run_auto_pipeline (toggle ladder + auto-applied confirm), not the
+        # legacy pipeline — retrying via _run_pipeline silently dropped the
+        # creator's toggles/brief when the failure predated confirm-application.
+        "auto_confirm": bool(req.auto_confirm),
     }
     job["custom_instructions"] = req.custom_instructions
     job["creator_id"] = req.creator_id                       # UX-B1a: keys push + learning
@@ -2234,6 +2271,13 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
         job["knowledge_version"] = knowledge_mod.knowledge_version()
         job["words"] = job.get("words") or _mock_words(job.get("script") or {})
         return {"mode": "mock", "job_id": job_id, "status": "mock_ready", "clips": job["clips"]}
+    # Set the status SYNCHRONOUSLY (no await between the 409 guard above and here):
+    # _run_edit only stamps "editing" when the spawned task first runs, so two
+    # confirms landing in the same event-loop tick both passed the guard and spawned
+    # two racing _run_edit tasks (double LLM + double Lambda spend). _run_edit's own
+    # _mark_stage re-stamp a tick later is a harmless refresh of the same stage.
+    _mark_stage(job, "editing")
+    _bump_pipeline_gen(job)   # this confirm owns the pipeline; zombies stand down
     _spawn(_run_edit(job_id, job.get("words") or []))
     _spawn(_persist_clip_job(job_id))
     return {"mode": "live", "job_id": job_id, "status": "editing", "clips": job["clips"]}
@@ -2247,8 +2291,10 @@ async def retry_clip_job(job_id: str):
     job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
     if job is None:
         _raise_job_not_found(job_id)
-    if job["status"] in ("transcribing", "editing", "rendering") \
+    if job["status"] in ("transcribing", "analyzing", "processing", "editing", "rendering") \
             or any(c.get("status") == "rendering" for c in job["clips"]):
+        # analyzing/processing included (they were missing): a retry mid-analysis
+        # otherwise spawned a SECOND pipeline racing the first on the same job dict.
         raise HTTPException(status_code=409, detail="retry_in_progress")
     if job["status"] == "mock_ready":
         return {"mode": "mock", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
@@ -2266,12 +2312,24 @@ async def retry_clip_job(job_id: str):
     # retrying any job older than the watchdog window (RENDER_WATCHDOG_S*2) instantly
     # re-failed as "job exceeded the pipeline watchdog" before the render even ran.
     job["created_at"] = time.time()
+    # ...and take ownership: any zombie task from the failed run (asyncio never
+    # cancelled it) must not overwrite this fresh attempt's state when it wakes.
+    _bump_pipeline_gen(job)
 
     if job.get("edl"):
-        job["status"] = "rendering"
+        # _mark_stage (not a bare status set): the watchdog anchor and the ETA both
+        # read stage_started_at, and the stale stamp from the FAILED run would
+        # otherwise make this fresh attempt look hours old.
+        _mark_stage(job, "rendering")
         _spawn(_retry_render(job_id))
+    elif job.get("auto_confirm"):
+        # One-tap jobs restart through the auto pipeline so the toggle ladder +
+        # auto-applied confirm run again — the legacy pipeline would silently
+        # drop them when the original failure predated confirm-application.
+        _mark_stage(job, "processing")
+        _spawn(_run_auto_pipeline(job_id))
     else:
-        job["status"] = "transcribing"
+        _mark_stage(job, "transcribing")
         _spawn(_run_pipeline(job_id))
     return {"mode": "live", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
 
@@ -2281,19 +2339,25 @@ async def _retry_render(job_id: str) -> None:
     job = _clip_jobs.get(job_id)
     if not job:
         return
+    my_pgen = job.get("pipeline_gen", 0)
     try:
         await _render_all_clips(job_id)
+        if not _owns_pipeline(job, my_pgen):
+            return
         job["status"] = "ready" if any(c["status"] == "ready" for c in job["clips"]) else "failed"
         if job["status"] == "failed" and not job.get("error"):
             first = next((c for c in job["clips"] if c.get("error")), None)
             job["error"] = (first or {}).get("error", "render_no_output")
             job["error_detail"] = (first or {}).get("error_detail", "")
     except PipelineError as e:
-        _fail_job(job, e.code, e.detail, e.stage)
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, e.code, e.detail, e.stage)
     except Exception as e:
-        _fail_job(job, "internal_error", str(e))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, "internal_error", str(e))
     finally:
-        _spawn(_persist_clip_job(job_id))   # F15: durable after retry
+        if _owns_pipeline(job, my_pgen):
+            _spawn(_persist_clip_job(job_id))   # F15: durable after retry
 
 
 @app.get("/v1/clips/{job_id}/suggested-edits")
@@ -2398,7 +2462,8 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
         raise HTTPException(status_code=422, detail="empty_instruction")
     # Concurrency guard: asyncio is single-threaded, so status checks + the
     # later synchronous status set (before any await) are atomic per request.
-    if clip.get("status") == "rendering" or job["status"] in ("transcribing", "editing", "rendering"):
+    if clip.get("status") == "rendering" \
+            or job["status"] in ("transcribing", "analyzing", "processing", "editing", "rendering"):
         raise HTTPException(status_code=409, detail="render_in_progress")
     if not job.get("edl"):
         raise HTTPException(status_code=409, detail="no_edl")
@@ -2430,6 +2495,15 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
             degraded = True
     else:
         reply, ops = _mock_tweak(req.instruction)
+
+    # RACE RE-CHECK: the LLM interpretation above awaited, so a retry/confirm may
+    # have started a whole pipeline since the top-of-request guard. Committing ops
+    # (or popping undo history) into a job whose EDL a running pipeline is about to
+    # regenerate would produce a mixed-state edit that neither side authored —
+    # same 409 as the top guard, just re-checked on this side of the await.
+    if clip.get("status") == "rendering" \
+            or job["status"] in ("transcribing", "analyzing", "processing", "editing", "rendering"):
+        raise HTTPException(status_code=409, detail="render_in_progress")
 
     applied: list[dict] = []
     skipped: list[dict] = []
@@ -2579,18 +2653,37 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
                 job["edl"] = await _resolve_broll(job["edl"], allow_generation=False)
             except Exception:
                 clip.setdefault("warnings", []).append("broll_unresolved: resolve failed")
+            # #16: a resolve that finds no stock clip (no key / no match) leaves the cue
+            # unresolved — build_render_plan then silently drops it and the re-render looks
+            # PIXEL-IDENTICAL, yet the tweak already replied "added b-roll". Surface the
+            # gap as a warning (mirrors the pipeline path) instead of a silent no-op.
+            # Refresh, not append, so a later successful resolve clears the stale warning.
+            clip["warnings"] = [w for w in clip.get("warnings", [])
+                                if not str(w).startswith("broll_unresolved")]
+            for b in (job["edl"].get("broll") or []):
+                if b.get("source") != "own_media" and not b.get("resolved_url"):
+                    clip.setdefault("warnings", []).append(
+                        f"broll_unresolved: {b.get('broll_query') or b.get('cue_text', '')}"[:120])
             # The resolve above ran INSIDE the rendering-watchdog window — restart the
             # clock so slow (but succeeding) resolution can't get the render falsely
             # failed as stalled and its good result discarded.
             clip["render_started_at"] = time.time()
         async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+            # Superseded while queued? Bail before spending a Lambda render whose
+            # result every write site (incl. our finally) would discard anyway.
+            if not _is_current_render(clip, my_gen):
+                return
+            # Same queue-time exemption as _render_all_clips: re-stamp at acquisition
+            # so semaphore wait never counts against the render watchdog.
+            clip["render_started_at"] = time.time()
             submission = await _submit_remotion_render(
                 job["source_url"], job["edl"], clip["format"], job["style"])
             if not submission:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
             clip["render_id"] = submission["render_id"]
             render_url = await _poll_remotion_render(
-                submission["render_id"], submission["bucket_name"])
+                submission["render_id"], submission["bucket_name"],
+                total_frames=submission.get("total_frames"))
         if _is_current_render(clip, my_gen):
             clip["render_url"] = render_url
             clip.pop("error", None)
@@ -2645,13 +2738,16 @@ async def _preview_rerender_clip(job_id: str, clip_id: str,
     my_gen = clip["preview_gen"] = clip.get("preview_gen", 0) + 1   # guard: newest preview wins
     try:
         async with _render_semaphore:
+            if clip.get("preview_gen") == my_gen:   # queue time ≠ render time (see _render_all_clips)
+                clip["preview_started_at"] = time.time()
             submission = await _submit_remotion_render(
                 job["source_url"], edl_override or job["edl"], clip["format"], job["style"],
                 preview=True)
             if not submission:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
             preview_url = await _poll_remotion_render(
-                submission["render_id"], submission["bucket_name"])
+                submission["render_id"], submission["bucket_name"],
+                total_frames=submission.get("total_frames"))
         if clip.get("preview_gen") == my_gen:         # a newer preview / watchdog didn't supersede us
             clip["preview_url"] = preview_url
             clip["preview_status"] = "ready"
@@ -2986,6 +3082,8 @@ ERROR_CODES = [
     "render_timeout",           # poll exhausted RENDER_POLL_MAX_S
     "render_no_output",         # done=true but outputFile missing
     "bridge_error",             # node bridge crashed / non-JSON / subprocess timeout
+    "pipeline_interrupted",     # job-level watchdog: restart/stall mid-stage (retryable)
+    "render_misconfigured",     # PARTIAL Remotion env on the server (deploy/secret gap)
     "internal_error",           # catch-all
 ]
 
@@ -2996,6 +3094,31 @@ RENDER_POLL_MAX_S = int(os.environ.get("RENDER_POLL_MAX_S", "240"))
 RENDER_STALL_S = int(os.environ.get("RENDER_STALL_S", "75"))
 BRIDGE_CALL_TIMEOUT_S = float(os.environ.get("BRIDGE_CALL_TIMEOUT_S", "30"))
 RENDER_WATCHDOG_S = int(os.environ.get("RENDER_WATCHDOG_S", "480"))
+# #17: the poll/stall budgets above are FLAT — a 3-minute take renders far longer
+# than a 15-second one and would trip render_timeout/render_stalled at the flat
+# 240s/75s. Scale both by the render's output frame count (Lambda parallelizes
+# chunks, so wall-clock grows sublinearly — a gentle linear term is enough).
+RENDER_POLL_PER_FRAME_S = float(os.environ.get("RENDER_POLL_PER_FRAME_S", "0.12"))
+RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "900"))
+# #18: renderMediaOnLambda DISPATCHES the render as part of the submit call, so a
+# killed-and-retried submit starts a SECOND, orphaned render. Give the submit a
+# generous cold-start-covering budget and never auto-retry it (_submit_remotion_render).
+RENDER_SUBMIT_TIMEOUT_S = float(os.environ.get("RENDER_SUBMIT_TIMEOUT_S", "90"))
+
+
+def _scaled_render_budgets(total_frames: int | None) -> tuple[int, int]:
+    """(poll_budget_s, stall_budget_s) for a render of `total_frames` output frames —
+    the flat defaults when the count is unknown. #17: keeps a long-but-succeeding
+    render from being killed as timed-out/stalled while short clips keep tight budgets."""
+    if not total_frames or total_frames <= 0:
+        return RENDER_POLL_MAX_S, RENDER_STALL_S
+    budget = min(RENDER_POLL_CEIL_S,
+                 max(RENDER_POLL_MAX_S, int(RENDER_POLL_MAX_S + total_frames * RENDER_POLL_PER_FRAME_S)))
+    # Stall grows more gently — a heavy single chunk can sit at one progress value a
+    # while before the next reports, but a genuinely-dead render still trips it.
+    stall = min(RENDER_STALL_S * 3,
+                max(RENDER_STALL_S, int(RENDER_STALL_S + total_frames * 0.03)))
+    return budget, stall
 
 # G7: clips WITHIN one job already render sequentially (the for-loop below has
 # no gather/create_task fan-out) — but separate JOBS each run in their own
@@ -3073,6 +3196,22 @@ def _is_current_render(clip: dict, my_gen: int) -> bool:
     return clip.get("render_gen", 0) == my_gen
 
 
+def _bump_pipeline_gen(job: dict) -> int:
+    """JOB-level analogue of _bump_render_gen. asyncio doesn't cancel a pipeline
+    task the watchdog failed — it keeps running and, when it finally finishes,
+    used to overwrite whatever a subsequent retry/confirm had built (job status,
+    edl, error fields) with its stale result. Every restart site (retry, confirm,
+    the job-level sweep) bumps this; pipeline tasks capture it at entry and drop
+    their job-level terminal writes if a newer owner has taken over. Clip-level
+    writes stay guarded by render_gen exactly as before."""
+    job["pipeline_gen"] = job.get("pipeline_gen", 0) + 1
+    return job["pipeline_gen"]
+
+
+def _owns_pipeline(job: dict, my_gen: int) -> bool:
+    return job.get("pipeline_gen", 0) == my_gen
+
+
 async def _validate_source_url(url: str) -> None:
     """Probe the source before handing it to AssemblyAI/Remotion — a bad URL used
     to hang the pipeline 5-15 minutes across two external services before failing.
@@ -3116,10 +3255,31 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
         # deploy restart mid-analysis stranded the job in "analyzing" forever (observed
         # in prod 2026-07-12: job 2b0fc44c). Now every non-terminal pipeline stage is
         # watchdogged; the app's retry endpoint restarts a failed pipeline cleanly.
-        if job.get("status") in ("transcribing", "analyzing", "processing", "editing", "rendering") \
-                and now - job.get("created_at", now) > budget * 2:
-            _fail_job(job, "pipeline_interrupted",
-                      "the edit was interrupted (server restart or stall) — retry to restart it")
+        #
+        # Anchor at the LATEST progress marker, not created_at alone: a creator who
+        # reviews a brief_ready job for >2×budget and then confirms would otherwise be
+        # insta-failed on the next poll (created_at is minutes-to-hours old the moment
+        # "editing" starts). _mark_stage stamps stage_started_at on every stage entry;
+        # max() keeps restart recovery intact (a restored job's stale stamp still
+        # trips the sweep) while parked-on-user time never counts as pipeline time.
+        if job.get("status") in ("transcribing", "analyzing", "processing", "editing", "rendering"):
+            anchor = max(float(job.get("created_at") or now),
+                         float(job.get("stage_started_at") or 0.0))
+            # While any clip is actively rendering inside ITS OWN watchdog window, the
+            # per-clip sweep above owns termination — a multi-clip job legitimately
+            # spends > budget*2 in "rendering" (clips render sequentially), and killing
+            # it here would fail renders that are progressing fine.
+            clip_actively_rendering = any(
+                c.get("status") == "rendering"
+                and now - c.get("render_started_at", now) <= budget
+                for c in job.get("clips", []))
+            if now - anchor > budget * 2 and not clip_actively_rendering:
+                # Take ownership before failing: the stalled task (if it's alive at
+                # all) must not overwrite this terminal state when it wakes up —
+                # same discipline as the clip sweep's _bump_render_gen above.
+                _bump_pipeline_gen(job)
+                _fail_job(job, "pipeline_interrupted",
+                          "the edit was interrupted (server restart or stall) — retry to restart it")
 
 
 async def _transcribe_job(job_id: str) -> list[dict]:
@@ -3203,15 +3363,20 @@ async def _run_analysis(job_id: str) -> None:
     """Analyze-first phase 1: transcribe → edit brief → stop at 'brief_ready' (no EDL
     or render yet). ALWAYS leaves the job terminal-or-brief_ready."""
     job = _clip_jobs[job_id]
+    my_pgen = job.get("pipeline_gen", 0)
     try:
         await _analyze_to_brief(job_id)
-        job["status"] = "brief_ready"
+        if _owns_pipeline(job, my_pgen):
+            job["status"] = "brief_ready"
     except PipelineError as e:
-        _fail_job(job, e.code, e.detail, e.stage)
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, e.code, e.detail, e.stage)
     except Exception as e:
-        _fail_job(job, "internal_error", str(e))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, "internal_error", str(e))
     finally:
-        _spawn(_persist_clip_job(job_id))
+        if _owns_pipeline(job, my_pgen):
+            _spawn(_persist_clip_job(job_id))
 
 
 async def _run_auto_pipeline(job_id: str) -> None:
@@ -3220,16 +3385,21 @@ async def _run_auto_pipeline(job_id: str) -> None:
     render. Clip ids were minted at create and already returned to the client, so the
     confirm mutation runs with reset_clips=False. Always leaves the job terminal."""
     job = _clip_jobs[job_id]
+    my_pgen = job.get("pipeline_gen", 0)
     try:
         await _analyze_to_brief(job_id, briefless_on_error=True)
     except PipelineError as e:
-        _fail_job(job, e.code, e.detail, e.stage)
-        _spawn(_persist_clip_job(job_id))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, e.code, e.detail, e.stage)
+            _spawn(_persist_clip_job(job_id))
         return
     except Exception as e:
-        _fail_job(job, "internal_error", str(e))
-        _spawn(_persist_clip_job(job_id))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, "internal_error", str(e))
+            _spawn(_persist_clip_job(job_id))
         return
+    if not _owns_pipeline(job, my_pgen):
+        return                        # a retry took over while we analyzed
     # Toggles: client-explicit (stored at create) → edit-format defaults → brief
     # heuristics — the same ladder confirm uses, via the same helper.
     _apply_confirm_to_job(job, toggles=job.get("toggles"), reset_clips=False)
@@ -3240,6 +3410,7 @@ async def _run_auto_pipeline(job_id: str) -> None:
 async def _run_pipeline(job_id: str):
     """Full pipeline: transcribe → edit → render. Always terminal on exit."""
     job = _clip_jobs[job_id]
+    my_pgen = job.get("pipeline_gen", 0)
     try:
         # P0.6: loudness probe parallel with transcription (same as _run_analysis).
         # P1.2: + visual dossier in the same gather (all fail-soft).
@@ -3250,13 +3421,17 @@ async def _run_pipeline(job_id: str):
         job["loudness_lufs"] = lufs
         job["dossier"] = dossier
     except PipelineError as e:
-        _fail_job(job, e.code, e.detail, e.stage)
-        _spawn(_persist_clip_job(job_id))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, e.code, e.detail, e.stage)
+            _spawn(_persist_clip_job(job_id))
         return
     except Exception as e:
-        _fail_job(job, "internal_error", str(e))
-        _spawn(_persist_clip_job(job_id))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, "internal_error", str(e))
+            _spawn(_persist_clip_job(job_id))
         return
+    if not _owns_pipeline(job, my_pgen):
+        return                        # a retry took over while we transcribed
     await _run_edit(job_id, words)
 
 
@@ -3302,6 +3477,20 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     # and bailing there would only lose the assembler's brief-cut folds for nothing.
     issues = check_edl_invariants(edl_data, words)
     hard = [i for i in issues if "kept duration" not in i]
+    if hard and all(("overlay" in i or "broll" in i) for i in hard):
+        # A stray overlay/b-roll window is a DECORATION bug, not an edit bug —
+        # stripping the offenders keeps the tailored cut. Nuking the whole plan
+        # to the untailored safe default over one bad punch-in threw away the
+        # entire edit the creator was promised.
+        bad_ov = {int(m.group(1)) for i in hard if (m := re.match(r"overlay (\d+)", i))}
+        bad_br = {int(m.group(1)) for i in hard if (m := re.match(r"broll (\d+)", i))}
+        edl_data["overlays"] = [o for k, o in enumerate(edl_data.get("overlays") or [])
+                                if k not in bad_ov]
+        edl_data["broll"] = [b for k, b in enumerate(edl_data.get("broll") or [])
+                             if k not in bad_br]
+        logging.warning("assemble_edl stripped %d incoherent overlay/broll windows", len(hard))
+        issues = check_edl_invariants(edl_data, words)
+        hard = [i for i in issues if "kept duration" not in i]
     if hard:
         logging.warning("assemble_edl hard invariant issues %s → safe default", hard[:4])
         return None, llm_contributed
@@ -3317,6 +3506,7 @@ async def _run_edit(job_id: str, words: list[dict]):
     """Edit + render from an already-transcribed job. Shared by the full pipeline and
     the analyze-first /confirm stage. Always leaves the job + clips terminal."""
     job = _clip_jobs[job_id]
+    my_pgen = job.get("pipeline_gen", 0)
     try:
         _mark_stage(job, "editing")
         for c in job["clips"]: c["status"] = "editing"
@@ -3372,8 +3562,14 @@ async def _run_edit(job_id: str, words: list[dict]):
                 # P0.9: author the EDL via structured outputs on Sonnet at temperature 0 —
                 # deterministic, no free-form JSON-parse failures, a real editing model instead
                 # of Haiku at temp 1.0. Falls back to the safe-default edit on LLM failure.
+                # 8000 tokens (was 4000): the legacy schema has the model echo captions,
+                # so a long take's EDL routinely blew the 4000 cap — truncated JSON parsed
+                # as a failure and EVERY long take silently got the untailored safe
+                # default. Scale with the transcript; structured outputs stop at the
+                # closing brace, so the extra headroom costs nothing on short takes.
+                _edl_max_tokens = 8000 if len(words) > 400 else 4000
                 edl_data = await anthropic_json(system, user, prompts.EDL_JSON_SCHEMA,
-                                                SONNET, 4000, temperature=0.0)
+                                                SONNET, _edl_max_tokens, temperature=0.0)
             except HTTPException:
                 # LLM down ≠ pipeline dead: the safe default edit (full footage +
                 # caption timing + deterministic filler cuts) still renders fine.
@@ -3381,9 +3577,23 @@ async def _run_edit(job_id: str, words: list[dict]):
 
             if edl_data:
                 try:
+                    # The model authored source-frame numbers on trust — clamp every
+                    # range to the REAL source extent before anything renders (a
+                    # hallucinated src_out past the end broke the Lambda render).
+                    total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
+                    edl_data = clamp_edl_to_source(edl_data, total_frames)
                     edl_obj = EDL(**edl_data)
                     edl_obj, issues = validate_and_repair(edl_obj)
                     edl_data = edl_obj.model_dump()
+                    # Captions are derived data (G3 rationale): if the model echoed
+                    # none back despite a transcript, rebuild them deterministically
+                    # rather than shipping a caption-less edit.
+                    if not edl_data.get("captions") and _clean_words \
+                            and (prefs.get("auto_captions") is not False):
+                        edl_data["captions"] = [
+                            {"word": w["word"], "frame": ms_to_frame(w.get("start_ms", 0)),
+                             "end_frame": ms_to_frame(w["end_ms"]) if w.get("end_ms") else None}
+                            for w in _clean_words if w.get("word")]
                 except Exception:
                     used_safe_default = True
                     total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
@@ -3414,6 +3624,12 @@ async def _run_edit(job_id: str, words: list[dict]):
                                                    emphasis_spans=emphasis_spans)
             edl_data = _apply_edit_prefs(edl_data, prefs, emphasis_spans=emphasis_spans)
 
+        # Ownership check after the authoring awaits: a watchdog kill + retry may
+        # have started a NEWER pipeline while the LLM was thinking. Bail before
+        # spending b-roll resolution (Pexels/Higgsfield credits) on a stale edit
+        # and before touching clip/job state the new owner is now writing.
+        if not _owns_pipeline(job, my_pgen):
+            return
         # F13: safe-default degradation is surfaced, not silent (both author paths).
         if used_safe_default:
             for c in job["clips"]:
@@ -3454,6 +3670,9 @@ async def _run_edit(job_id: str, words: list[dict]):
         _audio_block = edl_data.setdefault("audio", {"lufs_target": -14.0})
         _audio_block["gain"] = audio_mod.gain_db(
             job.get("loudness_lufs"), target_lufs=float(_audio_block.get("lufs_target") or -14.0))
+        # Second ownership check: the b-roll resolve above also awaited.
+        if not _owns_pipeline(job, my_pgen):
+            return
         job["edl"] = edl_data
         # P2.2: stamp which KB version steered this edit → A/B + revert + eval scorecard.
         job["knowledge_version"] = knowledge_mod.knowledge_version()
@@ -3462,9 +3681,13 @@ async def _run_edit(job_id: str, words: list[dict]):
         # revision if below threshold — BEFORE the final render. Flag-gated + fail-soft.
         await _self_review_edl(job_id)
 
+        if not _owns_pipeline(job, my_pgen):   # self-review awaited too
+            return
         _mark_stage(job, "rendering")
         await _render_all_clips(job_id)
 
+        if not _owns_pipeline(job, my_pgen):
+            return                             # newer owner's state stands
         # Ready ONLY if at least one clip actually delivered a render. The old
         # unconditional ready-set is how "ready" jobs with zero playable clips
         # reached the app.
@@ -3482,11 +3705,14 @@ async def _run_edit(job_id: str, words: list[dict]):
             job["error_detail"] = (first or {}).get("error_detail", "")
             job["error_stage"] = "render"
     except PipelineError as e:
-        _fail_job(job, e.code, e.detail, e.stage)
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, e.code, e.detail, e.stage)
     except Exception as e:
-        _fail_job(job, "internal_error", str(e))
+        if _owns_pipeline(job, my_pgen):
+            _fail_job(job, "internal_error", str(e))
     finally:
-        _spawn(_persist_clip_job(job_id))   # F15: durable at terminal state
+        if _owns_pipeline(job, my_pgen):
+            _spawn(_persist_clip_job(job_id))   # F15: durable at terminal state
 
 
 SELF_REVIEW = os.environ.get("SELF_REVIEW", "0").lower() in ("1", "true", "yes")
@@ -3588,7 +3814,8 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
                 job["source_url"], job["edl"], clip["format"], job["style"], preview=True)
             if not submission:
                 return
-            preview_url = await _poll_remotion_render(submission["render_id"], submission["bucket_name"])
+            preview_url = await _poll_remotion_render(submission["render_id"], submission["bucket_name"],
+                                                      total_frames=submission.get("total_frames"))
     except Exception as e:
         logging.warning("self-review preview render failed: %s", e)
         return
@@ -3619,7 +3846,18 @@ async def _render_all_clips(job_id: str) -> None:
     Invariant on exit: every touched clip is 'ready' (with render_url) or 'failed'."""
     job = _clip_jobs[job_id]
     edl_data = job["edl"]
-    if not (REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME):
+    _remotion_env = (REMOTION_SERVE_URL, REMOTION_ACCESS_KEY, REMOTION_FUNCTION_NAME)
+    if not all(_remotion_env):
+        if any(_remotion_env):
+            # PARTIAL env is prod misconfiguration (a rotated secret, a missed var
+            # on deploy) — the old keyless fallback silently shipped the raw,
+            # UNEDITED source video as a "ready" edit. Fail loud and structured.
+            for clip in job["clips"]:
+                if clip.get("status") != "ready":
+                    _fail_clip(clip, "render_misconfigured",
+                               "Remotion env incomplete on the server — check REMOTION_* vars")
+            return
+        # Fully keyless = dev/test mock: pass the source through as the "render".
         for clip in job["clips"]:
             if clip.get("status") != "ready":
                 clip["status"] = "ready"
@@ -3633,13 +3871,26 @@ async def _render_all_clips(job_id: str) -> None:
         my_gen = _bump_render_gen(clip)
         try:
             async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
+                # Superseded while queued (watchdog fail + retry started a newer
+                # attempt)? Don't spend a Lambda render whose result every write
+                # site would discard anyway.
+                if not _is_current_render(clip, my_gen):
+                    continue
+                # Queue time is not render time: under a burst, waiting on the
+                # semaphore can alone exceed RENDER_WATCHDOG_S and get a render
+                # that never even submitted falsely killed as render_stalled.
+                # Re-stamp at acquisition so the watchdog measures the actual
+                # render. (The pre-queue stamp above still covers a task that
+                # dies IN the queue — the sweep sees it and fails the clip.)
+                clip["render_started_at"] = time.time()
                 submission = await _submit_remotion_render(
                     job["source_url"], edl_data, clip["format"], job["style"])
                 if not submission:
                     raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
                 clip["render_id"] = submission["render_id"]
                 render_url = await _poll_remotion_render(
-                    submission["render_id"], submission["bucket_name"])
+                    submission["render_id"], submission["bucket_name"],
+                    total_frames=submission.get("total_frames"))
             if _is_current_render(clip, my_gen):
                 clip["render_url"] = render_url
                 clip["status"] = "ready"
@@ -3815,6 +4066,14 @@ async def verify_and_repair_edl(style: str, edl_data: dict, words: list[dict],
     if not repaired:
         return edl_data
     try:
+        # #5: the SONNET repair authored fresh source-frame numbers on trust. It runs
+        # DOWNSTREAM of the primary author path's clamp_edl_to_source, so re-apply the
+        # same deterministic clamp here — otherwise the repair can reintroduce an
+        # out-of-bounds src_out (past the real source end) that froze/broke the Lambda
+        # render, exactly the drift clamp_edl_to_source exists to stop. Same order as
+        # the primary path: clamp → construct → validate_and_repair.
+        total_frames = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000))
+        repaired = clamp_edl_to_source(repaired, total_frames)
         obj = EDL(**repaired)
         obj, _ = validate_and_repair(obj)
         return obj.model_dump()
@@ -3822,7 +4081,8 @@ async def verify_and_repair_edl(style: str, edl_data: dict, words: list[dict],
         return edl_data                                  # repair broke it → keep original
 
 
-async def _run_render_bridge(*args: str, timeout_s: float | None = None) -> dict:
+async def _run_render_bridge(*args: str, timeout_s: float | None = None,
+                             stdin_data: str | None = None) -> dict:
     """Remotion's render API (renderMediaOnLambda/getRenderProgress) is Node-only —
     there's no documented cross-language wire contract for invoking a deployed Lambda
     function directly. The Node bridge at render/dist/lambda-render.js (built from
@@ -3833,12 +4093,18 @@ async def _run_render_bridge(*args: str, timeout_s: float | None = None) -> dict
     Hardened: the subprocess call is bounded (a hung node process used to strand a
     clip in 'rendering' forever), and errors come back in-band via `_error` so they
     reach the clip's error field instead of dying in a log line."""
+    # stdin_data: large payloads (the render plan JSON) go through a pipe, never
+    # argv — Linux caps a single argv string at 128KB (MAX_ARG_STRLEN), and a long
+    # take's caption-heavy plan blows past it, failing execve with E2BIG before
+    # node even launches (surfaced as internal_error on the clip).
     proc = await asyncio.create_subprocess_exec(
         "node", REMOTION_BRIDGE, *args,
+        stdin=asyncio.subprocess.PIPE if stdin_data is not None else None,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_s or BRIDGE_CALL_TIMEOUT_S)
+            proc.communicate(input=stdin_data.encode() if stdin_data is not None else None),
+            timeout=timeout_s or BRIDGE_CALL_TIMEOUT_S)
     except asyncio.TimeoutError:
         proc.kill()
         # Drain whatever the node process buffered before the kill — otherwise a hang
@@ -3856,13 +4122,20 @@ async def _run_render_bridge(*args: str, timeout_s: float | None = None) -> dict
         logging.warning("remotion bridge TIMEOUT (cmd=%s): %s", args[0] if args else "?", msg)
         return {"_error": msg}
     if proc.returncode != 0:
-        raw = stderr.decode(errors="replace")[:500]
-        logging.warning("remotion bridge failed: %s", raw)
-        try:
-            detail = json.loads(raw).get("error", raw)
-        except json.JSONDecodeError:
-            detail = raw
-        return {"_error": str(detail)[:300]}
+        # The bridge prints ONE JSON error object as its last stderr line, but node
+        # runtime warnings (S3-offload notices, deprecations) can prefix it — and
+        # truncating BEFORE parsing chopped the real Remotion error off the end,
+        # surfacing "(node:12) Warning: ..." as the clip's error instead.
+        full = stderr.decode(errors="replace")
+        logging.warning("remotion bridge failed: %s", full[:500])
+        detail = None
+        idx = full.rfind('{"error"')          # the bridge's own JSON is written LAST
+        if idx != -1:
+            try:
+                detail = json.loads(full[idx:]).get("error")
+            except json.JSONDecodeError:
+                pass
+        return {"_error": str(detail or full[:500].strip())[:300]}
     try:
         return json.loads(stdout.decode())
     except json.JSONDecodeError:
@@ -3889,44 +4162,61 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     # scale, higher CRF — see lambda-render.ts submit()); the caller is
     # responsible for writing the result to a side-channel field, never
     # render_url, since this is not the final output.
-    result = await _run_render_bridge("submit", composition_id, input_props, "1" if preview else "0")
+    #
+    # Props travel via STDIN (argv "-"): a single Linux argv string caps at 128KB
+    # and long-take plans exceed it (execve E2BIG → the whole submit dies).
+    # #18: renderMediaOnLambda DISPATCHES the render as part of this call. A bridge
+    # timeout most likely means the render already STARTED server-side but the killed
+    # node process never returned its id — so the old "retry on timeout" would spin up
+    # a SECOND, orphaned render (billed, never polled). Instead: one attempt with a
+    # generous cold-start-covering budget (G8: a cold Lambda's dispatch can be slow),
+    # and any failure surfaces as bridge_error for the clip-level retry/watchdog to
+    # handle cleanly — no blind re-dispatch.
+    result = await _run_render_bridge("submit", composition_id, "-", "1" if preview else "0",
+                                      timeout_s=RENDER_SUBMIT_TIMEOUT_S, stdin_data=input_props)
     if result.get("_error"):
-        # G8: a cold Lambda function (first invocation after a deploy/idle period)
-        # can make renderMediaOnLambda's own submit call slow enough to trip the
-        # bridge's timeout — transient, and the retry (now against a function
-        # that's had extra time to warm) typically succeeds. Only retries on a
-        # TIMEOUT specifically (not every bridge error), once, with double the
-        # budget so a genuinely-slow-but-succeeding cold start has room to land.
-        if "timed out" in result["_error"]:
-            result = await _run_render_bridge(
-                "submit", composition_id, input_props, "1" if preview else "0",
-                timeout_s=BRIDGE_CALL_TIMEOUT_S * 2)
-        if result.get("_error"):
-            raise PipelineError("bridge_error", result["_error"], "render")
+        raise PipelineError("bridge_error", result["_error"], "render")
     if not result.get("renderId"):
         return None
     return {"render_id": result["renderId"], "bucket_name": result.get("bucketName", ""),
-            "plan_warnings": plan_warnings}
+            "plan_warnings": plan_warnings,
+            # #17: output length drives the poll/stall budgets at the caller.
+            "total_frames": plan.get("total_frames")}
 
 
 async def _poll_remotion_render(render_id: str, bucket_name: str,
-                                max_wait_s: int | None = None) -> str:
+                                max_wait_s: int | None = None,
+                                total_frames: int | None = None) -> str:
     """Poll the Lambda render to completion. Fail-FAST: exponential backoff within a
     hard wall-clock budget, stall detection on overallProgress, and every failure
     raises a structured PipelineError. (The old version linear-polled for 10 minutes
-    and returned None with no reason — the single biggest 'clips never finish' vector.)"""
-    budget = max_wait_s if max_wait_s is not None else RENDER_POLL_MAX_S
+    and returned None with no reason — the single biggest 'clips never finish' vector.)
+
+    #17: budget + stall tolerance scale with `total_frames` (the render's output
+    length) so a long take isn't falsely failed as timed-out/stalled."""
+    scaled_budget, stall_budget = _scaled_render_budgets(total_frames)
+    budget = max_wait_s if max_wait_s is not None else scaled_budget
     start = time.time()
     delays = [2.0, 4.0, 8.0]
     i = 0
     last_progress = -1.0
     last_change = start
+    poll_errors = 0   # consecutive bridge-poll failures (see below)
     while time.time() - start < budget:
         await asyncio.sleep(delays[i] if i < len(delays) else 15.0)
         i += 1
         progress = await _run_render_bridge("poll", render_id, bucket_name)
         if progress.get("_error"):
-            raise PipelineError("bridge_error", progress["_error"], "render")
+            # A poll is pure observation — the Lambda render is unaffected by a
+            # missed one. A single transient failure (node OOM-kill, AWS throttle,
+            # network blip) used to fail the WHOLE render as bridge_error while it
+            # was succeeding server-side. Tolerate up to 3 consecutive misses;
+            # only a persistently-dead bridge fails the clip.
+            poll_errors += 1
+            if poll_errors >= 3:
+                raise PipelineError("bridge_error", progress["_error"], "render")
+            continue
+        poll_errors = 0
         if progress.get("fatalErrorEncountered"):
             errs = progress.get("errors") or []
             detail = "; ".join(str(e.get("message", e)) if isinstance(e, dict) else str(e)
@@ -3941,7 +4231,7 @@ async def _poll_remotion_render(render_id: str, bucket_name: str,
         now = time.time()
         if p > last_progress:
             last_progress, last_change = p, now
-        elif now - last_change > RENDER_STALL_S:
+        elif now - last_change > stall_budget:
             raise PipelineError("render_stalled", f"progress stuck at {p:.0%} for {int(now - last_change)}s", "render")
     raise PipelineError("render_timeout", f"render exceeded {int(budget)}s budget", "render")
 
