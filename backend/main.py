@@ -7208,6 +7208,19 @@ async def write_turn_route(req: _WriteRequest):
             "invariants": write_agent.check_invariants(body, actions), "answer": answer}
 
 
+class _BriefScriptRequest(BaseModel):
+    creator_id: str = "default"
+    brief: dict = {}
+    brand: dict = {}
+
+
+@app.post("/v1/write/from-brief")
+async def script_from_brief_route(req: _BriefScriptRequest):
+    """Palo port (flag WRITE_AGENT): turn a selected idea-bank brief into a full script.
+    Off/keyless still returns a usable script assembled from the brief beats."""
+    return await write_agent.script_from_brief(_palo_store, req.creator_id, req.brief, req.brand)
+
+
 @app.post("/v1/ideas")
 async def ideas_bank(req: _IdeasRequest):
     """The creator's idea bank (Palo port, flag IDEA_BANK). Ranked briefs the app can

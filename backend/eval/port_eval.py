@@ -116,6 +116,10 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("write.apply", _nb == "hey world" and _oc[0]["applied"] is True))
     _skip = _wa.apply_actions("hello world", [{"op": "edit", "old": "nope", "new": "x"}])
     out.append(("write.apply_skip", _skip[0] == "hello world" and _skip[1][0]["applied"] is False))
+    _ms = _wa._mock_script_from_brief({"title": "T", "beginning": "a", "ending": "b"})
+    out.append(("write.from_brief", _ms["title"] == "T" and _ms["body"] == "a\nb"))
+    out.append(("write.leak_firewall", "leaked" in " ".join(
+        _wa.check_invariants("", [{"op": "fill", "content": "REGIME: x"}]))))
 
     return out
 
