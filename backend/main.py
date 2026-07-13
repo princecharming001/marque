@@ -133,10 +133,28 @@ push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supa
 
 # --- Palo port (branch palo-port) — memory/ledger store. None keyless => every ported
 # path is a pure no-op; all capabilities gated OFF by app.palo_flags (PALO_PORT unset).
-from app import memory_v2, palo_flags, recall_ledger  # noqa: E402
+from app import ideas, memory_v2, palo_flags, recall_ledger  # noqa: E402
 from app.palo_persistence import make_store  # noqa: E402
 
 _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
+# Internal cron auth — Render cron jobs POST with this token. Empty => the endpoint is
+# closed (403 to everyone), so it's never publicly triggerable by default.
+INTERNAL_CRON_TOKEN = os.environ.get("INTERNAL_CRON_TOKEN", "")
+
+
+class _CronRequest(BaseModel):
+    token: str = ""
+
+
+@app.post("/internal/cron/ideate")
+async def cron_ideate(req: _CronRequest):
+    """Nightly idea-bank sweep (Render cron). Each creator's tier cadence decides who is
+    actually due. Token-guarded + flag-gated (IDEA_BANK) — a no-op until both are set."""
+    if not INTERNAL_CRON_TOKEN or req.token != INTERNAL_CRON_TOKEN:
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not palo_flags.enabled(palo_flags.IDEA_BANK):
+        return {"ran": 0, "skipped": "flag_off"}
+    return {"ran": await ideas.run_ideate_cron(_palo_store, time.time())}
 
 
 async def _persist_creator(creator_id: str, **fields):
