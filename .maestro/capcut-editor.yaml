@@ -40,6 +40,14 @@ name: R10 — CapCut mimicry (transport, filter cards, keywords, cleanup, fullsc
 - extendedWaitUntil:
     visible: { id: "editorPro.cleanupPanel" }
     timeout: 4000
+# Formatting fix #10 regression guard: the demo clip's deterministic mock transcript
+# (backend/main.py _mock_words over _synthesize_demo_clip_job's script) contains exactly
+# one filler-listed word — "actually", mid-sentence in "...the one system that actually
+# works..." with no pause before it. The old cleanup logic cut every listed word
+# unconditionally and would have flagged it; the fixed clause-boundary rule must not, so
+# the panel shows its empty state instead of a checkbox row for "actually".
+- assertVisible: "Nothing to clean up"
+- assertNotVisible: "“actually”"
 - takeScreenshot: /tmp/cc-04-cleanup
 # dismiss the panel (Button ids aren't tappable in Maestro; the static text is)
 - tapOn: "Cancel"
