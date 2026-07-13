@@ -39,7 +39,21 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("cost.opus_in", ai_usage.estimate_cost("claude-opus-4-8", 1_000_000, 0) == 15.0))
     out.append(("gate.default_off", ai_usage.compile_allowed("x", is_paying=True) is False))
 
-    # Phase 1+ blocks appended here as memory/ideas/insights/strategy/write land.
+    # Phase 1 — memory + ledger parity
+    from app import memory_v2, recall_ledger
+    _ex = [{"id": "m1", "scope": "user", "type": "content_context", "key": "loc",
+            "value": "London", "confidence": 0.8}]
+    _ops = memory_v2.reconcile(_ex, [
+        {"scope": "user", "type": "content_context", "key": "loc", "value": "Berlin", "confidence": 0.9},
+        {"scope": "user", "type": "creative_preference", "key": "no_emoji", "value": "no emojis", "confidence": 1.0}])
+    out.append(("memory.reconcile", [o["op"] for o in _ops] == ["update", "add"]))
+    out.append(("memory.drop_insight", "insight" in memory_v2._DROP_TYPES
+                and "conversation_insight" in memory_v2._DROP_TYPES))
+    out.append(("memory.rank", memory_v2._rank(
+        [{"value": "lo", "similarity": 0.1, "confidence": 0.7},
+         {"value": "hi", "similarity": 0.95, "confidence": 0.9}])[0]["value"] == "hi"))
+    out.append(("ledger.ulid", len(recall_ledger.new_ulid()) == 26))
+
     return out
 
 
