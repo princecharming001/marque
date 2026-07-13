@@ -1,7 +1,9 @@
 """EDL invariant + scorecard harness — the edit-side twin of eval/run_eval.py.
 
     cd backend && python3 -m eval.edl_eval             # keyless invariant self-check
+    python3 -m eval.edl_eval --author                  # + fresh-authored tier (keyless)
     ANTHROPIC_API_KEY=... python3 -m eval.edl_eval --live   # + live scorecard (LLM judge)
+    ANTHROPIC_API_KEY=... python3 -m eval.edl_eval --author --live  # fresh-authored + judge
 
 Keyless mode (CI-safe, no API cost) proves two things:
   1. every fixture's reference EDL passes ALL invariants clean (known-good), and
@@ -9,10 +11,19 @@ Keyless mode (CI-safe, no API cost) proves two things:
 These invariants gate whatever authors the EDL — the current path today, `assemble_edl`
 after Phase 3 — because they assert on the render PLAN, not on who wrote it.
 
+`--author` closes the one gap in that story: self_check() above only ever grades a
+FROZEN golden (edit_golden.reference_edl), so a regression in assemble_edl itself (or
+the retention passes layered on top of it) never moves that score. `--author`
+re-authors each fixture fresh through the REAL deterministic path (assemble_edl with a
+mostly-empty plan — the whole-take fallback) and runs it through the same invariants,
+printing a per-fixture pass/fail table. Still fully keyless — assemble_edl is a pure
+function of (plan, words), no network/model call.
+
 Live mode additionally runs the full stack per fixture and scores each output with an
 independent LLM judge against the KB review rubric, reporting hook-time / kept-ratio /
 cut-cadence / judge-score per knowledge_version + prompt version, and gates on regression
 thresholds (pattern: MIN_GATE_PASS_RATE). Live mode is a no-op (clean exit) without a key.
+Combined with --author, the judge scores the fresh-authored plan instead of the golden.
 
 Exit code is non-zero on any regression so CI can gate the deploy.
 """
@@ -23,7 +34,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.edl import ms_to_frame, strip_fillers, build_render_plan, EDL, MIN_CLIP_OUTPUT_FRAMES
+from app.edl import (
+    ms_to_frame, strip_fillers, build_render_plan, EDL, MIN_CLIP_OUTPUT_FRAMES,
+    ALWAYS_FILLERS, _norm_word, assemble_edl,
+)
 from eval import edit_golden
 from eval.edit_fixtures import FIXTURES, take_total_frames
 
@@ -139,6 +153,45 @@ def check_edl_valid(edl: dict) -> list[str]:
         return [f"edl_invalid: {type(e).__name__}: {str(e).splitlines()[0][:120]}"]
 
 
+def check_residual_filler(plan: dict, words: list[dict]) -> list[str]:
+    """The final CAPTIONS (plan["captions"] — the output-coordinate word list
+    Remotion actually burns in) must never carry a residual filler. This is the
+    tripwire for retention.sweep_residual_fillers' whole job: an author that keeps
+    (or a later pass that un-drops) an "um"/"uh" or a transcript-tagged filler word.
+
+    Two independent conditions, matching strip_fillers' own unconditional
+    guarantees so a clean assemble_edl/reference_edl run can never trip this:
+      1. ALWAYS_FILLERS (um/uh) are unambiguous filler wherever they land as a
+         caption — no cross-referencing needed, a direct text scan suffices.
+      2. a SOURCE word the transcript tagged type=="filler" that still lands on a
+         captioned output frame — cross-referenced by mapping that word's source
+         frame to output (the same _map_source_to_output used by
+         check_caption_coverage/check_hook_timing) and checking whether a caption
+         sits at that exact output frame.
+    """
+    fails: list[str] = []
+    captions = plan.get("captions") or []
+
+    for c in captions:
+        norm = _norm_word(c.get("word", ""))
+        if norm in ALWAYS_FILLERS:
+            fails.append(
+                f"residual_filler: always-filler '{c.get('word')}' captioned at output f{c.get('frame')}")
+
+    cap_frames = {c["frame"] for c in captions}
+    for w in words:
+        if w.get("type") != "filler":
+            continue
+        src_frame = ms_to_frame(w.get("start_ms", 0))
+        out_frame = _map_source_to_output(plan, src_frame)
+        if out_frame is not None and out_frame in cap_frames:
+            fails.append(
+                f"residual_filler: tagged-filler '{w.get('word')}' still captioned "
+                f"at output f{out_frame} (source f{src_frame})")
+
+    return fails
+
+
 # --- Aggregate over a full EDL case -------------------------------------------
 
 def evaluate_edl(edl: dict, words: list[dict], hook_ms: int, total_source: int | None = None) -> dict:
@@ -155,6 +208,7 @@ def evaluate_edl(edl: dict, words: list[dict], hook_ms: int, total_source: int |
         + check_caption_coverage(plan, words)
         + check_broll_grammar(plan, total_out)
         + check_drops_within_take(edl, total_source)
+        + check_residual_filler(plan, words)
     )
     return {"failures": failures, "plan": plan}
 
@@ -186,28 +240,85 @@ def self_check() -> tuple[bool, list[str]]:
     return (not errs), errs
 
 
+# --- Author tier: re-author FRESH through the real deterministic path ---------
+#
+# self_check() above only proves the invariants gate a FROZEN golden (edit_golden's
+# hand-authored reference_edl). It never actually calls the code that authors an EDL
+# from raw word-timings — so a regression in assemble_edl (or the retention passes
+# layered on top of it) doesn't move that score at all. `--author` closes that gap:
+# it calls assemble_edl fresh, per fixture, and runs the SAME invariant checks
+# against the result.
+
+def author_fresh(fx: dict) -> dict:
+    """Author a FRESH EDL for one fixture through the REAL deterministic path —
+    assemble_edl (the Phase 3 typed-plan assembler), called with a mostly-empty
+    plan (no cuts/keeps/broll/open_on decisions — the documented whole-take
+    fallback) — then build_render_plan on the result. Pure and keyless: assemble_edl
+    only consumes the transcript words + a plan dict, never a network/model call."""
+    edl_obj = assemble_edl({}, fx["words"], fx["style"], fx.get("format_id", "myth-buster"))
+    return edl_obj.model_dump()
+
+
+def run_author_tier() -> dict:
+    """Re-author every fixture fresh (author_fresh) and run it through the SAME
+    invariant checks self_check() runs against the frozen goldens — proving the
+    checks actually gate the LIVE authoring code path, not just a fixed golden.
+
+    hook_ms is deliberately NOT the fixture's annotated "real payoff" timestamp.
+    That annotation encodes a semantic judgment (which line is the true hook) that
+    only plan-level guidance (a real typed plan's `open_on`) can act on — see
+    assemble_edl's open_on handling and test_assemble_edl.py's
+    test_assembled_edls_pass_edl_eval_invariants, which makes the identical call
+    with the identical comment: "The empty-plan default is a safe whole-take cut
+    and legitimately can't rescue a buried hook — that's the LLM's editorial job."
+    An empty plan gives assemble_edl no reorder/pull signal, so the fair structural
+    claim to hold a bare authoring run to is check_hook_timing's own fallback: the
+    earliest KEPT (non-filler) word lands up front — i.e. nothing in the
+    deterministic scaffolding itself buries or reorders the opening. hook_ms=0
+    asks exactly that question for every fixture, buried-hook included.
+    """
+    rows = []
+    all_ok = True
+    for fx in FIXTURES:
+        edl_dict = author_fresh(fx)
+        r = evaluate_edl(edl_dict, fx["words"], 0)
+        ok = not r["failures"]
+        all_ok = all_ok and ok
+        rows.append({"id": fx["id"], "category": fx["category"], "ok": ok, "failures": r["failures"]})
+    return {"ok": all_ok, "rows": rows}
+
+
 # --- Live scorecard (no-op keyless) -------------------------------------------
 
-async def _live_scorecard() -> dict:
+async def _live_scorecard(source: str = "reference") -> dict:
     """Full-stack per-fixture scorecard with an independent LLM judge.
 
     Requires ANTHROPIC_API_KEY (+ Supabase eval bucket for source video). Without a key
     this returns a clean no-op so CI stays green. The judge scores each rendered plan
     against knowledge/review_rubric.md and reports metrics per knowledge_version +
     prompt version so KB/prompt changes are A/B-able (regression gate: MIN_GATE_PASS_RATE).
+
+    `source="reference"` (default) scores the frozen edit_golden.reference_edl golden,
+    same as before. `source="author"` (the `--author --live` combination) instead
+    scores a FRESH assemble_edl authoring run (author_fresh) — same tier as the
+    keyless --author check, plus the live LLM judge on top. Since author_fresh's
+    empty plan can't carry a semantic hook decision, hook_ms is 0 (see
+    run_author_tier's docstring) rather than the fixture's annotated payoff.
     """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"skipped": True, "reason": "no ANTHROPIC_API_KEY — keyless no-op"}
 
+    use_author = source == "author"
     rows = []
     for fx in FIXTURES:
-        edl = edit_golden.reference_edl(fx)
-        r = evaluate_edl(edl, fx["words"], fx.get("hook_ms") or 0)
+        edl = author_fresh(fx) if use_author else edit_golden.reference_edl(fx)
+        hook_ms = 0 if use_author else (fx.get("hook_ms") or 0)
+        r = evaluate_edl(edl, fx["words"], hook_ms)
         plan = r["plan"] or {}
         clips = plan.get("clips") or []
         kept_ratio = round(plan.get("total_frames", 0) / max(1, take_total_frames(fx["words"])), 3)
         cadence = round(plan.get("total_frames", 0) / max(1, len(clips)), 1)
-        hook_out = _map_source_to_output(plan, ms_to_frame(fx.get("hook_ms") or 0))
+        hook_out = _map_source_to_output(plan, ms_to_frame(hook_ms))
         row = {
             "id": fx["id"], "category": fx["category"],
             "invariant_failures": r["failures"],
@@ -263,6 +374,7 @@ async def _judge_plan(fx: dict, plan: dict) -> dict:
 
 def main(argv: list[str]) -> int:
     live = "--live" in argv
+    author = "--author" in argv
     ok, errs = self_check()
     print(f"[edl_eval] keyless self-check: {'PASS' if ok else 'FAIL'} "
           f"({len(edit_golden.known_good())} good, {len(edit_golden.known_bad())} bad)")
@@ -271,14 +383,28 @@ def main(argv: list[str]) -> int:
     if not ok:
         return 1
 
+    if author:
+        report = run_author_tier()
+        n_pass = sum(1 for r in report["rows"] if r["ok"])
+        print(f"[edl_eval] author tier (fresh assemble_edl, keyless): "
+              f"{'PASS' if report['ok'] else 'FAIL'} ({n_pass}/{len(report['rows'])} fixtures)")
+        for r in report["rows"]:
+            status = "PASS" if r["ok"] else "FAIL"
+            line = f"  {status:4} {r['id']:18} ({r['category']})"
+            if not r["ok"]:
+                line += f" — {r['failures']}"
+            print(line)
+        if not report["ok"]:
+            return 1
+
     if live:
         import asyncio
-        report = asyncio.run(_live_scorecard())
+        report = asyncio.run(_live_scorecard(source="author" if author else "reference"))
         if report.get("skipped"):
             print(f"[edl_eval] live scorecard skipped: {report['reason']}")
         else:
-            print(f"[edl_eval] live scorecard: pass_rate={report['pass_rate']} "
-                  f"knowledge_version={report['knowledge_version']}")
+            print(f"[edl_eval] live scorecard ({'fresh author' if author else 'reference golden'}): "
+                  f"pass_rate={report['pass_rate']} knowledge_version={report['knowledge_version']}")
             for r in report["rows"]:
                 j = r.get("judge", {})
                 print(f"  {r['id']:16} hook_out={r['hook_out_frame']} kept={r['kept_ratio']} "
