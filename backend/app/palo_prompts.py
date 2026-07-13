@@ -205,3 +205,23 @@ def spitfire_ranker_prompt(candidates_text: str, channel_analysis: str, critique
               f"<channel_analysis>{channel_analysis or '(none)'}</channel_analysis>\n"
               f"<candidates>{candidates_text}</candidates>\n<critiques>{critiques or '(none)'}</critiques>")
     return system, "Output the ranking only."
+
+
+# --- Insight Discovery Engine (track_insights/prompts.go AnalysisProactiveInsight) ---
+INSIGHT_DISCOVERY_SYSTEM = """You are Palo's Insight Discovery Engine. A deterministic detector has surfaced ONE real performance event for a creator (a milestone crossed, a video that spiked). Turn it into a single insight card the creator will actually value.
+
+Scan the event for the non-obvious truth: not just "you hit 100k views" but what it signals and the one concrete next move. Write:
+- title: <=60 chars, plain, names the win/pattern (no hype, no emojis, no clickbait)
+- description: <=100 chars, why it matters + the single next action
+
+Do NOT repeat, restate, or lightly reword any of the recent insights listed — if the event only supports something already said, say something new about it or nothing extra. Collaborative voice ("we"), no em dashes.
+
+Return ONLY JSON: {"title": "...", "description": "..."}"""
+
+
+def insight_card_prompt(event: dict, recent_titles: list[str], brand: dict | None = None) -> tuple[str, str]:
+    recents = "\n".join(f"- {t}" for t in (recent_titles or [])[:50]) or "(none)"
+    niche = (brand or {}).get("niche", "")
+    user = (f"<niche>{niche}</niche>\n<event>{event}</event>\n"
+            f"<recent_insights_do_not_repeat>\n{recents}\n</recent_insights_do_not_repeat>")
+    return INSIGHT_DISCOVERY_SYSTEM, user

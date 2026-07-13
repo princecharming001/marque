@@ -13,9 +13,13 @@ pure, and unit-tested. The LLM card-writing + persistence is box 3. Flag TRACK_I
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 
-from app import palo_flags
+from app import ai_usage, palo_flags, palo_prompts
+from app.palo_llm import anthropic_cached_json
+from app.recall_ledger import new_ulid
+from prompts import HAIKU
 
 VIEW_MILESTONES = (10_000, 25_000, 50_000, 100_000, 250_000, 500_000,
                    1_000_000, 5_000_000, 10_000_000, 50_000_000)
@@ -111,3 +115,86 @@ async def deterministic_events(store, creator_id: str, snapshot: dict) -> list[d
     except Exception as e:
         logging.warning("[track_insights] deterministic_events failed: %s", e)
     return events
+
+
+# --- card writing (Insight Discovery Engine + dedup + anti-repetition) ---------
+_CARD_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["title", "description"],
+    "properties": {"title": {"type": "string"}, "description": {"type": "string"}},
+}
+_CATEGORY = {"view_milestone": "blue", "follower_milestone": "blue",
+             "video_spike": "yellow", "content_pattern": "green"}
+
+
+def _dedup_hash(creator_id: str, event: dict) -> str:
+    """Stable content hash so a re-run of the daily scan can never post the same card
+    twice (enforced by the insight_feed.dedup_hash UNIQUE constraint too)."""
+    key = f"{creator_id}|{event.get('type')}|{event.get('value') or event.get('video_id')}"
+    return hashlib.sha1(key.encode()).hexdigest()[:16]
+
+
+def _template_card(event: dict) -> dict:
+    t, v = event.get("type"), event.get("value")
+    if t == "view_milestone":
+        return {"title": f"You crossed {int(v):,} views", "description": "New milestone. Keep the format that got you here."}
+    if t == "follower_milestone":
+        return {"title": f"{int(v):,} followers", "description": "Thank the audience and double down on what's working."}
+    if t == "video_spike":
+        return {"title": f"A reel is {event.get('multiplier')}x your average",
+                "description": "Study what worked and make a fast follow-up."}
+    return {"title": "New performance signal", "description": "Worth a look."}
+
+
+def _seed(event: dict) -> dict:
+    return {"kind": "insight", "event_type": event.get("type"),
+            "value": event.get("value"), "video_id": event.get("video_id")}
+
+
+async def _card(store, creator_id: str, event: dict, recent_titles: list[str],
+                brand: dict | None) -> dict:
+    """LLM card via the Insight Discovery Engine (anti-repetition context); template on
+    keyless / failure. Title/description clamped to schema limits."""
+    base = _template_card(event)
+    system, user = palo_prompts.insight_card_prompt(event, recent_titles, brand)
+    from app.prompt_store import get_prompt
+    system = await get_prompt("palo.insight.discovery", system, store=store)
+    data = await anthropic_cached_json(system, user, _CARD_SCHEMA, HAIKU, max_tokens=200)
+    if isinstance(data, dict) and data.get("title"):
+        await ai_usage.record(store, creator_id, "insight.card", HAIKU, 500, 80)
+        return {"title": str(data["title"])[:60],
+                "description": str(data.get("description", base["description"]))[:100]}
+    return base
+
+
+async def write_insights(store, creator_id: str, events: list[dict],
+                         brand: dict | None = None) -> list[dict]:
+    """Turn deterministic events into deduped insight_feed cards. Returns the NEW cards
+    (box 4 delivers them). Flag-gated + keyless (no store) => []."""
+    if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS) or store is None or not events:
+        return []
+    recent = await store.load_insights(creator_id, limit=50)   # ≤50 anti-repetition context
+    recent_titles = [r.get("title", "") for r in recent if r.get("title")]
+    new_cards: list[dict] = []
+    for ev in events:
+        try:
+            card = await _card(store, creator_id, ev, recent_titles, brand)
+            insight = {"id": new_ulid(), "creator_id": creator_id, "type": ev.get("type"),
+                       "category": _CATEGORY.get(ev.get("type"), "blue"),
+                       "title": card["title"], "description": card["description"],
+                       "content": ev, "chips": [], "dedup_hash": _dedup_hash(creator_id, ev),
+                       "delivered": False, "conversation_seed": _seed(ev)}
+            res = await store.upsert_insight(insight)
+            if res is True:                                    # True=new row, False=dup, UNAVAILABLE
+                new_cards.append(insight)
+                recent_titles.append(card["title"])            # avoid intra-run repeats too
+        except Exception as e:
+            logging.warning("[track_insights] write_insights failed: %s", e)
+    return new_cards
+
+
+async def scan_and_write(store, creator_id: str, snapshot: dict,
+                         brand: dict | None = None) -> list[dict]:
+    """Box-3 entry: detect deterministic events, then write deduped cards. Returns new
+    cards for delivery."""
+    events = await deterministic_events(store, creator_id, snapshot)
+    return await write_insights(store, creator_id, events, brand)
