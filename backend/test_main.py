@@ -728,6 +728,34 @@ def test_demo_editor_job_synthesized_keyless():
     assert r2.status_code == 200 and len(r2.json()["edl"]["segments"]) == 3
 
 
+def test_demo_editor_job_style_suffix_seeds_that_style():
+    # LOOP U: "demo-<style>" seeds a demo job in that SPECIFIC style, so the
+    # UI-formatting audit can reach each composition's own framing preview.
+    r = client.get("/v1/clips/demo-green_screen")
+    assert r.status_code == 200
+    edl = r.json()["edl"]
+    assert edl["style"] == "green_screen"
+    assert edl["layout"]["style"] == "green_screen"
+
+
+def test_demo_editor_job_unknown_style_suffix_falls_back_to_talking_head():
+    r = client.get("/v1/clips/demo-not-a-real-style")
+    assert r.status_code == 200
+    assert r.json()["edl"]["style"] == "talking_head"
+
+
+def test_demo_editor_job_duet_split_includes_react_source():
+    # duet_split's editor preview reads react_source/react_schedule beyond just
+    # `style` — a synthesized job for it needs at least a minimal placeholder
+    # rather than an absent key.
+    r = client.get("/v1/clips/demo-duet_split")
+    assert r.status_code == 200
+    edl = r.json()["edl"]
+    assert edl["style"] == "duet_split"
+    assert edl["react_source"] is not None
+    assert len(edl["react_schedule"]) > 0
+
+
 def test_demo_editor_save_roundtrips_with_arbitrary_clip_id():
     """The editor's Save posts ops with the iOS clip's random UUID — which the
     backend never issued for the synthesized demo job. A keyless demo job must

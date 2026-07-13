@@ -1,0 +1,260 @@
+appId: com.getmarque.app
+name: "LOOP U — app/UI formatting audit (see .maestro/ui-manifest.json)"
+---
+# Drives a LOCAL keyless backend (start one on :8001 with no ANTHROPIC_API_KEY
+# set — the demo-job synthesis path in main.py only fires keyless). :8001 (not
+# :8000, flow-full.yaml's convention) because :8000 may already be occupied by
+# an unrelated project's server on this machine — :8001 is already the
+# established port for every other editor-focused flow in this directory
+# (editor-pro-flow.yaml, capcut-editor.yaml, etc.). One flow, multiple
+# launchApp re-seeds — each launchApp fully re-launches the process, so seed
+# state never bleeds between sections.
+
+# --- 1. Onboarding landing --------------------------------------------------
+- launchApp:
+    clearState: true
+    arguments:
+      reset: "true"
+      backend.url: "http://127.0.0.1:8001"
+- assertVisible: "Get started"
+- assertVisible:
+    id: "onboard.start"
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-onboarding-landing
+
+# --- 2. Home + Library empty state -------------------------------------------
+- launchApp:
+    clearState: true
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- assertVisible: "Home"
+- assertVisible: "Chat"
+- assertVisible: "Library"
+- assertVisible: "Performance"
+- assertVisible:
+    id: "film.open"
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-home
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: "No clips yet"
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-library-empty
+
+# --- 3. Settings (Home -> profile -> gearshape) ------------------------------
+# home.profile only exists on the Home tab — step 2 navigated to Library to
+# check the empty state, so we have to tap back to Home first.
+- tapOn: "Home"
+- tapOn:
+    id: "home.profile"
+- extendedWaitUntil:
+    visible:
+      id: "profile.settings"
+    timeout: 6000
+- tapOn:
+    id: "profile.settings"
+- extendedWaitUntil:
+    visible:
+      id: "settings.autoCaptions"
+    timeout: 6000
+- assertVisible:
+    id: "settings.captionStyle"
+- assertVisible:
+    id: "settings.fillerTrim"
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-settings
+
+# --- 4. Library (ready clip) + editor timeline / caption drawer / cleanup ----
+- launchApp:
+    clearState: true
+    arguments:
+      demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible:
+      id: "library.clip"
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-library-ready
+- tapOn:
+    id: "library.clip"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.playPause"
+    timeout: 12000
+# First-open-ever coachmark ("Your editor" / editorPro.coachDismiss) covers the
+# whole screen and blocks everything under it — clearState:true means it
+# reappears on every launchApp, not just a real first run.
+- tapOn:
+    id: "editorPro.coachDismiss"
+    optional: true
+- assertVisible:
+    id: "editorPro.timeReadout"
+- assertVisible:
+    id: "editorPro.undo"
+- assertVisible:
+    id: "editorPro.redo"
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-timeline
+
+- tapOn:
+    id: "editorPro.mode.text"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.captionsToggle"
+    timeout: 5000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-caption-drawer
+
+- tapOn:
+    id: "editorPro.mode.edit"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.cleanup"
+    timeout: 5000
+- tapOn:
+    id: "editorPro.cleanup"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.cleanupPanel"
+    timeout: 5000
+# editorPro.cleanup.apply is NOT asserted here: it only renders in the
+# !cleanupTargets().isEmpty branch (ProEditorView+Actions.swift cleanupPanel),
+# and the demo transcript (_mock_words in main.py) has no actual filler words
+# or long pauses for cleanupTargets() to find — "Nothing to clean up" is the
+# correct, deterministic state for this seed data, not a bug.
+# Text-based, not id-based: editorPro.cleanup.cancel never surfaces in ANY
+# accessibility snapshot despite rendering correctly on screen (confirmed via
+# screenshot + a full maestro.log search across two runs, one with an 8s
+# extendedWaitUntil) — a real SwiftUI accessibility quirk (this Button sits in
+# a ZStack alongside a plain, unlabeled sibling Text("Clean up"), a known
+# pattern for SwiftUI to auto-merge accessibility elements and drop the
+# child's own identifier), not a Maestro timing/matching issue. Flagged
+# separately for a real fix; worked around here with the same text-based
+# tapOn/assertVisible this flow already uses successfully for the tab bar.
+- extendedWaitUntil:
+    visible: "Cancel"
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-cleanup-panel
+- tapOn: "Cancel"
+
+# --- 5. Transition preview dip (formatting fix #11) --------------------------
+# The demo EDL's boundary transition is deliberately widened to a 3s ramp (see
+# main.py _demo_editor_edl's LOOP U comment) so a real-time playback wait has a
+# forgiving window to land a screenshot in, rather than needing frame-exact
+# scrubbing this black-box harness has no reliable affordance for.
+- tapOn:
+    id: "editorPro.playPause"
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.transitionDip"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-transition-dip
+- tapOn:
+    id: "editorPro.playPause"
+
+# --- 6. Composition framing preview: green_screen / duet_split / split_three -
+- launchApp:
+    clearState: true
+    arguments:
+      demoClip: 1
+      demoClipStyle: "green_screen"
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible:
+      id: "library.clip"
+    timeout: 8000
+- tapOn:
+    id: "library.clip"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- tapOn:
+    id: "editorPro.coachDismiss"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.framing.green_screen"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-framing-green-screen
+
+- launchApp:
+    clearState: true
+    arguments:
+      demoClip: 1
+      demoClipStyle: "duet_split"
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible:
+      id: "library.clip"
+    timeout: 8000
+- tapOn:
+    id: "library.clip"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- tapOn:
+    id: "editorPro.coachDismiss"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.framing.duet_split"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-framing-duet-split
+
+- launchApp:
+    clearState: true
+    arguments:
+      demoClip: 1
+      demoClipStyle: "split_three"
+      backend.url: "http://127.0.0.1:8001"
+- tapOn:
+    id: "tour.skip"
+    optional: true
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible:
+      id: "library.clip"
+    timeout: 8000
+- tapOn:
+    id: "library.clip"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "clip.editManual"
+    timeout: 6000
+- tapOn:
+    id: "clip.editManual"
+- tapOn:
+    id: "editorPro.coachDismiss"
+    optional: true
+- extendedWaitUntil:
+    visible:
+      id: "editorPro.framing.split_three"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/format-audit-framing-split-three
