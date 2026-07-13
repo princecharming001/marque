@@ -1,0 +1,1064 @@
+{
+  "id": "adv-long-take-phrase",
+  "sourceUrl": "__SOURCE__",
+  "formatId": "myth-buster",
+  "edl": {
+    "style": "talking_head",
+    "format_id": "myth-buster",
+    "clips": [
+      {
+        "src_in": 0,
+        "src_out": 3000,
+        "speed": 1.0,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0
+      }
+    ],
+    "captions": [
+      {
+        "word": "word0",
+        "frame": 5,
+        "end_frame": 17
+      },
+      {
+        "word": "word1",
+        "frame": 19,
+        "end_frame": 31
+      },
+      {
+        "word": "word2",
+        "frame": 33,
+        "end_frame": 45
+      },
+      {
+        "word": "word3",
+        "frame": 47,
+        "end_frame": 59
+      },
+      {
+        "word": "word4",
+        "frame": 61,
+        "end_frame": 73
+      },
+      {
+        "word": "word5",
+        "frame": 75,
+        "end_frame": 87
+      },
+      {
+        "word": "word6",
+        "frame": 89,
+        "end_frame": 101
+      },
+      {
+        "word": "word7",
+        "frame": 103,
+        "end_frame": 115
+      },
+      {
+        "word": "word8",
+        "frame": 117,
+        "end_frame": 129
+      },
+      {
+        "word": "word9",
+        "frame": 131,
+        "end_frame": 143
+      },
+      {
+        "word": "word10",
+        "frame": 145,
+        "end_frame": 157
+      },
+      {
+        "word": "word11",
+        "frame": 159,
+        "end_frame": 171
+      },
+      {
+        "word": "word12",
+        "frame": 173,
+        "end_frame": 185
+      },
+      {
+        "word": "word13",
+        "frame": 187,
+        "end_frame": 199
+      },
+      {
+        "word": "word14",
+        "frame": 201,
+        "end_frame": 213
+      },
+      {
+        "word": "word15",
+        "frame": 215,
+        "end_frame": 227
+      },
+      {
+        "word": "word16",
+        "frame": 229,
+        "end_frame": 241
+      },
+      {
+        "word": "word17",
+        "frame": 243,
+        "end_frame": 255
+      },
+      {
+        "word": "word18",
+        "frame": 257,
+        "end_frame": 269
+      },
+      {
+        "word": "word19",
+        "frame": 271,
+        "end_frame": 283
+      },
+      {
+        "word": "word20",
+        "frame": 285,
+        "end_frame": 297
+      },
+      {
+        "word": "word21",
+        "frame": 299,
+        "end_frame": 311
+      },
+      {
+        "word": "word22",
+        "frame": 313,
+        "end_frame": 325
+      },
+      {
+        "word": "word23",
+        "frame": 327,
+        "end_frame": 339
+      },
+      {
+        "word": "word24",
+        "frame": 341,
+        "end_frame": 353
+      },
+      {
+        "word": "word25",
+        "frame": 355,
+        "end_frame": 367
+      },
+      {
+        "word": "word26",
+        "frame": 369,
+        "end_frame": 381
+      },
+      {
+        "word": "word27",
+        "frame": 383,
+        "end_frame": 395
+      },
+      {
+        "word": "word28",
+        "frame": 397,
+        "end_frame": 409
+      },
+      {
+        "word": "word29",
+        "frame": 411,
+        "end_frame": 423
+      },
+      {
+        "word": "word30",
+        "frame": 425,
+        "end_frame": 437
+      },
+      {
+        "word": "word31",
+        "frame": 439,
+        "end_frame": 451
+      },
+      {
+        "word": "word32",
+        "frame": 453,
+        "end_frame": 465
+      },
+      {
+        "word": "word33",
+        "frame": 467,
+        "end_frame": 479
+      },
+      {
+        "word": "word34",
+        "frame": 481,
+        "end_frame": 493
+      },
+      {
+        "word": "word35",
+        "frame": 495,
+        "end_frame": 507
+      },
+      {
+        "word": "word36",
+        "frame": 509,
+        "end_frame": 521
+      },
+      {
+        "word": "word37",
+        "frame": 523,
+        "end_frame": 535
+      },
+      {
+        "word": "word38",
+        "frame": 537,
+        "end_frame": 549
+      },
+      {
+        "word": "word39",
+        "frame": 551,
+        "end_frame": 563
+      },
+      {
+        "word": "word40",
+        "frame": 565,
+        "end_frame": 577
+      },
+      {
+        "word": "word41",
+        "frame": 579,
+        "end_frame": 591
+      },
+      {
+        "word": "word42",
+        "frame": 593,
+        "end_frame": 605
+      },
+      {
+        "word": "word43",
+        "frame": 607,
+        "end_frame": 619
+      },
+      {
+        "word": "word44",
+        "frame": 621,
+        "end_frame": 633
+      },
+      {
+        "word": "word45",
+        "frame": 635,
+        "end_frame": 647
+      },
+      {
+        "word": "word46",
+        "frame": 649,
+        "end_frame": 661
+      },
+      {
+        "word": "word47",
+        "frame": 663,
+        "end_frame": 675
+      },
+      {
+        "word": "word48",
+        "frame": 677,
+        "end_frame": 689
+      },
+      {
+        "word": "word49",
+        "frame": 691,
+        "end_frame": 703
+      },
+      {
+        "word": "word50",
+        "frame": 705,
+        "end_frame": 717
+      },
+      {
+        "word": "word51",
+        "frame": 719,
+        "end_frame": 731
+      },
+      {
+        "word": "word52",
+        "frame": 733,
+        "end_frame": 745
+      },
+      {
+        "word": "word53",
+        "frame": 747,
+        "end_frame": 759
+      },
+      {
+        "word": "word54",
+        "frame": 761,
+        "end_frame": 773
+      },
+      {
+        "word": "word55",
+        "frame": 775,
+        "end_frame": 787
+      },
+      {
+        "word": "word56",
+        "frame": 789,
+        "end_frame": 801
+      },
+      {
+        "word": "word57",
+        "frame": 803,
+        "end_frame": 815
+      },
+      {
+        "word": "word58",
+        "frame": 817,
+        "end_frame": 829
+      },
+      {
+        "word": "word59",
+        "frame": 831,
+        "end_frame": 843
+      },
+      {
+        "word": "word60",
+        "frame": 845,
+        "end_frame": 857
+      },
+      {
+        "word": "word61",
+        "frame": 859,
+        "end_frame": 871
+      },
+      {
+        "word": "word62",
+        "frame": 873,
+        "end_frame": 885
+      },
+      {
+        "word": "word63",
+        "frame": 887,
+        "end_frame": 899
+      },
+      {
+        "word": "word64",
+        "frame": 901,
+        "end_frame": 913
+      },
+      {
+        "word": "word65",
+        "frame": 915,
+        "end_frame": 927
+      },
+      {
+        "word": "word66",
+        "frame": 929,
+        "end_frame": 941
+      },
+      {
+        "word": "word67",
+        "frame": 943,
+        "end_frame": 955
+      },
+      {
+        "word": "word68",
+        "frame": 957,
+        "end_frame": 969
+      },
+      {
+        "word": "word69",
+        "frame": 971,
+        "end_frame": 983
+      },
+      {
+        "word": "word70",
+        "frame": 985,
+        "end_frame": 997
+      },
+      {
+        "word": "word71",
+        "frame": 999,
+        "end_frame": 1011
+      },
+      {
+        "word": "word72",
+        "frame": 1013,
+        "end_frame": 1025
+      },
+      {
+        "word": "word73",
+        "frame": 1027,
+        "end_frame": 1039
+      },
+      {
+        "word": "word74",
+        "frame": 1041,
+        "end_frame": 1053
+      },
+      {
+        "word": "word75",
+        "frame": 1055,
+        "end_frame": 1067
+      },
+      {
+        "word": "word76",
+        "frame": 1069,
+        "end_frame": 1081
+      },
+      {
+        "word": "word77",
+        "frame": 1083,
+        "end_frame": 1095
+      },
+      {
+        "word": "word78",
+        "frame": 1097,
+        "end_frame": 1109
+      },
+      {
+        "word": "word79",
+        "frame": 1111,
+        "end_frame": 1123
+      },
+      {
+        "word": "word80",
+        "frame": 1125,
+        "end_frame": 1137
+      },
+      {
+        "word": "word81",
+        "frame": 1139,
+        "end_frame": 1151
+      },
+      {
+        "word": "word82",
+        "frame": 1153,
+        "end_frame": 1165
+      },
+      {
+        "word": "word83",
+        "frame": 1167,
+        "end_frame": 1179
+      },
+      {
+        "word": "word84",
+        "frame": 1181,
+        "end_frame": 1193
+      },
+      {
+        "word": "word85",
+        "frame": 1195,
+        "end_frame": 1207
+      },
+      {
+        "word": "word86",
+        "frame": 1209,
+        "end_frame": 1221
+      },
+      {
+        "word": "word87",
+        "frame": 1223,
+        "end_frame": 1235
+      },
+      {
+        "word": "word88",
+        "frame": 1237,
+        "end_frame": 1249
+      },
+      {
+        "word": "word89",
+        "frame": 1251,
+        "end_frame": 1263
+      },
+      {
+        "word": "word90",
+        "frame": 1265,
+        "end_frame": 1277
+      },
+      {
+        "word": "word91",
+        "frame": 1279,
+        "end_frame": 1291
+      },
+      {
+        "word": "word92",
+        "frame": 1293,
+        "end_frame": 1305
+      },
+      {
+        "word": "word93",
+        "frame": 1307,
+        "end_frame": 1319
+      },
+      {
+        "word": "word94",
+        "frame": 1321,
+        "end_frame": 1333
+      },
+      {
+        "word": "word95",
+        "frame": 1335,
+        "end_frame": 1347
+      },
+      {
+        "word": "word96",
+        "frame": 1349,
+        "end_frame": 1361
+      },
+      {
+        "word": "word97",
+        "frame": 1363,
+        "end_frame": 1375
+      },
+      {
+        "word": "word98",
+        "frame": 1377,
+        "end_frame": 1389
+      },
+      {
+        "word": "word99",
+        "frame": 1391,
+        "end_frame": 1403
+      },
+      {
+        "word": "word100",
+        "frame": 1405,
+        "end_frame": 1417
+      },
+      {
+        "word": "word101",
+        "frame": 1419,
+        "end_frame": 1431
+      },
+      {
+        "word": "word102",
+        "frame": 1433,
+        "end_frame": 1445
+      },
+      {
+        "word": "word103",
+        "frame": 1447,
+        "end_frame": 1459
+      },
+      {
+        "word": "word104",
+        "frame": 1461,
+        "end_frame": 1473
+      },
+      {
+        "word": "word105",
+        "frame": 1475,
+        "end_frame": 1487
+      },
+      {
+        "word": "word106",
+        "frame": 1489,
+        "end_frame": 1501
+      },
+      {
+        "word": "word107",
+        "frame": 1503,
+        "end_frame": 1515
+      },
+      {
+        "word": "word108",
+        "frame": 1517,
+        "end_frame": 1529
+      },
+      {
+        "word": "word109",
+        "frame": 1531,
+        "end_frame": 1543
+      },
+      {
+        "word": "word110",
+        "frame": 1545,
+        "end_frame": 1557
+      },
+      {
+        "word": "word111",
+        "frame": 1559,
+        "end_frame": 1571
+      },
+      {
+        "word": "word112",
+        "frame": 1573,
+        "end_frame": 1585
+      },
+      {
+        "word": "word113",
+        "frame": 1587,
+        "end_frame": 1599
+      },
+      {
+        "word": "word114",
+        "frame": 1601,
+        "end_frame": 1613
+      },
+      {
+        "word": "word115",
+        "frame": 1615,
+        "end_frame": 1627
+      },
+      {
+        "word": "word116",
+        "frame": 1629,
+        "end_frame": 1641
+      },
+      {
+        "word": "word117",
+        "frame": 1643,
+        "end_frame": 1655
+      },
+      {
+        "word": "word118",
+        "frame": 1657,
+        "end_frame": 1669
+      },
+      {
+        "word": "word119",
+        "frame": 1671,
+        "end_frame": 1683
+      },
+      {
+        "word": "word120",
+        "frame": 1685,
+        "end_frame": 1697
+      },
+      {
+        "word": "word121",
+        "frame": 1699,
+        "end_frame": 1711
+      },
+      {
+        "word": "word122",
+        "frame": 1713,
+        "end_frame": 1725
+      },
+      {
+        "word": "word123",
+        "frame": 1727,
+        "end_frame": 1739
+      },
+      {
+        "word": "word124",
+        "frame": 1741,
+        "end_frame": 1753
+      },
+      {
+        "word": "word125",
+        "frame": 1755,
+        "end_frame": 1767
+      },
+      {
+        "word": "word126",
+        "frame": 1769,
+        "end_frame": 1781
+      },
+      {
+        "word": "word127",
+        "frame": 1783,
+        "end_frame": 1795
+      },
+      {
+        "word": "word128",
+        "frame": 1797,
+        "end_frame": 1809
+      },
+      {
+        "word": "word129",
+        "frame": 1811,
+        "end_frame": 1823
+      },
+      {
+        "word": "word130",
+        "frame": 1825,
+        "end_frame": 1837
+      },
+      {
+        "word": "word131",
+        "frame": 1839,
+        "end_frame": 1851
+      },
+      {
+        "word": "word132",
+        "frame": 1853,
+        "end_frame": 1865
+      },
+      {
+        "word": "word133",
+        "frame": 1867,
+        "end_frame": 1879
+      },
+      {
+        "word": "word134",
+        "frame": 1881,
+        "end_frame": 1893
+      },
+      {
+        "word": "word135",
+        "frame": 1895,
+        "end_frame": 1907
+      },
+      {
+        "word": "word136",
+        "frame": 1909,
+        "end_frame": 1921
+      },
+      {
+        "word": "word137",
+        "frame": 1923,
+        "end_frame": 1935
+      },
+      {
+        "word": "word138",
+        "frame": 1937,
+        "end_frame": 1949
+      },
+      {
+        "word": "word139",
+        "frame": 1951,
+        "end_frame": 1963
+      },
+      {
+        "word": "word140",
+        "frame": 1965,
+        "end_frame": 1977
+      },
+      {
+        "word": "word141",
+        "frame": 1979,
+        "end_frame": 1991
+      },
+      {
+        "word": "word142",
+        "frame": 1993,
+        "end_frame": 2005
+      },
+      {
+        "word": "word143",
+        "frame": 2007,
+        "end_frame": 2019
+      },
+      {
+        "word": "word144",
+        "frame": 2021,
+        "end_frame": 2033
+      },
+      {
+        "word": "word145",
+        "frame": 2035,
+        "end_frame": 2047
+      },
+      {
+        "word": "word146",
+        "frame": 2049,
+        "end_frame": 2061
+      },
+      {
+        "word": "word147",
+        "frame": 2063,
+        "end_frame": 2075
+      },
+      {
+        "word": "word148",
+        "frame": 2077,
+        "end_frame": 2089
+      },
+      {
+        "word": "word149",
+        "frame": 2091,
+        "end_frame": 2103
+      },
+      {
+        "word": "word150",
+        "frame": 2105,
+        "end_frame": 2117
+      },
+      {
+        "word": "word151",
+        "frame": 2119,
+        "end_frame": 2131
+      },
+      {
+        "word": "word152",
+        "frame": 2133,
+        "end_frame": 2145
+      },
+      {
+        "word": "word153",
+        "frame": 2147,
+        "end_frame": 2159
+      },
+      {
+        "word": "word154",
+        "frame": 2161,
+        "end_frame": 2173
+      },
+      {
+        "word": "word155",
+        "frame": 2175,
+        "end_frame": 2187
+      },
+      {
+        "word": "word156",
+        "frame": 2189,
+        "end_frame": 2201
+      },
+      {
+        "word": "word157",
+        "frame": 2203,
+        "end_frame": 2215
+      },
+      {
+        "word": "word158",
+        "frame": 2217,
+        "end_frame": 2229
+      },
+      {
+        "word": "word159",
+        "frame": 2231,
+        "end_frame": 2243
+      },
+      {
+        "word": "word160",
+        "frame": 2245,
+        "end_frame": 2257
+      },
+      {
+        "word": "word161",
+        "frame": 2259,
+        "end_frame": 2271
+      },
+      {
+        "word": "word162",
+        "frame": 2273,
+        "end_frame": 2285
+      },
+      {
+        "word": "word163",
+        "frame": 2287,
+        "end_frame": 2299
+      },
+      {
+        "word": "word164",
+        "frame": 2301,
+        "end_frame": 2313
+      },
+      {
+        "word": "word165",
+        "frame": 2315,
+        "end_frame": 2327
+      },
+      {
+        "word": "word166",
+        "frame": 2329,
+        "end_frame": 2341
+      },
+      {
+        "word": "word167",
+        "frame": 2343,
+        "end_frame": 2355
+      },
+      {
+        "word": "word168",
+        "frame": 2357,
+        "end_frame": 2369
+      },
+      {
+        "word": "word169",
+        "frame": 2371,
+        "end_frame": 2383
+      },
+      {
+        "word": "word170",
+        "frame": 2385,
+        "end_frame": 2397
+      },
+      {
+        "word": "word171",
+        "frame": 2399,
+        "end_frame": 2411
+      },
+      {
+        "word": "word172",
+        "frame": 2413,
+        "end_frame": 2425
+      },
+      {
+        "word": "word173",
+        "frame": 2427,
+        "end_frame": 2439
+      },
+      {
+        "word": "word174",
+        "frame": 2441,
+        "end_frame": 2453
+      },
+      {
+        "word": "word175",
+        "frame": 2455,
+        "end_frame": 2467
+      },
+      {
+        "word": "word176",
+        "frame": 2469,
+        "end_frame": 2481
+      },
+      {
+        "word": "word177",
+        "frame": 2483,
+        "end_frame": 2495
+      },
+      {
+        "word": "word178",
+        "frame": 2497,
+        "end_frame": 2509
+      },
+      {
+        "word": "word179",
+        "frame": 2511,
+        "end_frame": 2523
+      },
+      {
+        "word": "word180",
+        "frame": 2525,
+        "end_frame": 2537
+      },
+      {
+        "word": "word181",
+        "frame": 2539,
+        "end_frame": 2551
+      },
+      {
+        "word": "word182",
+        "frame": 2553,
+        "end_frame": 2565
+      },
+      {
+        "word": "word183",
+        "frame": 2567,
+        "end_frame": 2579
+      },
+      {
+        "word": "word184",
+        "frame": 2581,
+        "end_frame": 2593
+      },
+      {
+        "word": "word185",
+        "frame": 2595,
+        "end_frame": 2607
+      },
+      {
+        "word": "word186",
+        "frame": 2609,
+        "end_frame": 2621
+      },
+      {
+        "word": "word187",
+        "frame": 2623,
+        "end_frame": 2635
+      },
+      {
+        "word": "word188",
+        "frame": 2637,
+        "end_frame": 2649
+      },
+      {
+        "word": "word189",
+        "frame": 2651,
+        "end_frame": 2663
+      },
+      {
+        "word": "word190",
+        "frame": 2665,
+        "end_frame": 2677
+      },
+      {
+        "word": "word191",
+        "frame": 2679,
+        "end_frame": 2691
+      },
+      {
+        "word": "word192",
+        "frame": 2693,
+        "end_frame": 2705
+      },
+      {
+        "word": "word193",
+        "frame": 2707,
+        "end_frame": 2719
+      },
+      {
+        "word": "word194",
+        "frame": 2721,
+        "end_frame": 2733
+      },
+      {
+        "word": "word195",
+        "frame": 2735,
+        "end_frame": 2747
+      },
+      {
+        "word": "word196",
+        "frame": 2749,
+        "end_frame": 2761
+      },
+      {
+        "word": "word197",
+        "frame": 2763,
+        "end_frame": 2775
+      },
+      {
+        "word": "word198",
+        "frame": 2777,
+        "end_frame": 2789
+      },
+      {
+        "word": "word199",
+        "frame": 2791,
+        "end_frame": 2803
+      }
+    ],
+    "overlays": [],
+    "broll": [],
+    "react_source": null,
+    "react_schedule": [],
+    "layout": {
+      "style": "talking_head",
+      "panels": 1,
+      "panel_boundaries": [],
+      "split_fraction": 0.58
+    },
+    "caption_style": "clean",
+    "caption_options": {
+      "position": "bottom",
+      "size": "medium",
+      "pos_y": null,
+      "scale": null,
+      "accent": null,
+      "uppercase": false,
+      "font": "inter",
+      "grouping": "phrase",
+      "highlight_words": []
+    },
+    "transitions": [],
+    "look": {
+      "filter": null,
+      "intensity": 1.0,
+      "adjust": {
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "saturation": 0.0,
+        "temperature": 0.0,
+        "vignette": 0.0
+      }
+    },
+    "audio": {
+      "lufs_target": -14.0,
+      "gain": 0.0,
+      "music": null,
+      "volume_ranges": [],
+      "speech_frames": []
+    },
+    "total_frames": 3000,
+    "schema_version": 1
+  }
+}

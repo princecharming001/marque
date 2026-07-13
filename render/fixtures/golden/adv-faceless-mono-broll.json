@@ -1,0 +1,104 @@
+{
+  "id": "adv-faceless-mono-broll",
+  "sourceUrl": "__SOURCE__",
+  "formatId": "myth-buster",
+  "edl": {
+    "style": "faceless",
+    "format_id": "myth-buster",
+    "clips": [
+      {
+        "src_in": 0,
+        "src_out": 90,
+        "speed": 1.0,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0
+      }
+    ],
+    "captions": [
+      {
+        "word": "hello",
+        "frame": 5,
+        "end_frame": 18
+      },
+      {
+        "word": "world",
+        "frame": 20,
+        "end_frame": 33
+      },
+      {
+        "word": "this",
+        "frame": 35,
+        "end_frame": 48
+      },
+      {
+        "word": "is",
+        "frame": 50,
+        "end_frame": 63
+      },
+      {
+        "word": "a",
+        "frame": 65,
+        "end_frame": 78
+      },
+      {
+        "word": "test",
+        "frame": 80,
+        "end_frame": 81
+      }
+    ],
+    "overlays": [],
+    "broll": [
+      {
+        "frame_in": 0,
+        "frame_out": 90,
+        "cue_text": "b-roll",
+        "asset_id": null,
+        "broll_query": null,
+        "source": "stock",
+        "resolved_url": "__SOURCE__"
+      }
+    ],
+    "react_source": null,
+    "react_schedule": [],
+    "layout": {
+      "style": "faceless",
+      "panels": 1,
+      "panel_boundaries": [],
+      "split_fraction": 0.58
+    },
+    "caption_style": "clean",
+    "caption_options": {
+      "position": "bottom",
+      "size": "medium",
+      "pos_y": null,
+      "scale": null,
+      "accent": null,
+      "uppercase": false,
+      "font": "inter",
+      "grouping": "phrase",
+      "highlight_words": []
+    },
+    "transitions": [],
+    "look": {
+      "filter": "mono",
+      "intensity": 1.0,
+      "adjust": {
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "saturation": 0.0,
+        "temperature": 0.0,
+        "vignette": 0.0
+      }
+    },
+    "audio": {
+      "lufs_target": -14.0,
+      "gain": 0.0,
+      "music": null,
+      "volume_ranges": [],
+      "speech_frames": []
+    },
+    "total_frames": 90,
+    "schema_version": 1
+  }
+}
