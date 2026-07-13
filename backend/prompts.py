@@ -984,7 +984,8 @@ _RANGE = {"type": "array", "items": _INT, "minItems": 2, "maxItems": 2}
 EDIT_PLAN_JSON_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["open_on", "keeps", "cuts", "order", "punch_ins", "broll",
-                 "caption_plan", "text_cards", "music", "pacing_intent"],
+                 "caption_plan", "text_cards", "music", "pacing_intent",
+                 "pacing", "interrupt_density", "hook_text", "end_card"],
     "properties": {
         "open_on": {"type": "object", "additionalProperties": False,
                     "required": ["start", "end", "why"],
@@ -1018,8 +1019,21 @@ EDIT_PLAN_JSON_SCHEMA = {
             "properties": {"frame": _INT, "text": _STR}}},
         "music": {"type": "object", "additionalProperties": False,
                   "required": ["wanted", "vibe"],
-                  "properties": {"wanted": {"type": "boolean"}, "vibe": _STR}},
+                  "properties": {"wanted": {"type": "boolean"},
+                                 "vibe": {"type": "string", "enum": ["upbeat", "chill", "driving", ""]}}},
         "pacing_intent": _STR,
+        # P5: typed decisions the retention passes (app/retention.py) consume directly —
+        # pacing_intent above stays free-text for self-review context, but these are what
+        # actually drive plan_pacing/schedule_interrupts/place_hook_overlay/place_end_card.
+        "pacing": {"type": "object", "additionalProperties": False,
+                   "required": ["lift", "fast_forward_silences", "why"],
+                   "properties": {"lift": {"type": "string", "enum": ["none", "subtle", "medium"]},
+                                  "fast_forward_silences": {"type": "boolean"}, "why": _STR}},
+        "interrupt_density": {"type": "string", "enum": ["calm", "standard", "dense"]},
+        "hook_text": _STR,   # "" = no hook overlay wanted; else <=6 words restating the promise
+        "end_card": {"type": "object", "additionalProperties": False,
+                    "required": ["wanted", "text"],
+                    "properties": {"wanted": {"type": "boolean"}, "text": _STR}},
     },
 }
 
@@ -1054,7 +1068,22 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "no reorder), punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), broll "
         "(source range + cue + search query; the assembler enforces J-cut lead, 2–3s holds, spacing, and "
         "hook/CTA protection), caption_plan (style/grouping/highlight_words), text_cards, music (wanted+vibe), "
-        "pacing_intent (one line).\n\n"
+        "pacing_intent (one free-text line — your overall read of the pace this take needs; the fields below "
+        "are what actually drive the edit, this is context for later review).\n\n"
+        "RETENTION FIELDS (code enforces the exact numbers; you only set intent):\n"
+        "- pacing.lift: \"medium\" for delivery that drags or rambles, \"subtle\" for normal delivery, "
+        "\"none\" for already-tight/high-energy takes. pacing.fast_forward_silences: true to speed through "
+        "dead air instead of hard-cutting it (keeps a sense of the pause without wasting time) — false for a "
+        "clean hard cut. pacing.why: one line.\n"
+        "- interrupt_density: \"dense\" for high-energy/entertainment content that wants a visual change "
+        "every couple seconds, \"calm\" for slower/story content that can sit still longer, \"standard\" "
+        "otherwise.\n"
+        "- hook_text: <=6 words restating the creator's promise, shown as a text overlay in the first ~1.5s "
+        "— quote/paraphrase their own hook, never invent a claim they didn't make. \"\" if the visual hook "
+        "already carries it and text would be redundant.\n"
+        "- end_card: wanted=true ONLY when the creator gives an explicit call-to-action worth holding on "
+        "(follow/subscribe/link-in-bio) — text is that CTA verbatim-ish. This REPLACES the loop-friendly "
+        "ending, so default wanted=false for takes without a real CTA (a loop ending serves those better).\n\n"
         f"{kb_block}\n\n"
         "Reply with ONLY the JSON object. No prose, no code fences."
     )

@@ -161,7 +161,8 @@ def test_author_via_plan_keyless_produces_valid_edl(monkeypatch):
            "custom_instructions": ""}
     w = _words("scripted-01")
     script = {"formatId": "myth-buster"}
-    edl_data, llm_contributed = _run(main._author_edl_via_plan(job, "talking_head", script, w, {}, None))
+    edl_data, llm_contributed, plan_data = _run(main._author_edl_via_plan(job, "talking_head", script, w, {}, None))
     assert edl_data is not None
     assert llm_contributed is False   # keyless → empty plan → generic whole-take cut
+    assert plan_data == {}           # P5: no LLM contribution → nothing to extract hints from
     assert check_edl_invariants(edl_data, w) == []

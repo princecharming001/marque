@@ -25,3 +25,9 @@ narrative. A buried hook kept in place is the single most common retention kille
 
 End on a line that flows back into the open (or a clean beat), trailing dead-air ≤ 10 frames,
 so the autoplay loop reads as continuous — measurably lifts replays and total watch time.
+
+## Interrupt cadence (enforced in code)
+
+A visual change is guaranteed at least every ~3–5s (style-dependent; edit_plan's
+`interrupt_density` scales it), as a FLOOR — real cuts/b-roll already covering a stretch
+count toward it. Skips fast_cuts/duet_split (their own rhythm already carries this).
