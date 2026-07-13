@@ -2007,17 +2007,20 @@ MUSIC_TRACKS = [
 
 # P4: kind -> hosted one-shot SFX URL, read by retention.synthesize_sfx (passed in
 # as sfx_assets=SFX_ASSETS, never imported the other direction — main.py already
-# imports retention_mod). URLs are None until real royalty-free assets are sourced
-# and uploaded to Supabase public storage (see _rehost_media for the upload
-# mechanics this would reuse) — deliberately NOT filled with a guessed/invented
-# URL. synthesize_sfx and build_render_plan both already skip any cue whose kind
-# resolves to a falsy URL (same "clean backdrop beats fake copy" fail-soft
-# philosophy as unresolved b-roll/GreenScreen's text_card), so this dict existing
-# with None values is a fully safe, inert no-op today, not a broken half-feature.
+# imports retention_mod). Defaults point at Marque's own public Supabase bucket
+# (same bucket/pattern as _rehost_media): whoosh + pop are Mixkit "Free License"
+# one-shots (royalty-free, no attribution, commercial use OK - mixkit.co/license),
+# hit is Kenney's "Impact Sounds" pack (CC0 / public domain - kenney.nl/assets/
+# impact-sounds), re-encoded to mp3 and uploaded to sfx/<kind>.mp3. Env vars still
+# override per-deploy if the assets ever need swapping. synthesize_sfx and
+# build_render_plan both already skip any cue whose kind resolves to a falsy URL
+# (same "clean backdrop beats fake copy" fail-soft philosophy as unresolved
+# b-roll/GreenScreen's text_card), so a missing/blank override stays a safe no-op.
+_SFX_DEFAULT_BASE = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/sfx"
 SFX_ASSETS: dict[str, str | None] = {
-    "whoosh": os.environ.get("SFX_URL_WHOOSH"),
-    "pop": os.environ.get("SFX_URL_POP"),
-    "hit": os.environ.get("SFX_URL_HIT"),
+    "whoosh": os.environ.get("SFX_URL_WHOOSH", f"{_SFX_DEFAULT_BASE}/whoosh.mp3"),
+    "pop": os.environ.get("SFX_URL_POP", f"{_SFX_DEFAULT_BASE}/pop.mp3"),
+    "hit": os.environ.get("SFX_URL_HIT", f"{_SFX_DEFAULT_BASE}/hit.mp3"),
 }
 
 
