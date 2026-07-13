@@ -999,6 +999,52 @@ def _kept_frames(edl: dict) -> int:
     return total
 
 
+def split_segment_in_place(edl: dict, idx: int, at_frame: int) -> bool:
+    """Split segment `idx` at source frame `at_frame` into two, updating `edl` IN
+    PLACE (segments, segment_order, transitions all kept consistent). Returns
+    False (no-op) if idx/at_frame are invalid; True on success.
+
+    Shared by apply_edl_ops' `split_segment` tweak-op AND the retention pacing
+    pass (WS2) — one implementation, so #45 (both halves inherit the parent's
+    speed/transform) and #10 (transitions remap to the boundary that survives)
+    can never drift between the two call sites."""
+    segments = edl.get("segments") or []
+    if not (isinstance(idx, int) and 0 <= idx < len(segments)):
+        return False
+    seg = segments[idx]
+    if not (isinstance(at_frame, int) and seg["src_in"] < at_frame < seg["src_out"]):
+        return False
+    # #45: both halves inherit the parent's per-segment settings (speed, canvas
+    # transform, …) — otherwise splitting a sped-up/repositioned clip silently
+    # resets it to defaults on the delivered render.
+    carry = {k: v for k, v in seg.items() if k not in ("src_in", "src_out")}
+    halves = [{**carry, "src_in": seg["src_in"], "src_out": at_frame},
+              {**carry, "src_in": at_frame, "src_out": seg["src_out"]}]
+    new_segs = segments[:idx] + halves + segments[idx + 1:]
+    old_order = edl.get("segment_order")
+    if old_order:
+        # remap the permutation: indices after idx shift +1; the new half
+        # (idx+1) plays right after its first half in the play order.
+        new_order: list[int] = []
+        for i in old_order:
+            new_order.append(i if i <= idx else i + 1)
+            if i == idx:
+                new_order.append(idx + 1)
+        edl["segment_order"] = new_order
+    # #10: the insert shifts every source index at/after idx by +1, so a
+    # transition anchored there moves with the second half — otherwise the fade
+    # jumps to the wrong boundary in the render.
+    if edl.get("transitions"):
+        edl["transitions"] = [
+            {**tr, "after_segment": tr["after_segment"] + 1}
+            if isinstance(tr.get("after_segment"), int) and tr["after_segment"] >= idx
+            else tr
+            for tr in edl["transitions"]
+        ]
+    edl["segments"] = new_segs
+    return True
+
+
 def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                   ) -> tuple[dict, list[dict]]:
     """Apply typed tweak ops to an EDL dict. Returns (new_edl, results) where each
@@ -1453,36 +1499,8 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                 elif not isinstance(at, int) or not (segments[idx]["src_in"] < at < segments[idx]["src_out"]):
                     reason = "at_frame must be strictly inside the segment"
                 else:
-                    seg = segments[idx]
-                    # #45: both halves inherit the parent's per-segment settings (speed,
-                    # canvas transform, …) — otherwise splitting a sped-up / repositioned
-                    # clip silently resets it to defaults on the delivered render.
-                    carry = {k: v for k, v in seg.items() if k not in ("src_in", "src_out")}
-                    halves = [{**carry, "src_in": seg["src_in"], "src_out": at},
-                              {**carry, "src_in": at, "src_out": seg["src_out"]}]
-                    new_segs = segments[:idx] + halves + segments[idx + 1:]
-                    old_order = edl.get("segment_order")
-                    if old_order:
-                        # remap the permutation: indices after idx shift +1; the new half
-                        # (idx+1) plays right after its first half in the play order.
-                        new_order: list[int] = []
-                        for i in old_order:
-                            new_order.append(i if i <= idx else i + 1)
-                            if i == idx:
-                                new_order.append(idx + 1)
-                        edl["segment_order"] = new_order
-                    # #10: the insert shifts every source index at/after idx by +1, so a
-                    # transition anchored there moves with the second half — otherwise the
-                    # fade jumps to the wrong boundary in the render.
-                    if edl.get("transitions"):
-                        edl["transitions"] = [
-                            {**tr, "after_segment": tr["after_segment"] + 1}
-                            if isinstance(tr.get("after_segment"), int) and tr["after_segment"] >= idx
-                            else tr
-                            for tr in edl["transitions"]
-                        ]
-                    edl["segments"] = new_segs
-                    segments = new_segs
+                    split_segment_in_place(edl, idx, at)
+                    segments = edl["segments"]
                     applied = True
 
             elif t == "edit_caption":
