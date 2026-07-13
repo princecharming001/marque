@@ -121,6 +121,13 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("write.leak_firewall", "leaked" in " ".join(
         _wa.check_invariants("", [{"op": "fill", "content": "REGIME: x"}]))))
 
+    # Phase 6 — exemplar bank retrieval (lift-ordered index)
+    from app import exemplar as _ex
+    _flat = _ex._flatten({"hook": [{"id": "h1", "mechanism": "m1", "lift": 2.0},
+                                   {"id": "h2", "mechanism": "m2", "lift": 3.0}]})
+    out.append(("exemplar.order", [p["id"] for p in _flat] == ["h2", "h1"]))
+    out.append(("exemplar.render", "[hook:h2] lift 3.0" in _ex.render_index(_flat)))
+
     return out
 
 

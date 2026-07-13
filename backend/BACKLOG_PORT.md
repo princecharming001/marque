@@ -59,7 +59,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] tests (LOOP W): XML invariants + ≤250 words + no scaffolding-vocab leak — test_palo_write_apply.py (7) + test_palo_write.py (6) + 4 port_eval goldens (write.parse/apply/apply_skip/leak_firewall)
 
 ## Phase 6 — exemplar bank  (flag: EXEMPLAR_BANK)
-- [ ] `app/exemplar.py` — retrieval/index (works with hand-seeded bank)
+- [x] `app/exemplar.py` — retrieval/index over channel_strategies.exemplar_bank JSONB: lift-ordered `load_index`/`render_index`, injectable `exemplar_block`, `dereference` to full cards; works hand-seeded; flag EXEMPLAR_BANK (test_palo_exemplar.py 5 green; +2 port_eval; suite 961)
 - [ ] `extract.py` rewrite against dossier schema; Opus build + daily refresh decider
 - [ ] tests: retrieval golden, budget
 
