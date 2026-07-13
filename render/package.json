@@ -6,6 +6,7 @@
     "start": "remotion studio",
     "build": "remotion render",
     "build:bridge": "tsc -p tsconfig.bridge.json",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/__tests__/*.test.js",
     "deploy:policies": "remotion lambda policies role && remotion lambda policies user",
     "deploy:function": "remotion lambda functions deploy",
     "deploy:site": "remotion lambda sites create src/index.ts --site-name=marque-render",

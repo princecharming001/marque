@@ -24,3 +24,6 @@ __pycache__/
 # Remotion render project
 render/node_modules/
 render/dist/
+render/dist-test/
+render/fixtures/source.mp4
+render/out/
