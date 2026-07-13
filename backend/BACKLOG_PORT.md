@@ -60,8 +60,8 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 
 ## Phase 6 — exemplar bank  (flag: EXEMPLAR_BANK)
 - [x] `app/exemplar.py` — retrieval/index over channel_strategies.exemplar_bank JSONB: lift-ordered `load_index`/`render_index`, injectable `exemplar_block`, `dereference` to full cards; works hand-seeded; flag EXEMPLAR_BANK (test_palo_exemplar.py 5 green; +2 port_eval; suite 961)
-- [ ] `extract.py` rewrite against dossier schema; Opus build + daily refresh decider
-- [ ] tests: retrieval golden, budget
+- [x] `build_bank` — Opus extract of golden hook/builder/rhythm/payoff patterns from the dossier-adapter evidence pack → `exemplar_bank` JSONB (revision+1); `should_rebuild` freshness decider + `run_exemplar_cron`; gated flag + `compile_allowed`; keyless→template bank (test_palo_exemplar_build.py 6 green; +1 port_eval; suite 967)
+- [x] tests: retrieval golden + build/refresh/budget — test_palo_exemplar.py (5) + test_palo_exemplar_build.py (6) + 3 port_eval goldens
 
 ## iOS (P7.x — per backend phase, contracts in `docs/api/PALO_PORT.md`)
 - [ ] P7.2 feed v2 · P7.3 insights inbox + deep-link · P7.4 Your Strategy · P7.5 write edit-chat · P7.6 reel review

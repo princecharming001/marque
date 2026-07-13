@@ -127,6 +127,8 @@ def _checks() -> list[tuple[str, bool]]:
                                    {"id": "h2", "mechanism": "m2", "lift": 3.0}]})
     out.append(("exemplar.order", [p["id"] for p in _flat] == ["h2", "h1"]))
     out.append(("exemplar.render", "[hook:h2] lift 3.0" in _ex.render_index(_flat)))
+    out.append(("exemplar.build_template", _ex._valid_bank(_ex._template_bank({"niche": "x"})) is True
+                and _ex._valid_bank({}) is False))
 
     return out
 
