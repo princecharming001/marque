@@ -83,6 +83,26 @@ struct ScriptReaderView: View {
         }
         .navigationTitle("Script")
         .navigationBarTitleDisplayMode(.inline)
+        // Same save-for-later as the feed card's bookmark — reading the full script is
+        // exactly when you decide you want it, so the action can't live only on Home.
+        // Same source of truth (store.readiedScripts), so the two stay in sync.
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    if let saved = store.readiedScripts.first(where: { $0.script.id == live.id }) {
+                        store.removeReadiedScript(saved)
+                    } else {
+                        store.readyScript(live, source: .daily)
+                    }
+                } label: {
+                    Image(systemName: store.readiedScripts.contains { $0.script.id == live.id }
+                          ? "bookmark.fill" : "bookmark")
+                }
+                .tint(Palette.accent)
+                .accessibilityLabel("Save for later")
+                .accessibilityIdentifier("script.save")
+            }
+        }
         .onAppear { router.hideTabBar = true }
         .onDisappear { router.hideTabBar = false }
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }

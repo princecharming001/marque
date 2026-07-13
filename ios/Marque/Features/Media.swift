@@ -29,6 +29,21 @@ enum MediaStore {
         return name
     }
 
+    /// Copy an existing file into media/<uuid>.<ext> WITHOUT loading it into memory —
+    /// required for library videos, which can be hundreds of MB (Data(contentsOf:) on
+    /// those gets the app memory-killed). Returns the Documents-relative path, or nil.
+    static func saveFile(from src: URL, ext: String) -> String? {
+        let dir = documents.appendingPathComponent("media", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = "media/\(UUID().uuidString).\(ext)"
+        do {
+            try FileManager.default.copyItem(at: src, to: documents.appendingPathComponent(name))
+            return name
+        } catch {
+            return nil
+        }
+    }
+
     /// Poster frame from a video file (sync — call off the main actor).
     static func poster(for url: URL) -> UIImage? {
         let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
@@ -37,6 +52,26 @@ enum MediaStore {
         let t = CMTime(seconds: 0.1, preferredTimescale: 600)
         guard let cg = try? gen.copyCGImage(at: t, actualTime: nil) else { return nil }
         return UIImage(cgImage: cg)
+    }
+}
+
+/// File-URL transferable for picked library videos. PhotosPicker's
+/// loadTransferable(type: Data.self) materializes the ENTIRE asset in RAM — fine for a
+/// 10s selfie, a memory-kill/timeout for a real multi-minute library video, which is
+/// exactly the "upload existing footage" case. FileRepresentation streams to a temp
+/// file instead; we copy it out before the transfer's sandbox URL is reclaimed.
+struct PickedVideoFile: Transferable {
+    let url: URL
+    static var transferRepresentation: some TransferRepresentation {
+        FileRepresentation(contentType: .movie) { file in
+            SentTransferredFile(file.url)
+        } importing: { received in
+            let ext = received.file.pathExtension.isEmpty ? "mov" : received.file.pathExtension
+            let dest = FileManager.default.temporaryDirectory
+                .appendingPathComponent("picked-\(UUID().uuidString).\(ext)")
+            try FileManager.default.copyItem(at: received.file, to: dest)
+            return Self(url: dest)
+        }
     }
 }
 

@@ -87,16 +87,38 @@ final class FeedStore {
         await silentRevalidate(store: store)
     }
 
+    /// In-flight guard: the foreground trigger (revalidateIfStale) and loadInitial's
+    /// painted-from-disk path could otherwise run two overlapping page-0 refetches
+    /// racing on the same buckets.
+    private var revalidating = false
+
     /// Re-fetch page 0 WITHOUT skeletons; replace the buckets only on success.
     private func silentRevalidate(store: AppStore) async {
+        guard !revalidating else { return }
+        revalidating = true
+        defer { revalidating = false }
         guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0) else { return }
+        applyPageZero(page, store: store)
+    }
+
+    /// Commit a fresh page 0 into the buckets — the ONLY place that's allowed to clear
+    /// them, and it runs strictly after a successful fetch (no await between clear and
+    /// re-ingest, so the screen can never sit empty on a network miss).
+    private func applyPageZero(_ page: BackendClient.FeedPage, store: AppStore) {
+        // A page without a trend entry must not kill the ticker: keep the last one.
+        let priorTrend = trend
         scriptItems = []; reelItems = []; trend = nil
         ingest(page.entries, includeReels: true, store: store)
+        if trend == nil { trend = priorTrend }
         feedCursor = page.nextCursor ?? -1
-        reelCursor = 1
+        reelCursor = 1                    // page 0's reels arrived inside the feed
         lastFreshLoadAt = Date()
         loadedOnce = true
         scheduleSave()
+        // First paint can be the instant "mock" fallback while the server generates the
+        // real AI picks in the background (~60-90s). Silently re-fetch a couple times to
+        // swap in the AI version the moment it's ready — so "Today's picks" never sits on
+        // template copy without the creator having to pull-to-refresh.
         if page.mode == "mock" { scheduleAIUpgrade(store: store) }
     }
 
@@ -116,21 +138,19 @@ final class FeedStore {
         isLoading = true
         defer { isLoading = false }
 
-        guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0) else {
+        // One quiet retry: a single transient blip (radio waking up, backend cold
+        // start) used to land the error card immediately — the feed is the first
+        // thing a creator sees, so it gets a second chance before giving up.
+        var page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0)
+        if page == nil {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0)
+        }
+        guard let page else {
             loadedOnce = false            // network miss — allow a later re-appear / pull to retry
             return
         }
-        ingest(page.entries, includeReels: true, store: store)
-        feedCursor = page.nextCursor ?? -1
-        reelCursor = 1                    // page 0's reels arrived inside the feed
-        lastFreshLoadAt = Date()
-        scheduleSave()
-
-        // First paint can be the instant "mock" fallback while the server generates the
-        // real AI picks in the background (~60-90s). Silently re-fetch a couple times to
-        // swap in the AI version the moment it's ready — so "Today's picks" never sits on
-        // template copy without the creator having to pull-to-refresh.
-        if page.mode == "mock" { scheduleAIUpgrade(store: store) }
+        applyPageZero(page, store: store)
     }
 
     private func scheduleAIUpgrade(store: AppStore) {
@@ -186,20 +206,22 @@ final class FeedStore {
         scheduleSave()
     }
 
-    // MARK: Pull-to-refresh — full reset + reload
+    // MARK: Pull-to-refresh
 
+    /// Fetch FIRST, swap the buckets only when a fresh page actually arrives. The old
+    /// clear-up-front version meant one transient failure during a pull-to-refresh
+    /// blanked a previously-fine screen (error card + vanished ticker) — the reported
+    /// "couldn't load today's picks for no reason" bug. The refresh spinner is the
+    /// activity indicator; existing content stays put until it's replaced.
     func refresh(store: AppStore) async {
-        guard !isLoading else { return }
-        scriptItems = []
-        reelItems = []
-        trend = nil
-        feedCursor = 0
-        reelCursor = 1
+        guard !isLoading, !revalidating else { return }
         isLoadingMoreScripts = false
         isLoadingMoreReels = false
-        loadedOnce = false
-        paintedFromDisk = false           // an explicit refresh may show skeletons again
-        await loadInitial(store: store)
+        // Skeletons only when there's nothing on screen to keep showing.
+        isLoading = scriptItems.isEmpty && reelItems.isEmpty
+        defer { isLoading = false }
+        guard let page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0) else { return }
+        applyPageZero(page, store: store)
     }
 
     // MARK: Bucketing + dedupe

@@ -52,6 +52,14 @@ struct ChatView: View {
                                            // customize their answer instead of sending verbatim.
                                            draft = text
                                            composerFocused = true
+                                       },
+                                       onOther: {
+                                           // Custom answer: empty composer, keyboard up. The
+                                           // chips stay until the first keystroke (draft
+                                           // onChange below), so the choices remain visible
+                                           // for reference while starting to type.
+                                           draft = ""
+                                           composerFocused = true
                                        })
                         .padding(.horizontal, 16)
                         .padding(.bottom, 4)

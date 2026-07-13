@@ -6920,7 +6920,15 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
             s = {**s, "why_picked": why_picked}   # UX-G1: every pick says WHY it's here
         items.append({"type": "script", "script": s})
 
-    reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
+    # A reels failure (Apify scrape flake, cache hydration error) must not 500 the
+    # whole feed — picks + trend still ship, the client just gets no reels this page.
+    # Reels were the single point of failure for the entire response, which the app
+    # surfaced as "couldn't load today's picks" even though picks were fine.
+    try:
+        reel_result = await reels(niche=niche, creator_id=creator_id, watched=watched, cursor=cursor)
+    except Exception as e:
+        logging.warning("feed reels failed (serving picks without them): %s", e)
+        reel_result = {"reels": [], "next_cursor": None}
     items += [{"type": "reel", "reel": r} for r in reel_result.get("reels", [])[:4]]
 
     # W1: live niche trends when cached, else mock ROTATED by cursor + 6h bucket so a

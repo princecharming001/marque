@@ -122,14 +122,26 @@ struct RecordView: View {
             Task {
                 // H-04: a failed import used to jump to .recorded with NO footage —
                 // creating a doomed byte-less live job. Surface it and stay .ready.
-                guard let data = try? await item.loadTransferable(type: Data.self) else {
+                // File-URL transfer first (streams to disk — real library videos are
+                // hundreds of MB and Data-transfer gets memory-killed, which was why
+                // "upload existing video" failed on anything but tiny clips); Data is
+                // kept only as a fallback for odd providers without a file rep.
+                var savedPath: String?
+                if let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
+                    let ext = picked.url.pathExtension.isEmpty ? "mov" : picked.url.pathExtension
+                    savedPath = MediaStore.saveFile(from: picked.url, ext: ext)
+                    try? FileManager.default.removeItem(at: picked.url)
+                } else if let data = try? await item.loadTransferable(type: Data.self) {
+                    savedPath = MediaStore.save(data, ext: "mov")
+                }
+                guard let savedPath else {
                     importError = "Couldn't load that video — try a different one."
                     pickedItem = nil
                     phase = .ready
                     return
                 }
                 importError = nil
-                footagePath = MediaStore.save(data, ext: "mov")
+                footagePath = savedPath
                 // AF-I7: reset so re-picking the SAME video after Re-record fires
                 // onChange again (equal PhotosPickerItems don't).
                 pickedItem = nil
@@ -223,17 +235,18 @@ struct RecordView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("record.pausePrompt")
-                    recordButton(active: true) { finishTake() }
-                    // Pause the TAKE — device only (lets you resume from a new angle).
-                    if camera.hasCamera {
-                        Button { pauseTake() } label: {
-                            Image(systemName: "pause.circle")
-                                .font(.system(size: 20)).foregroundStyle(.white)
-                                .marqueGlassCircle(diameter: 52)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("record.pauseTake")
+                    // The record button TOGGLES the take: tap again to pause (ends this
+                    // take, ready for the next angle). Finishing is always the separate
+                    // Done button — one consistent meaning per button, in both states.
+                    // Sim has no camera → pause is meaningless there; record = finish,
+                    // which keeps the Maestro fast path (single record.capture tap) intact.
+                    recordButton(active: true) { if camera.hasCamera { pauseTake() } else { finishTake() } }
+                    Button { finishTake() } label: {
+                        Text("Done").font(AppFont.headline).foregroundStyle(.white)
+                            .frame(width: 52, height: 52).marqueGlassCircle(diameter: 52)
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.finishTake")
                 }
             case .paused:
                 takeTimer
@@ -699,9 +712,12 @@ struct RecordView: View {
     }
 
     private func stitchAndFinish() {
+        // saveFile (copy, not Data(contentsOf:)) — a multi-take session can be minutes
+        // of footage, and materializing that in RAM risks the same memory-kill as the
+        // old library-upload path.
         if segments.count <= 1 {
-            if let only = segments.first, let data = try? Data(contentsOf: only) {
-                footagePath = MediaStore.save(data, ext: "mov")
+            if let only = segments.first {
+                footagePath = MediaStore.saveFile(from: only, ext: "mov")
             }
             phase = .recorded
             beginUpload()      // H-02: upload runs while the creator reviews the take
@@ -711,8 +727,8 @@ struct RecordView: View {
         Task {
             let stitched = await VideoStitcher.stitch(segments)
             let final = stitched ?? segments.first   // never strand: fall back to take 1
-            if let final, let data = try? Data(contentsOf: final) {
-                footagePath = MediaStore.save(data, ext: "mov")
+            if let final {
+                footagePath = MediaStore.saveFile(from: final, ext: "mov")
             }
             phase = .recorded
             beginUpload()
