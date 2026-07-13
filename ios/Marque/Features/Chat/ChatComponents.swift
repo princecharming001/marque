@@ -174,6 +174,10 @@ struct ChatScriptCard: View {
             .marqueCard(padding: Space.md)
             .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
             .onTapGesture { onOpen?() }     // inner Film/Save buttons keep their own hit areas
+            // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
+            // without .accessibilityElement(children: .contain), this card's own identifier
+            // clobbers the inner Save button's own identifier (saveId, default "chat.save").
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("chat.scriptCard")
     }
 }
@@ -320,6 +324,9 @@ struct ClipEditCard: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
+        // Same fix as cleanupPanel: without this, the card's own identifier clobbers the
+        // conditional "View in Library" button's own "chat.clipEdit.viewInLibrary" identifier.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.clipEdit.card")
     }
 }

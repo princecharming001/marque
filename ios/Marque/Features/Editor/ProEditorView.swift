@@ -1248,6 +1248,11 @@ struct ProEditorView: View {
                 selectedOverlay = (selectedOverlay == idx) ? nil : idx
             }
         }
+        // Same fix as cleanupPanel: when selected, stickerCornerHandles overlays 4 buttons
+        // with their own "editorPro.sticker.<idx>.<action>" identifiers — without
+        // .accessibilityElement(children: .contain) those get clobbered by this sticker's
+        // own identifier.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.sticker.\(idx)")
     }
 

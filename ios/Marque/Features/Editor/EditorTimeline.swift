@@ -230,6 +230,11 @@ struct EditorTimeline: View {
                 selectedSeg = (selectedSeg == segIdx) ? nil : segIdx
             }
         }
+        // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
+        // when selected, the leading/trailing trimHandle overlays have their own
+        // "editorPro.trimHandle.left/right" identifiers — without .accessibilityElement
+        // (children: .contain) those get clobbered by this cell's own identifier.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.clip.\(pos)")
     }
 
