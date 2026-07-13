@@ -23,7 +23,7 @@ export const TalkingHead: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       </AbsoluteFill>
       {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
-      {edl && <TextStickers overlays={edl.overlays} />}
+      {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade look={edl.look} transitions={edl.transitions} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>

@@ -4,7 +4,7 @@ import { loadFont as loadInter } from "@remotion/google-fonts/Inter";
 import { loadFont as loadArchivo } from "@remotion/google-fonts/ArchivoBlack";
 import { loadFont as loadBaloo } from "@remotion/google-fonts/Baloo2";
 import { CaptionWord, CaptionStyle, CaptionOptions } from "../types";
-import { karaokePop } from "../layout";
+import { LAYOUT, karaokePop, fitTextBlock, boldWordFontSize, captionCenterY, clampPosY } from "../layout";
 
 interface Props { captions: CaptionWord[]; style?: CaptionStyle; options?: CaptionOptions | null; }
 
@@ -34,30 +34,13 @@ export const FONTS: Record<CaptionOptions["font"], string> = {
   inter, archivo, baloo,
 };
 
-// G2: bottom safe-area. At 1080x1920, TikTok/IG Reels/YT Shorts all reserve the
-// bottom ~300-350px of the frame for their OWN chrome (username, caption/
-// description line, sound title, the like/comment/share icon column's lower
-// edge, the tab bar) — a caption anchored at bottom:180 sits UNDER that chrome
-// and gets visually collided with or fully obscured on-platform (this is only
-// visible once posted to an actual app, never in Remotion Studio/preview,
-// which is exactly why it went unnoticed). 320px clears all three platforms'
-// published safe-zone guidance with margin to spare.
-const CAPTION_SAFE_BOTTOM = 320;
-// Top safe-area: platform top chrome (search bar / "Following | For You" pills /
-// the status bar) occupies roughly the top 250px at 1080x1920.
-const CAPTION_SAFE_TOP = 280;
-
 const DEFAULTS: CaptionOptions = {
   position: "bottom", size: "medium", pos_y: null, scale: null,
   accent: null, uppercase: false, font: "inter",
   grouping: "phrase", highlight_words: [],   // P0.7: phrase default (stable 3-word chunks)
 };
 
-// P0.7 hide timing. A word with no end_frame is assumed to last this many frames.
-const DEFAULT_WORD_FRAMES = 15;
-const HIDE_AFTER_LAST = 12;    // hide the block this long after the last word ends
-const SILENCE_GAP = 30;        // hide during gaps longer than this between words
-const wordEnd = (c: CaptionWord): number => c.end_frame ?? c.frame + DEFAULT_WORD_FRAMES;
+const wordEnd = (c: CaptionWord): number => c.end_frame ?? c.frame + LAYOUT.DEFAULT_WORD_FRAMES;
 
 // CapCut keyword highlight: a word whose normalized form is in highlight_words
 // renders in the accent color (default gold) regardless of active state.
@@ -69,15 +52,13 @@ const highlightColor = (opts: CaptionOptions): string => opts.accent ?? HIGHLIGH
 
 // Effective font-size multiplier: continuous pinch `scale` wins over the S/M/L word.
 const sizeMult = (opts: CaptionOptions): number =>
-  opts.scale ?? SIZE_MULT[opts.size];
+  opts.scale ?? LAYOUT.SIZE_MULT[opts.size];
 
-// Continuous drag position (fraction of frame height, clamped into the platform
-// safe zones) — wins over the discrete top/middle/bottom anchor when set.
-const posYPct = (opts: CaptionOptions): number | null =>
-  opts.pos_y == null ? null : Math.min(0.84, Math.max(0.16, opts.pos_y)) * 100;
-
-const PHRASE_LEN = 3;
-const LINE_LEN = 5;   // P0.7: `line` = stable 5-word chunks (was a sliding window)
+// Continuous drag position (fraction of frame height) — clamped via the SHARED
+// layout constants (backend/app/layout_constants.py, iOS LayoutConstants.swift
+// agree on this exact range; backend/test_layout_parity.py is the tripwire).
+const posYFrac = (opts: CaptionOptions): number | null =>
+  opts.pos_y == null ? null : clampPosY(opts.pos_y);
 
 // The visible index window for the active word under a grouping mode.
 // line = the legacy sliding window; phrase = fixed ~3-word chunks (the OpusClip
@@ -88,20 +69,16 @@ function groupBounds(
 ): { start: number; end: number } {
   if (grouping === "word") return { start: activeIdx, end: activeIdx };
   if (grouping === "phrase") {
-    const start = Math.floor(activeIdx / PHRASE_LEN) * PHRASE_LEN;
-    return { start, end: Math.min(count - 1, start + PHRASE_LEN - 1) };
+    const start = Math.floor(activeIdx / LAYOUT.PHRASE_LEN) * LAYOUT.PHRASE_LEN;
+    return { start, end: Math.min(count - 1, start + LAYOUT.PHRASE_LEN - 1) };
   }
   // P0.7: `line` mode is now stable fixed chunks (like phrase but wider) instead of a
   // per-frame sliding window that reflowed text on every frame. lineBack/lineAhead retained
   // for signature compatibility but no longer drive a jittery window.
   void lineBack; void lineAhead;
-  const start = Math.floor(activeIdx / LINE_LEN) * LINE_LEN;
-  return { start, end: Math.min(count - 1, start + LINE_LEN - 1) };
+  const start = Math.floor(activeIdx / LAYOUT.LINE_LEN) * LAYOUT.LINE_LEN;
+  return { start, end: Math.min(count - 1, start + LAYOUT.LINE_LEN - 1) };
 }
-
-const SIZE_MULT: Record<CaptionOptions["size"], number> = {
-  small: 0.78, medium: 1, large: 1.24,
-};
 
 // Archivo Black ships a single 400 weight — asking for 700/800 would trigger
 // the browser's faux-bold and distort the letterforms.
@@ -129,14 +106,14 @@ export const Captions: React.FC<Props> = ({ captions, style = "clean", options }
   }
   if (activeIdx < 0) return null;
 
-  // P0.7: hide the block after the last word ends (+12 frames) so it doesn't burn on
-  // screen through the outro, and during long (>30-frame) silences between words so a
-  // trailing word doesn't hang there through a pause.
+  // P0.7: hide the block after the last word ends (+HIDE_AFTER_LAST frames) so it
+  // doesn't burn on screen through the outro, and during long (>SILENCE_GAP-frame)
+  // silences between words so a trailing word doesn't hang there through a pause.
   const last = captions[captions.length - 1];
-  if (frame > wordEnd(last) + HIDE_AFTER_LAST) return null;
+  if (frame > wordEnd(last) + LAYOUT.CAPTION_HIDE_AFTER_LAST) return null;
   const next = captions[activeIdx + 1];
   if (next && frame > wordEnd(captions[activeIdx]) &&
-      frame < next.frame && next.frame - wordEnd(captions[activeIdx]) > SILENCE_GAP) {
+      frame < next.frame && next.frame - wordEnd(captions[activeIdx]) > LAYOUT.CAPTION_SILENCE_GAP) {
     return null;
   }
 
@@ -145,36 +122,51 @@ export const Captions: React.FC<Props> = ({ captions, style = "clean", options }
   return <Clean captions={captions} activeIdx={activeIdx} opts={opts} />;
 };
 
-// Line-layout anchor per position. Middle biases slightly above true center so a
-// two-line wrap doesn't collide with a centered watermark/face. A continuous
-// dragged pos_y (TikTok model) wins over the discrete word.
-const lineWrap = (opts: CaptionOptions): React.CSSProperties => {
-  const dragged = posYPct(opts);
-  return {
-    position: "absolute", left: 0, right: 0,
-    ...(dragged != null ? { top: `${dragged}%`, transform: "translateY(-50%)" }
-      : opts.position === "top" ? { top: CAPTION_SAFE_TOP }
-      : opts.position === "middle" ? { top: "44%" }
-      : { bottom: CAPTION_SAFE_BOTTOM }),
-    display: "flex", flexWrap: "wrap", justifyContent: "center",
-    padding: "0 40px", gap: 8,
-  };
+// Shared vertical placement (formatting fix #2/#12): anchor (discrete position or
+// dragged pos_y), then clamp the block's CENTER so its ESTIMATED height stays
+// inside the platform safe band — the single mechanism both fixed-size (BoldWord)
+// and grouped (Clean/Karaoke) styles use, replacing three separate ad hoc
+// top/bottom/44%-offset branches that had no idea how tall their own content was.
+const blockPosition = (opts: CaptionOptions, estBlockHeightPx: number): React.CSSProperties => {
+  const centerFrac = captionCenterY(opts.position, posYFrac(opts), estBlockHeightPx);
+  return { position: "absolute", left: 0, right: 0, top: `${centerFrac * 100}%`, transform: "translateY(-50%)" };
+};
+
+const wrapStyle: React.CSSProperties = {
+  display: "flex", flexWrap: "wrap", justifyContent: "center", padding: "0 40px", gap: 8,
 };
 
 const casing = (word: string, opts: CaptionOptions): string =>
   opts.uppercase ? word.toUpperCase() : word;
 
+// Usable width matches Clean/Karaoke's own horizontal padding ("0 40px" in
+// wrapStyle below) — BoldWord's own "0 60px" usable width is computed inside
+// layout.ts's boldWordFontSize itself, so there's no separate constant here.
+const GROUP_USABLE_PX = LAYOUT.FRAME_W - 80;
+// Rough line-height factor for the block-height estimate fed to blockPosition —
+// not pixel-exact (this is a fast pre-filter; the render-formatting Ralph loop
+// catches residual drift with real pixels), just enough to keep a 2-line wrap
+// from being clamped as if it were 1 line tall.
+const LINE_HEIGHT_FACTOR = 1.3;
+
 const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: CaptionOptions }> =
   ({ captions, activeIdx, opts }) => {
   const { start, end } = groupBounds(opts.grouping, activeIdx, captions.length, 2, 4);
+  const group = captions.slice(start, end + 1);
+  // Measured at a representative weight (700, between the 600 default and the 800
+  // highlighted weight) — sizing for the heavier case keeps the lighter-weight
+  // words comfortably inside the same fitted width.
+  const fit = fitTextBlock(group.map((c) => c.word), 50 * sizeMult(opts), GROUP_USABLE_PX,
+                           LAYOUT.CAPTION_MAX_LINES, LAYOUT.CAPTION_MIN_SHRINK, opts.font, 700, opts.uppercase);
+  const estHeight = fit.fontSize * LINE_HEIGHT_FACTOR * fit.lines;
   return (
-    <div style={lineWrap(opts)}>
-      {captions.slice(start, end + 1).map((c, i) => {
+    <div style={{ ...blockPosition(opts, estHeight), ...wrapStyle }}>
+      {group.map((c, i) => {
         const isActive = start + i === activeIdx;
         const hi = isHighlighted(c.word, opts);
         return (
           <span key={start + i} style={{
-            fontFamily: FONTS[opts.font], fontSize: 50 * sizeMult(opts),
+            fontFamily: FONTS[opts.font], fontSize: fit.fontSize,
             fontWeight: weightFor(opts.font, hi ? 800 : 600),
             // Keyword highlight wins; else the accent colors the HOT word; default white.
             color: hi ? highlightColor(opts) : (isActive && opts.accent ? opts.accent : "white"),
@@ -187,36 +179,42 @@ const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Captio
   );
 };
 
-const BoldWord: React.FC<{ word: string; opts: CaptionOptions }> = ({ word, opts }) => (
-  <div style={{
-    position: "absolute", left: 0, right: 0,
-    ...(posYPct(opts) != null ? { top: `${posYPct(opts)}%`, transform: "translateY(-50%)" }
-      : opts.position === "top" ? { top: CAPTION_SAFE_TOP + 80 }
-      : opts.position === "bottom" ? { bottom: CAPTION_SAFE_BOTTOM + 80 }
-      : { top: 0, bottom: 0 }),
-    display: "flex",
-    alignItems: posYPct(opts) == null && opts.position === "middle" ? "center" : "flex-start",
-    justifyContent: "center", padding: "0 60px",
-  }}>
-    <span style={{
-      fontFamily: FONTS[opts.font], fontSize: 128 * sizeMult(opts),
-      fontWeight: weightFor(opts.font, 800), lineHeight: 1.05,
-      color: opts.accent ?? "white", textAlign: "center", textTransform: "uppercase",
-      letterSpacing: opts.font === "archivo" ? 0 : -2,
-      textShadow: "0 4px 20px rgba(0,0,0,0.9)",
-      WebkitTextStroke: "3px rgba(0,0,0,0.55)",
-    }}>{word}</span>
-  </div>
-);
+const BoldWord: React.FC<{ word: string; opts: CaptionOptions }> = ({ word, opts }) => {
+  const fontSize = boldWordFontSize(word, sizeMult(opts), opts.font);
+  const estHeight = fontSize * 1.1;   // single line, tight leading (lineHeight 1.05 below)
+  return (
+    <div style={{
+      ...blockPosition(opts, estHeight),
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "0 60px",
+    }}>
+      <span style={{
+        fontFamily: FONTS[opts.font], fontSize,
+        fontWeight: weightFor(opts.font, 800), lineHeight: 1.05,
+        color: opts.accent ?? "white", textAlign: "center", textTransform: "uppercase",
+        letterSpacing: opts.font === "archivo" ? 0 : -2,
+        textShadow: "0 4px 20px rgba(0,0,0,0.9)",
+        WebkitTextStroke: "3px rgba(0,0,0,0.55)",
+        // Belt for a genuinely pathological single "word" the font-shrink floor
+        // alone can't fit (see layout.ts fitTextBlock docs) — wraps mid-word
+        // rather than overflowing the frame.
+        maxWidth: "100%", overflowWrap: "anywhere",
+      }}>{word}</span>
+    </div>
+  );
+};
 
 const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: CaptionOptions }> =
   ({ captions, activeIdx, opts }) => {
   const frame = useCurrentFrame();
   const { start, end } = groupBounds(opts.grouping, activeIdx, captions.length, 3, 3);
+  const group = captions.slice(start, end + 1);
   const fill = opts.accent ?? ACCENT;
+  const fit = fitTextBlock(group.map((c) => c.word), 54 * sizeMult(opts), GROUP_USABLE_PX,
+                           LAYOUT.CAPTION_MAX_LINES, LAYOUT.CAPTION_MIN_SHRINK, opts.font, 700, opts.uppercase);
+  const estHeight = fit.fontSize * LINE_HEIGHT_FACTOR * fit.lines;
   return (
-    <div style={lineWrap(opts)}>
-      {captions.slice(start, end + 1).map((c, i) => {
+    <div style={{ ...blockPosition(opts, estHeight), ...wrapStyle }}>
+      {group.map((c, i) => {
         const idx = start + i;
         const spoken = idx <= activeIdx;
         // Formatting fix #14: a CSS `transition` is a no-op in Remotion's frame-by-frame
@@ -226,7 +224,7 @@ const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Capt
         const pop = idx === activeIdx ? karaokePop(frame, c.frame) : 1;
         return (
           <span key={idx} style={{
-            fontFamily: FONTS[opts.font], fontSize: 54 * sizeMult(opts),
+            fontFamily: FONTS[opts.font], fontSize: fit.fontSize,
             fontWeight: weightFor(opts.font, 700),
             color: spoken ? fill : "white",
             textShadow: "0 2px 8px rgba(0,0,0,0.85)",
