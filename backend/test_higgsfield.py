@@ -151,3 +151,58 @@ def test_eta_in_create_and_get(monkeypatch):
     g = client.get(f"/v1/clips/{r['job_id']}").json()
     assert g["eta_seconds"] >= 20
     main._clip_jobs.pop(r["job_id"], None)
+
+
+# --- adversarial-review regression tests -------------------------------------------
+
+def test_eta_anchors_at_stage_not_created_at():
+    """Review finding: user dwell at brief_ready must not count as pipeline progress."""
+    import time
+    now = time.time()
+    # parked on the user → NO estimate at all
+    assert main._job_eta_seconds({"status": "brief_ready", "created_at": now - 500}) is None
+    # a fresh stage on an OLD job uses the stage anchor, not created_at
+    job = {"status": "editing", "created_at": now - 500, "stage_started_at": now}
+    assert main._job_eta_seconds(job) >= 125          # full editing baseline, not the floor
+
+
+def test_tweak_rerender_never_generates(monkeypatch):
+    """Review finding: generation inside the render-watchdog window falsely failed
+    succeeding renders — _rerender_clip's resolve must pass allow_generation=False."""
+    import asyncio
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main.higgsfield_mod, "CONFIGURED", True)
+    main._broll_url_cache.clear(); main._broll_gen_failed.clear()
+
+    async def no_candidates(query, n):
+        return []
+    async def must_not_run(cue, duration_s=5):
+        raise AssertionError("generation must not run on the tweak path")
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", no_candidates)
+    monkeypatch.setattr(main.higgsfield_mod, "generate_broll", must_not_run)
+
+    edl = {"broll": [{"broll_query": "nothing matches", "cue_text": "c", "source": "stock"}]}
+    out = asyncio.run(main._resolve_broll(edl, allow_generation=False))
+    assert out["broll"][0].get("resolved_url") is None   # honestly unresolved, no burn
+
+
+def test_failed_generation_negative_cached(monkeypatch):
+    import asyncio
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main.higgsfield_mod, "CONFIGURED", True)
+    main._broll_url_cache.clear(); main._broll_gen_failed.clear()
+
+    calls = []
+    async def no_candidates(query, n):
+        return []
+    async def failing_generate(cue, duration_s=5):
+        calls.append(cue)
+        return None
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", no_candidates)
+    monkeypatch.setattr(main.higgsfield_mod, "generate_broll", failing_generate)
+
+    edl = {"broll": [{"broll_query": "hopeless", "cue_text": "c", "source": "stock"}]}
+    asyncio.run(main._resolve_broll(edl))
+    asyncio.run(main._resolve_broll(edl))               # second pass: negative cache holds
+    assert len(calls) == 1
+    main._broll_gen_failed.clear()

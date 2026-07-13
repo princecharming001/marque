@@ -2087,7 +2087,7 @@ async def create_clip_job(req: ClipJobRequest):
             job["edl"] = _apply_edit_prefs(_mock_edl(job["style"], job.get("script") or {}), prefs)
             job["knowledge_version"] = knowledge_mod.knowledge_version()
             return {"mode": "mock", "job_id": job_id, "status": "mock_ready", "clips": job["clips"]}
-        job["status"] = "processing"
+        _mark_stage(job, "processing")
         _spawn(_run_auto_pipeline(job_id))
         _spawn(_persist_clip_job(job_id))
         return {"mode": "live", "job_id": job_id, "status": "processing", "clips": job["clips"],
@@ -2576,9 +2576,13 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
     try:
         if resolve_broll:
             try:
-                job["edl"] = await _resolve_broll(job["edl"])
+                job["edl"] = await _resolve_broll(job["edl"], allow_generation=False)
             except Exception:
                 clip.setdefault("warnings", []).append("broll_unresolved: resolve failed")
+            # The resolve above ran INSIDE the rendering-watchdog window — restart the
+            # clock so slow (but succeeding) resolution can't get the render falsely
+            # failed as stalled and its good result discarded.
+            clip["render_started_at"] = time.time()
         async with _render_semaphore:   # G7: bound cross-job Lambda concurrency
             submission = await _submit_remotion_render(
                 job["source_url"], job["edl"], clip["format"], job["style"])
@@ -3015,18 +3019,28 @@ def _fail_clip(clip: dict, code: str, detail: str = "") -> None:
 # numbers (the app shows "~N min"), clamped so a slow stage never shows 0 then hangs.
 _STAGE_ETA_S = {
     "processing": 240, "transcribing": 240, "analyzing": 180,
-    "brief_ready": 150, "editing": 130, "rendering": 90,
+    "editing": 130, "rendering": 90,
+    # brief_ready is deliberately ABSENT: the job is parked on a USER action there —
+    # any countdown would be a lie (review finding: dwell time counted as progress).
 }
 
 
+def _mark_stage(job: dict, status: str) -> None:
+    """Set the job status AND stamp when this stage began — the ETA anchors here,
+    so time the user spends parked (e.g. reviewing a brief) never counts as
+    pipeline progress."""
+    job["status"] = status
+    job["stage_started_at"] = time.time()
+
+
 def _job_eta_seconds(job: dict) -> int | None:
-    """Remaining-time estimate for a non-terminal job, or None once terminal.
-    Stage baseline minus elapsed-in-pipeline, floored at 20s (never promise 0)."""
+    """Remaining-time estimate for a non-terminal job, or None once terminal or
+    parked on user action. Stage baseline minus elapsed-IN-STAGE, floored at 20s."""
     base = _STAGE_ETA_S.get(job.get("status") or "")
     if base is None:
         return None
-    elapsed = max(0.0, time.time() - float(job.get("created_at") or time.time()))
-    # Elapsed time already ate into the earlier stages' share of the estimate.
+    anchor = float(job.get("stage_started_at") or job.get("created_at") or time.time())
+    elapsed = max(0.0, time.time() - anchor)
     return max(20, int(base - min(elapsed, base - 20)))
 
 
@@ -3112,7 +3126,7 @@ async def _transcribe_job(job_id: str) -> list[dict]:
     """Transcribe the job's source into word-frames (shared by the full pipeline and the
     analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights."""
     job = _clip_jobs[job_id]
-    job["status"] = "transcribing"
+    _mark_stage(job, "transcribing")
     for c in job["clips"]:
         c["status"] = "transcribing"
     await _validate_source_url(job["source_url"])
@@ -3164,7 +3178,7 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
         _dossier_job(job_id))
     job["loudness_lufs"] = lufs
     job["dossier"] = dossier
-    job["status"] = "analyzing"
+    _mark_stage(job, "analyzing")
     for c in job["clips"]:
         c["status"] = "analyzing"
     await _resolve_reference_patterns(job)   # P2.3: measure the reference reel (cached)
@@ -3304,7 +3318,7 @@ async def _run_edit(job_id: str, words: list[dict]):
     the analyze-first /confirm stage. Always leaves the job + clips terminal."""
     job = _clip_jobs[job_id]
     try:
-        job["status"] = "editing"
+        _mark_stage(job, "editing")
         for c in job["clips"]: c["status"] = "editing"
         style = job["style"]
         script = job["script"]
@@ -3448,7 +3462,7 @@ async def _run_edit(job_id: str, words: list[dict]):
         # revision if below threshold — BEFORE the final render. Flag-gated + fail-soft.
         await _self_review_edl(job_id)
 
-        job["status"] = "rendering"
+        _mark_stage(job, "rendering")
         await _render_all_clips(job_id)
 
         # Ready ONLY if at least one clip actually delivered a render. The old
@@ -4870,7 +4884,13 @@ async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None =
 _broll_url_cache: dict[str, str] = {}
 
 
-async def _resolve_broll(edl: dict, dossier: dict | None = None) -> dict:
+# Queries whose GENERATION already failed once — never re-burn credits/latency on them
+# (a successful resolution is cached in _broll_url_cache; this is the negative side).
+_broll_gen_failed: set[str] = set()
+
+
+async def _resolve_broll(edl: dict, dossier: dict | None = None,
+                         allow_generation: bool = True) -> dict:
     """Resolve each b-roll cue (broll_query, source='stock') to a real portrait video URL
     via Pexels, in place. own_media entries (already have an asset/URL) are left alone.
     P4.1: fetch BROLL_CANDIDATES candidates and vision-re-rank the best against the cue +
@@ -4892,11 +4912,19 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None) -> dict:
         candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
         url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
         # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
-        # of silently dropping the cutaway. Capped per job (credits + ~1-2 min latency
-        # per generation); cached per query like every other resolution. Fail-soft.
-        if not url and higgsfield_mod.CONFIGURED and generated_count < _HIGGSFIELD_MAX_PER_JOB:
+        # of silently dropping the cutaway. Runs ONLY on the initial edit pipeline
+        # (allow_generation=False on tweak re-renders — generation inside the render
+        # watchdog window falsely failed succeeding renders, and re-tweaks re-burned
+        # credits), capped per pass, negative-cached per query. Fail-soft.
+        if not url and allow_generation and higgsfield_mod.CONFIGURED \
+                and generated_count < _HIGGSFIELD_MAX_PER_JOB \
+                and query not in _broll_gen_failed:
             generated_count += 1
             url = await higgsfield_mod.generate_broll(b.get("cue_text") or query)
+            if not url:
+                _broll_gen_failed.add(query)
+                if len(_broll_gen_failed) > 5000:
+                    _broll_gen_failed.clear()     # bounded; a rare full reset is fine
         if url:
             _broll_url_cache[query] = url
             _cap_evict(_broll_url_cache, 10_000)

@@ -687,7 +687,7 @@ final class AppStore {
                          seconds: Catalog.format(formatId).targetSeconds,
                          jobId: jobId)
             c.localVideoPath = footagePath
-            if !stub.ready { c.etaSeconds = etaSeconds }   // "Ready in ~N min" in the Library
+            if !stub.ready { c.etaSeconds = etaSeconds; c.etaSetAt = Date() }
             return c
         }
         clips.insert(contentsOf: tagged, at: 0)
@@ -749,12 +749,16 @@ final class AppStore {
             }
             if let result = maybeResult,
                let jobClips = result["clips"] as? [[String: Any]] {
+                let etaSeconds = result["eta_seconds"] as? Int
                 for jobClip in jobClips {
                     let clipStatus = jobClip["status"] as? String ?? ""
                     guard let backendId = UUID(uuidString: jobClip["clip_id"] as? String ?? ""),
                           let idx = clips.firstIndex(where: { $0.id == backendId }) else { continue }
                     clips[idx].status = clipStatus == "ready" ? .ready
                                       : clipStatus == "failed" ? .failed : .rendering
+                    let terminal = clipStatus == "ready" || clipStatus == "failed"
+                    clips[idx].etaSeconds = terminal ? nil : etaSeconds
+                    clips[idx].etaSetAt = terminal ? nil : Date()
                     if let url = jobClip["render_url"] as? String { updateRemoteURL(url, at: idx) }
                     if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed"
@@ -806,7 +810,9 @@ final class AppStore {
                 if let backendId = UUID(uuidString: clipIdStr),
                    let idx = clips.firstIndex(where: { $0.id == backendId }) {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
-                    clips[idx].etaSeconds = clipStatus == "ready" || clipStatus == "failed" ? nil : etaSeconds
+                    let terminal = clipStatus == "ready" || clipStatus == "failed"
+                    clips[idx].etaSeconds = terminal ? nil : etaSeconds
+                    clips[idx].etaSetAt = terminal ? nil : Date()
                     if let url = renderURL { updateRemoteURL(url, at: idx) }
                     if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed" ? clipError : nil
@@ -842,6 +848,8 @@ final class AppStore {
             return "We couldn't read the audio in your take. Re-record with clearer sound, or try again."
         case "render_stalled", "render_timeout":
             return "The edit took too long and timed out. Tap to try again."
+        case "pipeline_interrupted":
+            return "The edit was interrupted mid-flight (a brief server restart). Tap to restart it."
         case "render_fatal", "render_no_output", "render_submit_failed", "bridge_error":
             return "Something went wrong while rendering this clip. Tap to try again."
         case "internal_error":
