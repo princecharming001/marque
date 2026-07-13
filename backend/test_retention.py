@@ -384,3 +384,152 @@ def test_split_segment_in_place_matches_the_apply_op_path():
     assert results[0]["applied"] is True
     assert edl_a["segments"] == edl_b["segments"]
     assert edl_a.get("transitions") == edl_b.get("transitions")
+
+
+# ---------------------------------------------------------------------------
+# WS3 — schedule_interrupts
+# ---------------------------------------------------------------------------
+
+def _steady_words(total_ms, step_ms=300):
+    out, t, i = [], 0, 0
+    while t < total_ms:
+        out.append({"word": f"w{i}", "start_ms": t, "end_ms": t + 200})
+        t += step_ms
+        i += 1
+    return out
+
+
+def _bare_edl(style, total_frames, **over):
+    edl = _base_edl(style=style, segments=[{"src_in": 0, "src_out": total_frames}],
+                    drops=[], overlays=[], broll=[])
+    edl.update(over)
+    return edl
+
+
+def test_interrupts_no_static_span_exceeds_cadence_plus_hold():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    windows = sorted((o["src_in"], o["src_out"]) for o in out["overlays"])
+    assert len(windows) >= 2
+    gaps = [b[0] - a[1] for a, b in zip(windows, windows[1:])]
+    cadence = retention._INTERRUPT_CADENCE["talking_head"]
+    assert all(g <= cadence + retention._INTERRUPT_HOLD_FRAMES for g in gaps)
+
+
+def test_interrupts_respect_hook_and_cta_guard_zones():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    for o in out["overlays"]:
+        out_start = ms_to_frame(next(w for w in words if w["word"] == "w0")["start_ms"])  # sanity anchor unused
+    # Re-derive via the same output index the function itself uses, for an honest check.
+    index, total_out = retention._build_output_index(out["segments"], out["drops"], retention._play_order(out))
+    for o in out["overlays"]:
+        out_frame = retention._src_to_out(index, o["src_in"])
+        assert out_frame is not None
+        assert out_frame >= retention._INTERRUPT_HOOK_GUARD - 1
+        assert out_frame <= total_out - retention._INTERRUPT_CTA_GUARD + 1
+
+
+def test_interrupts_alternate_scale():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    scales = [o["scale"] for o in sorted(out["overlays"], key=lambda o: o["src_in"])]
+    assert len(scales) >= 2
+    for a, b in zip(scales, scales[1:]):
+        assert a != b   # strictly alternating
+
+
+def test_interrupts_faceless_uses_text_stickers_not_punch_in():
+    words = _steady_words(20000)
+    total_frames = ms_to_frame(20000)
+    edl = _bare_edl("faceless", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="faceless", hints={})
+    assert len(out["overlays"]) > 0
+    assert all(o["type"] == "text_sticker" for o in out["overlays"])
+
+
+def test_interrupts_cap_at_max_per_clip():
+    words = _steady_words(120000, step_ms=250)   # a very long, very dense take
+    total_frames = ms_to_frame(120000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    assert len(out["overlays"]) <= retention._INTERRUPT_MAX_PER_CLIP
+
+
+def test_interrupts_skips_fast_cuts_and_duet_split():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    for style in ("fast_cuts", "duet_split"):
+        edl = _bare_edl(style, total_frames)
+        out = retention.schedule_interrupts(edl, words, style=style, hints={})
+        assert out["overlays"] == []
+
+
+def test_interrupts_respects_prefs_punch_ins_false():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head",
+                                        prefs={"punch_ins": False}, hints={})
+    assert out == edl
+
+
+def test_interrupts_density_dense_inserts_more_than_calm():
+    words = _steady_words(60000, step_ms=250)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    calm = retention.schedule_interrupts(edl, words, style="talking_head",
+                                         hints={"interrupt_density": "calm"})
+    dense = retention.schedule_interrupts(edl, words, style="talking_head",
+                                          hints={"interrupt_density": "dense"})
+    assert len(dense["overlays"]) > len(calm["overlays"])
+
+
+def test_interrupts_never_overlaps_an_existing_overlay():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    # Pre-place a punch_in covering the middle third of the take.
+    existing_lo, existing_hi = int(total_frames * 0.4), int(total_frames * 0.6)
+    existing = {"type": "punch_in", "src_in": existing_lo, "src_out": existing_hi,
+               "scale": 1.08, "text": ""}
+    edl = _bare_edl("talking_head", total_frames, overlays=[existing])
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    # schedule_interrupts deep-copies internally, so compare by VALUE (the exact
+    # pre-existing window), not object identity, to skip the untouched original.
+    new_ones = [o for o in out["overlays"]
+               if not (o["src_in"] == existing_lo and o["src_out"] == existing_hi)]
+    assert len(new_ones) == len(out["overlays"]) - 1   # exactly the existing one was skipped
+    for o in new_ones:
+        assert o["src_out"] <= existing_lo or o["src_in"] >= existing_hi
+
+
+def test_interrupts_does_not_mutate_input():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    original_overlays = edl["overlays"]
+    retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    assert edl["overlays"] is original_overlays and edl["overlays"] == []
+
+
+def test_interrupts_output_passes_invariants():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    assert check_edl_invariants(out) == []
+
+
+def test_interrupts_applied_via_orchestrator():
+    retention._ENV_PASSES = "interrupts"
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_retention_passes(edl, words, style="talking_head")
+    assert len(out["overlays"]) > 0

@@ -6,6 +6,7 @@ import { TextStickers } from "../components/TextStickers";
 import { BrollLayer } from "../components/BrollLayer";
 import { Grade } from "../components/Grade";
 import { Captions, FONTS } from "../components/Captions";
+import { usePunchScale } from "../components/PunchZoom";
 import { CompositionProps } from "../types";
 import { LAYOUT, cardFit } from "../layout";
 
@@ -20,6 +21,7 @@ import { LAYOUT, cardFit } from "../layout";
 // overlay window (output coords); with no text_card overlay it shows throughout.
 export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
   const frame = useCurrentFrame();
+  const punchScale = usePunchScale(edl?.overlays);
   const textCards = (edl?.overlays ?? []).filter((o) => o.type === "text_card");
   // Only a REAL text card renders. The old fallback burned a literal
   // "Reference post" placeholder into the delivered video whenever the EDL
@@ -48,11 +50,15 @@ export const GreenScreen: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
           }}>{activeCard.text}</div>
         )}
       </div>
-      {/* Speaker in a rounded, shadowed card filling the bottom 55% — no blend modes. */}
+      {/* Speaker in a rounded, shadowed card filling the bottom 55% — no blend modes.
+          Punch-in zoom applies to an inner wrapper so it stays clipped by the card's
+          own rounded corners/border rather than scaling the frame/shadow itself. */}
       <div style={{ position: "absolute", left: "4%", right: "4%", bottom: "3%", height: "54%",
         borderRadius: 28, overflow: "hidden", boxShadow: "0 16px 50px rgba(0,0,0,0.5)",
         border: "3px solid rgba(255,255,255,0.9)" }}>
-        <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
+        <AbsoluteFill style={{ transform: `scale(${punchScale})` }}>
+          <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
+        </AbsoluteFill>
       </div>
       {edl && <BrollLayer broll={edl.broll} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
