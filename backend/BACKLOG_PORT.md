@@ -46,7 +46,7 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 - [x] tests (LOOP I): day-1 zero, dedup blocks repeat, underperformer skips before detect_spike — test_palo_insights.py 8 green (Phase 3 box2)
 
 ## Phase 4 — strategy compiler / brain  (flag: STRATEGY_COMPILER)
-- [ ] `app/dossier_adapter.py` — dossier → Palo-shaped analysis block (RISK #1 mitigation)
+- [x] `app/dossier_adapter.py` — dossier+transcript+metrics → compiler analysis block (RISK #1); `catalog_block` = metrics-ranked evidence pack; thin dossier degrades gracefully (test_palo_dossier_adapter.py 4 green; +1 port_eval; suite 922)
 - [ ] `app/strategy_compiler.py` — Sonnet digest → Opus synthesis, section splitter, UPSERT revision
 - [ ] gates: `compile_allowed` + freshness + per-stage `ai_usage`; weekly `/internal/cron/compile`
 - [ ] inject `{STRATEGY_*}` into script gen + converse

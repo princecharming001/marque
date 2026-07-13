@@ -94,6 +94,12 @@ def _checks() -> list[tuple[str, bool]]:
     out.append(("insight.settle", _ti.settle_candidates(
         [{"entity_type": "post", "entity_id": "p1", "metric": "views", "value": 1000}], 500) == [("p1", 1.0)]))
 
+    # Phase 4 — dossier adapter (RISK #1)
+    from app import dossier_adapter as _da
+    _blk = _da.dossier_to_analysis_block({"title": "T", "views": 1000,
+        "dossier": {"first_frame": {"desc": "hook", "pattern_interrupt": True}}})
+    out.append(("strategy.adapter", "T (1,000 views)" in _blk and "pattern interrupt" in _blk))
+
     return out
 
 
