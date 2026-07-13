@@ -50,8 +50,7 @@
       "id": "editor-cleanup-panel",
       "label": "ProEditorView — cleanup (filler-removal) panel",
       "screenshot": "format-audit-editor-cleanup-panel.png",
-      "expect_visible_ids": ["editorPro.cleanupPanel"],
-      "expect_visible_text": ["Cancel"]
+      "expect_visible_ids": ["editorPro.cleanupPanel", "editorPro.cleanup.cancel"]
     },
     {
       "id": "editor-transition-dip",

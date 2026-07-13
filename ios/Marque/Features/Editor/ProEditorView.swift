@@ -1068,18 +1068,19 @@ struct ProEditorView: View {
 
     var mediaPanel: some View {
         VStack(spacing: 0) {
-            ZStack {
+            // Same fix as cleanupPanel (ProEditorView+Actions.swift) — see the
+            // .accessibilityElement(children: .contain) on this panel's outer VStack
+            // below for the actual root-cause explanation.
+            HStack {
                 Text("Add media").font(AppFont.headline).foregroundStyle(.white)
-                HStack {
-                    Spacer()
-                    Button { withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false } } label: {
-                        Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
-                            .padding(.horizontal, Space.md).padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("editorPro.mediaPanel.cancel")
+                Spacer()
+                Button { withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false } } label: {
+                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                        .padding(.horizontal, Space.md).padding(.vertical, 8)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.mediaPanel.cancel")
             }
             .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
 
@@ -1119,6 +1120,7 @@ struct ProEditorView: View {
         .frame(height: 300, alignment: .top)
         .frame(maxWidth: .infinity)
         .background(Palette.ink.opacity(0.6))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.mediaPanel")
     }
 
