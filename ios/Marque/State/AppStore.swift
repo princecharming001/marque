@@ -93,11 +93,25 @@ final class AppStore {
             hasOnboarded = true
             auth.continueAsDemo()
             subscription.devContinue()
+            // LOOP U: an optional style override (Maestro's `demoClipStyle` launch
+            // argument, read the same way as `backend.url`) — the composition-framing
+            // preview overlays (green_screen/duet_split/split_three) only render for
+            // their own style, so exercising them for UI-formatting QA needs a seeded
+            // clip in that SPECIFIC style rather than the talking_head every other
+            // demoClip consumer (e.g. .maestro/editor-pro-flow.yaml) expects and still
+            // gets when this argument is absent. The editor session's EDL doesn't come
+            // from this Script/Clip at all though — it's polled from the backend by
+            // jobId (see ProEditorView+Actions.swift load()), which keyless-synthesizes
+            // a mock EDL for any `demo-`/`sim-`-prefixed id (main.py
+            // _synthesize_demo_clip_job) — so the style override has to travel via the
+            // jobId itself, not just this cosmetic Script field.
+            let demoStyleOverride = UserDefaults.standard.string(forKey: "demoClipStyle")
+            let demoStyle = demoStyleOverride ?? VideoStyle.talkingHead.rawValue
             let script = Script(
                 pillarName: "Your script",
                 title: "The one system that actually works",
                 summary: "Written by you",
-                style: VideoStyle.talkingHead.rawValue,
+                style: demoStyle,
                 formatId: "myth-buster",
                 hook: Hook(text: "Stop overthinking your content.", signal: .narrative, strength: 78),
                 altHooks: [],
@@ -112,7 +126,10 @@ final class AppStore {
                             formatName: "Myth-buster", caption: script.body,
                             predictedScore: 78, status: .ready, seconds: 22)
             clip.title = script.title
-            clip.jobId = "demo-clip-job"     // non-nil ⇒ Library shows "Edit manually"
+            // non-nil ⇒ Library shows "Edit manually". The plain "demo-clip-job" id is
+            // preserved exactly for the untouched (no override) path — backend tests
+            // assert on that literal string (test_demo_editor_job_synthesized_keyless).
+            clip.jobId = demoStyleOverride.map { "demo-\($0)" } ?? "demo-clip-job"
             clips.insert(clip, at: 0)
         }
         #endif

@@ -27,3 +27,7 @@ render/dist/
 render/dist-test/
 render/fixtures/source.mp4
 render/out/
+
+# LOOP U — machine-generated vision-tier cache, not meaningful to commit
+# (unlike .shots/*.png itself, which is an intentionally-committed reference set)
+.shots/.ui_eval_cache.json

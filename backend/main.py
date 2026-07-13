@@ -2801,7 +2801,7 @@ def _demo_editor_edl(style: str, script: dict) -> dict:
     confirm flow's single-segment contract — which many tests assert on — is
     untouched. Three ~8s segments across a 720-frame (24s @30fps) source."""
     hook = (script.get("hook") or "Great hook here").split()[:9]
-    return {
+    edl = {
         "style": style, "format_id": script.get("formatId", "myth-buster"),
         "segments": [{"src_in": 0, "src_out": 240},
                      {"src_in": 240, "src_out": 480},
@@ -2811,7 +2811,35 @@ def _demo_editor_edl(style: str, script: dict) -> dict:
         "overlays": [{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}],
         "broll": [], "layout": {"style": style, "panels": 1, "panel_boundaries": []},
         "audio": {"lufs_target": -14.0},
+        # LOOP U: a boundary transition so the editor's transitionSimOverlay
+        # (ProEditorView.swift editorPro.transitionDip) has something to render —
+        # every prior demo job omitted transitions entirely, so that preview was
+        # never actually reachable from the sim-driven demo path. frames=90 (3s,
+        # vs. a real edit's typical ~12) is deliberately widened: this is a
+        # black-box Maestro flow driving real-time playback with no frame-exact
+        # scrubbing affordance, so the ramp window needs to be wide enough for a
+        # `wait for real-time playback to reach it` step to reliably land inside
+        # it. This EDL is never rendered (editor-preview only, not fed through
+        # build_render_plan), so it doesn't interact with that function's own
+        # frames clamp (max 45) for real transitions.
+        "transitions": [{"after_segment": 0, "style": "fade_black", "frames": 90}],
     }
+    if style == "duet_split":
+        # LOOP U: duet_split is the one style whose editor preview reads fields
+        # beyond `style` itself (a react source + play schedule) — a minimal but
+        # complete placeholder so the iOS side has something to parse, not just
+        # an absent key it may not handle as gracefully as GreenScreen's
+        # documented "no fake copy" no-overlay fallback does.
+        edl["react_source"] = {"resolved_url": None, "kind": "video", "credit_label": "@original"}
+        edl["react_schedule"] = [{"state": "play", "src_in": 0, "src_out": 720, "clip_from": 0, "audio_gain": 1.0}]
+    return edl
+
+
+# LOOP U: styles the UI-formatting audit can request via a `demo-<style>` job id
+# (e.g. "demo-green_screen") — anything else, including the pre-existing plain
+# "demo-clip-job" id, falls back to the original talking_head default below.
+_DEMO_STYLES = {"talking_head", "green_screen", "broll_cutaway", "split_three",
+               "duet_split", "faceless", "fast_cuts"}
 
 
 def _synthesize_demo_clip_job(job_id: str) -> dict:
@@ -2822,7 +2850,8 @@ def _synthesize_demo_clip_job(job_id: str) -> dict:
               "body": "Here is the one system that actually works. Pick one idea, "
                       "film it in a single take, and ship it. Follow for more.",
               "cta": "Follow for more", "formatId": "myth-buster"}
-    style = "talking_head"
+    suffix = job_id[len("demo-"):] if job_id.startswith("demo-") else ""
+    style = suffix if suffix in _DEMO_STYLES else "talking_head"
     job = {
         "status": "mock_ready", "style": style, "script": script,
         "source_url": None,
