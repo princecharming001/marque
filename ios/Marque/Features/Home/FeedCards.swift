@@ -86,6 +86,10 @@ struct ScriptFeedCard: View {
         // their own hit areas (buttons beat a background tap gesture).
         .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .onTapGesture(perform: onOpen)
+        // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
+        // without .accessibilityElement(children: .contain), this card's own identifier
+        // clobbers the inner feed.like/feed.dismiss/feed.save button identifiers.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("feed.pick")
     }
 }

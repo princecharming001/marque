@@ -215,6 +215,12 @@ struct MarqueSegmented: View {
         .padding(3)
         .background(Palette.surfaceSunken)
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        // Every call site wraps a MarqueSegmented instance with its own
+        // .accessibilityIdentifier(...) (e.g. "settings.captionStyle"). Without this
+        // .accessibilityElement(children: .contain), that external identifier leaks onto
+        // every segment Button's own "segment.<opt>" identifier below — same root cause
+        // as the cleanupPanel/mediaPanel fix. Fixing it once here covers every call site.
+        .accessibilityElement(children: .contain)
     }
 }
 
