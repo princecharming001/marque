@@ -1754,6 +1754,8 @@ async def steer(req: SteerRequest):
         sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction, arm_stats=stats)
         sys = await _inject_brain(sys, req.creator_id, req.instruction)   # G1: refine stays brain-aware
         out = extract_json(await anthropic(sys, usr, SONNET, 1500), array=False)
+        if out:
+            (out,) = await _ensure_speakable([out])   # steer is unjudged — guard the body
         return {"mode": "live", "script": out or req.script}
     except HTTPException:
         return {"mode": "mock", "script": req.script}
@@ -7316,6 +7318,36 @@ def _feed_cache_key(creator_id: str, niche: str, audience: str, known_for: str,
     return f"{creator_id}::{sig}" + (f"::m{mem}" if mem else "")
 
 
+_SPEAKABLE_REPAIR_SYS = (
+    "You rewrite a short-form video script BODY so it is the EXACT words the creator says "
+    "out loud to camera — a verbatim spoken script, never a description of what to talk "
+    "about. Remove every stage direction / instruction ('talk about', 'mention', 'explain "
+    "that', 'Beat 1', 'show a chart', 'cut to') and replace it with the actual spoken line "
+    "that would go there, in the creator's voice. Keep the meaning, the length, and any "
+    "\\n\\n paragraph breaks. Return ONLY the rewritten body text, nothing else."
+)
+
+
+async def _ensure_speakable(scripts: list[dict]) -> list[dict]:
+    """Runtime speakability guard for the UNJUDGED script paths (fast paint, mimic, steer,
+    from-brief). For any body that reads as a description/stage-direction, run one cheap
+    HAIKU rewrite into spoken copy. Fail-soft: keeps the original on any error/keyless."""
+    if not (ANTHROPIC_KEY and scripts):
+        return scripts
+    for s in scripts:
+        body = s.get("body") or ""
+        if not prompts.flag_stage_direction(body, s.get("style", "")):
+            continue
+        try:
+            fixed = await asyncio.wait_for(
+                anthropic(_SPEAKABLE_REPAIR_SYS, body, HAIKU, 600), timeout=8.0)
+        except (HTTPException, asyncio.TimeoutError):
+            fixed = None
+        if fixed and fixed.strip() and not prompts.flag_stage_direction(fixed, s.get("style", "")):
+            s["body"] = fixed.strip()
+    return scripts
+
+
 async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
     """First-paint script generation: ONE lean HAIKU call, no best-of-N hooks and no
     judge/repair pass. The blank-home audit measured the old SONNET + full-schema call
@@ -7333,6 +7365,10 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
         sys, usr = prompts.scripts_prompt(sreq.d(), pillar, sreq.style, sreq.count,
                                           sreq.media_context, sreq.posts or None,
                                           arm_stats=stats, memory=sreq.memory or None)
+        # Palo brain on the cold paint too: a single compiled-strategy read (cheap) so the
+        # first-ever picks reflect the creator's strategy — the full brain rides the
+        # background OPUS upgrade. Best-effort; never blocks the paint.
+        sys = await _inject_strategy(sys, sreq.creator_id)
         # Output tokens are the latency long pole (HAIKU ~130 tok/s: three full bodies
         # ≈ 1000+ tokens ≈ 8-10s — measured live blowing the budget). Tight first-paint
         # bodies keep generation ~4-6s; the background OPUS pass restores full depth.
@@ -7358,6 +7394,10 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
         # a lonely single card (script-quality audit — the schema has no minItems).
         if len(out) < sreq.count:
             out = out + mock_scripts(sreq)[len(out):sreq.count]
+        # Speakability guard: the fast paint is unjudged, so a description-style body
+        # (the "some scripts describe what to say" report) would otherwise ship. Repair
+        # any that trip the lint into verbatim spoken copy before returning.
+        out = await _ensure_speakable(out)
         # "live_fast" (NOT "live"): a real-AI DRAFT (lean HAIKU, ≤80-word bodies, no
         # judge pass). The client uses this to keep polling for the full Opus upgrade —
         # marking it plain "live" stranded users on the draft (script-quality audit).
@@ -7660,7 +7700,12 @@ class _BriefScriptRequest(BaseModel):
 async def script_from_brief_route(req: _BriefScriptRequest):
     """Palo port (flag WRITE_AGENT): turn a selected idea-bank brief into a full script.
     Off/keyless still returns a usable script assembled from the brief beats."""
-    return await write_agent.script_from_brief(_palo_store, req.creator_id, req.brief, req.brand)
+    out = await write_agent.script_from_brief(_palo_store, req.creator_id, req.brief, req.brand)
+    # Unjudged path: guard the body reads as spoken copy, not a description of the brief.
+    if isinstance(out, dict) and out.get("body"):
+        (fixed,) = await _ensure_speakable([out])
+        out = fixed
+    return out
 
 
 @app.post("/v1/ideas")
@@ -7749,9 +7794,10 @@ def _mock_mimic(reel: dict, brand: dict) -> dict:
         "hook": my_hook or f"Everyone in {niche} gets this wrong — here's the fix.",
         "hookSignal": "contrarian",
         "formatId": fmt,
-        "body": (f"[Same skeleton as the original, your substance] Open on the boldest claim you can defend "
-                 f"about {niche}. Walk the same beats: {reel.get('transcript','claim → proof → takeaway')} "
-                 f"— but every example, number, and story is YOURS."),
+        "body": (f"Here's the thing most people in {niche} get completely backwards.\n\n"
+                 f"They chase the obvious move and wonder why nothing changes. The real lever is the "
+                 f"one nobody talks about — and once you see it, you can't unsee it.\n\n"
+                 f"Do this one thing differently this week and watch what happens."),
         "cta": "Follow for the next one.",
         "shotPlan": ["Hook on frame 1, direct eye contact", "One punch-in on the key beat", "CTA to camera"],
         "targetSeconds": 26, "predictedScore": 82,
@@ -7772,6 +7818,7 @@ async def mimic(req: MimicRequest):
         out = extract_json(await anthropic(sys, usr, OPUS, 2000), array=False)
         if not out:
             return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
+        (out,) = await _ensure_speakable([out])   # mimic is unjudged — guard the body
         return {"mode": "live", "script": out, "mimicked_from": provenance}
     except HTTPException:
         return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}

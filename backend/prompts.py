@@ -1403,7 +1403,10 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         "- voice_match: does it sound like THIS creator (their sliders, phrasing, no banned words) and not like "
         "generic AI copy?\n"
         "Set slop=true if the hook uses an AI-tell opener ('In today's video', 'Let me tell you', 'Here's the "
-        "thing', 'Ever wondered', 'Picture this', 'Buckle up') or reads like filler. "
+        "thing', 'Ever wondered', 'Picture this', 'Buckle up') or reads like filler, OR if the BODY is a "
+        "DESCRIPTION of what to talk about rather than the verbatim words the creator says out loud "
+        "('talk about X', 'mention the study', 'explain that…', 'Beat 1: the claim', 'show a chart') — the "
+        "body must be a speakable script, not stage directions. "
         "Set fabricated=true if any hook/body/cta asserts a first-person personal fact, credential, client "
         "story, testimonial, or specific personal number that is NOT supported by the CREATOR CONTEXT below "
         "and is not a bracketed fill-in — the creator would have to say a lie on camera. "
@@ -2301,6 +2304,11 @@ VIRALITY_BLOCK = (
 # separated by a blank line (a literal \n\n inside the JSON string). This OVERRIDES the spacing
 # of any example above (examples show voice + structure, not line breaks).
 BODY_FORMAT_RULE = (
+    "SPEAKABLE (required): `body` is the EXACT WORDS the creator says out loud to camera — a "
+    "verbatim script they can read off, not a description of what to talk about. NEVER write "
+    "stage directions or instructions ('talk about X', 'mention the study', 'explain that…', "
+    "'Beat 1: the claim', 'show a chart', 'cut to…'). If you catch yourself describing the "
+    "video instead of writing its words, rewrite it as the spoken line. "
     "BODY FORMATTING (required): write `body` as 2–4 SHORT paragraphs separated by a blank line — "
     "put a literal \\n\\n between beats inside the JSON string. One idea per paragraph: the hook's "
     "follow-through, then the meat, then the landing. Never return one unbroken wall of text. "
@@ -2308,6 +2316,47 @@ BODY_FORMAT_RULE = (
     "put EACH segment or line on its own line (\\n between them). This overrides how the example above "
     "is spaced."
 )
+
+
+# --- Speakability lint (deterministic, shared by runtime + eval/invariants) ---
+# The script body must be the words the creator SAYS, never a description of what to say.
+# The judge has no such axis and the fast paint is unjudged, so this cheap regex guard
+# catches stage-direction bodies on every path. Whitelisted: [broll: …] cues that some
+# formats deliberately embed, [your result]-style fill-ins, and spoken ordinals ("One:").
+import re as _sr_re
+
+# High-signal directive phrases — these read as instructions to the creator almost
+# anywhere they appear, so match mid-sentence too. (Excludes idioms like "cut to the
+# chase" / "show up" by requiring a describing object.)
+_STAGE_ANYWHERE_RE = _sr_re.compile(
+    r"\b(?:talk about|talk through|mention (?:that|the|how)|explain (?:that|how)|"
+    r"describe (?:how|the|a)|walk (?:them|the viewer|us) through|point out (?:that|the|how)|"
+    r"cut to (?:a |the |some )?(?:footage|b-?roll|a shot|the shot|a clip|a chart|a graph|the screen|an image)|"
+    r"(?:film|record|shoot) (?:yourself|this|a )|voice ?over (?:of|about|:)|"
+    r"you'?(?:ll| will)? (?:want to )?(?:say|talk about|explain|show|mention))\b",
+    _sr_re.I)
+# Broader directives that only read as stage direction at a CLAUSE start (first word,
+# after a period/newline) — mid-sentence they're often real spoken content.
+_STAGE_LINESTART_RE = _sr_re.compile(
+    r"(?:^|(?<=[.\n]))\s*(?:remind (?:them|viewers)|tell them to|show (?:a |the |them )|"
+    r"open on |start (?:by|with) (?:talking|explaining|showing)|"
+    r"in this (?:section|part|beat|segment)|"
+    r"beat\s*\d|scene\s*\d|segment\s*\d\s*:)",
+    _sr_re.I)
+
+
+def flag_stage_direction(body: str, style: str = "") -> str | None:
+    """Return a reason string if the body reads as a DESCRIPTION/stage-direction rather
+    than verbatim spoken copy, else None. Pure + deterministic. Whitelists the deliberate
+    [broll: …] cue used by broll_cutaway (its cues are inline by design)."""
+    if not body:
+        return None
+    # broll_cutaway embeds "[broll: …]" cues in the body on purpose — strip them before
+    # linting so a legit cue doesn't trip "b-roll of / cut to".
+    scrubbed = _sr_re.sub(r"\[broll:[^\]]*\]", "", body, flags=_sr_re.I)
+    if _STAGE_ANYWHERE_RE.search(scrubbed) or _STAGE_LINESTART_RE.search(scrubbed):
+        return "stage direction / description instead of spoken copy"
+    return None
 
 
 # W3: injected into every script/hook/mimic/analyze prompt. Stops the model from putting words

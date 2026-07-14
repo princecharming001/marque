@@ -139,18 +139,8 @@ async def script_from_brief(store, creator_id: str, brief: dict,
     (off ⇒ mock assembly so the brief still yields something usable)."""
     if not palo_flags.enabled(palo_flags.WRITE_AGENT):
         return {**_mock_script_from_brief(brief), "mode": "off"}
-    strat = mem = ""
-    try:
-        from app import strategy_compiler
-        strat = await strategy_compiler.strategy_block(store, creator_id)
-    except Exception:
-        pass
-    try:                                        # memory parity with write_turn / converse
-        from app import memory_v2
-        mem = memory_v2.memory_block(
-            await memory_v2.retrieve(store, creator_id, (brief or {}).get("title", "")))
-    except Exception:
-        pass
+    # Full-brain parity with write_turn: strategy + exemplar (proven craft) + memory.
+    strat, mem = await _context_blocks(store, creator_id, (brief or {}).get("title", ""), brand)
     system, user = palo_prompts.script_from_brief_prompt(brief, brand, strat)
     if mem:
         system = f"{system}\n\n{mem}"
