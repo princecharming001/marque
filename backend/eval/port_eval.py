@@ -27,7 +27,7 @@ def _checks() -> list[tuple[str, bool]]:
     out: list[tuple[str, bool]] = []
 
     # Phase 0 — shared infra parity
-    out.append(("tier.matrix", tiers.entitlements("studio")["video_brain"] is True
+    out.append(("tier.matrix", tiers.entitlements("studio")["exemplar_bank"] is True
                 and tiers.metrics_sources("starter") == ("apify",)))
     out.append(("strategy.slice", "name the viewer" in
                 prompt_assembly.replace_strategy_sections("{STRATEGY_INSIGHTS}", _STRATEGY_MD)))
