@@ -65,3 +65,13 @@ Conventions (non-negotiable, enforced by `scripts/gate.sh`):
 
 ## iOS (P7.x — per backend phase, contracts in `docs/api/PALO_PORT.md`)
 - [x] iOS API contract shipped: `docs/api/PALO_PORT.md` — typed req/resp for all new routes (`/v1/ideas`, feed briefs, `/v1/write/turn`, `/v1/write/from-brief`, converse brain-aware, insight push deeplink, strategy read) + P7.2–P7.6 surface map. SwiftUI is the agreed follow-on (per scope: backend + contracts this loop; UI phases next).
+
+## Production hardening (post-port 3-agent audit → 7 commits)
+- [x] C1 correctness: async metric pollers (were sync httpx blocking the event loop); `creators.handle` column (metrics loop was a silent no-op); never-raise `retrieve`/`ledger_block` on the converse read path
+- [x] C2 cron architecture: spawn-and-return + per-kind latch (were serial fleet work in one request); `metrics_ts` UNIQUE + ignore-duplicates; `hmac.compare_digest` auth; `/internal/cron/exemplar` route (bank was dead)
+- [x] C3 real evidence: `load_clip_sessions` + `videos_from_clip_sessions` feed the creator's REAL analyzed videos into compile/exemplar (were `videos=[]` → generic template); no-LLM short-circuit on empty evidence; exemplar_block injected into ideas + write; memory in `script_from_brief`
+- [x] C4 cost/latency: bill Opus/Sonnet on every response (not just valid path); `_spawn` write-path billing; shared embed client 5s; memory cap 200 + re-embed on update; `metrics_ts` since-filter; apply-once in write route
+- [x] C5 input hardening: length caps on write/brief prompt inputs; `/v1/ideas` limit clamp 1–50; `send_insight` log parity
+- [x] C6 cleanup: `get_running_loop`; close pooled clients in `_lifespan`; tolerant `<add>` regex; `import re` to top
+- [x] C7 read routes + activation: `GET /v1/insights` (P7.3) + `GET /v1/strategy` (P7.4); `render.yaml` cron-job services + flag env docs; contract/handoff updates
+- Deferred (documented): event-trigger ideation (`_spawn` on dossier-ready — deep clip-pipeline hook, cron covers it); real token counts from the API usage field (accounting precision, LOW)
