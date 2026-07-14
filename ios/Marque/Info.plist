@@ -32,7 +32,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>19</string>
+	<string>20</string>
 	<key>MARQUE_BACKEND_URL</key>
 	<string>https://marque-api.onrender.com</string>
 	<key>NSAppTransportSecurity</key>
