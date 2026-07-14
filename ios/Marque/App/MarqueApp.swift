@@ -20,6 +20,7 @@ struct MarqueApp: App {
             UserDefaults.standard.removeObject(forKey: "dev.subscribed")
             UserDefaults.standard.removeObject(forKey: "mock.subscribed")
             UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
+            FeedStore.clearSnapshot()   // the disk feed snapshot lives in Documents, not UserDefaults
         }
         // Without an explicit category, iOS defaults every AVPlayer to .soloAmbient,
         // which the hardware ring/silent switch silences — reel previews (Home,

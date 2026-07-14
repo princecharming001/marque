@@ -20,6 +20,20 @@ struct ScriptFeedCard: View {
     var onLike: () -> Void = {}
     var onDismiss: () -> Void = {}
 
+    /// The bandit's "why" is often a long phrase with a repetitive "(niche baseline — …)"
+    /// tail that truncated mid-word and left the card looking broken. Drop the parenthetical
+    /// and cap at a word boundary so it reads as a clean 1–2 lines, never an ellipsis mid-word.
+    private var shortWhy: String {
+        var s = script.whyPicked
+        if let r = s.range(of: " (") { s = String(s[..<r.lowerBound]) }
+        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        if s.count > 64 {
+            let cut = s.prefix(64)
+            s = (cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? String(cut)) + "…"
+        }
+        return s
+    }
+
     var body: some View {
         // spacing sm (not md) + height 260 (not 190): the old fixed 190pt frame was
         // SHORTER than the card's own minimum content (tag row + 2-3 line title +
@@ -54,8 +68,8 @@ struct ScriptFeedCard: View {
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             // UX-G2: WHY this pick is here — the bandit's honest reason, micro type.
-            if !script.whyPicked.isEmpty {
-                Text(script.whyPicked)
+            if !shortWhy.isEmpty {
+                Text(shortWhy)
                     .font(AppFont.micro).tracking(0.2)
                     .foregroundStyle(Palette.textTertiary)
                     .lineLimit(2)
@@ -80,7 +94,7 @@ struct ScriptFeedCard: View {
             }
         }
         .padding(Space.lg)
-        .frame(width: 260, height: 260, alignment: .topLeading)
+        .frame(width: 260, height: 220, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
@@ -375,7 +389,7 @@ struct FeedSkeletonCard: View {
             SkeletonBlock(cornerRadius: Radius.pill).frame(width: 96, height: 30) // CTA pill
         }
         .padding(Space.lg)
-        .frame(width: 260, height: 260, alignment: .topLeading)
+        .frame(width: 260, height: 220, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)

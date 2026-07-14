@@ -37,6 +37,11 @@ final class FeedStore {
         var feedCursor: Int = 0
         var reelCursor: Int = 1
         var savedAt: Date = Date()
+        // The backend that produced this snapshot. If it differs from the current
+        // backendBaseURL on load, the snapshot is discarded — otherwise a dev backend
+        // switch (or a stale localhost override) repaints another environment's content
+        // forever, which is exactly the stale-mock-reels incident.
+        var backend: String = ""
     }
 
     /// True when init painted from disk — revalidates are then SILENT (no skeletons).
@@ -51,9 +56,12 @@ final class FeedStore {
     }
 
     init() {
-        // Instant paint: restore the last feed before any network work.
+        // Instant paint: restore the last feed before any network work — but ONLY if it was
+        // produced by the backend we're pointed at now (else discard, never repaint stale/
+        // wrong-env content).
         if let data = try? Data(contentsOf: Self.snapshotURL),
            let snap = try? JSONDecoder().decode(FeedSnapshot.self, from: data),
+           snap.backend == AppConfig.backendBaseURL,
            !snap.scripts.isEmpty || !snap.reels.isEmpty {
             scriptItems = snap.scripts
             reelItems = snap.reels
@@ -62,7 +70,14 @@ final class FeedStore {
             reelCursor = snap.reelCursor
             lastFreshLoadAt = snap.savedAt
             paintedFromDisk = true
+        } else {
+            FeedStore.clearSnapshot()   // stale / wrong-backend / empty → drop it
         }
+    }
+
+    /// Delete the disk snapshot — on `-reset` and on a backend mismatch.
+    static func clearSnapshot() {
+        try? FileManager.default.removeItem(at: snapshotURL)
     }
 
     /// Debounced snapshot write — called after any ingest/refresh/dismiss mutation.
@@ -73,7 +88,8 @@ final class FeedStore {
             guard let self, !Task.isCancelled else { return }
             let snap = FeedSnapshot(scripts: self.scriptItems, reels: self.reelItems,
                                     trend: self.trend, feedCursor: self.feedCursor,
-                                    reelCursor: self.reelCursor, savedAt: self.lastFreshLoadAt ?? Date())
+                                    reelCursor: self.reelCursor, savedAt: self.lastFreshLoadAt ?? Date(),
+                                    backend: AppConfig.backendBaseURL)
             if let data = try? JSONEncoder().encode(snap) {
                 try? data.write(to: Self.snapshotURL, options: .atomic)
             }
