@@ -522,9 +522,8 @@ struct RecordView: View {
             VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topTrailing) {
                     if playable, visibleMimicIds.contains(r.id), let url = URL(string: r.videoURL) {
-                        FailableVideoPlayer(url: url, muted: true, showsControls: false) {
-                            failedMimicIds.insert(r.id)
-                        }
+                        FailableVideoPlayer(url: url, muted: true, showsControls: false,
+                                            onFailure: { failedMimicIds.insert(r.id) })
                         .frame(width: 104, height: 130)
                         .allowsHitTesting(false)         // the CARD is the tap target
                     } else {
