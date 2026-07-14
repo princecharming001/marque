@@ -146,15 +146,18 @@ struct MockLLMRouter: LLMRouting {
     }
 
     private func scriptBody(brand: BrandGraph, pillar: Pillar, format: VideoFormat, topic: String) -> String {
+        // SPOKEN copy the creator can read to camera — NOT stage directions. The old
+        // beat-sheet meta-instructions ("Beat 1: the surprising claim…") only surface as
+        // a local fallback after a network miss, and read as "this isn't a script."
         switch format.faceMode {
         case .split:
-            return "Show the wrong way first — the thing most people do with \(topic). Then cut to your way and name the single difference that matters. Keep each side under 4 seconds."
+            return "Here's the mistake almost everyone makes with \(topic).\n\nThey do the obvious thing — and it quietly works against them.\n\nHere's what I do instead, and the one difference that actually changes the result."
         case .faceless:
-            return "Voiceover over three quick visuals. Beat 1: the surprising claim about \(topic). Beat 2: the proof. Beat 3: what to do instead. Let the captions carry it."
+            return "Most of what you've heard about \(topic) is surface-level.\n\nHere's the part that actually moves the needle — and why almost nobody talks about it.\n\nDo this one thing and you'll feel the difference within a week."
         case .greenScreen:
-            return "Stand in front of the screenshot/chart. Point at the part everyone misses about \(topic), then deliver your take in one sentence."
+            return "Everyone's looking at the wrong part of this.\n\nWhen it comes to \(topic), the thing that matters isn't what you think — it's this.\n\nFix that, and the rest gets a lot easier."
         default:
-            return "Open on the hook — no intro. In one breath, give the core idea about \(topic), back it with a specific you've actually lived, then land the lesson. Fast cuts, no filler."
+            return "Here's something nobody tells you about \(topic).\n\nI learned it the slow way, so you don't have to: the real lever isn't effort, it's focus.\n\nPick the one thing that matters and go all in on it this week."
         }
     }
 

@@ -139,11 +139,13 @@ final class FeedStore {
         lastFreshLoadAt = Date()
         loadedOnce = true
         scheduleSave()
-        // First paint can be the instant "mock" fallback while the server generates the
-        // real AI picks in the background (~60-90s). Silently re-fetch a couple times to
-        // swap in the AI version the moment it's ready — so "Today's picks" never sits on
-        // template copy without the creator having to pull-to-refresh.
-        if page.mode == "mock" { scheduleAIUpgrade(store: store) }
+        // First paint is either the instant "mock" fallback OR the fast HAIKU draft
+        // ("live_fast"): both are placeholders for the full-quality Opus picks the server
+        // computes in the background. Arm the swap-in poller for ANYTHING that isn't the
+        // final "live" — else users are stranded on the 80-word draft (the "incomplete
+        // scripts" report). scheduleAIUpgrade accepts only mode == "live", so it correctly
+        // fires exactly once the Opus upgrade lands.
+        if page.mode != "live" { scheduleAIUpgrade(store: store) }
     }
 
     // MARK: Initial load

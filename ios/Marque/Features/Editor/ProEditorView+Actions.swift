@@ -7,9 +7,19 @@ extension ProEditorView {
     // MARK: load
 
     func load() async {
-        guard let jobId = clip.jobId,
-              let result = await store.backend.pollClipJob(jobId: jobId, includeWords: true),
-              let edlDict = result["edl"] as? [String: Any] else {
+        guard let jobId = clip.jobId else {
+            phase = .failed("Couldn't load this clip's edit — the session may have expired.")
+            return
+        }
+        // Use the status-aware poll (restart-fragility audit): pollClipJob swallowed the
+        // HTTP code, so a transient 503 (DB blip) or a restored-but-not-yet-edited job
+        // (no EDL) both mis-reported "session may have expired." Distinguish them.
+        let (result, http) = await store.backend.pollClipJobWithStatus(jobId: jobId, includeWords: true)
+        if http == 503 {
+            phase = .failed("Couldn't reach the studio just now — pull to try again.")
+            return
+        }
+        guard let result, let edlDict = result["edl"] as? [String: Any] else {
             phase = .failed("Couldn't load this clip's edit — the session may have expired.")
             return
         }
