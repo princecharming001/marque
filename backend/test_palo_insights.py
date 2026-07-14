@@ -142,3 +142,24 @@ def test_run_insights_cron_invokes_settle_hook(on, monkeypatch):
     async def boom(cid, r):
         raise RuntimeError("hook down")
     _run(ti.run_insights_cron(Store(), 1_700_000_000.0, settle_hook=boom))  # must not raise
+
+
+def test_zero_watermark_data_arrival_fires_at_most_top_rung(on):
+    # LIVE-OBSERVED flood: an empty first sweep (no scrapeable data yet) wrote
+    # watermark=0; when data finally arrived the next sweep crossed the ENTIRE ladder
+    # (9 cards at once). A 0→N crossing spanning >2 rungs is data ARRIVAL, not growth:
+    # baseline it and fire at most the single top rung.
+    store = FakeStore(marks={("c1", "views_milestone"): 0.0})
+    crossed = _run(ti.detect_milestones(store, "c1", "views", 14_666_566.0, ti.VIEW_MILESTONES))
+    assert crossed == [10_000_000]                     # top rung only, not the whole ladder
+    # watermark advanced -> nothing re-fires
+    crossed2 = _run(ti.detect_milestones(store, "c1", "views", 14_700_000.0, ti.VIEW_MILESTONES))
+    assert crossed2 == []
+
+
+def test_small_zero_watermark_crossing_still_fires_normally(on):
+    # A modest 0→N (≤2 rungs) is a young creator actually crossing their first
+    # milestones — keep firing those normally.
+    store = FakeStore(marks={("c1", "views_milestone"): 0.0})
+    crossed = _run(ti.detect_milestones(store, "c1", "views", 30_000.0, ti.VIEW_MILESTONES))
+    assert crossed == [10_000, 25_000]

@@ -36,8 +36,7 @@ def test_real_creator_blocks_shared_bucket():
 
 def test_tier_matrix():
     assert tiers.normalize("nonsense") == tiers.DEFAULT_TIER
-    assert tiers.entitlements(tiers.STUDIO)["video_brain"] is True
-    assert tiers.entitlements(tiers.GROWTH)["video_brain"] is False
+    # (video_brain entitlement removed with its dead flag — audit hygiene)
     assert tiers.has_feature(tiers.STUDIO, "exemplar_bank") is True
     assert tiers.has_feature(tiers.STARTER, "exemplar_bank") is False
     assert tiers.at_least(tiers.GROWTH, tiers.STARTER) is True
@@ -149,3 +148,11 @@ def test_disabled_store_methods_are_falsy():
     assert _run(store.load_strategy("c1")) is None
     assert _run(store.load_briefs("c1")) == []
     assert _run(store.load_creator_tier("c1")) is None
+
+
+def test_real_creator_excludes_demo_prefixed_ids():
+    # Hygiene (audit): iOS continueAsDemo mints "demo-XXXX" ids — device-local
+    # throwaways that must not write memory/ledger into real learning stores.
+    assert palo_flags.real_creator("demo-4f2a") is False
+    assert palo_flags.real_creator("demo") is False
+    assert palo_flags.real_creator("a1b2c3-supabase-user") is True

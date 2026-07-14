@@ -1505,7 +1505,26 @@ final class AppStore {
         let saved = SavedScript(script: script, source: source, mimickedFrom: mimickedFrom)
         readiedScripts.insert(saved, at: 0)
         save()
+        // Palo port: an idea-brief pick carries only its one-line summary as the body —
+        // expand the FULL script via the write agent in the background and swap it into
+        // the queued entry (views observe the store, so an open Film sheet repaints).
+        // Fire-and-forget: any failure just keeps the summary body.
+        if script.pillarName == "Idea", script.body == script.summary {
+            Task { await expandBriefScript(script) }
+        }
         return saved
+    }
+
+    /// Background half of the brief→script expansion (see readyScript). Idempotent —
+    /// re-readying an already-expanded script no longer matches body == summary.
+    private func expandBriefScript(_ script: Script) async {
+        let title = script.title.isEmpty ? script.hook.text : script.title
+        guard let (newTitle, fullBody) = await backend.expandBrief(
+            title: title, summary: script.summary, brand: brand) else { return }
+        guard let i = readiedScripts.firstIndex(where: { $0.script.id == script.id }) else { return }
+        readiedScripts[i].script.body = fullBody
+        if readiedScripts[i].script.title.isEmpty { readiedScripts[i].script.title = newTitle }
+        save()
     }
 
     func removeReadiedScript(_ saved: SavedScript) {

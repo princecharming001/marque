@@ -29,15 +29,19 @@ TRACK_INSIGHTS = _on("TRACK_INSIGHTS")  # Phase 3 — post-performance learning
 STRATEGY_COMPILER = _on("STRATEGY_COMPILER")  # Phase 4 — the self-learning brain
 WRITE_AGENT = _on("WRITE_AGENT")        # Phase 5 — interactive write agent
 EXEMPLAR_BANK = _on("EXEMPLAR_BANK")    # Phase 6 — golden-craft pattern library
-VIDEO_BRAIN = _on("VIDEO_BRAIN")        # per-reel deep analysis feeding the brain
+# (VIDEO_BRAIN removed — audit found it was a dead gate no code path consumed; video
+#  evidence already flows under EXEMPLAR_BANK / STRATEGY_COMPILER via the dossier
+#  adapter. Re-add only when per-reel deep analysis is actually ported.)
 
 
 def real_creator(creator_id: str) -> bool:
     """A learning WRITE must never land in the shared 'default'/empty bucket — unauthed or
     demo sessions default creator_id to 'default', and pooling memory/ledger there both leaks
     across users and poisons a real creator who ever transacts signed-out. Gate every port
-    read/write on this (audit F13)."""
-    return bool(creator_id) and creator_id not in ("default", "demo")
+    read/write on this (audit F13). `demo-…` ids are iOS continueAsDemo placeholders —
+    device-local throwaways whose learning would mix demo traffic into real stores."""
+    return bool(creator_id) and creator_id not in ("default", "demo") \
+        and not creator_id.startswith("demo-")
 
 
 def enabled(capability: bool) -> bool:

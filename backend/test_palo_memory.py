@@ -226,3 +226,84 @@ def test_remember_embeds_on_update(on, monkeypatch):
     s = S()
     _run(memory_v2.remember(s, "c1", "remember I moved to Berlin", "ok"))
     assert s.upserts and s.upserts[0].get("embedding") == [0.1, 0.2, 0.3]  # update re-embedded
+
+
+# --- Palo parity: LLM contradiction reconcile (ADD/UPDATE/DELETE/NOOP) ----------
+
+class _SemStore(FakeStore):
+    def __init__(self, memories=None):
+        super().__init__(memories=memories)
+        self.deleted = []
+
+    async def soft_delete_memory(self, mid):
+        self.deleted.append(mid)
+        return True
+
+
+def test_reconcile_contradiction_supersedes_across_keys(on, monkeypatch):
+    # Palo parity: "Moved to Berlin" must SUPERSEDE "Based in London" even when the
+    # extractor emitted a DIFFERENT key — the deterministic pass alone kept both.
+    async def fake_extract(store, u, a):
+        return [{"type": "content_context", "key": "new_location", "value": "Moved to Berlin",
+                 "confidence": 0.9, "scope": "user"}]
+    monkeypatch.setattr(memory_v2, "_extract_facts", fake_extract)
+
+    async def fake_llm(store, creator_id, value, scoped):
+        return {"action": "DELETE", "target_id": "m1"}          # contradiction detected
+    monkeypatch.setattr(memory_v2, "_llm_reconcile", fake_llm)
+
+    store = _SemStore(memories=[{"id": "m1", "scope": "user", "type": "content_context",
+                                 "key": "loc", "value": "Based in London", "confidence": 0.8}])
+    applied = _run(memory_v2.remember(store, "c1", "remember I moved to Berlin", "ok"))
+    assert store.deleted == ["m1"]                              # superseded fact removed
+    assert applied == 1 and store.upserts[0]["value"] == "Moved to Berlin"
+
+
+def test_reconcile_noop_drops_redundant_add(on, monkeypatch):
+    async def fake_extract(store, u, a):
+        return [{"type": "creative_preference", "key": "emoji_rule", "value": "No emojis ever",
+                 "confidence": 0.9, "scope": "user"}]
+    monkeypatch.setattr(memory_v2, "_extract_facts", fake_extract)
+
+    async def fake_llm(store, creator_id, value, scoped):
+        return {"action": "NOOP", "target_id": "m2"}            # already captured
+    monkeypatch.setattr(memory_v2, "_llm_reconcile", fake_llm)
+
+    store = _SemStore(memories=[{"id": "m2", "scope": "user", "type": "creative_preference",
+                                 "key": "no_emoji", "value": "Do not use emojis", "confidence": 1.0}])
+    applied = _run(memory_v2.remember(store, "c1", "remember: no emojis", "ok"))
+    assert applied == 0 and store.upserts == [] and store.deleted == []
+
+
+def test_reconcile_update_retargets_existing_row(on, monkeypatch):
+    async def fake_extract(store, u, a):
+        return [{"type": "content_context", "key": "posting_cadence_new", "value": "Posts 5x/week now",
+                 "confidence": 0.9, "scope": "user"}]
+    monkeypatch.setattr(memory_v2, "_extract_facts", fake_extract)
+
+    async def fake_llm(store, creator_id, value, scoped):
+        return {"action": "UPDATE", "target_id": "m3"}          # refresh same subject
+    monkeypatch.setattr(memory_v2, "_llm_reconcile", fake_llm)
+
+    store = _SemStore(memories=[{"id": "m3", "scope": "user", "type": "content_context",
+                                 "key": "cadence", "value": "Posts 2x/week", "confidence": 0.8}])
+    applied = _run(memory_v2.remember(store, "c1", "remember I post 5x a week now", "ok"))
+    assert applied == 1
+    assert store.upserts[0]["id"] == "m3" and store.upserts[0]["value"] == "Posts 5x/week now"
+    assert store.deleted == []
+
+
+def test_llm_reconcile_keyless_defaults_to_add(on):
+    # keyless-green: no ANTHROPIC key → anthropic_cached_json None → safe ADD
+    scoped = [{"id": "m1", "value": "Based in London"}]
+    v = _run(memory_v2._llm_reconcile(None, "c1", "Moved to Berlin", scoped))
+    assert v == {"action": "ADD", "target_id": None}
+
+
+def test_llm_reconcile_invalid_target_falls_to_closest(on, monkeypatch):
+    async def fake_json(system, user, schema, model, max_tokens=0, temperature=None):
+        return {"action": "DELETE", "target_id": "not-a-real-id"}
+    monkeypatch.setattr(memory_v2, "anthropic_cached_json", fake_json)
+    scoped = [{"id": "m1", "value": "Based in London"}, {"id": "m9", "value": "x"}]
+    v = _run(memory_v2._llm_reconcile(FakeStore(), "c1", "Moved to Berlin", scoped))
+    assert v == {"action": "DELETE", "target_id": "m1"}         # closest match fallback

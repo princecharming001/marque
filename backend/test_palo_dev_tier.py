@@ -36,7 +36,7 @@ def test_dev_route_sets_and_reads_and_clears(monkeypatch):
     monkeypatch.setattr(main, "_palo_store", None)       # works without Supabase
     tiers.clear_override("c1")
     out = _run(main.dev_set_tier(main._DevTierRequest(creator_id="c1", tier="studio")))
-    assert out["tier"] == "studio" and out["entitlements"]["video_brain"] is True
+    assert out["tier"] == "studio" and out["entitlements"]["exemplar_bank"] is True
     assert "ig_graph" in out["metrics_sources"]
     assert _run(main.dev_get_tier(creator_id="c1"))["tier"] == "studio"
     cleared = _run(main.dev_set_tier(main._DevTierRequest(creator_id="c1", tier="")))

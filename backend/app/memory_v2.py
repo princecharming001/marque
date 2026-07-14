@@ -152,6 +152,80 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+_RECONCILE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["ADD", "UPDATE", "DELETE", "NOOP"]},
+        "target_id": {"type": ["string", "null"]},
+    },
+    "required": ["action"],
+}
+
+
+async def _llm_reconcile(store, creator_id: str, value: str, scoped: list[dict]) -> dict:
+    """Palo parity (vector_service _reconcile_memory): one cheap HAIKU call decides how a
+    new fact relates to the same-scope+type existing memories — ADD / UPDATE / DELETE
+    (contradiction) / NOOP (redundant). ANY failure (keyless included) defaults to ADD so
+    a flaky LLM can never lose or wrongly delete a memory."""
+    try:
+        system, user = palo_prompts.memory_reconcile_prompt(value, scoped)
+        from app.prompt_store import get_prompt
+        system = await get_prompt("palo.memory.reconcile", system, store=store)
+        data = await anthropic_cached_json(system, user, _RECONCILE_SCHEMA, HAIKU, max_tokens=100)
+        if not isinstance(data, dict):
+            return {"action": "ADD", "target_id": None}
+        action = str(data.get("action", "ADD")).upper()
+        if action not in {"ADD", "UPDATE", "DELETE", "NOOP"}:
+            action = "ADD"
+        target_id = data.get("target_id")
+        valid = {m.get("id") for m in scoped}
+        if action in {"UPDATE", "DELETE", "NOOP"} and target_id not in valid:
+            target_id = scoped[0].get("id")     # LLM named an id we didn't supply → closest
+        if store is not None:
+            await ai_usage.record(store, creator_id, "memory.reconcile", HAIKU, 300, 30)
+        return {"action": action, "target_id": None if action == "ADD" else target_id}
+    except Exception as e:
+        logging.warning("[memory_v2] reconcile llm failed, defaulting to ADD: %s", e)
+        return {"action": "ADD", "target_id": None}
+
+
+async def _semantic_pass(store, creator_id: str, ops: list[dict], existing: list[dict]) -> list[dict]:
+    """Contradiction handling the deterministic key-match can't do: for each ADD (i.e. no
+    exact (scope,type,key) match), ask the reconcile judge whether it duplicates, refines,
+    or CONTRADICTS a same-scope+type memory. NOOP drops the add; UPDATE retargets it onto
+    the existing row; DELETE soft-deletes the superseded fact and keeps the add. Fires
+    only when scoped existing memories exist — zero extra cost otherwise."""
+    out: list[dict] = []
+    for op in ops:
+        row = op.get("row", {})
+        if op.get("op") != "add":
+            out.append(op)
+            continue
+        scoped = [e for e in existing
+                  if e.get("id") and e.get("scope") == row.get("scope")
+                  and e.get("type") == row.get("type")][:5]
+        if not scoped:
+            out.append(op)
+            continue
+        verdict = await _llm_reconcile(store, creator_id, row.get("value", ""), scoped)
+        action, tid = verdict["action"], verdict.get("target_id")
+        if action == "NOOP":
+            continue                              # already captured — drop the add
+        if action == "UPDATE" and tid:
+            out.append({"op": "update", "row": {
+                "id": tid, "value": row.get("value", ""),
+                "confidence": float(row.get("confidence", 0.7) or 0.7),
+                "updated_at": _now_iso()}})
+            continue
+        if action == "DELETE" and tid:
+            try:
+                await store.soft_delete_memory(tid)   # superseded by the new fact
+            except Exception as e:
+                logging.warning("[memory_v2] supersede delete failed: %s", e)
+        out.append(op)
+    return out
+
+
 async def _prune(store, creator_id: str, existing: list[dict], ops: list[dict]) -> None:
     """Bound per-creator memory growth: soft-delete the lowest-confidence / oldest memories
     beyond _MEMORY_CAP. Best-effort; never raises."""
@@ -182,6 +256,7 @@ async def remember(store, creator_id: str, user_msg: str, assistant_msg: str,
             return 0
         existing = await store.load_memories(creator_id)
         ops = reconcile(existing, candidates)
+        ops = await _semantic_pass(store, creator_id, ops, existing)   # contradiction judge
         applied = 0
         for op in ops:
             row = op["row"]

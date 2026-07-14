@@ -22,6 +22,10 @@ extension LLMRouting {
     func hookLab(brand: BrandGraph, topic: String) async -> [Hook] {
         await hookLab(brand: brand, topic: topic, memory: CreatorMemory())
     }
+    /// Palo port: expand an idea-brief pick into the FULL filmable script via the write
+    /// agent (/v1/write/from-brief). Default nil — the mock router (and any failure)
+    /// keeps the local one-line summary body.
+    func expandBrief(title: String, summary: String, brand: BrandGraph) async -> (title: String, body: String)? { nil }
 }
 
 protocol ClipEngineProtocol {
