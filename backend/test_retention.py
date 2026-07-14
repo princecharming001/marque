@@ -869,3 +869,85 @@ def test_sfx_applied_via_orchestrator():
     out = retention.apply_retention_passes(edl, words, style="talking_head",
                                            sfx_assets={"pop": "https://cdn/p.mp3"})
     assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": 0.7, "url": "https://cdn/p.mp3"}]
+
+
+# --- WS1: retake dedup + word-eater hardening -----------------------------------
+from app import retention as _ret
+from app import edl as _edl
+
+
+def _wds(pairs, gap_ms=600):
+    """Build words: list of (text, dur_ms); insert gap_ms of silence between phrases
+    marked by a None separator."""
+    out = []
+    t = 0
+    for p in pairs:
+        if p is None:
+            t += gap_ms
+            continue
+        text, dur = p
+        out.append({"word": text, "start_ms": t, "end_ms": t + dur, "confidence": 0.99})
+        t += dur
+    return out
+
+
+def _edl_one_segment(words):
+    lo = _edl.ms_to_frame(words[0]["start_ms"])
+    hi = _edl.ms_to_frame(words[-1]["end_ms"])
+    return {"segments": [{"src_in": lo, "src_out": hi}], "drops": [], "style": "talking_head"}
+
+
+def test_dedupe_retakes_drops_earlier_take():
+    # "the protein window is a myth" ... (pause, flub) ... re-delivered
+    line = [("here", 200), ("is", 150), ("why", 200), ("the", 150), ("protein", 300),
+            ("window", 300), ("is", 150), ("wrong", 300)]
+    words = _wds([("intro", 300), ("everyone", 300), ("listen", 300), None]
+                 + line + [None] + line)
+    edl = _edl_one_segment(words)
+    out = _ret.dedupe_retakes(edl, words)
+    # the earlier duplicate take is dropped (a drop exists covering the first "here..wrong")
+    assert out["drops"], "expected a retake drop"
+    first_line_start = _edl.ms_to_frame(words[3]["start_ms"])
+    assert any(d["src_in"] <= first_line_start < d["src_out"] for d in out["drops"])
+
+
+def test_dedupe_retakes_keeps_distinct_lines():
+    words = _wds([("today", 250), ("we", 150), ("talk", 250), ("protein", 300), None,
+                  ("now", 200), ("about", 200), ("sleep", 250), ("and", 150), ("stress", 300)])
+    edl = _edl_one_segment(words)
+    out = _ret.dedupe_retakes(edl, words)
+    assert out["drops"] == []          # different content — nothing deduped
+
+
+def test_dedupe_retakes_never_drops_hook():
+    line = [("protein", 300), ("timing", 300), ("is", 150), ("a", 120), ("myth", 300)]
+    words = _wds(line + [None] + line)   # hook itself is repeated
+    edl = _edl_one_segment(words)
+    out = _ret.dedupe_retakes(edl, words)
+    hook_start = _edl.ms_to_frame(words[0]["start_ms"])
+    assert not any(d["src_in"] <= hook_start < d["src_out"] for d in out["drops"])
+
+
+def test_confidence_cut_spares_stopwords():
+    # a low-confidence "is" (real function word) must survive; a low-conf garble is cut
+    words = [
+        {"word": "protein", "start_ms": 0, "end_ms": 300, "confidence": 0.99},
+        {"word": "is", "start_ms": 300, "end_ms": 450, "confidence": 0.20},        # protected
+        {"word": "grbl", "start_ms": 450, "end_ms": 600, "confidence": 0.20},      # cut
+        {"word": "everything", "start_ms": 600, "end_ms": 1000, "confidence": 0.99},
+    ]
+    drops = _edl.detect_disfluencies(words, "aggressive")
+    is_lo, is_hi = _edl.ms_to_frame(300), _edl.ms_to_frame(450)
+    grbl_lo = _edl.ms_to_frame(450)
+    assert not any(d.src_in <= is_lo and is_hi <= d.src_out for d in drops)     # "is" kept
+    assert any(d.src_in <= grbl_lo for d in drops)                             # garble cut
+
+
+def test_false_start_needs_content_word_overlap():
+    # stopword-only echo ("I the" ... "I the plan") must NOT be treated as a false start
+    words = _wds([("i", 150), ("the", 150), None, ("i", 150), ("the", 150),
+                  ("plan", 300), ("is", 150), ("simple", 300)])
+    drops = _edl.detect_disfluencies(words, "default")
+    # no drop should cover the opening "i the"
+    frag_lo = _edl.ms_to_frame(words[0]["start_ms"])
+    assert not any(d.src_in <= frag_lo < d.src_out and d.reason == "false_start" for d in drops)
