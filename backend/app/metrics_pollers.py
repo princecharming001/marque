@@ -91,11 +91,25 @@ async def _apify_fetch(handle: str) -> list[dict]:
         r = await _get_client().post(
             f"https://api.apify.com/v2/acts/{_APIFY_ACTOR}/run-sync-get-dataset-items",
             params={"token": _APIFY_KEY}, json={"usernames": [handle], "resultsLimit": 30},
-            timeout=60)
-        return r.json() if r.status_code == 200 else []
+            timeout=120)
+        # run-sync-get-dataset-items answers 201 Created (verified live) — a `== 200`
+        # check silently dropped every successful scrape.
+        if r.status_code not in (200, 201):
+            logging.warning("[metrics] apify fetch %s -> http %s", handle, r.status_code)
+            return []
+        items = r.json()
     except Exception as e:
         logging.warning("[metrics] apify fetch failed: %s", e)
         return []
+    # The profile-scraper actor returns ONE PROFILE per username with the posts nested
+    # under `latestPosts` (verified live: profile carries an `id` but no per-post counts,
+    # so iterating profiles yields zero metric rows). Flatten to post dicts; items that
+    # already look like posts (a posts-scraper actor) pass through unchanged.
+    posts: list[dict] = []
+    for it in items if isinstance(items, list) else []:
+        nested = it.get("latestPosts")
+        posts.extend(nested if isinstance(nested, list) else [it])
+    return posts
 
 
 async def _postforme_fetch(account_id: str) -> list[dict]:
@@ -174,18 +188,25 @@ _POLLERS = {"apify": poll_apify, "postforme": poll_postforme, "ig_graph": poll_i
 
 async def poll_creator(store, creator_id: str, tier: str, handle: str,
                        captured_at: str = "") -> int:
-    """Ingest one creator's post metrics via their tier's best available source into
-    metrics_ts. Returns #rows written (0 when off / no source / no store). Never raises."""
+    """Ingest one creator's post metrics into metrics_ts, trying the tier's source chain
+    IN ORDER until one actually yields rows. Key-availability alone is not enough: a
+    growth/studio creator whose Post for Me account isn't linked would otherwise pick
+    postforme (key exists), get nothing, and never fall back to Apify — confirmed live
+    (real handle, growth tier, 0 rows forever). Returns #rows written. Never raises."""
     if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS) or store is None or not creator_id:
         return 0
-    src = pick_source(tier)
-    if not src:
-        return 0
-    try:
-        rows = await _POLLERS[src](creator_id, handle, captured_at)
-        if rows and await store.insert_metrics(rows):
-            return len(rows)
-        return 0
-    except Exception as e:
-        logging.warning("[metrics] poll_creator failed: %s", e)
-        return 0
+    for src in tiers.metrics_sources(tier):
+        if not source_available(src):
+            continue
+        try:
+            rows = await _POLLERS[src](creator_id, handle, captured_at)
+        except Exception as e:
+            logging.warning("[metrics] poll_creator %s via %s failed: %s", creator_id, src, e)
+            continue
+        if rows:
+            try:
+                return len(rows) if await store.insert_metrics(rows) else 0
+            except Exception as e:
+                logging.warning("[metrics] insert failed for %s: %s", creator_id, e)
+                return 0
+    return 0

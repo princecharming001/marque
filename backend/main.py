@@ -245,7 +245,7 @@ async def cron_insights(req: _CronRequest):
     _cron_auth(req)
     if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS):
         return {"started": False, "skipped": "flag_off"}
-    return _start_cron("insights", lambda: track_insights.run_insights_cron(_palo_store, time.time()))
+    return _start_cron("insights", lambda: track_insights.run_insights_cron(_palo_store, time.time(), settle_hook=_settle_from_scrape))
 
 
 @app.post("/internal/cron/compile")
@@ -279,7 +279,7 @@ async def _palo_scheduler():
             if palo_flags.enabled(palo_flags.IDEA_BANK):
                 _start_cron("ideate", lambda: ideas.run_ideate_cron(_palo_store, time.time()))
             if palo_flags.enabled(palo_flags.TRACK_INSIGHTS):
-                _start_cron("insights", lambda: track_insights.run_insights_cron(_palo_store, time.time()))
+                _start_cron("insights", lambda: track_insights.run_insights_cron(_palo_store, time.time(), settle_hook=_settle_from_scrape))
             if palo_flags.enabled(palo_flags.STRATEGY_COMPILER):
                 _start_cron("compile", lambda: strategy_compiler.run_compile_cron(_palo_store, time.time()))
             if palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
@@ -5800,6 +5800,43 @@ async def ingest_metrics(req: MetricsIngestRequest):
             "post_id": req.post_id}
 
 
+async def _settle_from_scrape(creator_id: str, rows: list[dict]) -> int:
+    """Palo-port audit fix (bandit loop closure): polled metrics_ts rows settle their
+    registered posts through the SAME /v1/metrics/ingest machinery — idempotent settled
+    latch, cross-instance conditional PATCH, arm updates, attribution — instead of the
+    dead settle_candidates bridge. Unregistered posts (organic, not published through
+    the app) return status 'unregistered' and correctly update zero arms. Scraped
+    sources carry no reach; views stands in (reach≈plays for reels), which keeps the
+    engagement composite sane. Never raises."""
+    latest: dict[str, dict[str, float]] = {}
+    for r in rows:                                   # rows are captured_at-asc → last wins
+        if r.get("entity_type") == "account":
+            continue
+        pid = str(r.get("entity_id") or "")
+        metric = r.get("metric")
+        if pid and metric in ("views", "likes", "comments"):
+            latest.setdefault(pid, {})[metric] = float(r.get("value", 0))
+    settled = 0
+    for pid, m in latest.items():
+        views = int(m.get("views", 0))
+        if views < 20:                               # mirrors the ingest reach floor
+            continue
+        try:
+            resp = await ingest_metrics(MetricsIngestRequest(
+                post_id=pid, creator_id=creator_id, views=views,
+                likes=int(m.get("likes", 0)), comments=int(m.get("comments", 0)),
+                reach=views))
+        except Exception as e:
+            logging.warning("[settle] scrape settle failed for %s: %s", pid, e)
+            continue
+        if isinstance(resp, dict) and resp.get("status") == "ingested":
+            settled += 1
+    if settled:
+        logging.info("[settle] %s: %d registered posts settled from scraped metrics",
+                     creator_id, settled)
+    return settled
+
+
 def _cold_recommendations(niche: str) -> list[dict]:
     """Cold-start recommendations from the niche prior (before any own arm data).
     Pairs the niche's strongest styles with sensible starter pillars and an honest
@@ -6154,6 +6191,16 @@ async def converse(req: ConverseRequest):
                 system = f"{system}\n\n{_inject}"
         except Exception as e:
             logging.warning("[converse] memory/ledger injection failed: %s", e)
+    # Audit fix: converse was the ONLY brain surface without the exemplar bank (scripts/
+    # mimic/hooks all get it via _inject_brain) — the strategist should cite the creator's
+    # own proven patterns too.
+    if palo_flags.enabled(palo_flags.EXEMPLAR_BANK) and palo_flags.real_creator(req.creator_id):
+        try:
+            _ex_block = await exemplar.exemplar_block(_palo_store, req.creator_id)
+            if _ex_block:
+                system = f"{system}\n\n{_ex_block}"
+        except Exception as e:
+            logging.warning("[converse] exemplar injection failed: %s", e)
     system = await _inject_strategy(system, req.creator_id)   # Palo port: brain shapes converse
     # No trends passed: mock_trends is hand-authored filler, and injecting it as
     # "Trending right now" into a LIVE strategist makes the model relay invented trend
