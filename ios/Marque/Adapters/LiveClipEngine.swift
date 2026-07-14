@@ -381,7 +381,8 @@ extension BackendClient {
                           editFormat: String = "",
                           referenceReel: ReelItem? = nil,
                           autoConfirm: Bool = false,
-                          toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
+                          toggles: EditToggles? = nil,
+                          corpus: [[String: Any]] = []) async -> AnalyzeJobResponse? {
         var body: [String: Any] = [
             "analyze_first": true,
             "source_url": sourceURL,
@@ -389,6 +390,10 @@ extension BackendClient {
             "edit_prefs": editPrefs,
             "creator_id": creatorId,
         ]
+        // WS4: the creator's analyzed own-media corpus. When b-roll is on the backend
+        // scores these against each cue and places OWN footage before stock (this was
+        // never sent → imported media was never used as b-roll).
+        if !corpus.isEmpty { body["corpus"] = corpus }
         // UX-B1b one-tap submit: run the whole pipeline (no brief_ready stop); the
         // response then carries the clips array for immediate tracking.
         if autoConfirm {
@@ -402,11 +407,16 @@ extension BackendClient {
         if !editFormat.isEmpty { body["edit_format"] = editFormat }
         // The reel this cut should FEEL like (pacing/energy/caption vibe, never words).
         if let r = referenceReel {
-            body["reference_reel"] = [
+            var ref: [String: Any] = [
                 "id": r.id, "creator_handle": r.creatorHandle, "platform": r.platform,
                 "title": r.title, "hook_text": r.hookText, "why_trending": r.whyTrending,
                 "format_id": r.formatId, "style": r.style,
             ]
+            // The backend whitelists video_url and MEASURES the picked reel (cut density,
+            // caption vibe, energy) when VIDEO_UNDERSTANDING is on — omitting it left the
+            // reel a text-only nudge and the measurement path dead. Send it.
+            if !r.videoURL.isEmpty { ref["video_url"] = r.videoURL }
+            body["reference_reel"] = ref
         }
         // AF-I2 (audit): the duet react source was silently dropped on the whole
         // analyze path — the rendered duet had no react panel with zero errors.

@@ -195,34 +195,15 @@ final class AppStore {
 
     // MARK: OAuth account linking (Post for Me — real posting authority)
 
-    /// Stable per-user tag Post for Me stores against the linked account so we can find it
-    /// again. One account per (user, platform); relinking the same platform replaces it.
-    // Post for Me requires the external_id to be UNIQUE PER ACCOUNT. Deriving it as
-    // "\(userId)_\(platform)" collapsed every PRE-AUTH connect (the connect-first
-    // onboarding step, where auth.state is nil) to the shared literal "anon_instagram",
-    // so two separate Yunicorn accounts — or the same IG connected to two accounts —
-    // collided ("External Id already exists"). Fix: a fresh unique tag per connect
-    // ATTEMPT, stable for the auth-url → poll pair; the resulting spc_ account id is
-    // what we persist + publish with, so the tag only needs to survive one attempt.
-    private var pendingConnectExternalId: [String: String] = [:]
-
-    /// Begin a connect attempt: mint + stash the tag both the auth-url and the follow-up
-    /// poll will use. Signed in → stable per-account tag; pre-auth → unique per attempt so
-    /// two onboarding accounts can never share one tag.
-    private func beginConnectSession(platform: String) -> String {
-        let ext: String
-        if let uid = auth.state?.userId, !uid.isEmpty {
-            ext = "\(uid)_\(platform)"
-        } else {
-            ext = "anon-\(UUID().uuidString.prefix(12).lowercased())_\(platform)"
-        }
-        pendingConnectExternalId[platform] = ext
-        return ext
-    }
-
-    private func connectExternalId(platform: String) -> String {
-        pendingConnectExternalId[platform] ?? beginConnectSession(platform: platform)
-    }
+    // Post for Me FORBIDS linking the same social account under two DIFFERENT external_ids
+    // (anti-hijack: "External Id already exists for account spc_…"). A per-user/per-attempt
+    // tag therefore blocked re-linking and blocked a SECOND creator linking a shared IG.
+    // Per PFM's multi-user guidance, we use ONE stable per-platform tag for every connect,
+    // so a repeat/shared connect is treated as an UPDATE to the single account record — and
+    // we keep the user↔account mapping ourselves (local per-user `connectedAccounts`). We
+    // attribute the account THIS user linked by diffing the account list around the OAuth.
+    private func sharedConnectTag(_ platform: String) -> String { "marque-\(platform)" }
+    private var preConnectAccountIds: [String: Set<String>] = [:]
 
     /// The Post for Me account ids to publish `platforms` to (OAuth-linked accounts only).
     func publishAccountIds(for platforms: [SocialPlatform]) -> [String] {
@@ -235,8 +216,12 @@ final class AppStore {
     /// (mock backend / no key). No redirect override is sent — Post for Me Quickstart uses
     /// its own fixed success page, so we confirm the link by polling instead of a callback.
     func socialAuthURL(platform: String) async -> URL? {
+        // Snapshot accounts already under the shared tag so we can spot the one THIS user
+        // links (multiple creators/accounts share the tag).
+        let before = await backend.socialAccounts(externalId: sharedConnectTag(platform))
+        preConnectAccountIds[platform] = Set(before.map(\.accountId))
         let s = await backend.socialAuthURL(platform: platform,
-                                            externalId: beginConnectSession(platform: platform),
+                                            externalId: sharedConnectTag(platform),
                                             redirectURL: "")
         return s.flatMap(URL.init(string:))
     }
@@ -246,9 +231,24 @@ final class AppStore {
     /// hit. Returns true once linked.
     @discardableResult
     func refreshLinkedAccount(platform: String, retries: Int = 4) async -> Bool {
+        let before = preConnectAccountIds[platform] ?? []
         for attempt in 0..<max(1, retries) {
-            let linked = await backend.socialAccounts(externalId: connectExternalId(platform: platform))
-            if var acct = linked.first(where: { $0.platform == platform && $0.canPublish }) {
+            // Accounts under our shared tag (a fresh connect or a same-tag re-link land here).
+            var pool = await backend.socialAccounts(externalId: sharedConnectTag(platform))
+                .filter { $0.platform == platform && $0.canPublish }
+            // Adopt-fallback: if the IG was previously linked under a LEGACY/other tag, Post
+            // for Me refused to re-tag it (hijack guard) so it never joined the shared tag.
+            // The account still exists and posts by spc_ id — list the whole platform and
+            // adopt it into THIS user's mapping. Guarded to the unambiguous single-account
+            // case so we never grab another creator's account.
+            if pool.isEmpty {
+                let all = await backend.socialAccounts(platform: platform)
+                    .filter { $0.platform == platform && $0.canPublish }
+                if all.count == 1 { pool = all }
+            }
+            // Prefer the account that appeared during THIS connect; else the only candidate.
+            let fresh = pool.filter { !before.contains($0.accountId) }
+            if var acct = fresh.first ?? (pool.count == 1 ? pool.first : nil) {
                 // Post for Me returns username + photo but no follower/bio — enrich from the
                 // public profile for display + voice learning, keeping the spc_ accountId.
                 if !acct.handle.isEmpty,
@@ -259,7 +259,7 @@ final class AppStore {
                     if acct.displayName.isEmpty { acct.displayName = preview.displayName }
                 }
                 addConnectedAccount(acct)
-                pendingConnectExternalId[platform] = nil   // attempt done; next connect mints fresh
+                preConnectAccountIds[platform] = nil   // attempt done
                 return true
             }
             if attempt < retries - 1 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
@@ -528,6 +528,24 @@ final class AppStore {
         }
     }
 
+    /// WS4: the analyzed own-media corpus sent to the backend so it can place the creator's
+    /// OWN footage as b-roll before falling back to stock. Only assets that are ANALYZED and
+    /// UPLOADED (have a remote URL the render can fetch) and usable as b-roll qualify — a
+    /// local-only or unanalyzed asset can't be scored or rendered. Shape matches
+    /// ClipJobRequest.corpus: {asset_id, description, tags, broll_suitability, remote_url}.
+    func brollCorpus(limit: Int = 24) -> [[String: Any]] {
+        media
+            .filter { $0.analysisStatus == .done && !$0.remoteURL.isEmpty
+                      && $0.usableAs != "take" && $0.brollSuitability > 0 }
+            .sorted { $0.brollSuitability > $1.brollSuitability }
+            .prefix(limit)
+            .map { a in
+                ["asset_id": a.id.uuidString, "description": a.aiDescription,
+                 "tags": a.aiTags, "broll_suitability": a.brollSuitability,
+                 "remote_url": a.remoteURL]
+            }
+    }
+
     /// Trigger async analysis of a media asset. Fills aiDescription, aiTags, brollSuitability.
     func analyzeMedia(_ asset: MediaAsset) {
         guard !asset.contentHash.isEmpty || !asset.remoteURL.isEmpty else { return }
@@ -644,13 +662,18 @@ final class AppStore {
                          autoConfirm: Bool = false,
                          toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
+        // Send the analyzed own-media corpus at create time (the job persists it). The
+        // backend only USES it when b-roll is on, so sending it unconditionally is harmless
+        // and covers the manual analyze→confirm flow where toggles aren't known yet here.
+        // Empty when nothing is analyzed/uploaded.
+        let corpus = brollCorpus()
         return await backend.createAnalyzeJob(sourceURL: publicURL, script: script,
                                               customInstructions: customInstructions,
                                               reactSourceURL: reactSourceURL,
                                               editFormat: editFormat,
                                               referenceReel: referenceReel,
                                               autoConfirm: autoConfirm,
-                                              toggles: toggles)
+                                              toggles: toggles, corpus: corpus)
     }
 
     /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min
@@ -798,6 +821,19 @@ final class AppStore {
     /// relaunch mid-render) gets its job re-polled until it resolves, so nothing
     /// spins forever locally while the backend finished long ago.
     func repollRenderingClips() {
+        // WS4 orphan recovery: an instant-submit "Uploading…" placeholder (jobId nil,
+        // uploading true) is reconciled by a store-owned task in `backgroundSubmits`. If the
+        // app was KILLED mid-upload that task is gone (never persisted), so on relaunch the
+        // placeholder would spin "UPLOADING" forever with nothing to resolve it. Any such
+        // placeholder with no live task is a casualty → surface a retriable failed card
+        // (the footage is still at localVideoPath) instead of an eternal spinner.
+        for idx in clips.indices where clips[idx].uploading && clips[idx].jobId == nil
+            && backgroundSubmits[clips[idx].id] == nil {
+            clips[idx].uploading = false
+            clips[idx].status = .failed
+            clips[idx].lastError = "upload_interrupted"
+        }
+
         let stuck = clips.filter { $0.status == .rendering && $0.jobId != nil }
         for (jobId, group) in Dictionary(grouping: stuck, by: { $0.jobId! })
         where !activeRepolls.contains(jobId) {

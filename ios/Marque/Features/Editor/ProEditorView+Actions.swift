@@ -50,6 +50,7 @@ extension ProEditorView {
         // Per-style capabilities gate the Effects tab.
         if let all = await store.backend.editorCapabilities() { caps = all[doc.style] }
         captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
+        await MusicCatalog.hydrate(using: store.backend)   // show the same beds the render uses
         phase = .editing
     }
 
