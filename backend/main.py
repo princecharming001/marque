@@ -5251,6 +5251,16 @@ async def social_auth_url(req: SocialAuthURLRequest):
         body["redirect_url_override"] = req.redirect_url
     try:
         code, data = await _pfm_request("POST", "/social-accounts/auth-url", json_body=body)
+        # Quickstart PFM projects reject per-request redirect overrides ("Redirect URL
+        # Override is not allowed for Quickstart Projects…") with a 4xx + EMPTY url — which
+        # would silently break Instagram/TikTok linking. Retry once WITHOUT the override so
+        # the connect flow falls back to the dashboard-configured Project Redirect URL. The
+        # iOS client sends an empty redirect today, but this makes the endpoint robust to any
+        # caller that supplies one.
+        if not (200 <= code < 300) and "redirect_url_override" in body \
+                and "redirect url override" in str(data.get("message", "")).lower():
+            body.pop("redirect_url_override", None)
+            code, data = await _pfm_request("POST", "/social-accounts/auth-url", json_body=body)
     except httpx.HTTPError:
         return {"url": "", "platform": req.platform, "mode": "live", "error": "network"}
     if 200 <= code < 300:
@@ -6502,6 +6512,28 @@ def _classify_edit_format(post: dict) -> tuple[str, str]:
 
 _REEL_CLASSIFY_TOP_K = int(os.environ.get("REEL_CLASSIFY_TOP_K", "8"))
 
+# "Steal these" exists so a creator can EMULATE the reel — a person talking to camera
+# with real spoken words is a script they can steal; a music montage isn't. Rank the
+# edit treatments by emulatability; sorts below are STABLE so views/recency order is
+# preserved within each tier.
+_EDIT_FORMAT_RANK = {"talking_head": 0, "talking_head_broll": 1,
+                     "recap_voiceover": 2, "recap_music": 3}
+
+
+def _emulatable_rank(reel: dict) -> tuple[int, int]:
+    """Sort key for a SERVED reel dict: talking-head first, and within a tier the ones
+    with a real spoken transcript (words the creator can actually mimic) first."""
+    tier = _EDIT_FORMAT_RANK.get(reel.get("edit_format") or "", 1)
+    return (tier, 0 if reel.get("transcribed") else 1)
+
+
+def _talking_head_first(posts: list[dict]) -> None:
+    """Stable-sort scraped POSTS talking-head-first (heuristic or carried-forward dossier
+    classification) so the per-cycle enrichment budgets — transcription top-N, rehost
+    top-N, dossier watch top-K — are spent on reels a creator can emulate, not montages."""
+    posts.sort(key=lambda p: _EDIT_FORMAT_RANK.get(
+        p.get("edit_format") or _classify_edit_format(p)[0], 1))
+
 
 def _classify_from_dossier(dossier: dict | None, post: dict) -> tuple[str, str] | None:
     """UX-A1 tier 2: classify by WATCHING (the dossier adapter's measured signals).
@@ -6627,6 +6659,7 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
         posts.sort(key=lambda p: (p.get("views", 0), p.get("likes", 0)), reverse=True)
         prev = await _prev_reels_entry(_watched_reels_cache, key)
         _merge_prev_reel_work(posts, (prev or {}).get("reels") or [], handle=handle)
+        _talking_head_first(posts)          # emulatable reels get the enrichment budget
         posts = await _transcribe_top_posts(posts, top_n=2)
         await _dossier_classify_reels(posts[:6])      # UX-A1 tier 2 (fail-soft)
         reels = [_reel_from_post(p, handle, platform, i, True) for i, p in enumerate(posts[:6])]
@@ -6645,11 +6678,14 @@ _REEL_TRANSCRIBE_TOP_N = int(os.environ.get("REEL_TRANSCRIBE_TOP_N", "4"))
 _REEL_REHOST_TOP_N = int(os.environ.get("REEL_REHOST_TOP_N", "6"))
 
 
-async def _rehost_media(url: str, key: str, content_type: str, max_bytes: int) -> str | None:
+async def _rehost_media(url: str, key: str, content_type: str, max_bytes: int,
+                        min_bytes: int = 0) -> str | None:
     """W2: download a scraped CDN asset and re-upload it to the PUBLIC Supabase bucket so the
     app can play it reliably (IG/TikTok CDN URLs 403/expire). Deterministic keys (overwrite,
     never accumulate). Returns the durable public URL, or None (keyless/unconfigured/oversize/
-    any failure) — the caller then keeps the original CDN url and the client falls back."""
+    undersize/any failure) — the caller then keeps the original CDN url and the client falls
+    back. `min_bytes` rejects degenerate payloads (a CDN error page or a few-KB junk stream
+    served with a 200) — persisting one as a durable .mp4 renders as a full-screen smear."""
     if not (SUPABASE_URL and SUPABASE_KEY and url and url.startswith("http")):
         return None
     base = SUPABASE_URL.rstrip("/")
@@ -6663,6 +6699,8 @@ async def _rehost_media(url: str, key: str, content_type: str, max_bytes: int) -
                     buf.extend(chunk)
                     if len(buf) > max_bytes:
                         return None
+            if len(buf) < min_bytes:
+                return None
             up = await c.post(
                 f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
                 headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
@@ -6756,11 +6794,13 @@ async def _rehost_reel_media(posts: list[dict]) -> None:
             stem = _reel_storage_stem(p)
             try:
                 if p.get("thumbnail_url") and not _durable(p["thumbnail_url"]):
-                    d = await _rehost_media(p["thumbnail_url"], f"reels/{stem}.jpg", "image/jpeg", 2_000_000)
+                    d = await _rehost_media(p["thumbnail_url"], f"reels/{stem}.jpg", "image/jpeg",
+                                            2_000_000, min_bytes=2_000)
                     if d:
                         p["thumbnail_url"] = d
                 if i < _REEL_REHOST_TOP_N and p.get("video_url") and not _durable(p["video_url"]):
-                    d = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4", 60_000_000)
+                    d = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4",
+                                            60_000_000, min_bytes=100_000)
                     if d:
                         p["video_url"] = d
             except Exception as e:
@@ -6785,6 +6825,9 @@ async def _refresh_niche_reels(niche: str) -> None:
         # so the enrichment below only runs for posts that still need it.
         prev = await _prev_reels_entry(_niche_reels_cache, key)
         _merge_prev_reel_work(posts, (prev or {}).get("reels") or [])
+        # AFTER the carry-forward (so prior transcripts/classifications inform the tiers):
+        # talking-head candidates first — they get the transcription/rehost/dossier budget.
+        _talking_head_first(posts)
 
         # PHASE 1 — serve now. Renderable reels (caption fallback + CDN URLs).
         if posts:
@@ -7007,6 +7050,10 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
             if r["id"] not in seen:
                 seen.add(r["id"])
                 corpus.append(r)
+        # Emulatability ordering: talking-head reels (with real spoken words first) lead
+        # every page; montages/voiceovers sink to the tail. Stable — watched-before-niche
+        # and views order survive within each tier.
+        corpus.sort(key=_emulatable_rank)
         mode = "live"
     else:
         corpus = _mock_reels(niche, [h for _, h in parsed])

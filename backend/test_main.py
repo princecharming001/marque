@@ -364,6 +364,74 @@ def test_rehost_media_keyless_noop(monkeypatch):
     assert r is None
 
 
+def test_rehost_media_rejects_undersized_payload(monkeypatch):
+    # A CDN error page / few-KB junk stream served with a 200 must NOT be persisted as
+    # durable media — a garbage .mp4 renders as a full-screen smear in the reel sheet.
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://sb.example.com")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "k")
+
+    class FakeStream:
+        status_code = 200
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def aiter_bytes(self):
+            yield b"x" * 500                       # degenerate 500-byte "video"
+
+    uploaded = []
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        def stream(self, *a, **k): return FakeStream()
+        async def post(self, *a, **k):
+            uploaded.append(1)
+            class R: status_code = 200
+            return R()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    r = asyncio.run(main._rehost_media("https://cdn/x.mp4", "reels/a.mp4", "video/mp4",
+                                       60_000_000, min_bytes=100_000))
+    assert r is None and uploaded == []           # rejected, never uploaded
+    # the same payload with no floor still uploads (thumbnails / legacy callers)
+    r2 = asyncio.run(main._rehost_media("https://cdn/x.jpg", "reels/a.jpg", "image/jpeg",
+                                        2_000_000))
+    assert r2 and uploaded == [1]
+
+
+def test_emulatable_rank_talking_head_first():
+    # "Steal these" ordering: talking-head (spoken transcript first) → broll → voiceover
+    # → music montage. Sort is stable so views order survives within a tier.
+    reels = [
+        {"id": "m", "edit_format": "recap_music", "transcribed": False},
+        {"id": "v", "edit_format": "recap_voiceover", "transcribed": True},
+        {"id": "tb", "edit_format": "talking_head_broll", "transcribed": True},
+        {"id": "t2", "edit_format": "talking_head", "transcribed": False},
+        {"id": "t1", "edit_format": "talking_head", "transcribed": True},
+    ]
+    reels.sort(key=main._emulatable_rank)
+    assert [r["id"] for r in reels] == ["t1", "t2", "tb", "v", "m"]
+
+
+def test_talking_head_first_directs_enrichment_budget():
+    # The montage can top the views sort, but the transcription/rehost/dossier budgets
+    # (top-N slots) must go to emulatable posts; stable within a tier.
+    posts = [
+        {"caption": "#montage #edit sound on", "duration_s": 12, "views": 9_000_000},
+        {"caption": "Here is exactly how I fixed my squat form and why it matters " * 3,
+         "transcript": "so the first thing you need to understand about squat depth " * 5,
+         "duration_s": 45, "views": 500_000},
+        {"caption": "Stop doing these 3 things in the gym, do this instead — full breakdown "
+                    "of the mistakes I see every day", "duration_s": 40, "views": 400_000},
+    ]
+    main._talking_head_first(posts)
+    # straight talking-head (400K) leads, talking-head+broll (500K) second — both beat
+    # the 9M-view montage, which sinks out of the enrichment window.
+    assert posts[0]["views"] == 400_000
+    assert posts[1]["views"] == 500_000
+    assert "#montage" in posts[2]["caption"]
+
+
 def test_reel_storage_stem_deterministic():
     p = {"platform": "instagram", "author": "coach", "timestamp": "2026-01-01"}
     assert main._reel_storage_stem(p) == main._reel_storage_stem(p)   # stable → overwrite, not accumulate
@@ -617,6 +685,48 @@ def test_social_auth_url_mock_returns_empty_url():
     assert b["platform"] == "instagram"
     assert b["url"] == ""
     assert b["mode"] == "mock"
+
+
+def test_social_auth_url_retries_without_redirect_override_on_quickstart(monkeypatch):
+    # A Quickstart PFM project 4xx-rejects redirect_url_override with an empty url. The
+    # endpoint must retry once WITHOUT the override and return the real connect url — so
+    # Instagram/TikTok linking never silently breaks when a redirect is supplied.
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    calls = []
+
+    async def fake_pfm(method, path, **kw):
+        body = kw.get("json_body") or {}
+        calls.append("override" if "redirect_url_override" in body else "clean")
+        if "redirect_url_override" in body:
+            return 422, {"message": "Redirect URL Override is not allowed for Quickstart "
+                                    "Projects, please set the Project Redirect URL using the "
+                                    "dashboard instead."}
+        return 200, {"url": "https://instagram.com/oauth/authorize?x=1", "platform": "instagram"}
+    monkeypatch.setattr(main, "_pfm_request", fake_pfm)
+
+    b = client.post("/v1/social/auth-url", json={"platform": "instagram",
+                                                 "external_id": "creator_1",
+                                                 "redirect_url": "marque://social-connected"}).json()
+    assert calls == ["override", "clean"]            # tried override, then retried clean
+    assert b["mode"] == "live"
+    assert b["url"].startswith("https://instagram.com/oauth/authorize")
+    assert "error" not in b
+
+
+def test_social_auth_url_does_not_retry_on_other_errors(monkeypatch):
+    # A non-redirect error must NOT trigger the retry (single call, honest error surfaced).
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    calls = []
+
+    async def fake_pfm(method, path, **kw):
+        calls.append(1)
+        return 401, {"message": "invalid api key"}
+    monkeypatch.setattr(main, "_pfm_request", fake_pfm)
+
+    b = client.post("/v1/social/auth-url", json={"platform": "instagram",
+                                                 "redirect_url": "marque://x"}).json()
+    assert len(calls) == 1
+    assert b["url"] == "" and b["error"] == "invalid api key"
 
 
 def test_social_accounts_mock_returns_empty_list():
