@@ -7247,10 +7247,15 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
         sys, usr = prompts.scripts_prompt(sreq.d(), pillar, sreq.style, sreq.count,
                                           sreq.media_context, sreq.posts or None,
                                           arm_stats=stats, memory=sreq.memory or None)
+        # Output tokens are the latency long pole (HAIKU ~130 tok/s: three full bodies
+        # ≈ 1000+ tokens ≈ 8-10s — measured live blowing the budget). Tight first-paint
+        # bodies keep generation ~4-6s; the background OPUS pass restores full depth.
+        sys += ("\n\nFIRST-PAINT BUDGET: keep each script body under 80 words — a tight, "
+                "specific, filmable draft. A fuller quality pass follows separately.")
         out = await asyncio.wait_for(
             anthropic_json(sys, usr, _array_schema("scripts", prompts.FAST_SCRIPT_JSON_ELEMENT),
-                           HAIKU, 1200, array_key="scripts"),
-            timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "8")),
+                           HAIKU, 900, array_key="scripts"),
+            timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "10")),
         )
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(sreq)}
