@@ -725,6 +725,11 @@ final class AppStore {
     // H-07: jobIds with a re-poll loop already in flight — Library appears often;
     // never stack duplicate pollers on the same job.
     private var activeRepolls: Set<String> = []
+    // Restart-fragility audit: a `pipeline_interrupted` clip (a server-restart casualty
+    // whose backend job is now restored + resumable) auto-retries ONCE before the user
+    // ever sees the "tap to restart" card — so a healthy restore self-heals silently.
+    // Keyed per job so a genuinely-broken job still surfaces the manual card after one try.
+    private var autoRetriedJobs: Set<String> = []
 
     /// H-07: called on Library appear. Any clip stuck in .rendering (its original
     /// poll window expired — a tweak that outlived EditorView's loop, or an app
@@ -788,6 +793,17 @@ final class AppStore {
                     clips[idx].warnings = (warnings?.isEmpty ?? true) ? nil : warnings
                 }
                 save()
+                // Self-heal a server-restart casualty: if a tracked clip came back
+                // `pipeline_interrupted` and we haven't already auto-retried this job,
+                // fire the retry once (the backend re-attaches/re-runs) before the user
+                // ever sees the manual "tap to restart" card.
+                if !autoRetriedJobs.contains(jobId),
+                   let hit = clips.first(where: { clipIds.contains($0.id)
+                       && $0.status == .failed && $0.lastError == "pipeline_interrupted" }) {
+                    autoRetriedJobs.insert(jobId)
+                    await retryClipJob(hit)
+                    return
+                }
                 if !clips.contains(where: { clipIds.contains($0.id) && $0.status == .rendering }) {
                     return                              // every tracked clip resolved
                 }
@@ -1525,6 +1541,25 @@ final class AppStore {
         readiedScripts[i].script.body = fullBody
         if readiedScripts[i].script.title.isEmpty { readiedScripts[i].script.title = newTitle }
         save()
+    }
+
+    /// True for an idea-brief pick whose body is still just the one-line summary.
+    func isUnexpandedBrief(_ script: Script) -> Bool {
+        script.pillarName == "Idea" && script.body == script.summary
+    }
+
+    /// Expand an idea-brief into the full script for READING (the peek sheet). Returns the
+    /// expanded copy (or nil if it couldn't expand) — the caller swaps it into its sheet
+    /// state so tapping a brief card to read it never shows a bare one-line body.
+    func expandedBriefForPeek(_ script: Script) async -> Script? {
+        guard isUnexpandedBrief(script) else { return nil }
+        let title = script.title.isEmpty ? script.hook.text : script.title
+        guard let (newTitle, fullBody) = await backend.expandBrief(
+            title: title, summary: script.summary, brand: brand) else { return nil }
+        var out = script
+        out.body = fullBody
+        if out.title.isEmpty { out.title = newTitle }
+        return out
     }
 
     func removeReadiedScript(_ saved: SavedScript) {

@@ -152,8 +152,18 @@ struct ReelCard: View {
                 typographicGround          // visible while the image loads (and if it never does)
                 AsyncImage(url: url) { phase in
                     if case .success(let img) = phase {
-                        img.resizable().scaledToFill()
-                            .onAppear { imageLoaded = true }
+                        // Blur-fill + fit (aspect-safe): a landscape/square scraped cover
+                        // used to `scaledToFill` into the 9:16 cell as a ~3x center-crop
+                        // ("overblown proportions"). Now the sharp copy `scaledToFit`s
+                        // (portrait fills exactly; non-portrait letterboxes) over a blurred
+                        // fill of itself, so the whole frame shows without a zoom-crop.
+                        ZStack {
+                            img.resizable().scaledToFill()
+                                .blur(radius: 16).opacity(0.55)
+                                .overlay(Palette.ink.opacity(0.18))
+                            img.resizable().scaledToFit()
+                        }
+                        .onAppear { imageLoaded = true }
                     } else {
                         Color.clear
                     }

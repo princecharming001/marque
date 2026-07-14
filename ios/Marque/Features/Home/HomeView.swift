@@ -150,7 +150,20 @@ struct HomeView: View {
                                 },
                                 onSave: { store.readyScript(s, source: .daily) },
                                 saved: store.readiedScripts.contains { $0.script.id == s.id },
-                                onOpen: { peekedScript = s },
+                                onOpen: {
+                                    peekedScript = s          // open instantly with what we have
+                                    // Idea-brief cards carry only a one-line summary as the
+                                    // body — expand to the full script so the reader never
+                                    // shows a bare summary ("incomplete script").
+                                    if store.isUnexpandedBrief(s) {
+                                        Task {
+                                            if let full = await store.expandedBriefForPeek(s),
+                                               peekedScript?.id == s.id {
+                                                peekedScript = full
+                                            }
+                                        }
+                                    }
+                                },
                                 liked: store.likedPicks.contains(s.id),
                                 onLike: { store.likePick(s) },
                                 onDismiss: { withAnimation(Motion.quick) { feed.dismiss(s, store: store) } }

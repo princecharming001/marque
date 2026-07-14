@@ -528,7 +528,14 @@ struct RecordView: View {
                         .allowsHitTesting(false)         // the CARD is the tap target
                     } else {
                         AsyncImage(url: URL(string: r.thumbnailURL)) { img in
-                            img.resizable().aspectRatio(contentMode: .fill)
+                            // Blur-fill + fit: a landscape/square poster used to crop
+                            // ~2.2x in this 104x130 cell. Match the grid card + detail
+                            // sheet — show the whole frame over a blurred fill.
+                            ZStack {
+                                img.resizable().aspectRatio(contentMode: .fill)
+                                    .blur(radius: 12).opacity(0.55)
+                                img.resizable().aspectRatio(contentMode: .fit)
+                            }
                         } placeholder: {
                             Rectangle().fill(Color.white.opacity(0.08))
                                 .overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))

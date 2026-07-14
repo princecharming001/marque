@@ -502,8 +502,8 @@ extension BackendClient {
     /// AF-I4: poll variant that surfaces the status code — 404/410 mean the job is
     /// permanently gone (restart with no durable copy / TTL-swept) and the poller
     /// must fail its clips instead of spinning "rendering" forever.
-    func pollClipJobWithStatus(jobId: String) async -> (result: [String: Any]?, status: Int) {
-        let (data, status) = await getWithStatus("/v1/clips/\(jobId)")
+    func pollClipJobWithStatus(jobId: String, includeWords: Bool = false) async -> (result: [String: Any]?, status: Int) {
+        let (data, status) = await getWithStatus("/v1/clips/\(jobId)" + (includeWords ? "?include_words=1" : ""))
         guard let data,
               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return (nil, status)
