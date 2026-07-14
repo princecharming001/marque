@@ -145,6 +145,16 @@ def test_no_store_is_noop(on):
     assert _run(recall_ledger.ledger_block(None, "c1")) == ""
 
 
+def test_default_creator_never_writes_or_reads(on):
+    # F13: unauthed/demo sessions must not pool memory in the shared 'default' bucket.
+    store = FakeStore()
+    assert _run(memory_v2.remember(store, "default", "remember I love chess", "ok")) == 0
+    assert _run(memory_v2.retrieve(store, "default", "who am i")) == []
+    assert _run(recall_ledger.record(store, "default", "u", "a")) == 0
+    assert _run(recall_ledger.ledger_block(store, "demo")) == ""
+    assert store.upserts == [] and store.appended == []
+
+
 class _BoomStore:
     async def load_prompt_override(self, k):
         return None

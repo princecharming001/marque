@@ -32,6 +32,14 @@ EXEMPLAR_BANK = _on("EXEMPLAR_BANK")    # Phase 6 — golden-craft pattern libra
 VIDEO_BRAIN = _on("VIDEO_BRAIN")        # per-reel deep analysis feeding the brain
 
 
+def real_creator(creator_id: str) -> bool:
+    """A learning WRITE must never land in the shared 'default'/empty bucket — unauthed or
+    demo sessions default creator_id to 'default', and pooling memory/ledger there both leaks
+    across users and poisons a real creator who ever transacts signed-out. Gate every port
+    read/write on this (audit F13)."""
+    return bool(creator_id) and creator_id not in ("default", "demo")
+
+
 def enabled(capability: bool) -> bool:
     """True only when the whole port is on AND this capability's flag is on. Every
     ported entry point should guard with `if not enabled(palo_flags.MEMORY_V2): ...`

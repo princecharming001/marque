@@ -25,6 +25,13 @@ def test_flags_default_off():
     assert palo_flags.enabled(palo_flags.MEMORY_V2) is False
 
 
+def test_real_creator_blocks_shared_bucket():
+    assert palo_flags.real_creator("creator-123") is True
+    assert palo_flags.real_creator("default") is False    # unauthed shared bucket
+    assert palo_flags.real_creator("demo") is False
+    assert palo_flags.real_creator("") is False
+
+
 # --- tier entitlement matrix --------------------------------------------------
 
 def test_tier_matrix():

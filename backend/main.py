@@ -302,6 +302,37 @@ async def _inject_strategy(system: str, creator_id: str) -> str:
         return system
 
 
+async def _inject_brain(system: str, creator_id: str, query: str = "") -> str:
+    """Palo port: fold the full brain — compiled strategy + exemplar bank + never-re-pitch
+    ledger (and, when a query is given, self-learned memory) — into a generation system
+    prompt, so every script/steer/mimic/hook path is as brain-aware as converse (audit
+    G1-G5). Each block is flag-gated + best-effort; off/keyless => unchanged."""
+    system = await _inject_strategy(system, creator_id)
+    if not palo_flags.real_creator(creator_id):
+        return system
+    blocks: list[str] = []
+    try:
+        if palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
+            ex = await exemplar.exemplar_block(_palo_store, creator_id)
+            if ex:
+                blocks.append(ex)
+    except Exception as e:
+        logging.warning("[brain] exemplar inject failed: %s", e)
+    try:
+        if palo_flags.enabled(palo_flags.MEMORY_V2):
+            led = await recall_ledger.ledger_block(_palo_store, creator_id)
+            if led:
+                blocks.append(led)
+            if query:
+                mem = memory_v2.memory_block(
+                    await memory_v2.retrieve(_palo_store, creator_id, query))
+                if mem:
+                    blocks.append(mem)
+    except Exception as e:
+        logging.warning("[brain] memory inject failed: %s", e)
+    return system + ("\n\n" + "\n\n".join(blocks) if blocks else "")
+
+
 async def _persist_creator(creator_id: str, **fields):
     """Best-effort durable write of per-creator brand facts (niche/goal). Absent
     `creators` table or any error is swallowed — this is opportunistic."""
@@ -1591,6 +1622,7 @@ async def best_hooks(brand: dict, topic: str, style: str, creator_id: str,
         stats = await _arms_for_prompt(creator_id)
         hsys, husr = prompts.hooks_prompt(brand, topic, style, arm_stats=stats,
                                           memory=memory, emulation=emulation)
+        hsys = await _inject_brain(hsys, creator_id, topic)   # G5: best-of-N hooks are brain-aware too
         pool = await anthropic_json(hsys, husr, _array_schema("hooks", prompts.HOOK_JSON_ELEMENT),
                                     OPUS, 1200, temperature=1.0, array_key="hooks")
     except HTTPException:
@@ -1659,7 +1691,7 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
                                           req.media_context, req.posts or None,
                                           arm_stats=stats, memory=req.memory or None,
                                           mandated_hooks=mandated or None, emulation=emulation or None)
-        sys = await _inject_strategy(sys, req.creator_id)   # Palo port: brain shapes scripts
+        sys = await _inject_brain(sys, req.creator_id)   # Palo port: strategy + exemplar + ledger (G4)
         out = await anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                                    OPUS, 3800, array_key="scripts")
         if not out:
@@ -1684,6 +1716,7 @@ async def hooks(req: HooksRequest):
         emulation = await _resolve_emulation_profiles(req.emulation_targets)
         sys, usr = prompts.hooks_prompt(req.d(), req.topic, req.style, arm_stats=stats,
                                         memory=req.memory or None, emulation=emulation or None)
+        sys = await _inject_brain(sys, req.creator_id, req.topic)   # G5: hooks seed a brain-aware body
         out = await anthropic_json(sys, usr, _array_schema("hooks", prompts.HOOK_JSON_ELEMENT),
                                    OPUS, 1200, array_key="hooks")
         out = await quality_hooks(req.topic, out)
@@ -1701,6 +1734,7 @@ async def steer(req: SteerRequest):
     try:
         stats = await _arms_for_prompt(req.creator_id)
         sys, usr = prompts.steer_prompt(req.d(), req.script, req.instruction, arm_stats=stats)
+        sys = await _inject_brain(sys, req.creator_id, req.instruction)   # G1: refine stays brain-aware
         out = extract_json(await anthropic(sys, usr, SONNET, 1500), array=False)
         return {"mode": "live", "script": out or req.script}
     except HTTPException:
@@ -7444,6 +7478,7 @@ async def mimic(req: MimicRequest):
     try:
         stats = await _arms_for_prompt(req.creator_id)
         sys, usr = prompts.mimic_prompt(req.reel, req.brand, req.memory, arm_stats=stats)
+        sys = await _inject_brain(sys, req.creator_id)   # G2: "your version" shaped by the brain
         out = extract_json(await anthropic(sys, usr, OPUS, 2000), array=False)
         if not out:
             return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
@@ -7533,6 +7568,7 @@ async def analyze_video(req: AnalyzeVideoRequest):
             stats = await _arms_for_prompt(req.creator_id)
             sys, usr = prompts.analyze_video_prompt(req.url, transcript, req.brand, req.memory,
                                                     arm_stats=stats)
+            sys = await _inject_brain(sys, req.creator_id)   # G3: your_version shaped by the brain
             out = extract_json(await anthropic(sys, usr, OPUS, 2600), array=False)
             if out and out.get("your_version"):
                 return {"mode": "live" if is_real else "live_structure", "platform": platform,

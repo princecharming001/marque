@@ -63,7 +63,7 @@ async def record(store, creator_id: str, user_msg: str, assistant_msg: str,
     """Fire-and-forget: extract the assistant's proposals and APPEND to the ledger.
     Returns #rows appended (0 on gate-miss/keyless/no-store). Swallows all errors."""
     try:
-        if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not creator_id:
+        if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not palo_flags.real_creator(creator_id):
             return 0
         if not assistant_msg:
             return 0
@@ -84,7 +84,7 @@ async def record(store, creator_id: str, user_msg: str, assistant_msg: str,
 async def ledger_block(store, creator_id: str, limit: int = 25) -> str:
     """Render recent proposals/decisions as the <prior_recommendations> block, so the
     agent doesn't re-pitch. Empty string when off/empty."""
-    if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not creator_id:
+    if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not palo_flags.real_creator(creator_id):
         return ""
     # Never-raise: runs on the /v1/converse read path before the route's try.
     try:
