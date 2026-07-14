@@ -21,7 +21,12 @@ _KB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # separately); brief → hooks + retention + hook visual grammar; review → rubric +
 # sound design).
 _CALL_FILES = {
-    "brief": ["retention", "hooks", "hook_visual"],
+    # viral_editing (data-backed doctrine) rides the BRIEF digest — the brief author sets
+    # format/hook/structure/cut-regions, exactly what the doctrine informs. The edit_plan
+    # author already gets the operational craft (pacing/transitions/broll/captions) and a
+    # shorter viral pointer via the plan prompt, so it isn't duplicated into that (largest)
+    # digest where it would crowd the operational docs against the trim boundary.
+    "brief": ["viral_editing", "retention", "hooks", "hook_visual"],
     "edit_plan": ["pacing", "transitions", "broll", "captions"],
     "review": ["review_rubric", "sound_design"],
 }
@@ -71,7 +76,7 @@ def _playbook_section(style: str) -> str:
 # directly for every (call, style) combo instead of relying on an incidental
 # content-presence check to notice. 1200 extra tokens is negligible added
 # cost/latency for every call type having comfortable, verified headroom.
-_MAX_TOKENS = 2200
+_MAX_TOKENS = 3000   # kb-2026.10: fits +viral_editing.md in the brief digest with >200-char headroom (cache-prefixed, ~free after first call)
 _CHARS_PER_TOKEN = 4
 
 

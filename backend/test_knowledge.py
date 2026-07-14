@@ -85,7 +85,7 @@ def test_edit_brief_prompt_embeds_kb_block():
 
 def test_kb_v2_version():
     kb._read.cache_clear(); kb.knowledge_version.cache_clear()
-    assert kb.knowledge_version() == "kb-2026.09"
+    assert kb.knowledge_version() == "kb-2026.10"
 
 
 def test_edit_plan_digest_routes_playbook_and_transitions():

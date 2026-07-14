@@ -43,7 +43,7 @@ def _enabled_passes() -> set[str]:
     if not raw:
         return set()
     if raw == "all":
-        return {"filler", "pacing", "emphasis", "interrupts", "sfx", "structure"}
+        return {"filler", "retake", "pacing", "emphasis", "interrupts", "sfx", "structure"}
     return {p.strip() for p in raw.split(",") if p.strip()}
 
 
@@ -121,6 +121,97 @@ def sweep_residual_fillers(edl: dict, words: list[dict], level: str = "default")
     if _kept_frames(trial) < _MIN_DURATION_FRAMES:
         return edl
     edl["drops"] = merged_drops
+    return edl
+
+
+# ---------------------------------------------------------------------------
+# RETAKE DEDUP — the creator flubs a line, pauses, and re-delivers it. The
+# micro-scale disfluency detectors cap at ~1.2s / 4 words and match lexically, so
+# a whole re-spoken SENTENCE is invisible to them. This pass segments the kept
+# footage into pause-delimited utterances, finds adjacent near-duplicates by
+# token-shingle overlap, and drops the EARLIER take (keeps the re-delivery) — a
+# freestyle edit is allowed to omit the botched take for a cohesive cut.
+# ---------------------------------------------------------------------------
+
+_RETAKE_PAUSE_MS = 500          # a gap this long delimits one spoken attempt from the next
+_RETAKE_SIM = 0.62             # token-set Jaccard at/above which two utterances are "the same line"
+_RETAKE_MIN_WORDS = 4          # ignore tiny utterances (a repeated "okay" is filler, not a retake)
+_RETAKE_MAX_DROP_FRAC = 0.40   # never dedup away more than this share of the take
+
+
+def _utterances(words: list[dict]) -> list[tuple[int, int]]:
+    """Group word indices into [start_i, end_i) runs split on ≥_RETAKE_PAUSE_MS gaps."""
+    runs: list[tuple[int, int]] = []
+    if not words:
+        return runs
+    start = 0
+    for i in range(1, len(words)):
+        gap = words[i].get("start_ms", 0) - words[i - 1].get("end_ms", words[i - 1].get("start_ms", 0))
+        if gap >= _RETAKE_PAUSE_MS:
+            runs.append((start, i))
+            start = i
+    runs.append((start, len(words)))
+    return runs
+
+
+def _shingle_sim(a: list[str], b: list[str]) -> float:
+    """Jaccard over the two token multisets' shared vocabulary — robust to a
+    stumble adding/dropping a word between takes."""
+    sa, sb = set(a), set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def dedupe_retakes(edl: dict, words: list[dict]) -> dict:
+    """Drop the earlier of two adjacent near-duplicate utterances (a flubbed take
+    re-delivered). Frame-based drops, coalesced with the existing set; fail-soft and
+    floor-guarded like every other pass. Never drops the opening hook utterance."""
+    edl = copy.deepcopy(edl)
+    segments = edl.get("segments") or []
+    drops = edl.get("drops") or []
+    if not segments or len(words) < 2 * _RETAKE_MIN_WORDS:
+        return edl
+    kept = _kept_intervals(segments, drops)
+    if not kept:
+        return edl
+
+    def _inside_kept(lo: int, hi: int) -> bool:
+        return any(k_in <= lo and hi <= k_out for k_in, k_out in kept)
+
+    runs = _utterances(words)
+    norms = [_norm_word(w.get("word", "")) for w in words]
+    total_frames = max(1, sum(hi - lo for lo, hi in kept))
+    retake_drops: list[dict] = []
+    dropped_frames = 0
+    for idx in range(1, len(runs)):
+        pa, pb = runs[idx - 1], runs[idx]
+        toks_a = [norms[k] for k in range(*pa) if norms[k]]
+        toks_b = [norms[k] for k in range(*pb) if norms[k]]
+        if len(toks_a) < _RETAKE_MIN_WORDS or len(toks_b) < _RETAKE_MIN_WORDS:
+            continue
+        if _shingle_sim(toks_a, toks_b) < _RETAKE_SIM:
+            continue
+        # Drop the EARLIER take (the re-delivery is what the creator wanted to keep).
+        lo = ms_to_frame(words[pa[0]].get("start_ms", 0))
+        hi = ms_to_frame(words[pa[1] - 1].get("end_ms", words[pa[1] - 1].get("start_ms", 0) + 100))
+        if hi <= lo or not _inside_kept(lo, hi):
+            continue
+        # Protect the opening hook: never dedup the very first utterance away.
+        if pa[0] == 0:
+            continue
+        if dropped_frames + (hi - lo) > _RETAKE_MAX_DROP_FRAC * total_frames:
+            break
+        retake_drops.append({"src_in": lo, "src_out": hi, "reason": "false_start"})
+        dropped_frames += hi - lo
+
+    if not retake_drops:
+        return edl
+    merged = _coalesce_drops(drops + retake_drops)
+    trial = {**edl, "drops": merged}
+    if _kept_frames(trial) < _MIN_DURATION_FRAMES:
+        return edl
+    edl["drops"] = merged
     return edl
 
 
@@ -811,6 +902,11 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
 
     if "filler" in enabled and prefs.get("filler_trim") != "off":
         edl = _safe_pass("sweep_residual_fillers", edl, sweep_residual_fillers, words, level)
+
+    # Retake dedup runs AFTER the filler sweep (so utterance token sets are already
+    # filler-light) and BEFORE pacing (so a dropped take isn't first sped up then cut).
+    if "retake" in enabled:
+        edl = _safe_pass("dedupe_retakes", edl, dedupe_retakes, words)
 
     if "pacing" in enabled and prefs.get("pacing") is not False:
         edl = _safe_pass("plan_pacing", edl, plan_pacing, words, style=style,

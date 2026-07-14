@@ -114,6 +114,20 @@ export const CutVideo: React.FC<{
     outCursor += clipOutFrames(c);
     return { clip: c, outStart };
   });
+  // Per-cut declick: every clip boundary is a hard butt-splice of the source waveform,
+  // so its instantaneous amplitude jump reads as a click/pop (worst mid-phrase, and at
+  // every speed-ramp seam). An equal-power (√) micro-fade over ~2 frames at each INTERNAL
+  // seam smooths the discontinuity without an audible "fade". First-clip-start and
+  // last-clip-end are the true video boundaries — the composition owns those, so we skip
+  // them to avoid double-fading.
+  const SEAM_FADE_FRAMES = 2;
+  const seamFade = (localF: number, len: number, fadeIn: boolean, fadeOut: boolean): number => {
+    if (len <= 2 * SEAM_FADE_FRAMES) return 1;   // clip too short to fade cleanly
+    let g = 1;
+    if (fadeIn && localF < SEAM_FADE_FRAMES) g = Math.min(g, localF / SEAM_FADE_FRAMES);
+    if (fadeOut && localF > len - SEAM_FADE_FRAMES) g = Math.min(g, (len - localF) / SEAM_FADE_FRAMES);
+    return Math.sqrt(Math.max(0, Math.min(1, g)));
+  };
   return (
     <>
       {tempDef && (
@@ -133,13 +147,11 @@ export const CutVideo: React.FC<{
             trimBefore={c.src_in}
             trimAfter={c.src_out}
             playbackRate={c.speed || 1}
-            volume={
-              hasRanges
-                ? (localF) => volumeAt(outStart + localF, volumeRanges!) * gainMult
-                : gainMult !== 1
-                  ? gainMult
-                  : undefined
-            }
+            volume={(localF) => {
+              const len = clipOutFrames(c);
+              const base = hasRanges ? volumeAt(outStart + localF, volumeRanges!) : 1;
+              return base * gainMult * seamFade(localF, len, i > 0, i < withOffsets.length - 1);
+            }}
             style={{ width: "100%", height: "100%", objectFit: "cover",
                      // Canvas transform: translate in unscaled units, then zoom
                      // (CSS transform lists apply right-to-left).

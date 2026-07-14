@@ -1,6 +1,6 @@
 {
-  "version": "kb-2026.09",
-  "description": "Marque editing-craft knowledge base v2 \u2014 operational rules with numbers, consumed by app/knowledge.py digest() and stamped into job['knowledge_version'] for A/B + revert. v2 adds transitions / sound design / hook visual grammar / per-format playbooks (researched + distilled 2026-07). P5 (2026-07-13): pacing.md/retention.md/sound_design.md annotated with the retention-editor upgrade's code-enforced numbers (silence-policy v3 speed bands, interrupt cadence, hook/end-card guidance, deterministic SFX) \u2014 states editorial intent only, the exact math lives in app/retention.py.",
+  "version": "kb-2026.10",
+  "description": "Marque editing-craft knowledge base v2 \u2014 operational rules with numbers, consumed by app/knowledge.py digest() and stamped into job['knowledge_version'] for A/B + revert. v2 adds transitions / sound design / hook visual grammar / per-format playbooks (researched + distilled 2026-07). P5 (2026-07-13): pacing.md/retention.md/sound_design.md annotated with the retention-editor upgrade's code-enforced numbers. kb-2026.10 (2026-07-14): viral_editing.md \u2014 data-backed doctrine (OpusClip 13.5M-clip study + pacing/caption/sequencing research, cited in docs/research/VIRAL_EDITING_SOURCES.md) wired into the brief + edit_plan digests so the EDL author reasons from real numbers.",
   "files": [
     "retention.md",
     "hooks.md",
@@ -12,6 +12,7 @@
     "transitions.md",
     "sound_design.md",
     "hook_visual.md",
-    "format_playbooks.md"
+    "format_playbooks.md",
+    "viral_editing.md"
   ]
 }

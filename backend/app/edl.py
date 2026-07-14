@@ -37,6 +37,20 @@ DISCOURSE_MARKERS = frozenset({
 # single-token text they were compared against, so they're gone.)
 FILLER_WORDS = ALWAYS_FILLERS | DISCOURSE_MARKERS
 
+# Function words a transcript routinely mistimes / marks low-confidence, yet which
+# carry the SENTENCE'S MEANING when cut ("is", "the", "and", "to", "a"). The
+# confidence-cut and false-start heuristics must NEVER eat these — cutting one turns
+# "protein is not the problem" into "protein not problem" (the "cuts a word or two so
+# it doesn't make sense" report). A garble worth cutting is almost always a genuine
+# non-word stutter, not a real function word the recognizer under-scored.
+PROTECTED_STOPWORDS = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "am",
+    "to", "of", "in", "on", "at", "it", "its", "i", "you", "he", "she", "we",
+    "they", "and", "or", "but", "not", "no", "if", "as", "my", "your", "our",
+    "this", "that", "do", "does", "did", "has", "have", "had", "can", "will",
+    "for", "with", "me", "us", "them", "him", "her", "up", "out", "so",
+})
+
 # Multi-word discourse phrases ("you know", "kind of", ...) — never content on their
 # own, but only really SAFE to cut without a pause on either side for the first two
 # (the "so"/"like" family already has clause-boundary logic; these need their own
@@ -578,7 +592,13 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
                 continue
             frag_start_words = set(norms[i:min(i + 2, j)])
             restart_words = set(norms[j:j + 2])
-            if frag_start_words and frag_start_words & restart_words:
+            overlap = frag_start_words & restart_words
+            # A real restart echoes either a CONTENT word or a discourse marker
+            # ("So— So today…", "Like— Like the thing is…"). A purely grammatical
+            # stopword echo ("I the" … "I the plan is") is a coincidence, not a
+            # restart — cutting the fragment there ate a real clause (word-eater).
+            content_or_marker = (overlap - PROTECTED_STOPWORDS) or (overlap & DISCOURSE_MARKERS)
+            if overlap and content_or_marker:
                 drops.append(Drop(src_in=ms_to_frame(words[i].get("start_ms", 0)),
                                   src_out=ms_to_frame(words[j - 1].get("end_ms", 0)), reason="false_start"))
                 i = j
@@ -604,6 +624,11 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
         for idx, w in enumerate(words):
             dur = w.get("end_ms", 0) - w.get("start_ms", 0)
             conf = w.get("confidence", 1.0)
+            # Never cut a real function word the recognizer merely under-scored — those
+            # carry the sentence's grammar; cutting one produces the "doesn't make sense"
+            # garble. A genuinely cuttable low-confidence token is a non-word noise.
+            if _norm_word(w.get("word", "")) in PROTECTED_STOPWORDS:
+                continue
             if conf < conf_cut and 0 < dur <= 250 and not w.get("is_emphasized"):
                 drops.append(Drop(src_in=ms_to_frame(w.get("start_ms", 0)),
                                   src_out=ms_to_frame(w.get("end_ms", 0)), reason="filler"))
