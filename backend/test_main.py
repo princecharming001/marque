@@ -5341,7 +5341,7 @@ def test_fast_feed_scripts_uses_haiku_lean_schema_and_synthesizes_extras(monkeyp
     sreq = main.ScriptRequest(creator_id="c_lean", pillar="Hot takes",
                               style="talking_head", count=1)
     out = asyncio.run(main._fast_feed_scripts(sreq))
-    assert out["mode"] == "live"
+    assert out["mode"] == "live_fast"
     assert cap["model"] == main.HAIKU
     element = cap["schema"]["properties"]["scripts"]["items"]
     assert "altHooks" not in element["properties"]        # lean schema, not the full one
@@ -5437,3 +5437,135 @@ def test_dossier_circuit_breaker_opens_after_consecutive_failures(monkeypatch):
     assert calls["n"] == 3 and main._dossier_breaker["open"] is True
     asyncio.run(main._dossier_classify_reels(posts))       # breaker open -> zero calls
     assert calls["n"] == 3
+
+
+# --- platform audit R2: editing durability + script upgrade wire ---------------
+
+def test_mark_stage_persists_on_transition(monkeypatch):
+    # Restart-fragility: the durable copy must update on EVERY stage entry (was
+    # frozen at submit/confirm -> restored stale -> watchdog "server restarted").
+    persisted = []
+
+    async def fake_persist(jid):
+        persisted.append(jid)
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+    monkeypatch.setattr(main, "_supabase_client", object())
+
+    async def run():
+        job = {"job_id": "j1", "clips": []}
+        main._mark_stage(job, "rendering")
+        await asyncio.sleep(0)      # let the spawned persist run
+        return job
+    job = asyncio.run(run())
+    assert job["status"] == "rendering" and "j1" in persisted
+
+
+def test_mark_stage_no_loop_is_safe():
+    # A sync test call (no running loop) must not raise.
+    job = {"job_id": "j2", "clips": []}
+    main._mark_stage(job, "editing")
+    assert job["status"] == "editing"
+
+
+def test_sweep_persists_watchdog_terminal(monkeypatch):
+    # The watchdog's pipeline_interrupted write must reach Supabase so a second restart
+    # doesn't resurrect the zombie.
+    persisted = []
+
+    async def fake_persist(jid):
+        persisted.append(jid)
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+
+    async def run():
+        old = time.time() - 100000
+        jobs = {"jw": {"job_id": "jw", "status": "editing", "created_at": old,
+                       "stage_started_at": old, "clips": [], "pipeline_gen": 0}}
+        main._sweep_stuck_renders(jobs, max_render_s=1)
+        await asyncio.sleep(0)
+        return jobs["jw"]
+    job = asyncio.run(run())
+    assert job["status"] == "failed" and job.get("error") == "pipeline_interrupted"
+    assert "jw" in persisted
+
+
+def test_restore_reattaches_in_flight_render(monkeypatch):
+    # A clip restored mid-render with a durable render_id must re-attach the (idempotent)
+    # Lambda poller instead of being watchdog-killed + re-rendered.
+    state = {"job_id": "jr", "status": "rendering",
+             "clips": [{"status": "rendering", "render_id": "r-123",
+                        "bucket_name": "b-1", "render_gen": 0}]}
+
+    class FakeSB:
+        async def load_clip_job(self, jid):
+            return dict(state)
+    monkeypatch.setattr(main, "_supabase_client", FakeSB())
+
+    async def noop_persist(jid):
+        return None
+    monkeypatch.setattr(main, "_persist_clip_job", noop_persist)
+    polled = []
+
+    async def fake_poll(render_id, bucket_name, total_frames=None):
+        polled.append(render_id)
+        return "https://cdn/out.mp4"
+    monkeypatch.setattr(main, "_poll_remotion_render", fake_poll)
+
+    main._clip_jobs.pop("jr", None)
+
+    async def run():
+        job = await main._restore_clip_job("jr")
+        for _ in range(4):
+            await asyncio.sleep(0)
+        return job
+    job = asyncio.run(run())
+    assert "r-123" in polled                       # re-attached, not re-rendered
+    assert job["clips"][0]["status"] == "ready" and job["clips"][0]["render_url"]
+    main._clip_jobs.pop("jr", None)
+
+
+def test_fast_paint_mode_is_live_fast(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
+
+    async def fake_json(sys, usr, schema, model, max_tokens, array_key=None):
+        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
+                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}
+                for _ in range(3)]
+    monkeypatch.setattr(main, "anthropic_json", fake_json)
+    sreq = main.ScriptRequest(creator_id="c_lf", pillar="Hot takes", style="talking_head", count=3)
+    out = asyncio.run(main._fast_feed_scripts(sreq))
+    assert out["mode"] == "live_fast"              # draft marker, NOT plain "live"
+
+
+def test_fast_paint_pads_short_array_to_count(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
+
+    async def one_script(sys, usr, schema, model, max_tokens, array_key=None):
+        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
+                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}]
+    monkeypatch.setattr(main, "anthropic_json", one_script)
+    sreq = main.ScriptRequest(creator_id="c_pad", pillar="Hot takes", style="talking_head", count=3)
+    out = asyncio.run(main._fast_feed_scripts(sreq))
+    assert len(out["scripts"]) == 3                # padded, never a lonely single card
+
+
+def test_refresh_feed_page_never_downgrades_to_mock(monkeypatch):
+    # An Opus flake (mode:mock) must NOT overwrite good fast-paint picks.
+    main._feed_cache.clear(); main._feed_refreshing.clear()
+    key = "c_nd::sig"
+    main._feed_cache[key] = {"items": [{"type": "script", "script": {}}], "next_cursor": 1,
+                             "mode": "live_fast", "ts": time.time()}
+
+    async def flaky_scripts(sreq):
+        return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
+    monkeypatch.setattr(main, "scripts", flaky_scripts)
+    sreq = main.ScriptRequest(creator_id="c_nd", pillar="X", style="talking_head", count=3)
+    asyncio.run(main._refresh_feed_page(key, sreq, "fitness", "c_nd", "", 0))
+    assert main._feed_cache[key]["mode"] == "live_fast"    # unchanged — no downgrade
+    main._feed_cache.clear(); main._feed_refreshing.clear()
+
+
+def test_mock_scripts_has_no_unfilled_placeholder():
+    sreq = main.ScriptRequest(creator_id="c_ph", pillar="X", style="talking_head", count=3,
+                              niche="fitness")
+    for s in main.mock_scripts(sreq):
+        assert "[your number]" not in s["body"]
