@@ -28,7 +28,7 @@ _ARM_COLS = ("n", "sum_y", "sum_raw", "n_raw", "alpha", "beta", "effect", "confi
 _POST_COLS = ("creator_id", "clip_id", "permalink", "platform", "scheduled_at", "pillar",
               "style", "format_id", "hook_signal", "predicted_score", "outcome_y",
               "outcome_raw", "settled", "settled_at", "metrics")
-_CREATOR_COLS = ("niche", "goal", "coach_last_shown")
+_CREATOR_COLS = ("niche", "goal", "coach_last_shown", "handle")
 
 _BACKOFF = (0.5, 2.0, 8.0)
 _PAGE_SIZE = 1000            # PostgREST default row cap; load_all_posts pages past it
