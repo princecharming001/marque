@@ -84,3 +84,16 @@ def test_ideas_route_on(monkeypatch, on):
     monkeypatch.setattr(main.ideas, "brief_feed_items", fake_briefs)
     out = _run(main.ideas_bank(main._IdeasRequest(creator_id="c1")))
     assert out["briefs"][0]["id"] == "b1"
+
+
+def test_ideas_route_clamps_limit(monkeypatch, on):
+    captured = {}
+
+    async def fake_briefs(store, cid, limit=6, min_score=0.0):
+        captured["limit"] = limit
+        return []
+    monkeypatch.setattr(main.ideas, "brief_feed_items", fake_briefs)
+    _run(main.ideas_bank(main._IdeasRequest(creator_id="c1", limit=9999)))
+    assert captured["limit"] == 50                       # clamped high
+    _run(main.ideas_bank(main._IdeasRequest(creator_id="c1", limit=-5)))
+    assert captured["limit"] == 1                        # clamped low

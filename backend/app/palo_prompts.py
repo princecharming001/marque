@@ -304,24 +304,30 @@ Return ONLY JSON: {"title": "<the video title>", "script": "<the full spoken/on-
 def script_from_brief_prompt(brief: dict, brand: dict | None = None,
                              strategy_block: str = "") -> tuple[str, str]:
     b = brief or {}
+
+    def _cap(v, n=1500):
+        return str(v or "")[:n]
     beats = "\n".join(x for x in [
-        f"Beginning: {b.get('beginning', '')}" if b.get("beginning") else "",
-        f"Middle: {b.get('middle', '')}" if b.get("middle") else "",
-        f"End: {b.get('ending', '')}" if b.get("ending") else "",
-        f"Summary: {b.get('summary', '')}" if b.get("summary") and not b.get("beginning") else "",
+        f"Beginning: {_cap(b.get('beginning'))}" if b.get("beginning") else "",
+        f"Middle: {_cap(b.get('middle'))}" if b.get("middle") else "",
+        f"End: {_cap(b.get('ending'))}" if b.get("ending") else "",
+        f"Summary: {_cap(b.get('summary'))}" if b.get("summary") and not b.get("beginning") else "",
     ] if x)
-    niche = (brand or {}).get("niche", "")
+    niche = _cap((brand or {}).get("niche", ""), 200)
     system = SCRIPT_FROM_BRIEF_SYSTEM + (f"\n\n{strategy_block}" if strategy_block else "")
-    user = f"<niche>{niche}</niche>\n<brief>\nTitle: {b.get('title', '')}\n{beats}\n</brief>"
+    user = f"<niche>{niche}</niche>\n<brief>\nTitle: {_cap(b.get('title'), 300)}\n{beats}\n</brief>"
     return system, user
 
 
 def write_agent_prompt(script_body: str, instruction: str, strategy_block: str = "",
                        memory_block: str = "") -> tuple[str, str]:
+    # Cap client-supplied fields so a large payload can't inflate Opus input tokens/latency.
+    script_body = (script_body or "")[:20000]
+    instruction = (instruction or "Improve this.")[:2000]
     system = (WRITE_AGENT_SYSTEM
               .replace("{STRATEGY}", strategy_block or "")
               .replace("{MEMORY}", memory_block or "")).strip()
-    user = f"CURRENT SCRIPT:\n{script_body or '(empty)'}\n\nREQUEST:\n{instruction or 'Improve this.'}"
+    user = f"CURRENT SCRIPT:\n{script_body or '(empty)'}\n\nREQUEST:\n{instruction}"
     return system, user
 
 

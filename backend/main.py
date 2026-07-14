@@ -7272,7 +7272,8 @@ async def ideas_bank(req: _IdeasRequest):
     render as a dedicated 'ideas' surface. Off / keyless => empty."""
     if not palo_flags.enabled(palo_flags.IDEA_BANK):
         return {"mode": "off", "briefs": []}
-    briefs = await ideas.brief_feed_items(_palo_store, req.creator_id, limit=req.limit)
+    limit = max(1, min(req.limit, 50))               # clamp: negative breaks PostgREST, huge = big fetch
+    briefs = await ideas.brief_feed_items(_palo_store, req.creator_id, limit=limit)
     return {"mode": "live" if _palo_store else "mock", "briefs": briefs}
 
 
