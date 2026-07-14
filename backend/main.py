@@ -44,7 +44,13 @@ from supabase_persistence import SupabaseClient
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    await _load_learning_state()
+    # NON-BLOCKING (blank-home audit): awaiting the fleet learning-state load here held
+    # EVERY first request (and the health check) behind serial Supabase roundtrips —
+    # after a health-check kill the instance came back cold, stalled again, and got
+    # killed again (the observed crash loop + the 104s first /v1/feed). Serving before
+    # the load finishes is safe: _ensure_arms_loaded lazy-loads per creator and
+    # ingest_metrics falls back to load_post on a registry miss.
+    _spawn(_load_learning_state())
     _spawn(_warm_reels_on_boot())      # B-11: pre-warm known niches' reels (non-blocking)
     if palo_flags.PALO_PORT:           # Palo port: run the sweep jobs in-process (no cron services)
         _spawn(_palo_scheduler())
@@ -363,11 +369,15 @@ async def _load_learning_state():
             pid = p.get("post_id")
             if pid:
                 _post_registry[pid] = p
-        for cid in {p.get("creator_id") for p in posts if p.get("creator_id")}:
+        async def _boot_arms(cid: str) -> None:
             arms = await _supabase_client.load_arm_stats(cid)
             if arms:
                 _arm_stats[cid] = arms
             _arms_loaded.add(cid)                          # booted → don't re-load on first update
+        # Parallel (was a serial per-creator loop): fleet startup time is one roundtrip,
+        # not N — matters because this now runs behind live traffic, not before it.
+        await asyncio.gather(*(_boot_arms(cid) for cid in
+                               {p.get("creator_id") for p in posts if p.get("creator_id")}))
         logging.info("learning state loaded: %d posts, %d creators", len(_post_registry), len(_arm_stats))
     except Exception as e:
         logging.warning("startup learning-state load failed: %s", e)
@@ -6608,12 +6618,21 @@ def _classify_from_dossier(dossier: dict | None, post: dict) -> tuple[str, str] 
     return "talking_head", "talking_head"
 
 
+# Circuit breaker for the dossier providers (blank-home audit): TwelveLabs +
+# claude_frames were 400ing on EVERY reel — a retry storm of wasted CPU/network on the
+# instance while it was already health-check starved. After N consecutive provider
+# failures, stop attempting for the rest of this process's life (heuristic
+# classification still runs; a deploy/restart re-arms the breaker).
+_DOSSIER_BREAKER_LIMIT = int(os.environ.get("DOSSIER_BREAKER_LIMIT", "3"))
+_dossier_breaker = {"fails": 0, "open": False}
+
+
 async def _dossier_classify_reels(posts: list[dict]) -> None:
     """UX-A1 tier 2: run the dossier adapter over the top-K engagement-sorted reels
     that lack a dossier classification. Fully fail-soft (keyless/off → no-op); results
     are set on the POST dicts so _reel_from_post + the carry-forward persist them —
     the watch cost is paid once per reel, ever."""
-    if (dossier_mod.VIDEO_UNDERSTANDING or "off").lower() == "off":
+    if (dossier_mod.VIDEO_UNDERSTANDING or "off").lower() == "off" or _dossier_breaker["open"]:
         return
     for p in posts[:_REEL_CLASSIFY_TOP_K]:
         if p.get("fmt_source") == "dossier" or not p.get("video_url"):
@@ -6622,11 +6641,21 @@ async def _dossier_classify_reels(posts: list[dict]) -> None:
             d = await dossier_mod.dossier_for_reference(
                 p["video_url"], int(float(p.get("duration_s") or 0) * 1000))
             fs = _classify_from_dossier(d, p)
+            if d:
+                _dossier_breaker["fails"] = 0            # provider answered → healthy
+            else:
+                _dossier_breaker["fails"] += 1           # fail-soft None = provider miss
             if fs:
                 p["edit_format"], p["fmt_source"] = fs[0], "dossier"
                 p["why_match"] = f"Watched it: {_WHY_MATCH[fs[0]].lower()}"
         except Exception as e:
+            _dossier_breaker["fails"] += 1
             logging.warning("dossier reel classify failed: %s", e)
+        if _dossier_breaker["fails"] >= _DOSSIER_BREAKER_LIMIT:
+            _dossier_breaker["open"] = True
+            logging.warning("[dossier] circuit OPEN after %d consecutive provider failures — "
+                            "reel classification disabled until restart", _dossier_breaker["fails"])
+            return
 
 
 def _heuristic_reel_annotation(post: dict) -> dict:
@@ -6852,8 +6881,13 @@ async def _rehost_reel_media(posts: list[dict]) -> None:
                     if d:
                         p["thumbnail_url"] = d
                 if i < _REEL_REHOST_TOP_N and p.get("video_url") and not _durable(p["video_url"]):
+                    # 25MB cap (was 60MB): _rehost_media buffers the whole payload in
+                    # RAM, and 60MB x concurrency on a 512MB instance was an OOM /
+                    # health-check-kill trigger (blank-home audit). A 25MB ceiling still
+                    # covers virtually every sub-60s reel at mobile bitrates.
                     d = await _rehost_media(p["video_url"], f"reels/{stem}.mp4", "video/mp4",
-                                            60_000_000, min_bytes=100_000)
+                                            int(os.environ.get("REEL_REHOST_MAX_VIDEO_MB", "25")) * 1_000_000,
+                                            min_bytes=100_000)
                     if d:
                         p["video_url"] = d
             except Exception as e:
@@ -7152,10 +7186,15 @@ def _record_dismissal(creator_id: str, fingerprint: str) -> None:
     if fingerprint not in dq:
         dq.append(fingerprint)
 _FEED_CACHE_TTL_S = 6 * 3600
+# Mock pages exist only to bridge to the background upgrade — expire them fast so a
+# repoll gets the upgraded page, but NOT so fast that immediate repolls re-run the
+# generation gauntlet (blank-home audit).
+_FEED_MOCK_TTL_S = int(os.environ.get("FEED_MOCK_TTL_S", "90"))
 _FEED_CACHE_CAP = 512
 
 _feed_cache: dict[str, dict] = {}       # key -> {"items", "next_cursor", "mode", "ts"}
 _feed_refreshing: set[str] = set()      # keys with a background upgrade already in flight
+_feed_inflight: dict[str, asyncio.Task] = {}   # single-flight: cold paints per cache key
 
 
 def _feed_topics(niche: str, cursor: int) -> str:
@@ -7192,9 +7231,13 @@ def _feed_cache_key(creator_id: str, niche: str, audience: str, known_for: str,
 
 
 async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
-    """First-paint script generation: ONE cheap SONNET call, no best-of-N hooks
-    and no judge/repair pass. Bounded to 12s so a slow model never reproduces the
-    original timeout — falls back to the deterministic mock set instead."""
+    """First-paint script generation: ONE lean HAIKU call, no best-of-N hooks and no
+    judge/repair pass. The blank-home audit measured the old SONNET + full-schema call
+    at ~23-30s — past ANY budget, so the first paint was ALWAYS mock and every cold
+    request held a worker slot for the full 22s (which is what starved the health
+    checks). HAIKU + FAST_SCRIPT_JSON_ELEMENT lands in ~2-4s; the extras the lean
+    schema drops are synthesized below so the wire shape is unchanged, and the
+    background OPUS pass still upgrades to full quality."""
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
     pillar = {"name": sreq.pillar, "summary": sreq.pillar_summary,
@@ -7205,16 +7248,20 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
                                           sreq.media_context, sreq.posts or None,
                                           arm_stats=stats, memory=sreq.memory or None)
         out = await asyncio.wait_for(
-            anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
-                           SONNET, 2200, array_key="scripts"),
-            # A single SONNET structured call lands in ~10-18s; 12s clipped the slow
-            # tail and dropped first paint to the mock template ("Today's picks" read
-            # as hardcoded). 22s lets real AI win the first paint; the background
-            # full-quality pass still upgrades it further.
-            timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "22")),
+            anthropic_json(sys, usr, _array_schema("scripts", prompts.FAST_SCRIPT_JSON_ELEMENT),
+                           HAIKU, 1200, array_key="scripts"),
+            timeout=float(os.environ.get("FEED_FAST_TIMEOUT_S", "8")),
         )
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(sreq)}
+        for s in out:
+            # Synthesize the card extras the lean schema dropped — the client treats
+            # them as optional-with-defaults, but keeping the shape identical to the
+            # full pipeline means zero decode-path differences between paints.
+            s.setdefault("altHooks", [])
+            s.setdefault("shotPlan", [])
+            s.setdefault("targetSeconds", 30)
+            s.setdefault("predictedScore", 78)
         return {"mode": "live", "scripts": out}
     except (HTTPException, asyncio.TimeoutError):
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
@@ -7352,6 +7399,34 @@ def _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, w
     _spawn(_prefetch_feed_page(nkey, nsreq, niche, creator_id, watched, next_cursor, why_picked=nwhy))
 
 
+async def _prefetch_after_hit(creator_id: str, niche: str, audience: str, known_for: str,
+                              goal: str, styles: str, watched: str, cursor: int,
+                              memory: dict | None, next_cursor: int | None) -> None:
+    """Next-page warmup for the pure-cache-hit path, moved OFF the response (the
+    blank-home audit found `_top_arms` — 2 Supabase roundtrips on first touch —
+    sitting above the cache-hit return, taxing the hottest path in the app)."""
+    try:
+        arms = await _top_arms(creator_id, niche)
+        _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
+                             cursor, memory, next_cursor, arms=arms)
+    except Exception as e:
+        logging.warning("[feed] prefetch-after-hit failed: %s", e)
+
+
+async def _cold_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_id: str,
+                          watched: str, cursor: int, why_picked: str) -> tuple[list, int | None, str]:
+    """The shared cold-paint body behind the single-flight latch: generate (lean HAIKU,
+    bounded), compose, cache. Every concurrent request for the same key awaits THIS one
+    task instead of each burning its own generation budget."""
+    script_result = await _fast_feed_scripts(sreq)
+    items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
+                                                   why_picked=why_picked)
+    mode = script_result.get("mode", "mock")
+    _feed_cache[key] = {"items": items, "next_cursor": next_cursor, "mode": mode, "ts": time.time()}
+    _cap_evict(_feed_cache, _FEED_CACHE_CAP)
+    return items, next_cursor, mode
+
+
 async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str, goal: str,
                      styles: str, watched: str, cursor: int, fresh: int,
                      memory: dict | None) -> dict:
@@ -7360,15 +7435,19 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     key = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched, cursor, memory)
 
     cached = _feed_cache.get(key)
-    fresh_enough = cached and (time.time() - cached["ts"]) < _FEED_CACHE_TTL_S
+    # Live pages keep the long TTL; mock pages expire fast so repolls pick up the
+    # background upgrade (but immediate repolls still hit cache, not the gauntlet).
+    ttl = _FEED_CACHE_TTL_S if (cached and cached.get("mode") == "live") else _FEED_MOCK_TTL_S
+    fresh_enough = cached and (time.time() - cached["ts"]) < ttl
+    if cached and fresh_enough and not fresh:
+        # Pure cache hit: answer with ZERO awaits — next-page warmup happens off-response.
+        _spawn(_prefetch_after_hit(creator_id, niche, audience, known_for, goal, styles,
+                                   watched, cursor, memory, cached["next_cursor"]))
+        return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
+
     # UX-G1: the bandit's judgment (or honest cold-start priors) picks the page's
     # pillar/style and explains WHY — fetched once, threaded through every path.
     arms = await _top_arms(creator_id, niche)
-    if cached and fresh_enough and not fresh:
-        _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                             cursor, memory, cached["next_cursor"], arms=arms)
-        return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
-
     sreq, why_picked = _feed_sreq(niche, audience, known_for, goal, styles, cursor, creator_id,
                                   memory, arms=arms)
 
@@ -7381,14 +7460,18 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
                              cursor, memory, cached["next_cursor"], arms=arms)
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
-    # No cache yet (first-ever fetch) — fast single-call path so the client never waits
-    # on the full 4-6-call quality gate for its very first paint.
-    script_result = await _fast_feed_scripts(sreq)
-    items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
-                                                   why_picked=why_picked)
-    _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
-                        "mode": script_result.get("mode", "mock"), "ts": time.time()}
-    _cap_evict(_feed_cache, _FEED_CACHE_CAP)
+    # No cache yet (first-ever fetch) — fast single-call path, SINGLE-FLIGHT per key:
+    # a burst of cold requests (fresh install + repolls, several new users on one
+    # instance) shares one generation instead of stacking 8s calls until the health
+    # check starves (the crash-loop from the blank-home audit).
+    task = _feed_inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(_cold_feed_page(key, sreq, niche, creator_id, watched,
+                                                   cursor, why_picked))
+        _feed_inflight[key] = task
+        task.add_done_callback(lambda _t, _k=key: _feed_inflight.pop(_k, None))
+    # shield: a disconnecting client must not cancel the shared paint under its followers.
+    items, next_cursor, mode = await asyncio.shield(task)
 
     # page 0 → background full-quality OPUS upgrade for the SECOND fetch.
     if cursor == 0 and key not in _feed_refreshing:
@@ -7398,7 +7481,7 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
                          cursor, memory, next_cursor, arms=arms)
 
-    return {"mode": script_result.get("mode", "mock"), "items": items, "next_cursor": next_cursor}
+    return {"mode": mode, "items": items, "next_cursor": next_cursor}
 
 
 async def _merge_briefs(result: dict, creator_id: str, cursor: int) -> dict:

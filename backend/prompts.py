@@ -1116,6 +1116,23 @@ SCRIPT_JSON_ELEMENT = {
     },
 }
 
+# First-paint variant of SCRIPT_JSON_ELEMENT: only the fields the pick CARD needs.
+# The blank-home audit measured the full 12-field schema on SONNET at ~23-30s — past
+# any sane inline budget, so "Today's picks" first paint was ALWAYS the mock template.
+# This lean shape on HAIKU lands in ~2-4s; the dropped extras (altHooks/shotPlan/
+# targetSeconds/predictedScore) are synthesized server-side so the wire shape the app
+# decodes is unchanged, and the background OPUS pass still upgrades to full quality.
+FAST_SCRIPT_JSON_ELEMENT = {
+    "type": "object", "additionalProperties": False,
+    "required": ["title", "summary", "hook", "hookSignal", "formatId", "body", "cta", "style"],
+    "properties": {
+        "title": _STR, "summary": _STR, "hook": _STR,
+        "hookSignal": {"type": "string", "enum": SIGNAL_LIST},
+        "formatId": {"type": "string", "enum": FORMAT_IDS},
+        "body": _STR, "cta": _STR, "style": _STR,
+    },
+}
+
 HOOK_JSON_ELEMENT = {
     "type": "object", "additionalProperties": False,
     "required": ["text", "signal", "strength"],

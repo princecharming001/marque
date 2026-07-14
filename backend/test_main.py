@@ -5321,3 +5321,119 @@ def test_settle_from_scrape_settles_registered_posts_only():
     # idempotent: a second sweep re-reads the same rows and settles nothing new
     assert asyncio.run(main._settle_from_scrape("cScrape", rows)) == 0
     main._post_registry.pop("scrape_p1", None)
+
+
+# --- blank-home audit fixes: lean fast paint, single-flight, mock TTL, breaker -------
+
+def test_fast_feed_scripts_uses_haiku_lean_schema_and_synthesizes_extras(monkeypatch):
+    # The 12-field SONNET call measured ~23-30s in prod (always past the budget -> mock
+    # forever). First paint must be HAIKU + the lean schema, with the dropped extras
+    # synthesized so the wire shape is unchanged.
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
+    cap = {}
+
+    async def fake_json(sys, usr, schema, model, max_tokens, array_key=None):
+        cap["model"] = model
+        cap["schema"] = schema
+        return [{"title": "T", "summary": "S", "hook": "H", "hookSignal": "curiosity",
+                 "formatId": "pov-story", "body": "B", "cta": "C", "style": "talking_head"}]
+    monkeypatch.setattr(main, "anthropic_json", fake_json)
+    sreq = main.ScriptRequest(creator_id="c_lean", pillar="Hot takes",
+                              style="talking_head", count=1)
+    out = asyncio.run(main._fast_feed_scripts(sreq))
+    assert out["mode"] == "live"
+    assert cap["model"] == main.HAIKU
+    element = cap["schema"]["properties"]["scripts"]["items"]
+    assert "altHooks" not in element["properties"]        # lean schema, not the full one
+    s = out["scripts"][0]
+    assert s["altHooks"] == [] and s["shotPlan"] == []    # extras synthesized
+    assert s["targetSeconds"] and s["predictedScore"]
+
+
+def test_feed_cold_paint_is_single_flight(monkeypatch):
+    # A burst of cold requests for the same key must share ONE generation — stacked 8s
+    # calls were what starved the health check into the crash loop. (Next-page prefetch
+    # + the OPUS upgrade are no-op'd: they legitimately generate for OTHER keys.)
+    main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
+    calls = {"n": 0}
+
+    async def slow_fast(sreq):
+        calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return {"mode": "mock", "scripts": main.mock_scripts(sreq)}
+    monkeypatch.setattr(main, "_fast_feed_scripts", slow_fast)
+    monkeypatch.setattr(main, "_maybe_prefetch_next", lambda *a, **k: None)
+
+    async def noop_refresh(*a, **k):
+        return None
+    monkeypatch.setattr(main, "_refresh_feed_page", noop_refresh)
+
+    async def burst():
+        return await asyncio.gather(*(
+            main._feed_impl("c_sf", "fitness", "", "", "grow", "", "", 0, 0, None)
+            for _ in range(5)))
+    results = asyncio.run(burst())
+    assert calls["n"] == 1                                # one paint, five servings
+    assert all(r["items"] for r in results)
+    main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
+
+
+def test_feed_mock_ttl_short_live_ttl_long(monkeypatch):
+    # Mock pages bridge to the background upgrade -> stale after _FEED_MOCK_TTL_S (served
+    # via SWR, instantly, while a refresh spawns). Live pages keep the 6h TTL.
+    main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
+    monkeypatch.setattr(main, "_maybe_prefetch_next", lambda *a, **k: None)
+    refreshed = []
+
+    async def spy_refresh(key, *a, **k):
+        refreshed.append(key)
+    monkeypatch.setattr(main, "_refresh_feed_page", spy_refresh)
+    key = main._feed_cache_key("c_ttl", "fitness", "", "", "grow", "", "", 0, None)
+    old = time.time() - (main._FEED_MOCK_TTL_S + 10)
+    main._feed_cache[key] = {"items": [{"type": "trend", "trend": {}}], "next_cursor": 1,
+                             "mode": "mock", "ts": old}
+    out = asyncio.run(main._feed_impl("c_ttl", "fitness", "", "", "grow", "", "", 0, 0, None))
+    assert out["items"] and out["mode"] == "mock"          # stale mock still serves instantly (SWR)
+    assert key in main._feed_refreshing or refreshed       # ...and the upgrade was spawned
+    main._feed_refreshing.clear(); refreshed.clear()
+    main._feed_cache[key] = {"items": [{"type": "trend", "trend": {}}], "next_cursor": 1,
+                             "mode": "live", "ts": old}    # same age, but LIVE -> still fresh
+    out2 = asyncio.run(main._feed_impl("c_ttl", "fitness", "", "", "grow", "", "", 0, 0, None))
+    assert out2["mode"] == "live"
+    assert key not in main._feed_refreshing and not refreshed
+    main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
+
+
+def test_feed_cache_hit_answers_without_top_arms(monkeypatch):
+    # The audit found `await _top_arms` ABOVE the cache-hit return — Supabase roundtrips
+    # taxing the hottest path. A fresh hit must answer with zero awaits.
+    main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
+    key = main._feed_cache_key("c_hit", "fitness", "", "", "grow", "", "", 0, None)
+    main._feed_cache[key] = {"items": [{"type": "trend", "trend": {}}], "next_cursor": 1,
+                             "mode": "live", "ts": time.time()}
+
+    async def boom(*a, **k):
+        raise AssertionError("_top_arms must not run on the cache-hit response path")
+    monkeypatch.setattr(main, "_top_arms", boom)
+    out = asyncio.run(main._feed_impl("c_hit", "fitness", "", "", "grow", "", "", 0, 0, None))
+    assert out["mode"] == "live"
+    main._feed_cache.clear()
+
+
+def test_dossier_circuit_breaker_opens_after_consecutive_failures(monkeypatch):
+    # TwelveLabs/claude_frames 400-storm protection: 3 consecutive provider failures ->
+    # breaker opens, no further provider calls this process.
+    monkeypatch.setattr(main.dossier_mod, "VIDEO_UNDERSTANDING", "twelvelabs")
+    monkeypatch.setitem(main._dossier_breaker, "fails", 0)
+    monkeypatch.setitem(main._dossier_breaker, "open", False)
+    calls = {"n": 0}
+
+    async def failing(url, dur_ms):
+        calls["n"] += 1
+        raise RuntimeError("400 Bad Request")
+    monkeypatch.setattr(main.dossier_mod, "dossier_for_reference", failing)
+    posts = [{"video_url": f"https://cdn/{i}.mp4", "duration_s": 10} for i in range(6)]
+    asyncio.run(main._dossier_classify_reels(posts))
+    assert calls["n"] == 3 and main._dossier_breaker["open"] is True
+    asyncio.run(main._dossier_classify_reels(posts))       # breaker open -> zero calls
+    assert calls["n"] == 3
