@@ -26,7 +26,7 @@ class FakeStore:
     async def load_creator_tier(self, cid):
         return None
 
-    async def load_metrics(self, cid, entity_id="", metric=""):
+    async def load_metrics(self, cid, entity_id="", metric="", since=""):
         return self._metrics
 
     async def mark_insight_delivered(self, iid):

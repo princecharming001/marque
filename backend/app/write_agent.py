@@ -12,12 +12,24 @@ key ⇒ a deterministic <answer> mock. Flag WRITE_AGENT.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
 from app import palo_flags, palo_prompts
 from app.palo_llm import anthropic_cached, anthropic_cached_json
 from prompts import OPUS
+
+# Strong-ref background tasks (loop only weak-refs create_task) so a fire-and-forget
+# usage record can't be GC'd mid-flight. Mirrors main._spawn.
+_bg_tasks: set = set()
+
+
+def _spawn(coro):
+    t = asyncio.create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
 
 _SCRIPT_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["title", "script"],
@@ -86,15 +98,17 @@ def apply_actions(script_body: str, actions: list[dict]) -> tuple[str, list[dict
 _LEAK_RE = re.compile(r"REGIME:|LEVER:|spine_map|creator_strategy|prior_recommendations|DOCTRINE_|<memory>")
 
 
-def check_invariants(script_body: str, actions: list[dict]) -> list[str]:
-    """LOOP W: the write agent's contract invariants. Empty list = clean."""
+def check_invariants(script_body: str, actions: list[dict],
+                     applied_body: str | None = None) -> list[str]:
+    """LOOP W: the write agent's contract invariants. Empty list = clean. `applied_body`
+    (the result of apply_actions) can be passed to avoid re-applying."""
     issues: list[str] = []
     for a in actions:
         if a.get("op") == "edit" and a.get("old") and a["old"] not in (script_body or ""):
             issues.append("edit.old is not an exact substring")
         if a.get("op") == "add" and a.get("ref") and a["ref"] not in (script_body or ""):
             issues.append("add.ref is not an exact substring")
-    new_body, _ = apply_actions(script_body, actions)
+    new_body = applied_body if applied_body is not None else apply_actions(script_body, actions)[0]
     if len(new_body.split()) > 250:
         issues.append("script exceeds 250 words")
     if _LEAK_RE.search(new_body):
@@ -135,9 +149,9 @@ async def script_from_brief(store, creator_id: str, brief: dict,
     system = await get_prompt("palo.script.from_brief", system, store=store)
     data = await anthropic_cached_json(system, user, _SCRIPT_SCHEMA, OPUS, max_tokens=1200)
     if isinstance(data, dict) and data.get("script"):
-        try:
+        try:                                    # off the response path — don't await the DB insert
             from app import ai_usage
-            await ai_usage.record(store, creator_id, "script.from_brief", OPUS, 2000, 600)
+            _spawn(ai_usage.record(store, creator_id, "script.from_brief", OPUS, 2000, 600))
         except Exception:
             pass
         return {"title": data.get("title", (brief or {}).get("title", "")),
@@ -187,9 +201,9 @@ async def write_turn(store, creator_id: str, script_body: str, instruction: str,
     actions = parse_write_actions(raw)
     if not actions:                          # model spoke prose -> treat as an answer
         actions = [{"op": "answer", "text": raw.strip()[:500]}]
-    try:
+    try:                                        # off the response path
         from app import ai_usage
-        await ai_usage.record(store, creator_id, "write.turn", OPUS, 3000, 800)
+        _spawn(ai_usage.record(store, creator_id, "write.turn", OPUS, 3000, 800))
     except Exception as e:
         logging.warning("[write_agent] usage record failed: %s", e)
     return {"actions": actions, "raw": raw, "mode": "live"}

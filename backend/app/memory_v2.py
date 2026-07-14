@@ -15,15 +15,17 @@ returns [] and retrieval degrades to recency; no store ⇒ pure no-op.
 from __future__ import annotations
 
 import logging
+import asyncio
 import os
 import time
-from typing import Any
 
 import httpx
 
 from app import ai_usage, palo_flags, palo_prompts
 from app.palo_llm import anthropic_cached_json
 from prompts import HAIKU
+
+_MEMORY_CAP = 200                # per-creator memory cap (prune lowest-confidence/oldest beyond this)
 
 # Insight/performance/episodic memory types are DROPPED in code (never stored).
 _DROP_TYPES = frozenset({"successful_pattern", "conversation_insight", "episodic",
@@ -59,16 +61,41 @@ def _should_extract(user_message: str) -> bool:
     return any(c in m for c in _CUES)
 
 
+# Shared loop-aware embed client (a fresh AsyncClient per call = a TLS handshake on the
+# converse hot path). Timeout 5s: this is inline before the reply, so we can't wait long.
+_embed_client: httpx.AsyncClient | None = None
+_embed_loop = None
+
+
+def _get_embed_client() -> httpx.AsyncClient:
+    global _embed_client, _embed_loop
+    loop = asyncio.get_running_loop()
+    if _embed_client is None or _embed_loop is not loop:
+        _embed_client = httpx.AsyncClient(timeout=5)
+        _embed_loop = loop
+    return _embed_client
+
+
+async def aclose() -> None:
+    """Close the pooled embed client on app shutdown (main._lifespan)."""
+    global _embed_client
+    if _embed_client is not None:
+        try:
+            await _embed_client.aclose()
+        finally:
+            _embed_client = None
+
+
 async def _embed(text: str) -> list[float] | None:
     """OpenAI embedding for pgvector search. None keyless — retrieval then falls back
     to recency, and storage saves the memory without a vector (still retrievable)."""
     if not (_OPENAI_KEY and text.strip()):
         return None
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post("https://api.openai.com/v1/embeddings",
-                             headers={"Authorization": f"Bearer {_OPENAI_KEY}"},
-                             json={"model": _EMBED_MODEL, "input": text[:8000]})
+        r = await _get_embed_client().post(
+            "https://api.openai.com/v1/embeddings",
+            headers={"Authorization": f"Bearer {_OPENAI_KEY}"},
+            json={"model": _EMBED_MODEL, "input": text[:8000]})
         if r.status_code == 200:
             return r.json()["data"][0]["embedding"]
     except Exception as e:
@@ -125,6 +152,22 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
+async def _prune(store, creator_id: str, existing: list[dict], ops: list[dict]) -> None:
+    """Bound per-creator memory growth: soft-delete the lowest-confidence / oldest memories
+    beyond _MEMORY_CAP. Best-effort; never raises."""
+    try:
+        total = len(existing) + sum(1 for o in ops if o.get("op") == "add")
+        if total <= _MEMORY_CAP:
+            return
+        prunable = sorted(existing, key=lambda m: (float(m.get("confidence", 0) or 0),
+                                                   m.get("updated_at") or ""))
+        for m in prunable[:total - _MEMORY_CAP]:
+            if m.get("id"):
+                await store.soft_delete_memory(m["id"])
+    except Exception as e:
+        logging.warning("[memory_v2] prune failed: %s", e)
+
+
 async def remember(store, creator_id: str, user_msg: str, assistant_msg: str,
                    scope_default: str = "user") -> int:
     """Fire-and-forget: extract → reconcile vs existing → upsert. Returns #ops applied
@@ -143,10 +186,11 @@ async def remember(store, creator_id: str, user_msg: str, assistant_msg: str,
         for op in ops:
             row = op["row"]
             row["creator_id"] = creator_id
-            if op["op"] == "add":
+            if row.get("value"):          # embed on ADD *and* UPDATE (update left the vector stale)
                 row["embedding"] = await _embed(row["value"])
             if await store.upsert_memory({k: v for k, v in row.items() if v is not None}):
                 applied += 1
+        await _prune(store, creator_id, existing, ops)
         await ai_usage.record(store, creator_id, "memory.extract", HAIKU, 600, 200)
         return applied
     except Exception as e:

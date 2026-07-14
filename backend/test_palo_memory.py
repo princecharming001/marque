@@ -166,3 +166,53 @@ def test_retrieve_never_raises_on_store_error(on):
 
 def test_ledger_block_never_raises_on_store_error(on):
     assert _run(recall_ledger.ledger_block(_BoomStore(), "c1")) == ""
+
+
+def test_prune_soft_deletes_lowest_confidence(on, monkeypatch):
+    monkeypatch.setattr(memory_v2, "_MEMORY_CAP", 2)
+    deleted = []
+
+    class S:
+        async def soft_delete_memory(self, mid):
+            deleted.append(mid)
+            return True
+    existing = [{"id": "a", "confidence": 0.9, "updated_at": "2"},
+                {"id": "b", "confidence": 0.5, "updated_at": "1"},
+                {"id": "c", "confidence": 0.7, "updated_at": "3"}]
+    _run(memory_v2._prune(S(), "c1", existing, []))
+    assert deleted == ["b"]                              # 3 existing, cap 2 -> prune lowest-conf
+
+
+def test_remember_embeds_on_update(on, monkeypatch):
+    async def fake_extract(store, u, a):
+        return [{"type": "content_context", "key": "loc", "value": "Berlin",
+                 "confidence": 0.9, "scope": "user"}]
+    monkeypatch.setattr(memory_v2, "_extract_facts", fake_extract)
+
+    async def fake_embed(t):
+        return [0.1, 0.2, 0.3]
+    monkeypatch.setattr(memory_v2, "_embed", fake_embed)
+
+    class S:
+        def __init__(self):
+            self.upserts = []
+
+        async def load_prompt_override(self, k):
+            return None
+
+        async def load_memories(self, cid, scope=""):
+            return [{"id": "m1", "scope": "user", "type": "content_context",
+                     "key": "loc", "value": "London", "confidence": 0.8}]
+
+        async def upsert_memory(self, row):
+            self.upserts.append(row)
+            return True
+
+        async def soft_delete_memory(self, mid):
+            return True
+
+        async def record_ai_usage(self, row):
+            return True
+    s = S()
+    _run(memory_v2.remember(s, "c1", "remember I moved to Berlin", "ok"))
+    assert s.upserts and s.upserts[0].get("embedding") == [0.1, 0.2, 0.3]  # update re-embedded

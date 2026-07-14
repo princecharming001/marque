@@ -262,13 +262,15 @@ class PaloStore(SupabaseClient):
         return bool(r and r.status_code < 300)
 
     async def load_metrics(self, creator_id: str, entity_id: str = "",
-                           metric: str = "") -> list[dict]:
+                           metric: str = "", since: str = "") -> list[dict]:
         params = {"creator_id": f"eq.{creator_id}", "select": "*",
                   "order": "captured_at.asc"}
         if entity_id:
             params["entity_id"] = f"eq.{entity_id}"
         if metric:
             params["metric"] = f"eq.{metric}"
+        if since:                       # bound the read so the insight snapshot isn't O(all rows)
+            params["captured_at"] = f"gte.{since}"
         r = await self._request("GET", "/metrics_ts", params=params)
         if not (r and r.status_code == 200):
             return []
