@@ -110,11 +110,27 @@ def metrics_sources(tier: str | None) -> tuple[str, ...]:
     return _METRICS_CHAIN[normalize(tier)]
 
 
+# Dev-only in-process tier overrides (the /v1/dev/tier demo switcher). Checked first so a
+# demo works even without Supabase; guarded at the route by ALLOW_DEV_TIER, never in prod.
+_OVERRIDE: dict[str, str] = {}
+
+
+def set_override(creator_id: str, tier: str) -> str:
+    t = normalize(tier)
+    _OVERRIDE[creator_id] = t
+    return t
+
+
+def clear_override(creator_id: str) -> None:
+    _OVERRIDE.pop(creator_id, None)
+
+
 async def tier_for(creator_id: str, store=None) -> str:
-    """Resolve a creator's tier. Reads `creators.tier` via the Palo store when one is
-    provided and enabled; otherwise returns DEFAULT_TIER. This is the single seam to
-    wire real IAP/RevenueCat entitlements into later — every gate calls through here.
-    Never raises: an outage or missing column degrades to the default tier."""
+    """Resolve a creator's tier. Dev override wins (demo); then `creators.tier` via the
+    Palo store when provided; otherwise DEFAULT_TIER. This is the single seam to wire real
+    IAP/RevenueCat entitlements into later — every gate calls through here. Never raises."""
+    if creator_id in _OVERRIDE:
+        return _OVERRIDE[creator_id]
     if store is not None:
         try:
             t = await store.load_creator_tier(creator_id)

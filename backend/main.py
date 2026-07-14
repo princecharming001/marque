@@ -143,13 +143,52 @@ push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supa
 
 # --- Palo port (branch palo-port) — memory/ledger store. None keyless => every ported
 # path is a pure no-op; all capabilities gated OFF by app.palo_flags (PALO_PORT unset).
-from app import exemplar, ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, track_insights, write_agent  # noqa: E402
+from app import exemplar, ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, tiers, track_insights, write_agent  # noqa: E402
 from app.palo_persistence import make_store  # noqa: E402
 
 _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
 # Internal cron auth — Render cron jobs POST with this token. Empty => the endpoint is
 # closed (403 to everyone), so it's never publicly triggerable by default.
 INTERNAL_CRON_TOKEN = os.environ.get("INTERNAL_CRON_TOKEN", "")
+# Dev-only tier switcher (the iOS DEBUG demo button). OFF by default so it can never be used
+# to grab a paid tier in prod — set ALLOW_DEV_TIER=1 only in local/stage.
+ALLOW_DEV_TIER = os.environ.get("ALLOW_DEV_TIER", "0") != "0"
+
+
+class _DevTierRequest(BaseModel):
+    creator_id: str = "default"
+    tier: str = ""                    # starter|growth|studio ; empty clears the override
+
+
+def _tier_payload(creator_id: str, tier: str) -> dict:
+    return {"creator_id": creator_id, "tier": tier, "entitlements": tiers.entitlements(tier),
+            "metrics_sources": list(tiers.metrics_sources(tier))}
+
+
+@app.post("/v1/dev/tier")
+async def dev_set_tier(req: _DevTierRequest):
+    """DEBUG demo: force this creator's tier so paid tiers can be tried without billing.
+    403 unless ALLOW_DEV_TIER=1 (never on in prod)."""
+    if not ALLOW_DEV_TIER:
+        raise HTTPException(status_code=403, detail="dev tier override disabled")
+    if req.tier:
+        t = tiers.set_override(req.creator_id, req.tier)
+        if _palo_store:
+            try:
+                await _palo_store.set_creator_tier(req.creator_id, t)
+            except Exception as e:
+                logging.warning("[dev] set_creator_tier failed: %s", e)
+    else:
+        tiers.clear_override(req.creator_id)
+        t = tiers.DEFAULT_TIER
+    return _tier_payload(req.creator_id, t)
+
+
+@app.get("/v1/dev/tier")
+async def dev_get_tier(creator_id: str = "default"):
+    """Current resolved tier + entitlements (for the demo switcher to display)."""
+    t = await tiers.tier_for(creator_id, _palo_store)
+    return _tier_payload(creator_id, t)
 
 
 # Per-kind "already running" latch: an overlapping schedule or a client retry can't start
