@@ -20,6 +20,11 @@ struct ReelDetailSheet: View {
     @State private var phase: Phase = .detail
     @State private var playbackFailed = false      // W2-4: 403/expired CDN URL → fall back to the hook panel
     @State private var thumbFailed = false         // expired thumbnail CDN URL → fall back to the hook panel
+    // The footage's REAL aspect (w/h), reported by the player once known. Scraped reels
+    // aren't all 9:16 — a landscape/square source aspect-filled into a portrait frame
+    // was cropped ~4x into a zoomed blob. Clamped so an extreme source can't make the
+    // media card degenerate (skyscraper or ribbon).
+    @State private var videoAspect: CGFloat? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,10 +125,18 @@ struct ReelDetailSheet: View {
 
     @ViewBuilder private var media: some View {
         if !reel.videoURL.isEmpty && !playbackFailed, let url = URL(string: reel.videoURL) {
-            // Full-bleed 9:16, autoplaying + looping — the reel starts the moment
-            // the sheet opens, like opening it on the platform itself.
-            FailableVideoPlayer(url: url) { playbackFailed = true }
-                .aspectRatio(9.0 / 16.0, contentMode: .fit)
+            // Autoplaying + looping — the reel starts the moment the sheet opens, like
+            // opening it on the platform itself. The frame starts 9:16 and snaps to the
+            // FOOTAGE's real aspect once the player reports it, so a landscape or square
+            // source shows whole instead of aspect-fill-cropped into a zoomed blob.
+            FailableVideoPlayer(url: url,
+                                onFailure: { playbackFailed = true },
+                                onAspect: { a in
+                                    withAnimation(Motion.quick) {
+                                        videoAspect = min(max(a, 9.0 / 16.0), 16.0 / 9.0)
+                                    }
+                                })
+                .aspectRatio(videoAspect ?? 9.0 / 16.0, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
