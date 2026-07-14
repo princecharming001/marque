@@ -35,11 +35,21 @@ _client_loop = None
 
 def _get_client() -> httpx.AsyncClient:
     global _client, _client_loop
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()          # get_event_loop is deprecated + changed in 3.14
     if _client is None or _client_loop is not loop:
         _client = httpx.AsyncClient(timeout=120)
         _client_loop = loop
     return _client
+
+
+async def aclose() -> None:
+    """Close the pooled client on app shutdown (main._lifespan)."""
+    global _client
+    if _client is not None:
+        try:
+            await _client.aclose()
+        finally:
+            _client = None
 
 
 def build_system(system: str) -> str | list[dict]:

@@ -49,6 +49,15 @@ async def _lifespan(app: FastAPI):
     yield
     if _anthropic_client is not None:
         await _anthropic_client.aclose()
+    # Palo port: close the ported modules' pooled httpx clients too.
+    from app import memory_v2 as _mv
+    from app import metrics_pollers as _mp
+    from app import palo_llm as _pl
+    for _closer in (_pl.aclose, _mp.aclose, _mv.aclose):
+        try:
+            await _closer()
+        except Exception:
+            pass
 
 
 app = FastAPI(title="Marque API", version="0.3.0", lifespan=_lifespan)
