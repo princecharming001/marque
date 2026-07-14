@@ -36,6 +36,16 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return data
     }
 
+    #if DEBUG
+    /// DEBUG demo only: force this creator's paid tier on the backend (empty string clears).
+    /// Returns the resolved {tier, entitlements, metrics_sources}, or nil if the backend has
+    /// the dev override disabled (ALLOW_DEV_TIER unset → 403) or is offline.
+    func setDevTier(_ tier: String) async -> [String: Any]? {
+        guard let data = await post("/v1/dev/tier", ["creator_id": creatorId, "tier": tier]) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+    #endif
+
     /// AF-I4: like get(), but surfaces the HTTP status so poll loops can distinguish
     /// "transient miss, keep polling" from a permanently-gone job (404 never existed /
     /// structured 410 swept). Returns (nil, 0) on transport failure.

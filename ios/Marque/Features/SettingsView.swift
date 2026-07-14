@@ -12,6 +12,8 @@ struct SettingsView: View {
     @State private var showSignOutConfirm = false
     @State private var restoring = false
     @State private var notifPublished = UserDefaults.standard.bool(forKey: "notif.published")
+    @State private var demoTier: String = UserDefaults.standard.string(forKey: "demo.tier") ?? "growth"
+    @State private var demoTierInfo: String = ""
 
     var body: some View {
         @Bindable var store = store
@@ -156,6 +158,41 @@ struct SettingsView: View {
                             store.resetAll(); dismiss()
                         }
                         .padding(Space.md)
+
+                        #if targetEnvironment(simulator)
+                        // Simulator-only demo switch: try each paid tier without billing. The
+                        // backend applies it only when ALLOW_DEV_TIER=1 (never on in prod).
+                        Divider().padding(.leading, Space.md)
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            Text("Demo tier (simulator only)")
+                                .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            Picker("Demo tier", selection: $demoTier) {
+                                Text("Starter").tag("starter")
+                                Text("Growth").tag("growth")
+                                Text("Studio").tag("studio")
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("settings.demoTier")
+                            .onChange(of: demoTier) { _, newValue in
+                                UserDefaults.standard.set(newValue, forKey: "demo.tier")
+                                store.subscription.devContinue()   // unlock paid UI for the demo
+                                Task {
+                                    if let info = await store.backend.setDevTier(newValue),
+                                       let ents = info["entitlements"] as? [String: Any] {
+                                        let on = ents.filter { ($0.value as? Bool) == true }
+                                            .keys.sorted().joined(separator: ", ")
+                                        demoTierInfo = "Active: \(newValue)" + (on.isEmpty ? "" : " — \(on)")
+                                    } else {
+                                        demoTierInfo = "Backend override off (set ALLOW_DEV_TIER=1)"
+                                    }
+                                }
+                            }
+                            if !demoTierInfo.isEmpty {
+                                Text(demoTierInfo).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.horizontal, Space.md).padding(.vertical, 10)
+                        #endif
                         #endif
                     }
 
