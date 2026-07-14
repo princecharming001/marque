@@ -127,6 +127,13 @@ struct ReelCard: View {
     /// fall back to ink-on-light or the text ends up white over the light ground.
     @State private var imageLoaded = false
     private var overImage: Bool { imageLoaded }
+    // WS4: loop-play the reel right in the grid so the creator can see what it's about
+    // without tapping in (owner: "I'm unable to play the reels"). Only the on-screen cell
+    // plays (visibleReel), and only when it has a durable video URL; a failed/absent URL
+    // falls back to the blur-fill thumbnail (already aspect-safe).
+    @State private var onScreen = false
+    @State private var videoFailed = false
+    private var canPlay: Bool { onScreen && !videoFailed && !reel.videoURL.isEmpty }
 
     var body: some View {
         Button(action: onTap) {
@@ -140,6 +147,8 @@ struct ReelCard: View {
                 .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         }
         .buttonStyle(PressableStyle())
+        .onAppear { onScreen = true }
+        .onDisappear { onScreen = false }
         .accessibilityLabel("Reel by @\(reel.creatorHandle): \(reel.hookText)")
         .accessibilityIdentifier("feed.reel")
     }
@@ -147,7 +156,21 @@ struct ReelCard: View {
     // Background: subtle Palette-derived vertical gradient; thumbnail (when present)
     // fills behind a darkening gradient so the white text stays legible.
     @ViewBuilder private var backdrop: some View {
-        if let url = thumbURL {
+        if canPlay, let vurl = URL(string: reel.videoURL) {
+            // Muted looping preview — the shared player autoplays, loops, guards junk
+            // streams, and flips its own gravity to fit non-portrait footage.
+            ZStack {
+                typographicGround
+                FailableVideoPlayer(url: vurl, muted: true, showsControls: false,
+                                    onFailure: { videoFailed = true })
+                LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
+                                       .init(color: .clear, location: 0.22),
+                                       .init(color: .clear, location: 0.72),
+                                       .init(color: .black.opacity(0.45), location: 1)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+            .onAppear { imageLoaded = true }   // text stays white over the video
+        } else if let url = thumbURL {
             ZStack {
                 typographicGround          // visible while the image loads (and if it never does)
                 AsyncImage(url: url) { phase in

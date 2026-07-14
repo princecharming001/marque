@@ -3537,7 +3537,9 @@ def test_parse_watched_platform_prefix_and_backcompat():
 
 
 def test_niche_hashtags_slugging():
-    assert main._niche_hashtags("strength training") == ["strengthtraining", "strength"]
+    # WS4: compound tags for specificity (full slug + word pairs + a specific bare word)
+    tags = main._niche_hashtags("strength training")
+    assert tags[0] == "strengthtraining" and "strength" in tags
     assert main._niche_hashtags("") == []
     assert main._niche_hashtags("SEO") == ["seo"]
 
@@ -5644,3 +5646,40 @@ def test_default_toggles_broll_on_for_talking_style():
     assert main._default_toggles({"video_type": "other"})["broll"] is True
     assert main._default_toggles({"video_type": "scripted_talking_head"})["broll"] is True
     assert main._default_toggles({"video_type": "recap_music"})["broll"] is False
+
+
+# --- WS4: niche-sharp reels + own-media b-roll ----------------------------------
+def test_niche_hashtags_are_specific_not_broad():
+    tags = main._niche_hashtags("fitness for busy parents")
+    assert "fitnessbusyparents" in tags             # stopword 'for' dropped, full slug
+    assert "fitness" not in tags                    # bare broad category dropped
+    assert any("parent" in t for t in tags)         # compound with the specific word
+    # a single-word specific niche keeps its bare word
+    assert main._niche_hashtags("calisthenics") == ["calisthenics"]
+
+
+def test_score_broll_corpus_picks_best_match():
+    corpus = [
+        {"asset_id": "a1", "description": "person cooking pasta in a kitchen", "tags": ["kitchen", "food"], "broll_suitability": 80, "remote_url": "https://x/a1.mp4"},
+        {"asset_id": "a2", "description": "sunset over mountains", "tags": ["nature"], "broll_suitability": 70, "remote_url": "https://x/a2.mp4"},
+    ]
+    asset, score = main._score_broll_corpus("shot of cooking pasta kitchen", corpus)
+    assert asset["asset_id"] == "a1" and score > 0.45
+
+
+def test_resolve_broll_uses_own_media_before_stock(monkeypatch):
+    # an own-media asset above the floor wins; _resolve_broll marks it own_media and never
+    # calls Pexels for that cue.
+    monkeypatch.setattr(main, "PEXELS_KEY", "k")
+    pexels_calls = {"n": 0}
+
+    async def fake_pexels(*a, **k):
+        pexels_calls["n"] += 1
+        return []
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
+    edl = {"broll": [{"broll_query": "cooking pasta", "cue_text": "cooking pasta in kitchen", "source": "stock"}]}
+    corpus = [{"asset_id": "a1", "description": "cooking pasta in a kitchen", "tags": ["kitchen"], "broll_suitability": 90, "remote_url": "https://x/a1.mp4"}]
+    out = asyncio.run(main._resolve_broll(edl, corpus=corpus))
+    b = out["broll"][0]
+    assert b["source"] == "own_media" and b["resolved_url"] == "https://x/a1.mp4"
+    assert pexels_calls["n"] == 0                   # own media satisfied it — no stock call

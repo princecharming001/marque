@@ -115,6 +115,9 @@ struct ClipsSection: View {
     /// "Ready in about N min" — the server's estimate minus elapsed, floored at 1 min;
     /// falls back to the generic line when no estimate exists (old backend).
     private func renderingEtaLine(_ group: [Clip]) -> String {
+        if group.contains(where: { $0.uploading }) {
+            return "Uploading your take — the AI starts editing the moment it lands."
+        }
         let remaining = group.compactMap { c -> Int? in
             guard let eta = c.etaSeconds else { return nil }
             // Anchor at when the estimate was TAKEN — the server value is already
@@ -212,7 +215,7 @@ struct ClipGridCell: View {
         case .ready:     return "READY"
         case .scheduled: return "SCHED"
         case .posted:    return "POSTED"
-        case .rendering: return "RENDERING"
+        case .rendering: return clip.uploading ? "UPLOADING" : "RENDERING"
         case .failed:    return "FAILED"
         }
     }
