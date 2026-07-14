@@ -46,6 +46,8 @@ from supabase_persistence import SupabaseClient
 async def _lifespan(app: FastAPI):
     await _load_learning_state()
     _spawn(_warm_reels_on_boot())      # B-11: pre-warm known niches' reels (non-blocking)
+    if palo_flags.PALO_PORT:           # Palo port: run the sweep jobs in-process (no cron services)
+        _spawn(_palo_scheduler())
     yield
     if _anthropic_client is not None:
         await _anthropic_client.aclose()
@@ -262,6 +264,29 @@ async def cron_exemplar(req: _CronRequest):
     if not palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
         return {"started": False, "skipped": "flag_off"}
     return _start_cron("exemplar", lambda: exemplar.run_exemplar_cron(_palo_store, time.time()))
+
+
+async def _palo_scheduler():
+    """In-process scheduler for the ported sweep jobs (the plan's chosen worker model — no
+    separate Render cron services). Each sweep internally skips creators not due per their tier
+    cadence + watermarks and is DB-deduped, so a restart / overlap is safe on a single instance.
+    First run ~2 min after boot, then every PALO_SCHED_INTERVAL_S (default 6h). The cron HTTP
+    endpoints stay as a manual-trigger fallback."""
+    await asyncio.sleep(float(os.environ.get("PALO_SCHED_FIRST_DELAY_S", "120")))
+    interval = float(os.environ.get("PALO_SCHED_INTERVAL_S", "21600"))
+    while True:
+        try:
+            if palo_flags.enabled(palo_flags.IDEA_BANK):
+                _start_cron("ideate", lambda: ideas.run_ideate_cron(_palo_store, time.time()))
+            if palo_flags.enabled(palo_flags.TRACK_INSIGHTS):
+                _start_cron("insights", lambda: track_insights.run_insights_cron(_palo_store, time.time()))
+            if palo_flags.enabled(palo_flags.STRATEGY_COMPILER):
+                _start_cron("compile", lambda: strategy_compiler.run_compile_cron(_palo_store, time.time()))
+            if palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
+                _start_cron("exemplar", lambda: exemplar.run_exemplar_cron(_palo_store, time.time()))
+        except Exception as e:
+            logging.warning("[palo_scheduler] tick failed: %s", e)
+        await asyncio.sleep(interval)
 
 
 async def _inject_strategy(system: str, creator_id: str) -> str:
