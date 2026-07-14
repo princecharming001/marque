@@ -147,6 +147,26 @@ def test_cron_latch_blocks_overlap(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_palo_scheduler_runs_due_sweeps(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(main.palo_flags, "PALO_PORT", True)
+        monkeypatch.setattr(main.palo_flags, "IDEA_BANK", True)
+        monkeypatch.setenv("PALO_SCHED_FIRST_DELAY_S", "0.01")
+        monkeypatch.setenv("PALO_SCHED_INTERVAL_S", "0.01")
+        main._cron_running.clear()
+        called = {"n": 0}
+
+        async def fake_ideate(store, now):
+            called["n"] += 1
+            return 0
+        monkeypatch.setattr(main.ideas, "run_ideate_cron", fake_ideate)
+        t = asyncio.create_task(main._palo_scheduler())
+        await asyncio.sleep(0.15)                    # let it tick + run the spawned sweep
+        t.cancel()
+        assert called["n"] >= 1                       # scheduler fired the due sweep
+    asyncio.run(scenario())
+
+
 def test_cron_exemplar_route(monkeypatch):
     async def scenario():
         monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
