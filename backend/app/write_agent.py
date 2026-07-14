@@ -38,7 +38,11 @@ _SCRIPT_SCHEMA = {
 
 _FILL_RE = re.compile(r"<fill>(?P<content>.*?)</fill>", re.DOTALL)
 _EDIT_RE = re.compile(r"<edit>\s*<old>(?P<old>.*?)</old>\s*<new>(?P<new>.*?)</new>\s*</edit>", re.DOTALL)
-_ADD_RE = re.compile(r'<add\s+position="(?P<pos>after|before)"\s+ref="(?P<ref>.*?)">(?P<text>.*?)</add>', re.DOTALL)
+# Tolerant to attribute order / extra whitespace (a reordered <add> is otherwise silently
+# dropped): match the tag + attrs blob, then pull position/ref out of the blob.
+_ADD_RE = re.compile(r"<add\b(?P<attrs>[^>]*)>(?P<text>.*?)</add>", re.DOTALL)
+_ADD_POS_RE = re.compile(r'position\s*=\s*"(after|before)"', re.IGNORECASE)
+_ADD_REF_RE = re.compile(r'ref\s*=\s*"(.*?)"', re.DOTALL)
 _ANSWER_RE = re.compile(r"<answer>(?P<text>.*?)</answer>", re.DOTALL)
 
 
@@ -53,8 +57,13 @@ def parse_write_actions(text: str) -> list[dict]:
     for m in _EDIT_RE.finditer(text):
         spans.append((m.start(), {"op": "edit", "old": m.group("old").strip(), "new": m.group("new").strip()}))
     for m in _ADD_RE.finditer(text):
-        spans.append((m.start(), {"op": "add", "position": m.group("pos"),
-                                  "ref": m.group("ref").strip(), "text": m.group("text").strip()}))
+        attrs = m.group("attrs")
+        pos_m = _ADD_POS_RE.search(attrs)
+        ref_m = _ADD_REF_RE.search(attrs)
+        spans.append((m.start(), {"op": "add",
+                                  "position": (pos_m.group(1).lower() if pos_m else "after"),
+                                  "ref": (ref_m.group(1).strip() if ref_m else ""),
+                                  "text": m.group("text").strip()}))
     for m in _ANSWER_RE.finditer(text):
         spans.append((m.start(), {"op": "answer", "text": m.group("text").strip()}))
     return [a for _, a in sorted(spans, key=lambda s: s[0])]

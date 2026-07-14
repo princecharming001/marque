@@ -40,6 +40,13 @@ def test_parse_empty():
     assert wa.parse_write_actions("just prose, no tags") == []
 
 
+def test_parse_add_tolerant_to_attr_order():
+    acts = wa.parse_write_actions('<add  ref="the hook"   position="before">cold open</add>')
+    assert acts == [{"op": "add", "position": "before", "ref": "the hook", "text": "cold open"}]
+    acts2 = wa.parse_write_actions('<add ref="x">y</add>')      # missing position -> after
+    assert acts2[0]["position"] == "after" and acts2[0]["ref"] == "x"
+
+
 def test_prompt_caps_large_inputs():
     from app import palo_prompts
     _sys, user = palo_prompts.write_agent_prompt("x" * 50000, "y" * 5000)

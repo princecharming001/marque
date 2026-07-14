@@ -12,6 +12,7 @@ returned but not persisted. Flag IDEA_BANK gates the on-demand entry point.
 from __future__ import annotations
 
 import logging
+import re
 
 from app import ai_usage, palo_flags, palo_prompts
 from app.palo_llm import anthropic_cached, anthropic_cached_json
@@ -123,8 +124,6 @@ def to_briefs(creator_id: str, ideas: list[dict], source: str = "onboarding") ->
 
 
 # --- spitfire chain (overnight ideation) --------------------------------------
-import re  # noqa: E402
-
 _OPEN, _CLOSE = "<OPEN>", "<CLOSE>"
 _NEW_RE = re.compile(r"^\s*TITLE:\s*(?P<title>.+?)\s*\nCONTENT:\s*(?P<content>.+?)\s*$", re.DOTALL)
 _LEGACY_RE = re.compile(
