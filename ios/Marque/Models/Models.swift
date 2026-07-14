@@ -329,16 +329,18 @@ enum EditFormat: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// UX-B1b: this treatment's default toggles — MIRRORS backend
-    /// prompts.EDIT_FORMATS[*]["toggles"] exactly (the server re-derives the same
-    /// defaults when the client omits toggles, so drift here would only ever show
-    /// a misleading pre-submit state, never change the edit).
+    /// UX-B1b: this treatment's default toggles — MUST MIRROR backend
+    /// prompts.EDIT_FORMATS[*]["toggles"] exactly. The client SENDS these on submit and
+    /// the backend honors explicit toggles over its own defaults, so drift here DOES
+    /// change the edit. recap_voiceover (faceless) previously drifted to broll:false,
+    /// music:false → the footage renders at opacity 0 with no b-roll = a black screen +
+    /// captions, no bed. A faceless recap is voiceover OVER visuals: b-roll + music ON.
     var defaultToggles: EditToggles {
         switch self {
         case .talkingHead:      return EditToggles(broll: false, punchIns: true,  music: false)
         case .talkingHeadBroll: return EditToggles(broll: true,  punchIns: true,  music: false)
         case .recapMusic:       return EditToggles(broll: false, punchIns: false, music: true)
-        case .recapVoiceover:   return EditToggles(broll: false, punchIns: false, music: false)
+        case .recapVoiceover:   return EditToggles(broll: true,  punchIns: false, music: true)
         }
     }
 }

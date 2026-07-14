@@ -348,11 +348,19 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return url
     }
 
-    /// Fetch the accounts connected under our `externalId` tag (post-OAuth). Returns the
-    /// ConnectedAccount(s) carrying the Post for Me `accountId` (spc_…) needed to publish.
-    func socialAccounts(externalId: String) async -> [ConnectedAccount] {
-        let q = externalId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? externalId
-        guard let data = await get("/v1/social/accounts?external_id=\(q)"),
+    /// Fetch connected accounts, filtered by our `externalId` tag and/or `platform`
+    /// (post-OAuth). Returns the ConnectedAccount(s) carrying the Post for Me `accountId`
+    /// (spc_…) needed to publish. Passing only `platform` lists every account on that
+    /// platform — used to ADOPT an account already linked under another tag (Post for Me
+    /// forbids re-linking it under a new tag, but it still posts fine by spc_ id).
+    func socialAccounts(externalId: String = "", platform: String = "") async -> [ConnectedAccount] {
+        var items: [String] = []
+        if !externalId.isEmpty {
+            items.append("external_id=" + (externalId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? externalId))
+        }
+        if !platform.isEmpty { items.append("platform=" + platform) }
+        let query = items.isEmpty ? "" : "?" + items.joined(separator: "&")
+        guard let data = await get("/v1/social/accounts\(query)"),
               let r = try? JSONDecoder().decode(SocialAccountsResp.self, from: data) else { return [] }
         note(r.mode ?? "")
         return r.accounts
@@ -362,6 +370,21 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                                  displayName: a.username ?? "", avatarUrl: a.profile_photo_url ?? "",
                                  accountId: a.id)
             }
+    }
+
+    private struct MusicResp: Decodable {
+        let tracks: [MTrack]
+        struct MTrack: Decodable { let name: String; let url: String }
+    }
+
+    /// GET /v1/music — the beds the render/auto-selection uses, so the editor picker shows
+    /// the SAME catalog (single source of truth). Empty on failure → caller keeps fallback.
+    func musicCatalog() async -> [MusicCatalog.Track] {
+        guard let data = await get("/v1/music"),
+              let r = try? JSONDecoder().decode(MusicResp.self, from: data) else { return [] }
+        return r.tracks
+            .filter { !$0.url.isEmpty }
+            .map { MusicCatalog.Track(name: $0.name, url: $0.url) }
     }
 
     /// Revoke an OAuth-linked account on Post for Me (best-effort).
