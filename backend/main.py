@@ -1141,6 +1141,10 @@ class ClipJobRequest(BaseModel):
     # Loop F analyze-first flow: analyze the raw take → edit brief BEFORE editing.
     analyze_first: bool = False
     custom_instructions: str = ""       # free-text editing instructions from the creator
+    # WS4: the creator's analyzed imported-media corpus (each {asset_id, description, tags,
+    # broll_suitability, remote_url}). When b-roll is on, _resolve_broll scores these
+    # against each cue and uses the creator's OWN footage before falling back to stock.
+    corpus: list[dict] = []
     # The cut treatment the creator explicitly picked at submit time (a key of
     # prompts.EDIT_FORMATS). Empty = infer from the take (legacy behavior).
     edit_format: str = ""
@@ -2430,6 +2434,7 @@ async def create_clip_job(req: ClipJobRequest):
         "brand": req.brand, "media_context": req.media_context,
         "source_url": req.source_url, "edl": None, "error": None,
         "edit_prefs": req.edit_prefs or {},
+        "broll_corpus": req.corpus or [],   # WS4: creator's own media for auto b-roll
         "react_source_url": req.react_source_url,
         "react_credit_label": req.react_credit_label,
         "edit_format": edit_format,
@@ -4183,7 +4188,8 @@ async def _run_edit(job_id: str, words: list[dict]):
         # is a NICETY: a failure here must degrade to a warning, never fail the whole
         # clip job (the tweak path already guards this the same way — audit B-05/F4).
         try:
-            edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"))
+            edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
+                                            corpus=job.get("broll_corpus"))
             unresolved = [b.get("broll_query") or b.get("cue_text", "")
                           for b in (edl_data.get("broll") or [])
                           if b.get("source") != "own_media" and not b.get("resolved_url")]
@@ -4875,16 +4881,35 @@ async def scrape_posts(handle: str, platform: str, limit: int = 10) -> list[dict
     return posts[:limit]
 
 
+# Over-broad single words that, alone, pull off-niche reels ("fitness" returns all of
+# fitness, not "fitness for busy parents"). We keep them only as part of a compound tag.
+_BROAD_NICHE_WORDS = frozenset({
+    "fitness", "food", "cooking", "business", "money", "finance", "travel", "beauty",
+    "fashion", "health", "life", "tips", "content", "video", "creator", "marketing",
+})
+
+
 def _niche_hashtags(niche: str) -> list[str]:
-    """Turn a free-text niche into 1-2 search hashtags/terms (alnum-slugged)."""
-    words = [w for w in re.split(r"[^a-z0-9]+", niche.lower()) if w]
+    """Turn a free-text niche into SPECIFIC search hashtags. The old '#fitness' broadener
+    pulled the whole category (the off-niche complaint); now we build compound tags
+    (full slug + meaningful word pairs) and only fall back to a bare word when it's
+    already specific (not in _BROAD_NICHE_WORDS)."""
+    stop = {"for", "and", "the", "a", "an", "of", "to", "in", "on", "with", "your", "my"}
+    words = [w for w in re.split(r"[^a-z0-9]+", niche.lower()) if w and w not in stop]
     if not words:
         return []
-    slug = "".join(words)[:30]
-    tags = [slug]
-    if words[0] != slug:
-        tags.append(words[0])
-    return tags
+    tags: list[str] = ["".join(words)[:30]]                      # full slug, most specific
+    if len(words) >= 2:
+        tags.append((words[-1] + words[0])[:30])                # e.g. "parentsfitness"
+        tags.append((words[0] + words[-1])[:30])                # e.g. "fitnessparents"
+    # a single bare word only if it's specific enough to not pull the whole category
+    for w in words:
+        if w not in _BROAD_NICHE_WORDS and w not in tags:
+            tags.append(w)
+            break
+    # de-dupe, keep order, cap at 3 (Apify hashtag scraper cost)
+    seen: set[str] = set()
+    return [t for t in tags if t and not (t in seen or seen.add(t))][:3]
 
 
 async def scrape_niche_posts(niche: str, limit: int = 20) -> list[dict]:
@@ -5742,15 +5767,35 @@ _broll_url_cache: dict[str, str] = {}
 _broll_gen_failed: set[str] = set()
 
 
+def _score_broll_corpus(cue_text: str, corpus: list[dict]) -> tuple[dict | None, float]:
+    """Pure: best-matching own-media asset for a cue by keyword overlap + suitability
+    (shared with /v1/broll/match). Returns (asset, score) or (None, 0)."""
+    cue_lower = (cue_text or "").lower()
+    words = [w for w in cue_lower.split() if len(w) > 3]
+    best, best_score = None, 0.0
+    for asset in corpus or []:
+        desc = (str(asset.get("description", "")) + " " + " ".join(asset.get("tags", []) or [])).lower()
+        hits = sum(1 for w in words if w in desc)
+        suitability = float(asset.get("broll_suitability", 50)) / 100.0
+        score = 0.55 * min(1.0, hits / max(1, len(words))) + 0.45 * suitability
+        if score > best_score:
+            best, best_score = asset, score
+    return best, best_score
+
+
+_OWN_MEDIA_FLOOR = float(os.environ.get("OWN_MEDIA_BROLL_FLOOR", "0.45"))
+
+
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
-                         allow_generation: bool = True) -> dict:
-    """Resolve each b-roll cue (broll_query, source='stock') to a real portrait video URL
-    via Pexels, in place. own_media entries (already have an asset/URL) are left alone.
-    P4.1: fetch BROLL_CANDIDATES candidates and vision-re-rank the best against the cue +
-    a-roll palette/energy (falls back to top-1). Cached by query so re-renders don't re-hit
-    Pexels/vision. No-op without PEXELS_KEY."""
+                         allow_generation: bool = True,
+                         corpus: list[dict] | None = None) -> dict:
+    """Resolve each b-roll cue to a real portrait video URL. WS4: try the creator's OWN
+    analyzed media (corpus) FIRST — a matching own clip above the score floor becomes an
+    own_media hit — then fall back to Pexels stock, then Higgsfield generation. Cached by
+    query so re-renders don't re-hit Pexels/vision."""
     broll = edl.get("broll") or []
-    if not broll or not (PEXELS_KEY or higgsfield_mod.CONFIGURED):
+    has_stock = PEXELS_KEY or higgsfield_mod.CONFIGURED
+    if not broll or not (has_stock or corpus):
         return edl
     generated_count = 0
     for b in broll:
@@ -5758,6 +5803,17 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             continue
         query = (b.get("broll_query") or b.get("cue_text") or "").strip()
         if not query:
+            continue
+        # Own media first — the creator's real footage beats stock when it matches.
+        if corpus:
+            asset, score = _score_broll_corpus(b.get("cue_text") or query, corpus)
+            url = asset.get("remote_url") if asset else None
+            if asset and url and score >= _OWN_MEDIA_FLOOR:
+                b["source"] = "own_media"
+                b["resolved_url"] = url
+                b["asset_id"] = asset.get("asset_id", "")
+                continue
+        if not has_stock:
             continue
         if query in _broll_url_cache:
             b["resolved_url"] = _broll_url_cache[query]

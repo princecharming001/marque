@@ -778,10 +778,36 @@ struct RecordView: View {
     private func makeClips() {
         guard submitTask == nil else { return }               // AF-I3: no double-submit
         submitFailedMessage = nil
+        // Keep the raw take in the Library so it can be re-cut later — ONCE per take.
+        if let footagePath, footagePath != savedFootagePath {
+            store.addFootage(path: footagePath, scriptId: liveScript.id,
+                             title: liveScript.title.isEmpty ? liveScript.hook.text : liveScript.title,
+                             seconds: liveScript.targetSeconds)
+            savedFootagePath = footagePath
+        }
+        // WS4 — instant return: only the one-tap (auto-confirm) path benefits, and it's
+        // what every founder hits. Insert an "Uploading…" card and go straight to Library;
+        // the store owns the upload → create-job → reconcile so dismissing never cancels it.
+        // (The legacy brief-approve path below still awaits inline — it needs the brief on
+        //  screen before the creator can act.)
+        if uploadTask != nil { uploadTask?.cancel(); uploadTask = nil }   // store re-runs the upload
+        store.submitTakeInstant(script: isFreestyle ? liveScript : liveScript,
+                                footagePath: footagePath, isFreestyle: isFreestyle,
+                                customInstructions: customInstructions,
+                                reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
+                                editFormat: editFormat.rawValue, referenceReel: referenceReel,
+                                toggles: briefToggles)
+        dismiss()
+        router.selectedTab = .library
+        router.showFilm = false
+    }
+
+    // Legacy analyze/brief-approve submit — retained for the non-auto-confirm path (kept
+    // intact; the one-tap flow above is what ships to founders).
+    private func makeClipsLegacy() {
+        guard submitTask == nil else { return }
+        submitFailedMessage = nil
         phase = .analyzing
-        // Keep the raw take in the Library so it can be re-cut later — ONCE per take
-        // (the honest-failure path makes same-take retries possible; every retry was
-        // inserting a duplicate Footage row — review finding).
         if let footagePath, footagePath != savedFootagePath {
             store.addFootage(path: footagePath, scriptId: liveScript.id,
                              title: liveScript.title.isEmpty ? liveScript.hook.text : liveScript.title,

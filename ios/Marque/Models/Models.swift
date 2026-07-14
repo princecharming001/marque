@@ -389,6 +389,11 @@ struct Clip: Codable, Hashable, Identifiable {
     // friendlyRenderError's fallback show something more useful than a fully
     // generic message for an error code it doesn't have copy for yet.
     var lastErrorDetail: String? = nil
+    // WS4: the take's footage is still uploading from the device — the card shows an
+    // "Uploading…" state so the creator returns to Library instantly instead of watching
+    // a submit spinner. Cleared when the server job is created (status → .rendering) or
+    // failed. Optional-with-default → Snapshot-safe on existing installs.
+    var uploading: Bool = false
     // H10: non-fatal degradations the backend already tracked (F6 unresolved
     // b-roll, F13 safe-default-cut fallback) but nothing in iOS ever read —
     // the clip could be "ready" and playable while quietly missing a feature

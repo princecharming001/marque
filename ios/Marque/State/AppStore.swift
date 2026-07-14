@@ -691,6 +691,68 @@ final class AppStore {
     /// UX-B1b: the shared "clips are now in flight" tail — insert tracked clips, poll
     /// the job, streak + celebration. Factored from confirmClips so the one-tap submit
     /// (auto_confirm create response) lands clips through the exact same path.
+    // WS4 — instant return: insert a local "Uploading…" placeholder and run the whole
+    // upload → create-job → reconcile off the RecordView so it can dismiss to Library
+    // immediately. The task is store-owned (retained in `backgroundSubmits`) so dismissing
+    // the recorder never cancels the in-flight submit.
+    private var backgroundSubmits: [UUID: Task<Void, Never>] = [:]
+
+    @discardableResult
+    func submitTakeInstant(script: Script, footagePath: String?, isFreestyle: Bool,
+                           customInstructions: String, reactSourceURL: String,
+                           editFormat: String, referenceReel: ReelItem?,
+                           toggles: EditToggles) -> UUID {
+        let placeholderId = UUID()
+        var ph = Clip(id: placeholderId, scriptId: script.id, formatId: script.formatId,
+                      formatName: Catalog.format(script.formatId).name,
+                      title: script.title.isEmpty ? script.hook.text : script.title,
+                      caption: script.cta, predictedScore: script.predictedScore,
+                      status: .rendering, seconds: script.targetSeconds, jobId: nil)
+        ph.localVideoPath = footagePath
+        ph.uploading = true
+        clips.insert(ph, at: 0)
+        readiedScripts.removeAll { $0.script.id == script.id }
+        save()
+
+        let task = Task { [weak self] in
+            let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath)
+            guard let self else { return }
+            let resp = await self.startAnalyzeJob(
+                script: isFreestyle ? nil : script, publicURL: publicURL,
+                customInstructions: customInstructions, reactSourceURL: reactSourceURL,
+                editFormat: editFormat, referenceReel: referenceReel,
+                autoConfirm: true, toggles: toggles)
+            self.reconcileInstantSubmit(placeholderId: placeholderId, resp: resp,
+                                        script: script, footagePath: footagePath)
+            self.backgroundSubmits[placeholderId] = nil
+        }
+        backgroundSubmits[placeholderId] = task
+        return placeholderId
+    }
+
+    /// Swap the uploading placeholder for the real server-tracked clips, or mark it failed.
+    private func reconcileInstantSubmit(placeholderId: UUID, resp: AnalyzeJobResponse?,
+                                        script: Script, footagePath: String?) {
+        clips.removeAll { $0.id == placeholderId }
+        guard let resp, let stubs = resp.clips, !stubs.isEmpty else {
+            // Submit failed — surface a failed card the creator can retry, never a silent drop.
+            var failed = Clip(id: placeholderId, scriptId: script.id, formatId: script.formatId,
+                              formatName: Catalog.format(script.formatId).name,
+                              title: script.title.isEmpty ? script.hook.text : script.title,
+                              caption: script.cta, predictedScore: script.predictedScore,
+                              status: .failed, seconds: script.targetSeconds, jobId: nil)
+            failed.localVideoPath = footagePath
+            failed.lastError = "upload_failed"
+            clips.insert(failed, at: 0)
+            save()
+            return
+        }
+        primeBrollCorpus()   // warm own-media analysis (no-op without media / b-roll off)
+        trackSubmittedClips(jobId: resp.jobId, script: script, footagePath: footagePath,
+                            stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
+                            etaSeconds: resp.etaSeconds)
+    }
+
     func trackSubmittedClips(jobId: String, script: Script, footagePath: String?,
                              stubs: [(id: String, format: String, ready: Bool)],
                              etaSeconds: Int? = nil) {
