@@ -5427,9 +5427,9 @@ def test_feed_cache_hit_answers_without_top_arms(monkeypatch):
 
 
 def test_dossier_circuit_breaker_opens_after_consecutive_failures(monkeypatch):
-    # TwelveLabs/claude_frames 400-storm protection: 3 consecutive provider failures ->
-    # breaker opens, no further provider calls this process.
+    # 400-storm protection: 3 consecutive PROVIDER errors (exceptions) -> breaker opens.
     monkeypatch.setattr(main.dossier_mod, "VIDEO_UNDERSTANDING", "twelvelabs")
+    monkeypatch.setattr(main, "SUPABASE_URL", "")           # bypass the durable-URL gate
     monkeypatch.setitem(main._dossier_breaker, "fails", 0)
     monkeypatch.setitem(main._dossier_breaker, "open", False)
     calls = {"n": 0}
@@ -5443,6 +5443,43 @@ def test_dossier_circuit_breaker_opens_after_consecutive_failures(monkeypatch):
     assert calls["n"] == 3 and main._dossier_breaker["open"] is True
     asyncio.run(main._dossier_classify_reels(posts))       # breaker open -> zero calls
     assert calls["n"] == 3
+
+
+def test_dossier_none_does_not_open_breaker(monkeypatch):
+    # A fail-soft None (frame-extraction miss for one reel) is NOT a provider outage —
+    # it must NOT count toward the breaker (the bug that opened it on every restart).
+    monkeypatch.setattr(main.dossier_mod, "VIDEO_UNDERSTANDING", "claude_frames")
+    monkeypatch.setattr(main, "SUPABASE_URL", "")
+    monkeypatch.setitem(main._dossier_breaker, "fails", 0)
+    monkeypatch.setitem(main._dossier_breaker, "open", False)
+
+    async def none_ret(url, dur_ms):
+        return None                                        # couldn't get frames for this reel
+    monkeypatch.setattr(main.dossier_mod, "dossier_for_reference", none_ret)
+    posts = [{"video_url": f"https://x/{i}.mp4", "duration_s": 10} for i in range(6)]
+    asyncio.run(main._dossier_classify_reels(posts))
+    assert main._dossier_breaker["open"] is False           # never opened on Nones
+
+
+def test_dossier_skips_non_durable_urls(monkeypatch):
+    # Only durable Supabase-rehosted URLs are attempted (an expiring CDN link fails ffmpeg
+    # fetch and is a data miss, not a provider error).
+    monkeypatch.setattr(main.dossier_mod, "VIDEO_UNDERSTANDING", "claude_frames")
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://sb.example.com")
+    monkeypatch.setitem(main._dossier_breaker, "fails", 0)
+    monkeypatch.setitem(main._dossier_breaker, "open", False)
+    seen = []
+
+    async def spy(url, dur_ms):
+        seen.append(url)
+        return {"framing": {"eye_contact": True}}
+    monkeypatch.setattr(main.dossier_mod, "dossier_for_reference", spy)
+    posts = [
+        {"video_url": "https://cdn.instagram.com/expiring.mp4", "duration_s": 10},   # skipped
+        {"video_url": "https://sb.example.com/storage/v1/object/public/x/durable.mp4", "duration_s": 10},  # attempted
+    ]
+    asyncio.run(main._dossier_classify_reels(posts))
+    assert seen == ["https://sb.example.com/storage/v1/object/public/x/durable.mp4"]
 
 
 # --- platform audit R2: editing durability + script upgrade wire ---------------
