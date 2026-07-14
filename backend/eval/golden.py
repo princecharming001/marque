@@ -63,6 +63,18 @@ KNOWN_GOOD = [
 
 # Each: script + the check name(s) it must trip.
 KNOWN_BAD = [
+    {"why": "stage-direction body (describes what to say)", "expect_flag": "stage direction", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Most fitness advice is backwards.",
+        "hookSignal": "contrarian", "formatId": "myth-buster",
+        "body": "Talk about how protein timing is a myth.\n\nMention the anabolic window study, then explain that total daily intake is what matters.\n\nEnd by telling them to stop stressing about the clock.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "beat-sheet body (storyboard scaffolding)", "expect_flag": "stage direction", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "The one cardio mistake stalling your progress.",
+        "hookSignal": "curiosity", "formatId": "listicle",
+        "body": "Beat 1: the surprising claim about steady-state cardio.\n\nBeat 2: the proof from the data.\n\nBeat 3: what to do instead.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
     {"why": "fabricated client testimonial", "expect_flag": "ungrounded receipt", "gate_ok": True,
      "brand": _FIT_BRAND, "script": {
         "title": "x", "hook": "My client Sarah lost 40 pounds in 12 weeks with this.",

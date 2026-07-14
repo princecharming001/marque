@@ -5569,3 +5569,42 @@ def test_mock_scripts_has_no_unfilled_placeholder():
                               niche="fitness")
     for s in main.mock_scripts(sreq):
         assert "[your number]" not in s["body"]
+
+
+# --- WS2: speakability lint + repair -------------------------------------------
+def test_flag_stage_direction_catches_descriptions_spares_spoken():
+    from prompts import flag_stage_direction as f
+    assert f("Talk about how protein timing is a myth.")
+    assert f("Beat 1: the claim.\n\nBeat 2: the proof.")
+    assert f("First, mention the study, then explain that intake matters.")
+    assert f("Film yourself walking to the gym.")
+    # spoken copy + idioms + whitelisted broll cue must NOT flag
+    assert not f("Most fitness advice is backwards. Here is why.")
+    assert not f("Let me cut to the chase: consistency wins.")
+    assert not f("Just show up every day and the results come.")
+    assert not f("The real problem is stress. [broll: person at desk] Fix it.", "broll_cutaway")
+
+
+def test_ensure_speakable_repairs_description_body(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
+
+    async def fake_anthropic(system, user, model, max_tokens=0, **k):
+        return "Most fitness advice is backwards. The window is hours wide, not minutes."
+    monkeypatch.setattr(main, "anthropic", fake_anthropic)
+    scripts = [{"body": "Talk about how protein timing is a myth.", "style": "talking_head"}]
+    out = asyncio.run(main._ensure_speakable(scripts))
+    assert "talk about" not in out[0]["body"].lower()
+    assert "backwards" in out[0]["body"]
+
+
+def test_ensure_speakable_keeps_good_body_untouched(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "x")
+    calls = {"n": 0}
+
+    async def fake_anthropic(*a, **k):
+        calls["n"] += 1
+        return "should not be called"
+    monkeypatch.setattr(main, "anthropic", fake_anthropic)
+    good = [{"body": "Most fitness advice is backwards. Here is why.", "style": "talking_head"}]
+    out = asyncio.run(main._ensure_speakable(good))
+    assert calls["n"] == 0 and out[0]["body"].startswith("Most fitness")

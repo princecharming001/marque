@@ -130,8 +130,19 @@ def _flag_wall_of_text(sc, brand):
     return None
 
 
+def _flag_stage_direction(sc, brand):
+    """The body must be the words the creator SAYS, not a description of what to say.
+    Shares the exact runtime lint (prompts.flag_stage_direction) so the eval tracks the
+    same rule the pipeline enforces."""
+    try:
+        from prompts import flag_stage_direction
+    except Exception:
+        return None
+    return flag_stage_direction(_s(sc, "body"), _s(sc, "style"))
+
+
 QUALITY_FLAGS = [_flag_slop, _flag_question_opener, _flag_stacked_cta, _flag_ungrounded_receipt,
-                 _flag_wall_of_text]
+                 _flag_wall_of_text, _flag_stage_direction]
 
 
 def evaluate_script(script: dict, brand: dict | None = None) -> dict:
