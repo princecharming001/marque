@@ -253,8 +253,12 @@ class PaloStore(SupabaseClient):
     async def insert_metrics(self, rows: list[dict]) -> bool:
         if not rows:
             return True
-        r = await self._request("POST", "/metrics_ts", json=rows,
-                                headers={"Prefer": "return=minimal"})
+        # ignore-duplicates against metrics_ts_uniq so a re-run/overlapping poll of the same
+        # (creator, post, metric, timestamp) reading can't insert a duplicate that skews spikes.
+        r = await self._request(
+            "POST", "/metrics_ts",
+            params={"on_conflict": "creator_id,entity_id,metric,captured_at"}, json=rows,
+            headers={"Prefer": "resolution=ignore-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
 
     async def load_metrics(self, creator_id: str, entity_id: str = "",

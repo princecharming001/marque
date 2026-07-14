@@ -14,6 +14,7 @@ import copy
 import time
 import uuid
 import hashlib
+import hmac
 import asyncio
 import random
 import logging
@@ -133,7 +134,7 @@ push_mod.SUPABASE = _supabase_client   # UX-B2a: device tokens persist when Supa
 
 # --- Palo port (branch palo-port) — memory/ledger store. None keyless => every ported
 # path is a pure no-op; all capabilities gated OFF by app.palo_flags (PALO_PORT unset).
-from app import ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, track_insights, write_agent  # noqa: E402
+from app import exemplar, ideas, memory_v2, palo_flags, recall_ledger, strategy_compiler, track_insights, write_agent  # noqa: E402
 from app.palo_persistence import make_store  # noqa: E402
 
 _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
@@ -142,41 +143,77 @@ _palo_store = make_store(SUPABASE_URL, SUPABASE_KEY)
 INTERNAL_CRON_TOKEN = os.environ.get("INTERNAL_CRON_TOKEN", "")
 
 
+# Per-kind "already running" latch: an overlapping schedule or a client retry can't start
+# a second fleet sweep (double Opus spend, duplicate rows). In-process (single Render instance).
+_cron_running: dict[str, bool] = {}
+
+
 class _CronRequest(BaseModel):
     token: str = ""
 
 
+def _cron_auth(req: "_CronRequest") -> None:
+    """Constant-time token check — `hmac.compare_digest` avoids the timing side-channel of a
+    plain `!=`. Empty token env => the endpoint is closed to everyone (403)."""
+    if not (INTERNAL_CRON_TOKEN and hmac.compare_digest(req.token, INTERNAL_CRON_TOKEN)):
+        raise HTTPException(status_code=403, detail="forbidden")
+
+
+def _start_cron(kind: str, make_coro) -> dict:
+    """Spawn the fleet sweep in the background and return immediately, so the cron HTTP call
+    never blocks on per-creator LLM/network work (proxy-timeout safe). The latch prevents
+    overlapping runs. `make_coro` is a 0-arg callable returning the sweep coroutine."""
+    if _cron_running.get(kind):
+        return {"started": False, "reason": "already_running"}
+    _cron_running[kind] = True
+
+    async def _runner():
+        try:
+            n = await make_coro()
+            logging.info("[cron] %s sweep done: %s", kind, n)
+        except Exception as e:
+            logging.warning("[cron] %s sweep failed: %s", kind, e)
+        finally:
+            _cron_running[kind] = False
+
+    _spawn(_runner())
+    return {"started": True}
+
+
 @app.post("/internal/cron/ideate")
 async def cron_ideate(req: _CronRequest):
-    """Nightly idea-bank sweep (Render cron). Each creator's tier cadence decides who is
-    actually due. Token-guarded + flag-gated (IDEA_BANK) — a no-op until both are set."""
-    if not INTERNAL_CRON_TOKEN or req.token != INTERNAL_CRON_TOKEN:
-        raise HTTPException(status_code=403, detail="forbidden")
+    """Nightly idea-bank sweep (Render cron). Token-guarded + flag-gated (IDEA_BANK)."""
+    _cron_auth(req)
     if not palo_flags.enabled(palo_flags.IDEA_BANK):
-        return {"ran": 0, "skipped": "flag_off"}
-    return {"ran": await ideas.run_ideate_cron(_palo_store, time.time())}
+        return {"started": False, "skipped": "flag_off"}
+    return _start_cron("ideate", lambda: ideas.run_ideate_cron(_palo_store, time.time()))
 
 
 @app.post("/internal/cron/insights")
 async def cron_insights(req: _CronRequest):
-    """Daily post-performance sweep (Render cron): poll metrics → detect + write insight
-    cards → deliver via APNs. Token-guarded + flag-gated (TRACK_INSIGHTS)."""
-    if not INTERNAL_CRON_TOKEN or req.token != INTERNAL_CRON_TOKEN:
-        raise HTTPException(status_code=403, detail="forbidden")
+    """Daily post-performance sweep: poll metrics → detect + write cards → deliver via APNs."""
+    _cron_auth(req)
     if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS):
-        return {"delivered": 0, "skipped": "flag_off"}
-    return {"delivered": await track_insights.run_insights_cron(_palo_store, time.time())}
+        return {"started": False, "skipped": "flag_off"}
+    return _start_cron("insights", lambda: track_insights.run_insights_cron(_palo_store, time.time()))
 
 
 @app.post("/internal/cron/compile")
 async def cron_compile(req: _CronRequest):
-    """Weekly strategy-compile sweep (Render cron). Three gates keep the Opus bill bounded:
-    flag + allowlist + per-tier freshness. Token-guarded + flag-gated (STRATEGY_COMPILER)."""
-    if not INTERNAL_CRON_TOKEN or req.token != INTERNAL_CRON_TOKEN:
-        raise HTTPException(status_code=403, detail="forbidden")
+    """Weekly strategy-compile sweep. Gates: flag + allowlist + per-tier freshness."""
+    _cron_auth(req)
     if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER):
-        return {"compiled": 0, "skipped": "flag_off"}
-    return {"compiled": await strategy_compiler.run_compile_cron(_palo_store, time.time())}
+        return {"started": False, "skipped": "flag_off"}
+    return _start_cron("compile", lambda: strategy_compiler.run_compile_cron(_palo_store, time.time()))
+
+
+@app.post("/internal/cron/exemplar")
+async def cron_exemplar(req: _CronRequest):
+    """Daily exemplar-bank refresh sweep. Gates: flag + allowlist + freshness."""
+    _cron_auth(req)
+    if not palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
+        return {"started": False, "skipped": "flag_off"}
+    return _start_cron("exemplar", lambda: exemplar.run_exemplar_cron(_palo_store, time.time()))
 
 
 async def _inject_strategy(system: str, creator_id: str) -> str:

@@ -297,6 +297,9 @@ CREATE TABLE IF NOT EXISTS metrics_ts (
 );
 ALTER TABLE metrics_ts ENABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS metrics_ts_idx ON metrics_ts (creator_id, entity_id, metric, captured_at);
+-- De-dup latch: a re-run / overlapping poll of the same reading can't insert a duplicate
+-- row (which would skew the median/spike math). insert_metrics uses on_conflict against it.
+CREATE UNIQUE INDEX IF NOT EXISTS metrics_ts_uniq ON metrics_ts (creator_id, entity_id, metric, captured_at);
 
 -- First-run baseline discipline (Palo's recent_channel_metrics watermarks): records a
 -- baseline on the FIRST scan so day-one history never fires a flood of false milestones.
