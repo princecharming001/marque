@@ -91,4 +91,4 @@ def test_compile_route_guard_and_flag(monkeypatch):
     with pytest.raises(main.HTTPException):
         _run(main.cron_compile(main._CronRequest(token="nope")))
     monkeypatch.setattr(main.palo_flags, "PALO_PORT", False)
-    assert _run(main.cron_compile(main._CronRequest(token="secret"))) == {"compiled": 0, "skipped": "flag_off"}
+    assert _run(main.cron_compile(main._CronRequest(token="secret"))) == {"started": False, "skipped": "flag_off"}

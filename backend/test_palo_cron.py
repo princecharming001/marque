@@ -106,16 +106,57 @@ def test_cron_route_flag_off(monkeypatch):
     monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
     monkeypatch.setattr(main.palo_flags, "PALO_PORT", False)
     out = _run(main.cron_ideate(main._CronRequest(token="secret")))
-    assert out == {"ran": 0, "skipped": "flag_off"}
+    assert out == {"started": False, "skipped": "flag_off"}
 
 
-def test_cron_route_runs_when_on(monkeypatch):
-    monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
-    monkeypatch.setattr(main.palo_flags, "PALO_PORT", True)
-    monkeypatch.setattr(main.palo_flags, "IDEA_BANK", True)
+def test_cron_route_spawns_and_returns(monkeypatch):
+    # Spawn-and-return: the route returns immediately; the sweep runs in the background.
+    async def scenario():
+        monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
+        monkeypatch.setattr(main.palo_flags, "PALO_PORT", True)
+        monkeypatch.setattr(main.palo_flags, "IDEA_BANK", True)
+        main._cron_running.clear()
+        ran = {"n": 0}
 
-    async def fake_cron(store, now):
-        return 5
-    monkeypatch.setattr(main.ideas, "run_ideate_cron", fake_cron)
-    out = _run(main.cron_ideate(main._CronRequest(token="secret")))
-    assert out == {"ran": 5}
+        async def fake_cron(store, now):
+            ran["n"] += 1
+            return 5
+        monkeypatch.setattr(main.ideas, "run_ideate_cron", fake_cron)
+        out = await main.cron_ideate(main._CronRequest(token="secret"))
+        assert out == {"started": True}
+        await asyncio.sleep(0.02)                     # let the spawned sweep run + clear latch
+        assert ran["n"] == 1 and main._cron_running.get("ideate") is False
+    asyncio.run(scenario())
+
+
+def test_cron_latch_blocks_overlap(monkeypatch):
+    async def scenario():
+        main._cron_running.clear()
+        started = []
+
+        async def slow():
+            started.append(1)
+            await asyncio.sleep(0.05)
+            return 0
+        r1 = main._start_cron("t", lambda: slow())
+        r2 = main._start_cron("t", lambda: slow())    # blocked: first still running
+        assert r1 == {"started": True}
+        assert r2 == {"started": False, "reason": "already_running"}
+        await asyncio.sleep(0.08)
+        assert started == [1] and main._cron_running.get("t") is False   # one run, latch cleared
+    asyncio.run(scenario())
+
+
+def test_cron_exemplar_route(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
+        main._cron_running.clear()
+        try:
+            await main.cron_exemplar(main._CronRequest(token="nope"))
+            assert False, "bad token should 403"
+        except HTTPException as e:
+            assert e.status_code == 403
+        monkeypatch.setattr(main.palo_flags, "PALO_PORT", False)
+        out = await main.cron_exemplar(main._CronRequest(token="secret"))
+        assert out == {"started": False, "skipped": "flag_off"}
+    asyncio.run(scenario())
