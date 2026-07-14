@@ -53,6 +53,18 @@ def test_converse_injects_memory_and_ledger_when_on(monkeypatch):
     assert "prior_recommendations" in captured["system"]
 
 
+def test_inject_brain_noop_when_flags_off():
+    assert asyncio.run(main._inject_brain("SYS", "c1", "query")) == "SYS"
+
+
+def test_inject_brain_skips_default_creator(monkeypatch):
+    # even with every brain flag on, the shared 'default' bucket gets no memory/exemplar/ledger
+    for f in ("PALO_PORT", "STRATEGY_COMPILER", "MEMORY_V2", "EXEMPLAR_BANK"):
+        monkeypatch.setattr(main.palo_flags, f, True)
+    out = asyncio.run(main._inject_brain("SYS", "default", "q"))
+    assert "prior_recommendations" not in out and "<memory>" not in out
+
+
 def test_converse_untouched_when_flag_off(monkeypatch):
     captured = _live_env(monkeypatch, flag_on=False)
 

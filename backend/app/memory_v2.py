@@ -173,7 +173,7 @@ async def remember(store, creator_id: str, user_msg: str, assistant_msg: str,
     """Fire-and-forget: extract → reconcile vs existing → upsert. Returns #ops applied
     (0 on gate-miss/keyless/no-store). Swallows all errors (never touches the hot path)."""
     try:
-        if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not creator_id:
+        if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not palo_flags.real_creator(creator_id):
             return 0
         if not _should_extract(user_msg):
             return 0
@@ -215,7 +215,7 @@ def _rank(mems: list[dict]) -> list[dict]:
 
 async def retrieve(store, creator_id: str, query: str, scope: str = "",
                    k: int = 5) -> list[dict]:
-    if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not creator_id:
+    if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not palo_flags.real_creator(creator_id):
         return []
     # Never-raise: retrieve runs on the /v1/converse read path (before the route's try),
     # so a transient store error must degrade to no-memory, not 500 the turn.
