@@ -97,3 +97,81 @@ def test_poll_creator_ingests(on, monkeypatch):
 def test_poll_creator_no_source_noop(on):
     # keyless: STUDIO chain has nothing configured -> no source -> 0
     assert _run(mp.poll_creator(FakeStore(), "c1", tiers.STUDIO, "handle")) == 0
+
+
+def test_poll_creator_falls_through_chain_on_empty_rows(on, monkeypatch):
+    # LIVE-CONFIRMED bug: growth tier picked postforme (key exists), the creator had no
+    # linked PFM account -> [] -> never fell back to apify -> zero metrics forever.
+    # poll_creator must try the chain IN ORDER until a source actually yields rows.
+    monkeypatch.setattr(mp, "_POSTFORME_KEY", "y")
+    monkeypatch.setattr(mp, "_APIFY_KEY", "x")
+
+    async def pfm_empty(cid, account_id, captured_at=""):
+        return []                                        # unlinked account: nothing
+
+    async def apify_rows(cid, handle, captured_at=""):
+        return mp._rows(cid, "p1", {"views": 500.0, "likes": 10.0}, "apify", "T")
+    monkeypatch.setitem(mp._POLLERS, "postforme", pfm_empty)
+    monkeypatch.setitem(mp._POLLERS, "apify", apify_rows)
+    store = FakeStore()
+    n = _run(mp.poll_creator(store, "c1", tiers.GROWTH, "realhandle"))
+    assert n == 2 and {r["source"] for r in store.inserted} == {"apify"}
+
+
+def test_poll_creator_source_error_falls_through(on, monkeypatch):
+    # A raising source must not kill the sweep — the next source in the chain runs.
+    monkeypatch.setattr(mp, "_POSTFORME_KEY", "y")
+    monkeypatch.setattr(mp, "_APIFY_KEY", "x")
+
+    async def pfm_boom(cid, account_id, captured_at=""):
+        raise RuntimeError("pfm down")
+
+    async def apify_rows(cid, handle, captured_at=""):
+        return mp._rows(cid, "p1", {"views": 100.0}, "apify", "T")
+    monkeypatch.setitem(mp._POLLERS, "postforme", pfm_boom)
+    monkeypatch.setitem(mp._POLLERS, "apify", apify_rows)
+    store = FakeStore()
+    assert _run(mp.poll_creator(store, "c1", tiers.GROWTH, "h")) == 1
+
+
+def test_apify_fetch_accepts_201_and_unwraps_latest_posts(on, monkeypatch):
+    # LIVE-CONFIRMED double bug: run-sync-get-dataset-items answers HTTP 201 (the old
+    # `== 200` check dropped every successful scrape), and the profile-scraper actor
+    # nests the posts under profile.latestPosts (iterating profiles yields zero rows).
+    monkeypatch.setattr(mp, "_APIFY_KEY", "x")
+
+    class FakeResp:
+        status_code = 201
+        def json(self):
+            return [{"id": "profile1", "followersCount": 50000, "latestPosts": [
+                {"id": "post1", "videoViewCount": 14_666_566, "likesCount": 811_637,
+                 "commentsCount": 4_193},
+                {"id": "post2", "videoViewCount": 900, "likesCount": 40, "commentsCount": 2},
+            ]}]
+
+    class FakeClient:
+        async def post(self, *a, **k):
+            return FakeResp()
+    monkeypatch.setattr(mp, "_get_client", lambda: FakeClient())
+    posts = _run(mp._apify_fetch("arielyu.fit"))
+    assert [p["id"] for p in posts] == ["post1", "post2"]  # posts, not the profile
+    rows = _run(mp.poll_apify("c1", "arielyu.fit", captured_at="T"))
+    assert len(rows) == 6                                  # 2 posts x 3 metrics
+    assert max(r["value"] for r in rows) == 14_666_566.0
+
+
+def test_apify_fetch_passes_through_flat_post_items(on, monkeypatch):
+    # A posts-scraper actor (flat post dicts, no latestPosts) must keep working.
+    monkeypatch.setattr(mp, "_APIFY_KEY", "x")
+
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return [{"id": "p1", "videoViewCount": 100, "likesCount": 5, "commentsCount": 1}]
+
+    class FakeClient:
+        async def post(self, *a, **k):
+            return FakeResp()
+    monkeypatch.setattr(mp, "_get_client", lambda: FakeClient())
+    posts = _run(mp._apify_fetch("h"))
+    assert posts == [{"id": "p1", "videoViewCount": 100, "likesCount": 5, "commentsCount": 1}]

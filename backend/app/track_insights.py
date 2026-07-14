@@ -147,8 +147,25 @@ def _template_card(event: dict) -> dict:
 
 
 def _seed(event: dict) -> dict:
-    return {"kind": "insight", "event_type": event.get("type"),
-            "value": event.get("value"), "video_id": event.get("video_id")}
+    """Chat handoff for a card's 'Ask about this' tap. `prompt` is REQUIRED by the iOS
+    client (it reads conversation_seed["prompt"] verbatim into the composer) — the audit
+    found the app fell back to a generic template because this dict never carried it."""
+    t, v = event.get("type"), event.get("value")
+    try:
+        num = f"{int(float(v)):,}" if v is not None else ""
+    except (TypeError, ValueError):
+        num = str(v or "")
+    if t == "view_milestone":
+        prompt = f"I just crossed {num} views. What drove it, and how do I build on it?"
+    elif t == "follower_milestone":
+        prompt = f"I just hit {num} followers. What should my next move be?"
+    elif t == "video_spike":
+        prompt = (f"One of my reels is doing {event.get('multiplier')}x my average. "
+                  "What exactly should I learn from it — and what's the fastest follow-up?")
+    else:
+        prompt = "Walk me through my latest performance signal — what should I do about it?"
+    return {"kind": "insight", "event_type": t, "value": v,
+            "video_id": event.get("video_id"), "prompt": prompt}
 
 
 async def _card(store, creator_id: str, event: dict, recent_titles: list[str],
@@ -254,9 +271,13 @@ def settle_candidates(rows: list[dict], channel_avg: float) -> list[tuple[str, f
     return out
 
 
-async def run_insights_cron(store, now_epoch: float) -> int:
-    """Full sweep: poll metrics → build snapshot → detect + write cards → deliver. Returns
-    total pushes delivered across the fleet. Flag-gated + keyless no-op."""
+async def run_insights_cron(store, now_epoch: float, settle_hook=None) -> int:
+    """Full sweep: poll metrics → settle registered posts (bandit loop closure) → build
+    snapshot → detect + write cards → deliver. Returns total pushes delivered across the
+    fleet. Flag-gated + keyless no-op. `settle_hook(creator_id, rows)` is main.py's bridge
+    into the /v1/metrics/ingest settle machinery — injected (not imported) to avoid a
+    main↔module cycle; None keeps the sweep read-only (audit: settle_candidates was dead,
+    so real post performance never updated the bandit arms)."""
     if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS) or store is None:
         return 0
     from app import metrics_pollers, tiers
@@ -268,7 +289,13 @@ async def run_insights_cron(store, now_epoch: float) -> int:
         tier = await tiers.tier_for(cid, store)
         await metrics_pollers.poll_creator(store, cid, tier, c.get("handle", ""))
         since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_epoch - 90 * 86400))
-        snapshot = _snapshot_from_metrics(await store.load_metrics(cid, since=since))
+        rows = await store.load_metrics(cid, since=since)
+        if settle_hook is not None:
+            try:
+                await settle_hook(cid, rows)
+            except Exception as e:
+                logging.warning("[insights] settle hook failed for %s: %s", cid, e)
+        snapshot = _snapshot_from_metrics(rows)
         brand = {"niche": c.get("niche", "")}
         cards = await scan_and_write(store, cid, snapshot, brand)
         delivered += await deliver_insights(store, cid, cards)

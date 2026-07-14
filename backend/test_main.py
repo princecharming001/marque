@@ -5295,3 +5295,29 @@ def test_segment_transform_op_and_render_plan():
     plan = build_render_plan(EDL(**edl).model_dump())
     assert plan["clips"][0]["tx_scale"] == 3.0 and plan["clips"][0]["tx_y"] == -0.2
     assert plan["clips"][1]["tx_scale"] == 1.0            # untouched clip stays identity
+
+
+def test_settle_from_scrape_settles_registered_posts_only():
+    # Bandit loop closure: scraped metrics_ts rows settle a REGISTERED post through the
+    # real ingest machinery (idempotent second pass), and unregistered/organic posts
+    # update zero arms without raising.
+    main._post_registry["scrape_p1"] = {
+        "post_id": "scrape_p1", "creator_id": "cScrape", "settled": False,
+        "outcome_y": None, "metrics": None,
+        "style": "talking_head", "pillar": "training", "format": "myth-buster", "hook": "curiosity",
+    }
+    rows = [
+        {"entity_id": "scrape_p1", "entity_type": "post", "metric": "views", "value": 9000.0},
+        {"entity_id": "scrape_p1", "entity_type": "post", "metric": "likes", "value": 400.0},
+        {"entity_id": "scrape_p1", "entity_type": "post", "metric": "comments", "value": 25.0},
+        {"entity_id": "organic_x", "entity_type": "post", "metric": "views", "value": 5000.0},
+        {"entity_id": "tiny", "entity_type": "post", "metric": "views", "value": 5.0},
+        {"entity_id": "acct", "entity_type": "account", "metric": "views", "value": 99999.0},
+    ]
+    n = asyncio.run(main._settle_from_scrape("cScrape", rows))
+    assert n == 1                                            # only the registered post
+    entry = main._post_registry["scrape_p1"]
+    assert entry["settled"] is True and entry["outcome_y"] is not None
+    # idempotent: a second sweep re-reads the same rows and settles nothing new
+    assert asyncio.run(main._settle_from_scrape("cScrape", rows)) == 0
+    main._post_registry.pop("scrape_p1", None)
