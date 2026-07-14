@@ -192,4 +192,6 @@ async def send_insight(creator_id: str, title: str, body: str, insight_id: str =
             sent += 1
         elif status == 410 or (status == 400 and "BadDeviceToken" in text):
             await _disable(row["token"], row.get("environment", "sandbox"))
+        else:
+            log.warning("apns insight: %s → %s %s", row["token"][:8], status, text[:120])
     return sent

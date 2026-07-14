@@ -40,6 +40,14 @@ def test_parse_empty():
     assert wa.parse_write_actions("just prose, no tags") == []
 
 
+def test_prompt_caps_large_inputs():
+    from app import palo_prompts
+    _sys, user = palo_prompts.write_agent_prompt("x" * 50000, "y" * 5000)
+    assert user.count("x") == 20000 and user.count("y") == 2000       # capped, not unbounded
+    _sys2, user2 = palo_prompts.script_from_brief_prompt({"title": "t", "beginning": "z" * 9000})
+    assert user2.count("z") == 1500
+
+
 # --- write_turn ---------------------------------------------------------------
 
 def test_write_turn_flag_off():
