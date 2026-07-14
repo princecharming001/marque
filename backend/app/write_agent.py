@@ -116,13 +116,21 @@ async def script_from_brief(store, creator_id: str, brief: dict,
     (off ⇒ mock assembly so the brief still yields something usable)."""
     if not palo_flags.enabled(palo_flags.WRITE_AGENT):
         return {**_mock_script_from_brief(brief), "mode": "off"}
-    strat = ""
+    strat = mem = ""
     try:
         from app import strategy_compiler
         strat = await strategy_compiler.strategy_block(store, creator_id)
     except Exception:
         pass
+    try:                                        # memory parity with write_turn / converse
+        from app import memory_v2
+        mem = memory_v2.memory_block(
+            await memory_v2.retrieve(store, creator_id, (brief or {}).get("title", "")))
+    except Exception:
+        pass
     system, user = palo_prompts.script_from_brief_prompt(brief, brand, strat)
+    if mem:
+        system = f"{system}\n\n{mem}"
     from app.prompt_store import get_prompt
     system = await get_prompt("palo.script.from_brief", system, store=store)
     data = await anthropic_cached_json(system, user, _SCRIPT_SCHEMA, OPUS, max_tokens=1200)
@@ -143,6 +151,13 @@ async def _context_blocks(store, creator_id: str, instruction: str, brand: dict 
     try:
         from app import strategy_compiler
         strat = await strategy_compiler.strategy_block(store, creator_id)
+    except Exception:
+        pass
+    try:                                        # fold proven craft patterns into the context
+        from app import exemplar
+        exb = await exemplar.exemplar_block(store, creator_id)
+        if exb:
+            strat = (strat + "\n\n" + exb) if strat else exb
     except Exception:
         pass
     try:

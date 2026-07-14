@@ -64,6 +64,29 @@ def dossier_to_analysis_block(video: dict) -> str:
     return "\n".join(lines)
 
 
+def videos_from_clip_sessions(sessions: list[dict],
+                              views_by_id: dict | None = None) -> list[dict]:
+    """Map stored clip-job states (clip_edit_sessions.state) into the `{title, views,
+    transcript, dossier}` video shape the compiler/exemplar builder consume. This is the
+    seam that feeds the creator's REAL analyzed content into the brain (RISK #1 closed).
+    Only sessions carrying real evidence (a dossier or a transcript) are kept."""
+    views_by_id = views_by_id or {}
+    out: list[dict] = []
+    for s in sessions or []:
+        if not isinstance(s, dict):
+            continue
+        dossier = s.get("dossier") or {}
+        words = s.get("words") or []
+        if not (dossier or words):                 # in-progress/empty job -> no evidence
+            continue
+        script = s.get("script") if isinstance(s.get("script"), dict) else {}
+        title = (script.get("title") or "").strip() or "Untitled"
+        transcript = " ".join(w.get("word", "") for w in words if isinstance(w, dict))[:2000]
+        out.append({"title": title, "views": views_by_id.get(s.get("job_id")) or 0,
+                    "transcript": transcript, "dossier": dossier})
+    return out
+
+
 def catalog_block(videos: list[dict], limit: int = 20) -> str:
     """The evidence pack: the creator's videos as analysis blocks, best-performing first
     (metrics-ranked so the compiler weights what worked). Empty string for no videos."""
