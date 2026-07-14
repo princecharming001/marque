@@ -30,6 +30,7 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
     final class Coordinator: NSObject {
         let onFailure: () -> Void
         private var obs: NSKeyValueObservation?
+        private var sizeObs: NSKeyValueObservation?
         private var loop: NSObjectProtocol?
         private weak var player: AVPlayer?
         init(onFailure: @escaping () -> Void) { self.onFailure = onFailure }
@@ -37,6 +38,18 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
             self.player = player
             obs = item.observe(\.status) { [weak self] it, _ in
                 if it.status == .failed { DispatchQueue.main.async { self?.onFailure() } }
+            }
+            // Junk-stream guard: a scraped CDN sometimes 200s a degenerate few-pixel
+            // video that "plays" fine — .resizeAspectFill then paints it as a
+            // full-screen smear. Real reels are ≥540p; anything under 140px on its
+            // short side is garbage, so treat it as a failure and let the caller
+            // fall back (thumbnail → hook panel), same posture as a hard load error.
+            sizeObs = item.observe(\.presentationSize) { [weak self] it, _ in
+                let s = it.presentationSize
+                guard s != .zero else { return }        // unknown yet (or audio-only)
+                if min(s.width, s.height) < 140 {
+                    DispatchQueue.main.async { self?.onFailure() }
+                }
             }
             // Loop like the platforms do — a reel that ends and sits on a black
             // frame reads as broken.
