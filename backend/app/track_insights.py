@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import time
 
 from app import ai_usage, palo_flags, palo_prompts
 from app.palo_llm import anthropic_cached_json
@@ -266,7 +267,8 @@ async def run_insights_cron(store, now_epoch: float) -> int:
             continue
         tier = await tiers.tier_for(cid, store)
         await metrics_pollers.poll_creator(store, cid, tier, c.get("handle", ""))
-        snapshot = _snapshot_from_metrics(await store.load_metrics(cid))
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now_epoch - 90 * 86400))
+        snapshot = _snapshot_from_metrics(await store.load_metrics(cid, since=since))
         brand = {"niche": c.get("niche", "")}
         cards = await scan_and_write(store, cid, snapshot, brand)
         delivered += await deliver_insights(store, cid, cards)

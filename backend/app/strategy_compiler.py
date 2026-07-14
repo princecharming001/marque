@@ -92,9 +92,13 @@ async def synthesize(store, creator_id: str, digest_text: str, brand: dict | Non
     from app.prompt_store import get_prompt
     system = await get_prompt("palo.strategy.synthesis", system, store=store)
     out = await anthropic_cached(system, user, OPUS, max_tokens=2500)
-    if out and validate_sections(out):
+    if out:
+        # Bill the Opus call whenever it ran — even if the sections fail validation and we
+        # fall back to the template. Billing only on the valid path let the priciest model
+        # go unmetered on malformed output (the exact thing ai_usage exists to catch).
         await ai_usage.record(store, creator_id, "strategy.synthesis", OPUS, 30000, 1600)
-        return out
+        if validate_sections(out):
+            return out
     return _template_strategy(brand)
 
 

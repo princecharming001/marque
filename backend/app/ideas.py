@@ -81,11 +81,11 @@ async def generate_ideas(store, brand: dict, exemplars: str = "",
     data = await anthropic_cached_json(system, user, _IDEASET_SCHEMA, SONNET, max_tokens=1400)
     if not isinstance(data, dict) or not data.get("ideas"):
         return mock_ideas(brand)                       # keyless / failure fallback
+    await ai_usage.record(store, creator_id, "idea.generate", SONNET, 3000, 900)  # the call ran
     ideas = [{"title": i.get("title", ""), "content": i.get("content", "")}
              for i in data["ideas"] if i.get("title")][:3]
     if len(ideas) < 3:
         return mock_ideas(brand)
-    await ai_usage.record(store, creator_id, "idea.generate", SONNET, 3000, 900)
     return ideas
 
 

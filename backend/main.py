@@ -7250,7 +7250,7 @@ async def write_turn_route(req: _WriteRequest):
     answer = next((a.get("text", "") for a in actions if a.get("op") == "answer"), "")
     return {"mode": result.get("mode", "live"), "actions": outcomes,
             "preview": {**(req.script or {}), "body": new_body},
-            "invariants": write_agent.check_invariants(body, actions), "answer": answer}
+            "invariants": write_agent.check_invariants(body, actions, new_body), "answer": answer}
 
 
 class _BriefScriptRequest(BaseModel):

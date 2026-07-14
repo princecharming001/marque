@@ -85,6 +85,21 @@ def test_compile_first_revision(on, monkeypatch):
     assert store.upserted["strategy_revision"] == 1
 
 
+def test_synthesize_bills_opus_even_on_invalid_output(on, monkeypatch):
+    # The Opus call ran; billing must happen even when sections fail validation.
+    async def bad(system, user, model, max_tokens=0, temperature=None):
+        return "## Insights\nonly one section (invalid)"
+    monkeypatch.setattr(sc, "anthropic_cached", bad)
+    billed = []
+
+    async def rec(store, cid, op, model, i, o):
+        billed.append(op)
+        return 0.0
+    monkeypatch.setattr(sc.ai_usage, "record", rec)
+    md = _run(sc.synthesize(FakeStore(), "c1", "digest", {"niche": "chess"}))
+    assert "strategy.synthesis" in billed and sc.validate_sections(md)   # billed + template fallback
+
+
 def test_compile_empty_evidence_skips_llm(on, monkeypatch):
     # No analyzed videos -> deterministic template, NO Sonnet/Opus spend.
     monkeypatch.setenv("STRATEGY_ALLOWLIST", "*")

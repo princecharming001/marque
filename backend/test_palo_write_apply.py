@@ -53,6 +53,15 @@ def test_invariants_clean_and_violations():
     assert any("leaked" in i for i in wa.check_invariants("", [{"op": "fill", "content": "REGIME: breakout is the plan"}]))
 
 
+def test_check_invariants_uses_applied_body_no_reapply(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("should not re-apply when applied_body is given")
+    monkeypatch.setattr(wa, "apply_actions", boom)
+    issues = wa.check_invariants("hello world", [{"op": "edit", "old": "hello", "new": "hi"}],
+                                 applied_body="hi world")
+    assert issues == []
+
+
 # --- route --------------------------------------------------------------------
 
 def test_write_route_flag_off():
