@@ -23,6 +23,15 @@ struct ChatView: View {
     private static let bottomAnchor = "chat.bottomAnchor"
     private static let starters = ["Build my day", "Write me a script", "What should I post today?"]
 
+    /// P7.3: an insight card (or its push) routed here with a prompt — pre-fill the
+    /// composer so the creator can send (or edit) it in one tap.
+    private func consumePendingPrompt() {
+        guard let p = router.pendingChatPrompt, !p.isEmpty else { return }
+        draft = p
+        router.pendingChatPrompt = nil
+        composerFocused = true
+    }
+
     private var messages: [ChatMessage] { chat.current(in: store)?.messages ?? [] }
     private var trimmedDraft: String { draft.trimmingCharacters(in: .whitespacesAndNewlines) }
     /// Typing indicator only shows in the thread the in-flight reply belongs to.
@@ -182,7 +191,11 @@ struct ChatView: View {
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
                 .onTapGesture { composerFocused = false }
-                .onAppear { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
+                .onAppear {
+                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+                    consumePendingPrompt()
+                }
+                .onChange(of: router.pendingChatPrompt) { _, _ in consumePendingPrompt() }
                 .onChange(of: messages.count) { _, _ in
                     withAnimation(Motion.quick) { proxy.scrollTo(Self.bottomAnchor, anchor: .bottom) }
                 }

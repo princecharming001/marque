@@ -7,6 +7,16 @@ struct PerformanceView: View {
     @Environment(AppRouter.self) private var router
     @State private var sheet: CalSheet?
     @State private var mode: CalMode = .week
+    // P7.3/P7.4: the Palo brain surfaces — insight inbox + the compiled strategy.
+    @State private var aiInsights: [BackendClient.InsightItem] = []
+    @State private var showStrategy = false
+
+    private func insightColor(_ category: String) -> Color {
+        switch category {
+        case "orange", "yellow": return Palette.warning
+        default: return Palette.accent
+        }
+    }
 
     private var week: [Date] {
         let cal = Calendar.current
@@ -73,6 +83,66 @@ struct PerformanceView: View {
                     MonthGrid(schedule: store.schedule) { day in sheet = .schedule(day: day, clipId: nil) }
                 }
 
+                // MARK: P7.3/P7.4 — the AI coach: strategy entry + post-performance insights
+                MarqueHairline().padding(.vertical, Space.sm)
+                SectionLabel(text: "From your AI", accent: Palette.accent)
+                Button { showStrategy = true } label: {
+                    HStack(spacing: Space.md) {
+                        Image(systemName: "brain")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(Palette.accent)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Your Strategy").font(AppFont.headline)
+                                .foregroundStyle(Palette.textPrimary)
+                            Text("What Yunicorn has learned about your content")
+                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Palette.textTertiary)
+                    }
+                    .padding(Space.md)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(PressableStyle(dim: 0.7))
+                .accessibilityIdentifier("performance.yourStrategy")
+
+                ForEach(aiInsights.prefix(5)) { ins in
+                    Button {
+                        router.pendingChatPrompt = ins.seedPrompt
+                        router.selectedTab = .chat
+                    } label: {
+                        HStack(alignment: .top, spacing: Space.md) {
+                            Circle().fill(insightColor(ins.category))
+                                .frame(width: 8, height: 8).padding(.top, 6)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(ins.title).font(AppFont.headline)
+                                    .foregroundStyle(Palette.textPrimary)
+                                    .multilineTextAlignment(.leading)
+                                if !ins.description.isEmpty {
+                                    Text(ins.description).font(AppFont.caption)
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .multilineTextAlignment(.leading)
+                                        .lineLimit(3)
+                                }
+                                Text("Ask about this →").font(AppFont.caption)
+                                    .foregroundStyle(Palette.accent)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(Space.md)
+                        .background(Palette.surfaceRaised)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .strokeBorder(Palette.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(PressableStyle(dim: 0.7))
+                }
+
                 // MARK: 30-day insights (Phase 9 completes: platform toggle, series, best post)
                 MarqueHairline().padding(.vertical, Space.sm)
                 InsightsSection()
@@ -88,6 +158,8 @@ struct PerformanceView: View {
             }
         }
         .onAppear { consumePendingSchedule() }
+        .sheet(isPresented: $showStrategy) { StrategyView() }
+        .task { aiInsights = await store.backend.fetchInsights() }
         .onChange(of: router.pendingScheduleClipId) { _, _ in consumePendingSchedule() }
     }
 

@@ -9,6 +9,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     private let fallback = MockLLMRouter()
     var token: String?               // Supabase JWT, attached once auth lands
     var creatorId = "default"        // set by AuthManager on sign-in (scopes memory + learning)
+    var creatorHandle = ""           // creator's own social handle — feeds the metrics poller
     var editPrefs: [String: Any] = [:]   // set by AppStore; threaded into every clip job
     private(set) var lastMode = "Mock"   // "Claude" once a live response comes back
 
@@ -213,6 +214,23 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
 
     func steer(script s: Script, brand: BrandGraph, instruction: String) async -> Script {
+        // P7.5: try the Palo write agent first (strategy+memory+exemplar-aware co-writing).
+        // It edits the script BODY via exact-substring actions; if it returns a real edit we
+        // take it, otherwise (off / answer-only / no change) fall through to the legacy steer
+        // so hook/CTA rewrites keep today's behavior.
+        if let data = await post("/v1/write/turn",
+                                 ["creator_id": creatorId, "instruction": instruction,
+                                  "script": ["title": s.title, "body": s.body]]),
+           let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           (r["mode"] as? String) != "off",
+           let preview = r["preview"] as? [String: Any],
+           let newBody = preview["body"] as? String,
+           !newBody.isEmpty, newBody != s.body {
+            note("Claude")
+            var out = s
+            out.body = newBody
+            return out
+        }
         var body = brandBody(brand)
         body["instruction"] = instruction
         body["script"] = ["hook": s.hook.text, "body": s.body, "cta": s.cta, "formatId": s.formatId]
@@ -492,6 +510,57 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return json
     }
 
+    // MARK: Palo brain surfaces (P7.3 insights inbox + P7.4 Your Strategy)
+
+    struct InsightItem: Identifiable, Hashable {
+        let id: String
+        let category: String        // blue|yellow|green|orange (server-side type color)
+        let title: String
+        let description: String
+        let seedPrompt: String      // what tapping the card asks the chat
+    }
+
+    /// P7.3: the creator's post-performance insight feed. Empty when the feature is off,
+    /// nothing has fired yet, or offline — the section simply doesn't render.
+    func fetchInsights(limit: Int = 20) async -> [InsightItem] {
+        guard let data = await get("/v1/insights?creator_id=\(q(creatorId))&limit=\(limit)"),
+              let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = r["insights"] as? [[String: Any]] else { return [] }
+        note(r["mode"] as? String ?? "Mock")
+        return rows.compactMap { row in
+            guard let id = row["id"] as? String,
+                  let title = row["title"] as? String, !title.isEmpty else { return nil }
+            let desc = row["description"] as? String ?? ""
+            let seed = (row["conversation_seed"] as? [String: Any])?["prompt"] as? String
+            return InsightItem(id: id,
+                               category: row["category"] as? String ?? "blue",
+                               title: title, description: desc,
+                               seedPrompt: seed ?? "My insight: \(title). \(desc) What should I make next to build on this?")
+        }
+    }
+
+    struct StrategyDoc: Hashable {
+        let markdown: String
+        let revision: Int
+        let updatedAt: String
+        let updates: [String]       // recent "what changed" one-liners
+    }
+
+    /// P7.4: the compiled strategy (the creator's "brain"). nil when off / not yet compiled.
+    func fetchStrategy() async -> StrategyDoc? {
+        guard let data = await get("/v1/strategy?creator_id=\(q(creatorId))"),
+              let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let strat = r["strategy"] as? [String: Any],
+              let md = strat["strategy_markdown"] as? String, !md.isEmpty else { return nil }
+        note(r["mode"] as? String ?? "Mock")
+        let updates = (r["updates"] as? [[String: Any]] ?? [])
+            .compactMap { $0["update_text"] as? String }
+        return StrategyDoc(markdown: md,
+                           revision: strat["strategy_revision"] as? Int ?? 0,
+                           updatedAt: strat["strategy_updated_at"] as? String ?? "",
+                           updates: updates)
+    }
+
     // MARK: Learning loop
 
     func registerPost(_ post: ScheduledPost, clip: Clip) async {
@@ -505,6 +574,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             "format_id": clip.formatId,
             "hook_signal": "",
             "predicted_score": clip.predictedScore,
+            // Palo port: the creator's own handle — lets the backend metrics poller
+            // scrape this account so post-performance insights can fire.
+            "handle": creatorHandle,
         ]
         _ = await self.post("/v1/posts/register", body)
     }

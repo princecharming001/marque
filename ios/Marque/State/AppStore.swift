@@ -72,6 +72,7 @@ final class AppStore {
         }
         load()
         backend.editPrefs = editPrefs.asDictionary
+        backend.creatorHandle = brand.pageHandle   // metrics poller scrapes this account
         #if DEBUG
         // Deterministic Maestro/UI-audit entry: land straight on Home (all gates open),
         // bypassing the live plan-build step. Mirrors DevJumpMenu.jumpToHome but as a
@@ -164,6 +165,7 @@ final class AppStore {
         brand.connectedAccounts.removeAll { $0.platform == a.platform && $0.handle.lowercased() == a.handle.lowercased() }
         brand.connectedAccounts.append(a)
         if brand.pageHandle.isEmpty { brand.pageHandle = a.handle }
+        backend.creatorHandle = brand.pageHandle   // keep the metrics poller's handle fresh
         // Everything a real linked account already tells us, the quiz should never
         // ask for: prefill name, derive the follower stage, and set the platform
         // (two platforms connected → "both", i.e. nil primary).

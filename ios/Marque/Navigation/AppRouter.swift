@@ -20,6 +20,9 @@ final class AppRouter {
     var pendingScheduleClipId: UUID? = nil
     /// UX-B2b deep-link: a clips_ready push tap → Library tab + open this clip's detail.
     var pendingOpenClipId: UUID? = nil
+    /// P7.3 deep-link: tapping an insight card (or its push) → Chat tab with this prompt
+    /// pre-filled, so the strategist picks up right where the insight left off.
+    var pendingChatPrompt: String? = nil
 
     /// UX-B2b: route a marque:// URL (push tap / onOpenURL). Recognized today:
     /// marque://library/clip/{uuid} → Library tab + clip detail. OAuth callbacks
