@@ -444,9 +444,21 @@ def clamp_edl_to_source(edl_data: dict, total_frames: int) -> dict:
     return edl_data
 
 
+def _covered_by_silence(a_ms: float, b_ms: float,
+                        spans: list[tuple[int, int]], tol_ms: int = 80) -> bool:
+    """True if [a_ms, b_ms] sits (within tol) inside one verified-silent span. Used to
+    keep the dead-air trim from cutting a gap that actually carries speech energy — the
+    tell-tale of a word the transcriber dropped."""
+    for s0, s1 in spans:
+        if s0 - tol_ms <= a_ms and b_ms <= s1 + tol_ms:
+            return True
+    return False
+
+
 def strip_fillers(words: list[dict], gap_ms: int = 300,
                   use_disfluency_type: bool = True,
-                  keep_pause_frames: int = 6) -> tuple[list[dict], list[Drop]]:
+                  keep_pause_frames: int = 6,
+                  silent_spans: list[tuple[int, int]] | None = None) -> tuple[list[dict], list[Drop]]:
     """Remove filler words and tighten (not eliminate) dead-air gaps; return clean
     word list + drop list.
 
@@ -486,7 +498,14 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
             lead = max(1, round(keep_pause_frames * 2 / 3))
             tail = max(1, keep_pause_frames - lead)
             drop_start, drop_end = gap_start_f + lead, gap_end_f - tail
-            if drop_end - drop_start >= 4:
+            # Missed-word guard: when we have measured silence, only cut a gap that is
+            # VERIFIED silent. A gap the transcriber left because it dropped a word still
+            # has speech energy → it won't be a silent span → we keep it (the word's audio
+            # survives, so the sentence still makes sense). No measurement → prior behavior.
+            drop_ok = drop_end - drop_start >= 4 and (
+                silent_spans is None
+                or _covered_by_silence(_frame_to_ms(drop_start), _frame_to_ms(drop_end), silent_spans))
+            if drop_ok:
                 drops.append(Drop(src_in=drop_start, src_out=drop_end, reason="dead_air"))
             # else: too little room to usefully tighten — leave the natural gap as-is.
         if is_filler:
@@ -1778,7 +1797,8 @@ def _clamp_range(a: int, b: int, lo: int, hi: int) -> tuple[int, int] | None:
 
 
 def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
-                 prefs: dict | None = None, brief: dict | None = None) -> EDL:
+                 prefs: dict | None = None, brief: dict | None = None,
+                 silent_spans: list[tuple[int, int]] | None = None) -> EDL:
     """Pure function: (typed plan, transcript words) -> a valid EDL.
 
     Guarantees the LLM cannot violate:
@@ -1797,7 +1817,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     total = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000)) if words else ms_to_frame(30000)
 
     # --- drops: deterministic fillers + editorial cuts, all snapped + clamped ---
-    clean_words, filler_drops = strip_fillers(words)
+    clean_words, filler_drops = strip_fillers(words, silent_spans=silent_spans)
     drops: list[dict] = [d.model_dump() for d in filler_drops]
     if prefs.get("filler_trim") == "off":
         drops = []

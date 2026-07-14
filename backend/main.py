@@ -1683,6 +1683,19 @@ def editor_capabilities():
     return {"mode": "live", "capabilities": {s: style_capabilities(s) for s in STYLES}}
 
 
+@app.get("/v1/music")
+def music_catalog():
+    """The music-bed catalog the editor picks from, so iOS shows the SAME tracks the
+    render uses (no more client-only fallback drifting from the backend). Every URL is an
+    AVPlayer-native, range-served bed; tags drive tone matching. Swap-able via the
+    MUSIC_CATALOG env with zero code change."""
+    return {"mode": "live", "tracks": [
+        {"name": t.get("name", ""), "url": t.get("url", ""), "vibe": t.get("vibe", ""),
+         "tone": t.get("tone", ""), "bpm": t.get("bpm", 0), "energy": t.get("energy", "")}
+        for t in (MUSIC_TRACKS or _BUILTIN_MUSIC_TRACKS) if t.get("url")
+    ]}
+
+
 @app.post("/v1/pillars")
 async def pillars(req: PillarRequest):
     mode, p = await generate_pillars(req.d(), req.posts or None)
@@ -2002,7 +2015,15 @@ async def reels_examples(format: str = "talking_head", niche: str = ""):
     out: list[dict] = []
     if niche:
         try:
-            entry = await _prev_reels_entry(_niche_reels_cache, _niche_cache_key(niche))
+            key = _niche_cache_key(niche)
+            entry = await _prev_reels_entry(_niche_reels_cache, key)
+            # Mimic cards must be previewable. If the niche was never warmed (or is stale),
+            # kick a background scrape now — same trigger /v1/reels uses — so the NEXT open
+            # of the record screen shows real, playable reels instead of unplayable samples.
+            stale = not entry or (time.time() - entry.get("ts", 0)) > _NICHE_REELS_TTL_S
+            if stale and APIFY_KEY and key not in _reels_refreshing:
+                _reels_refreshing.add(key)
+                _spawn(_refresh_niche_reels(niche))
             reels = (entry or {}).get("reels") or []
 
             def _tier(r: dict) -> int | None:
@@ -2280,13 +2301,27 @@ async def mint_upload_url(req: UploadMintRequest):
 # handling needs it); DROP IN LICENSED TRACKS by setting the MUSIC_CATALOG env var to a
 # JSON array of {name,url,vibe,tone,bpm,energy} — the whole selection/beat machinery is
 # track-agnostic, so richer music is a data change, no code change.
+# Founder/talking-head music bed catalog. INVARIANTS learned the hard way:
+#   • mp3/m4a ONLY — AVPlayer cannot decode Ogg Vorbis, so any .ogg track played as dead
+#     silence on iOS (two of the old three tracks were .ogg → effectively 1 usable bed).
+#   • every URL must serve `audio/*` with HTTP range support (206) so the bed can be
+#     seeked/looped by both AVPlayer and the Remotion render.
+# Tags (vibe/tone/energy) drive tone-matched selection (_select_music_track); they cover
+# all three brand-tone buckets (calm/confident/energetic) with ≥2 tracks each so a match
+# always has variety. These are durable, royalty-free instrumental beds (SoundHelix + a
+# Google-hosted track) — swap in licensed/branded tracks with ZERO code change by setting
+# the MUSIC_CATALOG env (JSON list) or dropping files in the Supabase `music/` bucket.
+_MUSIC_SH = "https://www.soundhelix.com/examples/mp3"
 _BUILTIN_MUSIC_TRACKS = [
-    {"name": "Neverwritten", "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/DDR_assets/Kangaroo_MusiQue_-_The_Neverwritten_Role_Playing_Game.mp3",
+    {"name": "Momentum",   "url": f"{_MUSIC_SH}/SoundHelix-Song-1.mp3", "vibe": "driving",  "tone": "energetic", "bpm": 126, "energy": "high"},
+    {"name": "Groundwork", "url": f"{_MUSIC_SH}/SoundHelix-Song-2.mp3", "vibe": "steady",   "tone": "confident", "bpm": 112, "energy": "medium"},
+    {"name": "Still Air",  "url": f"{_MUSIC_SH}/SoundHelix-Song-3.mp3", "vibe": "chill",    "tone": "calm",      "bpm": 90,  "energy": "low"},
+    {"name": "Uplift",     "url": f"{_MUSIC_SH}/SoundHelix-Song-5.mp3", "vibe": "upbeat",   "tone": "energetic", "bpm": 128, "energy": "high"},
+    {"name": "Reflect",    "url": f"{_MUSIC_SH}/SoundHelix-Song-6.mp3", "vibe": "chill",    "tone": "calm",      "bpm": 84,  "energy": "low"},
+    {"name": "Assured",    "url": f"{_MUSIC_SH}/SoundHelix-Song-8.mp3", "vibe": "steady",   "tone": "confident", "bpm": 116, "energy": "medium"},
+    {"name": "Throughline","url": f"{_MUSIC_SH}/SoundHelix-Song-9.mp3", "vibe": "driving",  "tone": "confident", "bpm": 120, "energy": "medium"},
+    {"name": "Neverwritten","url": "https://commondatastorage.googleapis.com/codeskulptor-demos/DDR_assets/Kangaroo_MusiQue_-_The_Neverwritten_Role_Playing_Game.mp3",
      "vibe": "upbeat", "tone": "energetic", "bpm": 128, "energy": "high"},
-    {"name": "Epoq", "url": "https://commondatastorage.googleapis.com/codeskulptor-assets/Epoq-Lepidoptera.ogg",
-     "vibe": "chill", "tone": "calm", "bpm": 90, "energy": "low"},
-    {"name": "Race Menu", "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/riceracer_assets/music/menu.ogg",
-     "vibe": "driving", "tone": "confident", "bpm": 120, "energy": "medium"},
 ]
 
 
@@ -2581,6 +2616,15 @@ def _apply_confirm_to_job(job: dict, toggles: dict | None = None,
     job.setdefault("script", {})
     if isinstance(job["script"], dict):
         job["script"].setdefault("formatId", fmt)
+    # Visual-channel floor: a `faceless` edit hides the speaker (footage rendered at
+    # opacity 0), so with no b-roll it ships as a BLACK screen + captions. Some clients
+    # send broll:false for recap_voiceover (toggle drift), which zeroed the only visual
+    # channel. Force b-roll on for faceless styles so a voiceover-over-visuals format can
+    # never render black — regardless of what the client sent.
+    if job.get("style") == "faceless" and not toggles.get("broll"):
+        toggles = {**toggles, "broll": True}
+        job["toggles"] = toggles
+        logging.info("visual-channel floor: forced broll ON for faceless job %s", job.get("job_id", "?"))
     prefs = dict(job.get("edit_prefs") or {})
     prefs.update({"broll": bool(toggles.get("broll")), "punch_ins": bool(toggles.get("punch_ins")),
                   "music": bool(toggles.get("music"))})
@@ -3908,8 +3952,20 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     if not isinstance(plan, dict):
         plan = {}
     llm_contributed = bool(plan)   # a real plan came back → the edit is tailored
+    # Missed-word protection: measure real silence so the dead-air trim only removes
+    # VERIFIED-silent gaps. A gap the transcriber left because it dropped a word still
+    # carries speech energy → it's not a silent span → the word's audio is spared and the
+    # sentence stays intact. Cached on the job; fails soft to None (no ffmpeg/unfetchable
+    # URL) → the prior timestamp-only behavior.
+    if "_silent_spans" not in job:
+        try:
+            from app.audio import detect_silence_spans
+            job["_silent_spans"] = await detect_silence_spans(job.get("source_url") or "")
+        except Exception:
+            job["_silent_spans"] = None
     try:
-        edl_obj = assemble_edl(plan, words, style, format_id, prefs=prefs, brief=brief)
+        edl_obj = assemble_edl(plan, words, style, format_id, prefs=prefs, brief=brief,
+                               silent_spans=job.get("_silent_spans"))
     except Exception as e:
         logging.warning("assemble_edl failed (%s) → safe default", e)
         return None, llm_contributed, plan

@@ -4980,7 +4980,9 @@ def test_apply_plan_music_vibe_creator_on_wins_even_if_plan_not_wanted():
 
 def test_apply_plan_music_vibe_creator_unset_defers_to_plan_wanted():
     out = main._apply_plan_music_vibe(_music_edl(), {}, {"wanted": True, "vibe": "chill"})
-    assert out["audio"]["music"]["url"] == main.MUSIC_TRACKS[1]["url"]   # chill = index 1
+    url = out["audio"]["music"]["url"]
+    picked = next(t for t in main.MUSIC_TRACKS if t["url"] == url)
+    assert picked["vibe"] == "chill"   # tone-matched, not a fixed index
 
 
 def test_apply_plan_music_vibe_creator_unset_and_plan_not_wanted_noop():
@@ -4990,7 +4992,28 @@ def test_apply_plan_music_vibe_creator_unset_and_plan_not_wanted_noop():
 
 def test_apply_plan_music_vibe_picks_track_matching_vibe():
     out = main._apply_plan_music_vibe(_music_edl(), {}, {"wanted": True, "vibe": "driving"})
-    assert out["audio"]["music"]["url"] == main.MUSIC_TRACKS[2]["url"]   # driving = index 2
+    url = out["audio"]["music"]["url"]
+    picked = next(t for t in main.MUSIC_TRACKS if t["url"] == url)
+    assert picked["vibe"] == "driving"   # tone-matched, not a fixed index
+
+
+def test_music_catalog_is_all_avplayer_native_and_covers_tones():
+    # AVPlayer can't decode Ogg — every bed must be mp3/m4a, and the tone buckets that
+    # tone-matching relies on must each have at least one track.
+    assert main.MUSIC_TRACKS, "catalog must not be empty"
+    assert all(t["url"].lower().endswith((".mp3", ".m4a", ".aac")) for t in main.MUSIC_TRACKS)
+    tones = {(t.get("tone") or "").lower() for t in main.MUSIC_TRACKS}
+    assert {"calm", "confident", "energetic"} <= tones
+
+
+def test_faceless_forces_broll_on_so_recap_never_renders_black():
+    # recap_voiceover (style=faceless) with a client that sent broll:false must be forced
+    # back on — a faceless edit with no b-roll renders as a black screen + captions.
+    job = {"edit_brief": {"inferred": {}}, "edit_format": "recap_voiceover",
+           "script": {}, "style": "faceless"}
+    prefs = main._apply_confirm_to_job(job, toggles={"broll": False, "punch_ins": False, "music": True})
+    assert job["toggles"]["broll"] is True
+    assert prefs["broll"] is True
 
 
 def test_apply_plan_music_vibe_unknown_vibe_falls_back_to_deterministic_pick():

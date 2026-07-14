@@ -181,6 +181,37 @@ def test_silence_tighten_skips_when_too_little_room():
 
 
 # ---------------------------------------------------------------------------
+# Missed-word guard: dead-air trim only cuts VERIFIED-silent gaps
+# ---------------------------------------------------------------------------
+
+def test_dead_air_cut_when_gap_is_verified_silent():
+    # A real 1s pause between two words — silencedetect confirms it's silent, so the
+    # dead-air tighten fires exactly as before.
+    words = [_w("hello", 0, 600), _w("world", 1600, 1800)]
+    silent = [(600, 1600)]   # the whole gap is silence
+    _, drops = strip_fillers(words, gap_ms=300, keep_pause_frames=6, silent_spans=silent)
+    assert any(d.reason == "dead_air" for d in drops)
+
+
+def test_dead_air_spared_when_gap_has_speech_energy():
+    # Same-sized gap, but silencedetect found NO silence there → the transcriber dropped
+    # a word whose audio still lives in the gap. The trim must NOT cut it (the word's
+    # audio survives so the sentence still makes sense — the exact freestyle complaint).
+    words = [_w("hello", 0, 600), _w("world", 1600, 1800)]
+    _, drops = strip_fillers(words, gap_ms=300, keep_pause_frames=6, silent_spans=[])
+    assert not any(d.reason == "dead_air" for d in drops)
+
+
+def test_dead_air_unchanged_when_no_silence_measurement():
+    # silent_spans=None (no ffmpeg / unfetchable) → prior timestamp-only behavior.
+    words = [_w("hello", 0, 600), _w("world", 1600, 1800)]
+    _, with_none = strip_fillers(words, gap_ms=300, keep_pause_frames=6, silent_spans=None)
+    _, without = strip_fillers(words, gap_ms=300, keep_pause_frames=6)
+    assert [d.reason for d in with_none] == [d.reason for d in without]
+    assert any(d.reason == "dead_air" for d in with_none)
+
+
+# ---------------------------------------------------------------------------
 # v2 is a strict superset of v1's catches
 # ---------------------------------------------------------------------------
 

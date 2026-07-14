@@ -120,12 +120,16 @@ export const CutVideo: React.FC<{
   // seam smooths the discontinuity without an audible "fade". First-clip-start and
   // last-clip-end are the true video boundaries — the composition owns those, so we skip
   // them to avoid double-fading.
-  const SEAM_FADE_FRAMES = 2;
+  const SEAM_FADE_FRAMES = 3;
   const seamFade = (localF: number, len: number, fadeIn: boolean, fadeOut: boolean): number => {
     if (len <= 2 * SEAM_FADE_FRAMES) return 1;   // clip too short to fade cleanly
+    // Symmetric ramp over SEAM_FADE_FRAMES frames on each internal edge. The +1 divisor
+    // centres the ramp on frame midpoints so neither edge renders a fully-silent frame
+    // (a hard 0 can itself click); the two abutting clips' equal-power (√) gains still
+    // sum to ~unity across the seam. fade-in: 0.25→0.5→0.75→1; fade-out mirrors it.
     let g = 1;
-    if (fadeIn && localF < SEAM_FADE_FRAMES) g = Math.min(g, localF / SEAM_FADE_FRAMES);
-    if (fadeOut && localF > len - SEAM_FADE_FRAMES) g = Math.min(g, (len - localF) / SEAM_FADE_FRAMES);
+    if (fadeIn && localF < SEAM_FADE_FRAMES) g = Math.min(g, (localF + 1) / (SEAM_FADE_FRAMES + 1));
+    if (fadeOut && localF >= len - SEAM_FADE_FRAMES) g = Math.min(g, (len - localF) / (SEAM_FADE_FRAMES + 1));
     return Math.sqrt(Math.max(0, Math.min(1, g)));
   };
   return (
