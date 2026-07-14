@@ -888,7 +888,15 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
             )
             if r.status_code == 200:
                 try:
-                    return "".join(b.get("text", "") for b in r.json().get("content", []))
+                    _j = r.json()
+                    # Surface a max_tokens truncation (script-quality audit): a cut-off
+                    # structured response is invalid JSON that silently degrades to
+                    # mock/[] downstream — logging it makes the "incomplete scripts"
+                    # symptom diagnosable and flags when a max_tokens budget is too low.
+                    if _j.get("stop_reason") == "max_tokens":
+                        logging.warning("[anthropic] %s hit max_tokens=%d — response truncated",
+                                        model, max_tokens)
+                    return "".join(b.get("text", "") for b in _j.get("content", []))
                 except (ValueError, KeyError, TypeError) as e:
                     # A malformed 200 body must be degradeable (HTTPException), not a raw
                     # ValueError that escapes every route's `except HTTPException`.
@@ -1351,8 +1359,8 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
          f"Here's the one move to start this week."),
         ("specificity",
          f"One number decides most of your progress in {niche} — and you're probably not tracking it.",
-         f"Track it for one week — one note, [your number] at the end.\n\n"
-         f"The thing most people in {niche} obsess over barely moves it. This other habit does.\n\n"
+         f"Pick the single metric that actually reflects progress in {niche}, and log it once a day for a week.\n\n"
+         f"The thing most people obsess over barely moves it. This other habit does.\n\n"
          f"Here's how to run the test yourself."),
         ("authority",
          f"The part of {niche} nobody warns beginners about.",
@@ -2117,7 +2125,55 @@ async def _restore_clip_job(job_id: str) -> dict | None:
     # the 5s poll both missing memory after a restart) otherwise get two DIFFERENT dict
     # objects, and whichever assigned last silently discarded the other's mutations
     # (an applied tweak vanished from memory AND its trailing persist).
-    return _clip_jobs.setdefault(job_id, state)
+    job = _clip_jobs.setdefault(job_id, state)
+    # Restart-fragility audit: an in-flight Remotion Lambda keeps running after the
+    # instance dies — re-attach its poller instead of letting the watchdog fail the job
+    # (double-spend + "server restarted"). The persisted render_id/bucket_name (now
+    # written mid-render) make this possible; _poll_remotion_render is idempotent.
+    if job is state:                    # we won the restore (first to materialize it)
+        _reattach_in_flight_renders(job)
+    return job
+
+
+def _reattach_in_flight_renders(job: dict) -> None:
+    """For every clip restored mid-render, re-spawn the (idempotent) Lambda poller so a
+    render that's genuinely still finishing completes instead of being watchdog-killed
+    and re-rendered. Fire-and-forget; no-op for clips without a durable render_id."""
+    for clip in job.get("clips", []):
+        if clip.get("status") == "rendering" and clip.get("render_id") and clip.get("bucket_name"):
+            clip["render_started_at"] = time.time()      # fresh watchdog lease for the re-attached poll
+            my_gen = _bump_render_gen(clip)
+            try:
+                _spawn(_reattach_one_render(job, clip, my_gen))
+            except RuntimeError:
+                pass                                     # no loop (sync restore in a test)
+
+
+async def _reattach_one_render(job: dict, clip: dict, my_gen: int) -> None:
+    """Await the still-running Lambda for a restored clip and apply its result, mirroring
+    _render_all_clips' completion path (respecting the render-generation guard so a
+    concurrent retry still wins)."""
+    try:
+        render_url = await _poll_remotion_render(
+            clip["render_id"], clip["bucket_name"],
+            total_frames=clip.get("render_total_frames"))
+        if _is_current_render(clip, my_gen):
+            clip["render_url"] = render_url
+            clip["status"] = "ready"
+            # Finalize the JOB once no clip is still rendering (mirrors _run_edit's
+            # terminal write) — a restored render's completion must flip the job out
+            # of the non-terminal `rendering` status or the watchdog eventually trips it.
+            if not any(c.get("status") == "rendering" for c in job.get("clips", [])):
+                job["status"] = "ready" if any(c.get("status") == "ready"
+                                               for c in job["clips"]) else "failed"
+    except PipelineError as e:
+        if _is_current_render(clip, my_gen):
+            _fail_clip(clip, e.code, e.detail)
+    except Exception as e:
+        if _is_current_render(clip, my_gen):
+            _fail_clip(clip, "internal_error", str(e))
+    if job.get("job_id"):
+        _spawn(_persist_clip_job(job["job_id"]))
 
 
 async def _mint_supabase_upload(filename: str) -> dict | None:
@@ -2916,6 +2972,10 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             if not submission:
                 raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
             clip["render_id"] = submission["render_id"]
+            clip["bucket_name"] = submission["bucket_name"]
+            clip["render_total_frames"] = submission.get("total_frames")
+            if job.get("job_id"):
+                _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
             render_url = await _poll_remotion_render(
                 submission["render_id"], submission["bucket_name"],
                 total_frames=submission.get("total_frames"))
@@ -3415,9 +3475,19 @@ _STAGE_ETA_S = {
 def _mark_stage(job: dict, status: str) -> None:
     """Set the job status AND stamp when this stage began — the ETA anchors here,
     so time the user spends parked (e.g. reviewing a brief) never counts as
-    pipeline progress."""
+    pipeline progress. Also write-through to Supabase on EVERY transition (restart-
+    fragility audit): the durable copy used to freeze at submit/confirm, so a
+    mid-`editing`/`rendering` restart restored a stale status the watchdog then failed
+    as `pipeline_interrupted` ('a brief server restart'). Fire-and-forget; no-op if
+    there's no running loop (sync test calls) or no Supabase."""
     job["status"] = status
     job["stage_started_at"] = time.time()
+    jid = job.get("job_id")
+    if jid:
+        try:
+            _spawn(_persist_clip_job(jid))
+        except RuntimeError:
+            pass                       # no running loop (unit test) — the caller's own persist covers it
 
 
 def _job_eta_seconds(job: dict) -> int | None:
@@ -3502,6 +3572,7 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     task death, pre-finally crash) that used to leave clips spinning forever."""
     budget = max_render_s if max_render_s is not None else RENDER_WATCHDOG_S
     now = time.time()
+    _touched: set[str] = set()          # jobs whose terminal state must be persisted (below)
     for job in jobs.values():
         for c in job.get("clips", []):
             if c.get("status") == "rendering" and now - c.get("render_started_at", now) > budget:
@@ -3510,6 +3581,7 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 # to ready with contradictory state (audit D8).
                 _bump_render_gen(c)
                 _fail_clip(c, "render_stalled", f"render exceeded {int(budget)}s watchdog")
+                if job.get("job_id"): _touched.add(job["job_id"])
             if c.get("preview_status") == "rendering" \
                     and now - c.get("preview_started_at", now) > budget:
                 c["preview_gen"] = c.get("preview_gen", 0) + 1   # discard the stale preview's late write
@@ -3544,6 +3616,16 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 _bump_pipeline_gen(job)
                 _fail_job(job, "pipeline_interrupted",
                           "the edit was interrupted (server restart or stall) — retry to restart it")
+                if job.get("job_id"): _touched.add(job["job_id"])
+    # Persist the terminal writes (restart-fragility audit): the watchdog used to fail
+    # jobs in-memory only, so a SECOND restart in a crash-loop resurrected the zombie as
+    # `editing` and re-cycled the spinner. Fire-and-forget; guarded for sync/no-loop callers.
+    if _touched:
+        try:
+            for _jid in _touched:
+                _spawn(_persist_clip_job(_jid))
+        except RuntimeError:
+            pass
 
 
 async def _transcribe_job(job_id: str) -> list[dict]:
@@ -4293,6 +4375,10 @@ async def _render_all_clips(job_id: str) -> None:
                 if not submission:
                     raise PipelineError("render_submit_failed", "no renderId from bridge", "render")
                 clip["render_id"] = submission["render_id"]
+                clip["bucket_name"] = submission["bucket_name"]
+                clip["render_total_frames"] = submission.get("total_frames")
+                if job.get("job_id"):
+                    _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
                 render_url = await _poll_remotion_render(
                     submission["render_id"], submission["bucket_name"],
                     total_frames=submission.get("total_frames"))
@@ -7267,7 +7353,15 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
             s.setdefault("shotPlan", [])
             s.setdefault("targetSeconds", 30)
             s.setdefault("predictedScore", 78)
-        return {"mode": "live", "scripts": out}
+        # Pad a short array (HAIKU overshot the word cap → truncation dropped items, or
+        # it just emitted fewer) up to count with mock fills, so the picks row is never
+        # a lonely single card (script-quality audit — the schema has no minItems).
+        if len(out) < sreq.count:
+            out = out + mock_scripts(sreq)[len(out):sreq.count]
+        # "live_fast" (NOT "live"): a real-AI DRAFT (lean HAIKU, ≤80-word bodies, no
+        # judge pass). The client uses this to keep polling for the full Opus upgrade —
+        # marking it plain "live" stranded users on the draft (script-quality audit).
+        return {"mode": "live_fast", "scripts": out}
     except (HTTPException, asyncio.TimeoutError):
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
 
@@ -7354,10 +7448,18 @@ async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creato
     cache entry so the NEXT fetch for this key is both instant and high-quality."""
     try:
         script_result = await scripts(sreq)
+        # NO-DOWNGRADE (script-quality audit): only overwrite when the full pipeline
+        # actually produced live scripts. An Opus flake returns mode:"mock" (template
+        # copy) — writing that would replace the perfectly good fast-paint "live_fast"
+        # picks with template copy that then persists for the 6h TTL.
+        if script_result.get("mode") != "live":
+            logging.info("feed refresh for %s produced %s — keeping the fast paint",
+                         key, script_result.get("mode"))
+            return
         items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
                                                        why_picked=why_picked)
         _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
-                            "mode": script_result.get("mode", "mock"), "ts": time.time()}
+                            "mode": "live", "ts": time.time()}
         _cap_evict(_feed_cache, _FEED_CACHE_CAP)
     except Exception as e:
         logging.warning("feed background refresh failed for %s: %s", key, e)

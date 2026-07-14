@@ -69,6 +69,13 @@ def test_full_quality_refresh_keeps_why_picked(monkeypatch):
     """The background full-quality path stamps the same why_picked (threaded through
     _refresh_feed_page)."""
     _stub_arms(monkeypatch)
+
+    # The refresh now only writes when the pipeline produced genuine LIVE scripts (the
+    # no-downgrade guard) — stub scripts() so this keyless test exercises that write path.
+    async def live_scripts(sreq):
+        return {"mode": "live", "scripts": main.mock_scripts(sreq)}
+    monkeypatch.setattr(main, "scripts", live_scripts)
+
     sreq, why = main._feed_sreq("fitness", "", "", "Grow", "", 0, "g2", None, arms=_ARMS)
     asyncio.run(main._refresh_feed_page("k-g2", sreq, "fitness", "g2", "", 0, why_picked=why))
     entry = main._feed_cache.pop("k-g2")
