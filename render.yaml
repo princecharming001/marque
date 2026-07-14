@@ -36,3 +36,77 @@ services:
       # REMOTION_AWS_ACCESS_KEY_ID, REMOTION_AWS_SECRET_ACCESS_KEY,
       # REMOTION_AWS_REGION, REMOTION_FUNCTION_NAME, REMOTION_SERVE_URL
       # AI_QUALITY=1, BEST_OF_N_HOOKS=1   (optional; both default on)
+      #
+      # --- Palo port (branch palo-port) — ALL default OFF; flip one at a time ---
+      # PALO_PORT=1                (master switch; everything below needs it)
+      # MEMORY_V2, IDEA_BANK, TRACK_INSIGHTS, STRATEGY_COMPILER, WRITE_AGENT, EXEMPLAR_BANK, VIDEO_BRAIN
+      # INTERNAL_CRON_TOKEN        (required for the cron services below; empty => crons 403)
+      # STRATEGY_ALLOWLIST         (default empty = compiles/exemplar-builds OFF for everyone)
+      # Metrics/keys (only when TRACK_INSIGHTS on): APIFY_KEY (have), POSTFORME_KEY, IG_GRAPH_TOKEN
+      # Extraction/embeddings: AZURE_OPENAI_* , GOOGLE_PROJECT_ID/GOOGLE_API_KEY, OPENAI_API_KEY
+      # Prereq: apply migrations.sql PALO PORT block + enable the pgvector extension on Supabase.
+
+  # --- Palo port cron jobs (POST the internal sweep endpoints on a schedule) ---
+  # Each is a no-op until PALO_PORT + the capability flag + INTERNAL_CRON_TOKEN are set.
+  # The endpoints spawn the sweep and return immediately, so these curls are fast.
+  # Set MARQUE_API_URL + INTERNAL_CRON_TOKEN (same value as the web service) in the dashboard.
+  - type: cron
+    name: marque-cron-insights
+    runtime: image
+    image:
+      url: curlimages/curl:latest
+    schedule: "0 9 * * *"          # daily
+    dockerCommand: >-
+      curl -fsS -X POST "$MARQUE_API_URL/internal/cron/insights"
+      -H "Content-Type: application/json"
+      --data "{\"token\": \"$INTERNAL_CRON_TOKEN\"}"
+    envVars:
+      - key: MARQUE_API_URL
+        sync: false
+      - key: INTERNAL_CRON_TOKEN
+        sync: false
+  - type: cron
+    name: marque-cron-ideate
+    runtime: image
+    image:
+      url: curlimages/curl:latest
+    schedule: "0 8 * * *"          # nightly
+    dockerCommand: >-
+      curl -fsS -X POST "$MARQUE_API_URL/internal/cron/ideate"
+      -H "Content-Type: application/json"
+      --data "{\"token\": \"$INTERNAL_CRON_TOKEN\"}"
+    envVars:
+      - key: MARQUE_API_URL
+        sync: false
+      - key: INTERNAL_CRON_TOKEN
+        sync: false
+  - type: cron
+    name: marque-cron-compile
+    runtime: image
+    image:
+      url: curlimages/curl:latest
+    schedule: "0 7 * * 1"          # weekly (Mon)
+    dockerCommand: >-
+      curl -fsS -X POST "$MARQUE_API_URL/internal/cron/compile"
+      -H "Content-Type: application/json"
+      --data "{\"token\": \"$INTERNAL_CRON_TOKEN\"}"
+    envVars:
+      - key: MARQUE_API_URL
+        sync: false
+      - key: INTERNAL_CRON_TOKEN
+        sync: false
+  - type: cron
+    name: marque-cron-exemplar
+    runtime: image
+    image:
+      url: curlimages/curl:latest
+    schedule: "30 7 * * *"         # daily (refresh decider gates the actual build)
+    dockerCommand: >-
+      curl -fsS -X POST "$MARQUE_API_URL/internal/cron/exemplar"
+      -H "Content-Type: application/json"
+      --data "{\"token\": \"$INTERNAL_CRON_TOKEN\"}"
+    envVars:
+      - key: MARQUE_API_URL
+        sync: false
+      - key: INTERNAL_CRON_TOKEN
+        sync: false

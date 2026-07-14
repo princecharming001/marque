@@ -7286,6 +7286,28 @@ async def ideas_bank(req: _IdeasRequest):
     return {"mode": "live" if _palo_store else "mock", "briefs": briefs}
 
 
+@app.get("/v1/insights")
+async def get_insights(creator_id: str = "default", limit: int = 50):
+    """Palo port (flag TRACK_INSIGHTS): the creator's insight feed (P7.3 inbox). Off/keyless => empty."""
+    if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS):
+        return {"mode": "off", "insights": []}
+    limit = max(1, min(limit, 100))
+    rows = await _palo_store.load_insights(creator_id, limit=limit) if _palo_store else []
+    return {"mode": "live" if _palo_store else "mock", "insights": rows}
+
+
+@app.get("/v1/strategy")
+async def get_strategy(creator_id: str = "default"):
+    """Palo port (flag STRATEGY_COMPILER): the compiled strategy + recent updates (P7.4
+    'Your Strategy'). Off/keyless => null."""
+    if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or not _palo_store:
+        return {"mode": "off" if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) else "mock",
+                "strategy": None, "updates": []}
+    strat = await _palo_store.load_strategy(creator_id)
+    updates = await _palo_store.load_strategy_updates(creator_id)
+    return {"mode": "live", "strategy": strat, "updates": updates}
+
+
 @app.post("/v1/feed/feedback")
 async def feed_feedback(req: FeedFeedbackRequest):
     """B-7: a Today's-picks like/dislike. Folds a small reward into the creator's bandit

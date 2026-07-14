@@ -52,18 +52,25 @@ Cards live in `insight_feed` (delivered via APNs by the daily cron). Push payloa
 `{ aps{alert{title,body}}, deeplink: "marque://chat?insight=<id>", insight_id, seed }`.
 `InsightCard = { id, type, category: "blue|yellow|green|orange", title, description,
 content, chips, conversation_seed, delivered, created_at }`. Tapping the card/push opens
-ChatView seeded from `conversation_seed`. (Add a `GET` list route when the inbox lands;
-the store method `load_insights` already exists.)
+ChatView seeded from `conversation_seed`.
+
+**`GET /v1/insights?creator_id=&limit=`** → `{ mode, insights: [ InsightCard ] }` (limit
+clamped 1–100). Off/keyless → empty. This is the inbox source.
 
 ### Strategy (P7.4, "Your Strategy" / PlanBuildingView)
 `channel_strategies.strategy_markdown` — render the `## Insights / ## Plan / ## Buckets /
 ## Brand Bets / ## Not-Doing` sections; `strategy_revision` + `strategy_updated_at` power
-a "what changed this week" view. (Add a `GET /v1/strategy` read route when P7.4 lands;
-`load_strategy` exists.)
+a "what changed this week" view.
+
+**`GET /v1/strategy?creator_id=`** → `{ mode, strategy: {strategy_markdown, strategy_revision,
+…} | null, updates: [ {update_text, source, created_at} ] }`. Off/keyless → null.
 
 ### Internal crons (Render cron → not client-facing)
-`POST /internal/cron/{ideate,insights,compile}` — body `{ "token": INTERNAL_CRON_TOKEN }`,
-token+flag guarded. Idea bank / insight sweep / weekly strategy compile.
+`POST /internal/cron/{ideate,insights,compile,exemplar}` — body `{ "token": INTERNAL_CRON_TOKEN }`,
+constant-time token check + flag guarded. Each **spawns the fleet sweep and returns
+immediately** → `{ "started": true }` (or `{ "started": false, "reason": "already_running" }`
+if a sweep is in flight, or `{ "started": false, "skipped": "flag_off" }`). Scheduled by the
+Render cron services in `render.yaml`. Idea bank / insight sweep / weekly compile / exemplar refresh.
 
 ---
 

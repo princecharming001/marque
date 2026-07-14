@@ -212,3 +212,21 @@ P0 2-3d → P1 2-3d → P2 3-4d → P3 ~1wk (+pollers trailing) → P4 1-2wk →
 1. Owner: provision §2 keys (Azure OpenAI, Vertex, OpenAI embeddings; Perplexity optional) into `backend/.env` + Render env; enable pgvector on Supabase; start FB app review for IG Graph.
 2. Create `palo-port` branch; land Phase 0 (migrations + infra copies + LOOP C/P harnesses).
 3. Kick LOOP P with `BACKLOG_PORT.md` seeded from §1's matrix rows.
+
+## 12. Status + go-live checklist (updated post-hardening)
+
+**Done:** Phases 0–6 built + a 7-commit production-hardening pass (`palo-port`, ~28 commits,
+all flags OFF, keyless-green, 984 tests, NOT deployed). See `backend/BACKLOG_PORT.md`
+"Production hardening" for the audit-driven fixes. Local venv is Python 3.14 vs the
+Dockerfile's 3.12 — the ported code is 3.9+-safe (no Dockerfile change).
+
+**To go live (owner, one capability at a time):**
+1. Apply the `migrations.sql` PALO PORT block; **enable the pgvector extension** on Supabase first.
+2. Provision §2 keys into Render env; set `INTERNAL_CRON_TOKEN` + (per capability) the flags.
+3. The Render cron services (`render.yaml`) POST the sweep endpoints — set `MARQUE_API_URL`
+   + `INTERNAL_CRON_TOKEN` on each cron; they no-op until flags are on.
+4. Populate `creators.handle` (the app now persists it at `/v1/posts/register`) before
+   `TRACK_INSIGHTS` can collect metrics; keep `STRATEGY_ALLOWLIST` empty until you opt creators in.
+5. Flip `PALO_PORT=1` + one capability flag; deploy manually. Watch `ai_usage`.
+6. iOS P7.2–P7.6 build against `backend/docs/api/PALO_PORT.md` (incl. `GET /v1/insights`,
+   `GET /v1/strategy`).
