@@ -6832,28 +6832,36 @@ async def _dossier_classify_reels(posts: list[dict]) -> None:
     the watch cost is paid once per reel, ever."""
     if (dossier_mod.VIDEO_UNDERSTANDING or "off").lower() == "off" or _dossier_breaker["open"]:
         return
+    sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else None
     for p in posts[:_REEL_CLASSIFY_TOP_K]:
-        if p.get("fmt_source") == "dossier" or not p.get("video_url"):
+        vurl = p.get("video_url") or ""
+        if p.get("fmt_source") == "dossier" or not vurl:
+            continue
+        # Only attempt on a DURABLE (rehosted-to-Supabase) URL — an expiring IG/TikTok CDN
+        # link makes ffmpeg's keyframe fetch fail, which is a per-reel data miss, NOT a
+        # provider error. Skipping it (rather than counting it as a breaker failure) is why
+        # the breaker was opening on every restart before any real classification ran.
+        if sb_base and not vurl.startswith(sb_base):
             continue
         try:
             d = await dossier_mod.dossier_for_reference(
-                p["video_url"], int(float(p.get("duration_s") or 0) * 1000))
+                vurl, int(float(p.get("duration_s") or 0) * 1000))
+            # A None here is a fail-soft frame/parse miss for THIS reel, not a provider
+            # outage — just skip it. Only a raised exception (a real provider error, the
+            # 400-storm case the breaker exists for) counts.
+            _dossier_breaker["fails"] = 0
             fs = _classify_from_dossier(d, p)
-            if d:
-                _dossier_breaker["fails"] = 0            # provider answered → healthy
-            else:
-                _dossier_breaker["fails"] += 1           # fail-soft None = provider miss
             if fs:
                 p["edit_format"], p["fmt_source"] = fs[0], "dossier"
                 p["why_match"] = f"Watched it: {_WHY_MATCH[fs[0]].lower()}"
         except Exception as e:
             _dossier_breaker["fails"] += 1
             logging.warning("dossier reel classify failed: %s", e)
-        if _dossier_breaker["fails"] >= _DOSSIER_BREAKER_LIMIT:
-            _dossier_breaker["open"] = True
-            logging.warning("[dossier] circuit OPEN after %d consecutive provider failures — "
-                            "reel classification disabled until restart", _dossier_breaker["fails"])
-            return
+            if _dossier_breaker["fails"] >= _DOSSIER_BREAKER_LIMIT:
+                _dossier_breaker["open"] = True
+                logging.warning("[dossier] circuit OPEN after %d consecutive PROVIDER errors — "
+                                "reel classification disabled until restart", _dossier_breaker["fails"])
+                return
 
 
 def _heuristic_reel_annotation(post: dict) -> dict:
