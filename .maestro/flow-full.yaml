@@ -7,7 +7,7 @@ name: Marque — full core loop
       # Drive the LOCAL keyless backend (scripts/dev.sh test expects one on :8000) —
       # the Debug plist points at prod Render, which would mock-fallback past the
       # analyze-first brief screen this flow asserts.
-      backend.url: "http://127.0.0.1:8000"
+      backend.url: "http://127.0.0.1:8001"
 
 # Landing (cream, unicorn hero)
 - assertVisible: "Get started"

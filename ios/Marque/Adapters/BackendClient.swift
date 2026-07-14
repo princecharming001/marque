@@ -132,6 +132,19 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                       predictedScore: min(100, max(0, dto.predictedScore ?? 80)),
                       whyPicked: dto.why_picked ?? "")
     }
+    /// Palo idea-bank brief → a starter Script pick. Title + summary make a fileable card;
+    /// filming expands the full body on demand (from the brief). Renders identically to the
+    /// bandit's script picks, so the idea bank is finally visible on Home.
+    private func briefScript(_ item: FeedItemDTO) -> Script {
+        let fid = formatId(nil)
+        let title = item.title ?? "New idea"
+        return Script(pillarName: "Idea", title: title, summary: item.summary ?? "",
+                      style: VideoStyle.talkingHead.rawValue, formatId: fid,
+                      hook: Hook(text: title, signal: .curiosity, strength: 80), altHooks: [],
+                      body: item.summary ?? "", cta: "", shotPlan: [],
+                      targetSeconds: Catalog.format(fid).targetSeconds,
+                      predictedScore: 80, whyPicked: item.summary ?? "")
+    }
 
     // MARK: DTOs
 
@@ -710,10 +723,15 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
     private struct TrendDTO: Decodable { let title: String; let why: String; let formatId: String? }
     private struct FeedItemDTO: Decodable {
-        let type: String
-        let script: ScriptDTO?
-        let reel: ReelDTO?
+        let type: String?               // OPTIONAL: Palo idea-bank briefs merge in with NO `type`.
+        let script: ScriptDTO?          // A non-optional `type` made the whole feed fail to decode
+        let reel: ReelDTO?              // → silent mock fallback whenever IDEA_BANK was on (audit CRITICAL-1).
         let trend: TrendDTO?
+        // Palo idea-bank brief shape: {kind:"idea", source:"idea_bank", title, summary, brief_id}
+        let kind: String?
+        let source: String?
+        let title: String?
+        let summary: String?
     }
     private struct FeedResp: Decodable { let mode: String?; let items: [FeedItemDTO]; let next_cursor: Int? }
     private struct ReelsResp: Decodable { let mode: String?; let reels: [ReelDTO]; let next_cursor: Int? }
@@ -817,7 +835,12 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             case "trend":
                 guard let dto = item.trend else { return nil }
                 return .trend(TrendItem(title: dto.title, why: dto.why, formatId: dto.formatId ?? "myth-buster"))
-            default: return nil
+            default:
+                // Palo idea-bank brief (no `type`) → surface as a fileable pick card.
+                if item.source == "idea_bank" || item.kind == "idea", let t = item.title, !t.isEmpty {
+                    return .script(briefScript(item))
+                }
+                return nil
             }
         }
         return FeedPage(entries: entries, nextCursor: r.next_cursor, mode: r.mode)

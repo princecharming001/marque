@@ -185,7 +185,7 @@ struct HomeView: View {
                     Text("More").font(AppFont.callout).foregroundStyle(Palette.textPrimary)
                 }
             }
-            .frame(width: 96, height: 260)   // matches ScriptFeedCard's height
+            .frame(width: 96, height: 220)   // matches ScriptFeedCard's height
             .background(Palette.surfaceRaised)
             .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
@@ -210,7 +210,7 @@ struct HomeView: View {
             Spacer(minLength: 0)
         }
         .padding(Space.lg)
-        .frame(width: 260, height: 260, alignment: .topLeading)   // matches ScriptFeedCard
+        .frame(width: 260, height: 220, alignment: .topLeading)   // matches ScriptFeedCard
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
