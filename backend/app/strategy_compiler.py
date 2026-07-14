@@ -109,10 +109,15 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
         return None
     try:
         evidence = dossier_adapter.catalog_block(videos or [])
-        dg = await digest(store, creator_id, evidence, brand)
-        md = await synthesize(store, creator_id, dg, brand)
-        if not validate_sections(md):                          # never persist an unusable doc
+        if not evidence.strip():
+            # No real analyzed videos yet — write the deterministic template WITHOUT spending
+            # ~$1.60 of Sonnet+Opus to produce a generic strategy from "(no videos)".
             md = _template_strategy(brand)
+        else:
+            dg = await digest(store, creator_id, evidence, brand)
+            md = await synthesize(store, creator_id, dg, brand)
+            if not validate_sections(md):                      # never persist an unusable doc
+                md = _template_strategy(brand)
         prev = await store.load_strategy(creator_id) or {}
         rev = int(prev.get("strategy_revision", 0) or 0) + 1
         await store.upsert_strategy(creator_id, {
@@ -157,8 +162,10 @@ async def run_compile_cron(store, now_epoch: float) -> int:
         prev = await store.load_strategy(cid) or {}
         if not is_compile_due(tier, prev.get("strategy_updated_at"), now_epoch):  # freshness
             continue
-        # Videos (dossier list) are a data hookup from the creator's analyzed reels; [] here
-        # falls back to the template strategy until that source is wired.
-        if await compile_strategy(store, cid, [], {"niche": c.get("niche", "")}):
+        # Feed the creator's REAL analyzed videos (clip_edit_sessions dossiers) as evidence.
+        loader = getattr(store, "load_clip_sessions", None)
+        sessions = await loader(cid) if loader else []
+        videos = dossier_adapter.videos_from_clip_sessions(sessions)
+        if await compile_strategy(store, cid, videos, {"niche": c.get("niche", "")}):
             compiled += 1
     return compiled

@@ -277,6 +277,23 @@ class PaloStore(SupabaseClient):
         except Exception:
             return []
 
+    # --- clip sessions (the creator's analyzed videos → compiler/exemplar evidence) ---
+
+    async def load_clip_sessions(self, creator_id: str, limit: int = 50) -> list[dict]:
+        """The creator's stored clip-job states (dossier + transcript + title) for the
+        strategy compiler / exemplar builder. JSONB filter on state->>creator_id; empty on
+        any failure. `clip_edit_sessions` is written by main.py's upsert_clip_job."""
+        r = await self._request(
+            "GET", "/clip_edit_sessions",
+            params={"state->>creator_id": f"eq.{creator_id}", "select": "state",
+                    "limit": str(limit)})
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            return [row["state"] for row in r.json() if isinstance(row.get("state"), dict)]
+        except Exception:
+            return []
+
     async def get_watermark(self, creator_id: str, key: str) -> float | None:
         r = await self._request("GET", "/metric_watermarks",
                                 params={"creator_id": f"eq.{creator_id}", "key": f"eq.{key}",

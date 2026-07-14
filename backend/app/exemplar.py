@@ -132,15 +132,18 @@ async def build_bank(store, creator_id: str, videos: list[dict],
         return None
     try:
         evidence = dossier_adapter.catalog_block(videos or [])
-        system, user = palo_prompts.exemplar_build_prompt(evidence, brand)
-        from app.prompt_store import get_prompt
-        system = await get_prompt("palo.exemplar.build", system, store=store)
-        data = await anthropic_cached_json(system, user, _BANK_SCHEMA, OPUS, max_tokens=2000)
-        if _valid_bank(data):
-            await ai_usage.record(store, creator_id, "exemplar.build", OPUS, 20000, 1500)
-            bank = {c: data.get(c, []) for c in _CATEGORIES}
+        if not evidence.strip():
+            bank = _template_bank(brand)               # no evidence -> no Opus build
         else:
-            bank = _template_bank(brand)
+            system, user = palo_prompts.exemplar_build_prompt(evidence, brand)
+            from app.prompt_store import get_prompt
+            system = await get_prompt("palo.exemplar.build", system, store=store)
+            data = await anthropic_cached_json(system, user, _BANK_SCHEMA, OPUS, max_tokens=2000)
+            if _valid_bank(data):
+                await ai_usage.record(store, creator_id, "exemplar.build", OPUS, 20000, 1500)
+                bank = {c: data.get(c, []) for c in _CATEGORIES}
+            else:
+                bank = _template_bank(brand)
         prev = await store.load_strategy(creator_id) or {}
         rev = int(prev.get("exemplar_bank_revision", 0) or 0) + 1
         await store.upsert_strategy(creator_id, {
@@ -177,6 +180,9 @@ async def run_exemplar_cron(store, now_epoch: float) -> int:
             continue
         if not await should_rebuild(store, cid, now_epoch):
             continue
-        if await build_bank(store, cid, [], {"niche": c.get("niche", "")}):
+        loader = getattr(store, "load_clip_sessions", None)
+        sessions = await loader(cid) if loader else []
+        videos = dossier_adapter.videos_from_clip_sessions(sessions)
+        if await build_bank(store, cid, videos, {"niche": c.get("niche", "")}):
             built += 1
     return built

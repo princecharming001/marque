@@ -83,3 +83,16 @@ def test_compile_first_revision(on, monkeypatch):
     store = FakeStore(prev=None)
     _run(sc.compile_strategy(store, "c1", [], {"niche": "chess"}))
     assert store.upserted["strategy_revision"] == 1
+
+
+def test_compile_empty_evidence_skips_llm(on, monkeypatch):
+    # No analyzed videos -> deterministic template, NO Sonnet/Opus spend.
+    monkeypatch.setenv("STRATEGY_ALLOWLIST", "*")
+
+    async def boom(*a, **k):
+        raise AssertionError("must not call digest/synthesize on empty evidence")
+    monkeypatch.setattr(sc, "digest", boom)
+    monkeypatch.setattr(sc, "synthesize", boom)
+    store = FakeStore(prev=None)
+    md = _run(sc.compile_strategy(store, "c1", [], {"niche": "chess"}))
+    assert md and sc.validate_sections(md) and store.upserted["strategy_revision"] == 1

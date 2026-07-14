@@ -37,6 +37,20 @@ def test_transcript_as_word_list():
     assert "hello world" in b
 
 
+def test_videos_from_clip_sessions():
+    sessions = [
+        {"job_id": "j1", "creator_id": "c1", "script": {"title": "Fast edits"},
+         "words": [{"word": "hello"}, {"word": "world"}],
+         "dossier": {"first_frame": {"desc": "hook"}}},
+        {"job_id": "j2", "creator_id": "c1", "script": {"title": "In progress"}},  # no evidence
+    ]
+    vids = da.videos_from_clip_sessions(sessions, views_by_id={"j1": 5000})
+    assert len(vids) == 1                                    # j2 (no dossier/words) dropped
+    assert vids[0]["title"] == "Fast edits" and vids[0]["views"] == 5000
+    assert vids[0]["transcript"] == "hello world" and vids[0]["dossier"]["first_frame"]["desc"] == "hook"
+    assert da.videos_from_clip_sessions([]) == []
+
+
 def test_catalog_ranks_by_views_and_limits():
     vids = [{"title": "lo", "views": 10}, {"title": "hi", "views": 9000}, {"title": "mid", "views": 500}]
     block = da.catalog_block(vids, limit=2)

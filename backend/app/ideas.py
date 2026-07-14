@@ -69,6 +69,12 @@ def mock_ideas(brand: dict) -> list[dict]:
 
 async def generate_ideas(store, brand: dict, exemplars: str = "",
                          knowledge: str = "basic", creator_id: str = "") -> list[dict]:
+    if not exemplars and creator_id:            # draw on the exemplar bank's proven patterns
+        try:
+            from app import exemplar
+            exemplars = await exemplar.exemplar_block(store, creator_id)
+        except Exception:
+            exemplars = ""
     signals, identity, _topic, _fmt = _context_from_brand(brand)
     base_sys, user = palo_prompts.idea_generation_prompt(signals, identity, exemplars, knowledge)
     system = await get_prompt("palo.idea.generate", base_sys, store=store)

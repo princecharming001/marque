@@ -78,8 +78,17 @@ def test_build_uses_llm(on, monkeypatch):
     async def fake_json(system, user, schema, model, max_tokens=0, temperature=None):
         return {"hook": [{"id": "h9", "mechanism": "cold open", "lift": 3.0, "examples": []}]}
     monkeypatch.setattr(ex, "anthropic_cached_json", fake_json)
-    bank = _run(ex.build_bank(FakeStore(), "c1", [], {"niche": "chess"}))
+    # non-empty evidence so the LLM path runs (empty evidence short-circuits to template)
+    bank = _run(ex.build_bank(FakeStore(), "c1", [{"title": "v", "views": 100}], {"niche": "chess"}))
     assert bank["hook"][0]["id"] == "h9"
+
+
+def test_build_empty_evidence_skips_llm(on, monkeypatch):
+    async def boom(*a, **k):
+        raise AssertionError("must not call the LLM on empty evidence")
+    monkeypatch.setattr(ex, "anthropic_cached_json", boom)
+    bank = _run(ex.build_bank(FakeStore(), "c1", [], {"niche": "chess"}))   # empty -> template
+    assert bank and bank["hook"][0]["mechanism"]
 
 
 # --- refresh decider ----------------------------------------------------------

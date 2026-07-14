@@ -99,6 +99,10 @@ def _checks() -> list[tuple[str, bool]]:
     _blk = _da.dossier_to_analysis_block({"title": "T", "views": 1000,
         "dossier": {"first_frame": {"desc": "hook", "pattern_interrupt": True}}})
     out.append(("strategy.adapter", "T (1,000 views)" in _blk and "pattern interrupt" in _blk))
+    _vids = _da.videos_from_clip_sessions(
+        [{"job_id": "j1", "script": {"title": "V"}, "words": [{"word": "hi"}], "dossier": {"x": 1}},
+         {"job_id": "j2", "script": {"title": "empty"}}], views_by_id={"j1": 42})
+    out.append(("strategy.evidence", len(_vids) == 1 and _vids[0]["title"] == "V" and _vids[0]["views"] == 42))
     from app import strategy_compiler as _sc
     _sm = _sc._template_strategy({"niche": "chess"})
     out.append(("strategy.sections", _sc.validate_sections(_sm) is True
