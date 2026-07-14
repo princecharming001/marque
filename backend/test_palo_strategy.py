@@ -111,3 +111,23 @@ def test_compile_empty_evidence_skips_llm(on, monkeypatch):
     store = FakeStore(prev=None)
     md = _run(sc.compile_strategy(store, "c1", [], {"niche": "chess"}))
     assert md and sc.validate_sections(md) and store.upserted["strategy_revision"] == 1
+
+
+def test_synthesize_strips_reasoning_block(monkeypatch):
+    # Parity fix: the synthesis prompt asks for a <reasoning> block first (Palo's
+    # cognitive pass). It is DISCARDED — never persisted into strategy_markdown, never
+    # shown in the app's Strategy sheet.
+    md = ("<reasoning>\nstage: sub-breakout because ...\nconfound: trend carry ...\n</reasoning>\n"
+          "## Insights\n- x\n\n## Plan\nREGIME: sub-breakout\nLEVER: y\n\n"
+          "## Buckets\n- b\n\n## Brand Bets\n- s\n\n## Not-Doing\n- n")
+
+    async def fake_llm(system, user, model, max_tokens=0):
+        return md
+    monkeypatch.setattr(sc, "anthropic_cached", fake_llm)
+
+    async def _rec(*a, **k):
+        return True
+    monkeypatch.setattr(sc.ai_usage, "record", _rec)
+    out = asyncio.run(sc.synthesize(None, "c1", "digest", {"niche": "fitness"}))
+    assert "<reasoning>" not in out and "confound: trend carry" not in out
+    assert out.startswith("## Insights") and sc.validate_sections(out)

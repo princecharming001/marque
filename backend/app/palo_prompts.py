@@ -51,6 +51,28 @@ def memory_extract_prompt(user_msg: str, assistant_msg: str) -> tuple[str, str]:
     return MEMORY_EXTRACTION_SYSTEM, user
 
 
+# --- memory reconcile (vector_service/main.py _RECONCILE_PROMPT, adapted) ------
+# The mem0-style contradiction judge: replaced Palo's OpenAI 4o-mini with HAIKU. The
+# win was replacing keyword matching with ANY LLM, not the model tier — these are
+# short, low-volume calls (fires only when a same-scope+type memory already exists).
+MEMORY_RECONCILE_SYSTEM = """You maintain a creator's long-term memory. A NEW candidate fact arrived. Decide how it relates to the EXISTING memories (already scoped to the same scope + type).
+
+Pick exactly ONE action targeting the single most relevant existing memory:
+- NOOP: the new fact is already captured by an existing memory (redundant). target_id = that memory.
+- UPDATE: the new fact refines / refreshes / completes an existing memory about the SAME subject (more current or more complete). target_id = that memory; its value will be REPLACED with the new text.
+- DELETE: the new fact CONTRADICTS an existing memory about the same subject (incompatible value — e.g. "likes bullet points" vs "wants numbered lists", "based in NYC" vs "based in London"). target_id = the contradicted memory; it is removed and the new fact added.
+- ADD: the new fact is genuinely unrelated to all of the above. target_id = null.
+
+Return ONLY JSON: {"action": "ADD|UPDATE|DELETE|NOOP", "target_id": "<existing id or null>"}"""
+
+
+def memory_reconcile_prompt(new_value: str, existing: list[dict]) -> tuple[str, str]:
+    lines = "\n".join(f'{i}. id={m.get("id")} "{m.get("value", "")}"'
+                      for i, m in enumerate(existing[:5], 1))
+    user = f'NEW: "{new_value}"\n\nEXISTING:\n{lines}'
+    return MEMORY_RECONCILE_SYSTEM, user
+
+
 # --- recall ledger extraction (recall/ledger.py EXTRACTION_PROMPT, verbatim) --
 LEDGER_EXTRACTION_SYSTEM = """Extract what the ASSISTANT proposed, decided, or judged this turn — for a ledger the assistant can recall later ("you suggested X 2 days ago") and to avoid re-pitching duplicates.
 
@@ -233,26 +255,49 @@ STRATEGY_DIGEST_SYSTEM = """You are analyzing a creator's video catalog to extra
 # Doctrine prefix goes in the cached block; instructions + digest are dynamic. The
 # section headers below MUST match prompt_assembly._SECTION_HEADER_TO_PLACEHOLDER and
 # carry REGIME:/LEVER: so infer_craft_regime can read them.
-_STRATEGY_SYNTH_INSTRUCTIONS = """You are Palo's strategist. From the creator's evidence digest, write their compiled strategy as markdown with EXACTLY these sections and headers:
+_STRATEGY_SYNTH_INSTRUCTIONS = """You are Palo's strategist. Your job is not to describe this creator; it is to sit, reason hard, and decide what this channel should DO to grow — and to justify every call so the reasoning can be retrieved later.
+
+HOW YOU REASON — do this in a <reasoning> block BEFORE the artifact (it is discarded, not persisted):
+
+1. CLASSIFY THE REGIME. Compare the creator's own ceiling / median / floor against what their niche proves possible ON THE SAME FORMAT.
+- SUB-BREAKOUT: catalog sits far below the niche ceiling. Own-data max confidence = floor-competence only; breakout proof MUST come from the niche. Mine their own data for resonant SUBJECTS, not for proof a format breaks out.
+- BREAKOUT: clearing niche-comparable numbers; their own data is real signal.
+- SCALING: consistently at/above the niche; the work is optimization and durability.
+State the regime and its confidence-weighting consequence explicitly — it governs everything downstream.
+
+2. SEPARATE THE LEVER FROM THE CORRELATE (the discipline that earns this artifact's keep). A performance number tells you something WON, not WHY — most apparent wins are confounded. Before attributing a win to a feature, kill the confounds:
+- Trend / cultural carry: did a borrowed moment (a song, meme, trend) carry the count independent of structure? The transferable lever is the structure; borrowed attention does NOT travel to the next idea.
+- Recency: are the "winners" just the newest videos?
+- Co-occurring structure: does the winning surface feature (a set, a length, a setting) travel WITH a structural feature (an open loop, a prediction-hook)? Then the STRUCTURE is the candidate lever and the surface feature is the correlate.
+- One-off / production: a single fluke is not a pattern.
+For every candidate pattern, write the confound check and either promote it to a lever or REJECT it out loud as a correlate — the rejections become Not-Doing entries. A strategy that prescribes the correlate ("do more of what the outlier was about") is the exact failure this artifact exists to prevent. Find the mechanism that transfers to the next fifty videos.
+
+3. ONE DOMINANT BLOCKER, ONE LEVER. Among the resolved mechanisms, name the single biggest thing capping this creator and the single highest-leverage move to unlock it. ONE, not five — a flat equal-weight list of findings is a strategy with no point of view.
+
+4. THEN FORCE REAL BREADTH. The opposite failure is over-derivation: every bucket and bet restating the same one or two insights. Insights must be INDEPENDENT and sit on DISTINCT axes (hook architecture, concept, structure, voice, format durability). If an insight is a consequence of another, FOLD it. Buckets and Brand Bets may not all trace to the same insight.
+
+5. CALIBRATE. Tag claims by source: niche-proven vs own-proven-at-small-scale vs untested-on-them — never conflate how settled a MECHANISM is with how proven it is on THIS creator. NEVER invent a statistic: no fabricated percentages, view counts, or lifts. If you lack the number, state the shape ("floors", "outlier", "above median"). Gate only on observable signals (views, followers, visible engagement) — never on retention/saves/completion the system cannot see.
+
+THEN write the compiled strategy as markdown with EXACTLY these sections and headers:
 
 ## Insights
-3-5 bullets: what works for THIS creator specifically, each grounded in the digest.
+3-5 bullets: what works for THIS creator specifically. Each is grounded in the digest (a video, a verbatim line, a real number), sits on a DISTINCT axis, and names its confidence source (niche-proven / own-data / untested).
 
 ## Plan
-REGIME: sub-breakout | breakout | scaling   (pick one from their scale + trajectory)
-LEVER: the single growth lever that regime calls for
+REGIME: sub-breakout | breakout | scaling   (from step 1, with the one-line consequence)
+LEVER: the single growth lever (step 3) — the mechanism, not the correlate
 Then 1-2 lines on the priority focus for the next month.
 
 ## Buckets
-The content buckets (repeatable formats) they should make.
+The content buckets (repeatable formats) they should make. Per bucket: its job (headline / core / experiment), and how proven it is on THEM — a bucket whose mechanism is niche-proven but fired once on them is an experiment, never "proven".
 
 ## Brand Bets
-The signature moves to double down on — what makes them unmistakably them.
+The signature moves to double down on — what makes them unmistakably them. These are the breadth valve: additive NEW moves not implied by the buckets.
 
 ## Not-Doing
-What to stop or avoid (off-niche chasing, formats that underperform for them).
+What to stop or avoid — including the correlates you rejected in step 2, stated with the confound that killed them. Ban FORMATS and MECHANISMS, never a topic just because it floored inside a bad format (the topic travels; the format flopped).
 
-Ground every claim in the digest. No em dashes. Collaborative voice."""
+Ground every claim in the digest; if a signal you need is genuinely absent, say so rather than inventing it. Anti-hardening: "lean into", not "always/never" (Not-Doing is the one hard-exclusion section). Growth is the objective; do not build the plan on distribution tactics (posting times, reply-bait) — name the content lever. No em dashes. Collaborative voice."""
 
 
 def strategy_digest_prompt(evidence: str, brand: dict | None = None) -> tuple[str, str]:

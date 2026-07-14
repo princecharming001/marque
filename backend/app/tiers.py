@@ -50,7 +50,6 @@ _ENTITLEMENTS: dict[str, dict] = {
         "compile": "monthly",
         "ideas": "weekly",
         "insights": "3xweek",
-        "video_brain": False,
         "exemplar_bank": False,
     },
     GROWTH: {
@@ -58,7 +57,6 @@ _ENTITLEMENTS: dict[str, dict] = {
         "compile": "biweekly",
         "ideas": "3xweek",
         "insights": "daily",
-        "video_brain": False,
         "exemplar_bank": False,
     },
     STUDIO: {
@@ -66,7 +64,6 @@ _ENTITLEMENTS: dict[str, dict] = {
         "compile": "weekly",
         "ideas": "nightly",
         "insights": "daily",
-        "video_brain": True,
         "exemplar_bank": True,
     },
 }
@@ -96,7 +93,7 @@ def at_least(tier: str | None, minimum: str) -> bool:
 
 
 def has_feature(tier: str | None, feature: str) -> bool:
-    """Boolean features only (video_brain, exemplar_bank)."""
+    """Boolean features only (exemplar_bank; video_brain removed with its dead flag)."""
     return bool(_ENTITLEMENTS[normalize(tier)].get(feature))
 
 

@@ -4985,6 +4985,12 @@ async def create_digest_job(req: DigestRequest):
                            "transcribed": 0})
         return {"mode": "mock", "job_id": job_id, "status": "ready"}
     _spawn(_run_digest(job_id))
+    # Palo port (audit: suggest_ideas was fully unwired): onboarding completion IS the
+    # first-ideas moment — generate → niche-connection eval gate → persist briefs, so a
+    # brand-new creator's idea bank isn't empty until the nightly spitfire sweep. Off the
+    # hot path; flag- and real-creator-gated inside.
+    if palo_flags.enabled(palo_flags.IDEA_BANK) and palo_flags.real_creator(req.creator_id):
+        _spawn(ideas.suggest_ideas(_palo_store, req.creator_id, req.d(), source="onboarding"))
     return {"mode": "live", "job_id": job_id, "status": "running"}
 
 

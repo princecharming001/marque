@@ -10,7 +10,7 @@ no key/deterministic, `live` = real. Treat `off`/`mock` as valid, renderable dat
 
 ## Flags (env, all default OFF)
 `PALO_PORT` master + `MEMORY_V2` · `IDEA_BANK` · `TRACK_INSIGHTS` · `STRATEGY_COMPILER`
-· `WRITE_AGENT` · `EXEMPLAR_BANK` · `VIDEO_BRAIN`. A capability needs `PALO_PORT=1` AND
+· `WRITE_AGENT` · `EXEMPLAR_BANK`. A capability needs `PALO_PORT=1` AND
 its own flag. Tiers (`creators.tier`): `starter` / `growth` / `studio`.
 
 ---

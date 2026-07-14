@@ -63,18 +63,6 @@ class PaloStore(SupabaseClient):
             return None
         return rows[0]["prompt_text"] if rows and rows[0].get("prompt_text") else None
 
-    async def load_all_prompt_overrides(self) -> dict[str, str]:
-        r = await self._request("GET", "/prompt_overrides",
-                                params={"select": "key,prompt_text"})
-        if not (r and r.status_code == 200):
-            return {}
-        try:
-            return {row["key"]: row["prompt_text"] for row in r.json()
-                    if row.get("key") and row.get("prompt_text")}
-        except Exception:
-            return {}
-
-    # --- ai_usage (cost accounting) ------------------------------------------
 
     async def record_ai_usage(self, row: dict) -> bool:
         payload = {k: row.get(k) for k in _USAGE_COLS if row.get(k) is not None}

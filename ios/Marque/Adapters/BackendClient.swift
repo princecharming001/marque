@@ -132,6 +132,22 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                       predictedScore: min(100, max(0, dto.predictedScore ?? 80)),
                       whyPicked: dto.why_picked ?? "")
     }
+    /// Palo port (audit: /v1/write/from-brief had no consumer): the write agent expands a
+    /// brief's one-line summary into the FULL filmable script — strategy/memory/exemplar
+    /// aware, in the creator's voice. nil on off/keyless/failure → caller keeps the summary.
+    func expandBrief(title: String, summary: String, brand: BrandGraph) async -> (title: String, body: String)? {
+        // _BriefScriptRequest nests the brand dict (unlike the Brand-inheriting routes).
+        let payload: [String: Any] = ["creator_id": creatorId,
+                                      "brief": ["title": title, "summary": summary],
+                                      "brand": brandBody(brand)]
+        guard let data = await post("/v1/write/from-brief", payload),
+              let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (r["mode"] as? String) == "live",
+              let full = r["body"] as? String, !full.isEmpty else { return nil }
+        note("live")
+        return ((r["title"] as? String) ?? title, full)
+    }
+
     /// Palo idea-bank brief → a starter Script pick. Title + summary make a fileable card;
     /// filming expands the full body on demand (from the brief). Renders identically to the
     /// bandit's script picks, so the idea bank is finally visible on Home.

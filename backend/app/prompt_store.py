@@ -45,22 +45,6 @@ async def get_prompt(key: str, fallback: str, store=None) -> str:
     return text or fallback
 
 
-async def refresh_all(store) -> int:
-    """Warm the cache with every override in one round trip (startup + periodic). Returns
-    the count loaded; 0 on any failure. Individual keys still fall back per get_prompt."""
-    if store is None:
-        return 0
-    try:
-        overrides = await store.load_all_prompt_overrides()
-    except Exception:
-        overrides = {}
-    exp = time.monotonic() + _TTL_S
-    for key, text in overrides.items():
-        if isinstance(text, str) and text.strip():
-            _CACHE[key] = (text, exp)
-    return len(overrides)
-
-
 def clear_cache() -> None:
     """Test hook — reset the module cache between cases."""
     _CACHE.clear()

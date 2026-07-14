@@ -84,6 +84,12 @@ async def detect_milestones(store, creator_id: str, key: str, curr: float,
         await store.set_watermark(creator_id, f"{key}_milestone", float(curr))
         return []
     crossed = crossed_milestones(float(wm), float(curr), ladder)
+    # Data-ARRIVAL guard (live-observed flood): an empty first sweep (nothing scrapeable
+    # yet) records watermark=0; when data finally lands, 0→N crosses the entire ladder —
+    # 9 "congratulations" cards at once for history the creator lived long ago. A zero
+    # watermark crossing >2 rungs is arrival, not growth: fire only the top rung.
+    if float(wm) <= 0 and len(crossed) > 2:
+        crossed = crossed[-1:]
     if curr > float(wm):
         await store.set_watermark(creator_id, f"{key}_milestone", float(curr))
     return crossed

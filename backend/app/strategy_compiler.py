@@ -86,13 +86,24 @@ async def digest(store, creator_id: str, evidence: str, brand: dict | None) -> s
     return f"Catalog digest unavailable; using baseline {(brand or {}).get('niche', 'niche')} craft priors."
 
 
+def _strip_reasoning(md: str) -> str:
+    """The synthesis prompt does its cognitive pass in a <reasoning> block (Palo parity:
+    stage → confound checks → lever). It is scratch work — discard it so it is never
+    persisted into strategy_markdown nor shown in the app's Strategy sheet."""
+    return re.sub(r"<reasoning>.*?</reasoning>", "", md, flags=re.DOTALL).strip()
+
+
 async def synthesize(store, creator_id: str, digest_text: str, brand: dict | None) -> str:
     system, user = palo_prompts.strategy_synthesis_prompt(digest_text, brand)
     system = prompt_assembly.replace_doctrine_blocks(system)   # fill {DOCTRINE_CORE} in cached prefix
     from app.prompt_store import get_prompt
     system = await get_prompt("palo.strategy.synthesis", system, store=store)
-    out = await anthropic_cached(system, user, OPUS, max_tokens=2500)
+    # 4000 (was 2500): the reasoning pass spends tokens BEFORE the artifact — a tight cap
+    # truncated the artifact mid-section, failed validation, and silently shipped the
+    # template instead of the strategy the Opus call was billed for.
+    out = await anthropic_cached(system, user, OPUS, max_tokens=4000)
     if out:
+        out = _strip_reasoning(out)
         # Bill the Opus call whenever it ran — even if the sections fail validation and we
         # fall back to the template. Billing only on the valid path let the priciest model
         # go unmetered on malformed output (the exact thing ai_usage exists to catch).
