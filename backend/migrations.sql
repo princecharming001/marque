@@ -147,6 +147,10 @@ CREATE EXTENSION IF NOT EXISTS vector;
 -- creators table already exists (niche/goal/coach_last_shown); just add the column.
 ALTER TABLE creators ADD COLUMN IF NOT EXISTS tier TEXT DEFAULT 'growth'
     CHECK (tier IN ('starter', 'growth', 'studio'));
+-- Social handle/account id the metrics poller scrapes (run_insights_cron reads it).
+-- Populated opportunistically at post-register time. Empty => that creator's metrics
+-- loop stays a no-op (which is why it must be set before TRACK_INSIGHTS does anything).
+ALTER TABLE creators ADD COLUMN IF NOT EXISTS handle TEXT DEFAULT '';
 
 -- Prompt overrides — the get_prompt() fallback source (Palo's LD-prompt shim, no LD).
 CREATE TABLE IF NOT EXISTS prompt_overrides (

@@ -50,9 +50,11 @@ def test_pick_source_walks_chain(monkeypatch):
 
 def test_poll_apify_row_shape(monkeypatch):
     monkeypatch.setattr(mp, "_APIFY_KEY", "x")
-    monkeypatch.setattr(mp, "_apify_fetch",
-                        lambda h: [{"id": "p1", "videoViewCount": 1200, "likesCount": 80, "commentsCount": 5}])
-    rows = mp.poll_apify("c1", "handle", captured_at="T")
+
+    async def fake(h):
+        return [{"id": "p1", "videoViewCount": 1200, "likesCount": 80, "commentsCount": 5}]
+    monkeypatch.setattr(mp, "_apify_fetch", fake)
+    rows = _run(mp.poll_apify("c1", "handle", captured_at="T"))
     assert len(rows) == 3
     by_metric = {r["metric"]: r for r in rows}
     assert by_metric["views"]["value"] == 1200.0 and by_metric["views"]["source"] == "apify"
@@ -60,7 +62,17 @@ def test_poll_apify_row_shape(monkeypatch):
 
 
 def test_poll_apify_keyless_empty():
-    assert mp.poll_apify("c1", "handle") == []            # no key -> no fetch -> no rows
+    assert _run(mp.poll_apify("c1", "handle")) == []      # no key -> no fetch -> no rows
+
+
+def test_pollers_are_async_no_event_loop_blocking():
+    # The fetchers + pollers MUST be coroutines so they never block the uvicorn event
+    # loop (the CRITICAL bug: sync httpx froze the whole instance per creator).
+    import inspect
+    assert inspect.iscoroutinefunction(mp._apify_fetch)
+    assert inspect.iscoroutinefunction(mp._postforme_fetch)
+    assert inspect.iscoroutinefunction(mp._ig_graph_fetch)
+    assert inspect.iscoroutinefunction(mp.poll_apify)
 
 
 # --- poll_creator dispatch + gate ---------------------------------------------
@@ -71,9 +83,11 @@ def test_poll_creator_flag_off_noop():
 
 def test_poll_creator_ingests(on, monkeypatch):
     monkeypatch.setattr(mp, "_APIFY_KEY", "x")
-    monkeypatch.setattr(mp, "_apify_fetch",
-                        lambda h: [{"id": "p1", "views": 900, "likes": 40, "comments": 3},
-                                   {"id": "p2", "views": 100, "likes": 2, "comments": 0}])
+
+    async def fake(h):
+        return [{"id": "p1", "views": 900, "likes": 40, "comments": 3},
+                {"id": "p2", "views": 100, "likes": 2, "comments": 0}]
+    monkeypatch.setattr(mp, "_apify_fetch", fake)
     store = FakeStore()
     n = _run(mp.poll_creator(store, "c1", tiers.STARTER, "handle"))
     assert n == 6 and len(store.inserted) == 6            # 2 posts x 3 metrics

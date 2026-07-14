@@ -1112,6 +1112,7 @@ class PostRegisterRequest(BaseModel):
     predicted_score: int = 0
     creator_id: str = "default"
     niche: str = ""
+    handle: str = ""                # Palo port: creator's social handle/account for metrics polling
 
 
 class MetricsIngestRequest(BaseModel):
@@ -5499,6 +5500,10 @@ async def register_post(req: PostRegisterRequest):
     if req.niche:
         _creator_niche[req.creator_id] = req.niche      # remember for cold-arm Beta seeding
         await _persist_creator(req.creator_id, niche=req.niche)
+    if req.handle:
+        # Palo port: opportunistically persist the creator's social handle so the metrics
+        # poller (run_insights_cron) has an account to scrape. No-op if unset / no store.
+        await _persist_creator(req.creator_id, handle=req.handle)
     live_mode = "live" if _supabase_client else "mock"
     if req.post_id in _post_registry:
         return {"mode": live_mode, "status": "already_registered", "post_id": req.post_id}
@@ -5986,12 +5991,15 @@ async def converse(req: ConverseRequest):
     _last_user = next((m.get("content", "") for m in reversed(req.messages)
                        if m.get("role") == "user"), "")
     if palo_flags.enabled(palo_flags.MEMORY_V2):
-        _mem_block = memory_v2.memory_block(
-            await memory_v2.retrieve(_palo_store, req.creator_id, _last_user))
-        _led_block = await recall_ledger.ledger_block(_palo_store, req.creator_id)
-        _inject = "\n\n".join(b for b in (_mem_block, _led_block) if b)
-        if _inject:
-            system = f"{system}\n\n{_inject}"
+        try:                                 # defense-in-depth: never 500 converse on a store hiccup
+            _mem_block = memory_v2.memory_block(
+                await memory_v2.retrieve(_palo_store, req.creator_id, _last_user))
+            _led_block = await recall_ledger.ledger_block(_palo_store, req.creator_id)
+            _inject = "\n\n".join(b for b in (_mem_block, _led_block) if b)
+            if _inject:
+                system = f"{system}\n\n{_inject}"
+        except Exception as e:
+            logging.warning("[converse] memory/ledger injection failed: %s", e)
     system = await _inject_strategy(system, req.creator_id)   # Palo port: brain shapes converse
     # No trends passed: mock_trends is hand-authored filler, and injecting it as
     # "Trending right now" into a LIVE strategist makes the model relay invented trend

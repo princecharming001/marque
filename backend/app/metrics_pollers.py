@@ -12,6 +12,7 @@ Flag TRACK_INSIGHTS gates the entry point.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -54,13 +55,40 @@ def _rows(creator_id: str, entity_id: str, metrics: dict, source: str,
             for k, v in metrics.items() if v is not None]
 
 
-# --- source fetchers (thin; keyless => []) ------------------------------------
+# --- shared async HTTP client (loop-aware, mirrors main._get_anthropic_client) ---
+# The fetchers MUST be async: they run inside the async cron sweep on the single Render
+# uvicorn loop, so a blocking (sync) httpx call would freeze the ENTIRE instance for its
+# timeout (apify 60s) per creator. A pooled AsyncClient also avoids a TLS handshake/scrape.
+_client: httpx.AsyncClient | None = None
+_client_loop = None
 
-def _apify_fetch(handle: str) -> list[dict]:
+
+def _get_client() -> httpx.AsyncClient:
+    global _client, _client_loop
+    loop = asyncio.get_running_loop()
+    if _client is None or _client_loop is not loop:
+        _client = httpx.AsyncClient(timeout=60)
+        _client_loop = loop
+    return _client
+
+
+async def aclose() -> None:
+    """Close the pooled client on app shutdown (called from main._lifespan)."""
+    global _client
+    if _client is not None:
+        try:
+            await _client.aclose()
+        finally:
+            _client = None
+
+
+# --- source fetchers (thin, async; keyless => []) -----------------------------
+
+async def _apify_fetch(handle: str) -> list[dict]:
     if not (_APIFY_KEY and handle):
         return []
     try:
-        r = httpx.post(
+        r = await _get_client().post(
             f"https://api.apify.com/v2/acts/{_APIFY_ACTOR}/run-sync-get-dataset-items",
             params={"token": _APIFY_KEY}, json={"usernames": [handle], "resultsLimit": 30},
             timeout=60)
@@ -70,23 +98,24 @@ def _apify_fetch(handle: str) -> list[dict]:
         return []
 
 
-def _postforme_fetch(account_id: str) -> list[dict]:
+async def _postforme_fetch(account_id: str) -> list[dict]:
     if not (_POSTFORME_KEY and account_id):
         return []
     try:
-        r = httpx.get(f"{_POSTFORME_BASE}/accounts/{account_id}/posts",
-                      headers={"Authorization": f"Bearer {_POSTFORME_KEY}"}, timeout=30)
+        r = await _get_client().get(
+            f"{_POSTFORME_BASE}/accounts/{account_id}/posts",
+            headers={"Authorization": f"Bearer {_POSTFORME_KEY}"}, timeout=30)
         return r.json().get("data", []) if r.status_code == 200 else []
     except Exception as e:
         logging.warning("[metrics] postforme fetch failed: %s", e)
         return []
 
 
-def _ig_graph_fetch(account_id: str) -> list[dict]:
+async def _ig_graph_fetch(account_id: str) -> list[dict]:
     if not (_IG_GRAPH_TOKEN and account_id):
         return []
     try:
-        r = httpx.get(
+        r = await _get_client().get(
             f"https://graph.facebook.com/v21.0/{account_id}/media",
             params={"fields": "id,like_count,comments_count,insights.metric(reach,plays)",
                     "access_token": _IG_GRAPH_TOKEN}, timeout=30)
@@ -96,10 +125,10 @@ def _ig_graph_fetch(account_id: str) -> list[dict]:
         return []
 
 
-def poll_apify(creator_id: str, handle: str, captured_at: str = "") -> list[dict]:
+async def poll_apify(creator_id: str, handle: str, captured_at: str = "") -> list[dict]:
     at = captured_at or _now_iso()
     rows: list[dict] = []
-    for p in _apify_fetch(handle):
+    for p in await _apify_fetch(handle):
         pid = str(p.get("id") or p.get("shortCode") or p.get("shortcode") or "")
         if not pid:
             continue
@@ -110,10 +139,10 @@ def poll_apify(creator_id: str, handle: str, captured_at: str = "") -> list[dict
     return rows
 
 
-def poll_postforme(creator_id: str, account_id: str, captured_at: str = "") -> list[dict]:
+async def poll_postforme(creator_id: str, account_id: str, captured_at: str = "") -> list[dict]:
     at = captured_at or _now_iso()
     rows: list[dict] = []
-    for p in _postforme_fetch(account_id):
+    for p in await _postforme_fetch(account_id):
         pid = str(p.get("id") or "")
         m = p.get("metrics", p)
         if pid:
@@ -123,10 +152,10 @@ def poll_postforme(creator_id: str, account_id: str, captured_at: str = "") -> l
     return rows
 
 
-def poll_ig_graph(creator_id: str, account_id: str, captured_at: str = "") -> list[dict]:
+async def poll_ig_graph(creator_id: str, account_id: str, captured_at: str = "") -> list[dict]:
     at = captured_at or _now_iso()
     rows: list[dict] = []
-    for p in _ig_graph_fetch(account_id):
+    for p in await _ig_graph_fetch(account_id):
         pid = str(p.get("id") or "")
         if not pid:
             continue
@@ -153,7 +182,7 @@ async def poll_creator(store, creator_id: str, tier: str, handle: str,
     if not src:
         return 0
     try:
-        rows = _POLLERS[src](creator_id, handle, captured_at)
+        rows = await _POLLERS[src](creator_id, handle, captured_at)
         if rows and await store.insert_metrics(rows):
             return len(rows)
         return 0

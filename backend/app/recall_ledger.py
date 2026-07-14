@@ -86,7 +86,12 @@ async def ledger_block(store, creator_id: str, limit: int = 25) -> str:
     agent doesn't re-pitch. Empty string when off/empty."""
     if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not creator_id:
         return ""
-    rows = await store.load_ledger(creator_id, limit=limit)
+    # Never-raise: runs on the /v1/converse read path before the route's try.
+    try:
+        rows = await store.load_ledger(creator_id, limit=limit)
+    except Exception as e:
+        logging.warning("[recall_ledger] ledger_block failed: %s", e)
+        return ""
     if not rows:
         return ""
     lines = [f"- [{r.get('kind', 'idea')}] {r.get('summary', '').strip()}"

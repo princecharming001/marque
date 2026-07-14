@@ -143,3 +143,26 @@ def test_no_store_is_noop(on):
     assert _run(memory_v2.remember(None, "c1", "remember x", "a")) == 0
     assert _run(memory_v2.retrieve(None, "c1", "q")) == []
     assert _run(recall_ledger.ledger_block(None, "c1")) == ""
+
+
+class _BoomStore:
+    async def load_prompt_override(self, k):
+        return None
+
+    async def match_memories(self, *a, **k):
+        raise RuntimeError("db down")
+
+    async def load_memories(self, *a, **k):
+        raise RuntimeError("db down")
+
+    async def load_ledger(self, *a, **k):
+        raise RuntimeError("db down")
+
+
+def test_retrieve_never_raises_on_store_error(on):
+    # converse read path must degrade, never 500 (the HIGH finding)
+    assert _run(memory_v2.retrieve(_BoomStore(), "c1", "who am i")) == []
+
+
+def test_ledger_block_never_raises_on_store_error(on):
+    assert _run(recall_ledger.ledger_block(_BoomStore(), "c1")) == ""

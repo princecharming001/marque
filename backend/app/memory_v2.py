@@ -173,12 +173,18 @@ async def retrieve(store, creator_id: str, query: str, scope: str = "",
                    k: int = 5) -> list[dict]:
     if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None or not creator_id:
         return []
-    emb = await _embed(query)
-    if emb is not None:
-        mems = await store.match_memories(creator_id, emb, scope=scope, limit=k * 2)
-    else:
-        mems = await store.load_memories(creator_id, scope=scope)  # recency fallback
-    return _rank(mems)[:k]
+    # Never-raise: retrieve runs on the /v1/converse read path (before the route's try),
+    # so a transient store error must degrade to no-memory, not 500 the turn.
+    try:
+        emb = await _embed(query)
+        if emb is not None:
+            mems = await store.match_memories(creator_id, emb, scope=scope, limit=k * 2)
+        else:
+            mems = await store.load_memories(creator_id, scope=scope)  # recency fallback
+        return _rank(mems)[:k]
+    except Exception as e:
+        logging.warning("[memory_v2] retrieve failed: %s", e)
+        return []
 
 
 def memory_block(mems: list[dict]) -> str:
