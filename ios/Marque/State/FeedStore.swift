@@ -97,9 +97,17 @@ final class FeedStore {
     }
 
     /// UX-F2: foregrounding with a stale feed (>15 min) → silent revalidate.
+    /// Blank-home audit: ALSO fires when the feed NEVER loaded successfully
+    /// (`lastFreshLoadAt == nil` after a timed-out first fetch) — the old nil-guard
+    /// made one bad launch terminal until a manual pull-to-refresh.
     func revalidateIfStale(store: AppStore) async {
-        guard let last = lastFreshLoadAt, Date().timeIntervalSince(last) > 15 * 60,
-              !isLoading else { return }
+        guard !isLoading, !revalidating else { return }
+        if lastFreshLoadAt == nil {
+            guard loadedOnce else { return }         // the first load still owns the fetch
+            await silentRevalidate(store: store)
+            return
+        }
+        guard let last = lastFreshLoadAt, Date().timeIntervalSince(last) > 15 * 60 else { return }
         await silentRevalidate(store: store)
     }
 
@@ -163,10 +171,50 @@ final class FeedStore {
             page = await store.backend.fetchFeed(brand: store.brand, memory: store.memory, cursor: 0)
         }
         guard let page else {
-            loadedOnce = false            // network miss — allow a later re-appear / pull to retry
+            // Blank-home audit: a double miss used to strand the offline card until a
+            // manual pull-to-refresh (the upgrade repolls only armed after a SUCCESSFUL
+            // paint, and foreground revalidate bailed on lastFreshLoadAt == nil). Paint
+            // the LOCAL mock picks instead — never a blank row — and keep quietly
+            // retrying; the first server answer replaces the whole page.
+            await paintLocalFallback(store: store)
+            scheduleRetryLadder(store: store)
             return
         }
         applyPageZero(page, store: store)
+    }
+
+    /// Local last-resort picks (MockLLMRouter — the same deterministic engine keyless
+    /// demo mode uses) so Home never shows an empty picks row after a network miss.
+    /// Not persisted to the disk snapshot: template copy must not survive a relaunch.
+    private func paintLocalFallback(store: AppStore) async {
+        guard scriptItems.isEmpty else { return }
+        let pillar = store.pillars.first
+            ?? Pillar(name: store.brand.niche.isEmpty ? "Your lane" : store.brand.niche,
+                      weight: 1, colorHex: 0x1B1B1B)
+        let scripts = await MockLLMRouter().generateScripts(
+            brand: store.brand, pillar: pillar, count: 3, mediaContext: "",
+            style: .talkingHead, memory: store.memory)
+        if scriptItems.isEmpty { scriptItems = scripts }
+    }
+
+    /// Quiet recovery ladder after a FAILED first load. Unlike scheduleAIUpgrade (which
+    /// only swaps scripts once mode == "live"), this replaces the whole page 0 with the
+    /// first response of ANY mode — the local fallback has no reels/trend to preserve,
+    /// and applyPageZero arms the mock→live upgrade itself if the answer is mock.
+    private func scheduleRetryLadder(store: AppStore) {
+        aiUpgradeTask?.cancel()
+        aiUpgradeTask = Task { [weak self] in
+            for delay in [15, 30, 60, 120] {
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                guard let page = await store.backend.fetchFeed(brand: store.brand,
+                                                               memory: store.memory,
+                                                               cursor: 0) else { continue }
+                self.applyPageZero(page, store: store)
+                return
+            }
+        }
     }
 
     private func scheduleAIUpgrade(store: AppStore) {
