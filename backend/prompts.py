@@ -66,7 +66,10 @@ EDIT_FORMATS = {
     "recap_voiceover": {
         "label": "Recap with voiceover",
         "style": "faceless",
-        "toggles": {"broll": False, "punch_ins": False, "music": False},
+        # Faceless VO needs a VISUAL channel (b-roll) AND a low music bed under the voice —
+        # a faceless recap with no face, no b-roll and no bed is a dead frame + dry VO
+        # (viral_editing doctrine). The bed ducks hard under the narration.
+        "toggles": {"broll": True, "punch_ins": False, "music": True},
         "brief_hint": (
             "Voiceover recap: the creator's voice narrates over the footage. Keep the narration "
             "continuous and clean (cut only flubs/fillers — never mid-sentence), let the visuals "

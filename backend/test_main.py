@@ -4840,14 +4840,18 @@ def test_edit_format_recap_music_pins_fast_cuts_and_injects_music():
 
 def test_edit_format_recap_voiceover_maps_to_faceless():
     created = _create_with_format("recap_voiceover")
-    assert created["toggles"]["music"] is False
+    # WS3: a faceless VO recap now gets a low music BED (was music:False = dry VO over a
+    # dead frame) + a b-roll visual channel — reconciled with the format playbook.
+    assert created["toggles"]["music"] is True
+    assert created["toggles"]["broll"] is True
     job_id = created["job_id"]
     client.post(f"/v1/clips/{job_id}/confirm", json={})
     job = main._clip_jobs[job_id]
     assert job["style"] == "faceless"
     assert job["edl"]["style"] == "faceless"
     assert job["edl"]["format_id"] in prompts.STYLES["faceless"]["formats"]
-    assert not (job["edl"]["audio"].get("music"))            # voiceover recap: no default track
+    assert job["edl"]["audio"].get("music")                  # voiceover recap: low bed under the VO
+    assert job["edl"]["audio"]["music"]["duck_voice"] is True  # ...ducked hard under narration
 
 
 def test_edit_format_talking_head_broll_seeds_broll_toggle():
@@ -5608,3 +5612,35 @@ def test_ensure_speakable_keeps_good_body_untouched(monkeypatch):
     good = [{"body": "Most fitness advice is backwards. Here is why.", "style": "talking_head"}]
     out = asyncio.run(main._ensure_speakable(good))
     assert calls["n"] == 0 and out[0]["body"].startswith("Most fitness")
+
+
+# --- WS3: music catalog + tone-aware selection ---------------------------------
+def test_select_music_track_matches_brand_tone():
+    calm = main._select_music_track(tone="thoughtful")
+    assert calm["tone"] == "calm"
+    energetic = main._select_music_track(tone="hype")
+    assert energetic["tone"] == "energetic"
+
+
+def test_select_music_track_montage_prefers_high_energy():
+    t = main._select_music_track(montage=True)
+    assert t.get("energy") == "high"
+
+
+def test_music_catalog_env_override(monkeypatch):
+    monkeypatch.setenv("MUSIC_CATALOG", '[{"name":"Custom","url":"https://x/y.mp3","vibe":"upbeat","tone":"energetic","bpm":140,"energy":"high"}]')
+    cat = main._load_music_catalog()
+    assert len(cat) == 1 and cat[0]["name"] == "Custom" and cat[0]["bpm"] == 140
+
+
+def test_music_catalog_bad_env_falls_back(monkeypatch):
+    monkeypatch.setenv("MUSIC_CATALOG", "not json")
+    cat = main._load_music_catalog()
+    assert cat == main._BUILTIN_MUSIC_TRACKS
+
+
+def test_default_toggles_broll_on_for_talking_style():
+    # b-roll is the #1 lever — default ON for every talking take, off only for pure montage
+    assert main._default_toggles({"video_type": "other"})["broll"] is True
+    assert main._default_toggles({"video_type": "scripted_talking_head"})["broll"] is True
+    assert main._default_toggles({"video_type": "recap_music"})["broll"] is False

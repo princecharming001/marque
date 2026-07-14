@@ -263,10 +263,15 @@ async def _vision_json(system: str, user: str, images: list[bytes], schema: dict
         content.append({"type": "image", "source": {
             "type": "base64", "media_type": "image/jpeg",
             "data": base64.b64encode(img).decode("ascii")}})
+    # NOTE: no `output_config` structured-output here — the dossier schema is intentionally
+    # PERMISSIVE (additionalProperties:true, variable vision fields), which Anthropic's
+    # strict json_schema mode rejects with a 400 (the claude_frames 400 storm that forced
+    # VIDEO_UNDERSTANDING off). We instruct JSON-only + parse the text with _coerce_json,
+    # which is exactly what a permissive vision extraction needs.
+    system = system + " Return ONLY a single valid JSON object matching the requested fields — no prose, no markdown fences."
     body = {"model": os.environ.get("DOSSIER_VISION_MODEL", "claude-haiku-4-5-20251001"),
             "max_tokens": 2000, "system": system,
-            "messages": [{"role": "user", "content": content}],
-            "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+            "messages": [{"role": "user", "content": content}]}
     async with httpx.AsyncClient(timeout=90) as client:
         r = await client.post("https://api.anthropic.com/v1/messages",
                               headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",

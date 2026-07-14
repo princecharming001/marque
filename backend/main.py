@@ -2270,14 +2270,64 @@ async def mint_upload_url(req: UploadMintRequest):
 # Server-side music catalog (same tracks the iOS Sound-mode ships) — the source for
 # the music toggle's ACTUAL injection. Until this existed the toggle was a silent
 # no-op: it set prefs["music"]=true and nothing ever put a track in the EDL.
-MUSIC_TRACKS = [
-    {"name": "Neverwritten (upbeat)",
-     "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/DDR_assets/Kangaroo_MusiQue_-_The_Neverwritten_Role_Playing_Game.mp3"},
-    {"name": "Epoq (chill)",
-     "url": "https://commondatastorage.googleapis.com/codeskulptor-assets/Epoq-Lepidoptera.ogg"},
-    {"name": "Race Menu (driving)",
-     "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/riceracer_assets/music/menu.ogg"},
+# Music catalog. Each track is TAGGED (vibe/tone/bpm/energy) so selection matches the
+# creator's brand voice + the edit format, not a fixed index — and `bpm` feeds the
+# beat-aligned-cut pass for music recaps. The built-in set is CORS-clean (per-seam music
+# handling needs it); DROP IN LICENSED TRACKS by setting the MUSIC_CATALOG env var to a
+# JSON array of {name,url,vibe,tone,bpm,energy} — the whole selection/beat machinery is
+# track-agnostic, so richer music is a data change, no code change.
+_BUILTIN_MUSIC_TRACKS = [
+    {"name": "Neverwritten", "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/DDR_assets/Kangaroo_MusiQue_-_The_Neverwritten_Role_Playing_Game.mp3",
+     "vibe": "upbeat", "tone": "energetic", "bpm": 128, "energy": "high"},
+    {"name": "Epoq", "url": "https://commondatastorage.googleapis.com/codeskulptor-assets/Epoq-Lepidoptera.ogg",
+     "vibe": "chill", "tone": "calm", "bpm": 90, "energy": "low"},
+    {"name": "Race Menu", "url": "https://commondatastorage.googleapis.com/codeskulptor-demos/riceracer_assets/music/menu.ogg",
+     "vibe": "driving", "tone": "confident", "bpm": 120, "energy": "medium"},
 ]
+
+
+def _load_music_catalog() -> list[dict]:
+    raw = os.environ.get("MUSIC_CATALOG", "").strip()
+    if raw:
+        try:
+            cat = json.loads(raw)
+            if isinstance(cat, list) and all(isinstance(t, dict) and t.get("url") for t in cat):
+                return cat
+        except (ValueError, TypeError):
+            logging.warning("[music] MUSIC_CATALOG env is not valid JSON — using built-in tracks")
+    return list(_BUILTIN_MUSIC_TRACKS)
+
+
+MUSIC_TRACKS = _load_music_catalog()
+
+# Brand-voice tone → preferred track tone, so a calm founder gets a restrained bed and a
+# high-energy creator gets a driving one. Falls back to the vibe map, then any track.
+_TONE_TO_TRACK_TONE = {
+    "calm": "calm", "restrained": "calm", "thoughtful": "calm", "serious": "calm",
+    "energetic": "energetic", "hype": "energetic", "playful": "energetic", "bold": "energetic",
+    "confident": "confident", "authoritative": "confident", "professional": "confident",
+}
+
+
+def _select_music_track(vibe: str = "", tone: str = "", montage: bool = False,
+                        seed: int = 0) -> dict:
+    """Pick the best-matching track: brand tone first, then the plan's vibe, then a
+    montage gets the highest-energy track, else a deterministic seed pick. Never raises."""
+    cat = MUSIC_TRACKS or _BUILTIN_MUSIC_TRACKS
+    want_tone = _TONE_TO_TRACK_TONE.get((tone or "").strip().lower())
+    if want_tone:
+        matches = [t for t in cat if (t.get("tone") or "").lower() == want_tone]
+        if matches:
+            return matches[seed % len(matches)]
+    if vibe:
+        matches = [t for t in cat if (t.get("vibe") or "").lower() == vibe.strip().lower()]
+        if matches:
+            return matches[seed % len(matches)]
+    if montage:
+        hi = [t for t in cat if (t.get("energy") or "").lower() == "high"]
+        if hi:
+            return hi[seed % len(hi)]
+    return cat[seed % len(cat)]
 
 # P4: kind -> hosted one-shot SFX URL, read by retention.synthesize_sfx (passed in
 # as sfx_assets=SFX_ASSETS, never imported the other direction — main.py already
@@ -2339,12 +2389,12 @@ def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None
             audio = {"lufs_target": -14.0}
             edl["audio"] = audio
         if not audio.get("music"):
-            # Deterministic pick (segment count as seed) so retries render identically.
-            track = MUSIC_TRACKS[len(edl.get("segments") or []) % len(MUSIC_TRACKS)]
             montage = edl.get("style") == "fast_cuts"
+            track = _select_music_track(tone=(prefs.get("brand_tone") or ""),
+                                        montage=montage, seed=len(edl.get("segments") or []))
             # A montage recap is music-forward (louder, no duck); a talking cut sits
             # the track quietly under the voice.
-            audio["music"] = {"url": track["url"], "query": None,
+            audio["music"] = {"url": track["url"], "query": None, "bpm": track.get("bpm"),
                               "volume": 0.3 if montage else 0.12,
                               "duck_voice": not montage}
     return edl
@@ -3241,8 +3291,12 @@ def _default_toggles(brief: dict, edit_format: str = "") -> dict:
     if edit_format in prompts.EDIT_FORMATS:
         return dict(prompts.EDIT_FORMATS[edit_format]["toggles"])
     vtype = brief.get("video_type", "other")
+    # B-roll is the #1 retention lever after captions (viral_editing doctrine / OpusClip
+    # 13.5M-clip data), so it defaults ON for every talking-style take — the author emits
+    # light cutaways on concrete visual nouns, hook/CTA stay on the face. Only pure
+    # music montages opt out by default. The creator can still flip it off.
     return {
-        "broll": vtype in ("story", "listicle", "tutorial", "freestyle_rant"),
+        "broll": vtype not in ("recap_music",),
         "punch_ins": vtype in ("scripted_talking_head", "freestyle_rant", "reaction", "story"),
         "music": False,
     }
@@ -3950,12 +4004,12 @@ def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None)
         edl_data["audio"] = audio
     if audio.get("music"):
         return edl_data
-    idx = _MUSIC_VIBE_TRACK_INDEX.get(music_hint.get("vibe") or "")
-    if idx is None:
-        idx = len(edl_data.get("segments") or []) % len(MUSIC_TRACKS)   # deterministic fallback
-    track = MUSIC_TRACKS[idx % len(MUSIC_TRACKS)]
     montage = edl_data.get("style") == "fast_cuts"
-    audio["music"] = {"url": track["url"], "query": None,
+    seed = len(edl_data.get("segments") or [])
+    track = _select_music_track(vibe=music_hint.get("vibe") or "",
+                                tone=(prefs.get("brand_tone") or ""),
+                                montage=montage, seed=seed)
+    audio["music"] = {"url": track["url"], "query": None, "bpm": track.get("bpm"),
                       "volume": 0.3 if montage else 0.12, "duck_voice": not montage}
     return edl_data
 
