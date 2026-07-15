@@ -93,6 +93,7 @@ paid_tier() {
   need_env ANTHROPIC_API_KEY "paid tier"
 
   run "backend:edl_eval_live" bash -c "cd '$ROOT/backend' && ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY' .venv/bin/python -m eval.edl_eval --live"
+  run "backend:edit_quality"  bash -c "cd '$ROOT/backend' && ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY' .venv/bin/python -m eval.edit_quality_eval"
 
   if [ -f "$ROOT/backend/eval/format_eval.py" ]; then
     run "render:format_score" bash -c "cd '$ROOT/backend' && ANTHROPIC_API_KEY='$ANTHROPIC_API_KEY' .venv/bin/python -m eval.format_eval --render --score"

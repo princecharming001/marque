@@ -166,19 +166,29 @@ def _utterances(words: list[dict]) -> list[tuple[int, int]]:
     return runs
 
 
+_RETAKE_CONTAIN = 0.72          # min |a∩b|/min(|a|,|b|) to call a fragment a retake of a fuller take
+_RETAKE_BRIDGE_MAX_WORDS = 6   # a short utterance between two takes ("ugh, let me redo that") is a bridge
+
+
 def _shingle_sim(a: list[str], b: list[str]) -> float:
-    """Jaccard over the two token multisets' shared vocabulary — robust to a
-    stumble adding/dropping a word between takes."""
+    """Similarity of two token lists = max(Jaccard, containment). Jaccard is robust to a
+    stumble adding/dropping a word; containment catches the common retake shape where the
+    flubbed take is a FRAGMENT of (or contains) the clean take — Jaccard alone underrates
+    those because the size mismatch inflates the union."""
     sa, sb = set(a), set(b)
     if not sa or not sb:
         return 0.0
-    return len(sa & sb) / len(sa | sb)
+    inter = len(sa & sb)
+    jaccard = inter / len(sa | sb)
+    containment = inter / min(len(sa), len(sb))
+    return max(jaccard, containment if containment >= _RETAKE_CONTAIN else 0.0)
 
 
 def dedupe_retakes(edl: dict, words: list[dict]) -> dict:
-    """Drop the earlier of two adjacent near-duplicate utterances (a flubbed take
-    re-delivered). Frame-based drops, coalesced with the existing set; fail-soft and
-    floor-guarded like every other pass. Never drops the opening hook utterance."""
+    """Drop the earlier of two near-duplicate utterances (a flubbed take re-delivered),
+    keeping the LAST clean delivery. Compares each utterance to the next one AND the one
+    after (when a short bridge like 'ugh, let me redo that' sits between the takes).
+    Frame-based drops, coalesced; fail-soft and floor-guarded like every other pass."""
     edl = copy.deepcopy(edl)
     segments = edl.get("segments") or []
     drops = edl.get("drops") or []
@@ -193,29 +203,36 @@ def dedupe_retakes(edl: dict, words: list[dict]) -> dict:
 
     runs = _utterances(words)
     norms = [_norm_word(w.get("word", "")) for w in words]
+    toks = [[norms[k] for k in range(a, b) if norms[k]] for a, b in runs]
     total_frames = max(1, sum(hi - lo for lo, hi in kept))
+    dropped_idx: set = set()
     retake_drops: list[dict] = []
     dropped_frames = 0
-    for idx in range(1, len(runs)):
-        pa, pb = runs[idx - 1], runs[idx]
-        toks_a = [norms[k] for k in range(*pa) if norms[k]]
-        toks_b = [norms[k] for k in range(*pb) if norms[k]]
-        if len(toks_a) < _RETAKE_MIN_WORDS or len(toks_b) < _RETAKE_MIN_WORDS:
+    # Walk pairs; for each earlier utterance i, its retake may be the very next utterance
+    # (j=i+1) or the one after a short bridge (j=i+2 when i+1 is a brief aside). Drop the
+    # EARLIER take. No first-utterance exemption — a flubbed OPENING line kept in is exactly
+    # the bug we're fixing; the similarity gate is what protects a genuine hook.
+    for i in range(len(runs) - 1):
+        if i in dropped_idx or len(toks[i]) < _RETAKE_MIN_WORDS:
             continue
-        if _shingle_sim(toks_a, toks_b) < _RETAKE_SIM:
-            continue
-        # Drop the EARLIER take (the re-delivery is what the creator wanted to keep).
-        lo = ms_to_frame(words[pa[0]].get("start_ms", 0))
-        hi = ms_to_frame(words[pa[1] - 1].get("end_ms", words[pa[1] - 1].get("start_ms", 0) + 100))
-        if hi <= lo or not _inside_kept(lo, hi):
-            continue
-        # Protect the opening hook: never dedup the very first utterance away.
-        if pa[0] == 0:
-            continue
-        if dropped_frames + (hi - lo) > _RETAKE_MAX_DROP_FRAC * total_frames:
+        for j in (i + 1, i + 2):
+            if j >= len(runs) or j in dropped_idx:
+                continue
+            if j == i + 2 and len(toks[i + 1]) > _RETAKE_BRIDGE_MAX_WORDS:
+                break     # the thing between them is real content, not a bridge — not a retake
+            if len(toks[j]) < _RETAKE_MIN_WORDS or _shingle_sim(toks[i], toks[j]) < _RETAKE_SIM:
+                continue
+            lo = ms_to_frame(words[runs[i][0]].get("start_ms", 0))
+            hi = ms_to_frame(words[runs[i][1] - 1].get("end_ms",
+                             words[runs[i][1] - 1].get("start_ms", 0) + 100))
+            if hi <= lo or not _inside_kept(lo, hi):
+                continue
+            if dropped_frames + (hi - lo) > _RETAKE_MAX_DROP_FRAC * total_frames:
+                break
+            retake_drops.append({"src_in": lo, "src_out": hi, "reason": "false_start"})
+            dropped_frames += hi - lo
+            dropped_idx.add(i)
             break
-        retake_drops.append({"src_in": lo, "src_out": hi, "reason": "false_start"})
-        dropped_frames += hi - lo
 
     if not retake_drops:
         return edl
@@ -514,10 +531,11 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
 # ---------------------------------------------------------------------------
 
 _FRAMING_SKIP_STYLES = {"duet_split", "split_three"}     # reaction/multi-pane grammars own their own framing
-_FRAMING_SCALES = {"wide": 1.0, "mid": 1.18, "close": 1.35}
-# Cyclic pattern; every adjacent pair crosses through "wide" so the delta is
-# always >=18% — mid<->close directly would only be ~14%, below the lint's
-# same_framing_adjacent floor (0.15).
+# Spec §6.1 punch-in ladder: 100 / 110 / 118, capped at 118% so the framing transform
+# never breaches the 120% ceiling on a 1080 source (the old 135% "close" blew past it).
+_FRAMING_SCALES = {"wide": 1.0, "mid": 1.10, "close": 1.18}
+# Cyclic pattern crossing through "wide" so adjacent deltas are 10% / 18% (never 0);
+# the lint's same_framing_adjacent floor is relaxed to 0.08 to accept the spec's steps.
 _FRAMING_PATTERN = ("wide", "mid", "wide", "close")
 _FRAMING_ROTATE_S = (5.0, 8.0)          # jittered rotation period bounds, seconds
 _FRAMING_SPLIT_BUDGET = 12

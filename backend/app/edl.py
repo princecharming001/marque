@@ -77,6 +77,17 @@ _PHRASE_ALWAYS_PAUSE_FLANKED = frozenset({("kind", "of"), ("sort", "of")})
 _YOU_KNOW_GUARD_PRECEDING = frozenset({"do", "does", "did", "don't", "you'd", "didn't"})
 # Trailing discourse words dropped off the END of a take/clause ("...so yeah.").
 TRAILING_DISCOURSE = frozenset({"so", "yeah", "right", "okay", "ok", "cool", "alright", "anyway"})
+# Multi-word sign-off phrases that ALWAYS get cut from the tail (spec §9). Matched against
+# the last few normalized words of the take. Kept as normalized token tuples.
+TRAILING_SIGNOFF_PHRASES = (
+    ("hope", "this", "helped"), ("hope", "that", "helped"), ("hope", "this", "helps"),
+    ("hope", "you", "enjoyed"), ("hope", "you", "guys", "enjoyed"),
+    ("thanks", "for", "watching"), ("thank", "you", "for", "watching"),
+    ("thats", "basically", "it"), ("thats", "it"), ("thats", "all"),
+    ("thats", "pretty", "much", "it"), ("thats", "about", "it"),
+    ("see", "you", "next", "time"), ("catch", "you", "next", "time"),
+    ("let", "me", "know", "in", "the", "comments"), ("dont", "forget", "to", "subscribe"),
+)
 
 # #1a: trim-aggressiveness levels — the single source of truth for every filler/
 # silence knob (was previously just a hint the LLM prompt carried with no code-side
@@ -666,6 +677,18 @@ def detect_disfluencies(words: list[dict], level: str = "default") -> list[Drop]
         if run_start < n and pause_before(run_start) >= 400:
             drops.append(Drop(src_in=ms_to_frame(words[run_start].get("start_ms", 0)),
                               src_out=ms_to_frame(words[n - 1].get("end_ms", 0)), reason="filler"))
+        # Multi-word sign-off phrases ("hope this helped", "thanks for watching") — spec §9
+        # says these are ALWAYS cut. Match the tail against the phrase list (longest first)
+        # and drop from the phrase start to the end. No pause gate: a spoken sign-off is a
+        # sign-off wherever it lands. Apostrophes stripped so "that's" matches "thats".
+        tail_norms = [w.replace("'", "").replace("’", "") for w in norms]
+        for phrase in sorted(TRAILING_SIGNOFF_PHRASES, key=len, reverse=True):
+            plen = len(phrase)
+            if plen <= n and tuple(tail_norms[n - plen:n]) == phrase:
+                start_i = n - plen
+                drops.append(Drop(src_in=ms_to_frame(words[start_i].get("start_ms", 0)),
+                                  src_out=ms_to_frame(words[n - 1].get("end_ms", 0)), reason="false_start"))
+                break
 
     # --- confidence-aware cut: short, unemphasized, low-confidence garbles ---
     if conf_cut > 0:
@@ -1855,6 +1878,44 @@ def _clamp_range(a: int, b: int, lo: int, hi: int) -> tuple[int, int] | None:
     return a, b
 
 
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort + union-merge overlapping/adjacent [in, out) integer ranges."""
+    rs = sorted((a, b) for a, b in ranges if b > a)
+    if not rs:
+        return []
+    out = [list(rs[0])]
+    for a, b in rs[1:]:
+        if a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return [(a, b) for a, b in out]
+
+
+def _subtract_ranges(base: list[tuple[int, int]], cuts: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """base ranges with every cut range carved out (the surviving spans, in order)."""
+    cuts = _merge_ranges(cuts)
+    out: list[tuple[int, int]] = []
+    for a, b in base:
+        cur = a
+        for ca, cb in cuts:
+            if cb <= cur or ca >= b:
+                continue
+            if ca > cur:
+                out.append((cur, min(ca, b)))
+            cur = max(cur, cb)
+            if cur >= b:
+                break
+        if cur < b:
+            out.append((cur, b))
+    return [(a, b) for a, b in out if b > a]
+
+
+def _range_overlaps_any(r: tuple[int, int], ranges: list[tuple[int, int]]) -> bool:
+    a, b = r
+    return any(not (b <= ca or a >= cb) for ca, cb in ranges)
+
+
 def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                  prefs: dict | None = None, brief: dict | None = None,
                  silent_spans: list[tuple[int, int]] | None = None) -> EDL:
@@ -1875,66 +1936,68 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     # 1000-second whole-take segments from an empty transcript.
     total = ms_to_frame(max((w.get("end_ms", 0) for w in words), default=30000)) if words else ms_to_frame(30000)
 
-    # --- drops: deterministic fillers + editorial cuts, all snapped + clamped ---
+    # --- KEEP-EVERYTHING-EXCEPT-CUTS (spec deletion model, NOT a keeps-whitelist) ---
+    # The output is the WHOLE TAKE minus: the plan's explicit content cuts (flub/ramble/
+    # tangent/false_start/off_topic/retake), the brief's editorial cut_regions, and the
+    # deterministic filler/dead-air drops. Content the plan doesn't mention is KEPT —
+    # omission never silently deletes it. (The old behavior made `segments` a whitelist
+    # of the plan's `keeps`, so every unlisted region vanished — that is exactly why real
+    # content disappeared.) `keeps` is now a PROTECTION list (see below), not a whitelist.
     clean_words, filler_drops = strip_fillers(words, silent_spans=silent_spans)
-    drops: list[dict] = [d.model_dump() for d in filler_drops]
-    if prefs.get("filler_trim") == "off":
-        drops = []
+    filler_dicts: list[dict] = [] if prefs.get("filler_trim") == "off" else [d.model_dump() for d in filler_drops]
+
+    content_cuts: list[tuple[int, int]] = []
     for c in (plan.get("cuts") or []):
         rng = c.get("range") or []
         if len(rng) != 2:
             continue
-        s_in = snap_to_word(_frame_to_ms(rng[0]), words, "start")
-        s_out = snap_to_word(_frame_to_ms(rng[1]), words, "end")
-        cl = _clamp_range(s_in, s_out, 0, total)
+        cl = _clamp_range(snap_to_word(_frame_to_ms(rng[0]), words, "start"),
+                          snap_to_word(_frame_to_ms(rng[1]), words, "end"), 0, total)
         if cl:
-            reason = c.get("reason") or "false_start"
-            reason = reason if reason in ("filler", "dead_air", "false_start") else "false_start"
-            drops.append({"src_in": cl[0], "src_out": cl[1], "reason": reason})
-    # brief editorial cuts (flub/ramble/tangent) also honored
+            content_cuts.append(cl)
     for cr in ((brief or {}).get("cut_regions") or []):
         if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
             cl = _clamp_range(cr["start_frame"], cr["end_frame"], 0, total)
             if cl:
-                drops.append({"src_in": cl[0], "src_out": cl[1], "reason": "false_start"})
-    drops = _coalesce_drops(drops)
+                content_cuts.append(cl)
 
-    # --- segments: keeps (or whole take), snapped/clamped/merged, monotonic ---
-    keeps = []
+    # open_on: pull a buried hook forward = a content cut of the pre-hook intro. GUARDED so
+    # an LLM-hallucinated late "hook" can't delete the take: only when the hook sits
+    # meaningfully in AND >=6s of content remains after it.
+    open_on = plan.get("open_on") or {}
+    hook_start = open_on.get("start")
+    if isinstance(hook_start, int) and hook_start > _BROLL_HOOK_PROTECT and hook_start < total:
+        after_hook = (total - hook_start) - sum(
+            min(b, total) - max(a, hook_start) for a, b in content_cuts if b > hook_start and a < total)
+        if after_hook >= 180:
+            content_cuts.append((0, hook_start))
+
+    content_cuts = _merge_ranges(content_cuts)
+    # segments = whole take minus the content cuts (survivor spans in source order — the
+    # reorderable units). Never empty: a cut list that removes everything falls back to the
+    # whole take rather than shipping nothing.
+    survivors = _subtract_ranges([(0, total)], content_cuts) or [(0, total)]
+    segments = [{"src_in": a, "src_out": b} for a, b in survivors]
+
+    # keeps = PROTECTION: ranges the plan marks must-keep veto the automatic filler/dead-air
+    # trims that would otherwise nibble them. Explicit content cuts still win.
+    protect: list[tuple[int, int]] = []
     for k in (plan.get("keeps") or []):
         if len(k) == 2:
             cl = _clamp_range(snap_to_word(_frame_to_ms(k[0]), words, "start"),
                               snap_to_word(_frame_to_ms(k[1]), words, "end"), 0, total)
             if cl:
-                keeps.append(cl)
-    if not keeps:
-        keeps = [(0, total)]
-    keeps.sort()
-    merged = [list(keeps[0])]
-    for a, b in keeps[1:]:
-        if a <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], b)
-        else:
-            merged.append([a, b])
+                protect.append(cl)
+    if protect:
+        filler_dicts = [d for d in filler_dicts
+                        if not (d.get("reason") in ("filler", "dead_air")
+                                and _range_overlaps_any((d["src_in"], d["src_out"]), protect))]
 
-    # --- open_on: pull a buried hook forward by dropping the pre-hook intro ---
-    open_on = plan.get("open_on") or {}
-    hook_start = open_on.get("start")
-    if isinstance(hook_start, int) and hook_start > _BROLL_HOOK_PROTECT and merged and hook_start < merged[-1][1]:
-        # only when the hook sits meaningfully after the first kept frame — and
-        # GUARDED: an LLM-hallucinated "hook" near the END of the take would
-        # delete almost everything in one drop (the <3s kept-duration invariant
-        # is deliberately soft, so nothing downstream catches it). Pulling a
-        # genuinely buried hook is the feature; the guard is on what REMAINS:
-        # refuse the pull if it would leave under ~6s of kept footage.
-        kept_span = sum(b - a for a, b in merged)
-        pre_hook_kept = sum(min(b, hook_start) - a for a, b in merged if a < hook_start)
-        if (hook_start > merged[0][0] + _BROLL_HOOK_PROTECT
-                and kept_span - pre_hook_kept >= 180):
-            drops.append({"src_in": merged[0][0], "src_out": hook_start, "reason": "false_start"})
-            drops = _coalesce_drops(drops)
-
-    segments = [{"src_in": a, "src_out": b} for a, b in merged]
+    # drops = content cuts (labeled) + surviving fillers, coalesced. _kept_intervals
+    # subtracts these from the segments downstream (content-cut subtraction is redundant
+    # with the segment derivation but harmless, and keeps the reason labels for debug).
+    drops = [{"src_in": a, "src_out": b, "reason": "false_start"} for a, b in content_cuts] + filler_dicts
+    drops = _coalesce_drops(drops)
 
     # --- P4.2 loop-friendly ending: trim trailing dead-air after the last spoken word to
     # ≤10 frames so the autoplay loop cuts clean back to the first frame. Only trims the
@@ -2004,8 +2067,13 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     # non-alphanumerics): plain .lower() left "A.I." as "a.i.", which the
     # renderer's "ai" could never match — the highlight silently never fired.
     _hw = [re.sub(r"[^a-z0-9]", "", str(w).lower()) for w in (cp.get("highlight_words") or [])]
+    # pos_y 0.62 (spec §6.3: caption band at 55-65% of frame height). The render's own
+    # default is "bottom" = 0.833 → ~1594px, which sits BELOW the 1500px safe-zone floor
+    # and collides with TikTok's caption/sound UI. 0.62 keeps captions legible and clear of
+    # the platform chrome. A theme/creator can still move it via a set_caption_options op.
     caption_options = {"grouping": grouping,
-                       "highlight_words": [w for w in _hw if w][:12]}
+                       "highlight_words": [w for w in _hw if w][:12],
+                       "pos_y": 0.62}
     if prefs.get("auto_captions") is False:
         captions = []
 

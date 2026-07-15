@@ -532,20 +532,33 @@ Generate the EDL for this {style} edit. Output JSON only."""
     return system, user
 
 
-def _frame_anchored_transcript(words: list[dict], phrase_len: int = 8) -> str:
-    """Render the transcript as frame-anchored phrases ('[f120] the exact words ...')
-    so the model can cite real frame ranges for hooks/cuts instead of guessing."""
-    lines, phrase, start_f = [], [], None
+def _frame_anchored_transcript(words: list[dict], phrase_len: int = 6) -> str:
+    """Render the transcript as frame-anchored phrases with BOTH start and end frames
+    ('[f120-f168] the exact words ...') so the model can cite precise cut ranges instead
+    of guessing an end-frame between coarse start-only anchors (imprecise ranges were
+    trimming the tails off real sentences). Breaks a phrase early at a long pause (>=400ms)
+    so anchors align to natural sentence boundaries — the unit the model cuts on."""
+    lines: list[list] = []          # [start_f, end_f, [words]]
+    phrase: list[str] = []
+    start_f = end_f = None
+    prev_end_ms = None
     for w in words:
+        s_ms = w.get("start_ms", 0)
         if start_f is None:
-            start_f = ms_to_frame(w.get("start_ms", 0))
+            start_f = ms_to_frame(s_ms)
         phrase.append(w.get("word", ""))
-        if len(phrase) >= phrase_len:
-            lines.append(f"[f{start_f}] " + " ".join(phrase))
+        end_f = ms_to_frame(w.get("end_ms") or s_ms)
+        pause_after = False
+        # (a long gap AFTER this word suggests a sentence boundary — break here)
+        big_gap = prev_end_ms is not None and (s_ms - prev_end_ms) >= 400 and len(phrase) > 1
+        prev_end_ms = w.get("end_ms") or s_ms
+        if len(phrase) >= phrase_len or big_gap:
+            lines.append([start_f, end_f, phrase])
             phrase, start_f = [], None
     if phrase:
-        lines.append(f"[f{start_f}] " + " ".join(phrase))
-    return "\n".join(lines) or "(no transcript available)"
+        lines.append([start_f, end_f, phrase])
+    out = [f"[f{a}-f{b}] " + " ".join(ws) for a, b, ws in lines if a is not None]
+    return "\n".join(out) or "(no transcript available)"
 
 
 def _dossier_block(dossier: dict | None) -> str:
@@ -1051,7 +1064,8 @@ EDIT_PLAN_JSON_SCHEMA = {
             "required": ["range", "reason", "quote"],
             "properties": {"range": _RANGE,
                            "reason": {"type": "string",
-                                      "enum": ["filler", "dead_air", "false_start", "ramble", "tangent", "off_topic"]},
+                                      "enum": ["retake", "false_start", "greeting", "signoff",
+                                               "filler", "dead_air", "ramble", "tangent", "off_topic"]},
                            "quote": _STR}}},
         "order": {"type": "array", "items": _INT},
         "punch_ins": {"type": "array", "items": {
@@ -1126,33 +1140,76 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                  if theme_label else "")
     genre_line = f"\n{_genre_profile_block(resolved_video_type)}\n" if resolved_video_type else ""
     system = (
-        "You are an elite short-form editor. Output a typed EDIT PLAN as JSON — DECISIONS ONLY, not an EDL. "
-        "The assembler turns your plan into the final cut, so you never write caption arrays, filler drops, or "
-        "frame math for b-roll holds — you make the editorial calls.\n\n"
-        "GROUNDING: cite only [fN] frames that appear in the transcript/brief/dossier below; quote the "
-        "creator's VERBATIM words in cuts. Absence is valid — empty arrays beat forced findings.\n"
-        "PLAN FIELDS: open_on (the hook — pull a buried hook forward if the strongest line lands late), "
-        "keeps (source ranges to keep), cuts (flub/ramble/tangent/false_start with a verbatim quote — do NOT "
-        "list filler/dead-air, those are automatic), order (permutation of kept-segment indices; identity if "
-        "no reorder), punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), broll "
+        "You are an elite short-form talking-head editor. Output a typed EDIT PLAN as JSON — DECISIONS ONLY, "
+        "not an EDL. The assembler turns your plan into the final cut, so you never write caption arrays, "
+        "filler drops, or frame math for b-roll holds — you make the editorial calls.\n\n"
+
+        "═══ THE CUT MODEL — READ THIS FIRST ═══\n"
+        "`cuts` is your DELETION list. The final video = the WHOLE take MINUS the spans you put in `cuts` "
+        "(plus automatic filler/dead-air trims). ANYTHING YOU DO NOT CUT IS KEPT, verbatim, in order. So:\n"
+        "  • To remove a weak line, you MUST list it in `cuts` — omitting it does NOT remove it.\n"
+        "  • Never try to 'keep' good content by listing it somewhere — kept is the default. Only list what "
+        "goes AWAY.\n"
+        "  • `keeps` is NOT a whitelist. Leave it empty [] unless there's a specific line you want PROTECTED "
+        "from even automatic filler/pause trimming (rare — e.g. a deliberate dramatic pause). It never causes "
+        "anything to be removed.\n"
+        "Every `cuts` entry needs a source [f_start,f_end] range (from the transcript anchors below) + a "
+        "reason + the creator's VERBATIM quote of the words being removed. Cite only [fN] frames that appear "
+        "in the transcript. Be COMPREHENSIVE but PRECISE: cut every weak span, but never let a cut range "
+        "spill into the neighbouring kept sentence (the assembler snaps to word boundaries, but a sloppy "
+        "range still eats real words).\n\n"
+
+        "═══ WHAT TO CUT (in priority order) ═══\n"
+        "1. RETAKES / restarts: when the speaker says a line, flubs it, and re-records it (says essentially "
+        "the same thing again), CUT the EARLIER take(s) and keep the LAST clean delivery. This is the #1 job "
+        "— a kept flubbed first take ruins the video. Watch for '...let me redo that', a hard restart, or two "
+        "near-identical sentences in a row.\n"
+        "2. FALSE STARTS: abandoned sentence fragments before the speaker restarts the thought.\n"
+        "3. GREETINGS / SELF-INTRO / META: 'hey guys', 'in this video', 'today I want to talk about', "
+        "'so basically what I'm gonna do is' — always cut. The video must NOT open with a greeting or "
+        "context-setting sentence.\n"
+        "4. SIGN-OFFS / trailing wrap-up: 'so yeah', 'hope this helped', 'thanks for watching', "
+        "'that's basically it', 'hope you enjoyed', 'anyway' — ALWAYS cut. The video ends on the last strong "
+        "word, never a wind-down.\n"
+        "5. TANGENTS that don't serve the core claim; REPEATED points (keep the sharper/shorter phrasing, "
+        "cut the other); pure HEDGING ('I think', 'it kind of depends', 'sort of') — strip hedge phrases from "
+        "the front of otherwise-strong lines. Keep a hedge ONLY when a factual claim genuinely needs the caveat.\n"
+        "DELETION TEST for any borderline line: does the surrounding content still make sense without it? If "
+        "yes, cut it. ONE VIDEO = ONE IDEA — if the take contains a second independent idea, cut it out and "
+        "note it in pacing_intent as a separate-video candidate. Do NOT cut real substance, examples, or the "
+        "payoff to hit some length; correct length = 'nothing weak remains'.\n\n"
+
+        "═══ HOOK (open_on) — do this before cutting ═══\n"
+        "Score every candidate opening line +1 for each: contrarian/counterintuitive claim · a specific "
+        "number/stat · a curiosity gap (raises a question it delays answering) · names a common mistake/enemy "
+        "('everyone gets this wrong') · high stakes (money/time/failure/success) · self-contained (needs zero "
+        "prior context) · <=15 words. Set open_on to the HIGHEST-scoring line's [start,end] frames even if it "
+        "was buried later in the take (the assembler pulls it forward). Disqualify greetings, self-intros, and "
+        "any line whose pronoun ('it/that/they') has no established referent. If nothing scores >=2, open on "
+        "the strongest available line and say so in pacing_intent.\n\n"
+
+        "═══ REORDER (order) ═══\n"
+        "Default to identity order []. Only reorder when a later line is a far stronger opener or the logic "
+        "clearly improves — and after any reorder, every pronoun must still have an antecedent that now comes "
+        "EARLIER. If a move breaks that, don't do it.\n\n"
+
+        "OTHER FIELDS: punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), broll "
         "(source range + cue + search query; the assembler enforces J-cut lead, 2–3s holds, spacing, and "
-        "hook/CTA protection), caption_plan (style/grouping/highlight_words), text_cards, music (wanted+vibe), "
-        "pacing_intent (one free-text line — your overall read of the pace this take needs; the fields below "
-        "are what actually drive the edit, this is context for later review).\n\n"
+        "hook/CTA face-protection), caption_plan (style/grouping/highlight_words — emphasis words are numbers, "
+        "negations, superlatives, the novel term), text_cards, music (wanted+vibe), pacing_intent (one "
+        "free-text line: your read of the pace + any second-idea note).\n\n"
+
         "RETENTION FIELDS (code enforces the exact numbers; you only set intent):\n"
         "- pacing.lift: \"medium\" for delivery that drags or rambles, \"subtle\" for normal delivery, "
         "\"none\" for already-tight/high-energy takes. pacing.fast_forward_silences: true to speed through "
-        "dead air instead of hard-cutting it (keeps a sense of the pause without wasting time) — false for a "
-        "clean hard cut. pacing.why: one line.\n"
-        "- interrupt_density: \"dense\" for high-energy/entertainment content that wants a visual change "
-        "every couple seconds, \"calm\" for slower/story content that can sit still longer, \"standard\" "
-        "otherwise.\n"
+        "dead air instead of hard-cutting it — false for a clean hard cut. pacing.why: one line.\n"
+        "- interrupt_density: \"dense\" for high-energy content that wants a visual change every couple "
+        "seconds, \"calm\" for slower/story content, \"standard\" otherwise.\n"
         "- hook_text: <=6 words restating the creator's promise, shown as a text overlay in the first ~1.5s "
-        "— quote/paraphrase their own hook, never invent a claim they didn't make. \"\" if the visual hook "
-        "already carries it and text would be redundant.\n"
-        "- end_card: wanted=true ONLY when the creator gives an explicit call-to-action worth holding on "
-        "(follow/subscribe/link-in-bio) — text is that CTA verbatim-ish. This REPLACES the loop-friendly "
-        "ending, so default wanted=false for takes without a real CTA (a loop ending serves those better).\n\n"
+        "— quote/paraphrase their own hook, never invent a claim they didn't make. \"\" if redundant.\n"
+        "- end_card: wanted=true ONLY when the creator gives an explicit CTA worth holding on "
+        "(follow/subscribe/link-in-bio) — text is that CTA verbatim-ish. This REPLACES the loop ending, so "
+        "default wanted=false (a loop ending serves CTA-less takes better).\n\n"
         f"{kb_block}\n\n"
         "Reply with ONLY the JSON object. No prose, no code fences."
     )
