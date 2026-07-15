@@ -2036,9 +2036,14 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 continue
             if s_out - s_in < _BROLL_MIN_HOLD:
                 continue
+            need = b.get("need") if b.get("need") in ("entity", "data", "evidence", "action", "concept") else "action"
             broll.append({"src_in": s_in, "src_out": s_out, "cue_text": b.get("cue", ""),
                           "broll_query": b.get("query") or b.get("cue", ""),
-                          "source": b.get("source") if b.get("source") in ("stock", "own_media") else "stock"})
+                          "source": b.get("source") if b.get("source") in ("stock", "own_media") else "stock",
+                          # Addendum Part 4A: the need type + the text-card fallback copy, carried
+                          # so _resolve_broll can enforce the tier rule (entity/data/evidence with
+                          # no real asset → text card, never generic stock).
+                          "need": need, "fallback_text": (b.get("text") or b.get("cue", ""))[:80]})
             last_out = s_out
 
     # --- overlays: punch-ins + text cards ---

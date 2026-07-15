@@ -132,3 +132,54 @@ def test_caption_default_in_safe_zone():
                          words, "talking_head", "myth-buster").model_dump()
     pos = (d.get("caption_options") or {}).get("pos_y")
     assert pos is not None and 0.55 <= pos <= 0.65, f"caption pos_y {pos} outside safe zone"
+
+
+# ── Addendum Part 4A: b-roll selection (text card beats a wrong clip) ─────────
+import asyncio
+import main
+
+
+def test_entity_need_no_ownmedia_becomes_text_card(monkeypatch):
+    # An ENTITY need with only stock available must NOT show generic stock — it becomes a
+    # text card. (No PEXELS/own-media configured → nothing resolves.)
+    monkeypatch.setattr(main, "PEXELS_KEY", "")
+    monkeypatch.setattr(main, "higgsfield_mod", type("H", (), {"CONFIGURED": False})())
+    e = {"broll": [{"src_in": 200, "src_out": 260, "cue_text": "Notion app",
+                    "broll_query": "notion app", "source": "stock",
+                    "need": "entity", "fallback_text": "NOTION"}],
+         "overlays": []}
+    out = asyncio.run(main._resolve_broll(e))
+    assert out["broll"] == []                                  # no wrong stock clip
+    cards = [o for o in out["overlays"] if o["type"] == "text_card"]
+    assert cards and cards[0]["text"] == "NOTION"              # text card instead
+    assert any(x["action"] == "text_card" and x["need"] == "entity" for x in out["_broll_log"])
+
+
+def test_action_need_keeps_stock(monkeypatch):
+    monkeypatch.setattr(main, "PEXELS_KEY", "k")
+    async def fake_pexels(*a, **k): return [{"url": "https://x/v.mp4", "description": "driving"}]
+    async def fake_rerank(cue, cands, dossier): return "https://x/v.mp4"
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+    e = {"broll": [{"src_in": 200, "src_out": 260, "cue_text": "driving west",
+                    "broll_query": "driving highway", "source": "stock",
+                    "need": "action", "fallback_text": "driving"}], "overlays": []}
+    out = asyncio.run(main._resolve_broll(e))
+    assert len(out["broll"]) == 1 and out["broll"][0]["resolved_url"] == "https://x/v.mp4"
+
+
+def test_broll_no_repeat_within_15s(monkeypatch):
+    monkeypatch.setattr(main, "PEXELS_KEY", "k")
+    monkeypatch.setattr(main, "_broll_url_cache", {})
+    async def fake_pexels(*a, **k): return [{"url": "https://x/same.mp4", "description": "d"}]
+    async def fake_rerank(cue, cands, dossier): return "https://x/same.mp4"
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+    e = {"broll": [{"src_in": 100, "src_out": 160, "cue_text": "a", "broll_query": "q1",
+                    "source": "stock", "need": "action", "fallback_text": "a"},
+                   {"src_in": 300, "src_out": 360, "cue_text": "b", "broll_query": "q2",
+                    "source": "stock", "need": "action", "fallback_text": "b"}], "overlays": []}
+    out = asyncio.run(main._resolve_broll(e))
+    # both resolve to the SAME url within 200f (<450) → the second is dropped as a repeat
+    assert len(out["broll"]) == 1
+    assert any(x["action"] == "skipped_repeat" for x in out["_broll_log"])

@@ -1074,9 +1074,17 @@ EDIT_PLAN_JSON_SCHEMA = {
             "properties": {"frame": _INT, "scale": _NUM, "why": _STR}}},
         "broll": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["range", "cue", "query", "source"],
+            "required": ["range", "cue", "query", "source", "need", "text"],
             "properties": {"range": _RANGE, "cue": _STR, "query": _STR,
-                           "source": {"type": "string", "enum": ["stock", "own_media"]}}}},
+                           "source": {"type": "string", "enum": ["stock", "own_media"]},
+                           # Addendum Part 4A: what KIND of visual this line needs. Drives the
+                           # tier rule — entity/data/evidence must show the REAL thing (own
+                           # media) or fall back to a text card; generic stock is only allowed
+                           # for action/concept. `text` is the on-screen fallback card copy
+                           # (the entity name / the number / the quote) used when no real asset.
+                           "need": {"type": "string",
+                                    "enum": ["entity", "data", "evidence", "action", "concept"]},
+                           "text": _STR}}},
         "caption_plan": {"type": "object", "additionalProperties": False,
             "required": ["style", "grouping", "highlight_words"],
             "properties": {"style": {"type": "string", "enum": ["clean", "bold-word", "karaoke"]},
@@ -1111,7 +1119,8 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                      brief: dict | None = None, dossier: dict | None = None,
                      emphasis_spans: list | None = None, custom_instructions: str = "",
                      reference: dict | None = None, video_type: str = "",
-                     theme_label: str = "", theme_blurb: str = "") -> tuple[str, str]:
+                     theme_label: str = "", theme_blurb: str = "",
+                     broll_coverage: str = "", energy: str = "") -> tuple[str, str]:
     """P3.1: ask the model for a typed EDIT PLAN (not an EDL). The assembler owns all
     mechanics (captions, filler drops, b-roll grammar, min-clip, layout); the model owns
     the editorial JUDGMENT (what to open on, what to cut and why, order, where punch-ins /
@@ -1139,6 +1148,17 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                  f"your job is to keep your OWN editorial choices from clashing with it).\n"
                  if theme_label else "")
     genre_line = f"\n{_genre_profile_block(resolved_video_type)}\n" if resolved_video_type else ""
+    # Addendum Part 1: creator config hints (only the ones the current render honors).
+    _cov = {"minimal": "The creator prefers MINIMAL b-roll — keep the face on screen; use text "
+                       "callouts for needs instead of cutaways. Emit b-roll only for a need the "
+                       "face genuinely can't carry.",
+            "full": "The creator likes heavy b-roll coverage — cover every entity/action need "
+                    "that has a real asset.",
+            "partial": ""}.get((broll_coverage or "").lower(), "")
+    _en = {"calm": "Energy: CALM — slower pace, minimal interrupts, let lines breathe.",
+           "medium": "Energy: MEDIUM — moderate pace and interrupt density.",
+           "high": "Energy: HIGH — tight pace, dense visual changes."}.get((energy or "").lower(), "")
+    config_line = ("\n" + "\n".join(x for x in (_cov, _en) if x) + "\n") if (_cov or _en) else ""
     system = (
         "You are an elite short-form talking-head editor. Output a typed EDIT PLAN as JSON — DECISIONS ONLY, "
         "not an EDL. The assembler turns your plan into the final cut, so you never write caption arrays, "
@@ -1193,11 +1213,26 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "clearly improves — and after any reorder, every pronoun must still have an antecedent that now comes "
         "EARLIER. If a move breaks that, don't do it.\n\n"
 
-        "OTHER FIELDS: punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), broll "
-        "(source range + cue + search query; the assembler enforces J-cut lead, 2–3s holds, spacing, and "
-        "hook/CTA face-protection), caption_plan (style/grouping/highlight_words — emphasis words are numbers, "
-        "negations, superlatives, the novel term), text_cards, music (wanted+vibe), pacing_intent (one "
-        "free-text line: your read of the pace + any second-idea note).\n\n"
+        "OTHER FIELDS: punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), "
+        "caption_plan (style/grouping/highlight_words — emphasis words are numbers, negations, superlatives, "
+        "the novel term), text_cards, music (wanted+vibe), pacing_intent (one free-text line: your read of the "
+        "pace + any second-idea note).\n\n"
+
+        "═══ B-ROLL — only when it shows the REAL thing ═══\n"
+        "Add a broll entry ONLY where a line names something concrete worth SEEING. For each, set `need`:\n"
+        "  • entity = a named product/app/person/place/document · data = a number/stat/comparison · "
+        "evidence = a real message/review/receipt/screenshot · action = a process/event being described · "
+        "concept = an abstract idea.\n"
+        "THE RULE THAT MATTERS: entity/data/evidence b-roll must show the ACTUAL thing — the creator's own "
+        "footage/screenshot (source:own_media). If they don't have it, DO NOT reach for generic stock (a "
+        "'hands typing' clip over a specific product mention reads as filler and burns trust). Instead set "
+        "`text` to the fallback card copy (the entity name, the number rendered big, or the quote) and the "
+        "assembler shows a clean TEXT CARD instead of a wrong clip. A text card always beats a wrong clip.\n"
+        "action/concept needs MAY use stock (source:stock) — put a precise search `query` (subject + verb + "
+        "setting). NEVER cover the hook line, the final line, or a first-person emotional beat with b-roll — "
+        "the face is the content there. Empty broll [] is correct for a take with nothing concrete to show "
+        "(hot-takes/storytime lean on the face + captions). The assembler enforces J-cut lead, 2–3s holds, "
+        "spacing, and hook/CTA face-protection.\n\n"
 
         "RETENTION FIELDS (code enforces the exact numbers; you only set intent):\n"
         "- pacing.lift: \"medium\" for delivery that drags or rambles, \"subtle\" for normal delivery, "
@@ -1215,7 +1250,7 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
     )
     user = (
         f"{brand_block(brand)}\nStyle: {style}\nSource last frame: {last_frame} (30fps)."
-        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}{theme_line}{genre_line}\n"
+        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}{theme_line}{genre_line}{config_line}\n"
         f"Frame-anchored transcript:\n{_frame_anchored_transcript(transcript_words)}\n\n"
         "Produce the edit plan JSON."
     )

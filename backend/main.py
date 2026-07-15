@@ -1279,6 +1279,11 @@ class ClipJobRequest(BaseModel):
     # A7: explicit theme pick (a key of app.themes.THEMES). "" = infer from the
     # edit format's default_theme (prompts.EDIT_FORMATS[...]["default_theme"]).
     theme_id: str = ""
+    # Addendum Part 1: creator style config. Only the knobs the current render honors are
+    # read (broll_coverage, energy, allow_generated_broll); the rest (speaker_treatment,
+    # pip_position, background_style) are accepted for forward-compat but await the
+    # composition-mode render phase. Empty {} = exactly v1 behavior.
+    config: dict = {}
 
 
 class ConfirmRequest(BaseModel):
@@ -2784,6 +2789,7 @@ async def create_clip_job(req: ClipJobRequest):
         "react_credit_label": req.react_credit_label,
         "edit_format": edit_format,
         "theme_id": theme_id,
+        "config": req.config or {},
         "_theme": themes_mod.get_theme(theme_id) if EDIT_THEMES else None,
         "reference_reel": _clean_reference_reel(req.reference_reel),
         # Conversational-tweak state: transcript kept for re-editing, prior EDLs
@@ -4327,7 +4333,9 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
                 reference=job.get("reference_reel") or None,
                 video_type=(brief or {}).get("video_type", ""),
                 theme_label=_theme_for_plan.label if _theme_for_plan else "",
-                theme_blurb=_theme_for_plan.blurb if _theme_for_plan else "")
+                theme_blurb=_theme_for_plan.blurb if _theme_for_plan else "",
+                broll_coverage=(job.get("config") or {}).get("broll_coverage", ""),
+                energy=(job.get("config") or {}).get("energy", ""))
             plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
         except HTTPException as e:
             # NEVER swallow silently: a swallowed HTTPException here (e.g. a schema the
@@ -4679,6 +4687,10 @@ async def _run_edit(job_id: str, words: list[dict]):
         try:
             edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
                                             corpus=job.get("broll_corpus"))
+            # Addendum Part 8: surface the b-roll decision log (need → asset/tier → action)
+            # for the report card. After the tier pass, edl["broll"] holds only kept assets,
+            # so a literal need that fell back to a text card is no longer a "broll_unresolved".
+            job["broll_log"] = edl_data.pop("_broll_log", [])
             unresolved = [b.get("broll_query") or b.get("cue_text", "")
                           for b in (edl_data.get("broll") or [])
                           if b.get("source") != "own_media" and not b.get("resolved_url")]
@@ -6463,11 +6475,12 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     own_media hit — then fall back to Pexels stock, then Higgsfield generation. Cached by
     query so re-renders don't re-hit Pexels/vision."""
     broll = edl.get("broll") or []
-    has_stock = PEXELS_KEY or higgsfield_mod.CONFIGURED
-    if not broll or not (has_stock or corpus):
+    if not broll:
         return edl
+    has_stock = PEXELS_KEY or higgsfield_mod.CONFIGURED
+    can_resolve = has_stock or corpus
     generated_count = 0
-    for b in broll:
+    for b in broll if can_resolve else []:
         if b.get("resolved_url") or b.get("source") == "own_media":
             continue
         query = (b.get("broll_query") or b.get("cue_text") or "").strip()
@@ -6507,6 +6520,56 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             _broll_url_cache[query] = url
             _cap_evict(_broll_url_cache, 10_000)
             b["resolved_url"] = url
+
+    # --- Addendum Part 4A: tier rule + no-repeat + decision log ---
+    # entity/data/evidence needs must show the REAL thing (own_media = T1). If the only
+    # asset is generic stock (or nothing), a text card BEATS a wrong clip — convert it.
+    # action/concept may keep stock. Also dedupe a repeated asset within ~15s (450f).
+    _BROLL_REPEAT_FRAMES = 450
+    _LITERAL_NEEDS = ("entity", "data", "evidence")
+    kept: list[dict] = []
+    fallback_cards: list[dict] = []
+    log: list[dict] = []
+    seen_urls: list[tuple[str, int]] = []
+    for b in broll:
+        need = b.get("need", "action")
+        is_own = b.get("source") == "own_media"
+        resolved = bool(b.get("resolved_url"))
+        cue = b.get("cue_text", "")
+        s_in, s_out = int(b.get("src_in", 0)), int(b.get("src_out", 0))
+        txt = (b.get("fallback_text") or cue or "").strip()
+        # LITERAL need (entity/data/evidence) without the real asset → text card, never
+        # generic stock. This is the only case that overrides v1: action/concept and any
+        # legacy item with no `need` field keep v1 behavior (kept, resolved or not).
+        if need in _LITERAL_NEEDS and not is_own:
+            if txt and s_out > s_in:
+                fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
+                log.append({"need": need, "cue": cue, "tier": "stock" if resolved else "none",
+                            "action": "text_card", "why": "literal need with no real asset"})
+            else:
+                log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
+                            "why": "no asset and no fallback text"})
+            continue
+        # everything else keeps v1 behavior; resolved assets dedupe a repeat within 15s
+        u = b.get("resolved_url") or b.get("asset_id") or ""
+        if u and any(u == su and abs(s_in - sf) < _BROLL_REPEAT_FRAMES for su, sf in seen_urls):
+            log.append({"need": need, "cue": cue, "tier": "own_media" if is_own else "stock",
+                        "action": "skipped_repeat"})
+            continue
+        if u:
+            seen_urls.append((u, s_in))
+        kept.append(b)
+        log.append({"need": need, "cue": cue, "tier": "own_media" if is_own else "stock",
+                    "action": "broll"})
+
+    edl["broll"] = kept
+    if fallback_cards:
+        overlays = edl.get("overlays") or []
+        for c in fallback_cards:
+            overlays.append({"type": "text_card", "src_in": c["src_in"], "src_out": c["src_out"],
+                             "scale": 1.0, "text": str(c["text"])[:200]})
+        edl["overlays"] = overlays
+    edl["_broll_log"] = log
     return edl
 
 
