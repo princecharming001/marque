@@ -347,6 +347,9 @@ class EDL(BaseModel):
     # reordering would break every source-coord invariant; the render plan walks
     # this order instead. None = source order.
     segment_order: Optional[list[int]] = None
+    # A7 (superintelligence epic): which style bundle (app/themes.THEMES) produced
+    # this take, if any. "" = no theme applied (pre-A7 EDLs round-trip unchanged).
+    theme_id: str = ""
 
     @property
     def duration_frames(self) -> int:

@@ -41,6 +41,7 @@ from app import push as push_mod
 from app import higgsfield as higgsfield_mod
 from app import retention as retention_mod
 from app import edit_lint as edit_lint_mod
+from app import themes as themes_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -1191,6 +1192,9 @@ class ClipJobRequest(BaseModel):
     auto_confirm: bool = False
     toggles: dict | None = None
     creator_id: str = "default"
+    # A7: explicit theme pick (a key of app.themes.THEMES). "" = infer from the
+    # edit format's default_theme (prompts.EDIT_FORMATS[...]["default_theme"]).
+    theme_id: str = ""
 
 
 class ConfirmRequest(BaseModel):
@@ -1783,6 +1787,23 @@ def editor_capabilities():
     silent no-ops in the current style (audit D4)."""
     from app.edl import style_capabilities
     return {"mode": "live", "capabilities": {s: style_capabilities(s) for s in STYLES}}
+
+
+@app.get("/v1/themes")
+def themes_catalog():
+    """A7: the style-bundle catalog the editor picks from. `default_for_formats`
+    lets the client pre-select the right theme chip when the creator has
+    already chosen an edit format, without hardcoding the mapping client-side."""
+    default_for: dict[str, list[str]] = {}
+    for fmt, spec in prompts.EDIT_FORMATS.items():
+        dt = spec.get("default_theme", "")
+        if dt:
+            default_for.setdefault(dt, []).append(fmt)
+    return {"mode": "live", "themes": [
+        {"id": t.id, "label": t.label, "blurb": t.blurb,
+         "default_for_formats": default_for.get(t.id, [])}
+        for t in themes_mod.THEMES.values()
+    ]}
 
 
 @app.get("/v1/music")
@@ -2578,6 +2599,11 @@ async def create_clip_job(req: ClipJobRequest):
     # (brief/confirm) must never override the creator's choice.
     edit_format = req.edit_format if req.edit_format in prompts.EDIT_FORMATS else ""
     style = prompts.EDIT_FORMATS[edit_format]["style"] if edit_format else req.style
+    # A7: explicit pick > the edit format's default_theme > clean_creator (the
+    # golden-diff no-op). Resolution happens regardless of EDIT_THEMES so
+    # job["theme_id"] is always an honest record; only `_theme` (what
+    # apply_retention_passes actually reads) is flag-gated to None.
+    theme_id = req.theme_id or prompts.EDIT_FORMATS.get(edit_format, {}).get("default_theme", "")
     job = {
         "job_id": job_id, "source_id": req.source_id, "status": "transcribing",
         "clips": clips, "script": req.script, "style": style,
@@ -2588,6 +2614,8 @@ async def create_clip_job(req: ClipJobRequest):
         "react_source_url": req.react_source_url,
         "react_credit_label": req.react_credit_label,
         "edit_format": edit_format,
+        "theme_id": theme_id,
+        "_theme": themes_mod.get_theme(theme_id) if EDIT_THEMES else None,
         "reference_reel": _clean_reference_reel(req.reference_reel),
         # Conversational-tweak state: transcript kept for re-editing, prior EDLs
         # for undo, and the tweak chat history.
@@ -4010,6 +4038,9 @@ EDIT_LINT = os.environ.get("EDIT_LINT", "").lower()
 # A5b: true 2-pass loudness normalization on the FINAL rendered mp4. "" = off
 # (today's behavior — CutVideo.tsx's per-source-gain normalization only).
 AUDIO_FINALIZE = os.environ.get("AUDIO_FINALIZE", "").lower() in ("1", "true", "on")
+# A7: style bundles. "" (default) = off — job["_theme"] stays None, every
+# theme-aware pass's `theme=None` default keeps today's behavior unchanged.
+EDIT_THEMES = os.environ.get("EDIT_THEMES", "").lower() in ("1", "true", "on")
 
 
 async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str, script: dict,
@@ -4064,11 +4095,14 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     plan: dict = {}
     if ANTHROPIC_KEY and AI_QUALITY:
         try:
+            _theme_for_plan = job.get("_theme")
             sys, usr = prompts.edit_plan_prompt(
                 style, words, script, job["brand"], brief=brief, dossier=job.get("dossier"),
                 emphasis_spans=emphasis_spans, custom_instructions=job.get("custom_instructions", ""),
                 reference=job.get("reference_reel") or None,
-                video_type=(brief or {}).get("video_type", ""))
+                video_type=(brief or {}).get("video_type", ""),
+                theme_label=_theme_for_plan.label if _theme_for_plan else "",
+                theme_blurb=_theme_for_plan.blurb if _theme_for_plan else "")
             plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
         except HTTPException:
             plan = {}
@@ -4356,12 +4390,27 @@ async def _run_edit(job_id: str, words: list[dict]):
         retention_hints = ({"pacing": {"lift": "medium" if brief_pacing.get("energy") == "low" else "subtle"}}
                            if brief_pacing.get("energy") else {})
         retention_hints.update(_extract_plan_retention_hints(plan_data))
-        edl_data = _apply_plan_music_vibe(edl_data, prefs, plan_data.get("music"))
+        # A7: a theme's own vibe is a FALLBACK under the plan's own vibe choice —
+        # never forces music on/off (that's still purely prefs/plan-driven, so
+        # clean_creator stays a golden-diff no-op); it only flavors track
+        # selection once music is already wanted by some other signal.
+        music_hint = dict(plan_data.get("music") or {})
+        _theme_for_music = job.get("_theme")
+        if _theme_for_music is not None and not music_hint.get("vibe"):
+            music_hint["vibe"] = _theme_for_music.music.get("vibe", "")
+        edl_data = _apply_plan_music_vibe(edl_data, prefs, music_hint)
         trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
+        # A9: genre profile's interrupt_density is a pre-resolved plain string —
+        # the LOWEST-precedence fallback (llm hint > theme > genre > style
+        # default), computed here so retention.py never needs to import
+        # prompts.GENRE_PROFILES.
+        _video_type_for_genre = (job.get("edit_brief") or {}).get("video_type", "")
+        genre_density = prompts.GENRE_PROFILES.get(_video_type_for_genre, {}).get("interrupt_density", "")
         edl_data = retention_mod.apply_retention_passes(
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
             dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
-            sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"))
+            sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"),
+            genre_density=genre_density)
         # A1: deterministic pre-render lint — a live scoreboard of "amateur tells"
         # (dead stretches, glitch cuts, metronomic pacing, off-anchor effects, mixed
         # caption/transition grammars) on WHATEVER the two author paths + retention

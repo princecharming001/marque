@@ -33,6 +33,7 @@ from app.edl import (
     _kept_intervals, _kept_frames, _coalesce_drops, _norm_word,
     _MIN_DURATION_FRAMES, MIN_CLIP_OUTPUT_FRAMES, check_edl_invariants, SFX_GAIN_DEFAULT,
 )
+from app import themes as themes_mod
 
 # csv of pass names to run; "" (default) = everything off = today's live behavior.
 # "all" enables every implemented pass. Individual names: filler, pacing, emphasis,
@@ -535,6 +536,11 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
     edl = copy.deepcopy(edl)
     if style in _FRAMING_SKIP_STYLES or not words or not (edl.get("segments") or []):
         return edl
+    # A7: a theme can disable framing outright (docu_calm/premium_brand/
+    # faceless_explainer all favor a still camera) or override the rotate
+    # period; scales are read later, at the per-piece stamping step.
+    if theme is not None and theme.framing.get("enabled") is False:
+        return edl
     segments = edl["segments"]
     drops = edl.get("drops") or []
     play_order = _play_order(edl)
@@ -543,7 +549,8 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
         return edl
 
     rng = _seeded_rng("framing", job_seed)
-    lo_s, hi_s = _FRAMING_ROTATE_S
+    theme_rotate = (theme.framing.get("rotate_s") if theme is not None else None) or None
+    lo_s, hi_s = tuple(theme_rotate) if theme_rotate else _FRAMING_ROTATE_S
     boundaries_out: list[int] = []
     cursor = 0.0
     while True:
@@ -605,13 +612,15 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
                 covered += b - a
         return covered / span
 
+    theme_scales = (theme.framing.get("scales") if theme is not None else None) or None
+    scales = theme_scales if theme_scales else _FRAMING_SCALES
     tx_x_sign = 1
     for step, seg_i in enumerate(_play_order(edl)):
         seg = segments[seg_i]
         if _overlay_overlap_frac(seg["src_in"], seg["src_out"]) > _FRAMING_OVERLAY_OVERLAP_GUARD:
             continue
         kind = _FRAMING_PATTERN[step % len(_FRAMING_PATTERN)]
-        scale = _FRAMING_SCALES[kind]
+        scale = scales.get(kind, _FRAMING_SCALES[kind])
         seg["tx_scale"] = scale
         if kind == "wide":
             seg["tx_x"] = 0.0
@@ -955,7 +964,8 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
                         prefs: dict | None = None, hints: dict | None = None,
-                        jitter: bool = False, job_seed: str = "") -> dict:
+                        jitter: bool = False, job_seed: str = "", theme=None,
+                        genre_density: str = "") -> dict:
     """Guarantee a visual change at least every N output frames (N by style x
     density — or, with `jitter` on, a per-gap target independently drawn from
     _INTERRUPT_JITTER_S, since a perfectly regular cadence is itself an
@@ -983,7 +993,12 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
     if total_out <= _INTERRUPT_HOOK_GUARD + _INTERRUPT_CTA_GUARD:
         return edl   # too short a take to meaningfully schedule interrupts
 
-    density = hints.get("interrupt_density") or "standard"
+    # A7/A9 precedence: the LLM plan's own hint wins, then the theme's density,
+    # then the genre profile's density (A9 — a pre-resolved plain string from
+    # main.py, so this module never needs to import prompts.GENRE_PROFILES),
+    # then the style default.
+    theme_density = (theme.interrupts.get("density") if theme is not None else None)
+    density = hints.get("interrupt_density") or theme_density or genre_density or "standard"
     cadence = max(_INTERRUPT_CADENCE_FLOOR,
                  int(_INTERRUPT_CADENCE[style] * _DENSITY_MULT.get(density, 1.0)))
 
@@ -1001,7 +1016,15 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
 
     can_punch = style in _PUNCH_STYLES
     rng = _seeded_rng("interrupts", job_seed) if jitter else None
-    allowed_types = _INTERRUPT_JITTER_TYPES if can_punch else ("text_sticker",)
+    if not can_punch:
+        allowed_types = ("text_sticker",)
+    elif theme is not None and theme.interrupts.get("types"):
+        # theme.max_types caps how many DISTINCT types this take rotates
+        # through (a calmer theme wants less variety, not just less frequency).
+        max_types = theme.interrupts.get("max_types") or len(theme.interrupts["types"])
+        allowed_types = tuple(theme.interrupts["types"][:max_types]) or _INTERRUPT_JITTER_TYPES
+    else:
+        allowed_types = _INTERRUPT_JITTER_TYPES
     framing_splits_left = [_INTERRUPT_FRAMING_POP_SPLIT_BUDGET]
     inserted = 0
     scale_i = 0
@@ -1057,12 +1080,19 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
     # else covering that stretch, so insert a new punch/pop there. `_ITER_CAP`
     # is a hard backstop (never hit in practice — every branch strictly advances
     # `last_event_out`) so a future edit here can't ever infinite-loop.
+    # A7: theme.interrupts.jitter_frames is already in FRAMES (unlike the
+    # module default _INTERRUPT_JITTER_S, in seconds) — used as-is when present.
+    theme_jitter_frames = (theme.interrupts.get("jitter_frames") if theme is not None else None)
     _ITER_CAP = 4 * _INTERRUPT_MAX_PER_CLIP + len(cut_points) + len(occupied) + 4
     for _ in range(_ITER_CAP):
         if last_event_out >= total_out - _INTERRUPT_CTA_GUARD or inserted >= _INTERRUPT_MAX_PER_CLIP:
             break
-        gap_cadence = (max(_INTERRUPT_CADENCE_FLOOR, round(rng.uniform(*_INTERRUPT_JITTER_S) * 30))
-                      if jitter else cadence)
+        if jitter and theme_jitter_frames:
+            gap_cadence = max(_INTERRUPT_CADENCE_FLOOR, rng.randint(*theme_jitter_frames))
+        elif jitter:
+            gap_cadence = max(_INTERRUPT_CADENCE_FLOOR, round(rng.uniform(*_INTERRUPT_JITTER_S) * 30))
+        else:
+            gap_cadence = cadence
         next_cut = next((p for p in cut_points if p > last_event_out), total_out)
         next_occ = next(((a, b) for a, b in occupied if b > last_event_out), None)
         if next_occ is not None and next_occ[0] <= last_event_out + gap_cadence:
@@ -1098,7 +1128,7 @@ _SFX_END_GUARD_FRAMES = 15     # none in the last 15 source frames
 
 
 def synthesize_sfx(edl: dict, words: list[dict], *,
-                   sfx_assets: dict[str, str | None] | None = None) -> dict:
+                   sfx_assets: dict[str, str | None] | None = None, theme=None) -> dict:
     """WS4d: deterministically place SFX one-shots at transitions and at every
     punch_in overlay (whichever pass placed it — align_emphasis, the interrupt
     scheduler, or a hand-authored one), budget-capped at ~5 per 30s of KEPT
@@ -1138,6 +1168,11 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
         if o.get("type") == "punch_in":
             candidates.add((o["src_in"], "pop"))
 
+    # A7: a theme's gain_db (dB) overrides the module SFX_GAIN_DEFAULT (already
+    # -14dB) when the bundle wants its one-shots hotter/quieter than the default.
+    theme_gain_db = (theme.sfx.get("gain_db") if theme is not None else None)
+    gain = (10 ** (theme_gain_db / 20)) if theme_gain_db is not None else SFX_GAIN_DEFAULT
+
     ordered = sorted(c for c in candidates if _inside(c[0]))
     sfx: list[dict] = []
     last_placed = -_SFX_MIN_SPACING_FRAMES
@@ -1149,7 +1184,7 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
         url = sfx_assets.get(kind)
         if not url:
             continue
-        sfx.append({"src_in": f, "kind": kind, "gain": SFX_GAIN_DEFAULT, "url": url})
+        sfx.append({"src_in": f, "kind": kind, "gain": gain, "url": url})
         last_placed = f
 
     if sfx:
@@ -1164,7 +1199,7 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
                            dossier: dict | None = None, hints: dict | None = None,
                            script: dict | None = None, level: str = "default",
                            sfx_assets: dict[str, str | None] | None = None,
-                           job_seed: str = "", theme=None) -> dict:
+                           job_seed: str = "", theme=None, genre_density: str = "") -> dict:
     """Entry point called once from `_run_edit`, after EITHER author path builds
     its EDL and before `_resolve_broll`/`build_render_plan`. `hints` carries the
     plan author's typed decisions (pacing/interrupt_density/hook_text/end_card/
@@ -1174,11 +1209,19 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     passed as a parameter rather than imported, since main.py already imports
     THIS module and a reverse import would be circular. `job_seed` (the job id)
     drives every deterministic-jitter pass (framing, interrupt jitter) so
-    re-renders of the same job produce identical output; `theme` is reserved
-    for A7 (style bundles) — currently unused but threaded through so passes
-    don't need a signature change when it lands."""
+    re-renders of the same job produce identical output; `theme` (A7 style
+    bundles) is gated purely by its own presence (None = off), independent of
+    the RETENTION_PASSES csv below — a theme's caption/grade/duck defaults are
+    a separate feature from the deterministic editing passes."""
     prefs = prefs or {}
     hints = hints or {}
+
+    # A7: theme application runs FIRST and independently of RETENTION_PASSES
+    # (a theme is a caption/grade/audio-duck DEFAULT, not an editing pass) —
+    # None (EDIT_THEMES off, or no theme resolved) is a total no-op.
+    if theme is not None:
+        edl = _safe_pass("apply_theme", edl, themes_mod.apply_theme, theme, prefs=prefs)
+
     enabled = _enabled_passes()
     if not enabled or not words:
         return edl
@@ -1239,11 +1282,13 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     if "interrupts" in enabled:
         edl = _safe_pass("schedule_interrupts", edl, schedule_interrupts, words,
                          style=style, prefs=prefs, hints=hints,
-                         jitter=("jitter" in enabled), job_seed=job_seed)
+                         jitter=("jitter" in enabled), job_seed=job_seed, theme=theme,
+                         genre_density=genre_density)
 
     # sfx runs LAST of all: it sees every transition/overlay every prior pass
     # (including interrupts) placed.
     if "sfx" in enabled:
-        edl = _safe_pass("synthesize_sfx", edl, synthesize_sfx, words, sfx_assets=sfx_assets)
+        edl = _safe_pass("synthesize_sfx", edl, synthesize_sfx, words,
+                         sfx_assets=sfx_assets, theme=theme)
 
     return edl

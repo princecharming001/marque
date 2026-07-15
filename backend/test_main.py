@@ -5008,6 +5008,67 @@ def test_music_catalog_is_all_avplayer_native_and_covers_tones():
     assert {"calm", "confident", "energetic"} <= tones
 
 
+def test_themes_endpoint_lists_all_six_with_default_for_formats():
+    r = client.get("/v1/themes")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["mode"] == "live"
+    ids = {t["id"] for t in body["themes"]}
+    assert ids == {"clean_creator", "hormozi_punch", "docu_calm",
+                   "energetic_pop", "faceless_explainer", "premium_brand"}
+    by_id = {t["id"]: t for t in body["themes"]}
+    assert set(by_id["clean_creator"]["default_for_formats"]) == {"talking_head", "talking_head_broll"}
+    assert by_id["energetic_pop"]["default_for_formats"] == ["recap_music"]
+    assert by_id["faceless_explainer"]["default_for_formats"] == ["recap_voiceover"]
+    for t in body["themes"]:
+        assert t["label"] and t["blurb"]
+
+
+def test_edit_formats_each_have_a_default_theme():
+    for fmt, spec in prompts.EDIT_FORMATS.items():
+        theme_id = spec.get("default_theme", "")
+        assert theme_id, f"{fmt} has no default_theme"
+        assert theme_id in main.themes_mod.THEMES
+
+
+def test_clip_job_theme_resolution(monkeypatch):
+    # theme_id is ALWAYS recorded on the job (an honest field), even when
+    # EDIT_THEMES is off — only `_theme` (what the retention passes actually
+    # read) is flag-gated.
+    monkeypatch.setattr(main, "EDIT_THEMES", False)
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/footage.mov", "source_id": "test-theme-1",
+        "analyze_first": True, "edit_format": "recap_music",
+        "script": {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"},
+    })
+    job_id = r.json()["job_id"]
+    job = main._clip_jobs[job_id]
+    assert job["theme_id"] == "energetic_pop"     # inferred from the edit format
+    assert job["_theme"] is None                   # flag off -> passes see nothing
+
+    monkeypatch.setattr(main, "EDIT_THEMES", True)
+    r2 = client.post("/v1/clips", json={
+        "source_url": "https://example.com/footage.mov", "source_id": "test-theme-2",
+        "analyze_first": True, "edit_format": "recap_music",
+        "script": {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"},
+    })
+    job2 = main._clip_jobs[r2.json()["job_id"]]
+    assert job2["theme_id"] == "energetic_pop"
+    assert job2["_theme"] is not None and job2["_theme"].id == "energetic_pop"
+
+
+def test_clip_job_explicit_theme_id_beats_format_default(monkeypatch):
+    monkeypatch.setattr(main, "EDIT_THEMES", True)
+    r = client.post("/v1/clips", json={
+        "source_url": "https://example.com/footage.mov", "source_id": "test-theme-3",
+        "analyze_first": True, "edit_format": "recap_music", "theme_id": "docu_calm",
+        "script": {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"},
+    })
+    job = main._clip_jobs[r.json()["job_id"]]
+    assert job["theme_id"] == "docu_calm"           # explicit pick beats the format default
+    assert job["_theme"].id == "docu_calm"
+
+
 def test_faceless_forces_broll_on_so_recap_never_renders_black():
     # recap_voiceover (style=faceless) with a client that sent broll:false must be forced
     # back on — a faceless edit with no b-roll renders as a black screen + captions.
