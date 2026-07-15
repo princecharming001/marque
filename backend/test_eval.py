@@ -18,7 +18,11 @@ def test_known_good_scripts_pass_clean():
     for g in golden.KNOWN_GOOD:
         r = evaluate_script(g["script"], g["brand"])
         assert r["gate_passed"], (g["script"]["title"], r["failures"])
-        assert not r["quality_flags"], (g["script"]["title"], r["quality_flags"])
+        # B4: _flag_offbrand is a soft, lossy naive-term-overlap heuristic — excluded
+        # from this hard tripwire for the same reason eval/run_eval.py excludes it
+        # (a legitimately on-brand script can share zero literal niche terms).
+        other_flags = [f for f in r["quality_flags"] if not f.startswith("offbrand")]
+        assert not other_flags, (g["script"]["title"], other_flags)
 
 
 def test_known_bad_scripts_are_caught():

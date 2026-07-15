@@ -26,14 +26,14 @@ def _stub_arms(monkeypatch, arms=_ARMS):
 
 
 def test_feed_sreq_consumes_arms():
-    sreq, why = main._feed_sreq("fitness", "", "", "Grow", "", 0, "c1", None, arms=_ARMS)
+    sreq, why = main._feed_sreq({"niche": "fitness", "goal": "Grow"}, "", 0, "c1", None, arms=_ARMS)
     assert sreq.pillar == _ARMS[0]["pillar"]
     assert sreq.style == _ARMS[0]["style"]
     assert why == _ARMS[0]["reason"]
 
 
 def test_feed_sreq_template_fallback_when_arms_exhausted():
-    sreq, why = main._feed_sreq("fitness", "", "", "Grow", "", 5, "c1", None, arms=_ARMS)
+    sreq, why = main._feed_sreq({"niche": "fitness", "goal": "Grow"}, "", 5, "c1", None, arms=_ARMS)
     assert sreq.pillar                                   # template pillar
     assert why.startswith("From your '")
 
@@ -76,7 +76,7 @@ def test_full_quality_refresh_keeps_why_picked(monkeypatch):
         return {"mode": "live", "scripts": main.mock_scripts(sreq)}
     monkeypatch.setattr(main, "scripts", live_scripts)
 
-    sreq, why = main._feed_sreq("fitness", "", "", "Grow", "", 0, "g2", None, arms=_ARMS)
+    sreq, why = main._feed_sreq({"niche": "fitness", "goal": "Grow"}, "", 0, "g2", None, arms=_ARMS)
     asyncio.run(main._refresh_feed_page("k-g2", sreq, "fitness", "g2", "", 0, why_picked=why))
     entry = main._feed_cache.pop("k-g2")
     scripts = [it["script"] for it in entry["items"] if it["type"] == "script"]

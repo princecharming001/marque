@@ -280,6 +280,53 @@ class SupabaseClient:
             return None
         return rows[0]["entry"] if rows and rows[0].get("entry") else None
 
+    # --- creator_profiles (B3: server-side brand snapshot) --------------------
+    # The client (iOS) owns the brand and edits it — but GET /v1/feed, write-turn, and
+    # the T3 quality cron all need to hydrate a full brand server-side without a client
+    # payload. One JSONB blob per creator, mirroring the reels_cache pattern.
+
+    async def upsert_creator_profile(self, creator_id: str, brand: dict, brand_hash: str) -> bool:
+        row = {"creator_id": creator_id, "brand": brand, "brand_hash": brand_hash}
+        r = await self._request(
+            "POST", "/creator_profiles", params={"on_conflict": "creator_id"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_creator_profile(self, creator_id: str) -> dict | None:
+        r = await self._request("GET", "/creator_profiles",
+                                params={"creator_id": f"eq.{creator_id}",
+                                        "select": "brand,brand_hash,updated_at"})
+        if not (r and r.status_code == 200):
+            return None
+        try:
+            rows = r.json()
+        except Exception:
+            return None
+        return rows[0] if rows else None
+
+    # --- creator_posts (B3: server-side scraped-posts snapshot) ---------------
+    # The client NEVER holds scraped posts (they're scraped server-side, at scan/digest
+    # time, then discarded) — this is the ONLY durable source for prompt grounding
+    # (_voice_exemplars) outside of a single request's lifetime.
+
+    async def upsert_creator_posts(self, creator_id: str, posts: list[dict]) -> bool:
+        row = {"creator_id": creator_id, "posts": posts}
+        r = await self._request(
+            "POST", "/creator_posts", params={"on_conflict": "creator_id"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_creator_posts(self, creator_id: str) -> list[dict] | None:
+        r = await self._request("GET", "/creator_posts",
+                                params={"creator_id": f"eq.{creator_id}", "select": "posts"})
+        if not (r and r.status_code == 200):
+            return None
+        try:
+            rows = r.json()
+        except Exception:
+            return None
+        return rows[0]["posts"] if rows and rows[0].get("posts") is not None else None
+
     # --- clip_edit_sessions (F15: durable manual-editor state) ----------------
     # The whole in-memory job dict, stored as one JSONB blob — see migrations.sql
     # for why this is a blob rather than a column-per-field table.

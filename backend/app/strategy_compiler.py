@@ -13,6 +13,8 @@ the STRATEGY_COMPILER flag AND ai_usage.compile_allowed (allowlist default empty
 from __future__ import annotations
 
 import calendar
+import hashlib
+import json
 import logging
 import re
 import time
@@ -23,6 +25,23 @@ from prompts import OPUS, SONNET
 
 _REQUIRED = ("Insights", "Plan", "Buckets", "Brand Bets", "Not-Doing")
 _COMPILE_INTERVAL_DAYS = {"weekly": 7.0, "biweekly": 14.0, "monthly": 30.0, "off": 0.0}
+
+# B3 (superintelligence epic): brand-edit staleness detection. Duplicated (not imported)
+# from main._brand_hash — strategy_compiler is imported BY main.py, so the reverse import
+# would be circular. Both sides MUST hash the exact same field set to agree.
+_BRAND_HASH_FIELDS = ("niche", "audience", "known_for", "what_you_do", "goal", "voice",
+                     "catchphrases", "non_negotiables", "emulation_targets")
+_RECOMPILE_DEBOUNCE_S = 24 * 3600
+
+
+def _brand_hash(brand: dict) -> str:
+    if not brand:
+        return ""
+    try:
+        payload = {k: brand.get(k) for k in _BRAND_HASH_FIELDS}
+        return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    except (TypeError, ValueError):
+        return ""
 
 
 def _now_iso() -> str:
@@ -137,16 +156,49 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
         rev = int(prev.get("strategy_revision", 0) or 0) + 1
         await store.upsert_strategy(creator_id, {
             "strategy_markdown": md, "strategy_revision": rev,
-            "strategy_updated_at": _now_iso()})
+            "strategy_updated_at": _now_iso(), "brand_hash": _brand_hash(brand or {})})
         return md
     except Exception as e:
         logging.warning("[strategy_compiler] compile failed: %s", e)
         return None
 
 
-async def strategy_block(store, creator_id: str) -> str:
+async def maybe_recompile_on_brand_edit(store, creator_id: str, brand: dict) -> None:
+    """B3: a niche pivot / voice edit leaves the compiled strategy stale until the next
+    weekly/biweekly cron sweep — up to 30 days of the brain shaping output around the OLD
+    brand. On a brand-hash mismatch (AND compile_allowed AND a 24h debounce so a burst of
+    edits doesn't spam Opus), kick a background recompile. Fire-and-forget; never raises."""
+    if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or store is None or not creator_id or not brand:
+        return
+    new_hash = _brand_hash(brand)
+    if not new_hash:
+        return
+    try:
+        prev = await store.load_strategy(creator_id) or {}
+    except Exception:
+        return
+    if prev.get("brand_hash") == new_hash:
+        return   # already compiled against this brand
+    last_compiled = _iso_to_epoch(prev.get("strategy_updated_at"))
+    if last_compiled and (time.time() - last_compiled) < _RECOMPILE_DEBOUNCE_S:
+        return   # debounce: don't spam Opus on a burst of brand edits
+    if not ai_usage.compile_allowed(creator_id, True):
+        return
+    try:
+        loader = getattr(store, "load_clip_sessions", None)
+        sessions = await loader(creator_id) if loader else []
+        videos = dossier_adapter.videos_from_clip_sessions(sessions)
+        await compile_strategy(store, creator_id, videos, brand)
+    except Exception as e:
+        logging.warning("[strategy_compiler] brand-edit recompile failed for %s: %s", creator_id, e)
+
+
+async def strategy_block(store, creator_id: str, brand_hash: str | None = None) -> str:
     """The compiled strategy as an injectable prompt block for script gen + converse, so
-    the brain actually shapes output. Flag-gated + keyless (no store / no strategy) => ''."""
+    the brain actually shapes output. Flag-gated + keyless (no store / no strategy) => ''.
+    `brand_hash` (B3, optional): the CALLER's current brand hash — if it mismatches what
+    the strategy was actually compiled against, append an honest staleness note so the
+    model knows the live Creator brand block wins over anything conflicting here."""
     if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or store is None or not creator_id:
         return ""
     try:
@@ -156,8 +208,12 @@ async def strategy_block(store, creator_id: str) -> str:
     md = (strat or {}).get("strategy_markdown", "") if strat else ""
     if not md.strip():
         return ""
+    stale_note = ""
+    if brand_hash and strat and strat.get("brand_hash") and strat["brand_hash"] != brand_hash:
+        stale_note = ("\n\nNOTE: the creator's brand changed after this strategy was "
+                      "compiled — where they conflict, the Creator brand block wins.")
     return ("<creator_strategy>\nApply this compiled strategy to shape the output "
-            "(apply, don't recite):\n" + md.strip() + "\n</creator_strategy>")
+            "(apply, don't recite):\n" + md.strip() + stale_note + "\n</creator_strategy>")
 
 
 async def run_compile_cron(store, now_epoch: float) -> int:

@@ -29,6 +29,7 @@ from eval.invariants import evaluate_script, evaluate_batch
 MIN_GATE_PASS_RATE = 0.90
 MAX_QUALITY_FLAG_RATE = 0.20
 MIN_KNOWN_BAD_CATCH = 1.0        # every known-bad must be caught
+MIN_RELEVANCE_MEAN = 65.0        # B4: judge's relevance_to_creator mean across live CASES
 
 
 def _self_check() -> tuple[bool, list[str]]:
@@ -38,8 +39,14 @@ def _self_check() -> tuple[bool, list[str]]:
         r = evaluate_script(g["script"], g["brand"])
         if not r["gate_passed"]:
             errs.append(f"KNOWN_GOOD[{i}] should pass but failed: {r['failures']}")
-        if r["quality_flags"]:
-            errs.append(f"KNOWN_GOOD[{i}] should be clean but flagged: {r['quality_flags']}")
+        # B4: _flag_offbrand is a SOFT, lossy heuristic (naive stopword-stripped term
+        # overlap) — a legitimately on-brand script easily uses zero literal niche terms
+        # ("deadlift" vs. niche "strength training" share no stem). It's excluded from
+        # this hard "known-good must be flag-free" tripwire; its own KNOWN_BAD fixtures
+        # below still assert it catches the genuinely off-niche case.
+        other_flags = [f for f in r["quality_flags"] if not f.startswith("offbrand")]
+        if other_flags:
+            errs.append(f"KNOWN_GOOD[{i}] should be clean but flagged: {other_flags}")
     caught = 0
     for i, b in enumerate(golden.KNOWN_BAD):
         r = evaluate_script(b["script"], b["brand"])
@@ -61,6 +68,7 @@ async def _live() -> dict:
     import prompts
 
     all_scripts, per_case = [], []
+    all_verdicts: list[dict] = []
     for c in golden.CASES:
         req = main.ScriptRequest(
             **{k: c["brand"].get(k) for k in (
@@ -76,20 +84,27 @@ async def _live() -> dict:
         per_case.append((c["id"], res.get("mode"), card))
         all_scripts.extend(scripts)
 
-    # Independent judge pass (§8.2) — mean hook/specificity/voice across everything.
+        # B4: judge WITH this case's own brand+posts+style — brands differ per case, so
+        # the old single context-free call over the pooled scripts couldn't score
+        # relevance_to_creator (or voice_match) meaningfully at all.
+        if scripts and main.ANTHROPIC_KEY:
+            try:
+                jsys, jusr = prompts.script_judge_prompt(
+                    scripts, c["style"], brand=c["brand"], posts=c.get("posts"))
+                verdicts = main.extract_json(await main.anthropic(jsys, jusr, main.HAIKU, 1600), array=True) or []
+                all_verdicts.extend(v for v in verdicts if isinstance(v, dict))
+            except Exception as e:                  # judging is best-effort; never crash the gate
+                per_case[-1] = (*per_case[-1][:2], {**card, "judge_error": f"{type(e).__name__}: {e}"})
+
+    # Independent judge pass (§8.2) — mean hook/specificity/voice/relevance across every case.
     judge = {}
-    if all_scripts and main.ANTHROPIC_KEY:
-        try:
-            jsys, jusr = prompts.script_judge_prompt(all_scripts, "talking_head")
-            verdicts = main.extract_json(await main.anthropic(jsys, jusr, main.HAIKU, 1600), array=True) or []
-            for axis in ("hook_strength", "specificity", "voice_match"):
-                vals = [float(v[axis]) for v in verdicts if isinstance(v, dict) and axis in v]
-                if vals:
-                    judge[axis] = round(sum(vals) / len(vals), 1)
-            slop = [1 for v in verdicts if isinstance(v, dict) and v.get("slop")]
-            judge["slop_rate"] = round(len(slop) / (len(verdicts) or 1), 3)
-        except Exception as e:                      # judging is best-effort; never crash the gate
-            judge["error"] = f"{type(e).__name__}: {e}"
+    if all_verdicts:
+        for axis in ("hook_strength", "specificity", "voice_match", "relevance_to_creator"):
+            vals = [float(v[axis]) for v in all_verdicts if axis in v]
+            if vals:
+                judge[axis] = round(sum(vals) / len(vals), 1)
+        slop = [1 for v in all_verdicts if v.get("slop")]
+        judge["slop_rate"] = round(len(slop) / (len(all_verdicts) or 1), 3)
 
     overall = evaluate_batch(all_scripts, {})       # gate rate ignores per-brand banned words
     return {"per_case": per_case, "overall": overall, "judge": judge}
@@ -127,6 +142,9 @@ def main_entry() -> int:
             regress.append(f"gate_pass_rate {ov['gate_pass_rate']:.2f} < {MIN_GATE_PASS_RATE}")
         if ov["quality_flag_rate"] > MAX_QUALITY_FLAG_RATE:
             regress.append(f"quality_flag_rate {ov['quality_flag_rate']:.2f} > {MAX_QUALITY_FLAG_RATE}")
+        rel = live["judge"].get("relevance_to_creator")
+        if rel is not None and rel < MIN_RELEVANCE_MEAN:
+            regress.append(f"relevance_to_creator {rel} < {MIN_RELEVANCE_MEAN}")
         for r in regress:
             print("   REGRESSION:", r)
         gate_ok = gate_ok and not regress

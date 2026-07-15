@@ -246,9 +246,10 @@ def test_feed_get_and_empty_memory_post_share_cache():
     # B-6: an empty-memory POST must produce a byte-identical cache key to the GET,
     # so they share the same cached page (no personalization → no cache split).
     import main
-    k_get = main._feed_cache_key("c", "fitness", "", "", "g", "", "", 0, None)
-    k_post_empty = main._feed_cache_key("c", "fitness", "", "", "g", "", "", 0, {})
-    k_post_mem = main._feed_cache_key("c", "fitness", "", "", "g", "", "", 0, {"facts": ["x"]})
+    brand = {"niche": "fitness", "goal": "g"}
+    k_get = main._feed_cache_key("c", brand, "", "", 0, None)
+    k_post_empty = main._feed_cache_key("c", brand, "", "", 0, {})
+    k_post_mem = main._feed_cache_key("c", brand, "", "", 0, {"facts": ["x"]})
     assert k_get == k_post_empty
     assert k_post_mem != k_get and k_post_mem.startswith(k_get)
 
@@ -2439,15 +2440,16 @@ def test_feed_cache_hit_is_instant_and_stable():
 def test_feed_fresh_param_bypasses_cache():
     params = {"niche": "fresh-bypass-niche", "cursor": 0}
     client.get("/v1/feed", params=params)
-    key = main._feed_cache_key("default", "fresh-bypass-niche", "", "", "Grow my audience", "", "", 0)
+    brand = {"niche": "fresh-bypass-niche", "goal": "Grow my audience"}
+    key = main._feed_cache_key("default", brand, "", "", 0, None, "0")
     assert key in main._feed_cache
     r = client.get("/v1/feed", params={**params, "fresh": 1})
     assert r.status_code == 200  # fresh=1 recomputes rather than erroring
 
 
 def test_feed_cache_key_changes_with_niche():
-    k1 = main._feed_cache_key("c1", "fitness", "a", "k", "g", "s", "w", 0)
-    k2 = main._feed_cache_key("c1", "finance", "a", "k", "g", "s", "w", 0)
+    k1 = main._feed_cache_key("c1", {"niche": "fitness", "audience": "a", "known_for": "k", "goal": "g"}, "s", "w", 0)
+    k2 = main._feed_cache_key("c1", {"niche": "finance", "audience": "a", "known_for": "k", "goal": "g"}, "s", "w", 0)
     assert k1 != k2
 
 
@@ -5399,7 +5401,7 @@ def test_feed_cold_paint_is_single_flight(monkeypatch):
 
     async def burst():
         return await asyncio.gather(*(
-            main._feed_impl("c_sf", "fitness", "", "", "grow", "", "", 0, 0, None)
+            main._feed_impl("c_sf", {"niche": "fitness", "goal": "grow"}, "", "", 0, 0, None)
             for _ in range(5)))
     results = asyncio.run(burst())
     assert calls["n"] == 1                                # one paint, five servings
@@ -5417,17 +5419,18 @@ def test_feed_mock_ttl_short_live_ttl_long(monkeypatch):
     async def spy_refresh(key, *a, **k):
         refreshed.append(key)
     monkeypatch.setattr(main, "_refresh_feed_page", spy_refresh)
-    key = main._feed_cache_key("c_ttl", "fitness", "", "", "grow", "", "", 0, None)
+    brand = {"niche": "fitness", "goal": "grow"}
+    key = main._feed_cache_key("c_ttl", brand, "", "", 0, None, "0")
     old = time.time() - (main._FEED_MOCK_TTL_S + 10)
     main._feed_cache[key] = {"items": [{"type": "trend", "trend": {}}], "next_cursor": 1,
                              "mode": "mock", "ts": old}
-    out = asyncio.run(main._feed_impl("c_ttl", "fitness", "", "", "grow", "", "", 0, 0, None))
+    out = asyncio.run(main._feed_impl("c_ttl", brand, "", "", 0, 0, None))
     assert out["items"] and out["mode"] == "mock"          # stale mock still serves instantly (SWR)
     assert key in main._feed_refreshing or refreshed       # ...and the upgrade was spawned
     main._feed_refreshing.clear(); refreshed.clear()
     main._feed_cache[key] = {"items": [{"type": "trend", "trend": {}}], "next_cursor": 1,
                              "mode": "live", "ts": old}    # same age, but LIVE -> still fresh
-    out2 = asyncio.run(main._feed_impl("c_ttl", "fitness", "", "", "grow", "", "", 0, 0, None))
+    out2 = asyncio.run(main._feed_impl("c_ttl", brand, "", "", 0, 0, None))
     assert out2["mode"] == "live"
     assert key not in main._feed_refreshing and not refreshed
     main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
@@ -5437,14 +5440,15 @@ def test_feed_cache_hit_answers_without_top_arms(monkeypatch):
     # The audit found `await _top_arms` ABOVE the cache-hit return — Supabase roundtrips
     # taxing the hottest path. A fresh hit must answer with zero awaits.
     main._feed_cache.clear(); main._feed_refreshing.clear(); main._feed_inflight.clear()
-    key = main._feed_cache_key("c_hit", "fitness", "", "", "grow", "", "", 0, None)
+    brand = {"niche": "fitness", "goal": "grow"}
+    key = main._feed_cache_key("c_hit", brand, "", "", 0, None, "0")
     main._feed_cache[key] = {"items": [{"type": "trend", "trend": {}}], "next_cursor": 1,
                              "mode": "live", "ts": time.time()}
 
     async def boom(*a, **k):
         raise AssertionError("_top_arms must not run on the cache-hit response path")
     monkeypatch.setattr(main, "_top_arms", boom)
-    out = asyncio.run(main._feed_impl("c_hit", "fitness", "", "", "grow", "", "", 0, 0, None))
+    out = asyncio.run(main._feed_impl("c_hit", brand, "", "", 0, 0, None))
     assert out["mode"] == "live"
     main._feed_cache.clear()
 

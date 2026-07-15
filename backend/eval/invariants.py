@@ -141,8 +141,50 @@ def _flag_stage_direction(sc, brand):
     return flag_stage_direction(_s(sc, "body"), _s(sc, "style"))
 
 
+# B4: cheap deterministic relevance FLOOR — the live judge's relevance_to_creator axis
+# is the real signal (this is a soft backstop for the golden-fixture tripwire and prod
+# batch monitoring, not a hard gate: synonyms legitimately evade naive token overlap,
+# e.g. "budgeting" vs "personal finance" share zero literal terms).
+_STOPWORDS = frozenset((
+    "the", "a", "an", "and", "or", "but", "for", "with", "about", "your", "you", "this",
+    "that", "from", "into", "onto", "their", "them", "they", "how", "what", "why", "when",
+    "who", "which", "its", "of", "to", "in", "on", "at", "is", "are", "was", "were", "be",
+    "been", "being", "do", "does", "did", "not", "no", "yes", "get", "got", "one", "two",
+    "three", "here", "there", "just", "like", "will", "would", "could", "should", "have",
+    "has", "had", "more", "most", "some", "any", "all", "if", "so", "than",
+))
+_WORD_RE = _re.compile(r"[a-zA-Z']+")
+_STEM_SUFFIXES = ("ing", "ers", "er", "es", "ed", "s")
+
+
+def _content_terms(text: str) -> set[str]:
+    terms = set()
+    for w in _WORD_RE.findall((text or "").lower()):
+        w = w.strip("'")
+        if len(w) < 4 or w in _STOPWORDS:
+            continue
+        stem = w
+        for suf in _STEM_SUFFIXES:
+            if stem.endswith(suf) and len(stem) - len(suf) >= 3:
+                stem = stem[:-len(suf)]
+                break
+        terms.add(stem)
+    return terms
+
+
+def _flag_offbrand(sc, brand):
+    brand_text = " ".join(str(brand.get(k, "")) for k in ("niche", "known_for", "what_you_do"))
+    brand_terms = _content_terms(brand_text)
+    if not brand_terms:
+        return None   # nothing to compare against -> never a false positive
+    script_terms = _content_terms(_s(sc, "hook") + " " + _s(sc, "body"))
+    if brand_terms & script_terms:
+        return None
+    return "offbrand: no niche/known-for/what-you-do term overlap"
+
+
 QUALITY_FLAGS = [_flag_slop, _flag_question_opener, _flag_stacked_cta, _flag_ungrounded_receipt,
-                 _flag_wall_of_text, _flag_stage_direction]
+                 _flag_wall_of_text, _flag_stage_direction, _flag_offbrand]
 
 
 def evaluate_script(script: dict, brand: dict | None = None) -> dict:

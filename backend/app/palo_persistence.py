@@ -19,7 +19,7 @@ _MEMORY_COLS = ("id", "creator_id", "type", "key", "value", "confidence", "scope
 _STRATEGY_COLS = ("creator_id", "strategy_markdown", "strategy_playbooks",
                   "strategy_footnotes", "strategy_revision", "strategy_updated_at",
                   "exemplar_bank", "element_inventory", "exemplar_bank_revision",
-                  "exemplar_bank_built_at")
+                  "exemplar_bank_built_at", "brand_hash")
 _BRIEF_COLS = ("id", "creator_id", "source", "title", "summary", "beginning",
                "middle", "ending", "score", "status", "meta", "created_at")
 _INSIGHT_COLS = ("id", "creator_id", "type", "category", "title", "description",
