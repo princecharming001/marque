@@ -18,6 +18,8 @@ import hmac
 import asyncio
 import random
 import logging
+import shutil
+import tempfile
 from datetime import datetime, timezone
 
 import httpx
@@ -4005,6 +4007,9 @@ EDL_AUTHOR = os.environ.get("EDL_AUTHOR", "legacy").lower()   # plan | legacy | 
 # ONE round via apply_edl_ops, then re-lint. Ship "observe" first — a live scoreboard
 # of what the lint would fix, with zero behavior change — before ever flipping to "fix".
 EDIT_LINT = os.environ.get("EDIT_LINT", "").lower()
+# A5b: true 2-pass loudness normalization on the FINAL rendered mp4. "" = off
+# (today's behavior — CutVideo.tsx's per-source-gain normalization only).
+AUDIO_FINALIZE = os.environ.get("AUDIO_FINALIZE", "").lower() in ("1", "true", "on")
 
 
 async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str, script: dict,
@@ -4631,6 +4636,81 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
         logging.warning("self-review op apply failed: %s", e)
 
 
+async def _ffprobe_duration_s(src: str, timeout_s: float = 30.0) -> float | None:
+    """Duration in seconds via ffprobe, or None if unmeasurable. `src` may be a
+    URL or a local path — ffprobe handles both. Used by A5b/A5c to verify a
+    stream-copied-video ffmpeg pass didn't silently change duration before a
+    caller adopts its output."""
+    if not src or shutil.which("ffprobe") is None:
+        return None
+    cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+          "-of", "default=noprint_wrapper=1:nokey=1", src]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+        return float(stdout.decode("utf-8", "ignore").strip())
+    except Exception:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return None
+
+
+async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
+    """A5b: true 2-pass loudness normalization on the FINAL rendered mp4 (the
+    Lambda output). Video is stream-copied (untouched) throughout; the audio is
+    re-encoded to -14 LUFS using ffmpeg's loudnorm filter in its accurate
+    2-pass mode. Fail-soft at every step — any missing binary, unmeasurable
+    take, subprocess failure, or duration mismatch (the stream-copy guard)
+    returns None and the caller keeps the un-normalized Lambda URL. Never
+    raises; never fails the job over this."""
+    if not AUDIO_FINALIZE or not render_url or shutil.which("ffmpeg") is None:
+        return None
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return None
+    try:
+        p1 = await asyncio.create_subprocess_exec(
+            *audio_mod.loudnorm_pass1_args(render_url),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr1 = await asyncio.wait_for(p1.communicate(), timeout=60)
+        measured = audio_mod.parse_loudnorm_json(stderr1.decode("utf-8", "ignore"))
+        if not measured:
+            return None
+        with tempfile.TemporaryDirectory() as td:
+            out_path = os.path.join(td, "finalized.mp4")
+            args2 = audio_mod.loudnorm_pass2_args(render_url, measured, out_path)
+            if not args2:
+                return None
+            p2 = await asyncio.create_subprocess_exec(
+                *args2, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await asyncio.wait_for(p2.communicate(), timeout=90)
+            if p2.returncode != 0 or not os.path.exists(out_path):
+                return None
+            orig_dur = await _ffprobe_duration_s(render_url)
+            new_dur = await _ffprobe_duration_s(out_path)
+            if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.1:
+                return None
+            with open(out_path, "rb") as f:
+                data = f.read()
+        base = SUPABASE_URL.rstrip("/")
+        key = f"finalized/{job_id}.mp4"
+        async with httpx.AsyncClient(timeout=60) as c:
+            up = await c.post(
+                f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
+                headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
+                         "Content-Type": "video/mp4", "x-upsert": "true"},
+                content=data)
+        if 200 <= up.status_code < 300:
+            return f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
+    except Exception as e:
+        logging.warning("[audio-finalize] failed for job=%s: %s", job_id, e)
+    return None
+
+
 async def _render_all_clips(job_id: str) -> None:
     """Render every non-ready clip from job['edl']. Per-clip isolation: one clip's
     failure marks THAT clip failed (with a structured code) and the others continue.
@@ -4686,6 +4766,15 @@ async def _render_all_clips(job_id: str) -> None:
                 render_url = await _poll_remotion_render(
                     submission["render_id"], submission["bucket_name"],
                     total_frames=submission.get("total_frames"))
+            # A5b: optional true 2-pass loudness normalization on the finished
+            # render — fully fail-soft (returns None on any issue, keeping the
+            # Lambda URL). Outside the Lambda-concurrency semaphore (local ffmpeg
+            # work, not a Lambda call). Scoped to the main pipeline render only
+            # (not tweak re-renders / preview renders / restart re-attach) for now.
+            if _is_current_render(clip, my_gen):
+                finalized_url = await _finalize_audio_loudness(render_url, job_id)
+                if finalized_url:
+                    render_url = finalized_url
             if _is_current_render(clip, my_gen):
                 clip["render_url"] = render_url
                 clip["status"] = "ready"

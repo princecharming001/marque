@@ -2326,3 +2326,97 @@ def test_edit_lint_fix_mode_never_crashes_pipeline(monkeypatch):
     job = main._clip_jobs[job_id]
     assert job["status"] == "ready"
     assert "lint" in job
+
+
+# ---------------------------------------------------------------------------
+# A5b — _finalize_audio_loudness fail-soft guards (superintelligence epic)
+# ---------------------------------------------------------------------------
+
+def test_finalize_audio_loudness_noop_when_flag_off(monkeypatch):
+    monkeypatch.setattr(main, "AUDIO_FINALIZE", False)
+    out = asyncio.run(main._finalize_audio_loudness("https://cdn/render.mp4", "job1"))
+    assert out is None
+
+
+def test_finalize_audio_loudness_noop_without_ffmpeg(monkeypatch):
+    monkeypatch.setattr(main, "AUDIO_FINALIZE", True)
+    monkeypatch.setattr(main.shutil, "which", lambda name: None)
+    out = asyncio.run(main._finalize_audio_loudness("https://cdn/render.mp4", "job1"))
+    assert out is None
+
+
+def test_finalize_audio_loudness_noop_without_supabase_config(monkeypatch):
+    monkeypatch.setattr(main, "AUDIO_FINALIZE", True)
+    monkeypatch.setattr(main.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(main, "SUPABASE_URL", "")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "")
+    out = asyncio.run(main._finalize_audio_loudness("https://cdn/render.mp4", "job1"))
+    assert out is None
+
+
+def test_finalize_audio_loudness_noop_without_url(monkeypatch):
+    monkeypatch.setattr(main, "AUDIO_FINALIZE", True)
+    out = asyncio.run(main._finalize_audio_loudness("", "job1"))
+    assert out is None
+
+
+def test_finalize_audio_loudness_falls_back_when_pass1_unmeasurable(monkeypatch):
+    monkeypatch.setattr(main, "AUDIO_FINALIZE", True)
+    monkeypatch.setattr(main.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "k")
+
+    class _FakeProc:
+        returncode = 0
+        async def communicate(self):
+            return b"", b"no loudnorm json here"
+
+    async def fake_exec(*a, **kw):
+        return _FakeProc()
+
+    monkeypatch.setattr(main.asyncio, "create_subprocess_exec", fake_exec)
+    out = asyncio.run(main._finalize_audio_loudness("https://cdn/render.mp4", "job1"))
+    assert out is None   # unparseable pass-1 measurement -> keeps the Lambda URL
+
+
+def test_finalize_audio_loudness_falls_back_on_duration_mismatch(monkeypatch, tmp_path):
+    monkeypatch.setattr(main, "AUDIO_FINALIZE", True)
+    monkeypatch.setattr(main.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(main, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(main, "SUPABASE_KEY", "k")
+
+    measured_json = ('{"input_i": "-23.0", "input_tp": "-2.0", "input_lra": "7.0", '
+                     '"input_thresh": "-33.0", "target_offset": "0.0"}').encode()
+
+    class _Pass1:
+        returncode = 0
+        async def communicate(self):
+            return b"", measured_json
+
+    class _Pass2:
+        returncode = 0
+        async def communicate(self):
+            out_path = self._out_path
+            with open(out_path, "wb") as f:
+                f.write(b"fake mp4 bytes")
+            return b"", b""
+
+    calls = {"n": 0}
+
+    async def fake_exec(*args, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _Pass1()
+        p2 = _Pass2()
+        p2._out_path = args[-1]   # loudnorm_pass2_args' out_path is the last argv element
+        return p2
+
+    monkeypatch.setattr(main.asyncio, "create_subprocess_exec", fake_exec)
+
+    durations = iter([10.0, 12.5])   # orig vs. new — a deliberate mismatch
+    async def fake_duration(src, timeout_s=30.0):
+        return next(durations)
+    monkeypatch.setattr(main, "_ffprobe_duration_s", fake_duration)
+
+    out = asyncio.run(main._finalize_audio_loudness("https://cdn/render.mp4", "job1"))
+    assert out is None   # the stream-copy duration guard rejected it
