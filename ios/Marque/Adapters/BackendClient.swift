@@ -600,6 +600,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let revision: Int
         let updatedAt: String
         let updates: [String]       // recent "what changed" one-liners
+        /// True when this is the deterministic placeholder (no analyzed videos yet), not a
+        /// compiled-from-evidence strategy — the app shows a simple "still forming" state.
+        let isTemplate: Bool
     }
 
     /// P7.4: the compiled strategy (the creator's "brain"). nil when off / not yet compiled.
@@ -614,7 +617,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return StrategyDoc(markdown: md,
                            revision: strat["strategy_revision"] as? Int ?? 0,
                            updatedAt: strat["strategy_updated_at"] as? String ?? "",
-                           updates: updates)
+                           updates: updates,
+                           isTemplate: strat["is_template"] as? Bool ?? false)
     }
 
     // MARK: Learning loop

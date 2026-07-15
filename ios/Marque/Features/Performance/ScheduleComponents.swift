@@ -214,6 +214,14 @@ struct SchedulePickerSheet: View {
     @State private var autoCaptions = true
     @State private var importPick: PhotosPickerItem? = nil       // I-6
     @State private var importing = false
+    @State private var showConnect = false
+    @State private var pendingClip: Clip? = nil                  // held while the no-account alert is up
+
+    /// At least one OAuth-linked account that can actually publish (empty accountId =
+    /// voice-learning link only). Posting/scheduling with none reaches nothing.
+    private var hasPostableAccount: Bool {
+        store.brand.connectedAccounts.contains { $0.canPublish }
+    }
 
     init(day: Date, preselectClipId: UUID? = nil) {
         self.day = day
@@ -242,6 +250,26 @@ struct SchedulePickerSheet: View {
                             Button { toggle(p) } label: { Chip(text: p.label, selected: platforms.contains(p)) }
                                 .buttonStyle(.plain)
                         }
+                    }
+
+                    if !hasPostableAccount {
+                        // Be honest up front: with nothing connected, "scheduling" only saves
+                        // a reminder locally — it can't reach Instagram or TikTok.
+                        Button { showConnect = true } label: {
+                            HStack(spacing: Space.sm) {
+                                Image(systemName: "link").font(.system(size: 13, weight: .semibold))
+                                Text("Connect an account to actually post — otherwise this just saves to your calendar.")
+                                    .font(AppFont.caption).multilineTextAlignment(.leading)
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundStyle(Palette.textSecondary)
+                            .padding(Space.sm)
+                            .background(Palette.warning.opacity(0.12))
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("schedule.connectBanner")
                     }
 
                     MarqueToggleRow(title: "Auto-captions",
@@ -292,12 +320,27 @@ struct SchedulePickerSheet: View {
             .navigationTitle(day.formatted(.dateTime.weekday().month().day()))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .sheet(isPresented: $showConnect) { ConnectAccountsView() }
+            .alert("No account connected", isPresented: Binding(
+                get: { pendingClip != nil }, set: { if !$0 { pendingClip = nil } })) {
+                Button("Connect") { pendingClip = nil; showConnect = true }
+                Button("Save to calendar") { if let c = pendingClip { pendingClip = nil; commitSchedule(c) } }
+                Button("Cancel", role: .cancel) { pendingClip = nil }
+            } message: {
+                Text("Connect Instagram or TikTok to actually post this. Without one, it's only saved to your calendar as a reminder — nothing gets published.")
+            }
         }
     }
     private func toggle(_ p: SocialPlatform) {
         if platforms.contains(p) { platforms.remove(p) } else { platforms.insert(p) }
     }
     private func schedule(_ c: Clip) {
+        // No connected account → don't silently "schedule" into the void. Surface it and let
+        // the creator connect or knowingly save a local reminder.
+        guard hasPostableAccount else { pendingClip = c; return }
+        commitSchedule(c)
+    }
+    private func commitSchedule(_ c: Clip) {
         let comps = Calendar.current.dateComponents([.hour, .minute], from: time)
         let date = Calendar.current.date(bySettingHour: comps.hour ?? 18, minute: comps.minute ?? 0, second: 0, of: day) ?? day
         Task {
@@ -321,6 +364,7 @@ struct PostEditorSheet: View {
     @State private var showSubscribe = false      // C-07
     @State private var showMetrics = false
     @State private var showRemoveConfirm = false
+    @State private var showConnect = false
 
     init(post: ScheduledPost) {
         self.post = post
@@ -330,6 +374,10 @@ struct PostEditorSheet: View {
         _autoCaptions = State(initialValue: post.autoCaptions)
     }
     private var clip: Clip? { store.clips.first { $0.id == post.clipId } }
+    /// An OAuth-linked account that can actually publish (not a voice-only link).
+    private var hasPostableAccount: Bool {
+        store.brand.connectedAccounts.contains { $0.canPublish }
+    }
 
     var body: some View {
         NavigationStack {
@@ -395,7 +443,7 @@ struct PostEditorSheet: View {
                            confirm: "Remove", destructive: true) { store.deleteScheduledPost(post); dismiss() }
             .sheet(isPresented: $showMetrics) { MetricsEntrySheet(post: post) }
             .safeAreaInset(edge: .bottom) {
-                if store.canPublish {
+                if store.canPublish && hasPostableAccount {
                     PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {
                         posting = true
                         let p = current
@@ -403,6 +451,20 @@ struct PostEditorSheet: View {
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
+                } else if store.canPublish {
+                    // Subscribed but nothing to post TO — don't offer a "Post now" that
+                    // silently does nothing. Send them to connect an account instead.
+                    Button { showConnect = true } label: {
+                        Label("Connect an account to post", systemImage: "link")
+                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                            .frame(maxWidth: .infinity).padding(Space.md)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    }
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                    .background(.ultraThinMaterial)
+                    .accessibilityIdentifier("post.connectToPost")
+                    .sheet(isPresented: $showConnect) { ConnectAccountsView() }
                 } else {
                     // C-07: the real subscription gate (StoreKit2), not the dead PaywallView.
                     Button { showSubscribe = true } label: {

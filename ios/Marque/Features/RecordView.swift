@@ -328,13 +328,25 @@ struct RecordView: View {
                 Text("Paused — flip the camera for a new angle, then resume. Your takes stitch into one clip.")
                     .font(AppFont.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
                 HStack(spacing: Space.xl) {
-                    Button { camera.flip() } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath.camera")
-                            .font(.system(size: 18)).foregroundStyle(.white)
-                            .marqueGlassCircle(diameter: 52)
+                    if segments.isEmpty {
+                        Button { camera.flip() } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                                .font(.system(size: 18)).foregroundStyle(.white)
+                                .marqueGlassCircle(diameter: 52)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("record.flipCamera")
+                    } else {
+                        // Delete the last take — pops the most recent segment (and its file)
+                        // so a fumbled take can be redone without scrapping the whole clip.
+                        Button { deleteLastTake() } label: {
+                            Image(systemName: "arrow.uturn.backward")
+                                .font(.system(size: 18)).foregroundStyle(.white)
+                                .marqueGlassCircle(diameter: 52)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("record.deleteLastTake")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("record.flipCamera")
                     recordButton(active: false) { resumeTake() }
                     Button { finishTake() } label: {
                         Text("Done").font(AppFont.headline).foregroundStyle(.white)
@@ -342,6 +354,14 @@ struct RecordView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("record.finishTake")
+                }
+                if !segments.isEmpty {
+                    Button { camera.flip() } label: {
+                        Label("Flip camera", systemImage: "arrow.triangle.2.circlepath.camera")
+                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.flipCamera")
                 }
             case .stitching:
                 ProgressView().tint(Palette.accent)
@@ -1048,6 +1068,22 @@ struct RecordView: View {
         submitFailedMessage = nil
         footagePath = nil          // will be re-stitched from ALL segments on Done
         phase = .paused
+    }
+
+    /// Delete the most recently recorded take. Pops the last segment (and reclaims its
+    /// file), invalidates the hoisted upload/stitch (footage is about to change), and if
+    /// nothing remains, returns to the start screen. Re-record to replace it.
+    private func deleteLastTake() {
+        guard !segments.isEmpty else { return }
+        let removed = segments.removeLast()
+        try? FileManager.default.removeItem(at: removed)
+        uploadTask?.cancel()
+        uploadTask = nil
+        analyzeJobId = nil
+        submitFailedMessage = nil
+        footagePath = nil                      // re-stitch from the remaining segments on Done
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        if segments.isEmpty { phase = .ready }
     }
 
     private func recordButton(active: Bool = false, _ action: @escaping () -> Void) -> some View {
