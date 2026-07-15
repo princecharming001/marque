@@ -49,8 +49,11 @@ struct HomeView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $showVoice) { VoiceSessionView() }
-        .sheet(item: $selectedReel) { reel in
-            ReelDetailSheet(reel: reel)
+        // Tapping a reel opens the full-screen TikTok/IG-style vertical feed (swipe for the
+        // next, endlessly) rather than a single teardown sheet — the teardown is still one
+        // tap away via the pager's "Details" button.
+        .fullScreenCover(item: $selectedReel) { reel in
+            ReelFeedPager(feed: feed, startReel: reel)
         }
         // Tapping a pick opens the full script (read it, tweak it, film it) —
         // the card only ever shows the title + hook.
@@ -256,38 +259,25 @@ struct HomeView: View {
                 LazyVGrid(columns: reelColumns, spacing: Space.md) {
                     ForEach(feed.reelItems) { r in
                         ReelCard(reel: r) { selectedReel = r }
+                            // Infinite scroll: nearing the end auto-loads the next page, so
+                            // the grid keeps growing as you scroll (no manual "Load more").
+                            .onAppear { autoLoadMoreReels(near: r) }
                     }
                 }
-                if feed.reelCursor >= 0 {
-                    loadMoreReelsButton
+                if feed.isLoadingMoreReels {
+                    ProgressView().tint(Palette.textSecondary)
+                        .frame(maxWidth: .infinity).frame(height: 44)
                 }
             }
         }
     }
 
-    // GhostButton recipe, hand-rolled so the in-flight spinner can live inside the
-    // same control (keeps `feed.moreReels` stable for Maestro).
-    private var loadMoreReelsButton: some View {
-        Button {
-            Task { await feed.loadMoreReels(store: store) }
-        } label: {
-            Group {
-                if feed.isLoadingMoreReels {
-                    ProgressView().tint(Palette.textSecondary)
-                } else {
-                    Text("Load more reels").font(AppFont.headline)
-                }
-            }
-            .foregroundStyle(Palette.textPrimary)
-            .frame(maxWidth: .infinity).frame(height: 54)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
-        }
-        .buttonStyle(PressableStyle(dim: 0.7))
-        .disabled(feed.isLoadingMoreReels)
-        .accessibilityIdentifier("feed.moreReels")
+    /// Trigger the next reels page when one of the last cells appears.
+    private func autoLoadMoreReels(near reel: ReelItem) {
+        guard feed.reelCursor >= 0, !feed.isLoadingMoreReels,
+              let idx = feed.reelItems.firstIndex(where: { $0.id == reel.id }),
+              idx >= feed.reelItems.count - 2 else { return }
+        Task { await feed.loadMoreReels(store: store) }
     }
 
 }

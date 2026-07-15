@@ -44,7 +44,7 @@ struct StrategyView: View {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     if loading {
                         ProgressView().frame(maxWidth: .infinity).padding(.top, 80)
-                    } else if let doc {
+                    } else if let doc, !doc.isTemplate {
                         HStack {
                             Text("REVISION \(doc.revision)")
                                 .font(AppFont.micro).tracking(Track.label)
@@ -84,9 +84,13 @@ struct StrategyView: View {
                             .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                         }
                     } else {
+                        // Both a nil doc and the deterministic placeholder (doc.isTemplate)
+                        // land here — one short "not ready yet" line, matching the app's
+                        // other terse empty states, instead of rendering the generic
+                        // template as if it were a real compiled strategy.
                         EmptyStateView(icon: "brain",
-                                       title: "Your strategy is still forming",
-                                       message: "Yunicorn compiles a strategy from your analyzed videos. Film and analyze a few clips, then check back — it updates weekly.")
+                                       title: "Not ready yet",
+                                       message: "Film and analyze a few clips — your strategy builds from them.")
                             .padding(.top, 60)
                     }
                 }
