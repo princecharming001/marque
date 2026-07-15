@@ -110,6 +110,20 @@ def test_framing_scales_within_120():
     assert ret._FRAMING_SCALES["mid"] <= 1.12
 
 
+def test_combined_framing_punch_capped():
+    # A close-framed segment (1.18) under a 1.12 punch would render ~1.32 — the final
+    # clamp must lower the segment's tx_scale so the product stays <= 1.20.
+    e = {"segments": [{"src_in": 0, "src_out": 300, "tx_scale": 1.18}],
+         "overlays": [{"type": "punch_in", "src_in": 100, "src_out": 130, "scale": 1.12}]}
+    out = ret._clamp_combined_scale(e)
+    tx = out["segments"][0]["tx_scale"]
+    assert tx * 1.12 <= 1.20 + 1e-6, f"combined {tx * 1.12:.3f} exceeds 120% cap"
+    # a segment with no overlapping punch is untouched
+    e2 = {"segments": [{"src_in": 0, "src_out": 300, "tx_scale": 1.18}],
+          "overlays": [{"type": "punch_in", "src_in": 400, "src_out": 430, "scale": 1.12}]}
+    assert ret._clamp_combined_scale(e2)["segments"][0]["tx_scale"] == 1.18
+
+
 # ── Caption safe zone (spec §6.3) ────────────────────────────────────────────
 
 def test_caption_default_in_safe_zone():
