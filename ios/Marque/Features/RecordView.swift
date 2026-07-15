@@ -63,10 +63,11 @@ struct RecordView: View {
     @State private var visibleMimicIds: Set<String> = []
     @State private var failedMimicIds: Set<String> = []
     @State private var referenceReel: ReelItem? = nil
-    // "Match a vibe" is now a STYLE picker: the editing styles (theme bundles), each with a
-    // playable talking-head demo. The picked theme_id drives the actual edit (apply_theme).
-    @State private var styleOptions: [StyleOption] = []
-    @State private var selectedThemeId: String? = nil
+    // B-ROLL STYLE picker: how much cutaway coverage the creator wants (full/balanced/
+    // minimal/none), each option demonstrated by a real example reel. The pick drives the
+    // edit via config.broll_coverage + the b-roll toggle ("none" switches cutaways off).
+    @State private var brollStyles: [BrollStyleOption] = []
+    @State private var selectedBrollStyle: String = "balanced"
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -207,11 +208,13 @@ struct RecordView: View {
         for item in items {
             if let path = await importOne(item) {
                 store.addFootage(path: path, scriptId: liveScript.id, title: "Uploaded video", seconds: 60)
+                var toggles = editFormat.defaultToggles
+                toggles.broll = selectedBrollStyle != "none"
                 store.submitTakeInstant(script: freestyleTakeScript(), footagePath: path,
                                         isFreestyle: true, customInstructions: customInstructions,
                                         reactSourceURL: "", editFormat: editFormat.rawValue,
-                                        referenceReel: nil, themeId: selectedThemeId,
-                                        toggles: editFormat.defaultToggles)
+                                        referenceReel: nil, config: brollConfig(),
+                                        toggles: toggles)
             } else {
                 failures += 1
             }
@@ -392,8 +395,9 @@ struct RecordView: View {
                     if lastSeededFormat != editFormat {
                         briefToggles = editFormat.defaultToggles
                         lastSeededFormat = editFormat
+                        syncBrollToggle()      // the picked b-roll style survives a format change
                     }
-                    await loadStyles()
+                    await loadBrollStyles()
                 }
                 .task { await loadCapabilities() }
                 HStack(spacing: Space.lg) {
@@ -569,15 +573,15 @@ struct RecordView: View {
     }
 
     @ViewBuilder private var mimicSection: some View {
-        if !styleOptions.isEmpty {
+        if !brollStyles.isEmpty {
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text("PICK AN EDITING STYLE — OPTIONAL")
+                Text("B-ROLL STYLE — HOW MUCH CUTAWAY?")
                     .font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(.white.opacity(0.5))
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Space.sm) {
-                        ForEach(Array(styleOptions.enumerated()), id: \.element.id) { i, s in
-                            styleCard(s, index: i)
+                        ForEach(Array(brollStyles.enumerated()), id: \.element.id) { i, s in
+                            brollStyleCard(s, index: i)
                         }
                     }
                 }
@@ -585,23 +589,24 @@ struct RecordView: View {
         }
     }
 
-    private func styleCard(_ s: StyleOption, index: Int) -> some View {
-        let selected = selectedThemeId == s.themeId
-        // The card SHOWS the style via a real, muted-autoplay talking-head demo when the
-        // cache has one; hard playback failure or no demo → poster/placeholder fallback.
-        // The demo is illustrative only — picking the card sends s.themeId, which drives
-        // the edit (apply_theme + retention passes), NOT a mimic of this reel.
-        let playable = !s.videoURL.isEmpty && !failedMimicIds.contains(s.themeId)
+    private func brollStyleCard(_ s: BrollStyleOption, index: Int) -> some View {
+        let selected = selectedBrollStyle == s.id
+        // The card SHOWS the style via a real example reel (muted autoplay when the pool
+        // has one; poster/placeholder fallback otherwise). The demo is illustrative only —
+        // picking the card sends config.broll_coverage (+ the b-roll toggle for "none"),
+        // which drives how much cutaway the AI edit uses. NOT a mimic of this reel.
+        let playable = !s.videoURL.isEmpty && !failedMimicIds.contains(s.id)
         return Button {
             withAnimation(.easeOut(duration: 0.15)) {
-                selectedThemeId = selected ? nil : s.themeId      // tap again to unpick
+                selectedBrollStyle = s.id
+                syncBrollToggle()
             }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topTrailing) {
-                    if playable, visibleMimicIds.contains(s.themeId), let url = URL(string: s.videoURL) {
+                    if playable, visibleMimicIds.contains(s.id), let url = URL(string: s.videoURL) {
                         FailableVideoPlayer(url: url, muted: true, showsControls: false,
-                                            onFailure: { failedMimicIds.insert(s.themeId) })
+                                            onFailure: { failedMimicIds.insert(s.id) })
                         .frame(width: 118, height: 148)
                         .allowsHitTesting(false)         // the CARD is the tap target
                     } else {
@@ -613,7 +618,8 @@ struct RecordView: View {
                             }
                         } placeholder: {
                             Rectangle().fill(Color.white.opacity(0.08))
-                                .overlay(Image(systemName: "wand.and.stars").foregroundStyle(.white.opacity(0.3)))
+                                .overlay(Image(systemName: "photo.on.rectangle.angled")
+                                    .foregroundStyle(.white.opacity(0.3)))
                         }
                         .frame(width: 118, height: 148).clipped()
                     }
@@ -626,12 +632,12 @@ struct RecordView: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                .onAppear { visibleMimicIds.insert(s.themeId) }
-                .onDisappear { visibleMimicIds.remove(s.themeId) }
-                Text(s.label)                            // the STYLE name — this is the choice
+                .onAppear { visibleMimicIds.insert(s.id) }
+                .onDisappear { visibleMimicIds.remove(s.id) }
+                Text(s.label)                            // the B-ROLL style — this is the choice
                     .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                     .lineLimit(1)
-                Text(s.blurb)                            // what the style does to the cut
+                Text(s.blurb)                            // what the style means for the cut
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
@@ -642,13 +648,29 @@ struct RecordView: View {
                 .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("record.style.\(index)")
+        .accessibilityIdentifier("record.brollStyle.\(index)")
     }
 
-    private func loadStyles() async {
-        let opts = await store.backend.styles(niche: store.brand.niche)
+    private func loadBrollStyles() async {
+        let opts = await store.backend.brollStyles(niche: store.brand.niche)
         guard !Task.isCancelled else { return }
-        styleOptions = opts
+        brollStyles = opts
+    }
+
+    /// The picked b-roll style owns the b-roll toggle: "none" switches cutaways off
+    /// entirely; every other style keeps them available (coverage steered via config).
+    private func syncBrollToggle() {
+        briefToggles.broll = selectedBrollStyle != "none"
+    }
+
+    /// The config dict the pick maps to (Addendum Part 1). balanced = auto = v1 default,
+    /// so it sends nothing; "none" rides the toggle, not the config.
+    private func brollConfig() -> [String: String]? {
+        switch selectedBrollStyle {
+        case "full":    return ["broll_coverage": "full"]
+        case "minimal": return ["broll_coverage": "minimal"]
+        default:        return nil
+        }
     }
 
     private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
@@ -859,7 +881,7 @@ struct RecordView: View {
                                 customInstructions: customInstructions,
                                 reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                 editFormat: editFormat.rawValue, referenceReel: referenceReel,
-                                themeId: selectedThemeId,
+                                config: brollConfig(),
                                 toggles: briefToggles)
         dismiss()
         router.selectedTab = .library
@@ -889,7 +911,7 @@ struct RecordView: View {
                     reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                     editFormat: editFormat.rawValue,
                     referenceReel: referenceReel,
-                    themeId: selectedThemeId,
+                    config: brollConfig(),
                     autoConfirm: true,                        // UX-B1b: one-tap submit
                     toggles: briefToggles) else {
                 await fallbackToMock()

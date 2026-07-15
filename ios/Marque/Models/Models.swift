@@ -715,6 +715,20 @@ struct StyleOption: Codable, Hashable, Identifiable {
     var sample: Bool = false
 }
 
+/// A B-ROLL STYLE option (full / balanced / minimal / none): how much cutaway coverage
+/// the creator wants, illustrated by a real example reel demonstrating that style.
+/// Picking one sends config.broll_coverage (+ the b-roll toggle for "none") to the edit
+/// pipeline, which actually drives the cut. The demo is illustrative, never mimicked.
+struct BrollStyleOption: Codable, Hashable, Identifiable {
+    var id: String
+    let label: String
+    let blurb: String
+    var videoURL: String = ""
+    var thumbnailURL: String = ""
+    var handle: String = ""
+    var sample: Bool = false
+}
+
 enum SavedScriptSource: String, Codable {
     case daily, mimic, chat, custom, onboarding
     var label: String {

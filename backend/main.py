@@ -2239,28 +2239,18 @@ _STYLE_GALLERY_ORDER = ["clean_creator", "hormozi_punch", "energetic_pop",
                         "docu_calm", "premium_brand"]
 
 
-@app.get("/v1/styles")
-async def styles_gallery(niche: str = ""):
-    """The "match a vibe" picker: choose an EDITING STYLE, illustrated by a real, playable
-    talking-head reel so the creator can feel the energy before picking. Selecting one sends
-    `theme_id` to POST /v1/clips, which actually drives the edit (apply_theme + the retention
-    passes keyed off the theme). The demo reel is illustrative ONLY — it is never mimicked,
-    and it need not match the creator's niche. Demos are talking-head, playable, and distinct
-    per style where the cache allows; when no live reels exist we return the styles with no
-    demo (sample:true) rather than a fake video."""
-    themes = [themes_mod.get_theme(tid) for tid in _STYLE_GALLERY_ORDER]
-    # Pull this niche's durable Supabase copy into the in-memory cache first (same as
-    # /v1/reels) so demos appear immediately even on a cold process right after a deploy —
-    # otherwise the pool is empty until Home warms a niche and we'd show samples.
+async def _global_th_demo_pool(niche: str) -> list[dict]:
+    """The shared demo pool for the style/b-roll pickers: GENERAL talking heads pooled
+    across EVERY cached niche + watched creator (a style choice is not niche-relevant),
+    playable only, deduped by reel AND creator so options don't twin, durable-URL-first
+    (raw CDN links 403 into static cards). Hydrates the niche's durable Supabase copy
+    first so demos appear even on a cold post-deploy process, and kicks a background
+    warm so the pool keeps filling."""
     if niche:
         try:
             await _hydrate_reels_caches(niche, [])
         except Exception:
             pass
-    # Demos are GENERAL talking heads — pooled across EVERY cached niche + watched creator,
-    # not just this creator's niche (styles are a stylistic choice, not niche-relevant). Each
-    # style gets a DISTINCT demo (no modulo repeat) so the options feel different; when the
-    # pool runs dry the remaining styles are honest samples (no fake video).
     pool: list[dict] = []
     seen_ids: set = set()
     seen_handles: set = set()
@@ -2272,18 +2262,16 @@ async def styles_gallery(niche: str = ""):
                 rid = r.get("id")
                 handle = (r.get("creator_handle") or "").lower()
                 if rid in seen_ids or (handle and handle in seen_handles):
-                    continue     # dedupe by reel AND creator so styles don't twin
+                    continue
                 seen_ids.add(rid)
                 if handle:
                     seen_handles.add(handle)
                 pool.append(r)
     except Exception:
         pool = []
-    # Durable (Supabase-hosted) URLs first — they don't 403 like raw CDN links — then views.
     _sb = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
     pool.sort(key=lambda r: (0 if (r.get("video_url") or "").startswith(_sb) else 1,
                              -(r.get("views") or 0)))
-    # Warm this niche's cache so the pool keeps filling over time (still useful cross-niche).
     if niche:
         key = _niche_cache_key(niche)
         entry = _niche_reels_cache.get(key)
@@ -2291,11 +2279,73 @@ async def styles_gallery(niche: str = ""):
         if stale and APIFY_KEY and key not in _reels_refreshing:
             _reels_refreshing.add(key)
             _spawn(_refresh_niche_reels(niche))
+    return pool
+
+
+@app.get("/v1/styles")
+async def styles_gallery(niche: str = ""):
+    """The theme-bundle gallery (kept for wire compat — the record flow now uses
+    /v1/broll-styles instead). Each style is illustrated by a real, playable talking-head
+    reel; selecting one sends `theme_id` to POST /v1/clips (apply_theme). Demos are
+    distinct per style; when no live reels exist the styles come back sample:true."""
+    themes = [themes_mod.get_theme(tid) for tid in _STYLE_GALLERY_ORDER]
+    pool = await _global_th_demo_pool(niche)
     out = []
     for i, th in enumerate(themes):
         demo = pool[i] if i < len(pool) else None      # distinct per style, no wrap
         out.append({
             "theme_id": th.id, "label": th.label, "blurb": th.blurb,
+            "video_url": (demo or {}).get("video_url", ""),
+            "thumbnail_url": (demo or {}).get("thumbnail_url", ""),
+            "handle": (demo or {}).get("creator_handle", ""),
+            "sample": demo is None,
+        })
+    return {"mode": "live" if pool else "mock", "styles": out}
+
+
+# The "how much b-roll?" picker options. `want` = the edit-format classification whose
+# example reels best DEMONSTRATE that style (cutaway-heavy options show a reel that
+# actually cuts away; face-first options show a straight talking head). The id maps to
+# the edit via config.broll_coverage + the b-roll toggle (see /v1/clips config handling):
+#   full → coverage "full" · balanced → coverage auto ("") · minimal → coverage "minimal"
+#   none → toggles.broll=false (no cutaways at all).
+_BROLL_STYLE_OPTIONS = [
+    {"id": "full", "label": "Heavy B-roll", "want": "talking_head_broll",
+     "blurb": "Full-screen cutaways land on every key moment."},
+    {"id": "balanced", "label": "Balanced", "want": "talking_head_broll",
+     "blurb": "Cutaways where they help — your face where it matters."},
+    {"id": "minimal", "label": "Minimal", "want": "talking_head",
+     "blurb": "Face-first. Text callouts instead of cutaways."},
+    {"id": "none", "label": "No B-roll", "want": "talking_head",
+     "blurb": "Pure talking head — punch-ins and captions only."},
+]
+
+
+@app.get("/v1/broll-styles")
+async def broll_styles(niche: str = ""):
+    """The record flow's B-ROLL STYLE picker: how much cutaway coverage the creator wants,
+    each option illustrated by a real, playable example reel (cutaway-heavy options get a
+    reel classified talking_head_broll where the pool has one). The picked id returns to
+    POST /v1/clips as config.broll_coverage (+ the b-roll toggle for "none") and actually
+    drives the edit — the plan prompt's coverage hints and the Part 4A asset rules key off
+    it. Demos are illustrative only, never mimicked."""
+    pool = await _global_th_demo_pool(niche)
+    used: set = set()
+
+    def _pick(want: str) -> dict | None:
+        demo = next((r for r in pool if r.get("id") not in used
+                     and (r.get("edit_format") or "talking_head") == want), None)
+        if demo is None:                       # no format-matched reel left → any distinct one
+            demo = next((r for r in pool if r.get("id") not in used), None)
+        if demo is not None:
+            used.add(demo.get("id"))
+        return demo
+
+    out = []
+    for opt in _BROLL_STYLE_OPTIONS:
+        demo = _pick(opt["want"])
+        out.append({
+            "id": opt["id"], "label": opt["label"], "blurb": opt["blurb"],
             "video_url": (demo or {}).get("video_url", ""),
             "thumbnail_url": (demo or {}).get("thumbnail_url", ""),
             "handle": (demo or {}).get("creator_handle", ""),

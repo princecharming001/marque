@@ -827,6 +827,25 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
     }
 
+    private struct BrollStylesResp: Decodable { let styles: [BrollStyleDTO] }
+    private struct BrollStyleDTO: Decodable {
+        let id: String; let label: String; let blurb: String
+        let video_url: String?; let thumbnail_url: String?; let handle: String?; let sample: Bool?
+    }
+
+    /// The B-ROLL STYLE picker — how much cutaway coverage (full/balanced/minimal/none),
+    /// each option demonstrated by a real example reel. The picked id returns to
+    /// POST /v1/clips as config.broll_coverage and drives the actual edit.
+    func brollStyles(niche: String) async -> [BrollStyleOption] {
+        guard let data = await get("/v1/broll-styles?niche=\(q(niche))"),
+              let r = try? JSONDecoder().decode(BrollStylesResp.self, from: data) else { return [] }
+        return r.styles.map {
+            BrollStyleOption(id: $0.id, label: $0.label, blurb: $0.blurb,
+                             videoURL: $0.video_url ?? "", thumbnailURL: $0.thumbnail_url ?? "",
+                             handle: $0.handle ?? "", sample: $0.sample ?? false)
+        }
+    }
+
     private struct WarmResp: Decodable { let ok: Bool? }
 
     /// Fire-and-forget: pre-scrape a newly-added watched creator so their real
