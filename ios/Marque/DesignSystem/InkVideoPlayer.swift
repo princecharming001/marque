@@ -46,6 +46,9 @@ final class InkPlayerModel: ObservableObject {
         isPlaying.toggle()
     }
     func toggleMute() { muted.toggle(); player.isMuted = muted }
+    /// Pause immediately — called when the player's view leaves screen (sheet dismissed)
+    /// so audio never keeps playing behind a closed preview.
+    func stop() { player.pause(); isPlaying = false }
     func seek(to frac: Double) {
         guard let dur = player.currentItem?.duration.seconds, dur.isFinite, dur > 0 else { return }
         let f = min(1, max(0, frac))
@@ -54,6 +57,7 @@ final class InkPlayerModel: ObservableObject {
         progress = f
     }
     deinit {
+        player.pause()          // belt: never leave audio running past the model's life
         if let timeObs { player.removeTimeObserver(timeObs) }
         if let endObs { NotificationCenter.default.removeObserver(endObs) }
     }
@@ -161,6 +165,9 @@ struct InkVideoPlayer: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.2), value: model.isPlaying)
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
+        // Stop playback the moment the view leaves screen (preview sheet dismissed) so
+        // audio never keeps running behind a closed popup.
+        .onDisappear { model.stop() }
     }
 
     private func flashChrome() {

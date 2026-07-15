@@ -37,6 +37,13 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
     }
     func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {}
 
+    // Stop playback when the player leaves the hierarchy (sheet/preview dismissed) so a
+    // reel keeps neither playing nor looping audio behind a closed popup.
+    static func dismantleUIViewController(_ vc: AVPlayerViewController, coordinator: Coordinator) {
+        vc.player?.pause()
+        vc.player = nil
+    }
+
     final class Coordinator: NSObject {
         let onFailure: () -> Void
         let onAspect: ((CGFloat) -> Void)?
