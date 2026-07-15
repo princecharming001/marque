@@ -822,6 +822,36 @@ def test_get_clip_job_not_found():
     assert r.status_code == 404
 
 
+def test_persist_clip_job_survives_nested_theme(monkeypatch):
+    """Regression: a Theme (pydantic) nested ANYWHERE in the job — not just the top-level
+    _theme — used to raise 'Object of type Theme is not JSON serializable' in
+    upsert_clip_job, so the job was NEVER persisted → the next restart stranded the clip as
+    'failed'. The durable payload must now serialize cleanly (Theme → its dict)."""
+    import asyncio as _a, json as _j
+    from app.themes import get_theme
+    captured = {}
+
+    class _FakeSB:
+        async def upsert_clip_job(self, job_id, job):
+            _j.dumps(job)                 # must NOT raise — proves the payload is pure JSON
+            captured["job"] = job
+            return True
+
+    th = get_theme("hormozi_punch")
+    main._clip_jobs["theme_persist_job"] = {
+        "job_id": "theme_persist_job", "status": "ready", "_theme": th,
+        "edl": {"look": {"filter": "vivid"}, "leaked_theme": th},   # nested Theme (worst case)
+        "clips": [{"clip_id": "c", "status": "ready"}], "edl_history": [], "tweaks": [],
+    }
+    monkeypatch.setattr(main, "_supabase_client", _FakeSB())
+    _a.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._persist_clip_job("theme_persist_job"))
+    assert "job" in captured                               # persist actually ran (didn't throw)
+    assert captured["job"]["_theme"] is None               # top-level stripped
+    assert isinstance(captured["job"]["edl"]["leaked_theme"], dict)   # nested Theme → dict
+    del main._clip_jobs["theme_persist_job"]
+
+
 def test_demo_editor_job_synthesized_keyless():
     """E-12: a `demo-` job id is synthesized keyless with a 3-segment EDL so the
     manual editor is drivable in the sim without running the record→makeClips

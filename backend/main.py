@@ -2460,6 +2460,20 @@ REMOTION_BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
 _clip_jobs: dict[str, dict] = {}
 
 
+def _json_safe(o):
+    """`json.dumps(default=...)` hook: make any value durably serializable. A pydantic
+    model (Theme, etc.) becomes its plain dict; anything else non-serializable is dropped
+    (None) rather than raising. Keeps the clip-job persist from ever failing on a stray
+    object nested in the EDL/brief/config."""
+    md = getattr(o, "model_dump", None)
+    if callable(md):
+        try:
+            return md()
+        except Exception:
+            return None
+    return None
+
+
 async def _persist_clip_job(job_id: str) -> None:
     """Best-effort durable write-through for one edit session (F15). Call from
     a fire-and-forget asyncio.create_task at the end of any code path that
@@ -2485,6 +2499,13 @@ async def _persist_clip_job(job_id: str) -> None:
             # restore (job["theme_id"] is the durable, honest record; retheme() and any
             # future restore path re-resolve the Theme from that id).
             durable = {**durable, "_theme": None}
+        # BULLETPROOF: coerce the WHOLE payload to pure JSON first. A Theme (or any stray
+        # pydantic/object) nested ANYWHERE — not just at the top-level `_theme` key — used to
+        # raise "Object of type Theme is not JSON serializable" here, which meant the job was
+        # NEVER persisted durably → the next deploy/restart wiped the in-memory job and the
+        # clip stranded as "failed". `default` converts a pydantic model to its dict and drops
+        # anything else, so no nested value can ever break the persist (and strand a clip) again.
+        durable = json.loads(json.dumps(durable, default=_json_safe))
         await _supabase_client.upsert_clip_job(job_id, durable)
     except Exception as e:
         logging.warning("supabase upsert_clip_job failed: %s", e)
