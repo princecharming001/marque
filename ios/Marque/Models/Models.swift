@@ -580,6 +580,15 @@ struct ClipEditState: Codable, Hashable {
     var clipCount: Int = 1
     var resultClipId: UUID? = nil           // set when stage == .ready
     var detail: String = ""                 // honest failure reason when stage == .failed
+    // Recovery payload so a failed chat edit is retryable WITHOUT re-picking the videos:
+    // stored once the footage is stitched, then a retry re-runs the pipeline from it.
+    var footagePath: String = ""
+    var instruction: String = ""
+    var editFormat: String = ""
+    var reactSourceURL: String = ""
+    var config: [String: String]? = nil
+    var toggles: EditToggles? = nil
+    var retryable: Bool { stage == .failed && !footagePath.isEmpty }
 }
 
 struct ChatMessage: Codable, Hashable, Identifiable {

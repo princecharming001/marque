@@ -1036,7 +1036,9 @@ final class AppStore {
     /// source + EDL). Optimistically flips affected clips back to .rendering and
     /// resumes polling.
     func retryClipJob(_ clip: Clip) async {
-        guard let jobId = clip.jobId else { return }
+        // No server job at all (it failed before one was ever created) → recover straight
+        // from the local take.
+        guard let jobId = clip.jobId else { _ = await resubmitFailedClip(clip); return }
         let affected = clips.filter { $0.jobId == jobId && $0.status == .failed }.map { $0.id }
         for id in affected {
             if let idx = clips.firstIndex(where: { $0.id == id }) {
@@ -1046,8 +1048,59 @@ final class AppStore {
             }
         }
         save()
-        _ = await backend.retryClipJob(jobId: jobId)
-        await pollJob(jobId: jobId, clipIds: affected)
+        if await backend.retryClipJob(jobId: jobId) {
+            await pollJob(jobId: jobId, clipIds: affected)
+        } else if !(await resubmitFailedClip(clip)) {
+            // The server no longer has the job (e.g. it was never persisted durably before
+            // a restart) AND there's no local footage to recover from. DON'T strand the clip
+            // in a fake "rendering" — put it back to .failed so the Try-again button stays.
+            for id in affected {
+                if let idx = clips.firstIndex(where: { $0.id == id }) {
+                    clips[idx].status = .failed
+                    clips[idx].lastError = "Couldn't restart the edit — tap Try again."
+                }
+            }
+            save()
+        }
+    }
+
+    /// Recovery when the server no longer has the job (it failed/expired before the durable
+    /// copy was written): re-upload the local take and start a FRESH job in place, so the
+    /// retry is actually doable end-to-end. Returns false when there's no local footage to
+    /// recover from (caller then leaves the clip in .failed).
+    private func resubmitFailedClip(_ clip: Clip) async -> Bool {
+        guard let path = clip.localVideoPath,
+              let idx = clips.firstIndex(where: { $0.id == clip.id }) else { return false }
+        clips[idx].status = .rendering
+        clips[idx].uploading = true
+        clips[idx].lastError = nil
+        clips[idx].lastErrorDetail = nil
+        save()
+        func fail(_ why: String) {
+            if let i = clips.firstIndex(where: { $0.id == clip.id }) {
+                clips[i].uploading = false
+                clips[i].status = .failed
+                clips[i].lastError = why
+            }
+            save()
+        }
+        // mintAndUpload returns nil if the local file is gone — then there's nothing to recover.
+        guard let publicURL = await LiveClipEngine.mintAndUpload(footagePath: path) else {
+            fail("Couldn't re-upload your footage — tap Try again."); return true
+        }
+        let script = scripts.first(where: { $0.id == clip.scriptId })
+        guard let resp = await startAnalyzeJob(script: script, publicURL: publicURL,
+                                               autoConfirm: true, toggles: EditToggles()),
+              !resp.jobId.isEmpty else {
+            fail("Couldn't restart the edit — tap Try again."); return true
+        }
+        if let i = clips.firstIndex(where: { $0.id == clip.id }) {
+            clips[i].jobId = resp.jobId
+            clips[i].uploading = false
+        }
+        save()
+        await pollJob(jobId: resp.jobId, clipIds: [clip.id])
+        return true
     }
 
     // MARK: Scheduling / publishing

@@ -117,7 +117,6 @@ final class ChatStore {
                               editFormat: String = "", reactSourceURL: String = "") async {
         defer { isStreaming = false; streamingConversationId = nil }
         func fail(_ why: String) {
-            // Breadcrumb → Render logs: this path used to fail with zero server trace.
             BackendClient.shared.reportClientEvent("chat_edit_failed", detail: why)
             updateCard(cardId, in: convoId, store: store) { $0.stage = .failed; $0.detail = why }
         }
@@ -138,6 +137,32 @@ final class ChatStore {
                let saved = MediaStore.saveFile(from: stitched, ext: "mov") {
                 footagePath = saved
             }   // stitch failure → fall back to the first clip rather than stranding the turn
+        }
+        guard !Task.isCancelled else { return }
+
+        // Stash the recovery payload on the card the moment the footage exists, so a failed
+        // edit is retryable WITHOUT re-picking the videos (the picked items are gone by then).
+        updateCard(cardId, in: convoId, store: store) {
+            $0.footagePath = footagePath; $0.instruction = instruction
+            $0.editFormat = editFormat; $0.reactSourceURL = reactSourceURL
+            $0.config = config; $0.toggles = chosenToggles
+        }
+        await runEditFromFootage(footagePath: footagePath, instruction: instruction,
+                                 cardId: cardId, convoId: convoId, store: store,
+                                 config: config, chosenToggles: chosenToggles,
+                                 editFormat: editFormat, reactSourceURL: reactSourceURL)
+    }
+
+    /// The pipeline from ready-on-disk footage onward (upload → analyze → confirm → render).
+    /// Shared by the first run and the "Try again" retry, so a failed edit re-runs end-to-end
+    /// from the same footage without re-importing.
+    private func runEditFromFootage(footagePath: String, instruction: String,
+                                    cardId: UUID, convoId: UUID, store: AppStore,
+                                    config: [String: String]?, chosenToggles: EditToggles?,
+                                    editFormat: String, reactSourceURL: String) async {
+        func fail(_ why: String) {
+            BackendClient.shared.reportClientEvent("chat_edit_failed", detail: why)
+            updateCard(cardId, in: convoId, store: store) { $0.stage = .failed; $0.detail = why }
         }
         guard !Task.isCancelled else { return }
 
@@ -186,6 +211,26 @@ final class ChatStore {
         updateCard(cardId, in: convoId, store: store) {
             $0.stage = .ready
             $0.resultClipId = newClipId
+        }
+    }
+
+    /// "Try again" on a failed chat-edit card — re-runs the whole pipeline from the stored
+    /// footage (no re-picking). Needs the recovery payload the run stashed once footage existed.
+    func retryEdit(cardId: UUID, convoId: UUID, store: AppStore) {
+        guard !isStreaming,
+              let ci = store.conversations.firstIndex(where: { $0.id == convoId }),
+              let mi = store.conversations[ci].messages.firstIndex(where: { $0.id == cardId }),
+              let s = store.conversations[ci].messages[mi].clipEdit,
+              !s.footagePath.isEmpty else { return }
+        isStreaming = true
+        streamingConversationId = convoId
+        updateCard(cardId, in: convoId, store: store) { $0.stage = .uploading; $0.detail = "" }
+        inFlight = Task {
+            defer { isStreaming = false; streamingConversationId = nil }
+            await runEditFromFootage(footagePath: s.footagePath, instruction: s.instruction,
+                                     cardId: cardId, convoId: convoId, store: store,
+                                     config: s.config, chosenToggles: s.toggles,
+                                     editFormat: s.editFormat, reactSourceURL: s.reactSourceURL)
         }
     }
 
