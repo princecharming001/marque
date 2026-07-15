@@ -445,7 +445,11 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
 
     func brandScan(handle: String, platform: String, niche: String) async -> BrandScanResult? {
-        let body: [String: Any] = ["handle": handle, "platform": platform, "niche": niche]
+        // B3: creator_id so the backend persists the real scraped posts to creator_posts
+        // (the feed/mimic/analyze-video/converse prompts hydrate them server-side later —
+        // the client never holds these posts at all).
+        let body: [String: Any] = ["handle": handle, "platform": platform, "niche": niche,
+                                   "creator_id": creatorId]
         guard let data = await post("/v1/brand-scan/handle", body),
               let r = try? JSONDecoder().decode(BrandScanResp.self, from: data),
               let scan = r.scan else { return nil }
@@ -846,12 +850,17 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let styles = brand.preferredStyles.map { $0.rawValue }.joined(separator: ",")
         // I-8: POST so the creator's memory (yap-session context) personalizes picks. Falls
         // back to the GET path if POST isn't available (older backend → 404/nil).
-        let body: [String: Any] = [
-            "creator_id": creatorId, "niche": brand.niche, "audience": brand.audience,
-            "known_for": brand.knownFor, "goal": brand.goal.rawValue, "styles": styles,
+        // B3: merge the FULL brand (brandBody already builds voice/catchphrases/
+        // non_negotiables/what_you_do/emulation_targets for every other route) — this
+        // previously sent only 4 fields, so the feed had never seen how the creator
+        // actually talks. brandBody's keys win on overlap (niche/audience/known_for/goal
+        // are identical either way).
+        var body: [String: Any] = [
+            "creator_id": creatorId, "styles": styles,
             "watched": watchedParam(brand), "cursor": cursor,
             "memory": memory.asDictionary,
         ]
+        body.merge(brandBody(brand)) { _, new in new }
         var data = await post("/v1/feed", body)
         if data == nil {                        // fallback: GET (no personalization)
             let path = "/v1/feed?creator_id=\(q(creatorId))&niche=\(q(brand.niche))"

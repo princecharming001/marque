@@ -311,3 +311,30 @@ CREATE TABLE IF NOT EXISTS metric_watermarks (
     PRIMARY KEY (creator_id, key)
 );
 ALTER TABLE metric_watermarks ENABLE ROW LEVEL SECURITY;
+
+-- B3 (superintelligence epic): server-side brand + posts snapshots so the feed (and
+-- write-turn, mimic, analyze-video, the T3 quality cron) can hydrate a creator's full
+-- context without depending on the client to send it every request. The client still
+-- OWNS the brand (edits it, sends it on POST /v1/feed) — this is a durable mirror for
+-- GET fallback + server-only surfaces. Posts are NEVER held by the client at all.
+-- Applied directly via the Supabase MCP on 2026-07-15 (project nxibeiykcgxpbmkeadth).
+
+CREATE TABLE IF NOT EXISTS creator_profiles (
+    creator_id  TEXT PRIMARY KEY,
+    brand       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    brand_hash  TEXT NOT NULL DEFAULT '',
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE creator_profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS creator_posts (
+    creator_id  TEXT PRIMARY KEY,
+    posts       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    updated_at  TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE creator_posts ENABLE ROW LEVEL SECURITY;
+
+-- Strategy staleness detection: compare the brand_hash at compile time against the
+-- creator's CURRENT brand_hash (creator_profiles) to know if the compiled strategy
+-- predates a brand edit/niche pivot.
+ALTER TABLE channel_strategies ADD COLUMN IF NOT EXISTS brand_hash TEXT DEFAULT '';

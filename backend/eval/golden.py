@@ -209,3 +209,49 @@ KNOWN_GOOD.extend([
         "body": "One: stop skipping breakfast. It's the difference between a 10am crash and a steady afternoon.",
         "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
 ])
+
+# --- B4: relevance-to-creator (_flag_offbrand) fixtures ------------------------
+_POWERLIFT_BRAND = {
+    "niche": "powerlifting coaching for busy dads", "audience": "dads over 35",
+    "known_for": "strength training programming", "what_you_do": "coach powerlifters",
+    "goal": "Grow my audience", "voice": {"funnyToSerious": 0.3, "polishedToRaw": 0.6},
+}
+
+KNOWN_BAD.extend([
+    {"why": "offbrand (skincare script for a powerlifting coach)", "expect_flag": "offbrand", "gate_ok": True,
+     "brand": _POWERLIFT_BRAND, "script": {
+        "title": "x", "hook": "The best skincare routine for glowing skin.",
+        "hookSignal": "specificity", "formatId": "listicle",
+        "body": "Use this serum every morning for radiant, hydrated results.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "offbrand (recipe script for a powerlifting coach)", "expect_flag": "offbrand", "gate_ok": True,
+     "brand": _POWERLIFT_BRAND, "script": {
+        "title": "x", "hook": "This pasta recipe takes fifteen minutes.",
+        "hookSignal": "specificity", "formatId": "listicle",
+        "body": "Boil the noodles, toss with garlic and olive oil, and dinner is done.",
+        "cta": "Save this.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "offbrand (crypto script for a fitness coach)", "expect_flag": "offbrand", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "This altcoin could 10x by next quarter.",
+        "hookSignal": "stakes", "formatId": "myth-buster",
+        "body": "The chart pattern here looks exactly like the last breakout before it mooned.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+])
+
+# On-brand scripts that share a LITERAL niche term (so they're a clean tripwire even
+# though _flag_offbrand is excluded from the general KNOWN_GOOD hard-check — see
+# eval/run_eval.py's self-check comment for why that exclusion exists).
+KNOWN_GOOD.extend([
+    {"brand": _POWERLIFT_BRAND, "script": {
+        "title": "x", "summary": "On-brand: literal 'powerlifting'/'strength' overlap.",
+        "hook": "Most dads over 35 train powerlifting completely wrong.",
+        "hookSignal": "contrarian", "formatId": "myth-buster",
+        "body": "Strength training after 35 needs more recovery, not more volume. Cut your sets, keep the weight.",
+        "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
+    {"brand": _POWERLIFT_BRAND, "script": {
+        "title": "x", "summary": "On-brand: literal 'coach'/'powerlifters' overlap.",
+        "hook": "Every powerlifting coach says this and it's backwards.",
+        "hookSignal": "contrarian", "formatId": "myth-buster",
+        "body": "I coach powerlifters who thought more gym days meant more strength. It's the opposite.",
+        "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
+])

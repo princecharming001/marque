@@ -1146,10 +1146,12 @@ HOOK_JSON_ELEMENT = {
 SCRIPT_JUDGE_JSON_ELEMENT = {
     "type": "object", "additionalProperties": False,
     "required": ["index", "hook_strength", "specificity", "format_fit", "voice_match",
-                 "slop", "fabricated", "best_hook", "verdict", "weakest", "note"],
+                 "relevance_to_creator", "slop", "fabricated", "best_hook", "verdict",
+                 "weakest", "note"],
     "properties": {
         "index": _INT, "hook_strength": _INT, "specificity": _INT, "format_fit": _INT,
-        "voice_match": _INT, "slop": {"type": "boolean"}, "fabricated": {"type": "boolean"},
+        "voice_match": _INT, "relevance_to_creator": _INT,
+        "slop": {"type": "boolean"}, "fabricated": {"type": "boolean"},
         "best_hook": _INT,
         "verdict": {"type": "string", "enum": ["keep", "revise"]},
         "weakest": _STR, "note": _STR,
@@ -1379,7 +1381,8 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
 SCRIPT_JUDGE_SCHEMA = (
     'Reply with ONLY a JSON array, one object per script in order: '
     '{"index": int, "hook_strength": int 0-100, "specificity": int 0-100, '
-    '"format_fit": int 0-100, "voice_match": int 0-100, "slop": bool, "fabricated": bool, '
+    '"format_fit": int 0-100, "voice_match": int 0-100, "relevance_to_creator": int 0-100, '
+    '"slop": bool, "fabricated": bool, '
     '"best_hook": int (0 = keep main hook, or the 1-based altHook that would out-hook it), '
     '"verdict": "keep" | "revise", "weakest": str (the axis to fix), "note": str (one concrete fix)}'
 )
@@ -1405,6 +1408,11 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         f"STYLE = {s['label']}: {s['rubric']}\n"
         "- voice_match: does it sound like THIS creator (their sliders, phrasing, no banned words) and not like "
         "generic AI copy?\n"
+        "- relevance_to_creator: would THIS creator plausibly post this, given their niche, what they do, what "
+        "they want to be known for, and the pillar below? A script that reads as generic advice any creator in "
+        "the niche could post scores <=50; a script that's actually off-niche (wrong field, wrong audience, "
+        "wrong expertise) scores <=30. A script that only a creator with THIS specific niche/what-they-do/"
+        "known-for combination would credibly say scores high.\n"
         "Set slop=true if the hook uses an AI-tell opener ('In today's video', 'Let me tell you', 'Here's the "
         "thing', 'Ever wondered', 'Picture this', 'Buckle up') or reads like filler, OR if the BODY is a "
         "DESCRIPTION of what to talk about rather than the verbatim words the creator says out loud "
@@ -1415,8 +1423,8 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         "and is not a bracketed fill-in — the creator would have to say a lie on camera. "
         "Then compare the main hook against the altHooks and set best_hook to the index of the strongest "
         "(0 = main hook is already best; otherwise the 1-based position in altHooks). "
-        "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR slop is true OR fabricated "
-        "is true; else 'keep'. Be decisive and consistent.\n\n"
+        "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR relevance_to_creator<60 "
+        "OR slop is true OR fabricated is true; else 'keep'. Be decisive and consistent.\n\n"
         f"{VIRALITY_BLOCK}\n\n" + SCRIPT_JUDGE_SCHEMA
     )
     items = []
@@ -2673,7 +2681,8 @@ def converse_system(mode: str = "chat", persona: str = "closer", response_length
 # ---------------------------------------------------------------------------
 
 def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None,
-                 arm_stats: list[dict] | None = None) -> tuple[str, str]:
+                 arm_stats: list[dict] | None = None,
+                 posts: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's mimic engine. You take a proven viral reel and rewrite it AS a different creator — "
         "keeping the STRUCTURAL SKELETON that made it work (hook shape, beat order, pacing, loop structure, "
@@ -2705,7 +2714,7 @@ def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None,
         learn = niche_prior_block(brand.get("niche", ""))
     learn = f"\n{learn}\n" if learn else ""
     user = (
-        f"{brand_block(brand)}\n{mem}\n{learn}\n"
+        f"{brand_block(brand, posts)}\n{mem}\n{learn}\n"
         "ORIGINAL REEL TO MIMIC:\n"
         f"- creator: @{reel.get('creator_handle','unknown')} ({reel.get('platform','tiktok')})\n"
         f"- title: {reel.get('title','')}\n"
@@ -2723,7 +2732,8 @@ def mimic_prompt(reel: dict, brand: dict, memory: dict | None = None,
 # ---------------------------------------------------------------------------
 
 def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | None = None,
-                         arm_stats: list[dict] | None = None) -> tuple[str, str]:
+                         arm_stats: list[dict] | None = None,
+                         posts: list[dict] | None = None) -> tuple[str, str]:
     system = (
         "You are Marque's video analyst. Given a short-form video's transcript, produce a tight teardown of "
         "why it works and a version rewritten for a specific creator.\n\n"
@@ -2744,7 +2754,7 @@ def analyze_video_prompt(url: str, transcript: str, brand: dict, memory: dict | 
         learn = niche_prior_block(brand.get("niche", ""))
     learn = f"\n{learn}\n" if learn else ""
     user = (
-        f"{brand_block(brand)}\n{mem}\n{learn}\n"
+        f"{brand_block(brand, posts)}\n{mem}\n{learn}\n"
         f"VIDEO: {url}\n"
         f"TRANSCRIPT:\n{transcript[:4000]}\n\n"
         "Analyze it and write this creator's version. JSON only."

@@ -1035,19 +1035,47 @@ class ScriptRequest(Brand):
     memory: dict = {}                  # client-held creator memory (facts/angle/ideas/...)
 
 
-class FeedRequest(BaseModel):
-    """B-6: POST /v1/feed — same params as the GET plus the creator's memory, so Today's
+class FeedRequest(Brand):
+    """B-6/B3: POST /v1/feed — inherits the FULL Brand (niche/audience/known_for/goal/
+    voice/catchphrases/non_negotiables/emulation_targets/...), not just 4 fields.
+    Before B3 this only carried niche/audience/known_for/goal — the feed had NEVER seen
+    the creator's voice, catchphrases, or banned words, which was the structural root
+    cause of "scripts don't match my content." Plus the creator's memory, so Today's
     picks are personalized by what they told the orb in a yap session."""
     creator_id: str = "default"
-    niche: str = ""
-    audience: str = ""
-    known_for: str = ""
-    goal: str = "Grow my audience"
     styles: str = ""
     watched: str = ""
     cursor: int = 0
     fresh: int = 0
     memory: dict = {}
+
+
+# --- B3: brand-dict helpers shared by the feed + posts hydration + strategy staleness ---
+
+_BRAND_FIELD_NAMES = set(Brand.model_fields.keys())
+
+
+def _brand_only(d: dict) -> dict:
+    """Narrow any dict (a FeedRequest.model_dump(), a stored profile row, ...) down to
+    exactly Brand's fields, so it's always safe to spread into ScriptRequest(**brand)."""
+    return {k: v for k, v in (d or {}).items() if k in _BRAND_FIELD_NAMES}
+
+
+# Fields that materially change what a script SAYS — used for both the strategy-
+# staleness hash and the feed cache key (a niche/voice/catchphrase edit must invalidate
+# both instead of silently serving stale content for a brand the creator just edited).
+_BRAND_HASH_FIELDS = ("niche", "audience", "known_for", "what_you_do", "goal", "voice",
+                     "catchphrases", "non_negotiables", "emulation_targets")
+
+
+def _brand_hash(brand: dict) -> str:
+    if not brand:
+        return ""
+    try:
+        payload = {k: brand.get(k) for k in _BRAND_HASH_FIELDS}
+        return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:12]
+    except (TypeError, ValueError):
+        return ""
 
 
 class FeedFeedbackRequest(BaseModel):
@@ -1098,6 +1126,7 @@ class ScanRequest(Brand):
     handle: str = ""
     platform: str = "tiktok"
     posts: list[dict] = []          # caller-supplied posts (testing) or filled by the scraper
+    creator_id: str = "default"     # B3: so a scan's real posts persist to creator_posts
 
 
 class DigestRequest(Brand):
@@ -1485,12 +1514,25 @@ async def generate_pillars(brand: dict, posts: list[dict] | None) -> tuple[str, 
 
 def _blend_score(v: dict) -> int:
     """Ground predictedScore in the independent critic's axes instead of the
-    generator's self-flattery. Hook dominates because it dominates retention."""
+    generator's self-flattery. Hook dominates because it dominates retention.
+    B4: relevance_to_creator folded in at 0.15 (renormalized from hook/specificity/
+    format_fit) — a script that reads as generic advice for any creator in the niche,
+    or is outright off-niche, must not score as if it were a well-targeted draft.
+    Missing relevance_to_creator (an older cached judge response) falls back to the
+    pre-B4 weights so a stale verdict shape doesn't silently zero out the score."""
     try:
-        s = (0.50 * float(v.get("hook_strength", 0))
-             + 0.25 * float(v.get("specificity", 0))
-             + 0.15 * float(v.get("format_fit", 0))
-             + 0.10 * float(v.get("voice_match", 0)))
+        has_relevance = "relevance_to_creator" in v
+        if has_relevance:
+            s = (0.42 * float(v.get("hook_strength", 0))
+                 + 0.20 * float(v.get("specificity", 0))
+                 + 0.13 * float(v.get("format_fit", 0))
+                 + 0.10 * float(v.get("voice_match", 0))
+                 + 0.15 * float(v.get("relevance_to_creator", 0)))
+        else:
+            s = (0.50 * float(v.get("hook_strength", 0))
+                 + 0.25 * float(v.get("specificity", 0))
+                 + 0.15 * float(v.get("format_fit", 0))
+                 + 0.10 * float(v.get("voice_match", 0)))
         if v.get("slop"):
             s -= 12
         if v.get("fabricated"):          # W3: a fabricated personal receipt is worse than slop
@@ -1769,6 +1811,10 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
     """The full quality-gated script pipeline (best-of-N hooks → write → judge →
     repair). Shared by /v1/scripts and the onboarding digest job."""
     req.count = max(1, min(5, req.count))
+    # B3: second persist point (the feed POST is the other) — a direct /v1/scripts
+    # caller's brand snapshot should also be kept fresh for GET-feed hydration + the
+    # T3 cron. Dedup'd on unchanged hash inside _persist_creator_profile.
+    _spawn(_persist_creator_profile(req.creator_id, _brand_only(req.d())))
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "scripts": mock_scripts(req)}
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
@@ -5296,6 +5342,10 @@ async def brand_scan_handle(req: ScanRequest):
         except asyncio.TimeoutError:
             logging.warning("brand-scan scrape exceeded budget for %s — degrading", req.handle)
             posts = []
+    if posts:
+        # B3: persist real scraped posts so the feed/mimic/analyze-video/converse prompts
+        # can pull verbatim voice exemplars later, without the client ever holding them.
+        _spawn(_persist_creator_posts(req.creator_id, posts))
     brand = req.d()
     if not ANTHROPIC_KEY or not posts:
         # No evidence (or no key) → niche-aware fallback so onboarding never dead-ends.
@@ -5417,6 +5467,10 @@ async def _run_digest(job_id: str) -> None:
         job["stage"] = "transcribing"
         posts = await _transcribe_top_posts(posts)
         transcribed = sum(1 for p in posts if p.get("transcript"))
+        if posts:
+            # B3: persist (with real transcripts) so later prompts get verbatim voice
+            # exemplars without the client ever holding these posts.
+            _spawn(_persist_creator_posts(req.creator_id, posts))
 
         # 3) Derive brand/voice/pillars from the best evidence available. Also
         # best-effort analyze any emulation target that hasn't been resolved yet
@@ -6532,16 +6586,17 @@ async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
         except (TypeError, ValueError):
             count = 1
         angle = (req.memory.get("angle") or "").strip()
+        # B3: spread the FULL brand (voice/catchphrases/non_negotiables/what_you_do/
+        # emulation_targets/...) instead of hand-picking 7 fields — this previously
+        # silently dropped whatever Brand fields got added later. + real posts, so a
+        # script requested from the orb also gets verbatim voice exemplars.
+        posts = await _creator_posts(req.creator_id)
         sreq = ScriptRequest(
-            niche=req.brand.get("niche", ""), audience=req.brand.get("audience", ""),
-            known_for=req.brand.get("known_for", ""), what_you_do=req.brand.get("what_you_do", ""),
-            goal=req.brand.get("goal", "Grow my audience"), voice=req.brand.get("voice", {}) or {},
-            non_negotiables=req.brand.get("non_negotiables", []) or [],
-            catchphrases=req.brand.get("catchphrases", []) or [],
+            **_brand_only(req.brand),
             pillar=topic, pillar_summary=f"A one-off script request from conversation: {topic}",
             pillar_angle=angle, style=style, count=count, creator_id=req.creator_id,
             memory=req.memory or {},          # carry chat-learned memory into generation
-            emulation_targets=req.brand.get("emulation_targets", []) or [],
+            posts=posts,
         )
         result = await scripts(sreq)
         return result.get("scripts", [])
@@ -7599,14 +7654,26 @@ _feed_refreshing: set[str] = set()      # keys with a background upgrade already
 _feed_inflight: dict[str, asyncio.Task] = {}   # single-flight: cold paints per cache key
 
 
-def _feed_topics(niche: str, cursor: int) -> str:
-    topics = [
-        f"the {niche or 'creator'} mistake everyone makes",
-        f"what nobody tells beginners about {niche or 'your field'}",
-        f"a myth in {niche or 'your niche'} that needs to die",
-        f"the fastest win in {niche or 'your field'} this month",
-        f"what I'd do differently starting {niche or 'out'} today",
-    ]
+def _feed_topics(niche: str, known_for: str, what_you_do: str, cursor: int) -> str:
+    """B3 (B2 of the audit): cold-start topics were pure niche-string mad-libs, ignoring
+    what the creator actually does / wants to be known for. Weave those in when present;
+    fall back to the original niche-only templates only when both are empty."""
+    if known_for or what_you_do:
+        topics = [
+            f"the {known_for or niche or 'creator'} take nobody in {niche or 'your niche'} is saying",
+            f"what {what_you_do or 'what you do'} taught you that {niche or 'people'} get wrong",
+            f"the {niche or 'your field'} mistake everyone makes — that {known_for or 'you'} would never",
+            f"the fastest win in {niche or 'your field'} this month, from someone who does {what_you_do or 'this'}",
+            f"what you'd tell someone starting {niche or 'out'} today, given {known_for or 'what you know'}",
+        ]
+    else:
+        topics = [
+            f"the {niche or 'creator'} mistake everyone makes",
+            f"what nobody tells beginners about {niche or 'your field'}",
+            f"a myth in {niche or 'your niche'} that needs to die",
+            f"the fastest win in {niche or 'your field'} this month",
+            f"what I'd do differently starting {niche or 'out'} today",
+        ]
     return topics[cursor % len(topics)]
 
 
@@ -7622,12 +7689,101 @@ def _memory_digest(memory: dict | None) -> str:
         return ""
 
 
-def _feed_cache_key(creator_id: str, niche: str, audience: str, known_for: str,
-                    goal: str, styles: str, watched: str, cursor: int,
-                    memory: dict | None = None) -> str:
-    # Param-signature sub-key: a niche/style change invalidates the cached page
-    # instead of serving stale content for a brand the creator just edited.
-    sig = "|".join([niche, audience, known_for, goal, styles, watched, str(cursor)])
+# --- B3: creator profile (brand) + posts hydration -----------------------------
+# The client OWNS the brand and posts NEVER live client-side at all — this is the
+# durable server-side mirror everything that can't rely on a client payload reads from
+# (GET /v1/feed, write-turn, the T3 quality cron). In-memory TTL caches over the Supabase
+# read (same pattern as _watched_reels_cache) keep the hot feed path from adding a
+# Supabase round-trip to every single request.
+_CREATOR_PROFILE_TTL_S = 300
+_creator_profile_cache: dict[str, tuple[dict, float]] = {}     # creator_id -> (brand, ts)
+_last_persisted_brand_hash: dict[str, str] = {}                 # avoid a write per request
+_CREATOR_POSTS_TTL_S = 3600
+_creator_posts_cache: dict[str, tuple[list, float]] = {}        # creator_id -> (posts, ts)
+
+
+async def _hydrate_creator_profile(creator_id: str) -> dict:
+    """The stored brand snapshot for a creator, or {} if none / keyless. TTL-cached."""
+    if not creator_id or not _supabase_client:
+        return {}
+    cached = _creator_profile_cache.get(creator_id)
+    if cached and (time.time() - cached[1]) < _CREATOR_PROFILE_TTL_S:
+        return cached[0]
+    try:
+        row = await _supabase_client.load_creator_profile(creator_id)
+    except Exception:
+        row = None
+    brand = (row or {}).get("brand") or {}
+    _creator_profile_cache[creator_id] = (brand, time.time())
+    _cap_evict(_creator_profile_cache, _FEED_CACHE_CAP)
+    return brand
+
+
+async def _persist_creator_profile(creator_id: str, brand: dict) -> None:
+    """Fire-and-forget: write the brand snapshot when it's actually changed (dedup via
+    the in-memory last-hash map so an unchanged brand doesn't write every request)."""
+    if not creator_id or not _supabase_client or not brand:
+        return
+    h = _brand_hash(brand)
+    if not h or _last_persisted_brand_hash.get(creator_id) == h:
+        return
+    try:
+        ok = await _supabase_client.upsert_creator_profile(creator_id, brand, h)
+        if ok:
+            _last_persisted_brand_hash[creator_id] = h
+            _creator_profile_cache[creator_id] = (brand, time.time())   # keep the read cache warm
+            # B3: a real brand change (not just the first-ever snapshot) may have left the
+            # compiled strategy stale until the next weekly cron — check now, debounced.
+            _spawn(strategy_compiler.maybe_recompile_on_brand_edit(_palo_store, creator_id, brand))
+    except Exception as e:
+        logging.warning("[creator_profile] persist failed for %s: %s", creator_id, e)
+    _cap_evict(_last_persisted_brand_hash, _FEED_CACHE_CAP)
+
+
+async def _creator_posts(creator_id: str) -> list[dict]:
+    """Stored scraped posts for prompt grounding (_voice_exemplars). [] keyless/absent/
+    on any failure — never raises. TTL-cached (1h — posts change slowly)."""
+    if not creator_id or not _supabase_client:
+        return []
+    cached = _creator_posts_cache.get(creator_id)
+    if cached and (time.time() - cached[1]) < _CREATOR_POSTS_TTL_S:
+        return cached[0]
+    try:
+        posts = await _supabase_client.load_creator_posts(creator_id)
+    except Exception:
+        posts = None
+    posts = posts or []
+    _creator_posts_cache[creator_id] = (posts, time.time())
+    _cap_evict(_creator_posts_cache, _FEED_CACHE_CAP)
+    return posts
+
+
+async def _persist_creator_posts(creator_id: str, posts: list[dict]) -> None:
+    """Fire-and-forget. Caps at 10 posts, strips media URLs — this is prompt grounding
+    (caption/transcript/hashtags/engagement), not a data lake."""
+    if not creator_id or not _supabase_client or not posts:
+        return
+    trimmed = [
+        {"caption": p.get("caption", ""), "transcript": p.get("transcript", ""),
+         "hashtags": p.get("hashtags", []), "likes": p.get("likes", 0),
+         "comments": p.get("comments", 0), "views": p.get("views", 0)}
+        for p in posts[:10]
+    ]
+    try:
+        ok = await _supabase_client.upsert_creator_posts(creator_id, trimmed)
+        if ok:
+            _creator_posts_cache[creator_id] = (trimmed, time.time())
+    except Exception as e:
+        logging.warning("[creator_posts] persist failed for %s: %s", creator_id, e)
+
+
+def _feed_cache_key(creator_id: str, brand: dict, styles: str, watched: str, cursor: int,
+                    memory: dict | None = None, posts_token: str = "") -> str:
+    # Param-signature sub-key: a brand edit (niche/voice/catchphrases/...) or a fresh
+    # posts scan invalidates the cached page instead of serving stale content for a
+    # brand the creator just edited (previously only niche/audience/known_for/goal —
+    # editing voice sliders or catchphrases silently kept serving the old page).
+    sig = "|".join([_brand_hash(brand), styles, watched, str(cursor), posts_token])
     mem = _memory_digest(memory)
     return f"{creator_id}::{sig}" + (f"::m{mem}" if mem else "")
 
@@ -7805,12 +7961,18 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
     return items, next_cursor
 
 
-def _feed_sreq(niche: str, audience: str, known_for: str, goal: str, styles: str,
-               cursor: int, creator_id: str, memory: dict | None,
+def _feed_sreq(brand: dict, styles: str, cursor: int, creator_id: str, memory: dict | None,
+               posts: list[dict] | None = None,
                arms: list[dict] | None = None) -> tuple["ScriptRequest", str]:
-    """UX-G1: build the page's script request FROM the creator's top arms (pillar +
+    """UX-G1 + B3: build the page's script request FROM the creator's top arms (pillar +
     style chosen by the bandit, with its human reason as why_picked) — template
-    rotation only when the arms are exhausted/absent. Returns (sreq, why_picked)."""
+    rotation only when the arms are exhausted/absent. B3: now carries the FULL brand
+    (voice/catchphrases/non_negotiables/what_you_do/emulation_targets) + real posts —
+    previously only niche/audience/known_for/goal reached the feed's script generation
+    at all, so it had never seen how the creator actually talks. Returns (sreq, why_picked)."""
+    niche = brand.get("niche", "")
+    known_for = brand.get("known_for", "")
+    what_you_do = brand.get("what_you_do", "")
     allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
     arm = arms[cursor] if arms and cursor < len(arms) else None
     if arm and arm.get("pillar"):
@@ -7818,14 +7980,15 @@ def _feed_sreq(niche: str, audience: str, known_for: str, goal: str, styles: str
         style = arm["style"] if arm.get("style") in allowed else allowed[cursor % len(allowed)]
         why_picked = arm.get("reason") or f"From your '{pillar}' pillar"
     else:
-        pillar = _feed_topics(niche, cursor)
+        pillar = _feed_topics(niche, known_for, what_you_do, cursor)
         style = allowed[cursor % len(allowed)]
         why_picked = f"From your '{pillar}' pillar"
     return ScriptRequest(
-        niche=niche, audience=audience, known_for=known_for, goal=goal,
+        **_brand_only(brand),
         pillar=pillar, pillar_summary="Daily feed suggestion",
         style=style, count=3, creator_id=creator_id,
         memory=memory or {},                  # B-6: picks personalized by yap-session memory
+        posts=posts or [],                    # B3: real posts -> verbatim voice exemplars
     ), why_picked
 
 
@@ -7876,33 +8039,33 @@ async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creat
         _feed_refreshing.discard(key)
 
 
-def _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                         cursor, memory, next_cursor, arms=None) -> None:
+def _maybe_prefetch_next(creator_id, brand, styles, watched, cursor, memory, posts,
+                         next_cursor, arms=None) -> None:
     """Spawn a prefetch of cursor+1 so the next "Load more" is instant. Guarded by
     _feed_refreshing (single writer per key; the current page holds cursor, prefetch
     holds cursor+1 — disjoint). No-op when the next page is already cached/exhausted."""
     if next_cursor is None:
         return
-    nkey = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched,
-                           next_cursor, memory)
+    posts_token = str(len(posts or []))
+    nkey = _feed_cache_key(creator_id, brand, styles, watched, next_cursor, memory, posts_token)
     if nkey in _feed_cache or nkey in _feed_refreshing:
         return
     _feed_refreshing.add(nkey)
-    nsreq, nwhy = _feed_sreq(niche, audience, known_for, goal, styles, next_cursor, creator_id,
-                             memory, arms=arms)
-    _spawn(_prefetch_feed_page(nkey, nsreq, niche, creator_id, watched, next_cursor, why_picked=nwhy))
+    nsreq, nwhy = _feed_sreq(brand, styles, next_cursor, creator_id, memory, posts, arms=arms)
+    _spawn(_prefetch_feed_page(nkey, nsreq, brand.get("niche", ""), creator_id, watched,
+                               next_cursor, why_picked=nwhy))
 
 
-async def _prefetch_after_hit(creator_id: str, niche: str, audience: str, known_for: str,
-                              goal: str, styles: str, watched: str, cursor: int,
-                              memory: dict | None, next_cursor: int | None) -> None:
+async def _prefetch_after_hit(creator_id: str, brand: dict, styles: str, watched: str,
+                              cursor: int, memory: dict | None, posts: list[dict],
+                              next_cursor: int | None) -> None:
     """Next-page warmup for the pure-cache-hit path, moved OFF the response (the
     blank-home audit found `_top_arms` — 2 Supabase roundtrips on first touch —
     sitting above the cache-hit return, taxing the hottest path in the app)."""
     try:
-        arms = await _top_arms(creator_id, niche)
-        _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                             cursor, memory, next_cursor, arms=arms)
+        arms = await _top_arms(creator_id, brand.get("niche", ""))
+        _maybe_prefetch_next(creator_id, brand, styles, watched, cursor, memory, posts,
+                             next_cursor, arms=arms)
     except Exception as e:
         logging.warning("[feed] prefetch-after-hit failed: %s", e)
 
@@ -7921,12 +8084,20 @@ async def _cold_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_i
     return items, next_cursor, mode
 
 
-async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str, goal: str,
-                     styles: str, watched: str, cursor: int, fresh: int,
-                     memory: dict | None) -> dict:
-    """Shared feed body for GET (no memory) and POST (memory-personalized)."""
+async def _feed_impl(creator_id: str, brand: dict, styles: str, watched: str, cursor: int,
+                     fresh: int, memory: dict | None) -> dict:
+    """Shared feed body for GET (hydrated from the stored profile) and POST (the client's
+    live brand + memory). B3: `brand` now carries the full Brand shape, and posts are
+    hydrated server-side (the client never holds them) so the generator finally sees the
+    creator's real voice/catchphrases/verbatim posts, not just niche/audience/known_for/goal."""
     cursor = max(0, min(cursor, 50))
-    key = _feed_cache_key(creator_id, niche, audience, known_for, goal, styles, watched, cursor, memory)
+    creator_id = creator_id or "default"
+    # Persist the brand snapshot fire-and-forget (dedup'd on unchanged hash) so GET /v1/feed,
+    # write-turn, and the T3 cron can hydrate it later without a client payload.
+    _spawn(_persist_creator_profile(creator_id, brand))
+    posts = await _creator_posts(creator_id)
+    posts_token = str(len(posts))
+    key = _feed_cache_key(creator_id, brand, styles, watched, cursor, memory, posts_token)
 
     cached = _feed_cache.get(key)
     # Live pages keep the long TTL; mock pages expire fast so repolls pick up the
@@ -7935,23 +8106,23 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     fresh_enough = cached and (time.time() - cached["ts"]) < ttl
     if cached and fresh_enough and not fresh:
         # Pure cache hit: answer with ZERO awaits — next-page warmup happens off-response.
-        _spawn(_prefetch_after_hit(creator_id, niche, audience, known_for, goal, styles,
-                                   watched, cursor, memory, cached["next_cursor"]))
+        _spawn(_prefetch_after_hit(creator_id, brand, styles, watched, cursor, memory,
+                                   posts, cached["next_cursor"]))
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
     # UX-G1: the bandit's judgment (or honest cold-start priors) picks the page's
     # pillar/style and explains WHY — fetched once, threaded through every path.
-    arms = await _top_arms(creator_id, niche)
-    sreq, why_picked = _feed_sreq(niche, audience, known_for, goal, styles, cursor, creator_id,
-                                  memory, arms=arms)
+    arms = await _top_arms(creator_id, brand.get("niche", ""))
+    sreq, why_picked = _feed_sreq(brand, styles, cursor, creator_id, memory, posts, arms=arms)
 
     if cached and not fresh:
         # Stale-while-revalidate: serve the last good page instantly, upgrade in the background.
         if key not in _feed_refreshing:
             _feed_refreshing.add(key)
-            _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor, why_picked=why_picked))
-        _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                             cursor, memory, cached["next_cursor"], arms=arms)
+            _spawn(_refresh_feed_page(key, sreq, brand.get("niche", ""), creator_id, watched,
+                                      cursor, why_picked=why_picked))
+        _maybe_prefetch_next(creator_id, brand, styles, watched, cursor, memory, posts,
+                             cached["next_cursor"], arms=arms)
         return {"mode": cached["mode"], "items": cached["items"], "next_cursor": cached["next_cursor"]}
 
     # No cache yet (first-ever fetch) — fast single-call path, SINGLE-FLIGHT per key:
@@ -7960,8 +8131,8 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     # check starves (the crash-loop from the blank-home audit).
     task = _feed_inflight.get(key)
     if task is None:
-        task = asyncio.create_task(_cold_feed_page(key, sreq, niche, creator_id, watched,
-                                                   cursor, why_picked))
+        task = asyncio.create_task(_cold_feed_page(key, sreq, brand.get("niche", ""), creator_id,
+                                                   watched, cursor, why_picked))
         _feed_inflight[key] = task
         task.add_done_callback(lambda _t, _k=key: _feed_inflight.pop(_k, None))
     # shield: a disconnecting client must not cancel the shared paint under its followers.
@@ -7970,10 +8141,11 @@ async def _feed_impl(creator_id: str, niche: str, audience: str, known_for: str,
     # page 0 → background full-quality OPUS upgrade for the SECOND fetch.
     if cursor == 0 and key not in _feed_refreshing:
         _feed_refreshing.add(key)
-        _spawn(_refresh_feed_page(key, sreq, niche, creator_id, watched, cursor, why_picked=why_picked))
+        _spawn(_refresh_feed_page(key, sreq, brand.get("niche", ""), creator_id, watched,
+                                  cursor, why_picked=why_picked))
     # B-5: always warm the next page so "Load more" is instant at any depth.
-    _maybe_prefetch_next(creator_id, niche, audience, known_for, goal, styles, watched,
-                         cursor, memory, next_cursor, arms=arms)
+    _maybe_prefetch_next(creator_id, brand, styles, watched, cursor, memory, posts,
+                         next_cursor, arms=arms)
 
     return {"mode": mode, "items": items, "next_cursor": next_cursor}
 
@@ -7995,17 +8167,33 @@ async def _merge_briefs(result: dict, creator_id: str, cursor: int) -> dict:
 async def feed(creator_id: str = "default", niche: str = "", audience: str = "",
                known_for: str = "", goal: str = "Grow my audience",
                styles: str = "", watched: str = "", cursor: int = 0, fresh: int = 0):
-    result = await _feed_impl(creator_id, niche, audience, known_for, goal, styles, watched,
-                              cursor, fresh, None)
+    """B3: GET has no body, so it can't carry voice/catchphrases/etc — hydrate the FULL
+    brand from the server-side snapshot (written by a prior POST /v1/feed or /v1/scripts)
+    and let any explicit query params override just those 4 legacy fields, so an older
+    client (or a query-string deep link) still works exactly as before."""
+    brand = await _hydrate_creator_profile(creator_id)
+    if niche:
+        brand["niche"] = niche
+    if audience:
+        brand["audience"] = audience
+    if known_for:
+        brand["known_for"] = known_for
+    if goal and goal != "Grow my audience":
+        brand["goal"] = goal
+    brand.setdefault("goal", goal)
+    result = await _feed_impl(creator_id, brand, styles, watched, cursor, fresh, None)
     return await _merge_briefs(result, creator_id, cursor)
 
 
 @app.post("/v1/feed")
 async def feed_post(req: FeedRequest):
-    """B-6: memory-personalized feed. Same response shape as GET; the creator's yap-session
-    memory feeds the script prompt so Today's picks reflect what they told the orb."""
-    result = await _feed_impl(req.creator_id, req.niche, req.audience, req.known_for, req.goal,
-                              req.styles, req.watched, req.cursor, req.fresh, req.memory)
+    """B-6/B3: memory-personalized feed carrying the client's FULL live brand (voice,
+    catchphrases, non_negotiables, what_you_do, emulation_targets — not just the 4 legacy
+    fields). Same response shape as GET; the creator's yap-session memory feeds the script
+    prompt so Today's picks reflect what they told the orb."""
+    brand = _brand_only(req.model_dump())
+    result = await _feed_impl(req.creator_id, brand, req.styles, req.watched, req.cursor,
+                              req.fresh, req.memory)
     return await _merge_briefs(result, req.creator_id, req.cursor)
 
 
@@ -8185,7 +8373,8 @@ async def mimic(req: MimicRequest):
         return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
     try:
         stats = await _arms_for_prompt(req.creator_id)
-        sys, usr = prompts.mimic_prompt(req.reel, req.brand, req.memory, arm_stats=stats)
+        posts = await _creator_posts(req.creator_id)   # B3: real posts -> verbatim voice exemplars
+        sys, usr = prompts.mimic_prompt(req.reel, req.brand, req.memory, arm_stats=stats, posts=posts)
         sys = await _inject_brain(sys, req.creator_id)   # G2: "your version" shaped by the brain
         out = extract_json(await anthropic(sys, usr, OPUS, 2000), array=False)
         if not out:
@@ -8278,8 +8467,9 @@ async def analyze_video(req: AnalyzeVideoRequest):
     if ANTHROPIC_KEY:
         try:
             stats = await _arms_for_prompt(req.creator_id)
+            posts = await _creator_posts(req.creator_id)   # B3: real posts -> verbatim voice exemplars
             sys, usr = prompts.analyze_video_prompt(req.url, transcript, req.brand, req.memory,
-                                                    arm_stats=stats)
+                                                    arm_stats=stats, posts=posts)
             sys = await _inject_brain(sys, req.creator_id)   # G3: your_version shaped by the brain
             out = extract_json(await anthropic(sys, usr, OPUS, 2600), array=False)
             if out and out.get("your_version"):
