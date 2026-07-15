@@ -63,6 +63,41 @@ def test_broll_grammar_enforced():
         assert 60 <= hold <= 90, f"hold {hold} out of grammar"
 
 
+def test_broll_runtime_budget_caps_face_hiding_coverage():
+    # Sourced doctrine: full-frame b-roll hides the face; cap total face-hiding coverage at
+    # ~40% of runtime so the creator's face still owns the video. Ask for WAY too much
+    # full-frame b-roll on a face style → the assembler drops the overflow.
+    from app import edl as edl_mod
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(60)]  # ~24s
+    total = ms_to_frame(w[-1]["end_ms"])
+    # 8 full-frame cutaways, each ~2.5s, well spaced — far more than 40% if all kept
+    plan = {"broll": [{"range": [g, g + 60], "cue": "thing", "query": "q", "source": "stock",
+                       "mode": "full", "need": "action"}
+                      for g in range(150, total - 90, 90)]}
+    edl = assemble_edl(plan, w, "talking_head", "myth-buster")
+    d = edl.model_dump()
+    full_frames = sum(b["src_out"] - b["src_in"] for b in d["broll"] if b.get("mode") == "full")
+    assert full_frames <= edl_mod._BROLL_RUNTIME_BUDGET * total + 1, \
+        f"{full_frames}/{total} = {full_frames/total:.0%} exceeds the 40% face-hiding budget"
+    assert d["broll"], "budget cap must not drop ALL b-roll — the earliest inserts stay"
+
+
+def test_broll_budget_does_not_touch_panel_modes():
+    # panel/card keep the face visible → exempt from the ~40% face-hiding budget. Four
+    # well-spaced 5s panels total >50% of runtime and ALL survive (only `full` is budgeted).
+    from app import edl as edl_mod
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(100)]  # ~40s
+    total = ms_to_frame(w[-1]["end_ms"])
+    plan = {"broll": [{"range": [g, g + 150], "cue": "t", "query": "q", "source": "stock",
+                       "mode": "panel", "need": "action"}
+                      for g in (150, 450, 750, 1050)]}
+    edl = assemble_edl(plan, w, "talking_head", "myth-buster")
+    kept = edl.model_dump()["broll"]
+    panel_frames = sum(b["src_out"] - b["src_in"] for b in kept)
+    assert len(kept) == 4                                            # none dropped
+    assert panel_frames > edl_mod._BROLL_RUNTIME_BUDGET * total      # panels exceed 40% freely
+
+
 def test_buried_hook_pulled_forward_passes_invariant():
     fx = fixture("buried-hook-01")
     hook_f = ms_to_frame(fx["hook_ms"])

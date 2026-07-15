@@ -1896,13 +1896,21 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
 # ---------------------------------------------------------------------------
 
 # B-roll grammar (frames @30fps) — the numbers live in knowledge/broll.md; mirrored here
-# because the assembler must ENFORCE them, not just prompt for them.
-_BROLL_JCUT_LEAD = 12
-_BROLL_MIN_HOLD, _BROLL_MAX_HOLD = 60, 90     # 2–3s (mode B, face hidden)
-_BROLL_PARTIAL_MAX_HOLD = 240                 # 8s cap for panel/card modes (face visible)
-_BROLL_MIN_SPACING = 90                        # ≥3s between cutaways
-_BROLL_HOOK_PROTECT = 90                        # no b-roll over the hook (face styles)
-_BROLL_CTA_PROTECT = 60                         # …or the CTA
+# because the assembler must ENFORCE them, not just prompt for them. Numbers reconciled
+# against a sourced placement study (2026-07-15, see broll.md): J/L-cut audio-leads-video,
+# hold 1.5–3s (5s hard ceiling), hook 0–3s + CTA face-protected, b-roll ≤40% of runtime.
+_BROLL_JCUT_LEAD = 12                           # ~0.4s: video leads in under the continuous voice
+_BROLL_MIN_HOLD, _BROLL_MAX_HOLD = 60, 90     # 2–3s (mode B/full, face hidden)
+_BROLL_PARTIAL_MAX_HOLD = 150                 # 5s hard ceiling for panel/card (was 8s — no cited
+                                               # source holds footage past ~5s; face stays visible
+                                               # so the longer end is fine, but never outlast the beat)
+_BROLL_MIN_SPACING = 90                        # ≥3s between cutaways (return to the face between)
+_BROLL_HOOK_PROTECT = 90                        # no full-frame b-roll over the hook (first 3s, face styles)
+_BROLL_CTA_PROTECT = 60                         # …or the CTA (last 2s)
+# Sourced doctrine: "b-roll should support, not replace, the face" — cap total full-frame
+# cutaway time so the creator's face (parasocial connection) still owns the majority of the
+# runtime. Panel/card modes keep the face on screen, so they DON'T count against this budget.
+_BROLL_RUNTIME_BUDGET = 0.40                    # ≤40% of output covered by face-hiding b-roll
 _FACELESS_STYLES = {"faceless"}                # b-roll IS the visual channel → hook coverage ok
 _PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
 _PUNCH_HOLD = 30
@@ -2095,6 +2103,23 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                           "mode": mode,
                           "need": need, "fallback_text": (b.get("text") or b.get("cue", ""))[:80]})
             last_out = s_out
+
+        # RUNTIME BUDGET (sourced doctrine): full-frame b-roll HIDES the face, and burying the
+        # face past ~40% of the video strips the parasocial connection that makes viewers trust
+        # and follow. So cap face-hiding ("full") cutaway time at 40% of the output — keeping
+        # the EARLIER inserts (closer to the hook, usually higher-value) and dropping the
+        # trailing overflow. Panel/card keep the face on screen, so they don't count.
+        if face_style and total > 0:
+            budget = int(_BROLL_RUNTIME_BUDGET * total)
+            used, kept = 0, []
+            for b in broll:
+                if b.get("mode") == "full":
+                    span = b["src_out"] - b["src_in"]
+                    if used + span > budget:
+                        continue                       # over budget → drop this cutaway
+                    used += span
+                kept.append(b)
+            broll = kept
 
     # --- overlays: punch-ins + text cards ---
     overlays: list[dict] = []
