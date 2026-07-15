@@ -78,13 +78,35 @@ struct PickedVideoFile: Transferable {
 /// Bulk-import picked photos/videos into the app container as MediaAssets.
 /// I-5: stamps a real contentHash (so lazy analysis can run later) and pre-generates a
 /// video poster at import — but does NOT upload or analyze here (that's deferred until needed).
+/// MEMORY SAFETY: videos import via the FILE representation (PickedVideoFile streams to
+/// disk) — `Data.self` materializes the ENTIRE asset in RAM, which memory-killed the app
+/// on real multi-minute library videos (this took down the chat edit flow: mint succeeded,
+/// then the process died before the job was ever created). Data stays only as the
+/// small-file fallback and for images.
 func importPickedMedia(_ items: [PhotosPickerItem]) async -> [MediaAsset] {
     var out: [MediaAsset] = []
     for item in items {
         let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) || $0.conforms(to: .video) }
-        guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
-        let path = MediaStore.save(data, ext: isVideo ? "mov" : "jpg")
-        let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        var path: String?
+        var hash = ""
+        if isVideo, let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
+            let ext = picked.url.pathExtension.isEmpty ? "mov" : picked.url.pathExtension
+            path = MediaStore.saveFile(from: picked.url, ext: ext)
+            try? FileManager.default.removeItem(at: picked.url)
+            // Streaming hash (64KB chunks) — never the whole file in memory.
+            if let p = path, let fh = try? FileHandle(forReadingFrom: MediaStore.url(for: p)) {
+                var hasher = SHA256()
+                while let chunk = try? fh.read(upToCount: 65536), !chunk.isEmpty {
+                    hasher.update(data: chunk)
+                }
+                try? fh.close()
+                hash = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
+        } else if let data = try? await item.loadTransferable(type: Data.self) {
+            path = MediaStore.save(data, ext: isVideo ? "mov" : "jpg")
+            hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+        guard let path else { continue }
         var asset = MediaAsset(localPath: path, kind: isVideo ? .clip : .selfie, isVideo: isVideo)
         asset.contentHash = hash
         if isVideo, let poster = MediaStore.poster(for: MediaStore.url(for: path)),

@@ -9,7 +9,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "28"
+    CURRENT_PROJECT_VERSION: "29"
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
     # Real signing (was CODE_SIGNING_ALLOWED: NO — sim-only). Automatic style lets
     # xcodebuild -allowProvisioningUpdates manage certs/profiles via the ASC API key,
@@ -73,7 +73,7 @@ targets:
       properties:
         CFBundleDisplayName: Yunicorn
         CFBundleIconName: AppIcon
-        CFBundleVersion: "28"
+        CFBundleVersion: "29"
         MARQUE_BACKEND_URL: https://marque-api.onrender.com
         # Supabase auth (anon key is client-shippable by design). Without these,
         # TestFlight builds silently run demo-mode auth.

@@ -2321,6 +2321,24 @@ _BROLL_STYLE_OPTIONS = [
 ]
 
 
+class _ClientEventRequest(BaseModel):
+    event: str = ""
+    detail: str = ""
+    creator_id: str = "unknown"
+    build: str = "?"
+
+
+@app.post("/v1/telemetry/client")
+async def client_telemetry(req: _ClientEventRequest):
+    """Client-failure breadcrumbs. An on-device failure between upload-mint and job
+    creation (e.g. the chat edit flow memory-killing mid-upload) previously left ZERO
+    server trace — clips showed 'failed' with nothing in any log. The app now reports
+    those here so they're greppable in Render logs as [client]."""
+    logging.warning("[client] build=%s creator=%s %s: %s",
+                    req.build[:8], req.creator_id[:24], req.event[:40], req.detail[:300])
+    return {"ok": True}
+
+
 @app.get("/v1/broll-styles")
 async def broll_styles(niche: str = ""):
     """The record flow's B-ROLL STYLE picker: how much cutaway coverage the creator wants,

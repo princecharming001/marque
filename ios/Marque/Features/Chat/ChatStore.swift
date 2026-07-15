@@ -106,6 +106,8 @@ final class ChatStore {
                               cardId: UUID, convoId: UUID, store: AppStore) async {
         defer { isStreaming = false; streamingConversationId = nil }
         func fail(_ why: String) {
+            // Breadcrumb → Render logs: this path used to fail with zero server trace.
+            BackendClient.shared.reportClientEvent("chat_edit_failed", detail: why)
             updateCard(cardId, in: convoId, store: store) { $0.stage = .failed; $0.detail = why }
         }
 
@@ -118,9 +120,12 @@ final class ChatStore {
         var footagePath = assets[0].localPath
         if assets.count > 1 {
             let urls = assets.map { MediaStore.url(for: $0.localPath) }
+            // saveFile streams the stitched output into the container — the old
+            // Data(contentsOf:) loaded the WHOLE stitched video into RAM and
+            // memory-killed the app on real multi-minute takes.
             if let stitched = await VideoStitcher.stitch(urls),
-               let data = try? Data(contentsOf: stitched) {
-                footagePath = MediaStore.save(data, ext: "mov")
+               let saved = MediaStore.saveFile(from: stitched, ext: "mov") {
+                footagePath = saved
             }   // stitch failure → fall back to the first clip rather than stranding the turn
         }
         guard !Task.isCancelled else { return }

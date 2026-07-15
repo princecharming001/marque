@@ -129,16 +129,41 @@ struct LiveClipEngine: ClipEngineProtocol {
     /// falls back instead of creating a job with an empty source object.
     private static func uploadFootage(to uploadURLString: String, fileURL: URL) async -> Bool {
         guard let url = URL(string: uploadURLString),
-              FileManager.default.fileExists(atPath: fileURL.path) else { return false }
-        var req = URLRequest(url: url)
-        req.httpMethod = "PUT"
-        req.timeoutInterval = 300   // large upload, possibly on cellular
-        req.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
-        guard let (_, resp) = try? await URLSession.shared.upload(for: req, fromFile: fileURL),
-              let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+              FileManager.default.fileExists(atPath: fileURL.path) else {
+            BackendClient.shared.reportClientEvent("upload_precondition_failed",
+                                                   detail: "missing file or bad url")
             return false
         }
-        return true
+        // Up to 3 attempts with backoff — a single transient network blip on a large
+        // cellular upload used to hard-fail the whole edit with no retry.
+        var lastDetail = ""
+        for attempt in 0..<3 {
+            if attempt > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "PUT"
+            req.timeoutInterval = 300   // large upload, possibly on cellular
+            req.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
+            do {
+                let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
+                if let http = resp as? HTTPURLResponse {
+                    if (200..<300).contains(http.statusCode) { return true }
+                    lastDetail = "http \(http.statusCode)"
+                    if (400..<500).contains(http.statusCode) { break }   // permanent — don't retry
+                } else {
+                    lastDetail = "non-http response"
+                }
+            } catch {
+                lastDetail = error.localizedDescription
+            }
+        }
+        // Surface the failure server-side so a client-only breakage is diagnosable from
+        // Render logs (this failure class previously left ZERO server trace).
+        let mb = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int).flatMap { $0 } ?? 0
+        BackendClient.shared.reportClientEvent("upload_failed",
+                                               detail: "\(lastDetail) | \(mb / 1_000_000)MB")
+        return false
     }
 
     func render(clipId: UUID) async -> ClipStatus {
