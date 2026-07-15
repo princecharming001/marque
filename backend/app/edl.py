@@ -12,7 +12,9 @@ import re
 # shape changes.
 # v2 (P4): added end_card, progress_bar, audio.sfx — all additive/defaulted, so a
 # stale v1 site just never renders them (no crash), and checkPlanSchema still warns.
-PLAN_SCHEMA_VERSION = 2
+# v3 (A2/A5a, superintelligence epic): added caption_options.stroke_px/
+# sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
+PLAN_SCHEMA_VERSION = 3
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -259,6 +261,16 @@ class SfxCue(BaseModel):
     url: Optional[str] = None
 
 
+class AudioDuck(BaseModel):
+    """A5a (schema v3): optional override of AudioMix.tsx's duck-curve constants.
+    Every field is optional and read independently on the render side (each
+    falls back to that file's own module constant when unset) — an absent
+    `Audio.duck` (every pre-v3 EDL) behaves byte-identically to today."""
+    factor: Optional[float] = None      # music volume multiplier while ducked (0-1)
+    window_f: Optional[int] = None      # frames of full duck around a spoken word
+    ramp_f: Optional[int] = None        # frames to ease between ducked and full
+
+
 class Audio(BaseModel):
     # P0.6: loudness normalization is now live. app/audio.probe_loudness measures the
     # take's integrated LUFS (ffmpeg loudnorm analysis pass) during _run_analysis, and
@@ -271,6 +283,7 @@ class Audio(BaseModel):
     music: Optional[MusicTrack] = None
     volume_ranges: list[VolumeRange] = []
     sfx: list[SfxCue] = []        # P4: deterministic SFX one-shots (see SfxCue)
+    duck: Optional[AudioDuck] = None    # A5a: optional duck-curve override (schema v3)
 
 
 class CaptionOptions(BaseModel):
@@ -288,12 +301,17 @@ class CaptionOptions(BaseModel):
     scale: Optional[float] = None     # font-size multiplier from pinch (clamped 0.5-2.0)
     accent: Optional[str] = None      # #RRGGBB for the hot word / karaoke fill; None = style default
     uppercase: bool = False           # force ALL CAPS
-    font: str = "inter"               # inter | archivo | baloo (mirrors render/src fonts)
+    font: str = "inter"               # inter | archivo | baloo | montserrat | anton (mirrors render/src fonts)
     grouping: str = "phrase"          # word | phrase (~3 words, DEFAULT) | line (stable chunks)
                                       # P0.7: default is `phrase` — stable 3-word chunks read
                                       # better than the old sliding `line` window.
     highlight_words: list[str] = []   # normalized lowercase words rendered in the accent color
                                       # (CapCut "auto-highlight keywords")
+    # A2 (schema v3, superintelligence epic): all additive/defaulted (0), so an
+    # EDL from before this landed round-trips byte-identical.
+    stroke_px: float = 0.0                  # dual-span outline width (Hormozi/Submagic look); see Captions.tsx
+    sync_lead_frames: int = 0               # words appear this many frames BEFORE their spoken start
+    highlight_persist_frames: int = 0       # karaoke: extend a word's "popped" state this many frames past its end
 
 
 class EDL(BaseModel):
@@ -984,6 +1002,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         "volume_ranges": volume_ranges_out,
         "speech_frames": speech_frames_out,
         "sfx": sfx_out,
+        "duck": audio_src.get("duck"),   # A5a (schema v3): optional duck-curve override
     }
 
     # P4: end_card is TAIL-anchored (not source-coord), so it skips map_point
@@ -1198,7 +1217,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                 cur = dict(edl.get("caption_options") or {})
                 allowed = {"position": ("top", "middle", "bottom"),
                            "size": ("small", "medium", "large"),
-                           "font": ("inter", "archivo", "baloo"),
+                           "font": ("inter", "archivo", "baloo", "montserrat", "anton"),
                            "grouping": ("word", "phrase", "line")}
                 changed, bad = [], ""
                 for key, values in allowed.items():
@@ -1237,6 +1256,27 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         changed.append("scale")
                     except (TypeError, ValueError):
                         bad = f"bad scale '{op.get('scale')}'"
+                # A2 (schema v3): stroke_px (Hormozi outline width) / sync_lead_frames
+                # (early-appear) / highlight_persist_frames (karaoke hold) — all
+                # clamped to sane ranges, same partial-merge/reject-on-bad pattern.
+                if not bad and op.get("stroke_px") is not None:
+                    try:
+                        cur["stroke_px"] = min(20.0, max(0.0, float(op["stroke_px"])))
+                        changed.append("stroke_px")
+                    except (TypeError, ValueError):
+                        bad = f"bad stroke_px '{op.get('stroke_px')}'"
+                if not bad and op.get("sync_lead_frames") is not None:
+                    try:
+                        cur["sync_lead_frames"] = min(10, max(0, int(op["sync_lead_frames"])))
+                        changed.append("sync_lead_frames")
+                    except (TypeError, ValueError):
+                        bad = f"bad sync_lead_frames '{op.get('sync_lead_frames')}'"
+                if not bad and op.get("highlight_persist_frames") is not None:
+                    try:
+                        cur["highlight_persist_frames"] = min(30, max(0, int(op["highlight_persist_frames"])))
+                        changed.append("highlight_persist_frames")
+                    except (TypeError, ValueError):
+                        bad = f"bad highlight_persist_frames '{op.get('highlight_persist_frames')}'"
                 # Keyword highlight list — normalized to lowercase alphanumerics, capped.
                 if not bad and op.get("highlight_words") is not None:
                     hw = op.get("highlight_words")

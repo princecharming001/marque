@@ -158,9 +158,15 @@ export const CutVideo: React.FC<{
             }}
             style={{ width: "100%", height: "100%", objectFit: "cover",
                      // Canvas transform: translate in unscaled units, then zoom
-                     // (CSS transform lists apply right-to-left).
+                     // (CSS transform lists apply right-to-left). transformOrigin
+                     // biases the zoom toward a face-position proxy (38% down the
+                     // frame, ~selfie framing) instead of dead-center — without
+                     // this a punch/framing zoom pulls the face out of frame on a
+                     // tight crop. VIDEO_UNDERSTANDING is off so there's no real
+                     // face box yet; this is the deliberate v1 proxy (A3).
                      ...(c.tx_scale !== 1 || c.tx_x !== 0 || c.tx_y !== 0
-                       ? { transform: `translate(${(c.tx_x ?? 0) * 100}%, ${(c.tx_y ?? 0) * 100}%) scale(${c.tx_scale ?? 1})` }
+                       ? { transform: `translate(${(c.tx_x ?? 0) * 100}%, ${(c.tx_y ?? 0) * 100}%) scale(${c.tx_scale ?? 1})`,
+                          transformOrigin: "50% 38%" }
                        : {}),
                      ...(filter ? { filter } : {}), ...style }}
           />

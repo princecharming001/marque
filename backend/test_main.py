@@ -5158,6 +5158,71 @@ def test_set_caption_options_rejects_bad_values_whole():
         assert "caption_options" not in edl or not edl.get("caption_options")
 
 
+# A2 (schema v3, superintelligence epic) — montserrat/anton font whitelist +
+# stroke_px / sync_lead_frames / highlight_persist_frames tuning knobs.
+
+def test_set_caption_options_accepts_montserrat_and_anton():
+    from app.edl import apply_edl_ops
+    for font in ("montserrat", "anton"):
+        edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options", "font": font}], [])
+        assert res[0]["applied"] is True
+        assert edl["caption_options"]["font"] == font
+
+
+def test_set_caption_options_stroke_sync_persist_clamped():
+    from app.edl import apply_edl_ops
+    edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options",
+                                               "stroke_px": 999, "sync_lead_frames": -5,
+                                               "highlight_persist_frames": 1000}], [])
+    assert res[0]["applied"] is True
+    o = edl["caption_options"]
+    assert o["stroke_px"] == 20.0            # clamped ceiling
+    assert o["sync_lead_frames"] == 0        # clamped floor
+    assert o["highlight_persist_frames"] == 30   # clamped ceiling
+    # zero/defaults still apply cleanly
+    edl2, res2 = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options", "stroke_px": 10}], [])
+    assert res2[0]["applied"] is True and edl2["caption_options"]["stroke_px"] == 10.0
+
+
+def test_set_caption_options_rejects_bad_stroke_sync_persist():
+    from app.edl import apply_edl_ops
+    for bad in ({"stroke_px": "thick"}, {"sync_lead_frames": "early"},
+                {"highlight_persist_frames": "long"}):
+        edl, res = apply_edl_ops(_caption_edl(), [{"type": "set_caption_options", **bad}], [])
+        assert res[0]["applied"] is False
+
+
+def test_caption_options_defaults_include_a2_fields():
+    from app.edl import CaptionOptions
+    o = CaptionOptions().model_dump()
+    assert o["stroke_px"] == 0.0
+    assert o["sync_lead_frames"] == 0
+    assert o["highlight_persist_frames"] == 0
+
+
+# A5a — Audio.duck optional override.
+
+def test_audio_duck_defaults_none_and_round_trips():
+    from app.edl import EDL, build_render_plan
+    edl_dict = _caption_edl()
+    dumped = EDL(**edl_dict).model_dump()
+    assert dumped["audio"]["duck"] is None
+    plan = build_render_plan(dumped)
+    assert plan["audio"]["duck"] is None
+
+    edl_dict2 = _caption_edl()
+    edl_dict2["audio"]["duck"] = {"factor": 0.2, "window_f": 10, "ramp_f": 3}
+    dumped2 = EDL(**edl_dict2).model_dump()
+    assert dumped2["audio"]["duck"] == {"factor": 0.2, "window_f": 10, "ramp_f": 3}
+    plan2 = build_render_plan(dumped2)
+    assert plan2["audio"]["duck"] == {"factor": 0.2, "window_f": 10, "ramp_f": 3}
+
+
+def test_plan_schema_version_is_3():
+    from app.edl import PLAN_SCHEMA_VERSION
+    assert PLAN_SCHEMA_VERSION == 3
+
+
 def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
     from app.edl import EDL, build_render_plan
     edl_dict = _caption_edl()
@@ -5170,14 +5235,18 @@ def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
     assert plan["caption_options"] == {"position": "middle", "size": "small",
                                        "pos_y": None, "scale": None,
                                        "accent": "#60A5FA", "uppercase": True, "font": "baloo",
-                                       "grouping": "phrase", "highlight_words": []}
+                                       "grouping": "phrase", "highlight_words": [],
+                                       "stroke_px": 0.0, "sync_lead_frames": 0,
+                                       "highlight_persist_frames": 0}
     # and an EDL without options ships fully-defaulted values (render bridge
     # must never see undefined keys)
     plan2 = build_render_plan(EDL(**_caption_edl()).model_dump())
     assert plan2["caption_options"] == {"position": "bottom", "size": "medium",
                                         "pos_y": None, "scale": None,
                                         "accent": None, "uppercase": False, "font": "inter",
-                                        "grouping": "phrase", "highlight_words": []}
+                                        "grouping": "phrase", "highlight_words": [],
+                                        "stroke_px": 0.0, "sync_lead_frames": 0,
+                                        "highlight_persist_frames": 0}
 
 
 def test_mock_tweak_grammar_caption_options():
