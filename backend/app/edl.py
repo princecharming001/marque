@@ -2049,6 +2049,11 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 continue
             need = b.get("need") if b.get("need") in ("entity", "data", "evidence", "action", "concept") else "action"
             mode = b.get("mode") if b.get("mode") in ("full", "panel", "card") else "full"
+            # Composition-style picker: the creator picked a specific look (cutaway/panel/
+            # card) — force it rather than trust the LLM's per-item mode, which otherwise
+            # mixes modes even when the creator asked for one consistent treatment.
+            if prefs.get("broll_mode") in ("full", "panel", "card"):
+                mode = prefs["broll_mode"]
             cue_f = int(rng[0])
             s_in = max(0, cue_f - _BROLL_JCUT_LEAD)                 # J-cut lead
             # Mode B (full-frame) holds 2-3s — the face is hidden while it plays. Panel/card
