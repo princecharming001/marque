@@ -11,7 +11,7 @@ import json
 import logging
 import re
 
-from app.edl import ms_to_frame, TWEAK_OP_TYPES
+from app.edl import ms_to_frame, TWEAK_OP_TYPES, CHAT_TWEAK_OP_TYPES
 from app import knowledge as _kb
 
 OPUS = "claude-opus-4-8"
@@ -712,6 +712,16 @@ def edl_repair_prompt(style: str, broken_edl: dict, issues: list[str],
 
 # Structured-output envelope. Op params are union-typed with null (SO supports
 # null types; the repo schema-guard test only inspects object/array branches).
+# Native Structured Outputs grammar-compiles this whole schema, and it enforces THREE
+# hard limits that the old schema blew past — each degrading EVERY live tweak to the
+# canned mock (no re-render): ≤16 union/nullable params, ≤24 optional params, and an
+# overall "schema too complex" ceiling (the 27-type enum × dozens of fields tripped it).
+# So: (1) `type` uses the trimmed CHAT_TWEAK_OP_TYPES enum, (2) every other field is a
+# PLAIN type (no `["string","null"]` unions) and simply OPTIONAL (absent = unset — the
+# assembler's apply_edl_ops reads each with .get() and a default), (3) the field set is
+# trimmed to the ≤24 the chat commonly needs. The full op vocabulary + every field stays
+# reachable via the manual editor, which POSTs typed ops directly (mode="direct") and
+# never touches this schema.
 TWEAK_ENVELOPE_JSON_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["reply", "ops"],
@@ -719,55 +729,36 @@ TWEAK_ENVELOPE_JSON_SCHEMA = {
         "reply": {"type": "string"},
         "ops": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["type", "style", "enabled", "start_frame", "end_frame",
-                         "scale", "text", "query", "value", "kind", "frames",
-                         "order", "url", "volume",
-                         "position", "size", "accent", "uppercase", "font", "grouping",
-                         "highlight_words",
-                         "index", "speed", "after_segment", "name", "intensity",
-                         "brightness", "contrast", "saturation", "temperature", "vignette",
-                         "color", "bg", "off_x", "off_y"],
+            "required": ["type"],
             "properties": {
-                "type": {"type": "string", "enum": TWEAK_OP_TYPES},
-                "style": {"type": ["string", "null"]},
-                "enabled": {"type": ["boolean", "null"]},
-                "start_frame": {"type": ["integer", "null"]},
-                "end_frame": {"type": ["integer", "null"]},
-                "scale": {"type": ["number", "null"]},
-                "text": {"type": ["string", "null"]},
-                "query": {"type": ["string", "null"]},
-                "value": {"type": ["number", "null"]},
-                "kind": {"type": ["string", "null"]},
-                "frames": {"type": ["integer", "null"]},
-                # G-02: parity with the manual editor's op set — the chat could not
-                # express reorder/music-url/per-clip-volume before.
-                "order": {"type": ["array", "null"], "items": {"type": "integer"}},
-                "url": {"type": ["string", "null"]},
-                "volume": {"type": ["number", "null"]},
-                # set_caption_options knobs (any subset; null = leave unchanged)
-                "position": {"type": ["string", "null"]},
-                "size": {"type": ["string", "null"]},
-                "accent": {"type": ["string", "null"]},
-                "uppercase": {"type": ["boolean", "null"]},
-                "font": {"type": ["string", "null"]},
-                "grouping": {"type": ["string", "null"]},
-                # CapCut keyword highlight — words to color with the accent (null = unused)
-                "highlight_words": {"type": ["array", "null"], "items": {"type": "string"}},
-                # speed / transition / look / sticker knobs (null = unused)
-                "index": {"type": ["integer", "null"]},
-                "speed": {"type": ["number", "null"]},
-                "after_segment": {"type": ["integer", "null"]},
-                "name": {"type": ["string", "null"]},
-                "intensity": {"type": ["number", "null"]},
-                "brightness": {"type": ["number", "null"]},
-                "contrast": {"type": ["number", "null"]},
-                "saturation": {"type": ["number", "null"]},
-                "temperature": {"type": ["number", "null"]},
-                "vignette": {"type": ["number", "null"]},
-                "color": {"type": ["string", "null"]},
-                "bg": {"type": ["string", "null"]},
-                "off_x": {"type": ["number", "null"]},
-                "off_y": {"type": ["number", "null"]},
+                "type": {"type": "string", "enum": CHAT_TWEAK_OP_TYPES},
+                # cut/restore/trim/punch ranges (frames)
+                "start_frame": {"type": "integer"},
+                "end_frame": {"type": "integer"},
+                "scale": {"type": "number"},            # punch-in zoom
+                # captions
+                "style": {"type": "string"},            # clean | bold-word | karaoke
+                "enabled": {"type": "boolean"},         # set_captions_enabled
+                "position": {"type": "string"},         # top | middle | bottom
+                "size": {"type": "string"},             # small | medium | large
+                "accent": {"type": "string"},           # hex highlight color
+                "uppercase": {"type": "boolean"},
+                "font": {"type": "string"},             # inter | archivo | baloo | montserrat | anton
+                "grouping": {"type": "string"},         # word | phrase | line
+                "highlight_words": {"type": "array", "items": {"type": "string"}},
+                # b-roll / music
+                "query": {"type": "string"},            # add_broll stock query
+                "url": {"type": "string"},              # set_music / add_broll asset url
+                "volume": {"type": "number"},           # set_music / set_segment_volume
+                # segments
+                "index": {"type": "integer"},           # segment index for speed
+                "speed": {"type": "number"},
+                "order": {"type": "array", "items": {"type": "integer"}},  # reorder_segments
+                "value": {"type": "number"},            # set_split_fraction
+                # look
+                "name": {"type": "string"},             # set_filter preset name
+                "intensity": {"type": "number"},        # set_filter intensity
+                "temperature": {"type": "number"},      # set_adjust warmth (warm+/cool-)
             },
         }},
     },
@@ -1051,10 +1042,20 @@ EDL_JSON_SCHEMA = {
 _RANGE = {"type": "array", "items": _INT}
 EDIT_PLAN_JSON_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["open_on", "keeps", "cuts", "order", "punch_ins", "broll",
+    "required": ["understanding", "open_on", "keeps", "cuts", "order", "punch_ins", "broll",
                  "caption_plan", "text_cards", "music", "pacing_intent",
                  "pacing", "interrupt_density", "hook_text", "end_card"],
     "properties": {
+        # COMPREHENSION FIRST: the model must articulate what the whole take is trying to
+        # say before it decides what to cut — every downstream call (hook, cuts, order,
+        # b-roll) has to serve this. Not consumed by the assembler; it anchors the model's
+        # own reasoning and is logged for self-review.
+        "understanding": {"type": "object", "additionalProperties": False,
+            "required": ["through_line", "intent", "payoff"],
+            "properties": {
+                "through_line": _STR,   # the single idea the whole take is about (one sentence)
+                "intent": _STR,         # what the creator is trying to get the viewer to feel/do
+                "payoff": _STR}},       # the line/moment the whole take exists to deliver
         "open_on": {"type": "object", "additionalProperties": False,
                     "required": ["start", "end", "why"],
                     "properties": {"start": _INT, "end": _INT, "why": _STR}},
@@ -1171,7 +1172,18 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "not an EDL. The assembler turns your plan into the final cut, so you never write caption arrays, "
         "filler drops, or frame math for b-roll holds — you make the editorial calls.\n\n"
 
-        "═══ THE CUT MODEL — READ THIS FIRST ═══\n"
+        "═══ UNDERSTAND THE TAKE FIRST — DO THIS BEFORE ANY CUTTING ═══\n"
+        "Read the ENTIRE transcript (and the script/brief if given) end to end before you touch a single cut. "
+        "A great edit serves the piece's intent; you cannot know what's weak or what to open on until you know "
+        "what the whole thing is trying to say. Fill `understanding` first:\n"
+        "  • through_line — the ONE idea the whole take is about, in a sentence.\n"
+        "  • intent — what the creator wants the viewer to feel, believe, or do by the end.\n"
+        "  • payoff — the specific line or moment the entire take exists to deliver (protect it; never cut it).\n"
+        "Then make every later decision (hook, cuts, order, b-roll, pacing) in service of that through-line and "
+        "payoff. A line is 'weak' only relative to the intent — a tangent to one take is the whole point of "
+        "another. Cut what doesn't serve the through-line; keep what builds to the payoff.\n\n"
+
+        "═══ THE CUT MODEL — READ THIS SECOND ═══\n"
         "`cuts` is your DELETION list. The final video = the WHOLE take MINUS the spans you put in `cuts` "
         "(plus automatic filler/dead-air trims). ANYTHING YOU DO NOT CUT IS KEPT, verbatim, in order. So:\n"
         "  • To remove a weak line, you MUST list it in `cuts` — omitting it does NOT remove it.\n"

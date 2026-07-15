@@ -1127,6 +1127,21 @@ TWEAK_OP_TYPES = [
     "set_segment_speed", "set_segment_transform", "set_transition", "set_filter", "set_adjust",
 ]
 
+# The subset the CHAT tweak LLM is allowed to emit. The full TWEAK_OP_TYPES vocabulary
+# stays reachable through the manual editor (which sends typed ops directly, bypassing the
+# structured-output schema). We trim the LLM's enum because native Structured Outputs
+# grammar-compiles the whole op schema: the full 27-type enum crossed with every op field
+# is rejected as "schema too complex" — which silently degraded EVERY free-text tweak to
+# the canned "I can change captions…" fallback (no re-render ever fired). This subset +
+# a trimmed field set keeps the grammar under the complexity/optional/union caps.
+CHAT_TWEAK_OP_TYPES = [
+    "set_caption_style", "set_caption_options", "set_captions_enabled",
+    "cut_range", "restore_range", "trim_start", "trim_end",
+    "add_punch_in", "add_broll", "remove_broll", "remove_overlays",
+    "set_music", "set_segment_speed", "set_filter", "set_adjust",
+    "reorder_segments", "set_split_fraction", "undo",
+]
+
 # Only these compositions actually draw the b-roll layer (render/src/compositions).
 _BROLL_STYLES = {"broll_cutaway", "faceless"}
 # G-04: only these styles' Remotion comps actually DRAW punch-in / text-card overlays;

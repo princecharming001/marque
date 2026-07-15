@@ -1047,13 +1047,28 @@ def test_reels_niche_and_pagination():
     assert all({"id", "creator_handle", "hook_text", "transcript", "why_trending", "format_id"} <= set(r)
                for r in b["reels"])
     assert "sourdough" in json.dumps(b["reels"]).lower()
-    # paginate to exhaustion
-    cursor, pages = b["next_cursor"], 1
-    while cursor is not None and pages < 10:
+    # first page is all-unique (no resurfaced #p ids yet)
+    assert all("#p" not in r["id"] for r in b["reels"])
+
+
+def test_reels_infinite_scroll_never_dead_ends_on_healthy_corpus():
+    # A healthy corpus feeds an endless TikTok/IG-style scroll: every page returns reels
+    # and next_cursor stays non-null across many pages (cycling proven reels once uniques
+    # run out), with resurfaced cards carrying unique ids so the client renders them all.
+    seen_ids: set = set()
+    cursor, pages, saw_recycled = 0, 0, False
+    while cursor is not None and pages < 12:
         b = client.get("/v1/reels", params={"niche": "sourdough baking", "cursor": cursor}).json()
+        assert b["reels"], f"page {pages} unexpectedly empty"
+        ids = [r["id"] for r in b["reels"]]
+        assert len(ids) == len(set(ids)), "duplicate ids within a page"
+        if any("#p" in i for i in ids):
+            saw_recycled = True
+        seen_ids.update(ids)
         cursor = b["next_cursor"]
         pages += 1
-    assert cursor is None
+    assert pages >= 10          # kept producing pages — did not dead-end after one
+    assert saw_recycled         # cycled proven reels once uniques were exhausted
 
 
 def test_reels_watched_creators_first():
@@ -2300,8 +2315,12 @@ def test_tweak_live_path_applies_llm_ops(monkeypatch):
 
 
 def test_tweak_schema_is_structured_output_legal():
-    """The tweak envelope must obey the same SO restrictions as every other schema."""
-    import prompts
+    """The tweak envelope must obey Structured Outputs' restrictions. NOTE: props do NOT
+    have to be fully required — optional props are legal (≤24) and are in fact how we stay
+    under the 16-union cap (all-required-with-null-unions is exactly what 400'd every live
+    tweak). So: additionalProperties false, required ⊆ props, no banned keywords, no
+    null-unions, and the op item carries its `type` discriminator."""
+    import prompts, json as _json
 
     def check(schema):
         for banned in ("minimum", "maximum", "minLength", "maxLength", "multipleOf", "pattern"):
@@ -2309,12 +2328,16 @@ def test_tweak_schema_is_structured_output_legal():
         if schema.get("type") == "object":
             assert schema.get("additionalProperties") is False
             props = schema.get("properties", {})
-            assert set(schema.get("required", [])) == set(props)
+            assert set(schema.get("required", [])) <= set(props)   # required is a subset
             for v in props.values():
                 check(v)
         elif schema.get("type") == "array":
             check(schema["items"])
     check(prompts.TWEAK_ENVELOPE_JSON_SCHEMA)
+    assert '"null"' not in _json.dumps(prompts.TWEAK_ENVELOPE_JSON_SCHEMA)   # no unions
+    item = prompts.TWEAK_ENVELOPE_JSON_SCHEMA["properties"]["ops"]["items"]
+    assert item["required"] == ["type"]
+    assert len(item["properties"]) - 1 <= 24   # optional-param cap
 
 
 def test_caption_style_survives_pydantic_roundtrip():
@@ -5327,6 +5350,43 @@ def test_mock_tweak_grammar_caption_options():
     # no caption context → the option grammar must NOT fire
     reply, ops = main._mock_tweak("make the top clip bigger")
     assert ops == []
+
+
+def test_mock_tweak_unknown_is_honest_not_a_capabilities_dump():
+    # A no-match must NOT read like a completed action or brag about capabilities — that
+    # made users think the editor silently refused. It should say nothing applied + give a
+    # concrete example, and return empty ops.
+    reply, ops = main._mock_tweak("asdfghjkl do something vague")
+    assert ops == []
+    low = reply.lower()
+    assert "couldn't" in low or "could not" in low
+    assert "i can change caption styles" not in low   # the old brochure copy is gone
+
+
+def test_tweak_envelope_schema_within_structured_output_caps():
+    # Structured Outputs hard-limits union (≤16) and optional (≤24) params and rejects
+    # over-complex grammars — a breach 400s EVERY live tweak into the canned mock (no
+    # re-render). Guard the caps so a future field addition can't silently resurrect that.
+    import json as _json
+    item = prompts.TWEAK_ENVELOPE_JSON_SCHEMA["properties"]["ops"]["items"]
+    optional = len(item["properties"]) - len(item["required"])
+    assert optional <= 24, f"{optional} optional op params exceeds the 24 cap"
+    assert '"null"' not in _json.dumps(item), "no null-union types (they count to the 16 cap)"
+    # the LLM enum is the trimmed chat subset, not the full manual-editor vocabulary
+    from app.edl import CHAT_TWEAK_OP_TYPES, TWEAK_OP_TYPES
+    assert item["properties"]["type"]["enum"] == CHAT_TWEAK_OP_TYPES
+    assert len(CHAT_TWEAK_OP_TYPES) < len(TWEAK_OP_TYPES)
+
+
+def test_strategy_endpoint_flags_template_as_not_ready(monkeypatch):
+    # The compiler writes a deterministic template when there are no analyzed videos; the
+    # app must be able to tell that apart from a real strategy so it shows "still forming"
+    # instead of rendering the placeholder. is_template must ride the response.
+    from app import strategy_compiler as sc
+    tmpl = sc._template_strategy({"niche": "fitness"})
+    assert sc.is_template_markdown(tmpl) is True
+    assert sc.is_template_markdown("## Insights\n- a real evidence-backed lever") is False
+    assert sc.is_template_markdown(None) is False
 
 
 # ---------------------------------------------------------------------------
