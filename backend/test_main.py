@@ -1364,7 +1364,7 @@ def test_edl_prompt_threads_moments_and_frame_anchored_transcript():
                                    {"hook": "h", "body": "b", "cta": "c"}, {}, brief=brief)
     assert "[f30-60] city skyline" in usr    # b-roll moment threaded, frame-anchored
     assert "[f90] big claim" in usr           # punch-in moment threaded
-    assert "[f0]" in usr                      # frame-anchored transcript present
+    assert "[f0-" in usr                     # frame-anchored transcript (start-end anchors)
     assert '"start_ms"' not in usr            # the raw [:200] json.dumps transcript is gone
 
 
@@ -2678,7 +2678,7 @@ def test_edit_brief_prompt_includes_custom_instructions():
                                        custom_instructions="make it punchy and funny",
                                        brand={"niche": "fitness"})
     assert "make it punchy and funny" in usr
-    assert "[f0]" in usr                                      # frame-anchored transcript
+    assert "[f0-" in usr                                     # frame-anchored transcript
 
 
 # ---------------------------------------------------------------------------

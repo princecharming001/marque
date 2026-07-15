@@ -967,10 +967,13 @@ def test_framing_rotates_and_never_puts_mid_next_to_close():
     assert len(scales) > 3   # multiple framing changes happened
     wide, mid, close = (retention._FRAMING_SCALES[k] for k in ("wide", "mid", "close"))
     assert set(scales) <= {wide, mid, close}
+    # mid is never adjacent to close (the pattern crosses through wide); adjacent deltas
+    # are the spec's 100/110/118 ladder steps (>=8%), never a <8% near-miss glitch.
     for a, b in zip(scales, scales[1:]):
         if a != b:
             delta = abs(a - b) / max(a, b)
-            assert delta >= 0.15   # never a same_framing_adjacent-style near-miss
+            assert delta >= 0.08
+            assert not ({round(a, 2), round(b, 2)} == {mid, close})   # mid never touches close
 
 
 def test_framing_deterministic_same_seed():

@@ -30,7 +30,7 @@ class LintFinding(TypedDict):
 # --- thresholds (the only place these live) -----------------------------------
 STATIC_WINDOW_FRAMES = 150        # ~5s @ 30fps with no visual event
 STATIC_OPEN_FRAMES = 45           # ~1.5s — the video must open with SOME motion/overlay
-FRAMING_DELTA_FLOOR = 0.15        # <15% relative tx_scale change reads as a glitch, not a cut
+FRAMING_DELTA_FLOOR = 0.08        # <8% tx_scale change reads as a glitch; the spec's 100/110/118 ladder (8-10% steps) is legit
 METRONOME_GAP_FLOOR = 8           # stddev of event gaps below this reads as machine-timed
 METRONOME_MIN_EVENTS = 4
 ANCHOR_DRIFT_FRAMES = 3           # overlay/sfx more than this many frames from any word start
