@@ -2244,6 +2244,14 @@ async def styles_gallery(niche: str = ""):
     per style where the cache allows; when no live reels exist we return the styles with no
     demo (sample:true) rather than a fake video."""
     themes = [themes_mod.get_theme(tid) for tid in _STYLE_GALLERY_ORDER]
+    # Pull this niche's durable Supabase copy into the in-memory cache first (same as
+    # /v1/reels) so demos appear immediately even on a cold process right after a deploy —
+    # otherwise the pool is empty until Home warms a niche and we'd show samples.
+    if niche:
+        try:
+            await _hydrate_reels_caches(niche, [])
+        except Exception:
+            pass
     # Demos are GENERAL talking heads — pooled across EVERY cached niche + watched creator,
     # not just this creator's niche (styles are a stylistic choice, not niche-relevant). Each
     # style gets a DISTINCT demo (no modulo repeat) so the options feel different; when the
