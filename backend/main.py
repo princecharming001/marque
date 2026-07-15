@@ -2301,6 +2301,12 @@ async def _persist_clip_job(job_id: str) -> None:
         durable = job
         if len(job.get("edl_history") or []) > 5:
             durable = {**job, "edl_history": job["edl_history"][-5:]}
+        if "_theme" in durable:
+            # A7: job["_theme"] holds the resolved Theme pydantic object (internal-only,
+            # scoped to one _run_edit call) — not JSON-serializable and not needed for
+            # restore (job["theme_id"] is the durable, honest record; retheme() and any
+            # future restore path re-resolve the Theme from that id).
+            durable = {**durable, "_theme": None}
         await _supabase_client.upsert_clip_job(job_id, durable)
     except Exception as e:
         logging.warning("supabase upsert_clip_job failed: %s", e)

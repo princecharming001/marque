@@ -17,7 +17,21 @@ export function usePunchScale(overlays: Overlay[] | undefined | null): number {
     (o) => o.type === "punch_in" && frame >= o.frame_in && frame < o.frame_out
   );
   if (!punchIn) return 1.0;
-  const r = Math.min(8, (punchIn.frame_out - punchIn.frame_in) / 2);
+  const w = punchIn.frame_out - punchIn.frame_in;
+  const r = Math.min(8, w / 2);
+  // A window <=16 frames makes r land exactly on w/2, so frame_in+r === frame_out-r
+  // (an algebraic identity, not an edge case) — interpolate() requires a strictly
+  // increasing inputRange and throws on the duplicate keyframe. Below that width
+  // there's no room for a plateau anyway; ease straight to a single peak instead.
+  if (r * 2 >= w) {
+    const mid = (punchIn.frame_in + punchIn.frame_out) / 2;
+    return interpolate(
+      frame,
+      [punchIn.frame_in, mid, punchIn.frame_out],
+      [1, punchIn.scale, 1],
+      { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
+    );
+  }
   return interpolate(
     frame,
     [punchIn.frame_in, punchIn.frame_in + r, punchIn.frame_out - r, punchIn.frame_out],
