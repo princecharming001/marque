@@ -4741,6 +4741,19 @@ async def _run_edit(job_id: str, words: list[dict]):
             # for the report card. After the tier pass, edl["broll"] holds only kept assets,
             # so a literal need that fell back to a text card is no longer a "broll_unresolved".
             job["broll_log"] = edl_data.pop("_broll_log", [])
+            # Addendum mode H: listicle hook flash. When the take is a LISTICLE and >=4
+            # distinct real assets resolved, flash them full-frame right after the hook
+            # line (12f each, <=5 items = <=2s, inside the 2.5s cap). OUTPUT coords —
+            # build_render_plan copies the field verbatim. Conservative by design: any
+            # doubt (few assets, not a listicle) → no montage.
+            _vtype = (job.get("edit_brief") or {}).get("video_type", "")
+            _m_urls: list[str] = []
+            for _b in (edl_data.get("broll") or []):
+                _u = _b.get("resolved_url")
+                if _u and _u not in _m_urls:
+                    _m_urls.append(_u)
+            if _vtype == "listicle" and len(_m_urls) >= 4:
+                edl_data["montage"] = {"frame_in": 75, "frames_per": 12, "items": _m_urls[:5]}
             unresolved = [b.get("broll_query") or b.get("cue_text", "")
                           for b in (edl_data.get("broll") or [])
                           if b.get("source") != "own_media" and not b.get("resolved_url")]
@@ -4903,6 +4916,56 @@ async def _score_edl_vision(frames: list[bytes], plan: dict,
             return None
         text = "".join(b.get("text", "") for b in r.json().get("content", []))
         return json.loads(text)
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+
+
+async def _matte_qc(render_url: str, edl_data: dict, style: str) -> dict | None:
+    """Addendum Part 6 — cutout/PIP quality gates, run on the FINISHED render of the
+    speaker-composited modes (green_screen's rounded speaker card, source_pip's
+    circle/rect PIP). Samples ~1 frame/sec and vision-checks: (1) no halo/fringe wider
+    than ~2px around hair/shoulders, (2) no flickering matte between adjacent samples,
+    (3) no amputated features (scalp/ears/hair cut off by the crop — the circular PIP's
+    real failure mode). Returns {"pass": bool, "issues": [...]} or None when not
+    applicable / keyless / sampling failed (never blocks the render)."""
+    st = (edl_data.get("layout") or {}).get("speaker_treatment", "")
+    cutoutish = style == "green_screen" or st.startswith("pip")
+    if not cutoutish or not ANTHROPIC_KEY or not render_url:
+        return None
+    frames = await _sample_render_frames(render_url, 6)
+    if not frames:
+        return None
+    import base64
+    schema = {"type": "object", "additionalProperties": False,
+              "required": ["pass", "issues"],
+              "properties": {"pass": {"type": "boolean"},
+                             "issues": {"type": "array", "items": {"type": "string"}}}}
+    content: list[dict] = [{"type": "text", "text":
+        "These are evenly-sampled frames of a short vertical video where the SPEAKER is "
+        "composited in a card / picture-in-picture window over other media. Check the "
+        "speaker window ONLY, against these gates:\n"
+        "1. No visible halo or color fringe wider than ~2px around hair/shoulders.\n"
+        "2. No flickering/jumping matte between frames (window contents shifting without "
+        "real subject movement).\n"
+        "3. No amputated features: the crop must not cut off the scalp, ears, or chin — "
+        "the head and shoulders should sit comfortably inside the window.\n"
+        "pass=false ONLY for a clear violation a viewer would notice. List each issue "
+        "briefly. An empty speaker window in a frame (speaker hidden by design) is fine."}]
+    for fr in frames[:6]:
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                        "data": base64.b64encode(fr).decode("ascii")}})
+    body = {"model": SONNET, "max_tokens": 400,
+            "system": "You are a strict video-compositing QA checker.",
+            "messages": [{"role": "user", "content": content}],
+            "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+    try:
+        client = _get_anthropic_client()
+        r = await client.post(ANTHROPIC_URL,
+                              headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                                       "content-type": "application/json"}, json=body)
+        if r.status_code != 200:
+            return None
+        return json.loads("".join(b.get("text", "") for b in r.json().get("content", [])))
     except (httpx.HTTPError, ValueError, KeyError):
         return None
 
@@ -5164,6 +5227,33 @@ async def _render_all_clips(job_id: str) -> None:
                 finalized_url = await _finalize_audio_loudness(render_url, job_id)
                 if finalized_url:
                     render_url = finalized_url
+            # Addendum Part 6: cutout/PIP quality gates on the finished render. A failed
+            # circular PIP falls back ONCE to the rounded-rect PIP ("a clean rectangle
+            # always beats a bad cutout"); a failed rect/green_screen just records the
+            # issues on the job. Fully fail-soft — QC can never fail a good render.
+            if _is_current_render(clip, my_gen):
+                qc = await _matte_qc(render_url, edl_data, job.get("style", ""))
+                if qc is not None:
+                    job["matte_qc"] = qc
+                    if not qc.get("pass", True) and \
+                            (edl_data.get("layout") or {}).get("speaker_treatment") == "pip_circle":
+                        try:
+                            edl_data.setdefault("layout", {})["speaker_treatment"] = "pip_rounded_rect"
+                            job["edl"] = edl_data
+                            async with _render_semaphore:
+                                if _is_current_render(clip, my_gen):
+                                    sub2 = await _submit_remotion_render(
+                                        job["source_url"], edl_data, clip["format"], job["style"])
+                                    if sub2:
+                                        url2 = await _poll_remotion_render(
+                                            sub2["render_id"], sub2["bucket_name"],
+                                            total_frames=sub2.get("total_frames"))
+                                        if url2:
+                                            render_url = url2
+                                            qc["fallback"] = "pip_rounded_rect"
+                        except Exception as e:
+                            logging.warning("[matte-qc] fallback re-render failed (keeping "
+                                            "original): %s", e)
             if _is_current_render(clip, my_gen):
                 clip["render_url"] = render_url
                 clip["status"] = "ready"
@@ -5427,6 +5517,11 @@ async def _submit_remotion_render(source_url: str, edl: dict, format_id: str, st
     # Remotion Lambda composition IDs may only contain a-z, A-Z, 0-9, CJK, and "-" —
     # underscores are rejected at render time (discovered live: "Composition id can
     # only contain ... You passed Marque_TalkingHead"). Must match Root.tsx exactly.
+    # Addendum mode E: a duet with speaker_treatment=pip_* renders through the
+    # source-primary + speaker-PIP composition instead of the top/bottom split.
+    if style == "duet_split" and \
+            (edl.get("layout") or {}).get("speaker_treatment", "").startswith("pip"):
+        style = "source_pip"
     composition_id = f"Marque-{style.title().replace('_', '')}"
     # Transform the editorial EDL (source coords) into a render-ready plan: the actual
     # cut list + captions/overlays remapped to the post-cut output timeline. The
@@ -6637,6 +6732,18 @@ def _attach_react_source(edl: dict, job: dict) -> dict:
         "resolved_url": url, "kind": kind,
         "credit_label": job.get("react_credit_label", ""),
     }
+    # Addendum mode E: the creator's speaker_treatment config selects the source-primary
+    # + speaker-PIP layout instead of the top/bottom split. Stamped on layout so
+    # build_render_plan carries it and _submit_remotion_render picks Marque-SourcePip.
+    cfg = job.get("config") or {}
+    st = (cfg.get("speaker_treatment") or "").strip()
+    if st in ("pip_circle", "pip_rounded_rect"):
+        lay = dict(edl.get("layout") or {})
+        lay["speaker_treatment"] = st
+        pos = (cfg.get("pip_position") or "").strip()
+        if pos in ("bottom_left", "bottom_right", "bottom_center"):
+            lay["pip_position"] = pos
+        edl["layout"] = lay
     return edl
 
 

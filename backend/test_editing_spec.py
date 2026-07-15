@@ -183,3 +183,53 @@ def test_broll_no_repeat_within_15s(monkeypatch):
     # both resolve to the SAME url within 200f (<450) → the second is dropped as a repeat
     assert len(out["broll"]) == 1
     assert any(x["action"] == "skipped_repeat" for x in out["_broll_log"])
+
+
+# ── Addendum composition modes (schema v5) ────────────────────────────────────
+
+def test_broll_mode_and_need_survive_edl_roundtrip():
+    # The pydantic model must DECLARE mode/need/fallback_text — undeclared keys are
+    # silently dropped on EDL(**data).model_dump() (the known loose-keys gotcha), which
+    # is exactly how the Part 4A tier rule went dark the first time.
+    words = _sentence(["hello"] * 40, 0)
+    plan = {"cuts": [], "keeps": [],
+            "broll": [{"range": [120, 240], "cue": "notion app", "query": "notion",
+                       "source": "stock", "need": "entity", "text": "NOTION", "mode": "panel"}]}
+    d = edl.assemble_edl(plan, words, "broll_cutaway", "myth-buster").model_dump()
+    assert d["broll"], "b-roll entry dropped"
+    b = d["broll"][0]
+    assert b["mode"] == "panel" and b["need"] == "entity" and b["fallback_text"] == "NOTION"
+
+
+def test_broll_panel_allows_longer_hold_and_hook_overlap():
+    words = _sentence(["hello"] * 60, 0)
+    # panel over the hook (frame 30) — allowed because the face stays visible; and an
+    # 8s window survives (mode B would clamp to 3s and reject the hook overlap).
+    plan = {"cuts": [], "keeps": [],
+            "broll": [{"range": [30, 270], "cue": "c", "query": "q", "source": "stock",
+                       "need": "action", "text": "", "mode": "panel"}]}
+    d = edl.assemble_edl(plan, words, "broll_cutaway", "myth-buster").model_dump()
+    assert d["broll"], "panel insert rejected"
+    b = d["broll"][0]
+    assert (b["src_out"] - b["src_in"]) > 90        # longer than mode B's 3s cap
+    # same range as mode "full" is rejected (hook protection)
+    plan2 = {"cuts": [], "keeps": [],
+             "broll": [{"range": [30, 270], "cue": "c", "query": "q", "source": "stock",
+                        "need": "action", "text": "", "mode": "full"}]}
+    d2 = edl.assemble_edl(plan2, words, "broll_cutaway", "myth-buster").model_dump()
+    assert not d2["broll"]
+
+
+def test_render_plan_carries_mode_layout_montage():
+    words = _sentence(["hello"] * 40, 0)
+    plan = {"cuts": [], "keeps": [],
+            "broll": [{"range": [120, 240], "cue": "c", "query": "q", "source": "stock",
+                       "need": "action", "text": "", "mode": "card"}]}
+    d = edl.assemble_edl(plan, words, "talking_head", "myth-buster").model_dump()
+    d["broll"][0]["resolved_url"] = "http://x/v.mp4"
+    d["layout"]["speaker_treatment"] = "pip_circle"
+    d["montage"] = {"frame_in": 75, "frames_per": 12, "items": ["http://x/a.jpg"] * 4}
+    rp = edl.build_render_plan(d)
+    assert rp["broll"][0]["mode"] == "card"
+    assert rp["layout"]["speaker_treatment"] == "pip_circle"
+    assert rp["montage"]["items"] and rp["schema_version"] == edl.PLAN_SCHEMA_VERSION == 5
