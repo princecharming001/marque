@@ -38,6 +38,7 @@ from app.edl import (
     ms_to_frame, strip_fillers, build_render_plan, EDL, MIN_CLIP_OUTPUT_FRAMES,
     ALWAYS_FILLERS, _norm_word, assemble_edl,
 )
+from app.edit_lint import lint_edl
 from eval import edit_golden
 from eval.edit_fixtures import FIXTURES, take_total_frames
 
@@ -240,6 +241,31 @@ def self_check() -> tuple[bool, list[str]]:
     return (not errs), errs
 
 
+# --- A1: deterministic edit-lint tripwire (separate from the reference-EDL tiers
+# above — a bare single-segment `reference_edl` has no overlays at all, so it would
+# false-positive every lint ERROR check; the lint fixtures are hand-built dense EDLs
+# instead, see eval/edit_golden.known_bad_lint/known_good_lint). --------------------
+
+def evaluate_edl_lint(edl: dict, words: list[dict], style: str = "") -> list[str]:
+    """Formatted ERROR-severity lint findings only (warn-severity findings are
+    advisories, not eval-gating regressions — covered by test_edit_lint.py instead)."""
+    findings = lint_edl(edl, words, style=style or edl.get("style", ""))
+    return [f"{f['code']}: {f['detail']}" for f in findings if f["severity"] == "error"]
+
+
+def self_check_lint() -> tuple[bool, list[str]]:
+    errs: list[str] = []
+    good = edit_golden.known_good_lint()
+    fails = evaluate_edl_lint(good["edl"], good["words"])
+    if fails:
+        errs.append(f"LINT_KNOWN_GOOD[{good['id']}] should be clean but flagged: {fails}")
+    for b in edit_golden.known_bad_lint():
+        fails = evaluate_edl_lint(b["edl"], b["words"])
+        if not any(b["code"] in f for f in fails):
+            errs.append(f"LINT_KNOWN_BAD[{b['code']}] ({b['why']}) NOT caught — failures={fails}")
+    return (not errs), errs
+
+
 # --- Author tier: re-author FRESH through the real deterministic path ---------
 #
 # self_check() above only proves the invariants gate a FROZEN golden (edit_golden's
@@ -381,6 +407,14 @@ def main(argv: list[str]) -> int:
     for e in errs:
         print("  ✗", e)
     if not ok:
+        return 1
+
+    lint_ok, lint_errs = self_check_lint()
+    print(f"[edl_eval] lint self-check: {'PASS' if lint_ok else 'FAIL'} "
+          f"(1 good, {len(edit_golden.known_bad_lint())} bad)")
+    for e in lint_errs:
+        print("  ✗", e)
+    if not lint_ok:
         return 1
 
     if author:

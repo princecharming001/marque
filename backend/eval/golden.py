@@ -116,4 +116,96 @@ KNOWN_BAD = [
         "title": "x", "hook": "", "hookSignal": "stakes", "formatId": "myth-buster",
         "body": "A perfectly reasonable body of at least twelve characters.", "cta": "Follow.",
         "predictedScore": 60, "style": "talking_head"}},
+    # --- Speakability v2: one fixture per evasion family the live audit found slipping
+    # through the v1 lint. Each expect_flag matches a substring of its new reason string.
+    {"why": "meta-narration (here I'd break down)", "expect_flag": "meta-narration", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Most diets fail for one dumb reason.",
+        "hookSignal": "contrarian", "formatId": "myth-buster",
+        "body": "Here I'd break down why most diets fail. It's not willpower, it's math.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "meta-narration (this is where I get into)", "expect_flag": "meta-narration", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Cardio isn't the enemy people think it is.",
+        "hookSignal": "curiosity", "formatId": "myth-buster",
+        "body": "This is where I get into the three mistakes everyone makes with cardio timing.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "coaching (you want to open with)", "expect_flag": "coaching", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Your first rep sets the whole set.",
+        "hookSignal": "specificity", "formatId": "myth-buster",
+        "body": "You want to open with a bold claim, then hit them with the data.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "outline label density (Step 1 / Step 2)", "expect_flag": "outline", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Two steps fix your squat depth.",
+        "hookSignal": "specificity", "formatId": "listicle",
+        "body": "Step 1 — the hook.\n\nStep 2 — the reveal.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "sequencing scaffold (First/Then/Finally)", "expect_flag": "sequencing scaffold", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Your warmup order is backwards.",
+        "hookSignal": "contrarian", "formatId": "listicle",
+        "body": "First, the claim. Then, the proof. Finally, the takeaway.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "intent statement (the idea is to)", "expect_flag": "editorial intent", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Expectations vs. reality on leg day.",
+        "hookSignal": "curiosity", "formatId": "before-after",
+        "body": "The idea is to contrast what people expect with what actually works.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "meta-narration (I'll cover)", "expect_flag": "meta-narration", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Three myths are wrecking your progress.",
+        "hookSignal": "stakes", "formatId": "listicle",
+        "body": "I'll cover the three biggest myths and why they persist.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "bulleted content summary", "expect_flag": "bulleted content summary", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "Everything wrong with your current split.",
+        "hookSignal": "stakes", "formatId": "listicle",
+        "body": "- the myth\n- the evidence\n- the fix",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "imperative directive (Demonstrate/Highlight)", "expect_flag": "imperative directive", "gate_ok": True,
+     "brand": _FIT_BRAND, "script": {
+        "title": "x", "hook": "The rep range nobody talks about.",
+        "hookSignal": "specificity", "formatId": "myth-buster",
+        "body": "Demonstrate the move on camera. Highlight the key number.",
+        "cta": "Follow.", "predictedScore": 80, "style": "talking_head"}},
+    {"why": "visual artifact (picture the chart)", "expect_flag": "visual artifact", "gate_ok": True,
+     "brand": _FIN_BRAND, "script": {
+        "title": "x", "hook": "Your net worth chart is lying to you.",
+        "hookSignal": "curiosity", "formatId": "myth-buster",
+        "body": "Picture the graph going up and to the right.",
+        "cta": "Save this.", "predictedScore": 80, "style": "faceless"}},
 ]
+
+# Near-miss phrasings that are LEGITIMATE spoken copy and must NEVER be flagged by the
+# v2 speakability lint. Appended to KNOWN_GOOD so the harness self-check (which hard-fails
+# any KNOWN_GOOD that trips a quality flag) is the false-positive tripwire.
+KNOWN_GOOD.extend([
+    {"brand": _FIT_BRAND, "script": {
+        "title": "x", "summary": "Teaser for the next clip.",
+        "hook": "I'll show you what happened next.",
+        "hookSignal": "curiosity", "formatId": "myth-buster",
+        "body": "I'll show you what happened next. Three weeks in, my knees stopped hurting for the first time in years.",
+        "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
+    {"brand": _FIT_BRAND, "script": {
+        "title": "x", "summary": "Scene-setting spoken hook.",
+        "hook": "The scale lied to me for three weeks straight.",
+        "hookSignal": "narrative", "formatId": "pov-story",
+        "body": "Picture this: you're three weeks in and the scale hasn't moved, but your jeans fit different.",
+        "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
+    {"brand": _FIT_BRAND, "script": {
+        "title": "x", "summary": "Two-beat spoken sequence, not an outline.",
+        "hook": "This one habit changed everything.",
+        "hookSignal": "curiosity", "formatId": "myth-buster",
+        "body": "First, you're going to hate this. Then you'll thank me for it in a month.",
+        "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
+    {"brand": _FIT_BRAND, "script": {
+        "title": "x", "summary": "Spoken ordinal, not a label.",
+        "hook": "One tiny swap fixes your mornings.",
+        "hookSignal": "specificity", "formatId": "listicle",
+        "body": "One: stop skipping breakfast. It's the difference between a 10am crash and a steady afternoon.",
+        "cta": "Follow.", "predictedScore": 78, "style": "talking_head"}},
+])

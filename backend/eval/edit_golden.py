@@ -148,3 +148,108 @@ def known_bad() -> list[dict]:
                   "edl": edl5, "words": fx5["words"], "hook_ms": 0})
 
     return cases
+
+
+# ---------------------------------------------------------------------------
+# A1: deterministic edit-lint tripwires (app.edit_lint). Unlike the checks above,
+# these grade a FULLY-ASSEMBLED, retention-passed edit — a bare single-segment
+# `reference_edl` (no overlays at all) is legitimately "static" by lint's own
+# definition, so these fixtures are hand-built with realistic overlay density and
+# tested SEPARATELY (eval.edl_eval.self_check_lint), never mixed into the bare
+# reference_edl known_good()/known_bad() tripwires above.
+# ---------------------------------------------------------------------------
+
+def _lint_words(n: int = 120, step_ms: int = 120) -> list[dict]:
+    """A long, evenly-spaced word track (14.4s @ n=120) so fixtures have plenty of
+    source frames to place overlays/segments/transitions across."""
+    return [{"word": "word", "start_ms": i * step_ms, "end_ms": i * step_ms + 90} for i in range(n)]
+
+
+def _lint_base_edl(words: list[dict]) -> dict:
+    """A DENSE, well-formed EDL: varied framing across 3 segments, alternating
+    word-anchored overlays every ~130 output frames, one font, a short transition.
+    Every lint ERROR check should be clean on this — mutate exactly one thing per
+    known-bad case below."""
+    total = int(words[-1]["end_ms"] / 1000 * 30) + 60
+    third = total // 3
+    overlays = []
+    otype = "punch_in"
+    for f in range(30, total - 60, 130):
+        w = min(words, key=lambda w: abs(w["start_ms"] / 1000 * 30 - f))
+        anchor = int(w["start_ms"] / 1000 * 30)
+        overlays.append({"type": otype, "src_in": anchor, "src_out": anchor + 30,
+                         "scale": 1.08, "text": "hi" if otype == "text_sticker" else "",
+                         "font": "inter"})
+        otype = "text_sticker" if otype == "punch_in" else "punch_in"
+    return {
+        "style": "talking_head", "format_id": "myth-buster",
+        "segments": [
+            {"src_in": 0, "src_out": third, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0},
+            {"src_in": third, "src_out": 2 * third, "tx_scale": 1.18, "tx_x": 0.0, "tx_y": -0.02},
+            {"src_in": 2 * third, "src_out": total, "tx_scale": 1.0, "tx_x": 0.0, "tx_y": 0.0},
+        ],
+        "drops": [], "captions": [], "speech_frames": [],
+        "overlays": overlays, "broll": [],
+        "layout": {"style": "talking_head"},
+        "audio": {"lufs_target": -14.0, "gain": 0.0, "sfx": []},
+        "caption_options": {"font": "inter"},
+        "transitions": [{"after_segment": 0, "style": "fade_black", "frames": 10},
+                        {"after_segment": 1, "style": "fade_black", "frames": 10}],
+        "look": None, "end_card": None,
+    }
+
+
+def known_bad_lint() -> list[dict]:
+    """One case per lint ERROR code: {code, why, edl, words}. Each mutates the dense
+    base fixture with exactly one defect."""
+    cases: list[dict] = []
+    words = _lint_words()
+
+    # static_window: strip every overlay -> long dead stretches with zero events.
+    edl = _lint_base_edl(words)
+    edl["overlays"] = []
+    cases.append({"code": "static_window", "why": "no overlays -> 150f+ dead stretches",
+                  "edl": edl, "words": words})
+
+    # static_open: push every overlay past the first 1.5s.
+    edl = _lint_base_edl(words)
+    edl["overlays"] = [o for o in edl["overlays"] if o["src_in"] > 60]
+    cases.append({"code": "static_open", "why": "no event in the opening 45 output frames",
+                  "edl": edl, "words": words})
+
+    # same_framing_adjacent: make segment 1's tx_scale match segment 0's (no delta at the cut).
+    edl = _lint_base_edl(words)
+    edl["segments"][1]["tx_scale"] = edl["segments"][0]["tx_scale"]
+    cases.append({"code": "same_framing_adjacent", "why": "adjacent segments share tx_scale",
+                  "edl": edl, "words": words})
+
+    # long_dissolve: one transition way past the 15f cap.
+    edl = _lint_base_edl(words)
+    edl["transitions"][0]["frames"] = 40
+    cases.append({"code": "long_dissolve", "why": "40f transition (> 15f cap)",
+                  "edl": edl, "words": words})
+
+    # tail_rules: an end_card on fast_cuts, which never renders one.
+    edl = _lint_base_edl(words)
+    edl["style"] = "fast_cuts"
+    edl["end_card"] = {"text": "Follow for more", "frames": 75, "show_handle": True}
+    cases.append({"code": "tail_rules", "why": "end_card present on fast_cuts",
+                  "edl": edl, "words": words})
+
+    # bundle_coherence: a second text_sticker font mixed into an otherwise one-font EDL.
+    edl = _lint_base_edl(words)
+    for o in edl["overlays"]:
+        if o["type"] == "text_sticker":
+            o["font"] = "anton"
+            break
+    cases.append({"code": "bundle_coherence", "why": "mixed fonts (inter + anton) in one EDL",
+                  "edl": edl, "words": words})
+
+    return cases
+
+
+def known_good_lint() -> dict:
+    """The dense, well-formed base fixture itself — every lint ERROR check must be
+    clean on it (the false-positive tripwire for the lint's error tier)."""
+    words = _lint_words()
+    return {"id": "lint-dense-clean", "edl": _lint_base_edl(words), "words": words}

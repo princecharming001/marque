@@ -2347,11 +2347,40 @@ _STAGE_LINESTART_RE = _sr_re.compile(
     r"beat\s*\d|scene\s*\d|segment\s*\d\s*:)",
     _sr_re.I)
 
+# --- Speakability v2: 6 more evasion families found in live audit + eval sweep. Each
+# maps to its own reason string so eval fixtures can assert on which family fired. ---
+_META_NARRATION_RE = _sr_re.compile(
+    r"\b(?:here|this is where)\s+i(?:'d| would|'ll| will)?\s+"
+    r"(?:break down|get into|explain|cover|show|walk|dig into)"
+    r"|\bi(?:'ll| will|'d| would)\s+(?:cover|go over|get into|touch on|run through|break down)\b",
+    _sr_re.I)
+_COACHING_RE = _sr_re.compile(
+    r"\byou (?:want|need|'ll want) to (?:open|start|close|end|lead|hook)\b"
+    r"|(?:^|(?<=[.\n]))\s*open with\b",
+    _sr_re.I)
+_OUTLINE_LABEL_RE = _sr_re.compile(
+    r"(?:^|(?<=\n))\s*(?:step|point|part|tip|hook|beat)\s*\d*\s*[—:\-–]",
+    _sr_re.I)
+_INTENT_RE = _sr_re.compile(
+    r"\bthe (?:idea|goal|point|key|aim) (?:here )?is to\b", _sr_re.I)
+_IMPERATIVE_DIRECTIVE_RE = _sr_re.compile(
+    r"(?:^|(?<=[.\n]))\s*(?:demonstrate|highlight|emphasize|showcase|illustrate|contrast|present)\b",
+    _sr_re.I)
+_VISUAL_ARTIFACT_RE = _sr_re.compile(
+    r"\b(?:picture|imagine|visualize) (?:a |the )?"
+    r"(?:chart|graph|graphic|screen|image|footage|b-?roll|montage)",
+    _sr_re.I)
+# First-/second-person pronoun check for the bullet-summary structural test below.
+_PERSONAL_PRONOUN_RE = _sr_re.compile(r"\b(?:i|i'm|i'll|i've|my|me|you|you're|you'll|your)\b", _sr_re.I)
+_BULLET_LINE_RE = _sr_re.compile(r"^\s*[-•*]\s+(.*)$", _sr_re.M)
+_SEQUENCE_WORD_RE = _sr_re.compile(r"(?:^|(?<=[.\n]))\s*(?:first|then|finally)\b[,:]?", _sr_re.I)
+
 
 def flag_stage_direction(body: str, style: str = "") -> str | None:
     """Return a reason string if the body reads as a DESCRIPTION/stage-direction rather
     than verbatim spoken copy, else None. Pure + deterministic. Whitelists the deliberate
-    [broll: …] cue used by broll_cutaway (its cues are inline by design)."""
+    [broll: …] cue used by broll_cutaway (its cues are inline by design), [your result]
+    fill-ins, and spoken ordinals ("One:")."""
     if not body:
         return None
     # broll_cutaway embeds "[broll: …]" cues in the body on purpose — strip them before
@@ -2359,7 +2388,44 @@ def flag_stage_direction(body: str, style: str = "") -> str | None:
     scrubbed = _sr_re.sub(r"\[broll:[^\]]*\]", "", body, flags=_sr_re.I)
     if _STAGE_ANYWHERE_RE.search(scrubbed) or _STAGE_LINESTART_RE.search(scrubbed):
         return "stage direction / description instead of spoken copy"
+    if _META_NARRATION_RE.search(scrubbed):
+        return "meta-narration about the script instead of the script itself"
+    if _COACHING_RE.search(scrubbed):
+        return "coaching the creator on what to say instead of writing it"
+    if _INTENT_RE.search(scrubbed):
+        return "states editorial intent instead of the spoken line"
+    if _IMPERATIVE_DIRECTIVE_RE.search(scrubbed):
+        return "imperative directive verb instead of spoken copy"
+    if _VISUAL_ARTIFACT_RE.search(scrubbed):
+        return "describes a visual artifact instead of spoken copy"
+    # Outline-numbering density: >=2 labeled-line hits reads as a beat sheet, not a script.
+    if len(_OUTLINE_LABEL_RE.findall(scrubbed)) >= 2:
+        return "outline / beat-sheet body"
+    # Bulleted content summary: >=2 short, pronoun-free bullet lines.
+    bullets = _BULLET_LINE_RE.findall(scrubbed)
+    summary_bullets = [b for b in bullets
+                       if len(b.split()) < 8 and not _PERSONAL_PRONOUN_RE.search(b)]
+    if len(summary_bullets) >= 2:
+        return "bulleted content summary instead of spoken copy"
+    # Two-word "First,... Then,..." is common natural speech (stays under the floor).
+    # Three-word "First,... Then,... Finally,..." across separate clauses is an outline.
+    if len(_SEQUENCE_WORD_RE.findall(scrubbed)) >= 3:
+        return "sequencing scaffold (First/Then/Finally outline)"
     return None
+
+
+def speakability_report(script: dict) -> dict:
+    """Batch view over one script's hook/body: {'violations': [reason, ...],
+    'families': [...]}. Pure, keyless. Runtime callers use flag_stage_direction directly;
+    this is for eval/cron batch scoring where a full report is useful."""
+    violations = []
+    for field in ("hook", "body"):
+        v = script.get(field)
+        text = v.get("text") if isinstance(v, dict) else v
+        reason = flag_stage_direction(text or "", script.get("style", ""))
+        if reason:
+            violations.append(reason)
+    return {"violations": violations, "families": violations}
 
 
 # W3: injected into every script/hook/mimic/analyze prompt. Stops the model from putting words

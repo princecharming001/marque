@@ -122,6 +122,13 @@ def check_invariants(script_body: str, actions: list[dict],
         issues.append("script exceeds 250 words")
     if _LEAK_RE.search(new_body):
         issues.append("internal scaffolding vocabulary leaked into the script")
+    # Safety net: the route (main._guard_write_actions) already repairs/converts a dirty
+    # <fill> before this runs, so this should be clean in practice — but report honestly
+    # if a description slipped through some other action type.
+    from prompts import flag_stage_direction
+    reason = flag_stage_direction(new_body)
+    if reason:
+        issues.append(f"speakability: {reason}")
     return issues
 
 
