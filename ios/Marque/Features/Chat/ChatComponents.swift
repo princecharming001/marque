@@ -45,6 +45,7 @@ struct ChatAssistantMessage: View {
     var onTick: () -> Void = {}
     var onTypewriterDone: () -> Void = {}
     var onOpenScript: (Script) -> Void = { _ in }   // I-1
+    var onRetryEdit: () -> Void = {}
 
     @State private var displayed = ""
     @State private var caretOn = true
@@ -96,7 +97,7 @@ struct ChatAssistantMessage: View {
                 ForEach(scripts) { s in ChatScriptCard(script: s, onOpen: { onOpenScript(s) }) }
             }
             if let analysis = message.analysis { ChatVideoAnalysisCard(analysis: analysis) }
-            if let edit = message.clipEdit { ClipEditCard(state: edit) }
+            if let edit = message.clipEdit { ClipEditCard(state: edit, onRetry: onRetryEdit) }
         }
     }
 
@@ -247,6 +248,7 @@ struct ChatScriptCardContent: View {
 
 struct ClipEditCard: View {
     let state: ClipEditState
+    var onRetry: (() -> Void)? = nil
     @Environment(AppRouter.self) private var router
 
     private var isTerminal: Bool { state.stage == .ready || state.stage == .failed }
@@ -298,6 +300,22 @@ struct ClipEditCard: View {
             if state.stage == .failed, !state.detail.isEmpty {
                 Text(state.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if state.stage == .failed, state.retryable, let onRetry {
+                Button { onRetry() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.clockwise")
+                        Text("Try again").font(AppFont.callout.weight(.semibold))
+                    }
+                    .foregroundStyle(Palette.textPrimary)
+                    .padding(.horizontal, 14).frame(height: 40)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                }
+                .buttonStyle(PressableStyle(dim: 0.7))
+                .accessibilityIdentifier("chat.clipEdit.retry")
             }
 
             if state.stage == .ready {

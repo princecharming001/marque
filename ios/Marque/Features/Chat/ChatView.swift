@@ -246,7 +246,12 @@ struct ChatView: View {
                     if chat.typewriterMessageId == message.id { chat.typewriterMessageId = nil }
                     proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
                 },
-                onOpenScript: { peekedScript = $0 }
+                onOpenScript: { peekedScript = $0 },
+                onRetryEdit: {
+                    if let cid = chat.currentConversationId {
+                        chat.retryEdit(cardId: message.id, convoId: cid, store: store)
+                    }
+                }
             )
         }
     }
