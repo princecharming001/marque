@@ -1074,7 +1074,7 @@ EDIT_PLAN_JSON_SCHEMA = {
             "properties": {"frame": _INT, "scale": _NUM, "why": _STR}}},
         "broll": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["range", "cue", "query", "source", "need", "text"],
+            "required": ["range", "cue", "query", "source", "need", "text", "mode"],
             "properties": {"range": _RANGE, "cue": _STR, "query": _STR,
                            "source": {"type": "string", "enum": ["stock", "own_media"]},
                            # Addendum Part 4A: what KIND of visual this line needs. Drives the
@@ -1084,7 +1084,12 @@ EDIT_PLAN_JSON_SCHEMA = {
                            # (the entity name / the number / the quote) used when no real asset.
                            "need": {"type": "string",
                                     "enum": ["entity", "data", "evidence", "action", "concept"]},
-                           "text": _STR}}},
+                           "text": _STR,
+                           # Addendum Part 2: how the insert is composited —
+                           # full = covers the frame (face hidden, <=3s) · panel = rounded
+                           # upper panel, face stays visible (<=8s) · card = small floating
+                           # card over one shoulder, face full-frame (quick citations).
+                           "mode": {"type": "string", "enum": ["full", "panel", "card"]}}}},
         "caption_plan": {"type": "object", "additionalProperties": False,
             "required": ["style", "grouping", "highlight_words"],
             "properties": {"style": {"type": "string", "enum": ["clean", "bold-word", "karaoke"]},
@@ -1153,8 +1158,10 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                        "callouts for needs instead of cutaways. Emit b-roll only for a need the "
                        "face genuinely can't carry.",
             "full": "The creator likes heavy b-roll coverage — cover every entity/action need "
-                    "that has a real asset.",
-            "partial": ""}.get((broll_coverage or "").lower(), "")
+                    "that has a real asset; prefer mode 'full' inserts.",
+            "partial": "The creator wants b-roll to SHARE the screen with their face — prefer "
+                       "mode 'panel' or 'card' inserts over full-frame ones."}.get(
+        (broll_coverage or "").lower(), "")
     _en = {"calm": "Energy: CALM — slower pace, minimal interrupts, let lines breathe.",
            "medium": "Energy: MEDIUM — moderate pace and interrupt density.",
            "high": "Energy: HIGH — tight pace, dense visual changes."}.get((energy or "").lower(), "")
@@ -1229,10 +1236,17 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "`text` to the fallback card copy (the entity name, the number rendered big, or the quote) and the "
         "assembler shows a clean TEXT CARD instead of a wrong clip. A text card always beats a wrong clip.\n"
         "action/concept needs MAY use stock (source:stock) — put a precise search `query` (subject + verb + "
-        "setting). NEVER cover the hook line, the final line, or a first-person emotional beat with b-roll — "
-        "the face is the content there. Empty broll [] is correct for a take with nothing concrete to show "
-        "(hot-takes/storytime lean on the face + captions). The assembler enforces J-cut lead, 2–3s holds, "
-        "spacing, and hook/CTA face-protection.\n\n"
+        "setting). NEVER cover the hook line, the final line, or a first-person emotional beat with "
+        "FULL-frame b-roll — the face is the content there. Empty broll [] is correct for a take with "
+        "nothing concrete to show (hot-takes/storytime lean on the face + captions).\n"
+        "For each insert also pick `mode` (how it's composited):\n"
+        "  • full — the insert covers the whole frame (face hidden, held 2–3s). Use when the visual needs "
+        "detail inspection (screen recordings, charts, action footage) or the line is pure narration.\n"
+        "  • panel — a rounded panel in the upper half; the face stays visible below (may persist up to 8s). "
+        "Use when the speaker's delivery matters at the same time (jokes, opinions, emphasis).\n"
+        "  • card — a small floating card over one shoulder, face full-frame. For quick citations: a "
+        "screenshot, tweet, headline, or receipt (1.5–3s).\n"
+        "The assembler enforces J-cut lead, holds, spacing, and hook/CTA face-protection.\n\n"
 
         "RETENTION FIELDS (code enforces the exact numbers; you only set intent):\n"
         "- pacing.lift: \"medium\" for delivery that drags or rambles, \"subtle\" for normal delivery, "

@@ -7,6 +7,7 @@ import { FastCuts } from "./compositions/FastCuts";
 import { GreenScreen } from "./compositions/GreenScreen";
 import { BrollCutaway } from "./compositions/BrollCutaway";
 import { DuetSplit } from "./compositions/DuetSplit";
+import { SourcePip } from "./compositions/SourcePip";
 import { CompositionProps, planDuration } from "./types";
 
 // durationInFrames is resolved per-render from the plan's total_frames (the post-cut
@@ -31,6 +32,8 @@ export const RemotionRoot: React.FC = () => (
     <Composition id="Marque-BrollCutaway" component={BrollCutaway} calculateMetadata={meta} {...common}
       defaultProps={{ sourceUrl: "", edl: null, formatId: "myth-buster" }} />
     <Composition id="Marque-DuetSplit" component={DuetSplit} calculateMetadata={meta} {...common}
+      defaultProps={{ sourceUrl: "", edl: null, formatId: "green-screen" }} />
+    <Composition id="Marque-SourcePip" component={SourcePip} calculateMetadata={meta} {...common}
       defaultProps={{ sourceUrl: "", edl: null, formatId: "green-screen" }} />
   </>
 );

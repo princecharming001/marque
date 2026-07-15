@@ -16,7 +16,7 @@ import re
 # sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
 # v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
 # the "finishing" filter preset.
-PLAN_SCHEMA_VERSION = 4
+PLAN_SCHEMA_VERSION = 5   # v5: broll.mode (panel/card), layout.speaker_treatment/pip_position, montage
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -215,6 +215,14 @@ class BRoll(BaseModel):
     broll_query: Optional[str] = None
     source: str = "stock"           # stock (Pexels) | own_media
     resolved_url: Optional[str] = None   # filled by the backend Pexels-resolve step
+    # Addendum Part 2 composition mode for this insert (schema v5):
+    #   full  = mode B — covers the whole frame (v1 behavior, the default)
+    #   panel = mode C — rounded panel in the upper half; the face stays visible
+    #   card  = mode D — small floating card over one shoulder; face full-frame
+    # need/fallback_text: Part 4A bookkeeping (what KIND of visual + the text-card copy).
+    mode: str = "full"
+    need: Optional[str] = None
+    fallback_text: Optional[str] = None
 
 
 class ReactSource(BaseModel):
@@ -238,6 +246,11 @@ class Layout(BaseModel):
     panels: int = 1
     panel_boundaries: list[int] = []  # frame boundaries for split_three
     split_fraction: float = 0.58      # duet_split: top (source) panel height fraction
+    # Addendum Part 1/2 (schema v5) — mode E: how the speaker appears when the source
+    # media is the primary layer. "" = the default split layout (mode G / DuetSplit);
+    # pip_circle / pip_rounded_rect select the Marque-SourcePip composition.
+    speaker_treatment: str = ""
+    pip_position: str = "bottom_left"  # bottom_left | bottom_right | bottom_center
 
 
 class MusicTrack(BaseModel):
@@ -364,6 +377,11 @@ class EDL(BaseModel):
     # A7 (superintelligence epic): which style bundle (app/themes.THEMES) produced
     # this take, if any. "" = no theme applied (pre-A7 EDLs round-trip unchanged).
     theme_id: str = ""
+    # Addendum mode H (schema v5): listicle hook flash — a rapid full-frame montage of
+    # the take's resolved assets right after the hook line. OUTPUT-frame coords (set
+    # post-assembly on the final timeline; build_render_plan copies it verbatim).
+    # {"frame_in": int, "frames_per": int, "items": [urls]} — None = no montage.
+    montage: Optional[dict] = None
 
     @property
     def duration_frames(self) -> int:
@@ -967,6 +985,8 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
                 "asset_id": b.get("asset_id"), "broll_query": b.get("broll_query"),
                 "source": b.get("source", "stock"),
                 "resolved_url": b.get("resolved_url"),
+                # schema v5: composition mode (full = B / panel = C / card = D)
+                "mode": b.get("mode", "full"),
             })
 
     # duet_split: remap the top-panel play/freeze schedule to output coords, carry the
@@ -1078,6 +1098,8 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         "audio": audio_plan,
         "end_card": end_card_out,                       # P4: None when absent (G1: key always present)
         "progress_bar": bool(edl.get("progress_bar", False)),   # P4
+        # Mode H (schema v5): already in OUTPUT coords (stamped post-assembly) — verbatim.
+        "montage": edl.get("montage"),
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
         # +tail_frames: the end-card's own duration, appended AFTER every other
         # computation above already used the pre-extension total_frames.
@@ -1861,7 +1883,8 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
 # B-roll grammar (frames @30fps) — the numbers live in knowledge/broll.md; mirrored here
 # because the assembler must ENFORCE them, not just prompt for them.
 _BROLL_JCUT_LEAD = 12
-_BROLL_MIN_HOLD, _BROLL_MAX_HOLD = 60, 90     # 2–3s
+_BROLL_MIN_HOLD, _BROLL_MAX_HOLD = 60, 90     # 2–3s (mode B, face hidden)
+_BROLL_PARTIAL_MAX_HOLD = 240                 # 8s cap for panel/card modes (face visible)
 _BROLL_MIN_SPACING = 90                        # ≥3s between cutaways
 _BROLL_HOOK_PROTECT = 90                        # no b-roll over the hook (face styles)
 _BROLL_CTA_PROTECT = 60                         # …or the CTA
@@ -2024,25 +2047,32 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             rng = b.get("range") or []
             if len(rng) != 2:
                 continue
+            need = b.get("need") if b.get("need") in ("entity", "data", "evidence", "action", "concept") else "action"
+            mode = b.get("mode") if b.get("mode") in ("full", "panel", "card") else "full"
             cue_f = int(rng[0])
             s_in = max(0, cue_f - _BROLL_JCUT_LEAD)                 # J-cut lead
-            hold = max(_BROLL_MIN_HOLD, min(_BROLL_MAX_HOLD, int(rng[1]) - int(rng[0]) or _BROLL_MIN_HOLD))
+            # Mode B (full-frame) holds 2-3s — the face is hidden while it plays. Panel/card
+            # (modes C/D) may persist up to 8s since the face stays visible (Addendum Part 4).
+            max_hold = _BROLL_PARTIAL_MAX_HOLD if mode in ("panel", "card") else _BROLL_MAX_HOLD
+            hold = max(_BROLL_MIN_HOLD, min(max_hold, int(rng[1]) - int(rng[0]) or _BROLL_MIN_HOLD))
             s_out = min(total, s_in + hold)
-            if face_style and s_in < _BROLL_HOOK_PROTECT:           # protect the hook face
+            # Full-frame b-roll hides the face — never over the hook/CTA. Panel/card keep the
+            # face on screen, so the addendum allows them there (mode B prohibited; C/D fine).
+            if face_style and mode == "full" and s_in < _BROLL_HOOK_PROTECT:
                 continue
-            if face_style and s_out > total - _BROLL_CTA_PROTECT:   # protect the CTA face
+            if face_style and mode == "full" and s_out > total - _BROLL_CTA_PROTECT:
                 continue
             if last_out is not None and s_in - last_out < _BROLL_MIN_SPACING:   # spacing
                 continue
             if s_out - s_in < _BROLL_MIN_HOLD:
                 continue
-            need = b.get("need") if b.get("need") in ("entity", "data", "evidence", "action", "concept") else "action"
             broll.append({"src_in": s_in, "src_out": s_out, "cue_text": b.get("cue", ""),
                           "broll_query": b.get("query") or b.get("cue", ""),
                           "source": b.get("source") if b.get("source") in ("stock", "own_media") else "stock",
-                          # Addendum Part 4A: the need type + the text-card fallback copy, carried
-                          # so _resolve_broll can enforce the tier rule (entity/data/evidence with
-                          # no real asset → text card, never generic stock).
+                          # Addendum Part 2/4A: composition mode + need type + text-card fallback
+                          # copy, carried so _resolve_broll can enforce the tier rule and the
+                          # renderer can composite panel/card modes (face stays visible).
+                          "mode": mode,
                           "need": need, "fallback_text": (b.get("text") or b.get("cue", ""))[:80]})
             last_out = s_out
 

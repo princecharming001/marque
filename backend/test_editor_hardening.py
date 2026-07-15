@@ -1665,14 +1665,17 @@ _TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "
                         "react_source", "react_schedule", "layout", "caption_style",
                         "caption_options", "transitions", "look", "audio", "total_frames",
                         "schema_version",
-                        "end_card", "progress_bar"}   # P4 (schema v2)
+                        "end_card", "progress_bar",   # P4 (schema v2)
+                        "montage"}                    # mode H (schema v5)
 _TS_CLIP_KEYS = {"src_in", "src_out", "speed", "tx_scale", "tx_x", "tx_y"}
 _TS_CAPTION_KEYS = {"word", "frame", "end_frame"}
 _TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
                     "pos_x", "pos_y", "rotation", "color", "bg", "font"}
 _TS_BROLL_KEYS = {"frame_in", "frame_out", "cue_text", "asset_id", "broll_query",
-                  "source", "resolved_url"}
-_TS_LAYOUT_KEYS = {"style", "panels", "panel_boundaries", "split_fraction"}
+                  "source", "resolved_url",
+                  "mode"}                             # schema v5 (panel/card)
+_TS_LAYOUT_KEYS = {"style", "panels", "panel_boundaries", "split_fraction",
+                   "speaker_treatment", "pip_position"}   # schema v5 (SourcePip)
 _TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
 _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}

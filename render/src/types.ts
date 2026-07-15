@@ -27,8 +27,14 @@ export interface Adjust {
 // A8 (schema v4): grain is additive/defaulted (0) — a stale v3 plan renders identically.
 export interface Look { filter: string | null; intensity: number; adjust: Adjust; grain?: number; }
 // resolved_url is filled by the backend Pexels-resolve step; frame_in/out are output coords.
-export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; source?: string; resolved_url?: string; }
-export interface Layout { style: string; panels: number; panel_boundaries: number[]; split_fraction?: number; }
+// mode (schema v5, additive — absent = "full"): full = covers the frame (v1) ·
+// panel = rounded upper panel, face visible · card = small floating card over one shoulder.
+export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; source?: string; resolved_url?: string; mode?: string; }
+// speaker_treatment/pip_position (schema v5, additive): mode E — how the speaker appears
+// when the source media is the primary layer (SourcePip composition).
+export interface Layout { style: string; panels: number; panel_boundaries: number[]; split_fraction?: number; speaker_treatment?: string; pip_position?: string; }
+// Mode H (schema v5, additive): listicle hook flash — full-frame items in rapid sequence.
+export interface Montage { frame_in: number; frames_per: number; items: string[]; }
 
 // duet_split — the reacted-to clip and its top-panel play/freeze/duck schedule (output coords).
 export interface ReactSource { resolved_url?: string; kind?: string; credit_label?: string; }
@@ -102,6 +108,7 @@ export interface RenderPlan {
   audio?: AudioPlan | null;
   end_card?: EndCardPlan | null;   // P4
   progress_bar?: boolean;          // P4
+  montage?: Montage | null;        // mode H (schema v5)
   total_frames: number;
   // #19: backend build_render_plan's contract version — compared against
   // PLAN_SCHEMA_VERSION below to detect backend/site deploy skew.
@@ -116,7 +123,9 @@ export interface RenderPlan {
 // sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
 // v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
 // the "finishing" filter preset.
-export const PLAN_SCHEMA_VERSION = 4;
+// v5 (Addendum composition modes): broll.mode (panel/card), layout.speaker_treatment/
+// pip_position (SourcePip), montage (listicle hook flash). All additive/defaulted.
+export const PLAN_SCHEMA_VERSION = 5;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a
