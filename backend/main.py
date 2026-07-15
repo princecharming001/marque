@@ -8339,22 +8339,24 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
     else:
         corpus = _mock_reels(niche, [h for _, h in parsed])
         mode = "mock"
-    # Infinite scroll (TikTok/IG-style). A HEALTHY corpus (≥ one page) serves its unique
-    # reels first, then CYCLES so the feed never dead-ends — a proven reel resurfacing beats
-    # a hard stop, and the background re-scrape kicked above keeps growing the real pool.
-    # Cycled repeats (i ≥ n) get a page-suffixed id so the client renders them as distinct
-    # cards (SwiftUI ForEach identity). A THIN corpus (cold/just-warming, < one page) is
-    # served once, honestly — no padding a page with duplicates of the same 1–2 reels.
+    # Infinite scroll (TikTok/IG-style). With ≥2 reels the feed is ENDLESS: the first
+    # page(s) show every unique reel (never padded with dupes), then it CYCLES — a proven
+    # reel resurfacing beats a hard stop, and the background re-scrape kicked above keeps
+    # growing the real pool. Cycled repeats (past the uniques) get a page-suffixed id so the
+    # client renders them as distinct cards (SwiftUI ForEach identity). A single reel (a
+    # degenerate cold state) is served once rather than looped into six copies of itself.
     n = len(corpus)
     start = cursor * REELS_PAGE
-    if n >= REELS_PAGE:
-        page = [(dict(corpus[i % n]) if i < n
-                 else {**corpus[i % n], "id": f'{corpus[i % n].get("id", "reel")}#p{i}'})
-                for i in range(start, start + REELS_PAGE)]
+    if n >= 2:
+        if start >= n:                          # past the uniques → pure cycle page
+            page = [{**corpus[i % n], "id": f'{corpus[i % n].get("id", "reel")}#p{i}'}
+                    for i in range(start, start + REELS_PAGE)]
+        else:                                   # first page(s): uniques only, no dupes/padding
+            page = corpus[start:min(start + REELS_PAGE, n)]
         next_cursor = cursor + 1 if cursor < 50 else None
     else:
-        page = corpus[start:start + REELS_PAGE]
-        next_cursor = cursor + 1 if (cursor + 1) * REELS_PAGE < n else None
+        page = corpus[start:start + REELS_PAGE]   # 0 or 1 reel: honest single page
+        next_cursor = None
     return {"mode": mode, "reels": page, "next_cursor": next_cursor}
 
 

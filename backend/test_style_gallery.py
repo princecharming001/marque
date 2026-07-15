@@ -94,6 +94,26 @@ def test_reels_never_serve_unplayable_cards(monkeypatch):
     assert "q" not in [r["id"] for r in body["reels"]]
 
 
+def test_reels_small_live_corpus_still_scrolls_endlessly(monkeypatch):
+    # The live niche corpus is often small (3 reels here after the TH+playable filter).
+    # It must STILL feed an endless scroll (≥2 → cycle), with page 0 showing only the
+    # uniques (no dupes) and later pages resurfacing them with unique #p ids.
+    monkeypatch.setattr(main, "APIFY_KEY", "fake")
+    async def _hydrate(*a, **k): return None
+    monkeypatch.setattr(main, "_hydrate_reels_caches", _hydrate)
+    monkeypatch.setattr(main, "_watched_real_reels", lambda parsed: [])
+    monkeypatch.setattr(main, "_niche_real_reels", lambda niche: [
+        _th_reel("a", "c1", "http://x/a"), _th_reel("b", "c2", "http://x/b"),
+        _th_reel("c", "c3", "http://x/c")])
+    p0 = client.get("/v1/reels", params={"niche": "x", "cursor": 0}).json()
+    assert [r["id"] for r in p0["reels"]] == ["a", "b", "c"]   # uniques, no dupes/padding
+    assert p0["next_cursor"] == 1                              # doesn't dead-end at 3
+    p1 = client.get("/v1/reels", params={"niche": "x", "cursor": 1}).json()
+    assert len(p1["reels"]) == main.REELS_PAGE                 # a full resurfaced page
+    assert all("#p" in r["id"] for r in p1["reels"])           # cycled, unique ids
+    assert p1["next_cursor"] == 2
+
+
 # ── /v1/broll-styles: the composition-style picker ───────────────────────────
 # WHICH treatment (cutaway/panel/floating-card/green-screen/split-screen), not how much.
 # Demos are self-rendered through the real pipeline (durable Supabase URLs), not matched
