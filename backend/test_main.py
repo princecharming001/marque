@@ -1499,7 +1499,9 @@ def test_resolve_broll_caches_and_skips(monkeypatch):
     main._broll_url_cache.clear()
     edl = {"broll": [
         {"src_in": 0, "src_out": 60, "broll_query": "barbell", "source": "stock"},
-        {"src_in": 60, "src_out": 120, "broll_query": "barbell", "source": "stock"},   # same query → cache hit
+        # same query → cache hit; spaced >15s (450f) apart so the no-repeat dedup doesn't
+        # fire (this test is about the URL cache, not the Addendum Part 4A dedup)
+        {"src_in": 600, "src_out": 660, "broll_query": "barbell", "source": "stock"},
         {"src_in": 120, "src_out": 180, "broll_query": "mine", "source": "own_media"},  # skipped
         {"src_in": 180, "src_out": 240, "resolved_url": "https://x.mp4", "source": "stock"},  # already resolved → skipped
     ]}
