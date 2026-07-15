@@ -2303,21 +2303,26 @@ async def styles_gallery(niche: str = ""):
     return {"mode": "live" if pool else "mock", "styles": out}
 
 
-# The "how much b-roll?" picker options. `want` = the edit-format classification whose
-# example reels best DEMONSTRATE that style (cutaway-heavy options show a reel that
-# actually cuts away; face-first options show a straight talking head). The id maps to
-# the edit via config.broll_coverage + the b-roll toggle (see /v1/clips config handling):
-#   full → coverage "full" · balanced → coverage auto ("") · minimal → coverage "minimal"
-#   none → toggles.broll=false (no cutaways at all).
-_BROLL_STYLE_OPTIONS = [
-    {"id": "full", "label": "Heavy B-roll", "want": "talking_head_broll",
-     "blurb": "Full-screen cutaways land on every key moment."},
-    {"id": "balanced", "label": "Balanced", "want": "talking_head_broll",
-     "blurb": "Cutaways where they help — your face where it matters."},
-    {"id": "minimal", "label": "Minimal", "want": "talking_head",
-     "blurb": "Face-first. Text callouts instead of cutaways."},
-    {"id": "none", "label": "No B-roll", "want": "talking_head",
-     "blurb": "Pure talking head — punch-ins and captions only."},
+# The "which composition style?" picker options (Addendum Part 2 vocabulary) — WHAT
+# KIND of visual treatment, not how much. Each is illustrated by a real clip self-rendered
+# through this exact pipeline (guaranteed pixel-accurate, unlike a scraped reel which can't
+# be reliably classified into these treatments): see scripts/gen_composition_demos or the
+# durable Supabase path demo-assets/composition-styles/<id>.mp4. The picked id returns to
+# POST /v1/clips as config.composition_style (green_screen/split_screen → forces job style)
+# or config.broll_mode (cutaway/panel/card → forces every b-roll insert's mode; see
+# assemble_edl's broll loop in app/edl.py).
+_DEMO_BASE = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/composition-styles"
+_COMPOSITION_STYLE_OPTIONS = [
+    {"id": "cutaway", "label": "Cutaways", "config_key": "broll_mode",
+     "blurb": "Full-screen b-roll cuts in on key moments, then cuts back to you."},
+    {"id": "panel", "label": "Panel Overlay", "config_key": "broll_mode",
+     "blurb": "B-roll drops into a rounded panel up top — your face stays on screen."},
+    {"id": "card", "label": "Floating Cards", "config_key": "broll_mode",
+     "blurb": "Small b-roll card floats over your shoulder while you talk."},
+    {"id": "green_screen", "label": "Green Screen", "config_key": "composition_style",
+     "blurb": "You're composited over what you're reacting to, like a real green screen."},
+    {"id": "split_screen", "label": "Split Screen", "config_key": "composition_style",
+     "blurb": "Your face and the source clip share the frame side by side."},
 ]
 
 
@@ -2341,35 +2346,20 @@ async def client_telemetry(req: _ClientEventRequest):
 
 @app.get("/v1/broll-styles")
 async def broll_styles(niche: str = ""):
-    """The record flow's B-ROLL STYLE picker: how much cutaway coverage the creator wants,
-    each option illustrated by a real, playable example reel (cutaway-heavy options get a
-    reel classified talking_head_broll where the pool has one). The picked id returns to
-    POST /v1/clips as config.broll_coverage (+ the b-roll toggle for "none") and actually
-    drives the edit — the plan prompt's coverage hints and the Part 4A asset rules key off
-    it. Demos are illustrative only, never mimicked."""
-    pool = await _global_th_demo_pool(niche)
-    used: set = set()
-
-    def _pick(want: str) -> dict | None:
-        demo = next((r for r in pool if r.get("id") not in used
-                     and (r.get("edit_format") or "talking_head") == want), None)
-        if demo is None:                       # no format-matched reel left → any distinct one
-            demo = next((r for r in pool if r.get("id") not in used), None)
-        if demo is not None:
-            used.add(demo.get("id"))
-        return demo
-
-    out = []
-    for opt in _BROLL_STYLE_OPTIONS:
-        demo = _pick(opt["want"])
-        out.append({
-            "id": opt["id"], "label": opt["label"], "blurb": opt["blurb"],
-            "video_url": (demo or {}).get("video_url", ""),
-            "thumbnail_url": (demo or {}).get("thumbnail_url", ""),
-            "handle": (demo or {}).get("creator_handle", ""),
-            "sample": demo is None,
-        })
-    return {"mode": "live" if pool else "mock", "styles": out}
+    """The record flow's B-ROLL STYLE picker: WHICH composition treatment the creator
+    wants (cutaway / panel / floating card / green screen / split screen), each option
+    illustrated by a real clip self-rendered through this exact composition (not a
+    scraped reel — our reel classifier can't reliably tag panel/card/green-screen/split
+    treatments, so a self-render is the only way to guarantee the preview matches what
+    the creator actually gets). The picked id returns to POST /v1/clips as
+    config.broll_mode (cutaway/panel/card) or config.composition_style (green_screen/
+    split_screen) and actually drives the edit."""
+    return {"mode": "live", "styles": [
+        {"id": opt["id"], "label": opt["label"], "blurb": opt["blurb"],
+         "video_url": f"{_DEMO_BASE}/{opt['id']}.mp4", "thumbnail_url": "",
+         "handle": "", "sample": False}
+        for opt in _COMPOSITION_STYLE_OPTIONS
+    ]}
 
 
 @app.get("/v1/reels/examples")
@@ -2841,6 +2831,15 @@ async def create_clip_job(req: ClipJobRequest):
     # (brief/confirm) must never override the creator's choice.
     edit_format = req.edit_format if req.edit_format in prompts.EDIT_FORMATS else ""
     style = prompts.EDIT_FORMATS[edit_format]["style"] if edit_format else req.style
+    # Composition-style picker override: green_screen/split_screen aren't reachable via
+    # edit_format (that enum is talking-head-only), so the picker sends them through
+    # config.composition_style instead. This wins over the edit_format-derived style —
+    # the creator explicitly picked a composition treatment.
+    _comp_style = (req.config or {}).get("composition_style", "")
+    if _comp_style == "green_screen":
+        style = "green_screen"
+    elif _comp_style == "split_screen":
+        style = "duet_split"
     # A7: explicit pick > the edit format's default_theme > clean_creator (the
     # golden-diff no-op). Resolution happens regardless of EDIT_THEMES so
     # job["theme_id"] is always an honest record; only `_theme` (what
@@ -2874,6 +2873,13 @@ async def create_clip_job(req: ClipJobRequest):
     job["creator_id"] = req.creator_id                       # UX-B1a: keys push + learning
     if req.toggles:
         job["toggles"] = req.toggles                          # explicit beats every default
+    # Split screen with no reacted-to clip silently degrades to plain talking-head
+    # (DuetSplit's second panel has nothing to show) — surface that rather than let
+    # the creator wonder why their pick did nothing.
+    if style == "duet_split" and not req.react_source_url:
+        for c in job["clips"]:
+            c.setdefault("warnings", []).append(
+                "react_source_missing: split screen needs a source clip to react to")
     _clip_jobs[job_id] = job
 
     # UX-B1a one-tap submit: no brief_ready stop — the whole pipeline runs and the
@@ -4561,6 +4567,12 @@ async def _run_edit(job_id: str, words: list[dict]):
                                           brief=job.get("edit_brief"),
                                           reference=job.get("reference_reel") or None)
         prefs = job.get("edit_prefs") or {}
+        # Composition-style picker: cutaway/panel/card force EVERY b-roll insert's mode
+        # (assemble_edl's broll loop, app/edl.py) rather than leaving it to the LLM's
+        # per-item discretion — the creator picked a specific look, so it must be honored.
+        _broll_mode = (job.get("config") or {}).get("broll_mode", "")
+        if _broll_mode in ("full", "panel", "card"):
+            prefs = {**prefs, "broll_mode": _broll_mode}
         if prefs:
             hints = []
             if prefs.get("auto_captions") is False:

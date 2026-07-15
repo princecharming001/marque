@@ -94,38 +94,77 @@ def test_reels_never_serve_unplayable_cards(monkeypatch):
     assert "q" not in [r["id"] for r in body["reels"]]
 
 
-# ── /v1/broll-styles: the b-roll style picker ────────────────────────────────
+# ── /v1/broll-styles: the composition-style picker ───────────────────────────
+# WHICH treatment (cutaway/panel/floating-card/green-screen/split-screen), not how much.
+# Demos are self-rendered through the real pipeline (durable Supabase URLs), not matched
+# from the scraped-reel corpus — the classifier can't reliably tag these treatments.
 
-def test_broll_styles_options_and_demo_matching(monkeypatch):
-    # Pool has one cutaway-classified reel + three plain talking heads. The cutaway-heavy
-    # option must get the talking_head_broll demo; all demos distinct; 4 options total.
-    def _r(rid, handle, fmt, views):
-        return {"id": rid, "creator_handle": handle, "video_url": f"http://x/{rid}",
-                "thumbnail_url": f"http://x/{rid}-t", "edit_format": fmt, "views": views}
-    monkeypatch.setattr(main, "_niche_reels_cache", {
-        "niche:a": {"reels": [_r("b1", "cutter", "talking_head_broll", 900),
-                              _r("t1", "face1", "talking_head", 800),
-                              _r("t2", "face2", "talking_head", 700),
-                              _r("t3", "face3", "talking_head", 600)], "ts": 9e18}})
-    monkeypatch.setattr(main, "_watched_reels_cache", {})
-    body = client.get("/v1/broll-styles", params={"niche": "a"}).json()
-    styles = body["styles"]
-    assert [s["id"] for s in styles] == ["full", "balanced", "minimal", "none"]
-    assert all(s["label"] and s["blurb"] for s in styles)
-    # the first cutaway-heavy option gets the talking_head_broll demo
-    assert styles[0]["video_url"] == "http://x/b1"
-    # every non-sample demo distinct
-    vids = [s["video_url"] for s in styles if not s["sample"]]
-    assert len(vids) == len(set(vids))
-
-
-def test_broll_styles_empty_pool_returns_samples(monkeypatch):
-    monkeypatch.setattr(main, "_niche_reels_cache", {})
-    monkeypatch.setattr(main, "_watched_reels_cache", {})
+def test_broll_styles_options_are_composition_treatments():
     body = client.get("/v1/broll-styles").json()
-    assert body["mode"] == "mock"
-    assert len(body["styles"]) == 4
-    assert all(s["sample"] for s in body["styles"])
+    styles = body["styles"]
+    assert body["mode"] == "live"
+    assert [s["id"] for s in styles] == ["cutaway", "panel", "card", "green_screen", "split_screen"]
+    assert all(s["label"] and s["blurb"] for s in styles)
+    assert all(not s["sample"] for s in styles)
+    # every option carries a distinct, durably-hosted demo
+    vids = [s["video_url"] for s in styles]
+    assert len(set(vids)) == len(vids)
+    assert all(v.startswith("https://") and v.endswith(".mp4") for v in vids)
+
+
+def test_broll_styles_config_keys_map_to_the_right_override():
+    ids_by_key = {}
+    for opt in main._COMPOSITION_STYLE_OPTIONS:
+        ids_by_key.setdefault(opt["config_key"], []).append(opt["id"])
+    assert ids_by_key["broll_mode"] == ["cutaway", "panel", "card"]
+    assert ids_by_key["composition_style"] == ["green_screen", "split_screen"]
+
+
+def test_composition_style_config_overrides_job_style(monkeypatch):
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "")   # keyless: job created without real work
+    r = client.post("/v1/clips", json={
+        "source_id": "s1", "formats": ["myth-buster"],
+        "script": {"title": "t", "body": "hello"},
+        "config": {"composition_style": "green_screen"},
+        "analyze_first": True,
+    })
+    job_id = r.json()["job_id"]
+    assert main._clip_jobs[job_id]["style"] == "green_screen"
+
+    r2 = client.post("/v1/clips", json={
+        "source_id": "s2", "formats": ["myth-buster"],
+        "script": {"title": "t", "body": "hello"},
+        "config": {"composition_style": "split_screen"},
+        "react_source_url": "http://x/react.mp4",
+        "analyze_first": True,
+    })
+    job_id2 = r2.json()["job_id"]
+    assert main._clip_jobs[job_id2]["style"] == "duet_split"
+
+
+def test_split_screen_without_react_source_warns(monkeypatch):
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "")
+    r = client.post("/v1/clips", json={
+        "source_id": "s3", "formats": ["myth-buster"],
+        "script": {"title": "t", "body": "hello"},
+        "config": {"composition_style": "split_screen"},
+        "analyze_first": True,
+    })
+    job_id = r.json()["job_id"]
+    warnings = main._clip_jobs[job_id]["clips"][0].get("warnings", [])
+    assert any(w.startswith("react_source_missing") for w in warnings)
+
+
+def test_broll_mode_forces_every_broll_items_mode():
+    from app import edl as edl_mod
+    words = [{"word": "hi", "start_ms": 0, "end_ms": 10000}]
+    plan = {"broll": [{"range": [50, 100], "cue": "x", "mode": "full"},
+                      {"range": [200, 250], "cue": "y"}]}
+    out = edl_mod.assemble_edl(plan, words, "broll_cutaway", "myth-buster",
+                               prefs={"broll_mode": "panel"})
+    assert out.broll   # sanity: the fixture actually produced items
+    modes = {b.mode for b in out.broll}
+    assert modes == {"panel"}
 
 
 def test_client_telemetry_endpoint_logs_and_never_fails():

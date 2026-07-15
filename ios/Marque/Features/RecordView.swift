@@ -67,7 +67,7 @@ struct RecordView: View {
     // minimal/none), each option demonstrated by a real example reel. The pick drives the
     // edit via config.broll_coverage + the b-roll toggle ("none" switches cutaways off).
     @State private var brollStyles: [BrollStyleOption] = []
-    @State private var selectedBrollStyle: String = "balanced"
+    @State private var selectedBrollStyle: String = "cutaway"
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -208,8 +208,7 @@ struct RecordView: View {
         for item in items {
             if let path = await importOne(item) {
                 store.addFootage(path: path, scriptId: liveScript.id, title: "Uploaded video", seconds: 60)
-                var toggles = editFormat.defaultToggles
-                toggles.broll = selectedBrollStyle != "none"
+                let toggles = editFormat.defaultToggles
                 store.submitTakeInstant(script: freestyleTakeScript(), footagePath: path,
                                         isFreestyle: true, customInstructions: customInstructions,
                                         reactSourceURL: "", editFormat: editFormat.rawValue,
@@ -358,7 +357,7 @@ struct RecordView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                         formatGrid
                         mimicSection
-                        if liveScript.style == VideoStyle.duetSplit.rawValue {
+                        if liveScript.style == VideoStyle.duetSplit.rawValue || selectedBrollStyle == "split_screen" {
                             reactSourceField
                         }
                         // UX-B1b: the recorded screen is now the SINGLE context screen —
@@ -575,7 +574,7 @@ struct RecordView: View {
     @ViewBuilder private var mimicSection: some View {
         if !brollStyles.isEmpty {
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text("B-ROLL STYLE — HOW MUCH CUTAWAY?")
+                Text("B-ROLL STYLE — PICK A LOOK")
                     .font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(.white.opacity(0.5))
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -591,10 +590,10 @@ struct RecordView: View {
 
     private func brollStyleCard(_ s: BrollStyleOption, index: Int) -> some View {
         let selected = selectedBrollStyle == s.id
-        // The card SHOWS the style via a real example reel (muted autoplay when the pool
-        // has one; poster/placeholder fallback otherwise). The demo is illustrative only —
-        // picking the card sends config.broll_coverage (+ the b-roll toggle for "none"),
-        // which drives how much cutaway the AI edit uses. NOT a mimic of this reel.
+        // The card SHOWS the style via a self-rendered demo clip through this exact
+        // composition (cutaway/panel/card/green-screen/split-screen) — a pixel-accurate
+        // preview of the treatment, not a mimicked creator reel. Picking the card sends
+        // config.broll_mode or config.composition_style, which forces that treatment.
         let playable = !s.videoURL.isEmpty && !failedMimicIds.contains(s.id)
         return Button {
             withAnimation(.easeOut(duration: 0.15)) {
@@ -657,19 +656,23 @@ struct RecordView: View {
         brollStyles = opts
     }
 
-    /// The picked b-roll style owns the b-roll toggle: "none" switches cutaways off
-    /// entirely; every other style keeps them available (coverage steered via config).
+    /// Every composition style involves some visual treatment now (there's no "none"
+    /// option), so b-roll cutaways stay available; the picked style steers the LOOK.
     private func syncBrollToggle() {
-        briefToggles.broll = selectedBrollStyle != "none"
+        briefToggles.broll = true
     }
 
-    /// The config dict the pick maps to (Addendum Part 1). balanced = auto = v1 default,
-    /// so it sends nothing; "none" rides the toggle, not the config.
+    /// The config dict the pick maps to: cutaway/panel/card force every b-roll insert's
+    /// mode (config.broll_mode); green_screen/split_screen override the whole job style
+    /// (config.composition_style) since they're full composition treatments, not b-roll.
     private func brollConfig() -> [String: String]? {
         switch selectedBrollStyle {
-        case "full":    return ["broll_coverage": "full"]
-        case "minimal": return ["broll_coverage": "minimal"]
-        default:        return nil
+        case "cutaway": return ["broll_mode": "full"]
+        case "panel":   return ["broll_mode": "panel"]
+        case "card":    return ["broll_mode": "card"]
+        case "green_screen", "split_screen":
+            return ["composition_style": selectedBrollStyle]
+        default: return nil
         }
     }
 
