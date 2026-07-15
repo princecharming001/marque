@@ -27,7 +27,9 @@ import { AudioPlan } from "../types";
 const DUCK_WINDOW = 15;   // full duck within this many frames of speech
 const DUCK_RAMP = 8;      // ramp between full and ducked across this many frames
 const DUCK_FACTOR = 0.35;
-const FADE = 20;          // composition-level fade in / out
+const FADE = 20;          // composition-level fade out (and intro ramp after the lead)
+const MUSIC_LEAD = 15;    // spec §7: the bed starts ~0.5s (15f@30) AFTER the first spoken
+                          // word, so the hook lands over clean voice, never under music.
 
 // P4: SFX one-shots — build_render_plan has already resolved each cue to an
 // output frame + hosted URL (an unresolved kind, or one whose anchor frame
@@ -79,18 +81,30 @@ export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
     return duckFactor + (1 - duckFactor) * t;
   };
 
-  // Composition-level fade in/out so the loop doesn't slam in at 0 or cut off at the end.
+  // Fade OUT at the end so the loop doesn't cut off abruptly. The INTRO ramp is handled
+  // by startGate below (after the music lead), not here.
   const envAt = (f: number): number => {
     let e = 1;
-    if (f < FADE) e *= f / FADE;
     if (f > durationInFrames - FADE) e *= Math.max(0, (durationInFrames - f) / FADE);
     return e;
+  };
+
+  // Music start gate: silent until MUSIC_LEAD frames past the first spoken word, then ramps
+  // in over FADE frames. The hook plays over clean voice (spec §7). Falls back to a tiny
+  // lead when there's no speech-frame data so music still doesn't slam in at frame 0.
+  const firstSpeech = frames.length ? frames[0] : 0;
+  const musicStart = firstSpeech + MUSIC_LEAD;
+  const startGate = (f: number): number => {
+    if (f < musicStart) return 0;
+    if (f < musicStart + FADE) return (f - musicStart) / FADE;
+    return 1;
   };
 
   return (
     <>
       {music && music.url && (
-        <Audio src={music.url} loop volume={(f) => music.volume * duckAt(f) * envAt(f)} />
+        <Audio src={music.url} loop
+               volume={(f) => music.volume * duckAt(f) * envAt(f) * startGate(f)} />
       )}
       {sfx.length > 0 && <SfxLayer sfx={sfx} />}
     </>

@@ -17,6 +17,9 @@ export function usePunchScale(overlays: Overlay[] | undefined | null): number {
     (o) => o.type === "punch_in" && frame >= o.frame_in && frame < o.frame_out
   );
   if (!punchIn) return 1.0;
+  // Belt on top of the backend's combined-scale clamp: a punch overlay never zooms past
+  // 1.20 on its own (spec §6.1 ceiling), so even a malformed EDL scale can't spike.
+  const peak = Math.min(1.2, Math.max(1.0, punchIn.scale));
   const w = punchIn.frame_out - punchIn.frame_in;
   const r = Math.min(8, w / 2);
   // A window <=16 frames makes r land exactly on w/2, so frame_in+r === frame_out-r
@@ -28,14 +31,14 @@ export function usePunchScale(overlays: Overlay[] | undefined | null): number {
     return interpolate(
       frame,
       [punchIn.frame_in, mid, punchIn.frame_out],
-      [1, punchIn.scale, 1],
+      [1, peak, 1],
       { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
     );
   }
   return interpolate(
     frame,
     [punchIn.frame_in, punchIn.frame_in + r, punchIn.frame_out - r, punchIn.frame_out],
-    [1, punchIn.scale, punchIn.scale, 1],
+    [1, peak, peak, 1],
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
   );
 }

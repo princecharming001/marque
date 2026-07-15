@@ -294,6 +294,19 @@ def _check_bundle_coherence(edl: dict) -> list[LintFinding]:
     return findings
 
 
+def _check_caption_coverage(edl: dict, words: list[dict]) -> list[LintFinding]:
+    """Captions are derived directly from AssemblyAI's speech-to-text of the real audio,
+    so they're audio-verified by construction (spec HC6) — this check just guards the
+    failure where the caption track came back EMPTY over genuine speech, which breaks
+    comprehension-with-sound-off (spec priority 3 / §10 'a caption is visible at frame 1')."""
+    caps = edl.get("captions") or []
+    if words and not caps and edl.get("caption_style") not in (None, "", "off"):
+        return [{"code": "captions_missing", "severity": "error", "at_out_frame": 0,
+                 "detail": "no captions over spoken audio — sound-off viewers get nothing",
+                 "fix_op": None}]
+    return []
+
+
 def lint_edl(edl: dict, words: list[dict], *, style: str = "",
              emphasis_spans: list | None = None, theme=None) -> list[LintFinding]:
     """The 11-check deterministic "amateur tell" lint. Pure — never mutates `edl`.
@@ -322,6 +335,7 @@ def lint_edl(edl: dict, words: list[dict], *, style: str = "",
     findings += _check_tail_rules(edl, style)
     findings += _check_ungraded(edl, theme)
     findings += _check_bundle_coherence(edl)
+    findings += _check_caption_coverage(edl, words)
     return findings
 
 

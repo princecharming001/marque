@@ -1309,4 +1309,38 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         edl = _safe_pass("synthesize_sfx", edl, synthesize_sfx, words,
                          sfx_assets=sfx_assets, theme=theme)
 
+    # FINAL: cap combined framing×punch scale to the 120% ceiling (spec §6.1 / HC7).
+    # A punch overlay multiplies on top of the playing segment's tx_scale in the renderer,
+    # so a close-framed (1.18) segment under a 1.12 punch would hit ~1.32. Runs after every
+    # pass so it catches punches added by interrupts/emphasis/hook_pack too. Deterministic,
+    # never raises — a plain clamp, not a _safe_pass (it can only lower a scale).
+    edl = _clamp_combined_scale(edl)
+    return edl
+
+
+_COMBINED_SCALE_CAP = 1.20     # 1080-source ceiling; punch × framing must not exceed this
+
+
+def _clamp_combined_scale(edl: dict, cap: float = _COMBINED_SCALE_CAP) -> dict:
+    """For every punch_in overlay, lower any segment it overlaps (in source frames) so that
+    segment.tx_scale × punch.scale <= cap. Only ever reduces tx_scale (floor 1.0)."""
+    try:
+        segments = edl.get("segments") or []
+        punches = [o for o in (edl.get("overlays") or []) if o.get("type") == "punch_in"]
+        if not segments or not punches:
+            return edl
+        for o in punches:
+            ps = float(o.get("scale") or 1.0)
+            if ps <= 1.0:
+                continue
+            oa, ob = o.get("src_in", 0), o.get("src_out", o.get("src_in", 0))
+            for seg in segments:
+                if min(seg.get("src_out", 0), ob) <= max(seg.get("src_in", 0), oa):
+                    continue                       # no source overlap
+                cur = float(seg.get("tx_scale") or 1.0)
+                if cur * ps > cap:
+                    seg["tx_scale"] = max(1.0, round(cap / ps, 4))
+        edl["segments"] = segments
+    except Exception:
+        pass
     return edl
