@@ -180,3 +180,60 @@ def test_cron_exemplar_route(monkeypatch):
         out = await main.cron_exemplar(main._CronRequest(token="secret"))
         assert out == {"started": False, "skipped": "flag_off"}
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# T3 (superintelligence epic) — /internal/cron/quality route + scheduler watermark
+# ---------------------------------------------------------------------------
+
+def test_cron_quality_route_rejects_bad_token(monkeypatch):
+    monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
+    with pytest.raises(HTTPException) as ei:
+        _run(main.cron_quality(main._CronRequest(token="wrong")))
+    assert ei.value.status_code == 403
+
+
+def test_cron_quality_route_spawns_and_returns(monkeypatch):
+    async def scenario():
+        monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
+        main._cron_running.clear()
+        ran = {"n": 0}
+
+        async def fake_cron(store, now, gen_fast, gen_full):
+            ran["n"] += 1
+            return 3
+        monkeypatch.setattr(main.quality_sentry, "run_quality_cron", fake_cron)
+        out = await main.cron_quality(main._CronRequest(token="secret"))
+        assert out == {"started": True}
+        await asyncio.sleep(0.02)
+        assert ran["n"] == 1 and main._cron_running.get("quality") is False
+    asyncio.run(scenario())
+
+
+def test_cron_quality_has_no_flag_gate():
+    # T3 is testing infra, not a user feature — always on, unlike the other
+    # /internal/cron/* routes which each check a palo_flags.* gate.
+    import inspect
+    src = inspect.getsource(main.cron_quality)
+    assert "palo_flags.enabled" not in src
+
+
+def test_palo_scheduler_runs_quality_cron_once_per_day(monkeypatch):
+    async def scenario():
+        monkeypatch.setenv("PALO_SCHED_FIRST_DELAY_S", "0.01")
+        monkeypatch.setenv("PALO_SCHED_INTERVAL_S", "0.02")
+        monkeypatch.setattr(main.palo_flags, "PALO_PORT", False)   # skip the other sweeps
+        main._cron_running.clear()
+        store = FakeStore()
+        monkeypatch.setattr(main, "_palo_store", store)
+        called = {"n": 0}
+
+        async def fake_quality_cron(store, now, gen_fast, gen_full):
+            called["n"] += 1
+            return 1
+        monkeypatch.setattr(main.quality_sentry, "run_quality_cron", fake_quality_cron)
+        t = asyncio.create_task(main._palo_scheduler())
+        await asyncio.sleep(0.12)   # several ticks would fire without the daily watermark
+        t.cancel()
+        assert called["n"] == 1   # watermark gated every tick after the first to a no-op
+    asyncio.run(scenario())

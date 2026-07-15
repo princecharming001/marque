@@ -27,6 +27,9 @@ _INSIGHT_COLS = ("id", "creator_id", "type", "category", "title", "description",
                  "created_at")
 _USAGE_COLS = ("creator_id", "operation", "model", "input_tokens", "output_tokens",
                "cost_usd")
+_QUALITY_SCORECARD_COLS = ("day", "creator_id", "path", "n", "gate_pass_rate",
+                          "speakability_violations", "relevance_mean", "voice_match_mean",
+                          "judge", "breach")
 
 
 class PaloStore(SupabaseClient):
@@ -302,6 +305,24 @@ class PaloStore(SupabaseClient):
             json={"creator_id": creator_id, "key": key, "value": value},
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
+
+    # --- quality_scorecards (T3: daily prod-sampling cron) --------------------
+
+    async def insert_quality_scorecard(self, row: dict) -> bool:
+        payload = {k: row.get(k) for k in _QUALITY_SCORECARD_COLS if row.get(k) is not None}
+        r = await self._request("POST", "/quality_scorecards", json=payload,
+                                headers={"Prefer": "return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_quality_scorecards(self, days: int = 7) -> list[dict]:
+        r = await self._request("GET", "/quality_scorecards",
+                                params={"order": "created_at.desc", "limit": str(days * 20)})
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            return r.json()
+        except Exception:
+            return []
 
 
 # _Unavailable is re-exported for the type hint above without importing privately.
