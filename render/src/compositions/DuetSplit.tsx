@@ -1,6 +1,7 @@
 import React from "react";
 import { AbsoluteFill, Sequence, OffthreadVideo, Img, Freeze, useCurrentFrame, interpolate } from "remotion";
 import { CutVideo } from "../components/CutVideo";
+import { usePunchScale } from "../components/PunchZoom";
 import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
 import { BrollLayer } from "../components/BrollLayer";
@@ -39,23 +40,9 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
 
   const schedule = edl?.react_schedule ?? [];
   const quoteCards = (edl?.overlays ?? []).filter((o) => o.type === "text_card");
-  const punch = (edl?.overlays ?? []).find(
-    (o) => o.type === "punch_in" && frame >= o.frame_in && frame < o.frame_out
-  );
-  // Ramp the punch-in over ~8 frames with interpolate — a CSS `transition` does nothing
-  // in Remotion's frame-by-frame render (each frame is a fresh paint), so it would snap.
-  // P4.2: ease the EXIT too (was a hard snap back at frame_out); r clamps for short windows.
-  const bottomScale = punch
-    ? (() => {
-        const r = Math.min(8, (punch.frame_out - punch.frame_in) / 2);
-        return interpolate(
-          frame,
-          [punch.frame_in, punch.frame_in + r, punch.frame_out - r, punch.frame_out],
-          [1, punch.scale, punch.scale, 1],
-          { extrapolateLeft: "clamp", extrapolateRight: "clamp" }
-        );
-      })()
-    : 1.0;
+  // Was a hand-duplicated copy of usePunchScale's ramp math that had drifted (missing
+  // the narrow-window fix) — use the shared hook so this can't drift again.
+  const bottomScale = usePunchScale(edl?.overlays);
   const activeCard = quoteCards.find((o) => frame >= o.frame_in && frame < o.frame_out);
   const frozenNow = schedule.some(
     (w) => w.state === "freeze" && frame >= w.frame_in && frame < w.frame_out
