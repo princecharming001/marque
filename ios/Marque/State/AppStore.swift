@@ -659,6 +659,7 @@ final class AppStore {
                          reactSourceURL: String = "",
                          editFormat: String = "",
                          referenceReel: ReelItem? = nil,
+                         themeId: String? = nil,
                          autoConfirm: Bool = false,
                          toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
@@ -672,6 +673,7 @@ final class AppStore {
                                               reactSourceURL: reactSourceURL,
                                               editFormat: editFormat,
                                               referenceReel: referenceReel,
+                                              themeId: themeId,
                                               autoConfirm: autoConfirm,
                                               toggles: toggles, corpus: corpus)
     }
@@ -724,6 +726,7 @@ final class AppStore {
     func submitTakeInstant(script: Script, footagePath: String?, isFreestyle: Bool,
                            customInstructions: String, reactSourceURL: String,
                            editFormat: String, referenceReel: ReelItem?,
+                           themeId: String? = nil,
                            toggles: EditToggles) -> UUID {
         let placeholderId = UUID()
         var ph = Clip(id: placeholderId, scriptId: script.id, formatId: script.formatId,
@@ -737,13 +740,23 @@ final class AppStore {
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
 
+        // Instant reward: "That's a wrap" is the payoff for FINISHING the take, so fire it
+        // now — not after mintAndUpload + createAnalyzeJob (two network hops) return, which
+        // landed the popup seconds late, well after the recorder dismissed. Streak bumps
+        // here too so the count in the popup is current. The downstream trackSubmittedClips
+        // suppresses its own celebration for this path (celebrate: false) so nothing
+        // double-fires or double-bumps.
+        bumpDailyStreak()
+        showCelebration = true
+        save()
+
         let task = Task { [weak self] in
             let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath)
             guard let self else { return }
             let resp = await self.startAnalyzeJob(
                 script: isFreestyle ? nil : script, publicURL: publicURL,
                 customInstructions: customInstructions, reactSourceURL: reactSourceURL,
-                editFormat: editFormat, referenceReel: referenceReel,
+                editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
                 autoConfirm: true, toggles: toggles)
             self.reconcileInstantSubmit(placeholderId: placeholderId, resp: resp,
                                         script: script, footagePath: footagePath)
@@ -771,14 +784,16 @@ final class AppStore {
             return
         }
         primeBrollCorpus()   // warm own-media analysis (no-op without media / b-roll off)
+        // celebrate:false — submitTakeInstant already fired the wrap popup + streak bump
+        // optimistically at submit time; don't repeat it here after the round-trip.
         trackSubmittedClips(jobId: resp.jobId, script: script, footagePath: footagePath,
                             stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
-                            etaSeconds: resp.etaSeconds)
+                            etaSeconds: resp.etaSeconds, celebrate: false)
     }
 
     func trackSubmittedClips(jobId: String, script: Script, footagePath: String?,
                              stubs: [(id: String, format: String, ready: Bool)],
-                             etaSeconds: Int? = nil) {
+                             etaSeconds: Int? = nil, celebrate: Bool = true) {
         let tagged = stubs.map { stub -> Clip in
             let clipId = UUID(uuidString: stub.id) ?? UUID()
             let formatId = stub.format.isEmpty ? script.formatId : stub.format
@@ -802,9 +817,13 @@ final class AppStore {
         } else {
             notifyClipsReady(count: tagged.filter { $0.status == .ready }.count, jobId: jobId)
         }
-        bumpDailyStreak()
-        save()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
+        // celebrate:false paths (instant submit) already showed the popup + bumped the
+        // streak optimistically at submit time — don't repeat it here.
+        if celebrate {
+            bumpDailyStreak()
+            save()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
+        }
     }
 
     // H-07: jobIds with a re-poll loop already in flight — Library appears often;
@@ -882,6 +901,9 @@ final class AppStore {
                     clips[idx].etaSeconds = terminal ? nil : etaSeconds
                     clips[idx].etaSetAt = terminal ? nil : Date()
                     if let url = jobClip["render_url"] as? String { updateRemoteURL(url, at: idx) }
+                    if let thumb = jobClip["thumbnail_url"] as? String, !thumb.isEmpty {
+                        clips[idx].thumbnailURL = thumb
+                    }
                     if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed"
                         ? (jobClip["error"] as? String ?? result["error"] as? String) : nil
@@ -947,6 +969,9 @@ final class AppStore {
                     clips[idx].etaSeconds = terminal ? nil : etaSeconds
                     clips[idx].etaSetAt = terminal ? nil : Date()
                     if let url = renderURL { updateRemoteURL(url, at: idx) }
+                    if let thumb = jobClip["thumbnail_url"] as? String, !thumb.isEmpty {
+                        clips[idx].thumbnailURL = thumb
+                    }
                     if clipStatus == "ready" { cacheRender(clipId: backendId) }   // UX-C2
                     clips[idx].lastError = clipStatus == "failed" ? clipError : nil
                     clips[idx].lastErrorDetail = clipStatus == "failed" ? clipErrorDetail : nil

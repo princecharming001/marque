@@ -382,6 +382,7 @@ struct Clip: Codable, Hashable, Identifiable {
     var localVideoPath: String? = nil   // captured/rendered file in the app container
     var remoteURL: String? = nil        // public R2/Stream URL once rendered server-side
     var thumbnailPath: String? = nil    // poster frame in the app container
+    var thumbnailURL: String? = nil     // server-generated poster (thumbnail_url) for the render
     var captioned: Bool = false         // whether auto-captions were burned in
     var jobId: String? = nil            // backend clip-job ID for polling render status
     var lastError: String? = nil        // structured render error code when status == .failed
@@ -707,6 +708,21 @@ struct ReelItem: Codable, Hashable, Identifiable {
     var editFormat: String = ""     // the edit TREATMENT this reel matches (EDIT_FORMATS key)
     var whyMatch: String = ""       // human "why this matches the treatment" line
     var sample: Bool = false        // true = curated exemplar, not a live scraped reel
+}
+
+/// A "match a vibe" style option: an editing style (backend theme bundle) illustrated by
+/// a real, playable talking-head demo reel. Picking one sends themeId to the edit pipeline,
+/// which actually drives the cut (apply_theme + retention passes) — the demo reel is
+/// illustrative only, never mimicked.
+struct StyleOption: Codable, Hashable, Identifiable {
+    var id: String { themeId }
+    let themeId: String
+    let label: String
+    let blurb: String
+    var videoURL: String = ""
+    var thumbnailURL: String = ""
+    var handle: String = ""
+    var sample: Bool = false
 }
 
 enum SavedScriptSource: String, Codable {

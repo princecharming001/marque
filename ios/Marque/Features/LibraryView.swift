@@ -188,7 +188,8 @@ struct ClipGridCell: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             // Thumbnail
-            LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true)
+            LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true,
+                           remoteImageURL: clip.thumbnailURL)
                 .aspectRatio(9/16, contentMode: .fill)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
 
@@ -266,8 +267,8 @@ struct ClipDetailSheet: View {
                         // UX-D2: a staged tweak PREVIEW (uncommitted candidate) wins over
                         // everything while it exists — badged so it can't be mistaken
                         // for the committed cut.
-                        LocalVideoPlayer(path: current.previewURL == nil ? current.playbackLocalPath : nil,
-                                         remoteURL: current.previewURL ?? current.playbackRemoteURL)
+                        ClipPreviewPlayer(path: current.previewURL == nil ? current.playbackLocalPath : nil,
+                                          remoteURL: current.previewURL ?? current.playbackRemoteURL)
                             // Re-create the player when a tweak lands a NEW render URL,
                             // the render cache download completes, or a preview stages.
                             .id((current.previewURL ?? "") + (current.remoteURL ?? "")
@@ -296,7 +297,11 @@ struct ClipDetailSheet: View {
                             }
                         }
                     }
-                    .frame(height: 340)
+                    // 9:16 container so the portrait render fills it exactly — no
+                    // pillarbox bars. Capped height keeps the chat input + actions in view;
+                    // centered horizontally, it reads like a proper vertical reel.
+                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 500)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
 
                     // UX-D1: the tweak chat is the clip's front door, not a buried menu
