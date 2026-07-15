@@ -53,6 +53,14 @@ struct ProEditorView: View {
     @State private var speedDraft: Double = 1.0
     // FP1: adjust-knob slider drafts (commit on release).
     @State private var adjustDraft: Double = 0
+    // A7 feature #1: theme picker + report card (#8) — the active bundle + whatever
+    // the pipeline computed (self_review/lint), surfaced read-only.
+    @State var themes: [ThemeChoice] = []
+    @State var activeThemeId: String = ""
+    @State var showThemeSheet = false
+    @State var rethemeTask: Task<Void, Never>?
+    @State var selfReview: [String: Any]?
+    @State var lint: [String: Any]?
     // FP1: canvas gestures — live drafts for caption drag/pinch + sticker drag/pinch.
     @State var capDragY: Double? = nil
     @State var capPinch: Double? = nil
@@ -123,6 +131,7 @@ struct ProEditorView: View {
         // caption list is open (dialog would never render), and an .overlay hosted by a 64pt
         // view clips its accessibility/hit-testing to that frame.
         .sheet(isPresented: $showMusicSheet) { musicSheet }
+        .sheet(isPresented: $showThemeSheet) { themeSheet }
         .marqueInput($showTextCardAlert, title: "Text card", placeholder: "Card text",
                      text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
         .marqueInput($showStickerInput, title: "Add text", placeholder: "Say something",
@@ -388,7 +397,12 @@ struct ProEditorView: View {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
                 case .filters:
-                    EmptyView()   // filters render as visual cards below, not chips
+                    // A7 feature #1: the style bundle picker — a coherent theme changes
+                    // captions+grade+interrupts+music together (never just one knob).
+                    if !themes.isEmpty {
+                        drawerButton("Theme", "paintpalette", active: !activeThemeId.isEmpty) { showThemeSheet = true }
+                            .accessibilityIdentifier("editorPro.themeButton")
+                    }
                 }
             }.padding(.horizontal, Space.md)
         }
@@ -398,6 +412,8 @@ struct ProEditorView: View {
         if mode == .filters, !objectSelectionActive {
             filterCardsRow
             if session?.draft.look.filter != nil { filterIntensityRow }
+            // #8 AI report card — whatever the pipeline already computed, read-only.
+            if selfReview != nil || lint != nil { reportCardRow }
         }
         // The caption customizer (research round: preset + accent/size/position/case/
         // grouping/font are the knobs creators actually touch) — its own row so the
@@ -478,6 +494,41 @@ struct ProEditorView: View {
         .background(Palette.ink.opacity(0.25))
         .onAppear { filterIntensityDraft = session?.draft.look.intensity ?? 1.0 }
         .accessibilityIdentifier("editorPro.filterIntensity")
+    }
+
+    /// #8 AI report card — the self-review vision score + issues, and the
+    /// deterministic lint scoreboard, both surfaced read-only exactly as the
+    /// pipeline computed them (never faked when absent — the caller only shows
+    /// this row when at least one is present).
+    private var reportCardRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let review = selfReview {
+                HStack(spacing: 6) {
+                    Text("REVIEW").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                    if let score = review["score"] as? Int {
+                        Text("\(score)/100").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+                    }
+                    if let issues = review["issues"] as? [String], !issues.isEmpty {
+                        Text(issues.prefix(2).joined(separator: " · "))
+                            .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                    }
+                }
+            }
+            if let lint {
+                HStack(spacing: 6) {
+                    Text("LINT").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                    let errors = lint["errors"] as? Int ?? 0
+                    let warns = lint["warns"] as? Int ?? 0
+                    Text(errors > 0 ? "\(errors) issue\(errors == 1 ? "" : "s")" : (warns > 0 ? "\(warns) minor" : "clean"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(errors > 0 ? Color.orange : .white.opacity(0.8))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, Space.md).padding(.vertical, 6)
+        .background(Palette.ink.opacity(0.25))
+        .accessibilityIdentifier("editorPro.reportCard")
     }
 
     /// Grab a representative frame for the filter cards (middle of the first kept interval).
@@ -574,11 +625,22 @@ struct ProEditorView: View {
                         .accessibilityIdentifier("editorPro.capGroup.\(v)")
                 }
                 optDivider
-                // Fonts (curated: clean sans / heavy impact / rounded)
-                ForEach([("Inter", "inter"), ("Impact", "archivo"), ("Round", "baloo")], id: \.1) { label, v in
+                // Fonts (curated: clean sans / heavy impact / rounded / A2: two more)
+                ForEach([("Inter", "inter"), ("Impact", "archivo"), ("Round", "baloo"),
+                        ("Bold", "montserrat"), ("Caps", "anton")], id: \.1) { label, v in
                     optChip(label, active: o.font == v) { mutate([.captionOptions(font: v)]) }
                         .accessibilityIdentifier("editorPro.capFont.\(v)")
                 }
+                optDivider
+                // A2 feature #2: one-tap Hormozi/Submagic preset — thick outlined caps,
+                // gold keyword color, word-by-word grouping. A real style-bundle theme
+                // (via retheme) does the same for the WHOLE clip; this is the quick,
+                // caption-only version for creators who just want the look.
+                optChip("Hormozi", active: o.font == "anton" && o.strokePx >= 8) {
+                    mutate([.captionOptions(accent: "#FFD93D", uppercase: true,
+                                            font: "anton", grouping: "word", strokePx: 10)])
+                }
+                .accessibilityIdentifier("editorPro.capHormoziPreset")
             }
             .padding(.horizontal, Space.md)
         }
@@ -1384,11 +1446,16 @@ struct ProEditorView: View {
         }
     }
 
-    /// L1 approximations of the three render fonts (Inter / Archivo Black / Baloo 2).
+    /// L1 approximations of the render fonts (Inter / Archivo Black / Baloo 2 /
+    /// Montserrat 900 / Anton — A2). None of the last two ship as bundled fonts on
+    /// device, so this is a system-font weight/width approximation, same as the
+    /// existing three — the real render (Remotion/Lambda) is the source of truth.
     private func simCaptionFont(_ font: String, size: CGFloat, heavy: Bool) -> Font {
         switch font {
         case "archivo": return .system(size: size, weight: .black)
         case "baloo": return .system(size: size, weight: heavy ? .heavy : .bold, design: .rounded)
+        case "montserrat": return .system(size: size, weight: .black, design: .rounded)
+        case "anton": return .system(size: size, weight: .black).width(.condensed)
         default: return .system(size: size, weight: heavy ? .heavy : .semibold)
         }
     }

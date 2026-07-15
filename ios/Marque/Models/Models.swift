@@ -1003,6 +1003,17 @@ struct EditToggles: Codable, Hashable {
     }
 }
 
+/// A7: one entry from GET /v1/themes — a style bundle (captions+grade+interrupts+
+/// music pinned together so they never clash). Plain struct, hand-built from the
+/// raw JSON dict (see BackendClient.fetchThemes) rather than Codable — matches
+/// the AnalyzeJobResponse convention of defensive manual decoding elsewhere here.
+struct ThemeChoice: Identifiable, Equatable {
+    var id: String
+    var label: String
+    var blurb: String
+    var defaultForFormats: [String] = []
+}
+
 /// Decoded response for the analyze-first pair (POST /v1/clips + GET /v1/clips/{id}).
 struct AnalyzeJobResponse: Codable {
     /// UX-B1b: a clip in an auto_confirm create response — enough to track + poll.

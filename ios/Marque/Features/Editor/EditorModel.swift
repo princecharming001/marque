@@ -108,9 +108,10 @@ struct EditorCaptionOptions: Equatable {
     var scale: Double? = nil           // pinch override (font multiplier); nil = word
     var accent: String? = nil          // #RRGGBB; nil = the style's own default
     var uppercase: Bool = false
-    var font: String = "inter"         // inter | archivo | baloo
+    var font: String = "inter"         // inter | archivo | baloo | montserrat | anton (A2)
     var grouping: String = "phrase"    // word | phrase (DEFAULT, P0.7) | line — mirrors edl.py
     var highlightWords: [String] = []  // normalized keywords painted in the accent color
+    var strokePx: Double = 0           // A2: dual-span outline width (Hormozi/Submagic look)
 }
 
 struct EditorVolumeRange: Equatable {
@@ -154,7 +155,8 @@ struct EditorDocument: Equatable {
                 uppercase: co["uppercase"] as? Bool ?? false,
                 font: co["font"] as? String ?? "inter",
                 grouping: co["grouping"] as? String ?? "phrase",
-                highlightWords: co["highlight_words"] as? [String] ?? [])
+                highlightWords: co["highlight_words"] as? [String] ?? [],
+                strokePx: co["stroke_px"] as? Double ?? 0)
         }
         segments = (edl["segments"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }

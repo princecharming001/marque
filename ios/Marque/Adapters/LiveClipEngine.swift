@@ -342,6 +342,8 @@ extension BackendClient {
     static let shared = BackendClient()
     // OPT-8: session cache for GET /v1/editor/capabilities (static per backend build).
     static var cachedEditorCaps: [String: [String: Bool]]? = nil
+    // A7: session cache for GET /v1/themes (static per backend build).
+    static var cachedThemes: [ThemeChoice]? = nil
 
     func mintUploadURL(filename: String) async -> [String: Any]? {
         guard let data = await post("/v1/uploads/mint",
@@ -482,6 +484,41 @@ extension BackendClient {
         }
         BackendClient.cachedEditorCaps = out
         return out
+    }
+
+    /// A7: GET /v1/themes — the style-bundle catalog. Version-stable per backend
+    /// process (same caching rationale as editorCapabilities), so this fetches
+    /// once per app session rather than every time the theme picker opens.
+    func fetchThemes() async -> [ThemeChoice] {
+        if let cached = BackendClient.cachedThemes { return cached }
+        guard let data = await get("/v1/themes"),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = dict["themes"] as? [[String: Any]] else { return [] }
+        let out = raw.compactMap { t -> ThemeChoice? in
+            guard let id = t["id"] as? String, let label = t["label"] as? String else { return nil }
+            return ThemeChoice(id: id, label: label, blurb: t["blurb"] as? String ?? "",
+                               defaultForFormats: t["default_for_formats"] as? [String] ?? [])
+        }
+        BackendClient.cachedThemes = out
+        return out
+    }
+
+    /// A7 feature #1 ("Change theme"): POST /v1/clips/{id}/retheme — force-restamps
+    /// a finished clip's caption/grade/duck to a different bundle and re-renders.
+    /// clipId="" retargets every clip on the job (the common single-clip case).
+    func rethemeClip(jobId: String, themeId: String, clipId: String = "") async -> [String: Any] {
+        let body: [String: Any] = ["theme_id": themeId, "clip_id": clipId]
+        let (data, status) = await postWithStatus("/v1/clips/\(jobId)/retheme", body)
+        if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
+        if status == 422 { return ["error": true, "reply": "That theme isn't available right now."] }
+        if status == 409 {
+            return ["error": true, "transient": true,
+                    "reply": "Still rendering your last change — try again in a minute."]
+        }
+        guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ["error": true, "reply": "Couldn't reach the editor — check your connection."]
+        }
+        return dict
     }
 
     /// GET /v1/clips/{id} decoded for the analyze phase (status + edit_brief + toggles).
