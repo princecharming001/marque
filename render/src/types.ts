@@ -24,7 +24,8 @@ export interface Adjust {
   brightness: number; contrast: number; saturation: number;
   temperature: number; vignette: number;
 }
-export interface Look { filter: string | null; intensity: number; adjust: Adjust; }
+// A8 (schema v4): grain is additive/defaulted (0) — a stale v3 plan renders identically.
+export interface Look { filter: string | null; intensity: number; adjust: Adjust; grain?: number; }
 // resolved_url is filled by the backend Pexels-resolve step; frame_in/out are output coords.
 export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; source?: string; resolved_url?: string; }
 export interface Layout { style: string; panels: number; panel_boundaries: number[]; split_fraction?: number; }
@@ -113,7 +114,9 @@ export interface RenderPlan {
 // v2 (P4): added end_card, progress_bar, audio.sfx.
 // v3 (A2/A5a, superintelligence epic): added caption_options.stroke_px/
 // sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
-export const PLAN_SCHEMA_VERSION = 3;
+// v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
+// the "finishing" filter preset.
+export const PLAN_SCHEMA_VERSION = 4;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a

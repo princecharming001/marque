@@ -14,7 +14,9 @@ import re
 # stale v1 site just never renders them (no crash), and checkPlanSchema still warns.
 # v3 (A2/A5a, superintelligence epic): added caption_options.stroke_px/
 # sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
-PLAN_SCHEMA_VERSION = 3
+# v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
+# the "finishing" filter preset.
+PLAN_SCHEMA_VERSION = 4
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -171,7 +173,7 @@ class Transition(BaseModel):
     so trims keep it attached; deleting that segment drops it. v1 styles need no
     video overlap (they composite a color/flash dip over the boundary)."""
     after_segment: int               # source index of the leading segment
-    style: str = "fade_black"        # fade_black | fade_white | flash
+    style: str = "fade_black"        # fade_black | fade_white | flash | whip | zoom_punch (A8)
     frames: int = 12                 # total dip duration, centered on the boundary
 
 
@@ -188,9 +190,10 @@ class Adjust(BaseModel):
 class Look(BaseModel):
     """Whole-video color treatment: a named filter preset blended by intensity,
     composed with manual Adjust knobs (preset first, knobs on top)."""
-    filter: Optional[str] = None     # vivid | film | mono | golden | warm | cool
+    filter: Optional[str] = None     # vivid | film | mono | golden | warm | cool | finishing (A8)
     intensity: float = 1.0           # 0..1 preset strength
     adjust: Adjust = Adjust()
+    grain: float = 0.0               # A8 (schema v4): 0-1 film grain amount, additive/defaulted
 
 
 class BRoll(BaseModel):
@@ -1488,7 +1491,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                 style_v = op.get("style") or "fade_black"
                 if not (isinstance(idx, int) and 0 <= idx < len(segs)):
                     reason = f"no segment at index {idx}"
-                elif style_v not in ("none", "fade_black", "fade_white", "flash"):
+                elif style_v not in ("none", "fade_black", "fade_white", "flash", "whip", "zoom_punch"):
                     reason = f"unknown transition '{style_v}'"
                 else:
                     trans = [tr for tr in (edl.get("transitions") or []) if tr.get("after_segment") != idx]
@@ -1505,7 +1508,7 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     look["filter"] = None
                     edl["look"] = Look(**look).model_dump()
                     applied = True
-                elif name not in ("vivid", "film", "mono", "golden", "warm", "cool"):
+                elif name not in ("vivid", "film", "mono", "golden", "warm", "cool", "finishing"):
                     reason = f"unknown filter '{name}'"
                 else:
                     look = dict(edl.get("look") or {})
@@ -1514,6 +1517,14 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         look["intensity"] = min(1.0, max(0.0, float(op.get("intensity") if op.get("intensity") is not None else 1.0)))
                     except (TypeError, ValueError):
                         look["intensity"] = 1.0
+                    # A8 (feature #12, finishing slider): the SAME op can set grain
+                    # alongside the filter — a single 0-1 slider drives both filter
+                    # intensity and grain amount on the "finishing" preset.
+                    if op.get("grain") is not None:
+                        try:
+                            look["grain"] = min(1.0, max(0.0, float(op["grain"])))
+                        except (TypeError, ValueError):
+                            pass
                     edl["look"] = Look(**look).model_dump()
                     applied = True
 

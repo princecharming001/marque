@@ -61,6 +61,21 @@ export const temperatureFilter = (look: Look | null | undefined): { id: string; 
   return { id: `marque-temp-${Math.round(temp * 1000)}`, matrix };
 };
 
+// A8 (schema v4): "finishing" — an IG-proof polish pass (saturate + contrast +
+// a black-lift so shadows don't crush on a phone screen). Black lift needs an
+// SVG feComponentTransfer (a CSS filter alone can't remap the shadow floor);
+// `finishingFilter` returns that def (CutVideo renders it, same pattern as
+// temperatureFilter below) and lookFilterCSS references it via url(#id).
+// Deliberately NO sharpen/feConvolveMatrix here — see Grade.tsx's design note
+// on why a per-pixel convolution is out of scope (Lambda render cost/risk).
+const FINISHING_BLACK_FLOOR = 12 / 255;
+export const finishingFilter = (look: Look | null | undefined): { id: string; floor: string } | null => {
+  if (!look || look.filter !== "finishing") return null;
+  const t = Math.min(1, Math.max(0, look.intensity ?? 1));
+  const floor = FINISHING_BLACK_FLOOR * t;   // intensity scales how much the floor lifts
+  return { id: `marque-finishing-${Math.round(floor * 1000)}`, floor: floor.toFixed(4) };
+};
+
 // The whole-video color grade as a CSS filter chain: named preset (blended toward
 // identity by intensity) composed with the manual Adjust knobs. Empty look → "".
 export const lookFilterCSS = (look: Look | null | undefined): string => {
@@ -77,6 +92,7 @@ export const lookFilterCSS = (look: Look | null | undefined): string => {
     // saturation/brightness character here.
     case "warm": parts.push(`saturate(${lerp(1, 1.1)})`); break;
     case "cool": parts.push(`saturate(${lerp(1, 1.05)}) brightness(${lerp(1, 1.02)})`); break;
+    case "finishing": parts.push(`saturate(${lerp(1, 1.10)}) contrast(${lerp(1, 1.15)})`); break;
   }
   const a = look.adjust;
   if (a) {
@@ -87,6 +103,8 @@ export const lookFilterCSS = (look: Look | null | undefined): string => {
   }
   const temp = temperatureFilter(look);
   if (temp) parts.push(`url(#${temp.id})`);
+  const fin = finishingFilter(look);
+  if (fin) parts.push(`url(#${fin.id})`);
   return parts.join(" ");
 };
 
@@ -103,6 +121,7 @@ export const CutVideo: React.FC<{
   }
   const filter = lookFilterCSS(look);
   const tempDef = temperatureFilter(look);   // P0.8: SVG feColorMatrix def that filter refs
+  const finDef = finishingFilter(look);      // A8: SVG feComponentTransfer black-lift def
   // P0.6: loudness normalization — a linear multiplier on the source audio. gain 0 → 1.0
   // (untouched). Composes with per-range volume; a range's volume is scaled by the same
   // factor so mute (0) stays muted.
@@ -139,6 +158,19 @@ export const CutVideo: React.FC<{
           <defs>
             <filter id={tempDef.id} colorInterpolationFilters="sRGB">
               <feColorMatrix type="matrix" values={tempDef.matrix} />
+            </filter>
+          </defs>
+        </svg>
+      )}
+      {finDef && (
+        <svg width={0} height={0} style={{ position: "absolute" }} aria-hidden>
+          <defs>
+            <filter id={finDef.id} colorInterpolationFilters="sRGB">
+              <feComponentTransfer>
+                <feFuncR type="linear" slope={(1 - Number(finDef.floor)).toFixed(4)} intercept={finDef.floor} />
+                <feFuncG type="linear" slope={(1 - Number(finDef.floor)).toFixed(4)} intercept={finDef.floor} />
+                <feFuncB type="linear" slope={(1 - Number(finDef.floor)).toFixed(4)} intercept={finDef.floor} />
+              </feComponentTransfer>
             </filter>
           </defs>
         </svg>
