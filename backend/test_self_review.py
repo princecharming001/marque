@@ -48,7 +48,7 @@ def test_self_review_high_score_no_revision(monkeypatch):
         return "https://cdn/preview.mp4"
     async def fake_frames(url, n=6):
         return [b"jpeg1", b"jpeg2"]
-    async def fake_score(frames, plan):
+    async def fake_score(frames, plan, lint_findings=None):
         return {"score_0_100": 88, "issues": []}
     monkeypatch.setattr(main, "_submit_remotion_render", fake_submit)
     monkeypatch.setattr(main, "_poll_remotion_render", fake_poll)
@@ -74,7 +74,7 @@ def test_self_review_low_score_applies_fix_ops(monkeypatch):
         return "https://cdn/preview.mp4"
     async def fake_frames(url, n=6):
         return [b"jpeg1", b"jpeg2"]
-    async def fake_score(frames, plan):
+    async def fake_score(frames, plan, lint_findings=None):
         return {"score_0_100": 55, "issues": [
             {"code": "caption_style", "frame": 0,
              "fix_op": {"type": "set_caption_style", "style": "karaoke"}}]}
@@ -101,7 +101,7 @@ def test_self_review_ignores_non_tweak_ops(monkeypatch):
         return "https://cdn/preview.mp4"
     async def fake_frames(url, n=6):
         return [b"jpeg"]
-    async def fake_score(frames, plan):
+    async def fake_score(frames, plan, lint_findings=None):
         return {"score_0_100": 40, "issues": [
             {"code": "x", "frame": 0, "fix_op": {"type": "definitely_not_a_real_op"}}]}
     monkeypatch.setattr(main, "_submit_remotion_render", fake_submit)

@@ -38,6 +38,7 @@ from app import dossier as dossier_mod
 from app import push as push_mod
 from app import higgsfield as higgsfield_mod
 from app import retention as retention_mod
+from app import edit_lint as edit_lint_mod
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -1380,7 +1381,7 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
                  else None)
         title = (topic or hook)[:48]
         title = title[:1].upper() + title[1:] if title else title
-        out.append({
+        entry = {
             "title": title,
             "summary": f"A {s['label'].lower()} on {niche}.",
             "hook": hook,
@@ -1388,9 +1389,11 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
             "body": body,
             "cta": "Follow for more — I break this down every week.",
             "shotPlan": s["exemplar"] and ["Hook on frame 1", "One punch-in on the key number", "Direct CTA"],
-            "targetSeconds": 26, "predictedScore": 78,
+            "targetSeconds": 26,
             "altHooks": [], "style": req.style,
-        })
+        }
+        entry["predictedScore"] = _draft_score(req.creator_id, entry)
+        out.append(entry)
     return out
 
 
@@ -1532,6 +1535,54 @@ def _final_score(creator_id: str, script: dict, verdict: dict) -> int:
     return max(0, min(100, round((1 - w) * critic + w * cal)))
 
 
+# B5: the unjudged/mock paths (fast feed paint, keyless mocks) previously hardcoded
+# predictedScore=78 — a fabricated number with no relationship to the actual draft.
+# No LLM call (these paths are latency-critical); cheap deterministic craft signals
+# instead, blended toward the creator's real outcomes via the SAME calibration
+# machinery _final_score uses. Mirrors eval/invariants.py's SLOP_OPENERS (kept as its
+# own small copy here — main.py must not import the eval/ harness).
+_DRAFT_SLOP_OPENERS = (
+    "in this video", "in today's video", "in todays video", "let me tell you",
+    "here's the thing", "heres the thing", "ever wondered", "picture this",
+    "buckle up", "welcome back", "hey guys", "what's up", "whats up",
+    "let's dive in", "lets dive in", "without further ado", "today i want to talk",
+)
+
+
+def _draft_score(creator_id: str, script: dict) -> int:
+    """Honest draft-tier predictedScore — no LLM. A DRAFT may never outrank the judged
+    tier's typical floor (clamped 40..74), since it hasn't been through best-of-N +
+    a critic pass. Base 60, adjusted by cheap deterministic craft signals, then blended
+    toward the creator's real arm outcomes (same mechanism _final_score uses, so the
+    number means something once there's evidence)."""
+    hook = script.get("hook", "")
+    hook = (hook.get("text", "") if isinstance(hook, dict) else hook) or ""
+    hook = hook.strip()
+    body = script.get("body", "") or ""
+    hook_lower = hook.lower()
+    words = hook.split()
+
+    s = 60.0
+    if 6 <= len(words) <= 14:
+        s += 4
+    if any(ch.isdigit() for ch in hook):
+        s += 5
+    if hook.endswith("?") or hook_lower.startswith(("why ", "what ", "how ", "when ", "who ")):
+        s -= 6
+    if hook_lower.startswith(_DRAFT_SLOP_OPENERS):
+        s -= 10
+    if "\n\n" in body:
+        s += 3
+    if not prompts.flag_stage_direction(body, script.get("style", "")):
+        s += 5
+    base = max(40, min(74, round(s)))
+
+    cal, w = _calibration_signal(creator_id, script)
+    if cal is None:
+        return base
+    return max(40, min(74, round((1 - w) * base + w * cal)))
+
+
 async def quality_scripts(brand: dict, style: str, scripts: list[dict],
                           posts: list[dict] | None = None,
                           creator_id: str = "default",
@@ -1596,6 +1647,13 @@ async def quality_scripts(brand: dict, style: str, scripts: list[dict],
     for f, new in zip(flagged, revised):
         if isinstance(new, dict) and new.get("hook") and new.get("body"):
             new.setdefault("style", style)
+            # The revise pass exists to FIX quality issues — a rewrite that still reads
+            # as a description is worse than the original draft. Skip the swap on a
+            # dirty revise; the caller's final _ensure_speakable pass still covers the
+            # pre-revise draft that's left in place.
+            if prompts.flag_stage_direction(new["body"], style):
+                logging.info("[speakable] revise output still dirty at pos=%d — keeping pre-revise draft", f["pos"])
+                continue
             # Keep the critic+calibration-grounded score unless the rewrite lifted it.
             new["predictedScore"] = max(_final_score(creator_id, new, f["verdict"]),
                                         int(new.get("predictedScore", 0) or 0))
@@ -1734,6 +1792,12 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         out = await quality_scripts(req.d(), req.style, out, req.posts or None,
                                     creator_id=req.creator_id, mandated_hooks=mandated or None,
                                     memory=req.memory or None)
+        # Final speakability gate on the judged pipeline: the judge's own slop axis
+        # shares the old lint's blind spots, so a deterministic drop is the real guard.
+        # Never ship fewer than requested — backfill any drop from the mock templates.
+        out = await _ensure_speakable(out, policy="repair_or_drop")
+        if len(out) < req.count:
+            out = out + mock_scripts(req)[len(out):req.count]
         for s in out:
             if isinstance(s, dict) and s.get("title"):
                 s["title"] = _clamp_title(str(s["title"]))
@@ -1772,7 +1836,10 @@ async def steer(req: SteerRequest):
         sys = await _inject_brain(sys, req.creator_id, req.instruction)   # G1: refine stays brain-aware
         out = extract_json(await anthropic(sys, usr, SONNET, 1500), array=False)
         if out:
-            (out,) = await _ensure_speakable([out])   # steer is unjudged — guard the body
+            # steer is unjudged — guard the body; the safe floor is the creator's own
+            # pre-edit script, never a shipped description.
+            (out,) = await _ensure_speakable(
+                [out], policy="repair_or_keep_input", fallback=lambda i: req.script)
         return {"mode": "live", "script": out or req.script}
     except HTTPException:
         return {"mode": "mock", "script": req.script}
@@ -3887,6 +3954,11 @@ async def _run_pipeline(job_id: str):
 
 
 EDL_AUTHOR = os.environ.get("EDL_AUTHOR", "legacy").lower()   # plan | legacy | shadow (P3.3 rollout flag)
+# A1: deterministic pre-render "amateur tell" lint. "" = off. "observe" = run + log +
+# store job["lint"], never mutate. "fix" = additionally apply error-severity fix_ops
+# ONE round via apply_edl_ops, then re-lint. Ship "observe" first — a live scoreboard
+# of what the lint would fix, with zero behavior change — before ever flipping to "fix".
+EDIT_LINT = os.environ.get("EDIT_LINT", "").lower()
 
 
 async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str, script: dict,
@@ -4239,6 +4311,36 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
             dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
             sfx_assets=SFX_ASSETS)
+        # A1: deterministic pre-render lint — a live scoreboard of "amateur tells"
+        # (dead stretches, glitch cuts, metronomic pacing, off-anchor effects, mixed
+        # caption/transition grammars) on WHATEVER the two author paths + retention
+        # passes produced. "observe" only logs + stores job["lint"]; "fix" additionally
+        # applies error-severity fix_ops ONE round via apply_edl_ops, then re-lints and
+        # reverts any fix that introduces a NEW error (mirrors _safe_pass's contract).
+        if EDIT_LINT:
+            try:
+                lint_findings = edit_lint_mod.lint_edl(
+                    edl_data, words, style=style, emphasis_spans=emphasis_spans,
+                    theme=job.get("_theme"))
+                if EDIT_LINT == "fix":
+                    fix_ops = [f["fix_op"] for f in lint_findings
+                              if f["severity"] == "error" and f["fix_op"]]
+                    if fix_ops:
+                        before_errors = {f["code"] for f in lint_findings if f["severity"] == "error"}
+                        fixed_edl, _ = apply_edl_ops(edl_data, fix_ops, words)
+                        refindings = edit_lint_mod.lint_edl(
+                            fixed_edl, words, style=style, emphasis_spans=emphasis_spans,
+                            theme=job.get("_theme"))
+                        after_errors = {f["code"] for f in refindings if f["severity"] == "error"}
+                        if not (after_errors - before_errors):
+                            edl_data, lint_findings = fixed_edl, refindings
+                job["lint"] = edit_lint_mod.lint_summary(lint_findings)
+                for f in lint_findings:
+                    if f["severity"] == "error":
+                        logging.warning("[edit-lint] job=%s %s @out_f%s: %s",
+                                        job_id, f["code"], f["at_out_frame"], f["detail"])
+            except Exception as e:
+                logging.warning("[edit-lint] failed for job=%s: %s", job_id, e)
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole
@@ -4350,9 +4452,13 @@ async def _sample_render_frames(url: str, n: int = 6) -> list[bytes]:
     return out
 
 
-async def _score_edl_vision(frames: list[bytes], plan: dict) -> dict | None:
+async def _score_edl_vision(frames: list[bytes], plan: dict,
+                            lint_findings: list | None = None) -> dict | None:
     """One Claude-vision call scoring sampled frames + the render plan against the review
     rubric → {score_0_100, issues:[{code, frame, fix_op}]}. fix_op is a tweak-envelope op.
+    `lint_findings` (A1, optional): unresolved deterministic-lint findings prepended as
+    plain text so the vision judge both VERIFIES them visually and can target its own
+    fix_ops at the same problems, instead of rediscovering them from pixels alone.
     Monkeypatched in tests; keyless / no frames → None."""
     if not ANTHROPIC_KEY or not frames:
         return None
@@ -4376,8 +4482,16 @@ async def _score_edl_vision(frames: list[bytes], plan: dict) -> dict | None:
                 }}},
         },
     }
+    lint_block = ""
+    if lint_findings:
+        lines = "\n".join(f"- {f['code']} (out frame {f['at_out_frame']}): {f['detail']}"
+                          for f in lint_findings)
+        lint_block = (f"\n\nA DETERMINISTIC LINT already found these issues in this edit's "
+                      f"structure — verify them against the actual frames and fix what's real "
+                      f"(some may already be addressed by later passes):\n{lines}")
     content: list[dict] = [{"type": "text", "text":
-        f"REVIEW RUBRIC:\n{rubric}\n\nRENDER PLAN (output frames):\n{json.dumps(plan, default=str)[:4000]}\n\n"
+        f"REVIEW RUBRIC:\n{rubric}\n\nRENDER PLAN (output frames):\n{json.dumps(plan, default=str)[:4000]}"
+        f"{lint_block}\n\n"
         f"The {len(frames)} images are evenly-sampled frames of the rendered edit. Score 0-100 and list "
         f"issues; each fix_op MUST be a valid tweak op (type from the allowed set) that would fix it."}]
     for fr in frames[:8]:
@@ -4427,7 +4541,18 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
     frames = await _sample_render_frames(preview_url, 6)
     if not frames:
         return
-    review = await _score_edl_vision(frames, build_render_plan(job["edl"]))
+    # A1: hand the vision judge whatever deterministic lint already found (unresolved
+    # error-severity findings — EDIT_LINT=fix already cleared what it could upstream)
+    # so it verifies real problems instead of re-discovering them from pixels alone.
+    lint_for_review = None
+    if EDIT_LINT:
+        try:
+            lint_for_review = [f for f in edit_lint_mod.lint_edl(
+                job["edl"], job.get("words") or [], style=job.get("style", ""),
+                theme=job.get("_theme")) if f["severity"] == "error"]
+        except Exception:
+            lint_for_review = None
+    review = await _score_edl_vision(frames, build_render_plan(job["edl"]), lint_for_review)
     if not isinstance(review, dict):
         return
     job["self_review"] = {"score": review.get("score_0_100"), "issues": review.get("issues", [])}
@@ -4439,6 +4564,21 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
         return
     try:
         new_edl, results = apply_edl_ops(job["edl"], ops, job.get("words") or [])
+        # A1: never let a self-review "fix" introduce a NEW lint error (mirrors
+        # app.retention._safe_pass's revert-on-regression contract).
+        if EDIT_LINT:
+            try:
+                before = {f["code"] for f in (lint_for_review or [])}
+                after_findings = edit_lint_mod.lint_edl(
+                    new_edl, job.get("words") or [], style=job.get("style", ""),
+                    theme=job.get("_theme"))
+                after = {f["code"] for f in after_findings if f["severity"] == "error"}
+                if after - before:
+                    logging.info("self-review fix introduced new lint error(s) %s — reverted",
+                                 after - before)
+                    return
+            except Exception:
+                pass
         job["edl"] = new_edl
         job["self_review"]["applied"] = [r for r in results if r.get("applied")]
     except Exception as e:
@@ -7502,24 +7642,53 @@ _SPEAKABLE_REPAIR_SYS = (
 )
 
 
-async def _ensure_speakable(scripts: list[dict]) -> list[dict]:
-    """Runtime speakability guard for the UNJUDGED script paths (fast paint, mimic, steer,
-    from-brief). For any body that reads as a description/stage-direction, run one cheap
-    HAIKU rewrite into spoken copy. Fail-soft: keeps the original on any error/keyless."""
-    if not (ANTHROPIC_KEY and scripts):
-        return scripts
-    for s in scripts:
+async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_drop",
+                            fallback=None, timeout_s: float = 8.0) -> list[dict]:
+    """Runtime speakability guard for EVERY script-generation path. NEVER returns a
+    lint-dirty body: for any hit, one bounded HAIKU rewrite is attempted, then RE-LINTED
+    (a repair that still reads as a description doesn't count). If the body is still
+    dirty (repair failed, timed out, or keyless), `policy` decides what happens instead
+    of silently shipping the description:
+      repair_or_drop       -> the script is removed from the returned list (caller
+                              backfills from a mock/template if the result is empty)
+      repair_or_fallback   -> replaced by fallback(i) — a script guaranteed speakable
+                              (a template mock; the caller supplies it)
+      repair_or_keep_input -> same mechanics as repair_or_fallback — pass
+                              fallback=lambda i: <the pre-edit input> as the safe floor
+    fallback may also return None as a sentinel the CALLER interprets itself (used by
+    the write-turn route to know "convert this action to an answer" rather than ship a
+    reconstructed script dict). Every non-clean outcome is logged. Runs even keyless —
+    the policy still applies (fail-CLOSED, not fail-open)."""
+    out: list[dict] = []
+    for i, s in enumerate(scripts):
         body = s.get("body") or ""
-        if not prompts.flag_stage_direction(body, s.get("style", "")):
+        style = s.get("style", "")
+        reason = prompts.flag_stage_direction(body, style)
+        if not reason:
+            out.append(s)
             continue
-        try:
-            fixed = await asyncio.wait_for(
-                anthropic(_SPEAKABLE_REPAIR_SYS, body, HAIKU, 600), timeout=8.0)
-        except (HTTPException, asyncio.TimeoutError):
-            fixed = None
-        if fixed and fixed.strip() and not prompts.flag_stage_direction(fixed, s.get("style", "")):
-            s["body"] = fixed.strip()
-    return scripts
+        fixed = None
+        if ANTHROPIC_KEY:
+            try:
+                fixed = await asyncio.wait_for(
+                    anthropic(_SPEAKABLE_REPAIR_SYS, body, HAIKU, 600), timeout=timeout_s)
+            except (HTTPException, asyncio.TimeoutError):
+                fixed = None
+            if fixed and prompts.flag_stage_direction(fixed, style):
+                fixed = None   # the repair itself still reads as a description
+        if fixed and fixed.strip():
+            logging.info("[speakable] i=%d outcome=repaired reason=%s", i, reason)
+            out.append({**s, "body": fixed.strip()})
+            continue
+        if policy == "repair_or_drop":
+            logging.info("[speakable] i=%d outcome=dropped reason=%s", i, reason)
+            continue
+        if fallback is not None:
+            logging.info("[speakable] i=%d outcome=fallback reason=%s", i, reason)
+            out.append(fallback(i))
+        else:
+            logging.info("[speakable] i=%d outcome=dropped(no_fallback) reason=%s", i, reason)
+    return out
 
 
 async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
@@ -7562,7 +7731,7 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
             s.setdefault("altHooks", [])
             s.setdefault("shotPlan", [])
             s.setdefault("targetSeconds", 30)
-            s.setdefault("predictedScore", 78)
+            s["predictedScore"] = _draft_score(sreq.creator_id, s)
         # Pad a short array (HAIKU overshot the word cap → truncation dropped items, or
         # it just emitted fewer) up to count with mock fills, so the picks row is never
         # a lonely single card (script-quality audit — the schema has no minItems).
@@ -7570,8 +7739,12 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
             out = out + mock_scripts(sreq)[len(out):sreq.count]
         # Speakability guard: the fast paint is unjudged, so a description-style body
         # (the "some scripts describe what to say" report) would otherwise ship. Repair
-        # any that trip the lint into verbatim spoken copy before returning.
-        out = await _ensure_speakable(out)
+        # any that trip the lint into verbatim spoken copy; anything still dirty is
+        # swapped for the matching mock card (instant, deterministic — no added latency).
+        mocks = mock_scripts(sreq)
+        out = await _ensure_speakable(
+            out, policy="repair_or_fallback",
+            fallback=lambda i: mocks[i % len(mocks)])
         # "live_fast" (NOT "live"): a real-AI DRAFT (lean HAIKU, ≤80-word bodies, no
         # judge pass). The client uses this to keep polling for the full Opus upgrade —
         # marking it plain "live" stranded users on the draft (script-quality audit).
@@ -7847,6 +8020,28 @@ class _WriteRequest(BaseModel):
     instruction: str = ""
 
 
+async def _guard_write_actions(actions: list[dict]) -> list[dict]:
+    """Write-turn had NO speakability guard — a <fill> action is a FULL BODY REWRITE,
+    so a description-style fill would overwrite good copy with a description. Lint every
+    fill's content; repair it, or convert the action to an <answer> so the creator is
+    asked for the exact line instead of having a description silently applied."""
+    fixed: list[dict] = []
+    for a in actions:
+        if a.get("op") != "fill" or not a.get("content"):
+            fixed.append(a)
+            continue
+        mini = {"body": a["content"], "style": ""}
+        (checked,) = await _ensure_speakable(
+            [mini], policy="repair_or_fallback", fallback=lambda i: None)
+        if checked is None:
+            fixed.append({"op": "answer",
+                          "text": "I drafted that as an outline — tell me the exact line "
+                                  "you want and I'll write it out spoken."})
+        else:
+            fixed.append({**a, "content": checked["body"]})
+    return fixed
+
+
 @app.post("/v1/write/turn")
 async def write_turn_route(req: _WriteRequest):
     """Palo port (flag WRITE_AGENT): one co-writing turn. Returns the proposed actions
@@ -7856,7 +8051,7 @@ async def write_turn_route(req: _WriteRequest):
         return {"mode": "off", "actions": [], "preview": req.script, "answer": ""}
     body = (req.script or {}).get("body", "")
     result = await write_agent.write_turn(_palo_store, req.creator_id, body, req.instruction)
-    actions = result.get("actions", [])
+    actions = await _guard_write_actions(result.get("actions", []))
     new_body, outcomes = write_agent.apply_actions(body, actions)
     answer = next((a.get("text", "") for a in actions if a.get("op") == "answer"), "")
     return {"mode": result.get("mode", "live"), "actions": outcomes,
@@ -7876,8 +8071,11 @@ async def script_from_brief_route(req: _BriefScriptRequest):
     Off/keyless still returns a usable script assembled from the brief beats."""
     out = await write_agent.script_from_brief(_palo_store, req.creator_id, req.brief, req.brand)
     # Unjudged path: guard the body reads as spoken copy, not a description of the brief.
+    # Still-dirty falls back to the brief's own deterministic assembly — never a description.
     if isinstance(out, dict) and out.get("body"):
-        (fixed,) = await _ensure_speakable([out])
+        (fixed,) = await _ensure_speakable(
+            [out], policy="repair_or_fallback",
+            fallback=lambda i: {**write_agent._mock_script_from_brief(req.brief), "mode": "mock"})
         out = fixed
     return out
 
@@ -7992,7 +8190,10 @@ async def mimic(req: MimicRequest):
         out = extract_json(await anthropic(sys, usr, OPUS, 2000), array=False)
         if not out:
             return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
-        (out,) = await _ensure_speakable([out])   # mimic is unjudged — guard the body
+        # mimic is unjudged — guard the body; still-dirty falls back to the deterministic mock mimic.
+        (out,) = await _ensure_speakable(
+            [out], policy="repair_or_fallback",
+            fallback=lambda i: _mock_mimic(req.reel, req.brand))
         return {"mode": "live", "script": out, "mimicked_from": provenance}
     except HTTPException:
         return {"mode": "mock", "script": _mock_mimic(req.reel, req.brand), "mimicked_from": provenance}
@@ -8082,6 +8283,16 @@ async def analyze_video(req: AnalyzeVideoRequest):
             sys = await _inject_brain(sys, req.creator_id)   # G3: your_version shaped by the brain
             out = extract_json(await anthropic(sys, usr, OPUS, 2600), array=False)
             if out and out.get("your_version"):
+                # This path had NO speakability guard — the "your_version" script is the
+                # only script-body field here; still-dirty falls back to the deterministic
+                # mock mimic built from the same (real or canned) transcript.
+                mock_reel_for_fallback = {"creator_handle": "the original creator", "platform": platform,
+                                          "title": "the linked video", "transcript": transcript,
+                                          "format_id": "myth-buster", "style": "talking_head"}
+                (yv,) = await _ensure_speakable(
+                    [out["your_version"]], policy="repair_or_fallback",
+                    fallback=lambda i: _mock_mimic(mock_reel_for_fallback, req.brand))
+                out["your_version"] = yv
                 return {"mode": "live" if is_real else "live_structure", "platform": platform,
                         "transcript": transcript, **out}
         except HTTPException:

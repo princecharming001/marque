@@ -2268,3 +2268,61 @@ def test_poll_transcription_never_returns_bool_highlights(monkeypatch):
     assert isinstance(out["auto_highlights"], list)   # never a bool again
     # and the downstream consumer stays crash-free
     assert main._extract_emphasis_regions(out["words"], out["auto_highlights"]) == []
+
+
+# ---------------------------------------------------------------------------
+# A1: deterministic edit lint wiring in _run_edit (observe mode: never mutates
+# the EDL, only stores job["lint"] + logs).
+# ---------------------------------------------------------------------------
+
+def _lint_wiring_job(monkeypatch):
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        monkeypatch.setattr(main, k, "x")
+    words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
+             for i, w in enumerate("one two three four five six seven eight".split())]
+    job_id = seed_clip_job(source_url="mock://x", words=words, status="editing", edl=None,
+                           clips=[{"clip_id": "c1", "format": "myth-buster", "status": "queued"}])
+
+    async def no_llm(*a, **k):
+        raise main.HTTPException(status_code=502, detail="keyless")
+    monkeypatch.setattr(main, "anthropic", no_llm)
+
+    async def bridge(*args, timeout_s=None, **kwargs):
+        if args[0] == "submit":
+            return {"renderId": "r1", "bucketName": "b"}
+        return {"done": True, "outputFile": "https://cdn/out.mp4"}
+    async def fast_sleep(_): return None
+    monkeypatch.setattr(main, "_run_render_bridge", bridge)
+    monkeypatch.setattr(main.asyncio, "sleep", fast_sleep)
+    return job_id, words
+
+
+def test_edit_lint_off_by_default_no_job_lint_key(monkeypatch):
+    monkeypatch.setattr(main, "EDIT_LINT", "")
+    job_id, words = _lint_wiring_job(monkeypatch)
+    asyncio.run(main._run_edit(job_id, words))
+    assert "lint" not in main._clip_jobs[job_id]
+
+
+def test_edit_lint_observe_stores_summary_never_mutates_edl(monkeypatch):
+    monkeypatch.setattr(main, "EDIT_LINT", "observe")
+    job_id, words = _lint_wiring_job(monkeypatch)
+    asyncio.run(main._run_edit(job_id, words))
+    job = main._clip_jobs[job_id]
+    # keyless -> safe_default_edl (a bare whole-take, zero overlays) -> the lint should
+    # find the "no visual variety" errors it exists to catch.
+    assert "lint" in job
+    assert job["lint"]["errors"] > 0
+    assert "static_window" in job["lint"]["codes"] or "static_open" in job["lint"]["codes"]
+
+
+def test_edit_lint_fix_mode_never_crashes_pipeline(monkeypatch):
+    # "fix" mode must degrade to a no-op (not a hang/500) even when apply_edl_ops
+    # can't actually fix anything useful in a bare keyless EDL.
+    monkeypatch.setattr(main, "EDIT_LINT", "fix")
+    job_id, words = _lint_wiring_job(monkeypatch)
+    asyncio.run(main._run_edit(job_id, words))
+    job = main._clip_jobs[job_id]
+    assert job["status"] == "ready"
+    assert "lint" in job

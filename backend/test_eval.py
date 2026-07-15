@@ -52,6 +52,6 @@ def test_slop_and_question_openers_flagged():
 def test_evaluate_batch_scorecard():
     scripts = [g["script"] for g in golden.KNOWN_GOOD] + [golden.KNOWN_BAD[0]["script"]]
     card = evaluate_batch(scripts, {})
-    assert card["n"] == 3
+    assert card["n"] == len(golden.KNOWN_GOOD) + 1
     assert 0.0 <= card["gate_pass_rate"] <= 1.0
-    assert card["quality_flag_rate"] > 0            # the slop-opener known-bad flags
+    assert card["quality_flag_rate"] > 0            # the stage-direction known-bad flags
