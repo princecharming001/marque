@@ -11,6 +11,7 @@ flag-gating + fail-soft mechanics, sweep_residual_fillers, and trim_loop_tail.
 import pytest
 
 from app import retention
+from app import themes as _themes
 from app.edl import check_edl_invariants, ms_to_frame, apply_edl_ops, split_segment_in_place
 
 
@@ -1233,3 +1234,106 @@ def test_hook_package_applied_via_orchestrator_when_named():
     edl = _bare_edl("talking_head", total_frames)
     out = retention.apply_retention_passes(edl, words, style="talking_head")
     assert any(o["type"] == "punch_in" and o["src_in"] == 0 for o in out["overlays"])
+
+
+# ---------------------------------------------------------------------------
+# A7 — theme threading into apply_retention_passes / individual passes
+# ---------------------------------------------------------------------------
+
+def test_apply_theme_runs_first_independent_of_retention_passes_flag():
+    retention._ENV_PASSES = ""   # every deterministic pass off
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    theme = _themes.get_theme("hormozi_punch")
+    out = retention.apply_retention_passes(edl, words, style="talking_head", theme=theme)
+    assert out["theme_id"] == "hormozi_punch"
+    assert out["caption_style"] == "bold-word"
+
+
+def test_theme_none_is_a_total_noop_for_apply_theme_step():
+    retention._ENV_PASSES = ""
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_retention_passes(edl, words, style="talking_head", theme=None)
+    assert out == edl
+
+
+def test_plan_framing_disabled_by_theme():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    theme = _themes.get_theme("docu_calm")   # framing.enabled = False
+    out = retention.plan_framing(edl, words, style="talking_head", theme=theme, job_seed="job-a")
+    assert out == edl
+
+
+def test_plan_framing_uses_theme_scales():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    theme = _themes.get_theme("hormozi_punch")   # scales {wide:1.0, mid:1.2, close:1.4}
+    out = retention.plan_framing(edl, words, style="talking_head", theme=theme, job_seed="job-a")
+    scales = {round(s["tx_scale"], 2) for s in out["segments"]}
+    assert scales <= {1.0, 1.2, 1.4}
+    assert 1.4 in scales or 1.2 in scales   # a non-wide framing actually happened
+
+
+def test_schedule_interrupts_density_falls_back_to_theme():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    theme = _themes.get_theme("docu_calm")   # interrupts.density = "calm"
+    with_theme = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, theme=theme)
+    without_theme = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    # calm density means a longer cadence -> fewer or equal insertions
+    assert len(with_theme["overlays"]) <= len(without_theme["overlays"])
+
+
+def test_schedule_interrupts_llm_hint_beats_theme():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    theme = _themes.get_theme("docu_calm")   # interrupts.density = "calm"
+    out = retention.schedule_interrupts(edl, words, style="talking_head",
+                                        hints={"interrupt_density": "dense"}, theme=theme)
+    dense_alone = retention.schedule_interrupts(edl, words, style="talking_head",
+                                                hints={"interrupt_density": "dense"})
+    assert len(out["overlays"]) == len(dense_alone["overlays"])
+
+
+def test_schedule_interrupts_genre_density_is_lowest_precedence():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    # No theme, no llm hint -> genre wins over "standard".
+    genre_only = retention.schedule_interrupts(edl, words, style="talking_head", hints={},
+                                               genre_density="calm")
+    standard = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    assert len(genre_only["overlays"]) <= len(standard["overlays"])
+    # theme (if present) still beats genre.
+    theme = _themes.get_theme("hormozi_punch")   # interrupts.density = "dense"
+    theme_wins = retention.schedule_interrupts(edl, words, style="talking_head", hints={},
+                                               genre_density="calm", theme=theme)
+    dense_alone = retention.schedule_interrupts(edl, words, style="talking_head", hints={},
+                                                theme=theme)
+    assert len(theme_wins["overlays"]) == len(dense_alone["overlays"])
+
+
+def test_synthesize_sfx_uses_theme_gain_db():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    theme = _themes.get_theme("hormozi_punch")   # sfx.gain_db = -12
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"}, theme=theme)
+    expected_gain = 10 ** (-12 / 20)
+    assert abs(out["audio"]["sfx"][0]["gain"] - expected_gain) < 1e-9
+
+
+def test_synthesize_sfx_theme_none_uses_module_default():
+    words = _steady_words(30000)
+    edl = _bare_edl("talking_head", ms_to_frame(30000),
+                    overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
+    out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
+    assert out["audio"]["sfx"][0]["gain"] == retention.SFX_GAIN_DEFAULT

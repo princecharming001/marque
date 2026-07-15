@@ -152,6 +152,67 @@ def test_edit_plan_prompt_builds():
     assert "transcript" in user.lower()
 
 
+# --- A7 theme line + A9 genre profile injection ---------------------------------
+
+def test_edit_plan_prompt_omits_theme_line_when_no_theme():
+    w = _words("scripted-01")
+    script = {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster", "shotPlan": []}
+    _, user = prompts.edit_plan_prompt("talking_head", w, script, {})
+    assert "THEME:" not in user
+
+
+def test_edit_plan_prompt_includes_theme_line_when_theme_given():
+    w = _words("scripted-01")
+    script = {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster", "shotPlan": []}
+    _, user = prompts.edit_plan_prompt("talking_head", w, script, {},
+                                       theme_label="Hormozi Punch", theme_blurb="Maximum retention pressure.")
+    assert "THEME:" in user
+    assert "Hormozi Punch" in user
+    assert "Maximum retention pressure." in user
+
+
+def test_edit_plan_prompt_includes_genre_line_for_known_video_type():
+    w = _words("scripted-01")
+    script = {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster", "shotPlan": []}
+    _, user = prompts.edit_plan_prompt("talking_head", w, script, {},
+                                       brief={"video_type": "freestyle_rant"})
+    assert "GENRE (freestyle_rant)" in user
+    assert "dense" in user
+
+
+def test_edit_plan_prompt_omits_genre_line_for_reaction_and_other():
+    w = _words("scripted-01")
+    script = {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster", "shotPlan": []}
+    for vt in ("reaction", "other", "unknown-type", ""):
+        _, user = prompts.edit_plan_prompt("talking_head", w, script, {}, brief={"video_type": vt})
+        assert "GENRE (" not in user
+
+
+# --- A9 genre profile table -----------------------------------------------------
+
+def test_every_video_type_maps_to_a_complete_genre_profile():
+    for vt in prompts.VIDEO_TYPES:
+        assert vt in prompts.GENRE_PROFILES, f"{vt} missing from GENRE_PROFILES"
+        profile = prompts.GENRE_PROFILES[vt]
+        assert isinstance(profile, dict)   # possibly empty (reaction/other), never absent
+
+
+def test_reaction_and_other_are_intentionally_empty_profiles():
+    assert prompts.GENRE_PROFILES["reaction"] == {}
+    assert prompts.GENRE_PROFILES["other"] == {}
+
+
+def test_genre_profiles_with_interrupt_density_use_valid_values():
+    # Must match app/retention.py's _DENSITY_MULT vocabulary exactly — a value
+    # outside this set would silently no-op (fall back to the 1.0 multiplier)
+    # when schedule_interrupts consumes genre_density.
+    valid = {"calm", "standard", "dense"}
+    for vt, profile in prompts.GENRE_PROFILES.items():
+        density = profile.get("interrupt_density")
+        if density is not None:
+            assert density in valid, f"{vt}: unexpected interrupt_density {density!r}"
+
+
 # --- authoring path -----------------------------------------------------------
 
 def test_author_via_plan_keyless_produces_valid_edl(monkeypatch):

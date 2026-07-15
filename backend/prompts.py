@@ -42,6 +42,7 @@ EDIT_FORMATS = {
         "label": "Talking head",
         "style": "talking_head",
         "toggles": {"broll": False, "punch_ins": True, "music": False},
+        "default_theme": "clean_creator",   # A7
         "brief_hint": (
             "Classic talking-head cut: tight filler trims, open on the strongest hook, "
             "punch-ins on emphasized lines, captions carry the words."),
@@ -50,6 +51,7 @@ EDIT_FORMATS = {
         "label": "Talking head + B-roll",
         "style": "broll_cutaway",
         "toggles": {"broll": True, "punch_ins": True, "music": False},
+        "default_theme": "clean_creator",   # A7
         "brief_hint": (
             "Talking head with b-roll cutaways: find 3-5 broll_moments on concrete visual "
             "nouns/actions (roughly one every 4-6s); the hook and CTA stay on the creator's face."),
@@ -58,6 +60,7 @@ EDIT_FORMATS = {
         "label": "Recap with music",
         "style": "fast_cuts",
         "toggles": {"broll": False, "punch_ins": False, "music": True},
+        "default_theme": "energetic_pop",   # A7
         "brief_hint": (
             "Music-forward montage recap: keep ONLY the strongest beats as hard cuts (aim for "
             "5-8 short segments), kill every slow moment, energy reads high, captions carry the "
@@ -70,6 +73,7 @@ EDIT_FORMATS = {
         # a faceless recap with no face, no b-roll and no bed is a dead frame + dry VO
         # (viral_editing doctrine). The bed ducks hard under the narration.
         "toggles": {"broll": True, "punch_ins": False, "music": True},
+        "default_theme": "faceless_explainer",   # A7
         "brief_hint": (
             "Voiceover recap: the creator's voice narrates over the footage. Keep the narration "
             "continuous and clean (cut only flubs/fillers — never mid-sentence), let the visuals "
@@ -875,6 +879,49 @@ CUT_REASONS = ["filler", "dead_air", "flub", "ramble", "tangent"]
 EDIT_STRATEGIES = ["trim_only", "restructure"]
 STYLE_KEYS = list(STYLES.keys())
 
+# A9 (superintelligence epic): genre-conditioned planning. The edit brief's
+# video_type is already piped into edit_plan_prompt (below) — this maps each
+# type to qualitative guidance injected as prompt TEXT (the LLM plan author's
+# own editorial judgment), plus the one field (interrupt_density) that also
+# has a mechanical retention-hint counterpart (merged in main.py's
+# _extract_plan_retention_hints, UNDER the LLM's own choice and the active
+# theme's density — see that function). Every key maps to a COMPLETE (possibly
+# empty) profile — reaction/other are intentionally {} (duet grammar / no
+# strong genre signal), never a missing key.
+GENRE_PROFILES: dict[str, dict] = {
+    "freestyle_rant":        {"interrupt_density": "dense",    "broll": "light",  "caption_bias": "karaoke",  "pace": "aggressive"},
+    "listicle":              {"interrupt_density": "standard", "broll": "medium", "caption_bias": "bold-word", "transition_at": "list_beats"},
+    # "calm" (not "sparse") deliberately — matches the mechanical vocabulary
+    # _DENSITY_MULT (app/retention.py) actually understands; "sparse" would
+    # silently no-op there (unknown key -> the 1.0/"standard" fallback).
+    "tutorial":               {"interrupt_density": "calm",     "broll": "heavy",  "caption_bias": "clean",    "pace": "calm"},
+    "story":                 {"interrupt_density": "standard", "broll": "light",  "caption_bias": "clean",    "pace": "builds"},
+    "scripted_talking_head": {"interrupt_density": "standard", "broll": "medium", "caption_bias": "phrase",   "pace": "standard"},
+    "reaction": {},   # duet grammar untouched — the reacted-to clip owns pacing/energy
+    "other": {},
+}
+
+
+def _genre_profile_block(video_type: str) -> str:
+    """A9: 2-3 lines of qualitative guidance for the LLM plan author, or ''
+    when the video_type is unknown/empty/has no strong genre signal (reaction/
+    other) — an empty return means edit_plan_prompt adds nothing, so a take
+    with no detected genre reads identically to before A9."""
+    profile = GENRE_PROFILES.get(video_type) or {}
+    if not profile:
+        return ""
+    bits = []
+    if profile.get("pace"):
+        bits.append(f"pace reads {profile['pace']}")
+    if profile.get("interrupt_density"):
+        bits.append(f"default interrupt density {profile['interrupt_density']}")
+    if profile.get("broll"):
+        bits.append(f"{profile['broll']} b-roll usage")
+    if profile.get("caption_bias"):
+        bits.append(f"captions lean {profile['caption_bias']}")
+    return (f"GENRE ({video_type}): this content type typically wants " + ", ".join(bits) +
+           " — a starting point, not a rule; override it when the actual take calls for something else.")
+
 EDIT_BRIEF_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["video_type", "is_scripted", "through_line", "hook_candidates",
@@ -1044,14 +1091,18 @@ EDIT_PLAN_JSON_SCHEMA = {
 def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, brand: dict,
                      brief: dict | None = None, dossier: dict | None = None,
                      emphasis_spans: list | None = None, custom_instructions: str = "",
-                     reference: dict | None = None, video_type: str = "") -> tuple[str, str]:
+                     reference: dict | None = None, video_type: str = "",
+                     theme_label: str = "", theme_blurb: str = "") -> tuple[str, str]:
     """P3.1: ask the model for a typed EDIT PLAN (not an EDL). The assembler owns all
     mechanics (captions, filler drops, b-roll grammar, min-clip, layout); the model owns
     the editorial JUDGMENT (what to open on, what to cut and why, order, where punch-ins /
-    b-roll / text cards go, caption + music intent)."""
+    b-roll / text cards go, caption + music intent). `theme_label`/`theme_blurb` (A7) and
+    `video_type` (A9) are plain strings, not the Theme/GENRE_PROFILES objects themselves —
+    keeps this module decoupled from app.themes (main.py resolves both before calling)."""
     last_frame = ms_to_frame(max((w.get("end_ms", 0) for w in transcript_words), default=30000)) \
         if transcript_words else 30000
-    kb_block = _kb.digest(style, video_type or (brief or {}).get("video_type", ""), "edit_plan")
+    resolved_video_type = video_type or (brief or {}).get("video_type", "")
+    kb_block = _kb.digest(style, resolved_video_type, "edit_plan")
     brief_line = f"\nEDIT BRIEF (your editorial guide):\n{json.dumps(brief)[:2500]}\n" if brief else ""
     dossier_block = _dossier_block(dossier)
     dossier_line = f"\n{dossier_block}\n" if dossier_block else ""
@@ -1059,6 +1110,16 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
     ref_line = f"\n{ref_block}\n" if ref_block else ""
     emph_line = f"\nHigh-emphasis regions (good punch-in targets): {_span_lines(emphasis_spans)}\n" if emphasis_spans else ""
     custom_line = f"\nCREATOR'S CUSTOM INSTRUCTIONS (honor verbatim): {custom_instructions}\n" if custom_instructions else ""
+    # A7: the active style bundle — captions/grade/music/interrupt defaults are
+    # already handled in code (apply_theme + the retention passes' theme
+    # threading); this line just keeps the LLM's OWN choices (hook_text,
+    # interrupt_density, music) consistent with that bundle's identity.
+    theme_line = (f"\nTHEME: this edit uses the \"{theme_label}\" bundle — {theme_blurb} "
+                 f"Choose hook_text, interrupt_density, and music consistent with it "
+                 f"(the code already applies the bundle's captions/grade/interrupt mechanics; "
+                 f"your job is to keep your OWN editorial choices from clashing with it).\n"
+                 if theme_label else "")
+    genre_line = f"\n{_genre_profile_block(resolved_video_type)}\n" if resolved_video_type else ""
     system = (
         "You are an elite short-form editor. Output a typed EDIT PLAN as JSON — DECISIONS ONLY, not an EDL. "
         "The assembler turns your plan into the final cut, so you never write caption arrays, filler drops, or "
@@ -1092,7 +1153,7 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
     )
     user = (
         f"{brand_block(brand)}\nStyle: {style}\nSource last frame: {last_frame} (30fps)."
-        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}\n"
+        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}{theme_line}{genre_line}\n"
         f"Frame-anchored transcript:\n{_frame_anchored_transcript(transcript_words)}\n\n"
         "Produce the edit plan JSON."
     )
