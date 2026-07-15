@@ -2227,6 +2227,50 @@ def _format_example_reels(fmt: str, niche: str) -> list[dict]:
     return out
 
 
+# The "match a vibe" picker is a STYLE chooser, not a reel-to-copy chooser. These are the
+# theme bundles offered, ordered most-broadly-useful first. faceless_explainer is omitted
+# — it's a voiceover-recap treatment, not a talking-head editing style.
+_STYLE_GALLERY_ORDER = ["clean_creator", "hormozi_punch", "energetic_pop",
+                        "docu_calm", "premium_brand"]
+
+
+@app.get("/v1/styles")
+async def styles_gallery(niche: str = ""):
+    """The "match a vibe" picker: choose an EDITING STYLE, illustrated by a real, playable
+    talking-head reel so the creator can feel the energy before picking. Selecting one sends
+    `theme_id` to POST /v1/clips, which actually drives the edit (apply_theme + the retention
+    passes keyed off the theme). The demo reel is illustrative ONLY — it is never mimicked,
+    and it need not match the creator's niche. Demos are talking-head, playable, and distinct
+    per style where the cache allows; when no live reels exist we return the styles with no
+    demo (sample:true) rather than a fake video."""
+    themes = [themes_mod.get_theme(tid) for tid in _STYLE_GALLERY_ORDER]
+    demos: list[dict] = []
+    if niche:
+        try:
+            key = _niche_cache_key(niche)
+            entry = await _prev_reels_entry(_niche_reels_cache, key)
+            stale = not entry or (time.time() - entry.get("ts", 0)) > _NICHE_REELS_TTL_S
+            if stale and APIFY_KEY and key not in _reels_refreshing:
+                _reels_refreshing.add(key)
+                _spawn(_refresh_niche_reels(niche))
+            reels = (entry or {}).get("reels") or []
+            demos = [r for r in reels if r.get("video_url") and _is_talking_head_reel(r)]
+            demos.sort(key=lambda r: -(r.get("views") or 0))
+        except Exception:
+            demos = []
+    out = []
+    for i, th in enumerate(themes):
+        demo = demos[i % len(demos)] if demos else None
+        out.append({
+            "theme_id": th.id, "label": th.label, "blurb": th.blurb,
+            "video_url": (demo or {}).get("video_url", ""),
+            "thumbnail_url": (demo or {}).get("thumbnail_url", ""),
+            "handle": (demo or {}).get("creator_handle", ""),
+            "sample": demo is None,
+        })
+    return {"mode": "live" if demos else "mock", "styles": out}
+
+
 @app.get("/v1/reels/examples")
 async def reels_examples(format: str = "talking_head", niche: str = ""):
     """UX-A2: example reels for one edit format — what the creator's cut could feel
@@ -3380,6 +3424,8 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip.pop("error_detail", None)
             clip.pop("last_render_error", None)          # G-05: a good render clears the flag
             clip["last_render_failed"] = False
+            # Refresh the poster for the new cut (the old thumbnail is now stale).
+            _spawn(_attach_poster(job.get("job_id", ""), clip, render_url, my_gen))
             # A tweak (e.g. a fresh cut) can newly straddle an existing duet react
             # window, which build_render_plan then silently drops — this only
             # surfaces here (not in _run_pipeline's one-time check) since it's a
@@ -4917,6 +4963,53 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     return None
 
 
+async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | None:
+    """Extract a single poster frame from the finished render and host it, so Library
+    cards have a real thumbnail instead of a gray placeholder. ffmpeg range-reads the
+    remote mp4 (fast keyframe seek at ~0.6s to skip a black first frame) — no full
+    download. Fully fail-soft: any missing binary / bad frame / upload failure returns
+    None and the card just keeps its play-icon placeholder. Never raises."""
+    if not render_url or shutil.which("ffmpeg") is None:
+        return None
+    if not (SUPABASE_URL and SUPABASE_KEY):
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            out_path = os.path.join(td, "poster.jpg")
+            args = ["ffmpeg", "-y", "-ss", "0.6", "-i", render_url,
+                    "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4",
+                    "-f", "image2", out_path]
+            p = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await asyncio.wait_for(p.communicate(), timeout=45)
+            if p.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                return None
+            with open(out_path, "rb") as f:
+                data = f.read()
+        base = SUPABASE_URL.rstrip("/")
+        key = f"posters/{job_id}-{clip_id}.jpg"
+        async with httpx.AsyncClient(timeout=45) as c:
+            up = await c.post(
+                f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
+                headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
+                         "Content-Type": "image/jpeg", "x-upsert": "true"},
+                content=data)
+        if 200 <= up.status_code < 300:
+            return f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
+    except Exception as e:
+        logging.info("[poster] failed for job=%s clip=%s: %s", job_id, clip_id, e)
+    return None
+
+
+async def _attach_poster(job_id: str, clip: dict, render_url: str, my_gen: int) -> None:
+    """Fire-and-forget: generate + attach a poster without delaying the clip's 'ready'
+    transition. Re-checks render ownership before writing so a newer render's poster
+    isn't clobbered by a stale one."""
+    url = await _generate_poster(render_url, job_id, clip.get("clip_id", "c"))
+    if url and _is_current_render(clip, my_gen):
+        clip["thumbnail_url"] = url
+
+
 async def _render_all_clips(job_id: str) -> None:
     """Render every non-ready clip from job['edl']. Per-clip isolation: one clip's
     failure marks THAT clip failed (with a structured code) and the others continue.
@@ -4984,6 +5077,9 @@ async def _render_all_clips(job_id: str) -> None:
             if _is_current_render(clip, my_gen):
                 clip["render_url"] = render_url
                 clip["status"] = "ready"
+                # Poster for the Library card — fire-and-forget so it never delays 'ready';
+                # iOS picks up clip["thumbnail_url"] on its next poll.
+                _spawn(_attach_poster(job_id, clip, render_url, my_gen))
         except PipelineError as e:
             if _is_current_render(clip, my_gen):
                 _fail_clip(clip, e.code, e.detail)
@@ -7334,6 +7430,22 @@ def _emulatable_rank(reel: dict) -> tuple[int, int]:
     return (tier, 0 if reel.get("transcribed") else 1)
 
 
+# The app edits talking-head content; a montage / faceless-voiceover reel can't be
+# mimicked into a talking-head cut, so it has no business in the "steal these" surfaces.
+_TALKING_HEAD_FORMATS = {"talking_head", "talking_head_broll"}
+
+
+def _is_talking_head_reel(reel: dict) -> bool:
+    """HARD filter for recommended/mimic reels: keep only a person-talking-to-camera reel
+    (with or without b-roll cutaways). A served reel usually carries `edit_format`; when
+    it doesn't, fall back to the free heuristic. Excludes recap_music/recap_voiceover and
+    anything the heuristic reads as a montage."""
+    ef = reel.get("edit_format") or ""
+    if not ef:
+        ef = _classify_edit_format(reel)[0]
+    return ef in _TALKING_HEAD_FORMATS
+
+
 def _talking_head_first(posts: list[dict]) -> None:
     """Stable-sort scraped POSTS talking-head-first (heuristic or carried-forward dossier
     classification) so the per-cycle enrichment budgets — transcription top-N, rehost
@@ -7889,9 +8001,12 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
             if r["id"] not in seen:
                 seen.add(r["id"])
                 corpus.append(r)
-        # Emulatability ordering: talking-head reels (with real spoken words first) lead
-        # every page; montages/voiceovers sink to the tail. Stable — watched-before-niche
-        # and views order survive within each tier.
+        # HARD talking-head filter: this app mimics talking-head content, so a montage or
+        # faceless-voiceover reel can't be turned into a cut the creator could make —
+        # exclude them entirely (not just rank them down). Then order the survivors
+        # talking-head-with-transcript first. Keep a watched reel even if unclassifiable
+        # (the creator explicitly follows them) so the "watched" row never empties.
+        corpus = [r for r in corpus if _is_talking_head_reel(r) or r.get("from_watched")]
         corpus.sort(key=_emulatable_rank)
         mode = "live"
     else:
