@@ -909,6 +909,36 @@ def _get_anthropic_client() -> httpx.AsyncClient:
     return _anthropic_client
 
 
+_SCHEMA_STRIPPED_ONCE = False
+
+
+def _sanitize_schema(node):
+    """Recursively strip JSON-schema keywords that native Structured Outputs rejects
+    with a 400 (array length bounds): maxItems always, and minItems when it isn't 0/1.
+    These are enforced in code at every call site, so dropping them changes no behavior
+    except turning a silent hard failure into a working call. Logs once per process the
+    first time it strips something, so a reintroduced keyword is at least visible."""
+    global _SCHEMA_STRIPPED_ONCE
+    if isinstance(node, dict):
+        out = {}
+        for k, v in node.items():
+            if k == "maxItems":
+                if not _SCHEMA_STRIPPED_ONCE:
+                    logging.warning("[schema] stripped unsupported keyword %r for structured outputs", k)
+                    _SCHEMA_STRIPPED_ONCE = True
+                continue
+            if k == "minItems" and v not in (0, 1):
+                if not _SCHEMA_STRIPPED_ONCE:
+                    logging.warning("[schema] stripped unsupported %r=%r for structured outputs", k, v)
+                    _SCHEMA_STRIPPED_ONCE = True
+                continue
+            out[k] = _sanitize_schema(v)
+        return out
+    if isinstance(node, list):
+        return [_sanitize_schema(x) for x in node]
+    return node
+
+
 async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int = 3000,
                     temperature: float | None = None, schema: dict | None = None) -> str:
     delays = [0.5, 2.0, 8.0]
@@ -921,7 +951,12 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
         # Native Structured Outputs (GA): the model's text is guaranteed to be valid
         # JSON conforming to `schema`. No beta header; works with anthropic-version
         # 2023-06-01. https://platform.claude.com/docs/en/build-with-claude/structured-outputs
-        body["output_config"] = {"format": {"type": "json_schema", "schema": schema}}
+        # Defensive sanitize: Structured Outputs rejects array-length bounds other than
+        # 0/1 (minItems) and maxItems entirely with a hard 400. A single such keyword
+        # buried in a schema silently 400'd the whole edit-plan call and degraded every
+        # edit to the default cut. Strip the unsupported keywords (the corresponding
+        # shape checks live in code) so no future schema edit can resurrect that class.
+        body["output_config"] = {"format": {"type": "json_schema", "schema": _sanitize_schema(schema)}}
     for attempt, delay in enumerate(delays + [None]):
         try:
             client = _get_anthropic_client()
@@ -953,7 +988,15 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                     jitter = delay * 0.2 * (random.random() * 2 - 1)
                     await asyncio.sleep(delay + jitter)
                     continue
-            raise HTTPException(status_code=502, detail=f"upstream {r.status_code}")
+            # Non-retryable (400/401/403/404/...): log the API's error body — a bare
+            # "upstream 400" hid a schema-rejection that silently killed edit authoring.
+            _errbody = ""
+            try:
+                _errbody = r.text[:300]
+            except Exception:
+                pass
+            logging.warning("anthropic: non-retryable %d for %s: %s", r.status_code, model, _errbody)
+            raise HTTPException(status_code=502, detail=f"upstream {r.status_code}: {_errbody}")
         # httpx.HTTPError is the transport base (Timeout/Connect/Read/RemoteProtocol/Pool);
         # catching only Timeout/Connect let a mid-stream ReadError escape the route degrades.
         except httpx.HTTPError as e:
@@ -4212,7 +4255,13 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
                 theme_label=_theme_for_plan.label if _theme_for_plan else "",
                 theme_blurb=_theme_for_plan.blurb if _theme_for_plan else "")
             plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
-        except HTTPException:
+        except HTTPException as e:
+            # NEVER swallow silently: a swallowed HTTPException here (e.g. a schema the
+            # structured-outputs API rejects with a 400) degrades EVERY edit to the
+            # untailored safe-default cut with no trace. Log so the "all edits look
+            # generic" symptom is diagnosable from Render logs.
+            logging.warning("[plan-author] authoring call failed (%s) → safe default cut",
+                            getattr(e, "detail", e))
             plan = {}
     if not isinstance(plan, dict):
         plan = {}
