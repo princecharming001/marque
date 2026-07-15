@@ -861,6 +861,20 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
     }
 
+    /// Fire-and-forget client-failure breadcrumb → Render logs. Client-side breakages
+    /// (upload dying between mint and job creation) previously left ZERO server trace
+    /// and were undiagnosable from logs. Never blocks; never throws; safe pre-deploy
+    /// (a 404 from an older backend is ignored).
+    func reportClientEvent(_ event: String, detail: String = "") {
+        Task.detached(priority: .utility) { [weak self] in
+            _ = await self?.post("/v1/telemetry/client", [
+                "event": event, "detail": String(detail.prefix(300)),
+                "creator_id": self?.creatorId ?? "unknown",
+                "build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?",
+            ])
+        }
+    }
+
     /// I-2/I-8: fire-and-forget Today's-picks feedback → the backend learning loop.
     /// 404-tolerant (older backends), so it's safe to call before the endpoint deploys.
     func sendFeedFeedback(script: Script, niche: String, verdict: String) async {

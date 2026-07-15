@@ -126,3 +126,12 @@ def test_broll_styles_empty_pool_returns_samples(monkeypatch):
     assert body["mode"] == "mock"
     assert len(body["styles"]) == 4
     assert all(s["sample"] for s in body["styles"])
+
+
+def test_client_telemetry_endpoint_logs_and_never_fails():
+    r = client.post("/v1/telemetry/client", json={"event": "upload_failed",
+                                                  "detail": "http 413 | 92MB",
+                                                  "creator_id": "c1", "build": "29"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # junk-tolerant: missing fields still 200 (breadcrumbs must never error)
+    assert client.post("/v1/telemetry/client", json={}).status_code == 200

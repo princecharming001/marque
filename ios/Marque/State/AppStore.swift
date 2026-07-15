@@ -775,6 +775,10 @@ final class AppStore {
         clips.removeAll { $0.id == placeholderId }
         guard let resp, let stubs = resp.clips, !stubs.isEmpty else {
             // Submit failed — surface a failed card the creator can retry, never a silent drop.
+            // Breadcrumb → Render logs (client-side failures here previously left no trace).
+            backend.reportClientEvent("instant_submit_failed",
+                                      detail: resp == nil ? "upload or create-job returned nil"
+                                                          : "create-job returned no clips")
             var failed = Clip(id: placeholderId, scriptId: script.id, formatId: script.formatId,
                               formatName: Catalog.format(script.formatId).name,
                               title: script.title.isEmpty ? script.hook.text : script.title,
