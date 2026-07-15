@@ -51,7 +51,45 @@ extension ProEditorView {
         if let all = await store.backend.editorCapabilities() { caps = all[doc.style] }
         captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
         await MusicCatalog.hydrate(using: store.backend)   // show the same beds the render uses
+        // A7/#8: the active theme (if EDIT_THEMES produced one) + report card fields —
+        // all optional, absent-safe (older jobs / EDIT_THEMES off never carry them).
+        activeThemeId = result["theme_id"] as? String ?? ""
+        selfReview = result["self_review"] as? [String: Any]
+        lint = result["lint"] as? [String: Any]
+        if themes.isEmpty { themes = await store.backend.fetchThemes() }
         phase = .editing
+    }
+
+    // MARK: A7 feature #1 — retheme (a SEPARATE endpoint from /tweak: it only
+    // restamps caption/grade/duck, never touches segments/drops/overlays, so it
+    // skips the local op-log entirely and re-renders directly).
+
+    func retheme(to themeId: String) {
+        guard let jobId = clip.jobId, rethemeTask == nil, applyTask == nil else { return }
+        phase = .applying
+        rethemeTask = Task {
+            let resp = await store.backend.rethemeClip(jobId: jobId, themeId: themeId, clipId: clip.id.uuidString)
+            if resp["error"] as? Bool == true {
+                if resp["transient"] as? Bool == true {
+                    phase = .editing; rethemeTask = nil
+                    flash(resp["reply"] as? String ?? "Still busy — try again."); return
+                }
+                phase = .editing; rethemeTask = nil
+                flash(resp["reply"] as? String ?? "Couldn't switch themes."); return
+            }
+            activeThemeId = resp["theme_id"] as? String ?? themeId
+            let rendering = resp["rendering"] as? [String] ?? []
+            if !rendering.isEmpty {
+                phase = .rendering; renderStartedAt = Date(); store.setClipRendering(clip.id)
+                let (ready, message) = await pollClipUntilDone(jobId: jobId)
+                guard !Task.isCancelled else { return }
+                rethemeTask = nil
+                if ready { await load() } else { phase = .failed(message ?? "Couldn't finish that render.") }
+            } else {
+                rethemeTask = nil
+                phase = .editing   // keyless/mock, or nothing needed re-rendering
+            }
+        }
     }
 
     // MARK: gesture → op helpers (one gesture = one perform() = one undo step)
@@ -889,6 +927,33 @@ extension ProEditorView {
                 }
             }.navigationTitle("Add sound").navigationBarTitleDisplayMode(.inline)
         }.presentationDetents([.medium])
+    }
+
+    /// A7 feature #1: the style-bundle picker. Tapping a theme calls the SEPARATE
+    /// /retheme endpoint (not a tweak op) — it never touches the local op log,
+    /// since it only restamps caption/grade/duck and re-renders directly.
+    var themeSheet: some View {
+        NavigationStack {
+            List {
+                ForEach(themes) { t in
+                    Button {
+                        showThemeSheet = false
+                        retheme(to: t.id)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(t.label).font(.system(size: 15, weight: .semibold))
+                                if t.id == activeThemeId {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.accent)
+                                }
+                            }
+                            Text(t.blurb).font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .accessibilityIdentifier("editorPro.theme.\(t.id)")
+                }
+            }.navigationTitle("Theme").navigationBarTitleDisplayMode(.inline)
+        }.presentationDetents([.medium, .large])
     }
 }
 

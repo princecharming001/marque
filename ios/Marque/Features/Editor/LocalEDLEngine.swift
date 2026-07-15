@@ -41,7 +41,8 @@ struct WireOp: Equatable {
                                posY: Double? = nil, scale: Double? = nil,
                                accent: String? = nil, uppercase: Bool? = nil,
                                font: String? = nil, grouping: String? = nil,
-                               highlightWords: [String]? = nil) -> WireOp {
+                               highlightWords: [String]? = nil,
+                               strokePx: Double? = nil) -> WireOp {
         var s: [String: String] = [:]
         if let position { s["position"] = position }
         if let size { s["size"] = size }
@@ -51,6 +52,7 @@ struct WireOp: Equatable {
         var d: [String: Double] = [:]
         if let posY { d["pos_y"] = posY }
         if let scale { d["scale"] = scale }
+        if let strokePx { d["stroke_px"] = strokePx }   // A2: Hormozi-style thick outline
         var b: [String: Bool] = [:]
         if let uppercase { b["uppercase"] = uppercase }
         var op = WireOp(type: "set_caption_options", d: d, s: s, bool: b)
@@ -205,8 +207,9 @@ enum LocalEDLEngine {
             if let v = op.s["size"] { guard ["small", "medium", "large"].contains(v) else { return nil }; o.size = v; o.scale = nil; changed = true }
             if let v = op.d["pos_y"] { o.posY = min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, v)); changed = true }
             if let v = op.d["scale"] { o.scale = min(2.0, max(0.5, v)); changed = true }
-            if let v = op.s["font"] { guard ["inter", "archivo", "baloo"].contains(v) else { return nil }; o.font = v; changed = true }
+            if let v = op.s["font"] { guard ["inter", "archivo", "baloo", "montserrat", "anton"].contains(v) else { return nil }; o.font = v; changed = true }
             if let v = op.s["grouping"] { guard ["word", "phrase", "line"].contains(v) else { return nil }; o.grouping = v; changed = true }
+            if let v = op.d["stroke_px"] { o.strokePx = min(20.0, max(0.0, v)); changed = true }
             if let v = op.s["accent"] {
                 if v == "default" { o.accent = nil; changed = true }
                 else {
