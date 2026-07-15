@@ -1222,6 +1222,13 @@ class TweakRequest(BaseModel):
     ops: list[dict] = []
 
 
+class RethemeRequest(BaseModel):
+    """A7 feature #1: switch a finished clip's style bundle. clip_id="" retargets
+    every clip on the job (the common case — most jobs have exactly one)."""
+    theme_id: str = ""
+    clip_id: str = ""
+
+
 class MediaAnalyzeRequest(BaseModel):
     content_hash: str          # SHA-256 of file bytes (dedup key)
     filename: str = "asset"
@@ -2726,6 +2733,16 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         out["toggles"] = job.get("toggles") or _default_toggles(job["edit_brief"], job.get("edit_format", ""))
     if job.get("edit_format"):
         out["edit_format"] = job["edit_format"]
+    # #8 AI report card: surface whatever the pipeline already computed — the
+    # active theme, the self-review vision score/issues, and the deterministic
+    # lint scoreboard. All three are None/absent-safe (a job that never ran
+    # self-review, e.g. keyless, simply omits that key rather than faking one).
+    if job.get("theme_id"):
+        out["theme_id"] = job["theme_id"]
+    if job.get("self_review"):
+        out["self_review"] = job["self_review"]
+    if job.get("lint"):
+        out["lint"] = job["lint"]
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint
         # is polled every 5s; the manual editor is the only caller that needs them.
@@ -3151,6 +3168,50 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
             # carries only result stubs) so "Apply" can re-submit them deterministically
             # via the direct-ops path. Additive; empty on non-preview turns.
             "ops": edit_ops if preview_requested else []}
+
+
+@app.post("/v1/clips/{job_id}/retheme")
+async def retheme_clip(job_id: str, req: RethemeRequest):
+    """A7 feature #1 ("Change theme"): force-restamp a finished clip's caption
+    style/options/grade/duck to a DIFFERENT bundle and re-render. Cheap and
+    safe relative to a full re-edit — it only overwrites the theme-owned
+    fields (never segments/drops/overlays/broll), via apply_theme(force=True),
+    then re-renders through the exact same path a manual tweak does."""
+    job = _clip_jobs.get(job_id) or await _restore_clip_job(job_id)
+    if job is None:
+        _raise_job_not_found(job_id)
+    theme = themes_mod.get_theme(req.theme_id)
+    if req.theme_id and theme.id != req.theme_id:
+        raise HTTPException(status_code=422, detail=f"unknown theme '{req.theme_id}'")
+    targets = ([c for c in job["clips"] if c["clip_id"].lower() == req.clip_id.lower()]
+              if req.clip_id else job["clips"])
+    if not targets:
+        raise HTTPException(status_code=404, detail="clip_not_found")
+    if not job.get("edl"):
+        raise HTTPException(status_code=409, detail="no_edl")
+    if any(c.get("status") == "rendering" for c in targets) or \
+            job["status"] in ("transcribing", "analyzing", "processing", "editing", "rendering"):
+        raise HTTPException(status_code=409, detail="render_in_progress")
+
+    job["edl_history"].append(copy.deepcopy(job["edl"]))
+    del job["edl_history"][:-25]
+    job["edl"] = themes_mod.apply_theme(job["edl"], theme, force=True)
+    job["theme_id"] = theme.id
+
+    can_render = bool(REMOTION_SERVE_URL and REMOTION_ACCESS_KEY and REMOTION_FUNCTION_NAME)
+    rendering: list[str] = []
+    if job["status"] == "ready" and can_render:
+        for clip in targets:
+            if clip.get("status") == "rendering":
+                continue
+            clip["status"] = "rendering"
+            clip["render_started_at"] = time.time()
+            my_gen = _bump_render_gen(clip)
+            _spawn(_rerender_clip(job_id, clip["clip_id"], my_gen))
+            rendering.append(clip["clip_id"])
+    _spawn(_persist_clip_job(job_id))
+    return {"theme_id": theme.id, "rethemed_clips": [c["clip_id"] for c in targets],
+            "rendering": rendering, "undo_available": bool(job["edl_history"])}
 
 
 def _mark_tweak_render_failed(job: dict, clip: dict, err: str) -> None:

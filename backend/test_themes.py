@@ -107,6 +107,28 @@ def test_apply_theme_does_not_clobber_already_set_caption_option_fields():
     assert out["caption_options"]["stroke_px"] == 10        # unset — theme fills it in
 
 
+# --- force=True (the "Change theme" retheme action on an ALREADY-finished clip) ---
+
+def test_apply_theme_force_overwrites_previously_stamped_fields():
+    # Simulate a clip already carrying hormozi_punch's stamped values.
+    edl = _base_edl(theme_id="hormozi_punch", caption_style="bold-word",
+                    caption_options={"font": "anton", "uppercase": True, "stroke_px": 10},
+                    look={"filter": "vivid", "intensity": 0.7, "adjust": {}})
+    out = themes_mod.apply_theme(edl, themes_mod.get_theme("docu_calm"), force=True)
+    assert out["theme_id"] == "docu_calm"
+    assert out["caption_style"] == "clean"
+    assert out["caption_options"]["font"] == "inter"
+    assert out["look"]["filter"] == "warm"
+
+
+def test_apply_theme_force_still_ignores_creator_prefs_by_design():
+    # force is for an EXPLICIT theme-switch action — it intentionally does NOT
+    # consult prefs (the whole point is the creator just asked for this).
+    out = themes_mod.apply_theme(_base_edl(caption_style="clean"), themes_mod.get_theme("hormozi_punch"),
+                                 prefs={"caption_style": "karaoke"}, force=True)
+    assert out["caption_style"] == "bold-word"
+
+
 def test_apply_theme_stamps_look_when_absent():
     out = themes_mod.apply_theme(_base_edl(), themes_mod.get_theme("hormozi_punch"))
     assert out["look"]["filter"] == "vivid"

@@ -726,6 +726,80 @@ def test_get_clip_job_include_words():
 
 
 # ---------------------------------------------------------------------------
+# A7 feature #1 — POST /v1/clips/{job_id}/retheme
+# ---------------------------------------------------------------------------
+
+def test_retheme_restamps_caption_style_and_look():
+    job_id = seed_clip_job(source_url="mock://source")
+    out = client.post(f"/v1/clips/{job_id}/retheme", json={"theme_id": "hormozi_punch"}).json()
+    assert out["theme_id"] == "hormozi_punch"
+    edl = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert edl["caption_style"] == "bold-word"
+    assert edl["caption_options"]["font"] == "anton"
+    assert edl["look"]["filter"] == "vivid"
+    assert edl["theme_id"] == "hormozi_punch"
+
+
+def test_retheme_twice_actually_switches_look_each_time():
+    # force=True must let a SECOND retheme override the FIRST theme's own
+    # stamped values — this is the regression this whole force flag exists for.
+    job_id = seed_clip_job(source_url="mock://source")
+    client.post(f"/v1/clips/{job_id}/retheme", json={"theme_id": "hormozi_punch"})
+    out2 = client.post(f"/v1/clips/{job_id}/retheme", json={"theme_id": "docu_calm"})
+    assert out2.json()["theme_id"] == "docu_calm"
+    edl = client.get(f"/v1/clips/{job_id}").json()["edl"]
+    assert edl["caption_style"] == "clean"
+    assert edl["look"]["filter"] == "warm"
+
+
+def test_retheme_unknown_theme_id_422():
+    job_id = seed_clip_job(source_url="mock://source")
+    r = client.post(f"/v1/clips/{job_id}/retheme", json={"theme_id": "not-a-theme"})
+    assert r.status_code == 422
+
+
+def test_retheme_empty_theme_id_falls_back_to_clean_creator():
+    job_id = seed_clip_job(source_url="mock://source")
+    r = client.post(f"/v1/clips/{job_id}/retheme", json={})
+    assert r.status_code == 200
+    assert r.json()["theme_id"] == "clean_creator"
+
+
+def test_retheme_job_not_found_404():
+    r = client.post("/v1/clips/does-not-exist/retheme", json={"theme_id": "hormozi_punch"})
+    assert r.status_code == 404
+
+
+def test_retheme_records_undo_history():
+    job_id = seed_clip_job(source_url="mock://source")
+    before = len(main._clip_jobs[job_id]["edl_history"])
+    client.post(f"/v1/clips/{job_id}/retheme", json={"theme_id": "hormozi_punch"})
+    assert len(main._clip_jobs[job_id]["edl_history"]) == before + 1
+
+
+# ---------------------------------------------------------------------------
+# #8 AI report card — GET /v1/clips/{job_id} surfaces theme_id/self_review/lint
+# ---------------------------------------------------------------------------
+
+def test_report_card_fields_absent_when_never_computed():
+    job_id = seed_clip_job(source_url="mock://source")
+    out = client.get(f"/v1/clips/{job_id}").json()
+    assert "self_review" not in out
+    assert "lint" not in out
+    assert "theme_id" not in out
+
+
+def test_report_card_surfaces_theme_self_review_and_lint():
+    job_id = seed_clip_job(source_url="mock://source", theme_id="hormozi_punch",
+                           self_review={"score": 82, "issues": ["static open"]},
+                           lint={"errors": 1, "warns": 2, "codes": ["static_window"]})
+    out = client.get(f"/v1/clips/{job_id}").json()
+    assert out["theme_id"] == "hormozi_punch"
+    assert out["self_review"] == {"score": 82, "issues": ["static open"]}
+    assert out["lint"] == {"errors": 1, "warns": 2, "codes": ["static_window"]}
+
+
+# ---------------------------------------------------------------------------
 # E11: EDL model extensions — segment_order + audio round-trip
 # ---------------------------------------------------------------------------
 

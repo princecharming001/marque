@@ -150,27 +150,31 @@ def get_theme(theme_id: str | None) -> Theme:
     return THEMES.get(theme_id or "", THEMES[DEFAULT_THEME_ID])
 
 
-def apply_theme(edl: dict, theme: Theme, prefs: dict | None = None) -> dict:
-    """A7: stamp the theme's caption/grade/music choices onto the EDL as
-    DEFAULTS. Precedence: creator prefs (explicit per-request toggles in
-    `prefs`) > theme > whatever the author path already defaulted to (e.g.
-    assemble_edl's own "clean"/no-grade/no-music fallbacks) — those fall
-    under "style defaults" in the plan's own precedence language, which a
-    theme is allowed to override. Writes `edl["theme_id"]` so downstream
-    passes/the report card know which bundle produced this take."""
+def apply_theme(edl: dict, theme: Theme, prefs: dict | None = None, force: bool = False) -> dict:
+    """A7: stamp the theme's caption/grade/music choices onto the EDL.
+    Default (force=False) precedence: creator prefs (explicit per-request
+    toggles in `prefs`) > theme > whatever the author path already defaulted
+    to (e.g. assemble_edl's own "clean"/no-grade/no-music fallbacks) — those
+    fall under "style defaults" in the plan's own precedence language, which a
+    theme is allowed to override. force=True (the "Change theme" action on an
+    ALREADY-FINISHED clip) always overwrites the theme-owned fields — a
+    creator who explicitly picks a different bundle expects it to actually
+    switch the look, not silently no-op because the previous theme already
+    filled those same keys. Writes `edl["theme_id"]` so downstream passes/the
+    report card know which bundle produced this take."""
     edl = copy.deepcopy(edl)
     prefs = prefs or {}
     edl["theme_id"] = theme.id
 
-    if prefs.get("caption_style") is None:
+    if force or prefs.get("caption_style") is None:
         edl["caption_style"] = theme.caption.get("style", edl.get("caption_style", "clean"))
     cur_opts = dict(edl.get("caption_options") or {})
     for k, v in (theme.caption.get("options") or {}).items():
-        if cur_opts.get(k) is None:
+        if force or cur_opts.get(k) is None:
             cur_opts[k] = v
     edl["caption_options"] = cur_opts
 
-    if not (edl.get("look") or {}).get("filter"):
+    if force or not (edl.get("look") or {}).get("filter"):
         edl["look"] = theme.grade
 
     # NOTE: theme.music's vibe/volume are NOT applied here — actual track
@@ -183,7 +187,7 @@ def apply_theme(edl: dict, theme: Theme, prefs: dict | None = None) -> dict:
     # writer anywhere in the authoring pipeline, independent of which track
     # (if any) _apply_plan_music_vibe ends up selecting.
     audio = dict(edl.get("audio") or {"lufs_target": -14.0})
-    if audio.get("duck") is None and theme.music.get("duck"):
+    if (force or audio.get("duck") is None) and theme.music.get("duck"):
         audio["duck"] = theme.music["duck"]
         edl["audio"] = audio
 
