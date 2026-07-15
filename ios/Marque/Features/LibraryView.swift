@@ -1,16 +1,6 @@
 import SwiftUI
 import PhotosUI
 
-/// H10: short, human-readable labels for the backend's raw warning strings
-/// (F6 "broll_unresolved: <query>", F13 "ai_edit_unavailable: <reason>").
-/// Unknown/future warning types degrade to a generic label rather than
-/// showing raw backend internals.
-func warningChipLabel(_ raw: String) -> String {
-    if raw.hasPrefix("broll_unresolved") { return "B-roll skipped" }
-    if raw.hasPrefix("ai_edit_unavailable") { return "Used a default cut" }
-    if raw.hasPrefix("react_window_dropped") { return "A reaction clip was skipped" }
-    return "Heads up — check this clip"
-}
 
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
@@ -257,6 +247,21 @@ struct ClipDetailSheet: View {
         return nil
     }
 
+    /// A custom, on-brand action pill (Share / Delete) — GhostButton's card look at a
+    /// compact height, tintable so Delete reads destructive.
+    private func clipActionLabel(_ title: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: Space.xs) {
+            Image(systemName: systemImage).font(.system(size: 14, weight: .medium))
+            Text(title).font(AppFont.callout)
+        }
+        .foregroundStyle(tint)
+        .frame(maxWidth: .infinity).frame(height: 46)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -328,29 +333,6 @@ struct ClipDetailSheet: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("clip.tweakAffordance")
                     }
-                    HStack(spacing: Space.sm) {
-                        FormatTag(formatId: clip.formatId)
-                        Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        Spacer()
-                    }
-
-                    // H10: non-fatal warnings (F6 unresolved b-roll, F13
-                    // safe-default-cut fallback) — surfaces independent of
-                    // status, since a "ready" clip can still be quietly
-                    // missing a feature the creator asked for.
-                    if !isDraft, let warnings = current.warnings, !warnings.isEmpty {
-                        HStack(spacing: Space.xs) {
-                            ForEach(Array(Set(warnings.map(warningChipLabel))).sorted(), id: \.self) { label in
-                                Label(label, systemImage: "info.circle")
-                                    .font(AppFont.micro).foregroundStyle(Palette.textSecondary)
-                                    .padding(.horizontal, Space.sm).padding(.vertical, 4)
-                                    .background(Palette.surfaceRaised)
-                                    .clipShape(Capsule())
-                            }
-                        }
-                        .accessibilityIdentifier("clip.warnings")
-                    }
-
                     // Failed render → tell the creator WHY + let them retry (the
                     // backend still holds the source + EDL). No more silent spin.
                     if !isDraft, current.status == .failed {
@@ -380,6 +362,25 @@ struct ClipDetailSheet: View {
                             showEditor = true
                         }
                         .accessibilityIdentifier("clip.editManual")
+                    }
+
+                    // Custom Share / Delete actions — first-class, on-brand pills instead of
+                    // a buried Apple-native ellipsis menu.
+                    if !isDraft {
+                        HStack(spacing: Space.sm) {
+                            if let shareURL {
+                                ShareLink(item: shareURL) {
+                                    clipActionLabel("Share", systemImage: "square.and.arrow.up",
+                                                    tint: Palette.textPrimary)
+                                }
+                                .accessibilityIdentifier("clip.share")
+                            }
+                            Button { showDelete = true } label: {
+                                clipActionLabel("Delete", systemImage: "trash", tint: Palette.critical)
+                            }
+                            .buttonStyle(PressableStyle(dim: 0.7))
+                            .accessibilityIdentifier("clip.delete")
+                        }
                     }
 
                     if isDraft {
@@ -416,13 +417,8 @@ struct ClipDetailSheet: View {
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle(isDraft ? "Draft" : "Clip").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Menu {
-                        if !isDraft, let shareURL { ShareLink(item: shareURL) { Label("Share / Export", systemImage: "square.and.arrow.up") } }
-                        Button(role: .destructive) { showDelete = true } label: { Label("Delete clip", systemImage: "trash") }
-                    } label: { Image(systemName: "ellipsis.circle") }
-                    .accessibilityIdentifier("clip.menu")
-                }
+                // Share + Delete moved to custom in-body pills (clip.share / clip.delete);
+                // the native ellipsis menu is gone.
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") {
                         if !isDraft { store.updateClipCaption(clip, caption: caption) }

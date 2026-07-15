@@ -19,7 +19,12 @@ struct RecordView: View {
     @State private var restartToken = 0
     @State private var recordStart: Date?
     @State private var footagePath: String?
-    @State private var pickedItem: PhotosPickerItem?
+    @State private var pickedItems: [PhotosPickerItem] = []
+    // Import progress while picked videos load off the Photos library (large videos take
+    // several seconds each) — without this the UI looked frozen on the record screen.
+    @State private var isImporting = false
+    @State private var importDone = 0
+    @State private var importTotal = 0
     // duet_split only: the clip the creator is reacting to (pasted URL).
     @State private var reactSourceURL: String = ""
     // Mutable copy so inline teleprompter edits flow through without modifying the store mid-take.
@@ -115,44 +120,107 @@ struct RecordView: View {
             }
             .padding(Space.lg)
         }
+        .overlay { if isImporting { importingOverlay } }
         .onAppear { camera.configure() }
         .onDisappear {
             camera.teardown()
             submitTask?.cancel()      // AF-I3
             submitTask = nil
         }
-        .onChange(of: pickedItem) { _, item in
-            guard let item else { return }
-            Task {
-                // H-04: a failed import used to jump to .recorded with NO footage —
-                // creating a doomed byte-less live job. Surface it and stay .ready.
-                // File-URL transfer first (streams to disk — real library videos are
-                // hundreds of MB and Data-transfer gets memory-killed, which was why
-                // "upload existing video" failed on anything but tiny clips); Data is
-                // kept only as a fallback for odd providers without a file rep.
-                var savedPath: String?
-                if let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
-                    let ext = picked.url.pathExtension.isEmpty ? "mov" : picked.url.pathExtension
-                    savedPath = MediaStore.saveFile(from: picked.url, ext: ext)
-                    try? FileManager.default.removeItem(at: picked.url)
-                } else if let data = try? await item.loadTransferable(type: Data.self) {
-                    savedPath = MediaStore.save(data, ext: "mov")
-                }
-                guard let savedPath else {
-                    importError = "Couldn't load that video — try a different one."
-                    pickedItem = nil
-                    phase = .ready
-                    return
-                }
-                importError = nil
-                footagePath = savedPath
-                // AF-I7: reset so re-picking the SAME video after Re-record fires
-                // onChange again (equal PhotosPickerItems don't).
-                pickedItem = nil
-                phase = .recorded
-                beginUpload()      // H-02: start the upload while the creator reviews
-            }
+        .onChange(of: pickedItems) { _, items in
+            guard !items.isEmpty else { return }
+            let picked = items
+            // Reset so re-picking the SAME video (equal PhotosPickerItems don't re-fire
+            // onChange) works after a Re-record.
+            pickedItems = []
+            Task { await handlePickedVideos(picked) }
         }
+    }
+
+    @ViewBuilder private var importingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.72).ignoresSafeArea()
+            VStack(spacing: Space.md) {
+                ProgressView().tint(.white).scaleEffect(1.3)
+                Text(importTotal > 1 ? "Importing \(min(importDone + 1, importTotal)) of \(importTotal)…"
+                                     : "Importing video…")
+                    .font(AppFont.headline).foregroundStyle(.white)
+                Text("Keep the app open — larger videos take a moment.")
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.65))
+            }
+            .padding(Space.xl)
+        }
+        .transition(.opacity)
+        .accessibilityIdentifier("record.importing")
+    }
+
+    /// Import one picked video into the app container. File-URL transfer first (streams to
+    /// disk — real library videos are hundreds of MB and a Data transfer gets memory-killed);
+    /// Data is the fallback for odd providers with no file rep. Returns the saved path or nil.
+    private func importOne(_ item: PhotosPickerItem) async -> String? {
+        if let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
+            let ext = picked.url.pathExtension.isEmpty ? "mov" : picked.url.pathExtension
+            let p = MediaStore.saveFile(from: picked.url, ext: ext)
+            try? FileManager.default.removeItem(at: picked.url)
+            return p
+        } else if let data = try? await item.loadTransferable(type: Data.self) {
+            return MediaStore.save(data, ext: "mov")
+        }
+        return nil
+    }
+
+    /// A fresh freestyle placeholder script for an uploaded video (mirrors the init seed).
+    private func freestyleTakeScript() -> Script {
+        Script(pillarName: "Freestyle", title: "Uploaded video", summary: "Imported footage",
+               style: VideoStyle.talkingHead.rawValue, formatId: "myth-buster",
+               hook: Hook(text: "Uploaded video", signal: .narrative, strength: 70),
+               altHooks: [], body: "", cta: "", shotPlan: [], targetSeconds: 60, predictedScore: 70)
+    }
+
+    private func handlePickedVideos(_ items: [PhotosPickerItem]) async {
+        importError = nil
+        importTotal = items.count
+        importDone = 0
+        isImporting = true
+        defer { isImporting = false }
+
+        // Single video → the review flow (style picker, toggles) as before.
+        if items.count == 1 {
+            if let path = await importOne(items[0]) {
+                importDone = 1
+                importError = nil
+                footagePath = path
+                phase = .recorded
+                beginUpload()          // start the upload while the creator reviews
+            } else {
+                importDone = 1
+                importError = "Couldn't load that video — try a different one."
+                phase = .ready
+            }
+            return
+        }
+
+        // Multiple videos → each becomes its own freestyle clip, submitted to the queue.
+        // The store owns each upload → create-job → reconcile, so leaving the screen never
+        // cancels them; Library shows one "Uploading…" card per video.
+        var failures = 0
+        for item in items {
+            if let path = await importOne(item) {
+                store.addFootage(path: path, scriptId: liveScript.id, title: "Uploaded video", seconds: 60)
+                store.submitTakeInstant(script: freestyleTakeScript(), footagePath: path,
+                                        isFreestyle: true, customInstructions: customInstructions,
+                                        reactSourceURL: "", editFormat: editFormat.rawValue,
+                                        referenceReel: nil, themeId: selectedThemeId,
+                                        toggles: editFormat.defaultToggles)
+            } else {
+                failures += 1
+            }
+            importDone += 1
+        }
+        if failures > 0 { importError = "\(failures) of \(items.count) couldn't be imported." }
+        dismiss()
+        router.selectedTab = .library
+        router.showFilm = false
     }
 
     @ViewBuilder private var background: some View {
@@ -217,7 +285,7 @@ struct RecordView: View {
                 }
                 speedControl
                 recordButton { startRecording() }
-                PhotosPicker(selection: $pickedItem, matching: .videos) {
+                PhotosPicker(selection: $pickedItems, maxSelectionCount: 10, matching: .videos) {
                     Label("Upload existing video", systemImage: "square.and.arrow.up")
                         .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
                 }
@@ -302,7 +370,12 @@ struct RecordView: View {
                             }
                             briefToggleRow("Background music", isOn: $briefToggles.music)
                         }
-                        TextField("Anything specific? (optional)", text: $customInstructions, axis: .vertical)
+                        // prompt: gives the placeholder a legible color — the plain title
+                        // form renders it in system gray, unreadable on the dark overlay.
+                        TextField("", text: $customInstructions,
+                                  prompt: Text("Anything specific? (optional)")
+                                    .foregroundColor(.white.opacity(0.6)),
+                                  axis: .vertical)
                             .font(AppFont.callout).foregroundStyle(.white)
                             .lineLimit(1...3)
                             .padding(Space.md)

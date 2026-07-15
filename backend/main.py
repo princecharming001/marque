@@ -2244,23 +2244,43 @@ async def styles_gallery(niche: str = ""):
     per style where the cache allows; when no live reels exist we return the styles with no
     demo (sample:true) rather than a fake video."""
     themes = [themes_mod.get_theme(tid) for tid in _STYLE_GALLERY_ORDER]
-    demos: list[dict] = []
+    # Demos are GENERAL talking heads — pooled across EVERY cached niche + watched creator,
+    # not just this creator's niche (styles are a stylistic choice, not niche-relevant). Each
+    # style gets a DISTINCT demo (no modulo repeat) so the options feel different; when the
+    # pool runs dry the remaining styles are honest samples (no fake video).
+    pool: list[dict] = []
+    seen_ids: set = set()
+    seen_handles: set = set()
+    try:
+        for entry in list(_niche_reels_cache.values()) + list(_watched_reels_cache.values()):
+            for r in (entry.get("reels") or []):
+                if not (r.get("video_url") and _is_talking_head_reel(r)):
+                    continue
+                rid = r.get("id")
+                handle = (r.get("creator_handle") or "").lower()
+                if rid in seen_ids or (handle and handle in seen_handles):
+                    continue     # dedupe by reel AND creator so styles don't twin
+                seen_ids.add(rid)
+                if handle:
+                    seen_handles.add(handle)
+                pool.append(r)
+    except Exception:
+        pool = []
+    # Durable (Supabase-hosted) URLs first — they don't 403 like raw CDN links — then views.
+    _sb = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
+    pool.sort(key=lambda r: (0 if (r.get("video_url") or "").startswith(_sb) else 1,
+                             -(r.get("views") or 0)))
+    # Warm this niche's cache so the pool keeps filling over time (still useful cross-niche).
     if niche:
-        try:
-            key = _niche_cache_key(niche)
-            entry = await _prev_reels_entry(_niche_reels_cache, key)
-            stale = not entry or (time.time() - entry.get("ts", 0)) > _NICHE_REELS_TTL_S
-            if stale and APIFY_KEY and key not in _reels_refreshing:
-                _reels_refreshing.add(key)
-                _spawn(_refresh_niche_reels(niche))
-            reels = (entry or {}).get("reels") or []
-            demos = [r for r in reels if r.get("video_url") and _is_talking_head_reel(r)]
-            demos.sort(key=lambda r: -(r.get("views") or 0))
-        except Exception:
-            demos = []
+        key = _niche_cache_key(niche)
+        entry = _niche_reels_cache.get(key)
+        stale = not entry or (time.time() - entry.get("ts", 0)) > _NICHE_REELS_TTL_S
+        if stale and APIFY_KEY and key not in _reels_refreshing:
+            _reels_refreshing.add(key)
+            _spawn(_refresh_niche_reels(niche))
     out = []
     for i, th in enumerate(themes):
-        demo = demos[i % len(demos)] if demos else None
+        demo = pool[i] if i < len(pool) else None      # distinct per style, no wrap
         out.append({
             "theme_id": th.id, "label": th.label, "blurb": th.blurb,
             "video_url": (demo or {}).get("video_url", ""),
@@ -2268,7 +2288,7 @@ async def styles_gallery(niche: str = ""):
             "handle": (demo or {}).get("creator_handle", ""),
             "sample": demo is None,
         })
-    return {"mode": "live" if demos else "mock", "styles": out}
+    return {"mode": "live" if pool else "mock", "styles": out}
 
 
 @app.get("/v1/reels/examples")
@@ -7423,11 +7443,14 @@ _EDIT_FORMAT_RANK = {"talking_head": 0, "talking_head_broll": 1,
                      "recap_voiceover": 2, "recap_music": 3}
 
 
-def _emulatable_rank(reel: dict) -> tuple[int, int]:
-    """Sort key for a SERVED reel dict: talking-head first, and within a tier the ones
-    with a real spoken transcript (words the creator can actually mimic) first."""
+def _emulatable_rank(reel: dict) -> tuple[int, int, int]:
+    """Sort key for a SERVED reel dict: talking-head first; then durable (Supabase-hosted)
+    video before raw CDN — a durable URL keeps playing where a CDN link 403s (static-card
+    bug); then a real spoken transcript (words the creator can mimic) first."""
     tier = _EDIT_FORMAT_RANK.get(reel.get("edit_format") or "", 1)
-    return (tier, 0 if reel.get("transcribed") else 1)
+    _sb = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
+    durable = 0 if (reel.get("video_url") or "").startswith(_sb) else 1
+    return (tier, durable, 0 if reel.get("transcribed") else 1)
 
 
 # The app edits talking-head content; a montage / faceless-voiceover reel can't be
@@ -8006,7 +8029,10 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
         # exclude them entirely (not just rank them down). Then order the survivors
         # talking-head-with-transcript first. Keep a watched reel even if unclassifiable
         # (the creator explicitly follows them) so the "watched" row never empties.
-        corpus = [r for r in corpus if _is_talking_head_reel(r) or r.get("from_watched")]
+        # PLAYABILITY: never serve a card that can only ever be a static thumbnail — a reel
+        # with no video_url isn't "steal-able," it's just a picture. Require a video_url.
+        corpus = [r for r in corpus
+                  if r.get("video_url") and (_is_talking_head_reel(r) or r.get("from_watched"))]
         corpus.sort(key=_emulatable_rank)
         mode = "live"
     else:

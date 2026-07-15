@@ -566,7 +566,8 @@ def test_reels_endpoint_hydrates_from_supabase_on_cold_miss(monkeypatch):
     key = main._niche_cache_key("fitness")
     reel = main._reel_from_post(
         {"author": "c", "platform": "instagram", "views": 50000, "likes": 9,
-         "caption": "cap", "transcript": "spoken", "posted_at": "t1"},
+         "caption": "cap", "transcript": "spoken", "posted_at": "t1",
+         "video_url": "http://cdn/v.mp4"},   # playable — /v1/reels now drops video-less cards
         "c", "instagram", 0, False)
     fake = _FakeReelsPersistence({key: {"reels": [reel], "ts": main.time.time()}})
     monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
