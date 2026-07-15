@@ -63,7 +63,14 @@ final class ChatStore {
     /// The user attached video(s) + (optionally) an instruction and wants them
     /// edited. Appends the user turn + a live ClipEditCard, then runs the
     /// stitch → upload → analyze → edit pipeline, updating the card in place.
-    func sendClips(_ items: [PhotosPickerItem], instruction raw: String, store: AppStore) {
+    /// Edit attached clips from chat. `config`/`toggles`/`editFormat`/`reactSourceURL`
+    /// give chat the SAME steering as the record flow (composition style, b-roll/punch/
+    /// music toggles, cut treatment, react source) — so a creator who'd rather upload than
+    /// record on the spot gets the same fully-edited output. Defaults reproduce the old
+    /// behavior (server-inferred toggles, no composition override).
+    func sendClips(_ items: [PhotosPickerItem], instruction raw: String, store: AppStore,
+                   config: [String: String]? = nil, toggles: EditToggles? = nil,
+                   editFormat: String = "", reactSourceURL: String = "") {
         guard !items.isEmpty, !isStreaming else { return }
         let instruction = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         chips = []
@@ -88,7 +95,9 @@ final class ChatStore {
         let picked = Array(items.prefix(4))
         inFlight = Task {
             await runEditClips(items: picked, instruction: instruction,
-                               cardId: card.id, convoId: convoId, store: store)
+                               cardId: card.id, convoId: convoId, store: store,
+                               config: config, toggles: toggles,
+                               editFormat: editFormat, reactSourceURL: reactSourceURL)
         }
     }
 
@@ -103,7 +112,9 @@ final class ChatStore {
     }
 
     private func runEditClips(items: [PhotosPickerItem], instruction: String,
-                              cardId: UUID, convoId: UUID, store: AppStore) async {
+                              cardId: UUID, convoId: UUID, store: AppStore,
+                              config: [String: String]? = nil, toggles chosenToggles: EditToggles? = nil,
+                              editFormat: String = "", reactSourceURL: String = "") async {
         defer { isStreaming = false; streamingConversationId = nil }
         func fail(_ why: String) {
             // Breadcrumb → Render logs: this path used to fail with zero server trace.
@@ -137,7 +148,9 @@ final class ChatStore {
         }
         guard !Task.isCancelled else { return }
 
-        // 4) A minimal script carries the user's instruction into the edit.
+        // 4) A minimal script carries the user's instruction into the edit. When the
+        // creator picked a cut treatment in the config sheet, honor it; otherwise fall
+        // back to their preferred style.
         let style = store.brand.preferredStyles.first ?? .talkingHead
         let script = Script(
             pillarName: "Your clips", title: instruction.isEmpty ? "Your edit" : String(instruction.prefix(40)),
@@ -147,10 +160,13 @@ final class ChatStore {
             altHooks: [], body: instruction, cta: "",
             shotPlan: [], targetSeconds: 30, predictedScore: 70)
 
-        // 5) Analyze → brief.
+        // 5) Analyze → brief. Thread the creator's chosen composition style + toggles +
+        // cut treatment + react source through, exactly like the record flow does.
         updateCard(cardId, in: convoId, store: store) { $0.stage = .analyzing }
         guard let job = await store.backend.createAnalyzeJob(
-                sourceURL: sourceURL, script: script, customInstructions: instruction),
+                sourceURL: sourceURL, script: script, customInstructions: instruction,
+                reactSourceURL: reactSourceURL, editFormat: editFormat,
+                config: config, toggles: chosenToggles),
               !job.jobId.isEmpty else {
             return fail("Couldn't start the edit — try again in a moment.")
         }
@@ -159,8 +175,9 @@ final class ChatStore {
         if brief?.status == "failed" { return fail("The edit couldn't be planned from that footage.") }
 
         // 6) Confirm → render (confirmClips inserts the tracked clip + polls + streak).
+        // Creator-chosen toggles win over the server-inferred ones.
         updateCard(cardId, in: convoId, store: store) { $0.stage = .editing }
-        let toggles = brief?.toggles ?? job.toggles ?? EditToggles()
+        let toggles = chosenToggles ?? brief?.toggles ?? job.toggles ?? EditToggles()
         let before = Set(store.clips.map { $0.id })
         await store.confirmClips(jobId: job.jobId, script: script, toggles: toggles,
                                  customInstructions: instruction, footagePath: footagePath)

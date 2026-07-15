@@ -15,6 +15,8 @@ struct ChatView: View {
     @State private var showAttach = false
     @State private var showClipPicker = false        // W5: PhotosPicker for "edit my clips"
     @State private var pickedClips: [PhotosPickerItem] = []
+    @State private var editItems: [PhotosPickerItem] = []   // held while the config sheet is up
+    @State private var showEditConfig = false
     @State private var speech = SpeechRecognizer()    // C-10: chat dictation
     @State private var dictating = false
     @State private var peekedScript: Script?          // I-1: chat card → full reader
@@ -97,10 +99,21 @@ struct ChatView: View {
                       maxSelectionCount: 4, matching: .videos)
         .onChange(of: pickedClips) { _, items in
             guard !items.isEmpty else { return }
-            let instruction = trimmedDraft
-            draft = ""
-            chat.sendClips(items, instruction: instruction, store: store)
+            // Parity with the record flow: configure the edit (composition style, toggles,
+            // instruction, react source) before it runs, instead of firing with defaults.
+            editItems = Array(items.prefix(4))
             pickedClips = []
+            showEditConfig = true
+        }
+        .sheet(isPresented: $showEditConfig) {
+            ChatEditConfigSheet(clipCount: editItems.count, initialInstruction: trimmedDraft) {
+                config, toggles, editFormat, instruction, reactSourceURL in
+                draft = ""
+                chat.sendClips(editItems, instruction: instruction, store: store,
+                               config: config, toggles: toggles,
+                               editFormat: editFormat, reactSourceURL: reactSourceURL)
+                editItems = []
+            }
         }
         .onChange(of: draft) { _, newValue in
             if !newValue.isEmpty { chat.chips = [] }   // chips dismiss when the user types
