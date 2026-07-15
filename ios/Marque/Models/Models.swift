@@ -279,35 +279,31 @@ enum VideoStyle: String, CaseIterable, Codable, Identifiable {
 // The submit-time CUT TREATMENT — how the editor should cut the take, distinct from
 // the script style (what was filmed). Mirrors backend prompts.EDIT_FORMATS: the choice
 // pins the engine style end to end (inference never overrides it).
+// Marque is a TALKING-HEAD editor. Only the two talking-head treatments are offered;
+// the recap (music/voiceover) formats were removed from the product. The backend still
+// accepts recap_music/recap_voiceover for wire compatibility with older clients, but
+// this app never sends them.
 enum EditFormat: String, CaseIterable, Codable, Identifiable {
     case talkingHead = "talking_head"
     case talkingHeadBroll = "talking_head_broll"
-    case recapMusic = "recap_music"
-    case recapVoiceover = "recap_voiceover"
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .talkingHead: return "Talking head"
         case .talkingHeadBroll: return "Talking head + B-roll"
-        case .recapMusic: return "Recap with music"
-        case .recapVoiceover: return "Recap with voiceover"
         }
     }
     var blurb: String {
         switch self {
         case .talkingHead: return "Tight cuts, punch-ins, captions."
         case .talkingHeadBroll: return "Cutaways on your key words."
-        case .recapMusic: return "Montage on a track — hard cuts."
-        case .recapVoiceover: return "Your voice narrates the footage."
         }
     }
     var icon: String {
         switch self {
         case .talkingHead: return "person.wave.2"
         case .talkingHeadBroll: return "photo.on.rectangle.angled"
-        case .recapMusic: return "music.note"
-        case .recapVoiceover: return "waveform"
         }
     }
     /// The engine style this treatment renders with (mirrors the backend mapping).
@@ -315,16 +311,14 @@ enum EditFormat: String, CaseIterable, Codable, Identifiable {
         switch self {
         case .talkingHead: return "talking_head"
         case .talkingHeadBroll: return "broll_cutaway"
-        case .recapMusic: return "fast_cuts"
-        case .recapVoiceover: return "faceless"
         }
     }
-    /// Best default given the script's style lane (freestyle/empty → talking head).
+    /// Best default given the script's style lane. Recap/faceless/fast-cuts scripts map to
+    /// the closest talking-head treatment (b-roll-forward for faceless), since recap
+    /// formats are no longer offered. Freestyle/empty → talking head.
     static func inferred(fromScriptStyle style: String) -> EditFormat {
         switch style {
-        case "broll_cutaway": return .talkingHeadBroll
-        case "faceless": return .recapVoiceover
-        case "fast_cuts": return .recapMusic
+        case "broll_cutaway", "faceless": return .talkingHeadBroll
         default: return .talkingHead
         }
     }
@@ -332,15 +326,11 @@ enum EditFormat: String, CaseIterable, Codable, Identifiable {
     /// UX-B1b: this treatment's default toggles — MUST MIRROR backend
     /// prompts.EDIT_FORMATS[*]["toggles"] exactly. The client SENDS these on submit and
     /// the backend honors explicit toggles over its own defaults, so drift here DOES
-    /// change the edit. recap_voiceover (faceless) previously drifted to broll:false,
-    /// music:false → the footage renders at opacity 0 with no b-roll = a black screen +
-    /// captions, no bed. A faceless recap is voiceover OVER visuals: b-roll + music ON.
+    /// change the edit.
     var defaultToggles: EditToggles {
         switch self {
         case .talkingHead:      return EditToggles(broll: false, punchIns: true,  music: false)
         case .talkingHeadBroll: return EditToggles(broll: true,  punchIns: true,  music: false)
-        case .recapMusic:       return EditToggles(broll: false, punchIns: false, music: true)
-        case .recapVoiceover:   return EditToggles(broll: true,  punchIns: false, music: true)
         }
     }
 }

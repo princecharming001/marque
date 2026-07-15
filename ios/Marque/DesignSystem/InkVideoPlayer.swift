@@ -81,10 +81,13 @@ private struct InkPlayerLayerHost: UIViewRepresentable {
 struct InkVideoPlayer: View {
     @StateObject private var model: InkPlayerModel
     var showsMute: Bool
+    var cornerRadius: CGFloat
 
-    init(url: URL, loops: Bool = false, startMuted: Bool = false, showsMute: Bool = true) {
+    init(url: URL, loops: Bool = false, startMuted: Bool = false, showsMute: Bool = true,
+         cornerRadius: CGFloat = Radius.lg) {
         _model = StateObject(wrappedValue: InkPlayerModel(url: url, loops: loops, muted: startMuted))
         self.showsMute = showsMute
+        self.cornerRadius = cornerRadius
     }
 
     @State private var chromeVisible = true
@@ -153,6 +156,9 @@ struct InkVideoPlayer: View {
             }
         }
         .background(Color.black)
+        // Built-in rounding so the aspect-fill video surface is always clipped, even
+        // if a caller forgets its own .clipShape (the AVPlayerLayer overdraws its bounds).
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .animation(.easeInOut(duration: 0.2), value: model.isPlaying)
         .animation(.easeInOut(duration: 0.2), value: chromeVisible)
     }
