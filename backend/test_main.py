@@ -5279,9 +5279,9 @@ def test_audio_duck_defaults_none_and_round_trips():
     assert plan2["audio"]["duck"] == {"factor": 0.2, "window_f": 10, "ramp_f": 3}
 
 
-def test_plan_schema_version_is_3():
+def test_plan_schema_version_is_4():
     from app.edl import PLAN_SCHEMA_VERSION
-    assert PLAN_SCHEMA_VERSION == 3
+    assert PLAN_SCHEMA_VERSION == 4
 
 
 def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
@@ -5397,6 +5397,48 @@ def test_filter_and_adjust_compose_in_look():
     assert res[0]["applied"] is False
     _, res = apply_edl_ops(edl, [{"type": "set_adjust"}], [])
     assert res[0]["applied"] is False
+
+
+# A8 (superintelligence epic, schema v4) — whip/zoom_punch transitions, the
+# finishing filter preset, and film grain.
+
+def test_transition_accepts_whip_and_zoom_punch():
+    from app.edl import apply_edl_ops, build_render_plan
+    for style in ("whip", "zoom_punch"):
+        edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_transition", "after_segment": 0,
+                                              "style": style, "frames": 8}], [])
+        assert res[0]["applied"] is True, style
+        plan = build_render_plan(edl)
+        assert plan["transitions"] == [{"at_frame": 300, "style": style, "frames": 8}]
+
+
+def test_set_filter_accepts_finishing_with_grain():
+    from app.edl import apply_edl_ops, build_render_plan
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_filter", "name": "finishing",
+                                          "intensity": 0.8, "grain": 0.3}], [])
+    assert res[0]["applied"] is True
+    look = build_render_plan(edl)["look"]
+    assert look["filter"] == "finishing"
+    assert look["intensity"] == 0.8
+    assert look["grain"] == 0.3
+
+
+def test_set_filter_grain_clamped_and_optional():
+    from app.edl import apply_edl_ops, build_render_plan
+    edl, res = apply_edl_ops(_fp_edl(), [{"type": "set_filter", "name": "finishing", "grain": 5.0}], [])
+    assert res[0]["applied"] is True
+    assert build_render_plan(edl)["look"]["grain"] == 1.0   # clamped ceiling
+    # grain omitted entirely -> stays at the Look default (0.0), no crash
+    edl2, res2 = apply_edl_ops(_fp_edl(), [{"type": "set_filter", "name": "vivid"}], [])
+    assert res2[0]["applied"] is True
+    assert build_render_plan(edl2)["look"]["grain"] == 0.0
+
+
+def test_look_grain_defaults_zero_and_round_trips():
+    from app.edl import EDL, Look
+    assert Look().model_dump()["grain"] == 0.0
+    edl = EDL(**_fp_edl(), look={"filter": "finishing", "grain": 0.5})
+    assert edl.model_dump()["look"]["grain"] == 0.5
 
 
 def test_text_sticker_add_edit_and_render_plan_fields():
