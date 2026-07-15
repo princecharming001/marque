@@ -46,11 +46,16 @@ export interface CaptionOptions {
   scale: number | null;
   accent: string | null;
   uppercase: boolean;
-  font: "inter" | "archivo" | "baloo";
+  font: "inter" | "archivo" | "baloo" | "montserrat" | "anton";
   // word = one word at a time; phrase = ~3-word chunks; line = sliding window (legacy look)
   grouping: "word" | "phrase" | "line";
   // Normalized lowercase words rendered in the accent color (CapCut keyword highlight).
   highlight_words?: string[];
+  // A2 (superintelligence epic, schema v3): all additive/defaulted (0/undefined),
+  // so a plan from a stale backend renders byte-identical.
+  stroke_px?: number;                  // outlined-caption look (Hormozi/Submagic); dual-span, see Captions.tsx
+  sync_lead_frames?: number;           // words appear this many frames BEFORE their spoken start (doctrine: 100-200ms early)
+  highlight_persist_frames?: number;   // karaoke: extend a word's "filled" state this many frames past its end
 }
 
 // Audio plan (output coords for volume_ranges; music plays across the whole output).
@@ -68,7 +73,11 @@ export interface VolumeRange { frame_in: number; frame_out: number; volume: numb
 // output frame + hosted URL by build_render_plan (a cue whose kind had no
 // configured asset, or whose anchor frame got cut, never reaches this list).
 export interface SfxCue { frame: number; kind: string; gain: number; url: string; }
-export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; sfx: SfxCue[]; }
+// A5a (schema v3): optional duck-curve override, read with AudioMix.tsx's own
+// constants as the fallback for any missing field — an absent `duck` (every
+// pre-v3 plan) behaves byte-identically to today.
+export interface DuckParams { factor?: number; window_f?: number; ramp_f?: number; }
+export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; sfx: SfxCue[]; duck?: DuckParams | null; }
 
 // P4: a tail-of-video CTA card. Tail-anchored (not a source-coord remap) —
 // start_frame is where the last kept clip ends, and total_frames on the plan
@@ -102,7 +111,9 @@ export interface RenderPlan {
 // render-plan shape changes so a half-deploy (backend updated, Remotion site stale)
 // surfaces as a logged warning instead of a silently-wrong render.
 // v2 (P4): added end_card, progress_bar, audio.sfx.
-export const PLAN_SCHEMA_VERSION = 2;
+// v3 (A2/A5a, superintelligence epic): added caption_options.stroke_px/
+// sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
+export const PLAN_SCHEMA_VERSION = 3;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a

@@ -21,7 +21,7 @@ export const progressFraction = (frame: number, totalFrames: number): number =>
   totalFrames > 0 ? Math.min(1, Math.max(0, frame / totalFrames)) : 0;
 
 export type CaptionPosition = "top" | "middle" | "bottom";
-export type FontKey = "inter" | "archivo" | "baloo";
+export type FontKey = "inter" | "archivo" | "baloo" | "montserrat" | "anton";
 
 export interface Rect {
   /** Fraction of FRAME_H (0-1). */
@@ -42,6 +42,16 @@ const CHAR_W: Record<string, number> = {
   "inter:600": 0.50, "inter:700": 0.53, "inter:800": 0.56,
   "archivo:400": 0.62,
   "baloo:600": 0.52, "baloo:700": 0.54, "baloo:800": 0.57,
+  // A2 (schema v3): NOT yet calibrated against a rendered probe frame per this
+  // file's own procedure (docs above) — conservative placeholder per that
+  // procedure's own fallback ("start with archivo's values x 1.05"), so
+  // shrink-to-fit errs toward shrinking sooner rather than overflowing until a
+  // real calibration pass lands. Keyed at 700/800 (not 900/400) because those
+  // are the literal weights Captions.tsx's fitTextBlock/boldWordFontSize calls
+  // always pass for text-fit MEASUREMENT, independent of the CSS font-weight
+  // actually painted (weightFor) — matching every other font's entries above.
+  "montserrat:700": 0.65, "montserrat:800": 0.65,
+  "anton:700": 0.65, "anton:800": 0.65,
 };
 
 export function estTextWidth(

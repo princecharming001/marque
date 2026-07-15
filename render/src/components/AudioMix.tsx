@@ -54,21 +54,29 @@ export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
   // just because there's no music track.
   if ((!music || !music.url) && sfx.length === 0) return null;
 
+  // A5a (schema v3): optional per-plan duck-curve override, each field read
+  // independently with the module constant as its fallback — an absent
+  // `audio.duck` (every pre-v3 plan) behaves byte-identically to today.
+  const duck = audio?.duck;
+  const duckWindow = duck?.window_f ?? DUCK_WINDOW;
+  const duckRamp = duck?.ramp_f ?? DUCK_RAMP;
+  const duckFactor = duck?.factor ?? DUCK_FACTOR;
+
   const frames = (audio?.speech_frames ?? []).slice().sort((a, b) => a - b);
-  // Smoothed duck: full duck within DUCK_WINDOW of speech, easing back to full across
-  // DUCK_RAMP frames (instead of the old hard 35%/100% step that pumped on every word).
+  // Smoothed duck: full duck within duckWindow of speech, easing back to full across
+  // duckRamp frames (instead of the old hard 35%/100% step that pumped on every word).
   const duckAt = (f: number): number => {
     if (!music || !music.duck_voice || frames.length === 0) return 1;
     let nearest = Infinity;
     for (const cf of frames) {
       const d = Math.abs(cf - f);
       if (d < nearest) nearest = d;
-      if (cf > f + DUCK_WINDOW + DUCK_RAMP) break;
+      if (cf > f + duckWindow + duckRamp) break;
     }
-    if (nearest <= DUCK_WINDOW) return DUCK_FACTOR;
-    if (nearest >= DUCK_WINDOW + DUCK_RAMP) return 1;
-    const t = (nearest - DUCK_WINDOW) / DUCK_RAMP;   // 0 → ducked, 1 → full
-    return DUCK_FACTOR + (1 - DUCK_FACTOR) * t;
+    if (nearest <= duckWindow) return duckFactor;
+    if (nearest >= duckWindow + duckRamp) return 1;
+    const t = (nearest - duckWindow) / duckRamp;   // 0 → ducked, 1 → full
+    return duckFactor + (1 - duckFactor) * t;
   };
 
   // Composition-level fade in/out so the loop doesn't slam in at 0 or cut off at the end.

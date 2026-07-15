@@ -19,12 +19,51 @@ import {
 test("a realistic long word shrinks to fit the usable width across all fonts and sizes", () => {
   const word = "uncharacteristically"; // 20 chars — long but not pathological
   const usable = LAYOUT.FRAME_W - 120;
+  // NOTE: montserrat/anton are deliberately excluded here — see the dedicated
+  // CHAR_W sanity tests below. Their conservative 0.65 placeholder (real
+  // calibration pending) is wide enough that THIS specific 20-char/1.24x
+  // combination can't reach the usable width even at the shrink floor; the
+  // CSS `overflowWrap: anywhere` belt (Captions.tsx) is what actually
+  // protects a genuinely pathological single "word" in that case, same as
+  // it does for every font today (fitTextBlock's own docs are explicit that
+  // its contract is "shrink as far as the floor allows", not "never overflow").
   for (const font of ["inter", "archivo", "baloo"] as const) {
     for (const mult of [0.78, 1.0, 1.24]) {
       const fs = boldWordFontSize(word, mult, font);
       const w = estTextWidth(word, font, 800, fs, true);
       assert.ok(w <= usable + 1, `${font}@${mult}: width ${w} exceeds usable ${usable}`);
     }
+  }
+});
+
+// A2 (schema v3, superintelligence epic): montserrat/anton CHAR_W sanity — new
+// fonts must resolve to a real calibrated entry (not the 0.55 unknown-font
+// fallback), and estTextWidth must scale sanely with length/size like every
+// other font already covered above.
+test("montserrat and anton resolve to their own CHAR_W entries, not the unknown-font fallback", () => {
+  const unknownFallbackWidth = estTextWidth("hello", "inter" as any, 999, 40);   // sentinel: bogus weight -> 0.55 fallback
+  // 700/800 are the literal weights fitTextBlock/boldWordFontSize actually pass
+  // for text-fit measurement (see layout.ts CHAR_W comment) — not the CSS
+  // font-weight painted on screen.
+  for (const font of ["montserrat", "anton"] as const) {
+    const w700 = estTextWidth("hello", font, 700, 40);
+    const w800 = estTextWidth("hello", font, 800, 40);
+    assert.ok(w700 > 0, `${font} width must be positive`);
+    // both weight keys map to the SAME calibrated placeholder value today —
+    // sanity-checking they're both defined and equal confirms that, rather
+    // than silently falling back to the generic 0.55 default.
+    assert.equal(w700, w800);
+    assert.notEqual(w700, unknownFallbackWidth);
+  }
+});
+
+test("montserrat/anton boldWordFontSize shrinks monotonically like every other font", () => {
+  const word = "extraordinarily-uncharacteristically";
+  for (const font of ["montserrat", "anton"] as const) {
+    const big = boldWordFontSize(word, 1.24, font);
+    const small = boldWordFontSize(word, 0.78, font);
+    assert.ok(small <= big, `${font}: shrink-mult font size should not exceed the larger multiplier's`);
+    assert.ok(big >= 128 * 1.24 * LAYOUT.CAPTION_MIN_SHRINK - 0.01);
   }
 });
 

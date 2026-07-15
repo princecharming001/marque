@@ -1603,7 +1603,7 @@ _TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
 _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
 _TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
-_TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames", "sfx"}
+_TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames", "sfx", "duck"}
 _TS_END_CARD_KEYS = {"text", "start_frame", "frames", "show_handle"}   # P4
 _TS_SFX_KEYS = {"frame", "kind", "gain", "url"}                        # P4
 

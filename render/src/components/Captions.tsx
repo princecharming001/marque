@@ -3,6 +3,8 @@ import { useCurrentFrame } from "remotion";
 import { loadFont as loadInter } from "@remotion/google-fonts/Inter";
 import { loadFont as loadArchivo } from "@remotion/google-fonts/ArchivoBlack";
 import { loadFont as loadBaloo } from "@remotion/google-fonts/Baloo2";
+import { loadFont as loadMontserrat } from "@remotion/google-fonts/Montserrat";
+import { loadFont as loadAnton } from "@remotion/google-fonts/Anton";
 import { CaptionWord, CaptionStyle, CaptionOptions } from "../types";
 import { LAYOUT, karaokePop, fitTextBlock, boldWordFontSize, captionCenterY, clampPosY } from "../layout";
 
@@ -23,21 +25,29 @@ const ACCENT = "#FFD60A";
 const inter = loadFont("inter");
 const archivo = loadFont("archivo");
 const baloo = loadFont("baloo");
+const montserrat = loadFont("montserrat");
+const anton = loadFont("anton");
 
-function loadFont(which: "inter" | "archivo" | "baloo"): string {
+function loadFont(which: CaptionOptions["font"]): string {
   if (which === "archivo") return loadArchivo("normal", { weights: ["400"] }).fontFamily;
   if (which === "baloo") return loadBaloo("normal", { weights: ["600", "700", "800"] }).fontFamily;
+  // A2: Montserrat needs weight 900 for the Hormozi/Submagic bold-caption look.
+  if (which === "montserrat") return loadMontserrat("normal", { weights: ["700", "900"] }).fontFamily;
+  // Anton ships a single 400 weight — asking for anything heavier would trigger
+  // the browser's faux-bold (same reasoning as Archivo Black, see weightFor below).
+  if (which === "anton") return loadAnton("normal", { weights: ["400"] }).fontFamily;
   return loadInter("normal", { weights: ["600", "700", "800"] }).fontFamily;
 }
 
 export const FONTS: Record<CaptionOptions["font"], string> = {
-  inter, archivo, baloo,
+  inter, archivo, baloo, montserrat, anton,
 };
 
 const DEFAULTS: CaptionOptions = {
   position: "bottom", size: "medium", pos_y: null, scale: null,
   accent: null, uppercase: false, font: "inter",
   grouping: "phrase", highlight_words: [],   // P0.7: phrase default (stable 3-word chunks)
+  stroke_px: 0, sync_lead_frames: 0, highlight_persist_frames: 0,   // A2 (schema v3)
 };
 
 const wordEnd = (c: CaptionWord): number => c.end_frame ?? c.frame + LAYOUT.DEFAULT_WORD_FRAMES;
@@ -80,10 +90,10 @@ function groupBounds(
   return { start, end: Math.min(count - 1, start + LAYOUT.LINE_LEN - 1) };
 }
 
-// Archivo Black ships a single 400 weight — asking for 700/800 would trigger
-// the browser's faux-bold and distort the letterforms.
+// Archivo Black and Anton each ship a single 400 weight — asking for 700/800
+// would trigger the browser's faux-bold and distort the letterforms.
 const weightFor = (font: CaptionOptions["font"], w: number): number =>
-  font === "archivo" ? 400 : w;
+  (font === "archivo" || font === "anton") ? 400 : w;
 
 // Captions carry OUTPUT-frame coords (remapped by the backend after cutting), so they
 // render straight against the composition's global useCurrentFrame(). Three looks driven
@@ -96,12 +106,16 @@ export const Captions: React.FC<Props> = ({ captions, style = "clean", options }
   if (captions.length === 0) return null;
 
   const opts: CaptionOptions = { ...DEFAULTS, ...(options ?? {}) };
+  // A2: sync_lead_frames pre-empts the active word by N frames (doctrine:
+  // captions should appear ~100-200ms/3-6f early) — 0 (default) is today's
+  // exact behavior.
+  const leadFrame = frame + (opts.sync_lead_frames ?? 0);
 
   // Active word = last caption whose start frame has passed (manual scan; avoids the
   // ES2023 findLastIndex lib requirement in the render bundle).
   let activeIdx = -1;
   for (let i = 0; i < captions.length; i++) {
-    if (captions[i].frame <= frame) activeIdx = i;
+    if (captions[i].frame <= leadFrame) activeIdx = i;
     else break;
   }
   if (activeIdx < 0) return null;
@@ -149,6 +163,29 @@ const GROUP_USABLE_PX = LAYOUT.FRAME_W - 80;
 // from being clamped as if it were 1 line tall.
 const LINE_HEIGHT_FACTOR = 1.3;
 
+// A2 (schema v3): thick-stroke ("Hormozi"/Submagic outline) caption look. At
+// 8-12px, applying WebkitTextStroke directly on a filled span eats the glyph
+// interior (the stroke draws both inside and outside the glyph edge, and at
+// that width basically overwrites the fill at typical caption sizes) — so a
+// stroke this heavy needs a DUAL SPAN: an absolutely-positioned stroke-only
+// clone (transparent fill, thick stroke) sitting exactly BEHIND a normal,
+// un-stroked fill span. `strokePx` <= 0 renders a plain span (no wrapper, no
+// perf/layout cost) — the default, byte-identical to pre-A2 output.
+const Stroked: React.FC<{ text: string; style: React.CSSProperties; strokePx: number }> =
+  ({ text, style, strokePx }) => {
+  if (!strokePx || strokePx <= 0) return <span style={style}>{text}</span>;
+  return (
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <span style={{ ...style, position: "absolute", left: 0, top: 0,
+                     WebkitTextStroke: `${strokePx}px black`, color: "transparent",
+                     textShadow: "none" }}>
+        {text}
+      </span>
+      <span style={style}>{text}</span>
+    </span>
+  );
+};
+
 const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: CaptionOptions }> =
   ({ captions, activeIdx, opts }) => {
   const { start, end } = groupBounds(opts.grouping, activeIdx, captions.length, 2, 4);
@@ -165,14 +202,14 @@ const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Captio
         const isActive = start + i === activeIdx;
         const hi = isHighlighted(c.word, opts);
         return (
-          <span key={start + i} style={{
+          <Stroked key={start + i} strokePx={opts.stroke_px ?? 0} text={casing(c.word, opts)} style={{
             fontFamily: FONTS[opts.font], fontSize: fit.fontSize,
             fontWeight: weightFor(opts.font, hi ? 800 : 600),
             // Keyword highlight wins; else the accent colors the HOT word; default white.
             color: hi ? highlightColor(opts) : (isActive && opts.accent ? opts.accent : "white"),
             opacity: isActive || hi ? 1 : 0.55,
             textShadow: "0 2px 8px rgba(0,0,0,0.8)",
-          }}>{casing(c.word, opts)}</span>
+          }} />
         );
       })}
     </div>
@@ -182,23 +219,28 @@ const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Captio
 const BoldWord: React.FC<{ word: string; opts: CaptionOptions }> = ({ word, opts }) => {
   const fontSize = boldWordFontSize(word, sizeMult(opts), opts.font);
   const estHeight = fontSize * 1.1;   // single line, tight leading (lineHeight 1.05 below)
+  const strokePx = opts.stroke_px ?? 0;
+  const baseStyle: React.CSSProperties = {
+    fontFamily: FONTS[opts.font], fontSize,
+    fontWeight: weightFor(opts.font, 800), lineHeight: 1.05,
+    color: opts.accent ?? "white", textAlign: "center", textTransform: "uppercase",
+    letterSpacing: opts.font === "archivo" ? 0 : -2,
+    textShadow: "0 4px 20px rgba(0,0,0,0.9)",
+    // A2: a heavy stroke_px (>0) uses the Stroked dual-span technique below
+    // instead of this thin baked-in outline (which is fine at 3px on a single
+    // span, but would eat the interior at Hormozi-scale 8-12px).
+    ...(strokePx > 0 ? {} : { WebkitTextStroke: "3px rgba(0,0,0,0.55)" }),
+    // Belt for a genuinely pathological single "word" the font-shrink floor
+    // alone can't fit (see layout.ts fitTextBlock docs) — wraps mid-word
+    // rather than overflowing the frame.
+    maxWidth: "100%", overflowWrap: "anywhere",
+  };
   return (
     <div style={{
       ...blockPosition(opts, estHeight),
       display: "flex", alignItems: "center", justifyContent: "center", padding: "0 60px",
     }}>
-      <span style={{
-        fontFamily: FONTS[opts.font], fontSize,
-        fontWeight: weightFor(opts.font, 800), lineHeight: 1.05,
-        color: opts.accent ?? "white", textAlign: "center", textTransform: "uppercase",
-        letterSpacing: opts.font === "archivo" ? 0 : -2,
-        textShadow: "0 4px 20px rgba(0,0,0,0.9)",
-        WebkitTextStroke: "3px rgba(0,0,0,0.55)",
-        // Belt for a genuinely pathological single "word" the font-shrink floor
-        // alone can't fit (see layout.ts fitTextBlock docs) — wraps mid-word
-        // rather than overflowing the frame.
-        maxWidth: "100%", overflowWrap: "anywhere",
-      }}>{word}</span>
+      <Stroked text={word} style={baseStyle} strokePx={strokePx} />
     </div>
   );
 };
@@ -221,16 +263,23 @@ const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Capt
         // render (every frame is a fresh paint, nothing to transition FROM) — the old
         // `transform: scale(1.08)` + `transition` snapped invisibly instead of popping.
         // karaokePop computes the ramp per-frame from the active word's own start frame.
-        const pop = idx === activeIdx ? karaokePop(frame, c.frame) : 1;
+        // A2 (schema v3): highlight_persist_frames keeps the PREVIOUS word popped for a
+        // few extra frames after the next one has already gone active — a brief overlap
+        // that reads as less abrupt than an instant handoff. 0 (default) = today's exact
+        // single-active-word behavior.
+        const persist = opts.highlight_persist_frames ?? 0;
+        const isPopping = idx === activeIdx ||
+          (persist > 0 && idx === activeIdx - 1 && frame <= wordEnd(c) + persist);
+        const pop = isPopping ? karaokePop(frame, c.frame) : 1;
         return (
-          <span key={idx} style={{
+          <Stroked key={idx} strokePx={opts.stroke_px ?? 0} text={casing(c.word, opts)} style={{
             fontFamily: FONTS[opts.font], fontSize: fit.fontSize,
             fontWeight: weightFor(opts.font, 700),
             color: spoken ? fill : "white",
             textShadow: "0 2px 8px rgba(0,0,0,0.85)",
             display: "inline-block",
             transform: `scale(${pop})`,
-          }}>{casing(c.word, opts)}</span>
+          }} />
         );
       })}
     </div>
