@@ -1030,7 +1030,12 @@ EDL_JSON_SCHEMA = {
 # Captions are NEVER authored here — the assembler always derives them from the
 # cleaned word list. Every frame the plan cites must exist in its inputs.
 # ---------------------------------------------------------------------------
-_RANGE = {"type": "array", "items": _INT, "minItems": 2, "maxItems": 2}
+# A [start_frame, end_frame] pair. NOTE: no minItems/maxItems here — native
+# Structured Outputs rejects array length bounds other than 0/1 with a hard 400
+# (this exact keyword silently 400'd the entire plan-authoring call, degrading
+# every edit to the safe default cut). The 2-element shape is enforced in code
+# instead: assemble_edl skips any range where len(rng) != 2 (edl.py ~1885).
+_RANGE = {"type": "array", "items": _INT}
 EDIT_PLAN_JSON_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["open_on", "keeps", "cuts", "order", "punch_ins", "broll",
