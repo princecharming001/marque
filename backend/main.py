@@ -42,6 +42,7 @@ from app import higgsfield as higgsfield_mod
 from app import retention as retention_mod
 from app import edit_lint as edit_lint_mod
 from app import themes as themes_mod
+from app import quality_sentry
 import supabase_persistence as sp
 from supabase_persistence import SupabaseClient
 
@@ -276,6 +277,36 @@ async def cron_exemplar(req: _CronRequest):
     return _start_cron("exemplar", lambda: exemplar.run_exemplar_cron(_palo_store, time.time()))
 
 
+async def _quality_cron_generate_fast(creator_id: str, brand: dict, posts: list[dict]) -> list[dict]:
+    """T3: the SAME code path a real feed_fast request hits — _fast_feed_scripts
+    on a ScriptRequest built from the creator's own stored brand+posts."""
+    sreq = ScriptRequest(**_brand_only(brand), pillar="Quality sentry sample",
+                         pillar_summary="Daily production-path sample", pillar_angle="",
+                         style="talking_head", count=3, posts=posts, creator_id=creator_id)
+    res = await _fast_feed_scripts(sreq)
+    return res.get("scripts", [])
+
+
+async def _quality_cron_generate_full(creator_id: str, brand: dict, posts: list[dict]) -> list[dict]:
+    """T3: the full judged /v1/scripts pipeline, same construction as above."""
+    sreq = ScriptRequest(**_brand_only(brand), pillar="Quality sentry sample",
+                         pillar_summary="Daily production-path sample", pillar_angle="",
+                         style="talking_head", count=3, posts=posts, creator_id=creator_id)
+    res = await scripts(sreq)
+    return res.get("scripts", [])
+
+
+@app.post("/internal/cron/quality")
+async def cron_quality(req: _CronRequest):
+    """T3: daily prod-sampling quality cron — re-generates through the real feed_fast
+    (+ one rotating creator/day through the full judged pipeline) for a slice of the
+    real creator roster, scores each batch, and writes a quality_scorecards row per
+    (creator, path). Always on (no flag) — this is testing infra, not a user feature."""
+    _cron_auth(req)
+    return _start_cron("quality", lambda: quality_sentry.run_quality_cron(
+        _palo_store, time.time(), _quality_cron_generate_fast, _quality_cron_generate_full))
+
+
 async def _palo_scheduler():
     """In-process scheduler for the ported sweep jobs (the plan's chosen worker model — no
     separate Render cron services). Each sweep internally skips creators not due per their tier
@@ -294,6 +325,16 @@ async def _palo_scheduler():
                 _start_cron("compile", lambda: strategy_compiler.run_compile_cron(_palo_store, time.time()))
             if palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
                 _start_cron("exemplar", lambda: exemplar.run_exemplar_cron(_palo_store, time.time()))
+            # T3: quality cron is DAILY, not every 6h tick — a watermark (not a flag;
+            # this is always-on testing infra) gates it to once per UTC day, reusing
+            # the same metric_watermarks table every other sweep already uses.
+            import datetime as _dt
+            today_ord = float(_dt.date.today().toordinal())
+            last_day = await _palo_store.get_watermark("_system", "quality_cron_last_day")
+            if last_day is None or last_day < today_ord:
+                _start_cron("quality", lambda: quality_sentry.run_quality_cron(
+                    _palo_store, time.time(), _quality_cron_generate_fast, _quality_cron_generate_full))
+                await _palo_store.set_watermark("_system", "quality_cron_last_day", today_ord)
         except Exception as e:
             logging.warning("[palo_scheduler] tick failed: %s", e)
         await asyncio.sleep(interval)

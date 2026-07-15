@@ -338,3 +338,23 @@ ALTER TABLE creator_posts ENABLE ROW LEVEL SECURITY;
 -- creator's CURRENT brand_hash (creator_profiles) to know if the compiled strategy
 -- predates a brand edit/niche pivot.
 ALTER TABLE channel_strategies ADD COLUMN IF NOT EXISTS brand_hash TEXT DEFAULT '';
+
+-- T3 (superintelligence epic): daily prod-sampling quality cron. One row per
+-- (day, creator, path) sampled — the honest way to know what real creators are
+-- actually seeing, since the feed cache is in-memory and wiped on every deploy.
+CREATE TABLE IF NOT EXISTS quality_scorecards (
+    id                      BIGSERIAL PRIMARY KEY,
+    day                     DATE NOT NULL,
+    creator_id              TEXT NOT NULL,
+    path                    TEXT NOT NULL,
+    n                       INT,
+    gate_pass_rate          FLOAT,
+    speakability_violations INT,
+    relevance_mean          FLOAT,
+    voice_match_mean        FLOAT,
+    judge                   JSONB DEFAULT '{}'::jsonb,
+    breach                  BOOLEAN DEFAULT FALSE,
+    created_at              TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE quality_scorecards ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS quality_scorecards_day_idx ON quality_scorecards (day);

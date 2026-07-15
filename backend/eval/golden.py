@@ -46,6 +46,67 @@ CASES = [
      "style": "green_screen", "count": 2},
 ]
 
+# ---------------------------------------------------------------------------
+# T2 (superintelligence epic) — shared fixtures for eval/path_eval.py's
+# all-paths live scorecard. A richer brand+posts pair than CASES' fixtures
+# (real voice sliders, multiple catchphrases/non_negotiables, and every post
+# carrying BOTH a caption and a spoken transcript — transcripts are what
+# _voice_exemplars/brand_block actually mine for verbatim voice grounding, so
+# a posts fixture missing them can't meaningfully exercise voice_match).
+# ---------------------------------------------------------------------------
+EVAL_BRAND = {
+    "niche": "sustainable fashion for young professionals",
+    "audience": "25-35 year olds building a capsule wardrobe on a budget",
+    "known_for": "thrift-flip styling and cost-per-wear breakdowns",
+    "what_you_do": "help people dress well without buying fast fashion",
+    "goal": "Grow my audience",
+    "voice": {"funnyToSerious": 0.35, "polishedToRaw": 0.6},
+    "non_negotiables": ["haul", "shop my closet clickbait", "guilt-trip the viewer"],
+    "catchphrases": ["cost per wear, not cost per cart", "your closet already has the outfit",
+                     "buy it once, wear it forever", "slow is the new flex"],
+}
+EVAL_POSTS = [
+    {"caption": "This $12 thrift blazer has a lower cost-per-wear than your $80 fast-fashion one.",
+     "transcript": "This blazer cost me twelve dollars at a thrift store two years ago. I've worn it "
+                   "forty-one times. That's thirty cents a wear. Compare that to the eighty dollar "
+                   "blazer sitting in your closet with the tag still on it.",
+     "likes": 41200, "comments": 890},
+    {"caption": "Your closet already has the outfit. You just haven't looked at it sideways yet.",
+     "transcript": "You do not need to buy anything new for this weekend. Open your closet. That "
+                   "blazer you wear to work? Belt it over a slip dress. Done. Your closet already "
+                   "has the outfit.",
+     "likes": 27800, "comments": 512},
+    {"caption": "Cost per wear, not cost per cart. Do the math before you check out.",
+     "transcript": "Before you buy anything, divide the price by how many times you'll actually "
+                   "wear it. A forty dollar tee you wear weekly beats a twelve dollar tee that sits "
+                   "in a drawer. Cost per wear, not cost per cart.",
+     "likes": 55600, "comments": 1204},
+    {"caption": "Buy it once, wear it forever — three fabrics that actually hold up.",
+     "transcript": "Three fabrics I trust to last more than a season: wool, real leather, and heavy "
+                   "cotton twill. Everything else in fast fashion is designed to fall apart. Buy it "
+                   "once, wear it forever.",
+     "likes": 33900, "comments": 640},
+    {"caption": "Slow is the new flex. Here's what my six-year-old jacket has been through.",
+     "transcript": "This jacket is six years old. It has been through two moves, one breakup, and "
+                   "more job interviews than I can count. Slow is the new flex.",
+     "likes": 19700, "comments": 301},
+    {"caption": "I stopped hauling and started tracking cost-per-wear. My spending dropped 60 percent.",
+     "transcript": "A year ago I filmed haul videos every week. Then I started tracking cost per "
+                   "wear instead. My clothing spending dropped sixty percent and I actually like my "
+                   "closet now.",
+     "likes": 48300, "comments": 977},
+    {"caption": "The $12 blazer versus the $80 blazer — a real cost-per-wear breakdown.",
+     "transcript": "Let's do the actual math. Twelve dollar thrifted blazer, forty one wears, thirty "
+                   "cents each. Eighty dollar new blazer, worn three times because the fit's a "
+                   "little off, twenty-six dollars a wear. The thrift find wins every time.",
+     "likes": 61500, "comments": 1390},
+    {"caption": "You don't need a capsule wardrobe guide. You need to stop buying trend pieces.",
+     "transcript": "Every capsule wardrobe guide tells you to buy fifteen new basics. Skip that. "
+                   "Look at what you already own, keep what earns its cost per wear, and stop "
+                   "buying anything described as a trend piece.",
+     "likes": 22100, "comments": 455},
+]
+
 KNOWN_GOOD = [
     {"brand": _FIT_BRAND, "script": {
         "title": "The 15-minute lie", "summary": "Debunk the hour-long-workout myth.",

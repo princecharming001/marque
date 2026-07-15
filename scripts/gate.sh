@@ -56,6 +56,7 @@ fast_tier() {
   run "backend:pytest"       bash -c "cd '$ROOT/backend' && .venv/bin/python -m pytest -q"
   run "backend:edl_eval"     bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.edl_eval"
   run "backend:run_eval"     bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.run_eval"
+  run "backend:path_eval"    bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.path_eval"
   run "backend:port_eval"    bash -c "cd '$ROOT/backend' && .venv/bin/python -m eval.port_eval"
   run "secrets:scan"         secret_scan
   run "render:typecheck"     bash -c "cd '$ROOT/render' && npx tsc --noEmit"
