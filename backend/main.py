@@ -3274,13 +3274,21 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
         ops = [o for o in req.ops if isinstance(o, dict)]
     elif ANTHROPIC_KEY:
         mode = "live"
+        sys_p, usr_p = prompts.tweak_prompt(job["edl"], job.get("words") or [],
+                                            req.instruction, job["tweaks"])
         try:
-            sys_p, usr_p = prompts.tweak_prompt(job["edl"], job.get("words") or [],
-                                                req.instruction, job["tweaks"])
             envelope = await anthropic_json(sys_p, usr_p, prompts.TWEAK_ENVELOPE_JSON_SCHEMA,
                                             SONNET, 1000)
         except HTTPException:
             envelope = None
+        # Schema-less fallback: if Structured Outputs rejected the schema or the call
+        # failed, retry WITHOUT the schema and parse the JSON by hand. This is what
+        # previously never existed — a single schema hiccup dropped straight to the
+        # canned _mock_tweak (empty ops → no re-render), which is exactly the "editing
+        # just says what it can do instead of editing" bug. Free text still becomes real
+        # ops here.
+        if not (isinstance(envelope, dict) and (envelope.get("reply") or "").strip()):
+            envelope = await _tweak_llm_schemaless(sys_p, usr_p)
         if isinstance(envelope, dict) and (envelope.get("reply") or "").strip():
             reply = envelope["reply"]
             ops = [o for o in (envelope.get("ops") or []) if isinstance(o, dict)]
@@ -3870,6 +3878,38 @@ def _resolve_strategy(brief: dict, total_frames: int) -> dict:
     return b
 
 
+async def _tweak_llm_schemaless(system: str, user: str) -> dict | None:
+    """Fallback interpreter: ask the model for the tweak envelope WITHOUT a
+    structured-output schema, then parse the JSON by hand. Used when the schema path
+    fails (rejection/timeout) so a free-text direction still becomes real ops instead
+    of degrading to the canned capabilities reply. Coerces the discriminator to `type`
+    (the model sometimes writes `op`) and drops ops without a known type. Never raises."""
+    hint = ("\n\nReply with ONLY a JSON object: {\"reply\": <one short sentence>, "
+            "\"ops\": [ ... ]}. Each op is an object with a \"type\" field (one of the "
+            "op types above) plus that op's parameters. No prose outside the JSON, no code fences.")
+    try:
+        raw = await anthropic(system, user + hint, SONNET, 1000)
+    except HTTPException:
+        return None
+    data = None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        data = extract_json(raw, array=False)
+    if not isinstance(data, dict):
+        return None
+    clean: list[dict] = []
+    for o in (data.get("ops") or []):
+        if not isinstance(o, dict):
+            continue
+        t = o.get("type") or o.pop("op", None)   # tolerate the model naming it `op`
+        if t in TWEAK_OP_TYPES:
+            o["type"] = t
+            clean.append(o)
+    return {"reply": (data.get("reply") or "").strip() or "Done — applying your change.",
+            "ops": clean}
+
+
 def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
     """Keyless tweak grammar (deterministic, first-match) so the demo/tests work
     without a key: returns (reply, ops)."""
@@ -3928,9 +3968,12 @@ def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
     if any(p in low for p in ("add a transition", "add transitions", "fade between")):
         return "Added a fade between your first two clips.", [
             {"type": "set_transition", "after_segment": 0, "style": "fade_black"}]
-    return ("I can change caption styles, size, position and color, apply filters, add "
-            "transitions and text, speed clips up, cut or restore sections, add punch-ins "
-            "or b-roll, and undo tweaks — tell me what to change."), []
+    # Honest catch-all: no op matched, so NOTHING was applied. Say so plainly instead of
+    # listing capabilities as if the edit happened — the old copy read like a completed
+    # action and left users thinking the editor silently refused. Give one concrete example.
+    return ("I couldn't turn that into an edit — try being specific, like \"make the "
+            "captions bigger\", \"cut the part where I stumble\", or \"add a punch-in when "
+            "I say the key line\"."), []
 
 
 # ---------------------------------------------------------------------------
@@ -8296,8 +8339,22 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
     else:
         corpus = _mock_reels(niche, [h for _, h in parsed])
         mode = "mock"
-    page = corpus[cursor * REELS_PAGE:(cursor + 1) * REELS_PAGE]
-    next_cursor = cursor + 1 if (cursor + 1) * REELS_PAGE < len(corpus) else None
+    # Infinite scroll (TikTok/IG-style). A HEALTHY corpus (≥ one page) serves its unique
+    # reels first, then CYCLES so the feed never dead-ends — a proven reel resurfacing beats
+    # a hard stop, and the background re-scrape kicked above keeps growing the real pool.
+    # Cycled repeats (i ≥ n) get a page-suffixed id so the client renders them as distinct
+    # cards (SwiftUI ForEach identity). A THIN corpus (cold/just-warming, < one page) is
+    # served once, honestly — no padding a page with duplicates of the same 1–2 reels.
+    n = len(corpus)
+    start = cursor * REELS_PAGE
+    if n >= REELS_PAGE:
+        page = [(dict(corpus[i % n]) if i < n
+                 else {**corpus[i % n], "id": f'{corpus[i % n].get("id", "reel")}#p{i}'})
+                for i in range(start, start + REELS_PAGE)]
+        next_cursor = cursor + 1 if cursor < 50 else None
+    else:
+        page = corpus[start:start + REELS_PAGE]
+        next_cursor = cursor + 1 if (cursor + 1) * REELS_PAGE < n else None
     return {"mode": mode, "reels": page, "next_cursor": next_cursor}
 
 
@@ -8992,6 +9049,14 @@ async def get_strategy(creator_id: str = "default"):
                 "strategy": None, "updates": []}
     strat = await _palo_store.load_strategy(creator_id)
     updates = await _palo_store.load_strategy_updates(creator_id)
+    # is_template: the doc is the deterministic placeholder (no real analyzed videos yet),
+    # not a compiled-from-evidence strategy. The app shows a simple "still forming" state
+    # for these instead of rendering the generic template as if it were real. Flag from the
+    # persisted marker, with a content fallback for rows written before the marker existed.
+    if isinstance(strat, dict):
+        strat["is_template"] = (
+            strat.get("strategy_footnotes") == "template"
+            or strategy_compiler.is_template_markdown(strat.get("strategy_markdown")))
     return {"mode": "live", "strategy": strat, "updates": updates}
 
 

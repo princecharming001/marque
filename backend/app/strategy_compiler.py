@@ -82,6 +82,19 @@ def validate_sections(md: str) -> bool:
     return all(name in sections for name in _REQUIRED)
 
 
+# A fixed line the deterministic template always carries and a real synthesized strategy
+# never reproduces verbatim — lets the API flag a not-ready/template doc even for rows
+# written before strategy_footnotes carried the explicit "template" marker.
+_TEMPLATE_SENTINEL = "LEVER: escape the current view band by sharpening the first 3 seconds"
+
+
+def is_template_markdown(md: str | None) -> bool:
+    """True when the strategy doc is the deterministic placeholder (no real analyzed
+    videos yet), not a compiled-from-evidence strategy. The app shows a simple 'not ready'
+    state for these instead of rendering the generic template as if it were real."""
+    return bool(md) and _TEMPLATE_SENTINEL in md
+
+
 def _template_strategy(brand: dict | None) -> str:
     niche = ((brand or {}).get("niche") or "your niche").strip()
     return (f"## Insights\n- {niche} videos that open with a specific, curiosity-gap hook "
@@ -156,6 +169,11 @@ async def compile_strategy(store, creator_id: str, videos: list[dict],
         rev = int(prev.get("strategy_revision", 0) or 0) + 1
         await store.upsert_strategy(creator_id, {
             "strategy_markdown": md, "strategy_revision": rev,
+            # Explicit not-ready marker so the app shows a simple "still forming" state
+            # instead of rendering the generic placeholder as a real strategy. The API
+            # also content-detects the template (is_template_markdown) as a fallback for
+            # rows written before this flag existed.
+            "strategy_footnotes": "template" if is_template_markdown(md) else "",
             "strategy_updated_at": _now_iso(), "brand_hash": _brand_hash(brand or {})})
         return md
     except Exception as e:
