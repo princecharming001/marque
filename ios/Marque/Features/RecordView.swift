@@ -58,6 +58,10 @@ struct RecordView: View {
     @State private var visibleMimicIds: Set<String> = []
     @State private var failedMimicIds: Set<String> = []
     @State private var referenceReel: ReelItem? = nil
+    // "Match a vibe" is now a STYLE picker: the editing styles (theme bundles), each with a
+    // playable talking-head demo. The picked theme_id drives the actual edit (apply_theme).
+    @State private var styleOptions: [StyleOption] = []
+    @State private var selectedThemeId: String? = nil
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -316,7 +320,7 @@ struct RecordView: View {
                         briefToggles = editFormat.defaultToggles
                         lastSeededFormat = editFormat
                     }
-                    await loadExamples()
+                    await loadStyles()
                 }
                 .task { await loadCapabilities() }
                 HStack(spacing: Space.lg) {
@@ -492,15 +496,15 @@ struct RecordView: View {
     }
 
     @ViewBuilder private var mimicSection: some View {
-        if !exampleReels.isEmpty {
+        if !styleOptions.isEmpty {
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text("MATCH A VIBE — OPTIONAL")
+                Text("PICK AN EDITING STYLE — OPTIONAL")
                     .font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(.white.opacity(0.5))
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Space.sm) {
-                        ForEach(Array(exampleReels.enumerated()), id: \.element.id) { i, r in
-                            mimicCard(r, index: i)
+                        ForEach(Array(styleOptions.enumerated()), id: \.element.id) { i, s in
+                            styleCard(s, index: i)
                         }
                     }
                 }
@@ -508,29 +512,27 @@ struct RecordView: View {
         }
     }
 
-    private func mimicCard(_ r: ReelItem, index: Int) -> some View {
-        let selected = referenceReel?.id == r.id
-        // UX-A3: a mimic card should SHOW the vibe, not describe it — autoplay the
-        // reel muted + looping when we have real footage and the card is on screen;
-        // hard playback failure → poster fallback (never a dead black box).
-        let playable = !r.videoURL.isEmpty && !failedMimicIds.contains(r.id)
+    private func styleCard(_ s: StyleOption, index: Int) -> some View {
+        let selected = selectedThemeId == s.themeId
+        // The card SHOWS the style via a real, muted-autoplay talking-head demo when the
+        // cache has one; hard playback failure or no demo → poster/placeholder fallback.
+        // The demo is illustrative only — picking the card sends s.themeId, which drives
+        // the edit (apply_theme + retention passes), NOT a mimic of this reel.
+        let playable = !s.videoURL.isEmpty && !failedMimicIds.contains(s.themeId)
         return Button {
             withAnimation(.easeOut(duration: 0.15)) {
-                referenceReel = selected ? nil : r      // tap again to unpick
+                selectedThemeId = selected ? nil : s.themeId      // tap again to unpick
             }
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topTrailing) {
-                    if playable, visibleMimicIds.contains(r.id), let url = URL(string: r.videoURL) {
+                    if playable, visibleMimicIds.contains(s.themeId), let url = URL(string: s.videoURL) {
                         FailableVideoPlayer(url: url, muted: true, showsControls: false,
-                                            onFailure: { failedMimicIds.insert(r.id) })
-                        .frame(width: 104, height: 130)
+                                            onFailure: { failedMimicIds.insert(s.themeId) })
+                        .frame(width: 118, height: 148)
                         .allowsHitTesting(false)         // the CARD is the tap target
                     } else {
-                        AsyncImage(url: URL(string: r.thumbnailURL)) { img in
-                            // Blur-fill + fit: a landscape/square poster used to crop
-                            // ~2.2x in this 104x130 cell. Match the grid card + detail
-                            // sheet — show the whole frame over a blurred fill.
+                        AsyncImage(url: URL(string: s.thumbnailURL)) { img in
                             ZStack {
                                 img.resizable().aspectRatio(contentMode: .fill)
                                     .blur(radius: 12).opacity(0.55)
@@ -538,9 +540,9 @@ struct RecordView: View {
                             }
                         } placeholder: {
                             Rectangle().fill(Color.white.opacity(0.08))
-                                .overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
+                                .overlay(Image(systemName: "wand.and.stars").foregroundStyle(.white.opacity(0.3)))
                         }
-                        .frame(width: 104, height: 130).clipped()
+                        .frame(width: 118, height: 148).clipped()
                     }
                     if selected {
                         Image(systemName: "checkmark.circle.fill")
@@ -549,43 +551,31 @@ struct RecordView: View {
                             .background(Circle().fill(.white).padding(2))
                             .padding(5)
                     }
-                    if r.sample {                        // honest: curated, not scraped
-                        Text("SAMPLE")
-                            .font(.system(size: 8, weight: .bold)).tracking(0.8)
-                            .foregroundStyle(.white.opacity(0.9))
-                            .padding(.horizontal, 5).padding(.vertical, 2)
-                            .background(Color.black.opacity(0.55))
-                            .clipShape(Capsule())
-                            .padding(5)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                .onAppear { visibleMimicIds.insert(r.id) }
-                .onDisappear { visibleMimicIds.remove(r.id) }
-                Text("@\(r.creatorHandle)")
-                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(.white.opacity(0.85))
+                .onAppear { visibleMimicIds.insert(s.themeId) }
+                .onDisappear { visibleMimicIds.remove(s.themeId) }
+                Text(s.label)                            // the STYLE name — this is the choice
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
                     .lineLimit(1)
-                // Why THIS reel matches the picked treatment (falls back to why it trends).
-                Text(r.whyMatch.isEmpty ? r.whyTrending : r.whyMatch)
+                Text(s.blurb)                            // what the style does to the cut
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
             }
-            .frame(width: 104)
+            .frame(width: 118)
             .padding(4)
             .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                 .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("record.mimic.\(index)")
+        .accessibilityIdentifier("record.style.\(index)")
     }
 
-    private func loadExamples() async {
-        let reels = await store.backend.editExamples(format: editFormat.rawValue,
-                                                     niche: store.brand.niche)
+    private func loadStyles() async {
+        let opts = await store.backend.styles(niche: store.brand.niche)
         guard !Task.isCancelled else { return }
-        exampleReels = reels
+        styleOptions = opts
     }
 
     private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
@@ -796,6 +786,7 @@ struct RecordView: View {
                                 customInstructions: customInstructions,
                                 reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                 editFormat: editFormat.rawValue, referenceReel: referenceReel,
+                                themeId: selectedThemeId,
                                 toggles: briefToggles)
         dismiss()
         router.selectedTab = .library
@@ -825,6 +816,7 @@ struct RecordView: View {
                     reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                     editFormat: editFormat.rawValue,
                     referenceReel: referenceReel,
+                    themeId: selectedThemeId,
                     autoConfirm: true,                        // UX-B1b: one-tap submit
                     toggles: briefToggles) else {
                 await fallbackToMock()

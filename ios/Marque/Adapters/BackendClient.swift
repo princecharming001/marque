@@ -808,6 +808,25 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return r.reels.map(reel)
     }
 
+    private struct StylesResp: Decodable { let styles: [StyleDTO] }
+    private struct StyleDTO: Decodable {
+        let theme_id: String; let label: String; let blurb: String
+        let video_url: String?; let thumbnail_url: String?; let handle: String?; let sample: Bool?
+    }
+
+    /// The "match a vibe" style gallery — editing styles (theme bundles), each with a
+    /// playable talking-head demo. The picked style's themeId returns to POST /v1/clips
+    /// and drives the actual edit.
+    func styles(niche: String) async -> [StyleOption] {
+        guard let data = await get("/v1/styles?niche=\(q(niche))"),
+              let r = try? JSONDecoder().decode(StylesResp.self, from: data) else { return [] }
+        return r.styles.map {
+            StyleOption(themeId: $0.theme_id, label: $0.label, blurb: $0.blurb,
+                        videoURL: $0.video_url ?? "", thumbnailURL: $0.thumbnail_url ?? "",
+                        handle: $0.handle ?? "", sample: $0.sample ?? false)
+        }
+    }
+
     private struct WarmResp: Decodable { let ok: Bool? }
 
     /// Fire-and-forget: pre-scrape a newly-added watched creator so their real

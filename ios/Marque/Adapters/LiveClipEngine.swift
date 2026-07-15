@@ -382,6 +382,7 @@ extension BackendClient {
                           reactSourceURL: String = "",
                           editFormat: String = "",
                           referenceReel: ReelItem? = nil,
+                          themeId: String? = nil,
                           autoConfirm: Bool = false,
                           toggles: EditToggles? = nil,
                           corpus: [[String: Any]] = []) async -> AnalyzeJobResponse? {
@@ -407,6 +408,9 @@ extension BackendClient {
         // The creator's explicit cut treatment — pins the engine style server-side
         // (brief inference never overrides an explicit pick).
         if !editFormat.isEmpty { body["edit_format"] = editFormat }
+        // "Match a vibe" style pick → theme_id, which actually drives the edit
+        // (apply_theme + retention passes). Overrides the format's default theme.
+        if let themeId, !themeId.isEmpty { body["theme_id"] = themeId }
         // The reel this cut should FEEL like (pacing/energy/caption vibe, never words).
         if let r = referenceReel {
             var ref: [String: Any] = [

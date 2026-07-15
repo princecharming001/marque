@@ -96,10 +96,14 @@ func importPickedMedia(_ items: [PhotosPickerItem]) async -> [MediaAsset] {
     return out
 }
 
-/// Thumbnail for a local image or video path. Generates a video poster lazily.
+/// Thumbnail for a local image or video path, or a remote poster image. Prefers the
+/// server-generated poster (remoteImageURL) when present — that's what fills a
+/// server-rendered clip's Library card, whose local render/raw-take poster was cleared
+/// on render. Falls back to a local poster, then a play-icon placeholder.
 struct LocalThumbnail: View {
     let path: String?
     var isVideo: Bool = false
+    var remoteImageURL: String? = nil
     var cornerRadius: CGFloat = Radius.sm
     @State private var image: UIImage?
     var body: some View {
@@ -113,10 +117,19 @@ struct LocalThumbnail: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .task(id: path) { await load() }
+        .task(id: (remoteImageURL ?? "") + (path ?? "")) { await load() }
     }
     private func load() async {
-        guard image == nil, let path, !path.isEmpty else { return }
+        guard image == nil else { return }
+        // 1) server poster image (jpg over http) — the primary path for rendered clips
+        if let remoteImageURL, let u = URL(string: remoteImageURL) {
+            if let (data, _) = try? await URLSession.shared.data(from: u), let img = UIImage(data: data) {
+                image = img
+                return
+            }
+        }
+        // 2) local file (raw take poster / imported still)
+        guard let path, !path.isEmpty else { return }
         let url = MediaStore.url(for: path)
         if isVideo {
             let img = await Task.detached(priority: .utility) { MediaStore.poster(for: url) }.value
@@ -142,6 +155,33 @@ struct LocalVideoPlayer: View {
                         Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
                         Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     }
+                }
+            }
+        }
+    }
+    private var resolved: URL? {
+        if let path, !path.isEmpty { return MediaStore.url(for: path) }
+        if let remoteURL, let u = URL(string: remoteURL) { return u }
+        return nil
+    }
+}
+
+/// Polished clip preview: the in-house InkVideoPlayer (fill gravity + custom controls)
+/// instead of AVKit's letterboxing VideoPlayer. Resolves a local path or remote URL the
+/// same way LocalVideoPlayer does; falls back to an "unavailable" panel. Meant to sit in
+/// a 9:16 container so the render fills with no black bars.
+struct ClipPreviewPlayer: View {
+    let path: String?
+    var remoteURL: String? = nil
+    var body: some View {
+        if let url = resolved {
+            InkVideoPlayer(url: url, loops: false, startMuted: false)
+        } else {
+            ZStack {
+                Palette.surfaceSunken
+                VStack(spacing: Space.sm) {
+                    Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
+                    Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 }
             }
         }
