@@ -304,6 +304,21 @@ class SupabaseClient:
             return None
         return rows[0] if rows else None
 
+    async def load_all_creator_profiles(self, limit: int = 500) -> list[dict]:
+        """T3: the quality cron's roster source. `creator_profiles` (a server-side
+        brand snapshot written on every /v1/feed POST and /v1/scripts call — see B3)
+        is the reliable source of "has this creator_id actually generated content
+        with a real brand", unlike the legacy `creators` table (load_all_creators),
+        which several onboarding paths never populate a niche onto."""
+        r = await self._request("GET", "/creator_profiles",
+                                params={"select": "creator_id,brand", "limit": str(limit)})
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            return r.json()
+        except Exception:
+            return []
+
     # --- creator_posts (B3: server-side scraped-posts snapshot) ---------------
     # The client NEVER holds scraped posts (they're scraped server-side, at scan/digest
     # time, then discarded) — this is the ONLY durable source for prompt grounding
