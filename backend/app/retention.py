@@ -23,13 +23,15 @@ Pass order (all implemented as of P4):
 """
 from __future__ import annotations
 import copy
+import hashlib
 import os
+import random
 
 from app.edl import (
     ALWAYS_FILLERS, TRIM_LEVELS, ms_to_frame, _frame_to_ms, snap_to_word,
     detect_disfluencies, split_segment_in_place, _PUNCH_STYLES,
     _kept_intervals, _kept_frames, _coalesce_drops, _norm_word,
-    _MIN_DURATION_FRAMES, MIN_CLIP_OUTPUT_FRAMES, check_edl_invariants,
+    _MIN_DURATION_FRAMES, MIN_CLIP_OUTPUT_FRAMES, check_edl_invariants, SFX_GAIN_DEFAULT,
 )
 
 # csv of pass names to run; "" (default) = everything off = today's live behavior.
@@ -53,6 +55,15 @@ def _play_order(edl: dict) -> list[int]:
     if order is not None and sorted(order) == list(range(len(segs))):
         return list(order)
     return list(range(len(segs)))
+
+
+def _seeded_rng(*parts: str) -> random.Random:
+    """A random.Random seeded deterministically from arbitrary string parts, via
+    sha1 rather than Python's built-in hash() (which is salted per-process by
+    default) — so "same job_seed -> identical output" holds across process
+    restarts / redeploys, not just within one run."""
+    digest = hashlib.sha1(":".join(parts).encode()).hexdigest()
+    return random.Random(int(digest[:16], 16))
 
 
 def _safe_pass(name: str, edl: dict, fn, *args, **kwargs) -> dict:
@@ -490,6 +501,131 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
 
 
 # ---------------------------------------------------------------------------
+# A3 (superintelligence epic) — simulated multicam framing. A static single
+# framing for the whole take is the single most recognizable "un-edited" tell;
+# this pass rotates the canvas transform (Segment.tx_scale/tx_x/tx_y — already
+# rendered end to end, see build_render_plan and CutVideo.tsx) through a
+# WIDE/MID/WIDE/CLOSE pattern at jittered 5-8s intervals, simulating a 2-3
+# camera setup with zero render-side schema change. Runs AFTER plan_pacing
+# (so it walks the post-speed-change output timeline) and BEFORE align_emphasis
+# (so a hook/emphasis punch synthesized later can react to whatever framing is
+# already there rather than the reverse).
+# ---------------------------------------------------------------------------
+
+_FRAMING_SKIP_STYLES = {"duet_split", "split_three"}     # reaction/multi-pane grammars own their own framing
+_FRAMING_SCALES = {"wide": 1.0, "mid": 1.18, "close": 1.35}
+# Cyclic pattern; every adjacent pair crosses through "wide" so the delta is
+# always >=18% — mid<->close directly would only be ~14%, below the lint's
+# same_framing_adjacent floor (0.15).
+_FRAMING_PATTERN = ("wide", "mid", "wide", "close")
+_FRAMING_ROTATE_S = (5.0, 8.0)          # jittered rotation period bounds, seconds
+_FRAMING_SPLIT_BUDGET = 12
+_FRAMING_MIN_TOTAL_OUT_FRAMES = 150     # ~5s — too short a take for framing changes to read as intentional
+_FRAMING_TX_X_STEP = 0.03
+_FRAMING_OVERLAY_OVERLAP_GUARD = 0.5    # skip stamping a piece >50% covered by an existing punch_in
+
+
+def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
+                 job_seed: str = "") -> dict:
+    """Assign tx_scale/tx_x/tx_y per segment to simulate a 2-3 camera setup.
+    Deterministic per (job_seed, take) via `_seeded_rng` — re-renders of the
+    same job produce an identical framing schedule. Never touches segments
+    already carrying a punch_in overlay covering more than half their span
+    (avoids a combined punch-on-punch scale spike)."""
+    edl = copy.deepcopy(edl)
+    if style in _FRAMING_SKIP_STYLES or not words or not (edl.get("segments") or []):
+        return edl
+    segments = edl["segments"]
+    drops = edl.get("drops") or []
+    play_order = _play_order(edl)
+    index, total_out = _build_output_index(segments, drops, play_order)
+    if total_out < _FRAMING_MIN_TOTAL_OUT_FRAMES:
+        return edl
+
+    rng = _seeded_rng("framing", job_seed)
+    lo_s, hi_s = _FRAMING_ROTATE_S
+    boundaries_out: list[int] = []
+    cursor = 0.0
+    while True:
+        cursor += rng.uniform(lo_s, hi_s) * 30.0
+        if cursor >= total_out - 45 or len(boundaries_out) >= _FRAMING_SPLIT_BUDGET:
+            break
+        boundaries_out.append(round(cursor))
+
+    if not boundaries_out:
+        return edl
+
+    # Map each output-frame boundary back to a source frame and snap to the
+    # nearest word start, so a framing change never lands mid-word.
+    snapped_src: set[int] = set()
+    for b_out in boundaries_out:
+        src = _out_to_src(index, b_out)
+        if src is None:
+            continue
+        snapped = snap_to_word(_frame_to_ms(src), words, "start")
+        if isinstance(snapped, int) and snapped > 0:
+            snapped_src.add(snapped)
+
+    if not snapped_src:
+        return edl
+
+    # Split from LAST boundary to FIRST: split_segment_in_place only ever
+    # shifts indices AFTER the split point (mirrors plan_pacing's own
+    # last-to-first discipline), so processing highest-frame-first keeps
+    # earlier boundaries' target segments valid throughout the loop.
+    splits_used = 0
+    for b_src in sorted(snapped_src, reverse=True):
+        if splits_used >= _FRAMING_SPLIT_BUDGET:
+            break
+        segments = edl["segments"]
+        target_idx = next((i for i, seg in enumerate(segments)
+                           if seg["src_in"] < b_src < seg["src_out"]), None)
+        if target_idx is None:
+            continue
+        if split_segment_in_place(edl, target_idx, b_src):
+            splits_used += 1
+
+    # Stamp framing onto every piece in PLAY order following the cyclic
+    # pattern, so consecutive played pieces (not consecutive source indices)
+    # alternate scale — what actually plays back-to-back is what must read as
+    # a framing change.
+    segments = edl["segments"]
+    overlays = edl.get("overlays") or []
+
+    def _overlay_overlap_frac(seg_lo: int, seg_hi: int) -> float:
+        span = seg_hi - seg_lo
+        if span <= 0:
+            return 0.0
+        covered = 0
+        for o in overlays:
+            if o.get("type") != "punch_in":
+                continue
+            a, b = max(seg_lo, o["src_in"]), min(seg_hi, o.get("src_out", o["src_in"]))
+            if b > a:
+                covered += b - a
+        return covered / span
+
+    tx_x_sign = 1
+    for step, seg_i in enumerate(_play_order(edl)):
+        seg = segments[seg_i]
+        if _overlay_overlap_frac(seg["src_in"], seg["src_out"]) > _FRAMING_OVERLAY_OVERLAP_GUARD:
+            continue
+        kind = _FRAMING_PATTERN[step % len(_FRAMING_PATTERN)]
+        scale = _FRAMING_SCALES[kind]
+        seg["tx_scale"] = scale
+        if kind == "wide":
+            seg["tx_x"] = 0.0
+            seg["tx_y"] = 0.0
+        else:
+            seg["tx_x"] = _FRAMING_TX_X_STEP * tx_x_sign
+            tx_x_sign *= -1
+            seg["tx_y"] = -0.02 if scale >= 1.18 else 0.0
+
+    edl["segments"] = segments
+    return edl
+
+
+# ---------------------------------------------------------------------------
 # WS4a/4b — hook overlay + emphasis alignment. Both reuse EXISTING overlay
 # types (text_sticker, punch_in) and caption_options.highlight_words — no
 # schema change. Run BEFORE schedule_interrupts (WS3) so these overlays count
@@ -598,6 +734,78 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     return edl
 
 
+# ---------------------------------------------------------------------------
+# A6 (superintelligence epic) — first-1.5s hook PACKAGE, layered on top of
+# place_hook_overlay's sticker: (1) frame-1 motion so the video opens
+# mid-zoom instead of a static settle, and (2) the "first cut by 3s" rule —
+# every take must have SOME visual event (a cut or an overlay) before output
+# frame 90, or one gets synthesized. Runs as its OWN opt-in pass name
+# ("hook_pack", not folded into "structure"/"all") so it bakes independently.
+# ---------------------------------------------------------------------------
+
+_HOOK_PACK_OPEN_PUNCH_FRAMES = 15
+_HOOK_PACK_OPEN_SCALE = 1.06
+_HOOK_PACK_FIRST_CUT_CEILING_OUT = 90    # ~3s
+_HOOK_PACK_FIRST_CUT_MIN_OUT = 45        # ~1.5s — never insert earlier than this
+
+
+def apply_hook_package(edl: dict, words: list[dict], *, style: str,
+                       hints: dict | None = None, theme=None) -> dict:
+    """A6: (1) a short eased punch_in over the opening frames so frame-1 is
+    already in motion; (2) if nothing (cut boundary or overlay) creates a
+    visual event before output frame 90, synthesize a framing bump at the
+    first word boundary after frame 45. Skips duet_split (the reacted-to clip
+    owns the open, same as place_hook_overlay)."""
+    if style in _HOOK_SKIP_STYLES or not words or not (edl.get("segments") or []):
+        return edl
+    edl = copy.deepcopy(edl)
+    segments = edl["segments"]
+    drops = edl.get("drops") or []
+    play_order = _play_order(edl)
+    index, total_out = _build_output_index(segments, drops, play_order)
+    if total_out < _HOOK_PACK_FIRST_CUT_CEILING_OUT:
+        return edl
+    kept = _kept_intervals(segments, drops)
+    if not kept:
+        return edl
+    first_kept = kept[0][0]
+    overlays = edl.get("overlays") or []
+
+    # (1) frame-1 motion — skip if something already occupies the very open
+    # (e.g. a hand-authored overlay), never stacking two competing opens.
+    if not any(o["src_in"] <= first_kept < o.get("src_out", o["src_in"]) for o in overlays):
+        open_src_hi = _out_to_src(index, _HOOK_PACK_OPEN_PUNCH_FRAMES)
+        if open_src_hi is None or open_src_hi <= first_kept:
+            open_src_hi = first_kept + _HOOK_PACK_OPEN_PUNCH_FRAMES
+        overlays = overlays + [{"type": "punch_in", "src_in": first_kept, "src_out": open_src_hi,
+                                "scale": _HOOK_PACK_OPEN_SCALE, "text": ""}]
+
+    # (2) first-cut-by-3s rule.
+    cut_points = {out_start for _, _, out_start, _ in index}
+    has_early_cut = any(0 < p < _HOOK_PACK_FIRST_CUT_CEILING_OUT for p in cut_points)
+    has_early_overlay = False
+    for o in overlays:
+        a = _src_to_out(index, o["src_in"])
+        if a is not None and 0 < a < _HOOK_PACK_FIRST_CUT_CEILING_OUT:
+            has_early_overlay = True
+            break
+    if not has_early_cut and not has_early_overlay:
+        anchor_src = _out_to_src(index, _HOOK_PACK_FIRST_CUT_MIN_OUT)
+        if anchor_src is not None:
+            anchor_word = snap_to_word(_frame_to_ms(anchor_src), words, "start")
+            if isinstance(anchor_word, int) and anchor_word > first_kept:
+                target_idx = next((i for i, seg in enumerate(segments)
+                                   if seg["src_in"] < anchor_word < seg["src_out"]), None)
+                if target_idx is not None and split_segment_in_place(edl, target_idx, anchor_word):
+                    for seg in edl["segments"]:
+                        if seg["src_in"] == anchor_word:
+                            seg["tx_scale"] = max(seg.get("tx_scale", 1.0), 1.12)
+                            break
+
+    edl["overlays"] = overlays
+    return edl
+
+
 _END_CARD_SKIP_STYLES = {"fast_cuts", "duet_split"}   # WS5 matrix: loop-friendly / play-freeze own the close
 
 
@@ -644,6 +852,48 @@ _INTERRUPT_MIN_SPACING = 60    # from any existing overlay/broll edge
 _INTERRUPT_MAX_PER_CLIP = 12
 _INTERRUPT_HOLD_FRAMES = 75    # max width of a synthesized punch/pop window
 _INTERRUPT_SCALES = (1.06, 1.10)   # alternates, so consecutive cuts read as multi-cam
+
+# A4 (superintelligence epic) — jittered cadence + type variety, opt-in via the
+# "jitter" pass token (never folded into the fixed-cadence default so prod's
+# existing RETENTION_PASSES=all baseline is untouched until this bakes on its
+# own). A perfectly metronomic interrupt cadence is itself an amateur tell;
+# jitter draws each gap's target independently instead of using one constant.
+_INTERRUPT_JITTER_S = (3.0, 5.0)                   # per-gap cadence target range, seconds
+_INTERRUPT_JITTER_HOLD_FRAMES = (9, 15)            # short snap-zoom window vs. the fixed 75f hold
+_INTERRUPT_JITTER_TYPES = ("punch", "framing_pop", "text_sticker")
+_INTERRUPT_FRAMING_POP_BUMP = 0.10
+_INTERRUPT_FRAMING_POP_SPLIT_BUDGET = 2 * _INTERRUPT_MAX_PER_CLIP
+
+
+def _insert_framing_pop(edl: dict, src_lo: int, src_hi: int, splits_left: list[int]) -> bool:
+    """A4: one 'framing_pop' interrupt type — a one-clip tx_scale bump over
+    [src_lo, src_hi) instead of a punch_in overlay, so consecutive interrupts
+    can read as a genuine camera change rather than a repeated zoom. Splits
+    `edl["segments"]` IN PLACE (mirrors plan_pacing's own split discipline);
+    returns False without mutating if the window doesn't sit inside a single
+    existing segment, a split fails, or the split budget is spent — the
+    caller falls back to a punch_in in that case."""
+    if splits_left[0] <= 0:
+        return False
+    segments = edl["segments"]
+    target_idx = next((i for i, seg in enumerate(segments)
+                       if seg["src_in"] <= src_lo and src_hi <= seg["src_out"]), None)
+    if target_idx is None:
+        return False
+    if segments[target_idx]["src_in"] < src_lo:
+        if not split_segment_in_place(edl, target_idx, src_lo):
+            return False
+        splits_left[0] -= 1
+        target_idx += 1
+    segments = edl["segments"]
+    if splits_left[0] > 0 and src_hi < segments[target_idx]["src_out"]:
+        if not split_segment_in_place(edl, target_idx, src_hi):
+            return False
+        splits_left[0] -= 1
+    segments = edl["segments"]
+    seg = segments[target_idx]
+    seg["tx_scale"] = min(3.0, (seg.get("tx_scale") or 1.0) + _INTERRUPT_FRAMING_POP_BUMP)
+    return True
 
 
 def _build_output_index(segments: list[dict], drops: list[dict],
@@ -704,14 +954,21 @@ def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
-                        prefs: dict | None = None, hints: dict | None = None) -> dict:
+                        prefs: dict | None = None, hints: dict | None = None,
+                        jitter: bool = False, job_seed: str = "") -> dict:
     """Guarantee a visual change at least every N output frames (N by style x
-    density) by inserting punch_in overlays (text_sticker keyword pops for
-    faceless, which has no face to zoom) into gaps left uncovered by cuts,
-    speed changes, or any overlay/b-roll already placed. Skips fast_cuts and
-    duet_split entirely (native cut cadence / play-freeze rhythm already carries
-    this). Alternates punch scale between two values so consecutive insertions
-    read as a "multi-cam" cut rather than a repeated zoom."""
+    density — or, with `jitter` on, a per-gap target independently drawn from
+    _INTERRUPT_JITTER_S, since a perfectly regular cadence is itself an
+    amateur tell) by inserting punch_in overlays, a one-clip framing_pop
+    (jitter only), or text_sticker keyword pops (faceless, which has no face
+    to zoom) into gaps left uncovered by cuts, speed changes, or any
+    overlay/b-roll already placed. Skips fast_cuts and duet_split entirely
+    (native cut cadence / play-freeze rhythm already carries this). Without
+    jitter, alternates punch scale between two values (today's live
+    behavior, byte-identical). With jitter, rotates among the allowed types
+    per style, never repeating the previous insertion's type, and uses a
+    short 9-15f snap-zoom window instead of the fixed 75f hold — deterministic
+    per job_seed via `_seeded_rng` so re-renders of the same job match."""
     edl = copy.deepcopy(edl)
     prefs = prefs or {}
     hints = hints or {}
@@ -743,26 +1000,44 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
         if _src_to_out(index, ms_to_frame(w["start_ms"])) is not None)
 
     can_punch = style in _PUNCH_STYLES
+    rng = _seeded_rng("interrupts", job_seed) if jitter else None
+    allowed_types = _INTERRUPT_JITTER_TYPES if can_punch else ("text_sticker",)
+    framing_splits_left = [_INTERRUPT_FRAMING_POP_SPLIT_BUDGET]
     inserted = 0
     scale_i = 0
     last_event_out = 0
+    last_type: str | None = None
     new_overlays: list[dict] = []
 
     def _try_insert(anchor_target: int, ceiling: int) -> int | None:
-        """Insert one punch/pop anchored at the next caption word on/after
+        """Insert one interrupt anchored at the next caption word on/after
         `anchor_target`, provided it stays clear of `ceiling` (the next real
         event) and the guards. Returns the new `last_event_out` on success."""
-        nonlocal inserted, scale_i
+        nonlocal inserted, scale_i, last_type
         anchor = next((out for out, _ in words_by_out if out >= anchor_target), None)
         if anchor is None or anchor >= ceiling - 6 or anchor - last_event_out < _INTERRUPT_MIN_SPACING:
             return None
-        out_hi = min(anchor + _INTERRUPT_HOLD_FRAMES, ceiling - 6)
+        hold = rng.randint(*_INTERRUPT_JITTER_HOLD_FRAMES) if jitter else _INTERRUPT_HOLD_FRAMES
+        out_hi = min(anchor + hold, ceiling - 6)
         src_lo, src_hi = _out_to_src(index, anchor), _out_to_src(index, max(anchor + 1, out_hi))
         if src_lo is None or src_hi is None or src_hi <= src_lo:
             return None
-        if can_punch:
+
+        it_type = "punch" if can_punch else "text_sticker"
+        if jitter:
+            pool = [t for t in allowed_types if t != last_type] or list(allowed_types)
+            it_type = rng.choice(pool)
+            if it_type == "framing_pop":
+                if _insert_framing_pop(edl, src_lo, src_hi, framing_splits_left):
+                    inserted += 1
+                    last_type = "framing_pop"
+                    return out_hi
+                it_type = "punch" if can_punch else "text_sticker"   # split failed — fall back
+
+        if it_type == "punch" and can_punch:
             new_overlays.append({"type": "punch_in", "src_in": src_lo, "src_out": src_hi,
                                  "scale": _INTERRUPT_SCALES[scale_i % 2], "text": ""})
+            scale_i += 1
         else:
             word_text = next((w["word"] for out, w in words_by_out if out == anchor), "")
             if not word_text:
@@ -771,8 +1046,9 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
                                  "scale": 1.0, "text": word_text[:24],
                                  "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0,
                                  "color": None, "bg": "box", "font": "inter"})
+            it_type = "text_sticker"
         inserted += 1
-        scale_i += 1
+        last_type = it_type
         return out_hi
 
     # Forward-progress state machine: at every step, either an existing event
@@ -785,21 +1061,23 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
     for _ in range(_ITER_CAP):
         if last_event_out >= total_out - _INTERRUPT_CTA_GUARD or inserted >= _INTERRUPT_MAX_PER_CLIP:
             break
+        gap_cadence = (max(_INTERRUPT_CADENCE_FLOOR, round(rng.uniform(*_INTERRUPT_JITTER_S) * 30))
+                      if jitter else cadence)
         next_cut = next((p for p in cut_points if p > last_event_out), total_out)
         next_occ = next(((a, b) for a, b in occupied if b > last_event_out), None)
-        if next_occ is not None and next_occ[0] <= last_event_out + cadence:
+        if next_occ is not None and next_occ[0] <= last_event_out + gap_cadence:
             # an overlay/b-roll window arrives before cadence is exceeded — it
             # counts as the visual event; jump past its far edge.
             last_event_out = max(last_event_out, next_occ[1])
             continue
-        if next_cut - last_event_out <= cadence:
+        if next_cut - last_event_out <= gap_cadence:
             last_event_out = next_cut   # a cut arrives in time — it counts as the event
             continue
         # cadence exceeded with nothing else covering it — insert here. The
         # ceiling is whichever comes first: the next cut or the next occupied
         # window's start (never insert past either).
         ceiling = min(next_cut, next_occ[0] if next_occ else total_out)
-        anchor_target = max(last_event_out + cadence, _INTERRUPT_HOOK_GUARD)
+        anchor_target = max(last_event_out + gap_cadence, _INTERRUPT_HOOK_GUARD)
         new_last = _try_insert(anchor_target, ceiling)
         last_event_out = new_last if new_last is not None else ceiling
 
@@ -871,7 +1149,7 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
         url = sfx_assets.get(kind)
         if not url:
             continue
-        sfx.append({"src_in": f, "kind": kind, "gain": 0.7, "url": url})
+        sfx.append({"src_in": f, "kind": kind, "gain": SFX_GAIN_DEFAULT, "url": url})
         last_placed = f
 
     if sfx:
@@ -885,7 +1163,8 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
                            prefs: dict | None = None, emphasis_spans: list | None = None,
                            dossier: dict | None = None, hints: dict | None = None,
                            script: dict | None = None, level: str = "default",
-                           sfx_assets: dict[str, str | None] | None = None) -> dict:
+                           sfx_assets: dict[str, str | None] | None = None,
+                           job_seed: str = "", theme=None) -> dict:
     """Entry point called once from `_run_edit`, after EITHER author path builds
     its EDL and before `_resolve_broll`/`build_render_plan`. `hints` carries the
     plan author's typed decisions (pacing/interrupt_density/hook_text/end_card/
@@ -893,7 +1172,11 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     has a style-driven default so an empty hints dict is a fully valid input).
     `sfx_assets` is main.py's SFX_ASSETS dict (kind -> hosted URL or None);
     passed as a parameter rather than imported, since main.py already imports
-    THIS module and a reverse import would be circular."""
+    THIS module and a reverse import would be circular. `job_seed` (the job id)
+    drives every deterministic-jitter pass (framing, interrupt jitter) so
+    re-renders of the same job produce identical output; `theme` is reserved
+    for A7 (style bundles) — currently unused but threaded through so passes
+    don't need a signature change when it lands."""
     prefs = prefs or {}
     hints = hints or {}
     enabled = _enabled_passes()
@@ -911,6 +1194,14 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     if "pacing" in enabled and prefs.get("pacing") is not False:
         edl = _safe_pass("plan_pacing", edl, plan_pacing, words, style=style,
                          emphasis_spans=emphasis_spans, dossier=dossier, hints=hints)
+
+    # A3: simulated multicam framing — opt-in via the "framing" token (never
+    # folded into "all"; bakes independently). Runs after pacing (so it walks
+    # the post-speed-change timeline) and before emphasis (so a later
+    # emphasis/hook punch can react to whatever framing is already there).
+    if "framing" in enabled and prefs.get("framing") is not False:
+        edl = _safe_pass("plan_framing", edl, plan_framing, words,
+                         style=style, theme=theme, job_seed=job_seed)
 
     if "emphasis" in enabled:
         edl = _safe_pass("align_emphasis", edl, align_emphasis, words,
@@ -934,11 +1225,21 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         edl = _safe_pass("place_hook_overlay", edl, place_hook_overlay, words,
                          style=style, hints=hints, script=script)
 
+    # A6: hook PACKAGE (frame-1 motion + first-cut-by-3s) — opt-in via
+    # "hook_pack", layered on top of place_hook_overlay's sticker above, so it
+    # can see whether the sticker already occupies the open.
+    if "hook_pack" in enabled:
+        edl = _safe_pass("apply_hook_package", edl, apply_hook_package, words,
+                         style=style, hints=hints, theme=theme)
+
     # interrupts runs after emphasis/structure (per WS3): it needs to see every
-    # event they already placed so it never double-covers them.
+    # event they already placed so it never double-covers them. "jitter" is an
+    # opt-in modifier on the SAME pass (not a separate token) — off by default,
+    # so the live RETENTION_PASSES=all baseline is byte-identical until baked.
     if "interrupts" in enabled:
         edl = _safe_pass("schedule_interrupts", edl, schedule_interrupts, words,
-                         style=style, prefs=prefs, hints=hints)
+                         style=style, prefs=prefs, hints=hints,
+                         jitter=("jitter" in enabled), job_seed=job_seed)
 
     # sfx runs LAST of all: it sees every transition/overlay every prior pass
     # (including interrupts) placed.

@@ -776,7 +776,7 @@ def test_sfx_places_whoosh_at_transitions():
                     segments=[{"src_in": 0, "src_out": 450}, {"src_in": 450, "src_out": 900}],
                     transitions=[{"after_segment": 0, "style": "fade_black", "frames": 12}])
     out = retention.synthesize_sfx(edl, words, sfx_assets={"whoosh": "https://cdn/w.mp3"})
-    assert out["audio"]["sfx"] == [{"src_in": 450, "kind": "whoosh", "gain": 0.7, "url": "https://cdn/w.mp3"}]
+    assert out["audio"]["sfx"] == [{"src_in": 450, "kind": "whoosh", "gain": retention.SFX_GAIN_DEFAULT, "url": "https://cdn/w.mp3"}]
 
 
 def test_sfx_places_pop_at_punch_ins():
@@ -784,7 +784,7 @@ def test_sfx_places_pop_at_punch_ins():
     edl = _bare_edl("talking_head", ms_to_frame(30000),
                     overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
     out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
-    assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": 0.7, "url": "https://cdn/p.mp3"}]
+    assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": retention.SFX_GAIN_DEFAULT, "url": "https://cdn/p.mp3"}]
 
 
 def test_sfx_skips_kind_with_no_resolved_url():
@@ -868,7 +868,7 @@ def test_sfx_applied_via_orchestrator():
                     overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
     out = retention.apply_retention_passes(edl, words, style="talking_head",
                                            sfx_assets={"pop": "https://cdn/p.mp3"})
-    assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": 0.7, "url": "https://cdn/p.mp3"}]
+    assert out["audio"]["sfx"] == [{"src_in": 300, "kind": "pop", "gain": retention.SFX_GAIN_DEFAULT, "url": "https://cdn/p.mp3"}]
 
 
 # --- WS1: retake dedup + word-eater hardening -----------------------------------
@@ -951,3 +951,285 @@ def test_false_start_needs_content_word_overlap():
     # no drop should cover the opening "i the"
     frag_lo = _edl.ms_to_frame(words[0]["start_ms"])
     assert not any(d.src_in <= frag_lo < d.src_out and d.reason == "false_start" for d in drops)
+
+
+# ---------------------------------------------------------------------------
+# A3 (superintelligence epic) — plan_framing
+# ---------------------------------------------------------------------------
+
+def test_framing_rotates_and_never_puts_mid_next_to_close():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
+    scales = [round(s["tx_scale"], 2) for s in out["segments"]]
+    assert len(scales) > 3   # multiple framing changes happened
+    wide, mid, close = (retention._FRAMING_SCALES[k] for k in ("wide", "mid", "close"))
+    assert set(scales) <= {wide, mid, close}
+    for a, b in zip(scales, scales[1:]):
+        if a != b:
+            delta = abs(a - b) / max(a, b)
+            assert delta >= 0.15   # never a same_framing_adjacent-style near-miss
+
+
+def test_framing_deterministic_same_seed():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    a = retention.plan_framing(edl, words, style="talking_head", job_seed="job-x")
+    b = retention.plan_framing(edl, words, style="talking_head", job_seed="job-x")
+    assert a == b
+
+
+def test_framing_different_seed_can_differ():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    a = retention.plan_framing(edl, words, style="talking_head", job_seed="job-x")
+    b = retention.plan_framing(edl, words, style="talking_head", job_seed="job-y")
+    scales_a = [s["tx_scale"] for s in a["segments"]]
+    scales_b = [s["tx_scale"] for s in b["segments"]]
+    assert scales_a != scales_b or a["segments"] != b["segments"]
+
+
+def test_framing_skips_duet_split_and_split_three():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    for style in ("duet_split", "split_three"):
+        edl = _bare_edl(style, total_frames)
+        out = retention.plan_framing(edl, words, style=style, job_seed="job-a")
+        assert out == edl
+
+
+def test_framing_noop_on_short_take():
+    words = _steady_words(2000)
+    total_frames = ms_to_frame(2000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
+    assert out == edl
+
+
+def test_framing_respects_split_budget():
+    words = _steady_words(300000, step_ms=250)   # a very long take -> many candidate boundaries
+    total_frames = ms_to_frame(300000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
+    assert len(out["segments"]) <= 1 + retention._FRAMING_SPLIT_BUDGET
+
+
+def test_framing_respects_punch_overlay_guard():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    # A punch_in overlay covering the ENTIRE take must protect every piece.
+    edl = _bare_edl("talking_head", total_frames,
+                    overlays=[{"type": "punch_in", "src_in": 0, "src_out": total_frames, "scale": 1.1, "text": ""}])
+    out = retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
+    assert all(s.get("tx_scale", 1.0) == 1.0 for s in out["segments"])
+
+
+def test_framing_output_passes_invariants():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
+    assert check_edl_invariants(out) == []
+
+
+def test_framing_does_not_mutate_input():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    before = [dict(s) for s in edl["segments"]]
+    retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
+    assert edl["segments"] == before
+
+
+def test_framing_applied_via_orchestrator_when_named():
+    retention._ENV_PASSES = "framing"
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_retention_passes(edl, words, style="talking_head", job_seed="job-a")
+    assert any(s["tx_scale"] != 1.0 for s in out["segments"])
+
+
+def test_framing_not_applied_when_all_but_not_named():
+    retention._ENV_PASSES = "all"
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_retention_passes(edl, words, style="talking_head", job_seed="job-a")
+    # "all" does not include "framing" (A1 discipline: new passes bake individually)
+    assert all(s.get("tx_scale", 1.0) == 1.0 for s in out["segments"])
+
+
+# ---------------------------------------------------------------------------
+# A4 (superintelligence epic) — jittered interrupts
+# ---------------------------------------------------------------------------
+
+def test_interrupts_jitter_off_by_default_is_byte_identical():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    a = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    b = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=False)
+    assert a == b
+
+
+def test_interrupts_jitter_deterministic_same_seed():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    a = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-a")
+    b = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-a")
+    assert a == b
+
+
+def test_interrupts_jitter_gaps_are_not_metronomic():
+    words = _steady_words(90000)
+    total_frames = ms_to_frame(90000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-jit")
+    events = sorted(o["src_in"] for o in out["overlays"]) + \
+        [s["src_in"] for s in out["segments"] if s.get("tx_scale", 1.0) != 1.0]
+    events = sorted(set(events))
+    assert len(events) >= 3
+    gaps = [b - a for a, b in zip(events, events[1:])]
+    mean = sum(gaps) / len(gaps)
+    variance = sum((g - mean) ** 2 for g in gaps) / len(gaps)
+    assert variance ** 0.5 > 8   # anti-metronome: stddev of gaps exceeds the lint floor
+
+
+def test_interrupts_jitter_never_same_type_twice_in_a_row():
+    words = _steady_words(120000, step_ms=250)
+    total_frames = ms_to_frame(120000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-b")
+    # Reconstruct the ordered type sequence: punch_in overlays are "punch", text_sticker
+    # overlays are "text_sticker", and a segment split with a bumped tx_scale is "framing_pop".
+    events = [(o["src_in"], "punch" if o["type"] == "punch_in" else "text_sticker") for o in out["overlays"]]
+    base_edl = _bare_edl("talking_head", total_frames)
+    base_ins = {s["src_in"] for s in base_edl["segments"]}
+    for s in out["segments"]:
+        if s.get("tx_scale", 1.0) != 1.0 and s["src_in"] not in base_ins:
+            events.append((s["src_in"], "framing_pop"))
+    events.sort()
+    types = [t for _, t in events]
+    for a, b in zip(types, types[1:]):
+        assert a != b
+
+
+def test_interrupts_jitter_uses_short_hold_window():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-c")
+    punch_overlays = [o for o in out["overlays"] if o["type"] == "punch_in"]
+    assert punch_overlays   # at least one punch survived the type rotation
+    lo, hi = retention._INTERRUPT_JITTER_HOLD_FRAMES
+    for o in punch_overlays:
+        assert o["src_out"] - o["src_in"] <= hi + 1   # short window, not the fixed 75f hold
+
+
+def test_interrupts_jitter_output_passes_invariants():
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-d")
+    assert check_edl_invariants(out) == []
+
+
+def test_interrupts_jitter_applied_via_orchestrator_jitter_token():
+    retention._ENV_PASSES = "interrupts,jitter"
+    words = _steady_words(60000)
+    total_frames = ms_to_frame(60000)
+    edl = _bare_edl("talking_head", total_frames)
+    a = retention.apply_retention_passes(edl, words, style="talking_head", job_seed="job-e")
+    retention._ENV_PASSES = "interrupts,jitter"
+    b = retention.apply_retention_passes(edl, words, style="talking_head", job_seed="job-e")
+    assert a == b   # deterministic through the orchestrator too
+
+
+# ---------------------------------------------------------------------------
+# A6 (superintelligence epic) — apply_hook_package
+# ---------------------------------------------------------------------------
+
+def test_hook_package_adds_opening_punch():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_hook_package(edl, words, style="talking_head")
+    opens = [o for o in out["overlays"] if o["type"] == "punch_in" and o["src_in"] == 0]
+    assert opens
+    assert opens[0]["scale"] == retention._HOOK_PACK_OPEN_SCALE
+
+
+def test_hook_package_skips_when_open_already_occupied():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    existing = {"type": "text_sticker", "src_in": 0, "src_out": 45, "text": "hook",
+               "scale": 1.0, "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0, "color": None,
+               "bg": "box", "font": "inter"}
+    edl = _bare_edl("talking_head", total_frames, overlays=[existing])
+    out = retention.apply_hook_package(edl, words, style="talking_head")
+    punches = [o for o in out["overlays"] if o["type"] == "punch_in"]
+    assert punches == []   # never stacks two competing opens
+
+
+def test_hook_package_first_cut_by_3s_rule_fires_on_a_static_open():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)   # one long unbroken segment, no early overlay
+    out = retention.apply_hook_package(edl, words, style="talking_head")
+    index, _ = retention._build_output_index(out["segments"], out["drops"], retention._play_order(out))
+    early_events = [s["src_in"] for s in out["segments"] if s.get("tx_scale", 1.0) != 1.0]
+    assert early_events
+    out_frame = retention._src_to_out(index, early_events[0])
+    assert out_frame is not None and out_frame < retention._HOOK_PACK_FIRST_CUT_CEILING_OUT
+
+
+def test_hook_package_skips_when_early_cut_already_exists():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    # Two segments with a cut boundary well before output frame 90.
+    edl = _bare_edl("talking_head", total_frames,
+                    segments=[{"src_in": 0, "src_out": 60}, {"src_in": 60, "src_out": total_frames}])
+    out = retention.apply_hook_package(edl, words, style="talking_head")
+    # No synthesized framing bump should have been added (the cut already covers it).
+    assert all(s.get("tx_scale", 1.0) == 1.0 or s["src_in"] == 0 for s in out["segments"])
+
+
+def test_hook_package_skips_duet_split():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("duet_split", total_frames)
+    out = retention.apply_hook_package(edl, words, style="duet_split")
+    assert out == edl
+
+
+def test_hook_package_output_passes_invariants():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_hook_package(edl, words, style="talking_head")
+    assert check_edl_invariants(out) == []
+
+
+def test_hook_package_does_not_mutate_input():
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    before_overlays = list(edl["overlays"])
+    before_segments = [dict(s) for s in edl["segments"]]
+    retention.apply_hook_package(edl, words, style="talking_head")
+    assert edl["overlays"] == before_overlays
+    assert [dict(s) for s in edl["segments"]] == before_segments
+
+
+def test_hook_package_applied_via_orchestrator_when_named():
+    retention._ENV_PASSES = "structure,hook_pack"
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.apply_retention_passes(edl, words, style="talking_head")
+    assert any(o["type"] == "punch_in" and o["src_in"] == 0 for o in out["overlays"])

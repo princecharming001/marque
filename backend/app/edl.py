@@ -16,6 +16,11 @@ PLAN_SCHEMA_VERSION = 2
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
+# A5a (superintelligence epic): SFX doctrine calls for one-shots to sit at
+# -12..-18dB under the mix, not compete with the voice — the old 0.7 linear
+# default was ~-3dB, audibly hot. -14dB split-the-difference: 10**(-14/20).
+SFX_GAIN_DEFAULT = 10 ** (-14 / 20)   # ~0.1995
+
 # P0.3: a kept clip shorter than this in OUTPUT frames (12 = 400ms @ 30fps) reads as a
 # jarring sliver — build_render_plan drops such intervals (unless it's the only one).
 # Mirrored in ios/.../EditorModel.swift keptIntervalsWithSpeed for preview parity.
@@ -250,7 +255,7 @@ class SfxCue(BaseModel):
     synthesize_sfx at authoring time, not by build_render_plan."""
     src_in: int
     kind: str             # whoosh | pop | hit
-    gain: float = 0.7
+    gain: float = SFX_GAIN_DEFAULT
     url: Optional[str] = None
 
 
@@ -970,7 +975,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         if of is None:
             continue
         sfx_out.append({"frame": of, "kind": cue.get("kind", ""),
-                        "gain": float(cue.get("gain") or 0.7), "url": url})
+                        "gain": float(cue.get("gain") or SFX_GAIN_DEFAULT), "url": url})
 
     audio_plan = {
         "lufs_target": audio_src.get("lufs_target", -14.0),

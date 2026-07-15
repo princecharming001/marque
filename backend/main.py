@@ -4356,7 +4356,7 @@ async def _run_edit(job_id: str, words: list[dict]):
         edl_data = retention_mod.apply_retention_passes(
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
             dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
-            sfx_assets=SFX_ASSETS)
+            sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"))
         # A1: deterministic pre-render lint — a live scoreboard of "amateur tells"
         # (dead stretches, glitch cuts, metronomic pacing, off-anchor effects, mixed
         # caption/transition grammars) on WHATEVER the two author paths + retention
