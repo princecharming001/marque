@@ -29,15 +29,43 @@ MIN_RELEVANCE_MEAN = 60.0
 
 def _rotated_roster(creators: list[dict], now_epoch: float, max_creators: int) -> list[dict]:
     """Deterministic day-of-year rotation over creators with a real (non-empty)
-    niche — a bare `creators` row with no niche never actually onboarded. Pure,
+    niche — a bare row with no niche never actually generated content. Every item
+    is normalized to {"creator_id", "brand"} by the caller before this runs. Pure,
     keyless-testable."""
-    real = [c for c in creators if (c.get("creator_id") or "") and (c.get("niche") or "").strip()]
+    real = [c for c in creators if (c.get("creator_id") or "") and (c.get("brand") or {}).get("niche")]
     if not real:
         return []
     real = sorted(real, key=lambda c: c["creator_id"])
     day_index = int(now_epoch // 86400)
     start = day_index % len(real)
     return (real[start:] + real[:start])[:max_creators]
+
+
+async def _load_roster(store) -> list[dict]:
+    """T3's roster source: creator_profiles (a server-side brand snapshot written
+    on every /v1/feed POST and /v1/scripts call — see B3) is the reliable "has
+    this creator_id actually generated content with a real brand" source. Falls
+    back to the legacy `creators` table only if creator_profiles is empty
+    (defensive — several onboarding paths never populate a niche onto that
+    older table, which is WHY creator_profiles exists, but an empty creator_
+    profiles table on a fresh deploy shouldn't make the cron a permanent no-op)."""
+    try:
+        profiles = await store.load_all_creator_profiles()
+    except Exception as e:
+        logging.warning("[quality-cron] load_all_creator_profiles failed: %s", e)
+        profiles = []
+    if profiles:
+        return [{"creator_id": p["creator_id"], "brand": p.get("brand") or {}}
+               for p in profiles if p.get("creator_id")]
+    try:
+        legacy = await store.load_all_creators()
+    except Exception as e:
+        logging.warning("[quality-cron] load_all_creators failed: %s", e)
+        legacy = []
+    return [{"creator_id": c["creator_id"],
+            "brand": {k: c.get(k) for k in ("niche", "audience", "known_for", "what_you_do", "goal")
+                     if c.get(k)}}
+           for c in legacy if c.get("creator_id")]
 
 
 def breached(card: dict) -> list[str]:
@@ -70,12 +98,8 @@ async def run_quality_cron(store, now_epoch: float, generate_fast, generate_full
         return 0
     max_creators = int(os.environ.get("QUALITY_CRON_MAX_CREATORS", str(QUALITY_CRON_MAX_CREATORS_DEFAULT)))
     full_n = int(os.environ.get("QUALITY_CRON_FULL_PIPELINE_N", str(QUALITY_CRON_FULL_PIPELINE_N_DEFAULT)))
-    try:
-        creators = await store.load_all_creators()
-    except Exception as e:
-        logging.warning("[quality-cron] load_all_creators failed: %s", e)
-        creators = []
-    roster = _rotated_roster(creators or [], now_epoch, max_creators)
+    all_creators = await _load_roster(store)
+    roster = _rotated_roster(all_creators, now_epoch, max_creators)
     if not roster:
         return 0
 
@@ -85,10 +109,7 @@ async def run_quality_cron(store, now_epoch: float, generate_fast, generate_full
     for i, c in enumerate(roster):
         creator_id = c["creator_id"]
         try:
-            profile = await store.load_creator_profile(creator_id)
-            brand = (profile or {}).get("brand") or {
-                k: c.get(k) for k in ("niche", "audience", "known_for", "what_you_do", "goal")
-                if c.get(k)}
+            brand = c["brand"]
             posts = await store.load_creator_posts(creator_id) or []
 
             fast_scripts = await generate_fast(creator_id, brand, posts)
