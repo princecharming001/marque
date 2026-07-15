@@ -383,6 +383,7 @@ extension BackendClient {
                           editFormat: String = "",
                           referenceReel: ReelItem? = nil,
                           themeId: String? = nil,
+                          config: [String: String]? = nil,
                           autoConfirm: Bool = false,
                           toggles: EditToggles? = nil,
                           corpus: [[String: Any]] = []) async -> AnalyzeJobResponse? {
@@ -411,6 +412,9 @@ extension BackendClient {
         // "Match a vibe" style pick → theme_id, which actually drives the edit
         // (apply_theme + retention passes). Overrides the format's default theme.
         if let themeId, !themeId.isEmpty { body["theme_id"] = themeId }
+        // Creator style config (Addendum Part 1) — e.g. the B-ROLL STYLE pick maps to
+        // config.broll_coverage, which steers the plan prompt's coverage hints.
+        if let config, !config.isEmpty { body["config"] = config }
         // The reel this cut should FEEL like (pacing/energy/caption vibe, never words).
         if let r = referenceReel {
             var ref: [String: Any] = [

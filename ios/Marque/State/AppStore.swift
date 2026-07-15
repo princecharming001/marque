@@ -660,6 +660,7 @@ final class AppStore {
                          editFormat: String = "",
                          referenceReel: ReelItem? = nil,
                          themeId: String? = nil,
+                         config: [String: String]? = nil,
                          autoConfirm: Bool = false,
                          toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
@@ -674,6 +675,7 @@ final class AppStore {
                                               editFormat: editFormat,
                                               referenceReel: referenceReel,
                                               themeId: themeId,
+                                              config: config,
                                               autoConfirm: autoConfirm,
                                               toggles: toggles, corpus: corpus)
     }
@@ -727,6 +729,7 @@ final class AppStore {
                            customInstructions: String, reactSourceURL: String,
                            editFormat: String, referenceReel: ReelItem?,
                            themeId: String? = nil,
+                           config: [String: String]? = nil,
                            toggles: EditToggles) -> UUID {
         let placeholderId = UUID()
         var ph = Clip(id: placeholderId, scriptId: script.id, formatId: script.formatId,
@@ -757,7 +760,7 @@ final class AppStore {
                 script: isFreestyle ? nil : script, publicURL: publicURL,
                 customInstructions: customInstructions, reactSourceURL: reactSourceURL,
                 editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
-                autoConfirm: true, toggles: toggles)
+                config: config, autoConfirm: true, toggles: toggles)
             self.reconcileInstantSubmit(placeholderId: placeholderId, resp: resp,
                                         script: script, footagePath: footagePath)
             self.backgroundSubmits[placeholderId] = nil

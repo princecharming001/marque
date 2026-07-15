@@ -92,3 +92,37 @@ def test_reels_never_serve_unplayable_cards(monkeypatch):
     assert body["mode"] == "live"
     assert all(r.get("video_url") for r in body["reels"])
     assert "q" not in [r["id"] for r in body["reels"]]
+
+
+# ── /v1/broll-styles: the b-roll style picker ────────────────────────────────
+
+def test_broll_styles_options_and_demo_matching(monkeypatch):
+    # Pool has one cutaway-classified reel + three plain talking heads. The cutaway-heavy
+    # option must get the talking_head_broll demo; all demos distinct; 4 options total.
+    def _r(rid, handle, fmt, views):
+        return {"id": rid, "creator_handle": handle, "video_url": f"http://x/{rid}",
+                "thumbnail_url": f"http://x/{rid}-t", "edit_format": fmt, "views": views}
+    monkeypatch.setattr(main, "_niche_reels_cache", {
+        "niche:a": {"reels": [_r("b1", "cutter", "talking_head_broll", 900),
+                              _r("t1", "face1", "talking_head", 800),
+                              _r("t2", "face2", "talking_head", 700),
+                              _r("t3", "face3", "talking_head", 600)], "ts": 9e18}})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    body = client.get("/v1/broll-styles", params={"niche": "a"}).json()
+    styles = body["styles"]
+    assert [s["id"] for s in styles] == ["full", "balanced", "minimal", "none"]
+    assert all(s["label"] and s["blurb"] for s in styles)
+    # the first cutaway-heavy option gets the talking_head_broll demo
+    assert styles[0]["video_url"] == "http://x/b1"
+    # every non-sample demo distinct
+    vids = [s["video_url"] for s in styles if not s["sample"]]
+    assert len(vids) == len(set(vids))
+
+
+def test_broll_styles_empty_pool_returns_samples(monkeypatch):
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    body = client.get("/v1/broll-styles").json()
+    assert body["mode"] == "mock"
+    assert len(body["styles"]) == 4
+    assert all(s["sample"] for s in body["styles"])
