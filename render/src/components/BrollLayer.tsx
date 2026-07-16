@@ -52,11 +52,13 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   url, durationInFrames, mode, source,
 }) => {
   const frame = useCurrentFrame(); // local to the Sequence (0 at clip start)
-  const kenBurns = interpolate(frame, [0, durationInFrames], [1.06, 1.12], {
-    extrapolateRight: "clamp",
-  });
   const isImage = /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url);
   const isGiphy = source === "giphy";
+  // Stills (own_media photos) need a STRONGER Ken-Burns push than video so they don't read as a
+  // frozen slide; motion footage moves on its own, so it keeps the gentle push.
+  const kenBurns = interpolate(frame, [0, durationInFrames], isImage ? [1.05, 1.18] : [1.06, 1.12], {
+    extrapolateRight: "clamp",
+  });
   const media = (style: React.CSSProperties) =>
     isImage ? <Img src={url} style={style} /> : <OffthreadVideo src={url} muted style={style} />;
 

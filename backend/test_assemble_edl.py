@@ -82,20 +82,21 @@ def test_broll_runtime_budget_caps_face_hiding_coverage():
     assert d["broll"], "budget cap must not drop ALL b-roll — the earliest inserts stay"
 
 
-def test_broll_budget_does_not_touch_panel_modes():
-    # panel/card keep the face visible → exempt from the ~40% face-hiding budget. Four
-    # well-spaced 5s panels total >50% of runtime and ALL survive (only `full` is budgeted).
+def test_combined_visual_budget_caps_all_modes():
+    # Realism pass: panel/card keep the face visible (exempt from the 40% FACE-HIDING budget) but
+    # still count toward the 50% TOTAL-visual budget — a wall of panels can't own the whole video.
     from app import edl as edl_mod
-    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(100)]  # ~40s
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]  # ~48s
     total = ms_to_frame(w[-1]["end_ms"])
+    # 8 panels, each clamps to action's 105f ceiling — 8×105 = 840f ≈ 58% of ~1450f, over the 50% cap.
     plan = {"broll": [{"range": [g, g + 150], "cue": "t", "query": "q", "source": "stock",
                        "mode": "panel", "need": "action"}
-                      for g in (150, 450, 750, 1050)]}
-    edl = assemble_edl(plan, w, "talking_head", "myth-buster")
-    kept = edl.model_dump()["broll"]
+                      for g in range(150, total - 120, 150)]}
+    kept = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()["broll"]
     panel_frames = sum(b["src_out"] - b["src_in"] for b in kept)
-    assert len(kept) == 4                                            # none dropped
-    assert panel_frames > edl_mod._BROLL_RUNTIME_BUDGET * total      # panels exceed 40% freely
+    assert all(b["src_out"] - b["src_in"] <= 105 for b in kept)      # panel ceiling now 3.5s
+    assert panel_frames <= edl_mod._BROLL_VISUAL_BUDGET * total + 1   # total insert time ≤ 50%
+    assert kept                                                       # but not all dropped
 
 
 def test_broll_hold_policy_per_need():
@@ -335,3 +336,70 @@ def test_author_via_plan_keyless_produces_valid_edl(monkeypatch):
     assert llm_contributed is False   # keyless → empty plan → generic whole-take cut
     assert plan_data == {}           # P5: no LLM contribution → nothing to extract hints from
     assert check_edl_invariants(edl_data, w) == []
+
+
+def _alpha_words(n, ms_step=400):
+    _nouns = ["interface", "product", "founder", "growth", "metric", "startup",
+              "revenue", "customer", "platform", "strategy"]
+    return [{"word": _nouns[i % len(_nouns)], "start_ms": i * ms_step, "end_ms": i * ms_step + 350}
+            for i in range(n)]
+
+
+def test_partial_holds_capped_per_need():
+    # Realism pass: panel/card caps are now entity 75 / evidence 90 / action 105 (was 90/120/150).
+    w = _alpha_words(120)
+    for need, cap in (("entity", 75), ("evidence", 90), ("action", 105)):
+        plan = {"broll": [{"range": [300, 540], "cue": "x", "query": "x", "source": "stock",
+                           "mode": "panel", "need": need}]}
+        d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
+        assert d["broll"], f"{need} panel dropped"
+        assert d["broll"][0]["src_out"] - d["broll"][0]["src_in"] <= cap, f"{need} exceeds {cap}"
+
+
+def test_long_phrase_biases_short_not_max():
+    # A 300f phrase (>> 2× action's 90f full cap) biases to lo+15 = 75, not pinned at 90.
+    w = _alpha_words(120)
+    plan = {"broll": [{"range": [300, 600], "cue": "x", "query": "x", "source": "stock",
+                       "mode": "full", "need": "action"}]}
+    d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
+    assert d["broll"] and d["broll"][0]["src_out"] - d["broll"][0]["src_in"] == 75
+
+
+def test_topup_fires_with_one_weak_plan_cue():
+    # Realism pass: the floor is no longer only-on-empty — ONE weak plan cue no longer suppresses
+    # density (old behavior: exactly 1 insert). coverage=full tops up the gaps toward ~1 per 9s
+    # (best-effort, bounded by the 40% floor budget + spacing + available content words).
+    w = _alpha_words(120)                       # ~48s
+    plan = {"broll": [{"range": [150, 210], "cue": "one", "query": "one", "source": "stock",
+                       "mode": "full", "need": "action"}]}
+    d = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                     prefs={"broll": True, "broll_coverage": "full", "broll_mode": "full"}).model_dump()
+    assert len(d["broll"]) >= 4, "one weak cue must not suppress the density top-up"
+
+
+def test_topup_respects_occupied_windows_and_spacing():
+    # No top-up cutaway lands within `spacing` (60f under coverage=full) of the plan's own cutaway.
+    w = _alpha_words(120)
+    plan = {"broll": [{"range": [300, 360], "cue": "one", "query": "one", "source": "stock",
+                       "mode": "full", "need": "action"}]}
+    d = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                     prefs={"broll": True, "broll_coverage": "full", "broll_mode": "full"}).model_dump()
+    ins = sorted(d["broll"], key=lambda b: b["src_in"])
+    for a, b in zip(ins, ins[1:]):
+        assert b["src_in"] - a["src_out"] >= 60, "top-up violated spacing"
+
+
+def test_coverage_full_tightens_spacing():
+    # Two cues ~70f apart: both survive under coverage=full (60f spacing); the 2nd drops without it.
+    w = _alpha_words(60)
+    plan = {"broll": [
+        {"range": [150, 210], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [285, 345], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
+    ]}
+    cov = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                       prefs={"broll": True, "broll_coverage": "full"}).model_dump()
+    plain = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                         prefs={"broll": True}).model_dump()
+    # coverage=full also tops up, so assert the tight PAIR both survive there:
+    assert any(b["cue_text"] == "a" for b in cov["broll"]) and any(b["cue_text"] == "b" for b in cov["broll"])
+    assert len([b for b in plain["broll"] if b["cue_text"] in ("a", "b")]) == 1  # default spacing drops one

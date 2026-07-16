@@ -67,3 +67,18 @@ test("GreenScreen and DuetSplit text_card rendering goes through cardFit (no unc
   }
   assert.deepEqual(offenders, [], `text_card composition not using cardFit: ${offenders.join(", ")}`);
 });
+
+test("TalkingHead and BrollCutaway render text cards via TextCardOverlay (literal-need fallback visible)", () => {
+  // Realism pass: the literal-need text_card fallback was invisible on the face styles that use
+  // b-roll (TextStickers renders only text_sticker). These now mount TextCardOverlay so a
+  // "text card beats a wrong clip" cue actually appears.
+  const offenders: string[] = [];
+  for (const file of ["TalkingHead.tsx", "BrollCutaway.tsx"]) {
+    const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, file), "utf8");
+    if (!/<TextCardOverlay\b/.test(content)) offenders.push(file);
+  }
+  assert.deepEqual(offenders, [], `face style missing TextCardOverlay: ${offenders.join(", ")}`);
+  // and the overlay itself routes through cardFit (no unclamped overflow path)
+  const overlay = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "TextCardOverlay.tsx"), "utf8");
+  assert.ok(/cardFit\(/.test(overlay), "TextCardOverlay must size text via cardFit");
+});
