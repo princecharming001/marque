@@ -953,9 +953,14 @@ def test_punch_in_and_text_card_gated_by_style():
     _, tc_ok = apply_edl_ops({**_base_edl(), "style": "green_screen"},
                              [{"type": "add_text_card", "start_frame": 10, "end_frame": 50, "text": "hi"}])
     assert tc_ok[0]["applied"] is True                   # green_screen draws text cards
-    _, tc_no = apply_edl_ops(_base_edl(),
+    # Realism pass: talking_head (and broll_cutaway) NOW draw text cards too (TextCardOverlay), so
+    # the literal-need fallback is visible on the styles that use b-roll.
+    _, tc_th = apply_edl_ops(_base_edl(),
                              [{"type": "add_text_card", "start_frame": 10, "end_frame": 50, "text": "hi"}])
-    assert tc_no[0]["applied"] is False                  # talking_head does not
+    assert tc_th[0]["applied"] is True                   # talking_head now draws text cards
+    _, tc_no = apply_edl_ops({**_base_edl(), "style": "fast_cuts"},
+                             [{"type": "add_text_card", "start_frame": 10, "end_frame": 50, "text": "hi"}])
+    assert tc_no[0]["applied"] is False                  # fast_cuts (montage recap) does not
 
 
 def test_set_music_query_only_rejected_with_reason():

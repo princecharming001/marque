@@ -817,6 +817,17 @@ def test_get_clip_job():
     assert b["mode"] in ("live", "mock")
 
 
+def test_get_clip_job_surfaces_broll_log():
+    # Observability: the per-cue b-roll decisions must be readable via the API for live QC.
+    job_id = seed_clip_job(source_url="https://example.com/footage.mov", style="broll_cutaway", formats=["talking_head_broll"])
+    main._clip_jobs[job_id]["broll_log"] = [
+        {"need": "action", "cue": "lifting", "tier": "stock", "action": "broll"},
+        {"need": "entity", "cue": "the app", "tier": "none", "action": "text_card", "why": "vision_reject"},
+    ]
+    b = client.get(f"/v1/clips/{job_id}").json()
+    assert b.get("broll_log") and b["broll_log"][1]["action"] == "text_card"
+
+
 def test_get_clip_job_not_found():
     r = client.get("/v1/clips/nonexistent-job-id")
     assert r.status_code == 404

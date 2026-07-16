@@ -45,9 +45,7 @@ def test_rerank_vision_pick_chooses_index(monkeypatch):
     assert _run(main._rerank_broll("cue", cands)) == "b.mp4"
 
 
-def test_rerank_vision_none_falls_back_top1(monkeypatch):
-    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
-
+def _thumb_client():
     class _Resp:
         status_code = 200
         content = b"jpeg"
@@ -55,13 +53,31 @@ def test_rerank_vision_none_falls_back_top1(monkeypatch):
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
         async def get(self, url): return _Resp()
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
+    return lambda *a, **k: _Client()
+
+
+def test_rerank_vision_none_rejects_when_keyed(monkeypatch):
+    # Realism pass: keyed vision failure/reject NO LONGER falls back to top-1 — it returns None
+    # so the caller retries a simpler query and then degrades to a punch-in (never a wrong clip).
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    monkeypatch.setattr(main.httpx, "AsyncClient", _thumb_client())
 
     async def fake_pick(cue, thumbs, dossier):
         return None
     monkeypatch.setattr(main, "_broll_vision_pick", fake_pick)
     cands = [{"link": "a.mp4", "thumb": "t1"}, {"link": "b.mp4", "thumb": "t2"}]
-    assert _run(main._rerank_broll("cue", cands)) == "a.mp4"
+    assert _run(main._rerank_broll("cue", cands)) is None
+
+
+def test_rerank_vision_reject_returns_none(monkeypatch):
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    monkeypatch.setattr(main.httpx, "AsyncClient", _thumb_client())
+
+    async def fake_pick(cue, thumbs, dossier):
+        return -1                                    # judge rejected all as unrelated
+    monkeypatch.setattr(main, "_broll_vision_pick", fake_pick)
+    cands = [{"link": "a.mp4", "thumb": "t1"}, {"link": "b.mp4", "thumb": "t2"}]
+    assert _run(main._rerank_broll("cue", cands)) is None
 
 
 def test_fetch_candidates_keyless_empty(monkeypatch):
@@ -160,3 +176,100 @@ def test_meme_unresolved_drops_not_stock_or_card(monkeypatch):
     assert out["broll"] == []                              # dropped — no stock stand-in
     assert not out.get("overlays")                         # and no text card
     assert any(e["action"] == "dropped" for e in out.get("_broll_log", []))
+
+
+def test_giphy_mp4_only_no_gif_fallback(monkeypatch):
+    # Realism pass: a GIPHY result with NO mp4 rendition is OMITTED (a raw .gif renders frozen
+    # on Lambda — no candidate beats a frozen one). Only the mp4 result survives.
+    monkeypatch.setattr(main, "GIPHY_KEY", "gk")
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"data": [
+                {"images": {"original": {"url": "https://giphy/gifonly.gif"},   # no mp4 → dropped
+                            "original_still": {"url": "s1"}}},
+                {"images": {"original": {"mp4": "https://giphy/ok.mp4", "url": "https://giphy/ok.gif"},
+                            "original_still": {"url": "s2"}}},
+            ]}
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None): return _Resp()
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    out = _run(main._fetch_giphy_candidates("mind blown", 5))
+    assert out == [{"link": "https://giphy/ok.mp4", "thumb": "s2"}]   # gif-only omitted
+
+
+def test_tenor_mp4_only(monkeypatch):
+    monkeypatch.setattr(main, "TENOR_KEY", "tk")
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"results": [
+                {"media_formats": {"gif": {"url": "https://tenor/x.gif"}}},        # no mp4 → dropped
+                {"media_formats": {"mp4": {"url": "https://tenor/x.mp4"},
+                                   "gifpreview": {"url": "s"}}},
+            ]}
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None): return _Resp()
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    out = _run(main._fetch_tenor_candidates("mind blown", 5))
+    assert out == [{"link": "https://tenor/x.mp4", "thumb": "s"}]
+
+
+def test_simplify_broll_query():
+    assert main._simplify_broll_query("the barbell deadlift form is wrong") == "barbell deadlift form"
+    assert main._simplify_broll_query("a big one") == ""            # all stopwords / short
+
+
+def test_resolve_broll_retries_simplified_query(monkeypatch):
+    # Vision rejects the (cinematic) query → retry ONCE with the short literal query; resolve on retry.
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    main._broll_url_cache.clear(); main._broll_rejected.clear()
+    fetches = []
+    async def fake_fetch(q, n):
+        fetches.append(q)
+        return [{"link": "clip.mp4", "thumb": "t"}]
+    calls = {"n": 0}
+    async def fake_rerank(cue, cands, dossier):
+        calls["n"] += 1
+        return None if calls["n"] == 1 else "clip.mp4"   # reject first, accept the simplified retry
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_fetch)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+
+    edl = {"broll": [{"broll_query": "founder typing in a dark neon office",
+                      "cue_text": "the founder ships code", "need": "action",
+                      "src_in": 100, "src_out": 190, "source": "stock"}]}
+    out = _run(main._resolve_broll(edl))
+    assert out["broll"] and out["broll"][0]["resolved_url"] == "clip.mp4"
+    assert len(fetches) == 2                              # original + one simplified retry
+    assert fetches[1] == "founder ships code"            # the literal fallback query
+
+
+def test_unresolved_action_degrades_to_punch_in(monkeypatch):
+    # action cue, vision rejects everything, retry also fails → face-keeping PUNCH-IN, not a wrong clip.
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    main._broll_url_cache.clear(); main._broll_rejected.clear()
+    async def fake_fetch(q, n):
+        return [{"link": "wrong.mp4", "thumb": "t"}]
+    async def always_reject(cue, cands, dossier):
+        return None
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_fetch)
+    monkeypatch.setattr(main, "_rerank_broll", always_reject)
+
+    edl = {"style": "broll_cutaway",
+           "broll": [{"broll_query": "abstract momentum", "cue_text": "the whole process moves fast",
+                      "need": "action", "src_in": 200, "src_out": 290, "source": "stock"}]}
+    out = _run(main._resolve_broll(edl))
+    assert out["broll"] == []                             # no wrong stock clip kept
+    punch = [o for o in out.get("overlays", []) if o["type"] == "punch_in"]
+    assert len(punch) == 1 and punch[0]["src_in"] == 200  # degraded to a punch-in at the cue
+    assert any(e["action"] == "punch_in" for e in out["_broll_log"])

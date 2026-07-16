@@ -181,9 +181,11 @@ def test_tweak_rerender_never_generates(monkeypatch):
     monkeypatch.setattr(main, "_fetch_pexels_candidates", no_candidates)
     monkeypatch.setattr(main.higgsfield_mod, "generate_broll", must_not_run)
 
-    edl = {"broll": [{"broll_query": "nothing matches", "cue_text": "c", "source": "stock"}]}
+    edl = {"broll": [{"broll_query": "nothing matches", "cue_text": "c", "need": "action", "source": "stock"}]}
     out = asyncio.run(main._resolve_broll(edl, allow_generation=False))
-    assert out["broll"][0].get("resolved_url") is None   # honestly unresolved, no burn
+    # No burn: nothing resolved to a real clip (the action cue degraded to a face-keeping punch-in
+    # rather than generating one). The load-bearing assertion is `must_not_run` never firing.
+    assert not any(b.get("resolved_url") for b in out["broll"])
 
 
 def test_failed_generation_negative_cached(monkeypatch):

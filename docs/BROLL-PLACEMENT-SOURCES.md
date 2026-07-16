@@ -197,3 +197,30 @@ may breathe). Meme is capped at 75f even in panel (jokes die held).
 "exact right cadence" (left to the creator's own A/B loop). Direction encoded, magnitudes stay
 conservative. Research-gap register updated: *shorter-hold dose-response*, *meme-on-info-beat lift*,
 *panel-meme vs full-meme* now have live flags (`BROLL_MEMES`) to measure per-creator.
+
+---
+
+## Part 6 — 2026-07-16 realism pass (owner: "generic, too long, too few")
+
+Live output read as generic stock, held too long, and too sparse. Root causes (all live code, now fixed):
+1. **Too long** — panel/card `partial_max` was 90–150f (3–5s) and iOS forces that mode on every
+   insert; panel/card were exempt from hook/CTA + the 40% budget. **Fix:** partial caps 75/90/105f
+   (entity/evidence/action), a combined **50% total-visual budget** counting all modes, and a
+   **hold-bias** (`span > 2×max → lo+15`) so a long phrase cuts back to the face instead of pinning at max.
+2. **Too few** — the floor fired ONLY on an empty plan (one weak LLM cue suppressed it) and chat-edit
+   sent no `broll_coverage` → no floor + literal cues → invisible text cards. **Fix:** a **density
+   TOP-UP** (coverage=full → ~1 per 9s, fills the gaps the plan left), coverage tightens spacing to
+   60f, iOS chat-edit + a server default both send coverage for b-roll formats, and **text cards now
+   render on TalkingHead/BrollCutaway** (`TextCardOverlay`), so literal-need fallbacks are visible.
+3. **Generic / unrelated** — the vision re-rank always returned top-1 of 6 (no reject). **Fix:** the
+   judge may **reject all** (best_index −1); on reject → **retry once** with a short literal query
+   (first 2–3 content words), then **degrade action/concept to a punch-in** (face-keeping change,
+   never a wrong clip); candidate pool 6→10; query-rewrite now targets short literal queries, not
+   cinematic phrases.
+4. **Frozen** — GIPHY/Tenor `.gif` fallbacks rendered frozen on Lambda. **Fix:** MP4-only (drop the
+   gif fallback); own-media stills get a stronger Ken-Burns push.
+
+Observability: `broll_log` (per-cue tier/action/why) is now returned by `GET /v1/clips/{id}`.
+Encoded numbers stay Tier-2 (practitioner cutaway holds 1.5–3s, insert every ~4–9s, 60/40 A:B); the
+relevance-vs-density tension is resolved by making the ASSEMBLER guarantee density (top-up + punch-in
+degradation) so the author only judges relevance.
