@@ -5,6 +5,7 @@ import { AudioMix } from "../components/AudioMix";
 import { TextStickers } from "../components/TextStickers";
 import { Grade } from "../components/Grade";
 import { BrollLayer } from "../components/BrollLayer";
+import { TextCardOverlay } from "../components/TextCardOverlay";
 import { Captions } from "../components/Captions";
 import { usePunchScale } from "../components/PunchZoom";
 import { MontageIntro } from "../components/MontageIntro";
@@ -26,6 +27,7 @@ export const BrollCutaway: React.FC<CompositionProps> = ({ sourceUrl, edl }) => 
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
       </AbsoluteFill>
       {edl && <BrollLayer broll={edl.broll} />}
+      {edl && <TextCardOverlay overlays={edl.overlays} />}
       {edl && <MontageIntro montage={edl.montage} />}
       {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}

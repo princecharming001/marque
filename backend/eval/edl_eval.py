@@ -116,21 +116,24 @@ def check_caption_coverage(plan: dict, words: list[dict]) -> list[str]:
     return []
 
 
-def check_broll_grammar(plan: dict, total_out: int) -> list[str]:
+def check_broll_grammar(plan: dict, total_out: int, min_spacing: int = BROLL_MIN_SPACING) -> list[str]:
     fails: list[str] = []
     brolls = sorted((b for b in plan.get("broll") or []), key=lambda b: b.get("frame_in", 0))
     prev_out = None
     for b in brolls:
         fi, fo = b.get("frame_in", 0), b.get("frame_out", 0)
+        # panel/card keep the face visible → exempt from hook/CTA protection (only full-frame hides
+        # the face). coverage=full fixtures pass min_spacing=60 (the creator asked for b-roll).
+        is_full = (b.get("mode") or "full") == "full"
         hold = fo - fi
         if hold < BROLL_MIN_HOLD or hold > BROLL_MAX_HOLD:
             fails.append(f"broll_hold: {hold}f hold outside [{BROLL_MIN_HOLD},{BROLL_MAX_HOLD}]")
-        if fi < HOOK_PROTECT_FRAMES:
-            fails.append(f"broll_hook: b-roll at f{fi} covers the hook (< {HOOK_PROTECT_FRAMES})")
-        if total_out and fo > total_out - CTA_PROTECT_FRAMES:
-            fails.append(f"broll_cta: b-roll ends at f{fo} inside the CTA (> {total_out - CTA_PROTECT_FRAMES})")
-        if prev_out is not None and fi - prev_out < BROLL_MIN_SPACING:
-            fails.append(f"broll_spacing: {fi - prev_out}f gap (< {BROLL_MIN_SPACING})")
+        if is_full and fi < HOOK_PROTECT_FRAMES:
+            fails.append(f"broll_hook: full-frame b-roll at f{fi} covers the hook (< {HOOK_PROTECT_FRAMES})")
+        if is_full and total_out and fo > total_out - CTA_PROTECT_FRAMES:
+            fails.append(f"broll_cta: full-frame b-roll ends at f{fo} inside the CTA (> {total_out - CTA_PROTECT_FRAMES})")
+        if prev_out is not None and fi - prev_out < min_spacing:
+            fails.append(f"broll_spacing: {fi - prev_out}f gap (< {min_spacing})")
         prev_out = fo
     return fails
 
