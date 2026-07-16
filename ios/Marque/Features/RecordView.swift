@@ -592,7 +592,9 @@ struct RecordView: View {
     }
 
     @ViewBuilder private var mimicSection: some View {
-        if !brollStyles.isEmpty {
+        // The b-roll style picker belongs to "Talking Head + B-roll" only — plain Talking Head
+        // has no b-roll, so the "what kind of b-roll" choice would be meaningless there.
+        if editFormat == .talkingHeadBroll, !brollStyles.isEmpty {
             VStack(alignment: .leading, spacing: Space.xs) {
                 Text("B-ROLL STYLE — PICK A LOOK")
                     .font(AppFont.micro).tracking(Track.label)
@@ -676,23 +678,26 @@ struct RecordView: View {
         brollStyles = opts
     }
 
-    /// Every composition style involves some visual treatment now (there's no "none"
-    /// option), so b-roll cutaways stay available; the picked style steers the LOOK.
+    /// B-roll is available only for the "Talking Head + B-roll" format — plain Talking Head
+    /// keeps it off (and hides the picker). The picked style steers the LOOK.
     private func syncBrollToggle() {
-        briefToggles.broll = true
+        briefToggles.broll = (editFormat == .talkingHeadBroll)
     }
 
-    /// The config dict the pick maps to: cutaway/panel/card force every b-roll insert's
-    /// mode (config.broll_mode); green_screen/split_screen override the whole job style
-    /// (config.composition_style) since they're full composition treatments, not b-roll.
+    /// The config dict the pick maps to. cutaway/panel/card force every b-roll insert's mode
+    /// (broll_mode) AND signal that b-roll is explicitly wanted (broll_coverage:"full") so the
+    /// backend GUARANTEES b-roll appears (synthesizes a floor if the AI plan emits none).
+    /// green_screen/split_screen override the whole job style (composition_style). Nil for
+    /// plain Talking Head (no b-roll).
     private func brollConfig() -> [String: String]? {
+        guard editFormat == .talkingHeadBroll else { return nil }
         switch selectedBrollStyle {
-        case "cutaway": return ["broll_mode": "full"]
-        case "panel":   return ["broll_mode": "panel"]
-        case "card":    return ["broll_mode": "card"]
+        case "cutaway": return ["broll_mode": "full",  "broll_coverage": "full"]
+        case "panel":   return ["broll_mode": "panel", "broll_coverage": "full"]
+        case "card":    return ["broll_mode": "card",  "broll_coverage": "full"]
         case "green_screen", "split_screen":
             return ["composition_style": selectedBrollStyle]
-        default: return nil
+        default: return ["broll_coverage": "full"]   // format is TH+broll but no style yet → still want b-roll
         }
     }
 

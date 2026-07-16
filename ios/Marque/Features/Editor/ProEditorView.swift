@@ -31,6 +31,7 @@ struct ProEditorView: View {
     @State var applyTask: Task<Void, Never>?
     @State var renderStartedAt: Date?
     @State var transient: String?
+    @State var editorRecoverable = false        // gone job + local footage → offer re-create
     @State var showMusicSheet = false
     @State var showTextCardAlert = false
     @State var showStickerInput = false
