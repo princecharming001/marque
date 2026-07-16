@@ -16,7 +16,7 @@ import re
 # sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
 # v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
 # the "finishing" filter preset.
-PLAN_SCHEMA_VERSION = 5   # v5: broll.mode (panel/card), layout.speaker_treatment/pip_position, montage
+PLAN_SCHEMA_VERSION = 6   # v5: broll.mode (panel/card), layout.speaker_treatment/pip_position, montage
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -339,6 +339,7 @@ class CaptionOptions(BaseModel):
     stroke_px: float = 0.0                  # dual-span outline width (Hormozi/Submagic look); see Captions.tsx
     sync_lead_frames: int = 0               # words appear this many frames BEFORE their spoken start
     highlight_persist_frames: int = 0       # karaoke: extend a word's "popped" state this many frames past its end
+    bg: str = ""                            # schema v6: rounded background pill ("" = none; #RRGGBB[AA])
 
 
 class EDL(BaseModel):
@@ -1358,6 +1359,17 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         changed.append("highlight_persist_frames")
                     except (TypeError, ValueError):
                         bad = f"bad highlight_persist_frames '{op.get('highlight_persist_frames')}'"
+                # schema v6: background pill. "none"/"" clears it; else a #RRGGBB or #RRGGBBAA hex.
+                if not bad and op.get("bg") is not None:
+                    _bg = str(op.get("bg") or "").strip()
+                    if _bg in ("", "none"):
+                        cur["bg"] = ""
+                        changed.append("bg")
+                    elif re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", _bg):
+                        cur["bg"] = _bg
+                        changed.append("bg")
+                    else:
+                        bad = f"bad bg '{_bg}'"
                 # Keyword highlight list — normalized to lowercase alphanumerics, capped.
                 if not bad and op.get("highlight_words") is not None:
                     hw = op.get("highlight_words")

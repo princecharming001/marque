@@ -63,6 +63,9 @@ export interface CaptionOptions {
   stroke_px?: number;                  // outlined-caption look (Hormozi/Submagic); dual-span, see Captions.tsx
   sync_lead_frames?: number;           // words appear this many frames BEFORE their spoken start (doctrine: 100-200ms early)
   highlight_persist_frames?: number;   // karaoke: extend a word's "filled" state this many frames past its end
+  // schema v6 (additive/defaulted, "" = none): a rounded background pill behind the caption
+  // (CapCut "boxed" / TikTok solid-bg / Beast word-box look). #RRGGBB or #RRGGBBAA.
+  bg?: string;
 }
 
 // Audio plan (output coords for volume_ranges; music plays across the whole output).
@@ -125,7 +128,7 @@ export interface RenderPlan {
 // the "finishing" filter preset.
 // v5 (Addendum composition modes): broll.mode (panel/card), layout.speaker_treatment/
 // pip_position (SourcePip), montage (listicle hook flash). All additive/defaulted.
-export const PLAN_SCHEMA_VERSION = 5;
+export const PLAN_SCHEMA_VERSION = 6;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a

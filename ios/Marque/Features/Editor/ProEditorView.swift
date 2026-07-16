@@ -371,12 +371,8 @@ struct ProEditorView: View {
                         drawerButton("Edit captions", "list.bullet.rectangle") { showCaptionList = true }
                             .accessibilityIdentifier("editorPro.editCaptions")
                     }
-                    if captionsOn {
-                        ForEach(["clean", "bold-word", "karaoke"], id: \.self) { st in
-                            drawerButton(st.capitalized, "textformat", active: session?.draft.captionStyle == st) { setCaptionStyle(st) }
-                                .accessibilityIdentifier("editorPro.capStyle.\(st)")
-                        }
-                    }
+                    // Style is now a dedicated 10-preset picker row below (captionStyleRow),
+                    // not individual drawer buttons.
                     // #5: text card is only supported for green-screen / duet styles — gate the
                     // button so a talking-head creator doesn't type one only to be rejected.
                     if textCardsSupported {
@@ -420,7 +416,8 @@ struct ProEditorView: View {
         // grouping/font are the knobs creators actually touch) — its own row so the
         // presets row stays scannable.
         if mode == .text, captionsOn {
-            captionOptionsRow
+            captionStyleRow      // 10 popular styles
+            captionOptionsRow    // fine-tune: position (all at once) / accent / case / grouping / font
         }
         // CapCut Speed → Normal: slider + chips, committed as ONE op on release (UX-4).
         if let seg = speedPanelSeg {
@@ -597,10 +594,48 @@ struct ProEditorView: View {
         AdjustKnob(label: label, initial: value, range: range, commit: commit)
     }
 
-    private var captionOptionsRow: some View {
-        let o = session?.draft.captionOptions ?? EditorCaptionOptions()
+    // The 10 popular caption styles (Feature 2). Each chip carries a color swatch + name and
+    // applies the full preset (base style + font/caps/color/outline/box) on tap.
+    private var captionStyleRow: some View {
+        let activeId = activeCaptionPresetId()
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
+                ForEach(CaptionPreset.all) { p in
+                    Button { applyCaptionPreset(p) } label: {
+                        HStack(spacing: 6) {
+                            Circle().fill(p.swatch).frame(width: 12, height: 12)
+                                .overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.5))
+                            Text(p.label).font(.system(size: 11, weight: activeId == p.id ? .bold : .medium))
+                        }
+                        .foregroundStyle(activeId == p.id ? Palette.ink : .white)
+                        .padding(.horizontal, 10).frame(height: 30)
+                        .background(activeId == p.id ? Palette.onInk : Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editorPro.capPreset.\(p.id)")
+                }
+            }
+            .padding(.horizontal, Space.md)
+        }
+        .frame(height: 42)
+        .background(Palette.ink.opacity(0.25))
+        .accessibilityIdentifier("editorPro.captionStyleRow")
+    }
+
+    private var captionOptionsRow: some View {
+        let o = session?.draft.captionOptions ?? EditorCaptionOptions()
+        // The current effective vertical anchor (a discrete position enum, or the continuous
+        // pos_y drag override) — used to light the matching position chip.
+        let curY = o.posY ?? (o.position == "top" ? 0.20 : o.position == "middle" ? 0.46 : 0.74)
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.sm) {
+                // POSITION — shift ALL captions at once (one track-wide pos_y). Also draggable on canvas.
+                ForEach([("Top", 0.20), ("Mid", 0.46), ("Low", 0.74)], id: \.0) { label, y in
+                    optChip(label, active: abs(curY - y) < 0.06) { setCaptionPosition(y) }
+                        .accessibilityIdentifier("editorPro.capPos.\(label)")
+                }
+                optDivider
                 // Accent swatches — one accent per video (slash = the style's default color).
                 colorSwatch(nil, active: o.accent == nil)
                 ForEach(["#FFD60A", "#34D399", "#F472B6", "#60A5FA"], id: \.self) { hex in
@@ -610,12 +645,6 @@ struct ProEditorView: View {
                 // CapCut "auto-highlight keywords" — paints notable words in the accent color.
                 optChip("Keywords", active: !o.highlightWords.isEmpty) { toggleKeywordHighlight() }
                     .accessibilityIdentifier("editorPro.capKeywords")
-                optDivider
-                // Size + position moved ONTO the canvas (TikTok model): drag the caption
-                // to place it, pinch to resize. The hint earns its row space once.
-                Text("Drag caption to move · pinch to resize")
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.5))
-                    .accessibilityIdentifier("editorPro.capHint")
                 optDivider
                 optChip("AA", active: o.uppercase) { mutate([.captionOptions(uppercase: !o.uppercase)]) }
                     .accessibilityIdentifier("editorPro.capCase")
@@ -1402,7 +1431,13 @@ struct ProEditorView: View {
                             .shadow(radius: 4)
                     }
                 }
-                .padding(.horizontal, 10).padding(.vertical, 4)
+                .padding(.horizontal, o.bg.isEmpty ? 10 : 14).padding(.vertical, o.bg.isEmpty ? 4 : 6)
+                // v6: live preview of the background pill (Boxed / Bubble presets).
+                .background {
+                    if !o.bg.isEmpty {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous).fill(colorFromHex(o.bg))
+                    }
+                }
                 .accessibilityIdentifier("editorPro.captionSim")
                 // Selection affordance: dashed bounds in Text mode invite the drag;
                 // accent while a gesture is live (TikTok's selection box).

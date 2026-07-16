@@ -48,7 +48,14 @@ const DEFAULTS: CaptionOptions = {
   accent: null, uppercase: false, font: "inter",
   grouping: "phrase", highlight_words: [],   // P0.7: phrase default (stable 3-word chunks)
   stroke_px: 0, sync_lead_frames: 0, highlight_persist_frames: 0,   // A2 (schema v3)
+  bg: "",   // schema v6
 };
+
+// schema v6: a rounded background pill hugging the caption text (CapCut "boxed" / TikTok
+// solid-bg / Beast word-box look). Applied to an INNER fit-content wrapper so the box wraps
+// the words, not the full-frame block. "" (default) = no box, byte-identical to pre-v6 output.
+const boxStyle = (bg: string | null | undefined): React.CSSProperties =>
+  bg ? { backgroundColor: bg, borderRadius: 14, padding: "6px 20px" } : {};
 
 const wordEnd = (c: CaptionWord): number => c.end_frame ?? c.frame + LAYOUT.DEFAULT_WORD_FRAMES;
 
@@ -197,7 +204,8 @@ const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Captio
                            LAYOUT.CAPTION_MAX_LINES, LAYOUT.CAPTION_MIN_SHRINK, opts.font, 700, opts.uppercase);
   const estHeight = fit.fontSize * LINE_HEIGHT_FACTOR * fit.lines;
   return (
-    <div style={{ ...blockPosition(opts, estHeight), ...wrapStyle }}>
+    <div style={{ ...blockPosition(opts, estHeight), display: "flex", justifyContent: "center", padding: "0 40px" }}>
+     <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 8, ...boxStyle(opts.bg) }}>
       {group.map((c, i) => {
         const isActive = start + i === activeIdx;
         const hi = isHighlighted(c.word, opts);
@@ -212,6 +220,7 @@ const Clean: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Captio
           }} />
         );
       })}
+     </div>
     </div>
   );
 };
@@ -240,7 +249,9 @@ const BoldWord: React.FC<{ word: string; opts: CaptionOptions }> = ({ word, opts
       ...blockPosition(opts, estHeight),
       display: "flex", alignItems: "center", justifyContent: "center", padding: "0 60px",
     }}>
-      <Stroked text={word} style={baseStyle} strokePx={strokePx} />
+      <div style={{ display: "inline-flex", ...boxStyle(opts.bg) }}>
+        <Stroked text={word} style={baseStyle} strokePx={strokePx} />
+      </div>
     </div>
   );
 };
@@ -255,7 +266,8 @@ const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Capt
                            LAYOUT.CAPTION_MAX_LINES, LAYOUT.CAPTION_MIN_SHRINK, opts.font, 700, opts.uppercase);
   const estHeight = fit.fontSize * LINE_HEIGHT_FACTOR * fit.lines;
   return (
-    <div style={{ ...blockPosition(opts, estHeight), ...wrapStyle }}>
+    <div style={{ ...blockPosition(opts, estHeight), display: "flex", justifyContent: "center", padding: "0 40px" }}>
+     <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 8, ...boxStyle(opts.bg) }}>
       {group.map((c, i) => {
         const idx = start + i;
         const spoken = idx <= activeIdx;
@@ -282,6 +294,7 @@ const Karaoke: React.FC<{ captions: CaptionWord[]; activeIdx: number; opts: Capt
           }} />
         );
       })}
+     </div>
     </div>
   );
 };

@@ -228,6 +228,35 @@ extension ProEditorView {
     }
     func setCaptionStyle(_ s: String) { mutate([.captionStyle(s)]) }
 
+    /// Apply one of the 10 popular presets — sets the base render style AND a full options
+    /// bundle so every knob is defined (switching presets resets outline/color/box/font/caps).
+    func applyCaptionPreset(_ p: CaptionPreset) {
+        mutate([
+            .captionStyle(p.style),
+            .captionOptions(accent: p.accent ?? "default", uppercase: p.uppercase,
+                            font: p.font, grouping: p.grouping, strokePx: p.strokePx,
+                            bg: p.bg.isEmpty ? "none" : p.bg),
+        ])
+    }
+
+    /// The preset id whose full bundle matches the current caption options (for the picker's
+    /// active-chip highlight); nil when the creator has hand-tuned away from any preset.
+    func activeCaptionPresetId() -> String? {
+        guard let d = session?.draft else { return nil }
+        let o = d.captionOptions
+        return CaptionPreset.all.first {
+            $0.style == d.captionStyle && $0.font == o.font && $0.uppercase == o.uppercase
+                && ($0.accent ?? "") == (o.accent ?? "") && $0.strokePx == o.strokePx
+                && $0.grouping == o.grouping && $0.bg == o.bg
+        }?.id
+    }
+
+    /// Shift ALL captions at once — one track-wide pos_y (0.15…0.85). The three chips map to
+    /// safe top/middle/bottom anchors that clear the platform chrome.
+    func setCaptionPosition(_ y: Double) {
+        mutate([.captionOptions(posY: min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, y)))])
+    }
+
     /// R10: CapCut "auto-highlight keywords" — toggles the highlight list between empty
     /// and a heuristic pick of significant transcript words (5+ chars, non-stopword).
     func toggleKeywordHighlight() {
