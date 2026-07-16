@@ -93,3 +93,29 @@ def test_broll_floor_respects_face_protection_and_budget():
         assert b.src_out <= total - E._BROLL_CTA_PROTECT
     used = sum(b.src_out - b.src_in for b in out.broll if b.mode == "full")
     assert used <= E._BROLL_RUNTIME_BUDGET * total + 1   # ≤40% budget still enforced
+
+
+# ── Fix 3b: own_media cue falls back to stock when b-roll is forced ───────────
+
+def test_forced_broll_own_media_cue_falls_back_to_stock(monkeypatch):
+    import asyncio, main
+    monkeypatch.setattr(main, "PEXELS_KEY", "fake")
+    async def _cands(q, n): return [{"url": "http://stock/clip.mp4"}]
+    async def _rerank(cue, cands, dossier): return "http://stock/clip.mp4"
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", _cands)
+    monkeypatch.setattr(main, "_rerank_broll", _rerank)
+    # An own_media cue with NO corpus: without force it stays unresolved (invisible); WITH
+    # force it falls back to stock and becomes a real, kept cutaway.
+    edl = {"broll": [{"src_in": 100, "src_out": 160, "cue_text": "gym equipment",
+                      "broll_query": "gym equipment", "source": "own_media", "need": "entity"}],
+           "overlays": []}
+    out_no = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._resolve_broll({"broll": [dict(edl["broll"][0])], "overlays": []},
+                            allow_generation=False, force_broll=False))
+    assert not (out_no["broll"] and out_no["broll"][0].get("resolved_url"))   # unresolved w/o force
+    out_yes = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+        main._resolve_broll({"broll": [dict(edl["broll"][0])], "overlays": []},
+                            allow_generation=False, force_broll=True))
+    assert out_yes["broll"], "forced own_media cue must survive as a stock cutaway"
+    assert out_yes["broll"][0].get("resolved_url") == "http://stock/clip.mp4"
+    assert out_yes["broll"][0].get("source") == "stock"
