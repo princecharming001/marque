@@ -63,6 +63,20 @@ struct EditorTimeline: View {
         CGFloat(framesToSeconds(outputFrames(frames, speed: speed))) * pointsPerSecond
     }
 
+    /// During a LEADING-edge trim drag, shift the whole content strip so the DRAGGED edge tracks
+    /// the finger and the trailing edge + every downstream clip stay visually stationary. The clip
+    /// cell lives in a left-anchored HStack, so a width change alone pins the LEFT edge and moves
+    /// the RIGHT edge (and all following clips) — the "extends/detracts from both sides" bug. A
+    /// trailing drag already moves the correct (dragged) edge, so it needs no shift (returns 0).
+    private var trimContentShift: CGFloat {
+        guard let t = trimPreview, t.edge == .leading,
+              let c = clips.first(where: { $0.segIdx == t.segIdx }) else { return 0 }
+        let baseW = max(30, width(c.keptFrames, speed: c.speed))
+        let prevW = max(30, width(previewFrames(segIdx: c.segIdx, base: c.keptFrames,
+                                                srcIn: c.srcIn, srcOut: c.srcOut), speed: c.speed))
+        return baseW - prevW      // >0 (inward trim) shifts content right so the right edge holds
+    }
+
     var body: some View {
         GeometryReader { geo in
             let mid = geo.size.width / 2
@@ -89,7 +103,7 @@ struct EditorTimeline: View {
                     if musicName != nil || showMusicAdd { musicLane }
                 }
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
-                .offset(x: -playheadOffset)    // content scrolls under the fixed playhead
+                .offset(x: -playheadOffset + trimContentShift)   // scroll + leading-trim rubber-band
                 laneGutter                     // CapCut track heads, pinned at the left edge
                 // Fixed center playhead
                 Rectangle().fill(Palette.accent).frame(width: 2)
@@ -152,11 +166,20 @@ struct EditorTimeline: View {
     }
 
     /// How far this clip's edge can GROW outward (restore previously-trimmed footage):
-    /// the extent of the drop that abuts the edge; 0 when nothing was trimmed there.
+    /// the extent of the drop that abuts the edge; 0 when nothing was trimmed there. Clamped to
+    /// the segment's OWN raw source bounds — the commit (ProEditorView+Actions.trim) never restores
+    /// past seg.srcIn/srcOut, so a drop that crosses the segment boundary must not let the
+    /// rubber-band overshoot what will actually commit.
     private func restorableFrames(edge: TrimEdge, srcIn: Int, srcOut: Int) -> Int {
         for d in document.drops {
-            if edge == .leading, d.srcOut == srcIn { return d.srcOut - d.srcIn }
-            if edge == .trailing, d.srcIn == srcOut { return d.srcOut - d.srcIn }
+            if edge == .leading, d.srcOut == srcIn {
+                let segLo = document.segments.first(where: { $0.srcIn <= srcIn && srcIn <= $0.srcOut })?.srcIn ?? d.srcIn
+                return srcIn - max(d.srcIn, segLo)
+            }
+            if edge == .trailing, d.srcIn == srcOut {
+                let segHi = document.segments.first(where: { $0.srcIn <= srcOut && srcOut <= $0.srcOut })?.srcOut ?? d.srcOut
+                return min(d.srcOut, segHi) - srcOut
+            }
         }
         return 0
     }

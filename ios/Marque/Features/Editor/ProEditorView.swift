@@ -60,8 +60,9 @@ struct ProEditorView: View {
     @State var activeThemeId: String = ""
     @State var showThemeSheet = false
     @State var rethemeTask: Task<Void, Never>?
-    @State var selfReview: [String: Any]?
-    @State var lint: [String: Any]?
+    // Declutter disclosures: caption fine-tune knobs + manual Adjust knobs hide by default.
+    @State var showCaptionCustomize = false
+    @State var showFilterAdvanced = false
     // FP1: canvas gestures — live drafts for caption drag/pinch + sticker drag/pinch.
     @State var capDragY: Double? = nil
     @State var capPinch: Double? = nil
@@ -154,6 +155,9 @@ struct ProEditorView: View {
         }
         .onChange(of: mode) { _, m in
             if m == .filters, filterPreviewImage == nil { Task { await loadFilterPreview() } }
+            // Collapse the declutter disclosures when leaving their tab so each opens fresh.
+            if m != .text { showCaptionCustomize = false }
+            if m != .filters { showFilterAdvanced = false }
         }
         // R10: keyboard-first text commits when the on-canvas field loses focus.
         .onChange(of: stickerFieldFocused) { _, focused in
@@ -358,6 +362,10 @@ struct ProEditorView: View {
                                 .accessibilityIdentifier("editorPro.clipVolume")
                                 .onAppear { clipVolDraft = clipVolume(seg) }
                         }
+                        // Mute lives here now (was in the context strip) — all clip audio on one surface.
+                        drawerButton(mutedState(seg) ? "Unmute" : "Mute",
+                                     mutedState(seg) ? "speaker.slash.fill" : "speaker.wave.2") { toggleMute(seg); bumpHaptic() }
+                            .accessibilityIdentifier("editorPro.muteToggle")
                     }
                 case .text:
                     drawerButton("Add text", "plus.square") { startTextEntry() }
@@ -371,6 +379,14 @@ struct ProEditorView: View {
                         drawerButton("Edit captions", "list.bullet.rectangle") { showCaptionList = true }
                             .accessibilityIdentifier("editorPro.editCaptions")
                     }
+                    if captionsOn {
+                        // Declutter: the fine-tune knobs (position/accent/case/grouping/font) hide
+                        // behind "Customize" so the 10-preset row stays the scannable default.
+                        drawerButton("Customize", "slider.horizontal.3", active: showCaptionCustomize) {
+                            withAnimation(.easeOut(duration: 0.15)) { showCaptionCustomize.toggle() }
+                        }
+                        .accessibilityIdentifier("editorPro.capCustomize")
+                    }
                     // Style is now a dedicated 10-preset picker row below (captionStyleRow),
                     // not individual drawer buttons.
                     // #5: text card is only supported for green-screen / duet styles — gate the
@@ -382,7 +398,7 @@ struct ProEditorView: View {
                 case .effects:
                     // #8: fall back to the LOCAL style capability when the server caps didn't
                     // load (keyless/network hiccup) so Zoom doesn't silently vanish.
-                    if punchInsSupported { drawerButton("Add zoom", "plus.magnifyingglass") { addPunchInOnHook() }.accessibilityIdentifier("editorPro.addPunchIn") }
+                    if punchInsSupported { drawerButton("Punch-in", "plus.magnifyingglass") { addPunchInOnHook() }.accessibilityIdentifier("editorPro.addPunchIn") }
                     // B-roll is universal now (Round 9) — the button opens the media panel
                     // so the creator picks stock vs their own photo/video.
                     drawerButton("Add b-roll", "photo.on.rectangle") {
@@ -394,39 +410,54 @@ struct ProEditorView: View {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
                 case .filters:
-                    // A7 feature #1: the style bundle picker — a coherent theme changes
-                    // captions+grade+interrupts+music together (never just one knob).
-                    if !themes.isEmpty {
-                        drawerButton("Theme", "paintpalette", active: !activeThemeId.isEmpty) { showThemeSheet = true }
-                            .accessibilityIdentifier("editorPro.themeButton")
-                    }
+                    // Filters has no chip drawer (this switch only renders for mode != .filters —
+                    // this case was dead). Its tools live in filterCardsRow + filterToolsRow below.
+                    EmptyView()
                 }
             }.padding(.horizontal, Space.md)
         }
         .frame(height: 52).background(Palette.ink.opacity(0.25))
         }
-        // Filters: visual thumbnail cards (real frame through each look) + intensity.
+        // Filters: visual thumbnail cards (real frame through each look) + a tools row
+        // (Theme + Advanced) + intensity when a filter is active. Manual color knobs (Adjust)
+        // hide behind "Advanced" to keep the idle Filters tab to two rows.
         if mode == .filters, !objectSelectionActive {
             filterCardsRow
+            filterToolsRow
             if session?.draft.look.filter != nil { filterIntensityRow }
-            // #8 AI report card — whatever the pipeline already computed, read-only.
-            if selfReview != nil || lint != nil { reportCardRow }
         }
-        // The caption customizer (research round: preset + accent/size/position/case/
-        // grouping/font are the knobs creators actually touch) — its own row so the
-        // presets row stays scannable.
+        // Captions: the 10-preset row is always the scannable default; the fine-tune knobs
+        // (position/accent/case/grouping/font) hide behind the "Customize" disclosure.
         if mode == .text, captionsOn {
             captionStyleRow      // 10 popular styles
-            captionOptionsRow    // fine-tune: position (all at once) / accent / case / grouping / font
+            if showCaptionCustomize { captionOptionsRow }
         }
         // CapCut Speed → Normal: slider + chips, committed as ONE op on release (UX-4).
         if let seg = speedPanelSeg {
             speedRow(seg)
         }
-        // CapCut Adjust: manual color knobs under the filter presets.
-        if mode == .filters {
+        // CapCut Adjust: manual color knobs, behind "Advanced".
+        if mode == .filters, !objectSelectionActive, showFilterAdvanced {
             adjustRow
         }
+    }
+
+    /// Filters tools: the Theme sheet (one-tap coherent look — captions+grade+music) plus an
+    /// "Advanced" toggle that reveals the manual Adjust knobs. Keeps the idle Filters tab tidy.
+    private var filterToolsRow: some View {
+        HStack(spacing: Space.sm) {
+            if !themes.isEmpty {
+                optChip("Theme", active: !activeThemeId.isEmpty) { showThemeSheet = true }
+                    .accessibilityIdentifier("editorPro.themeButton")
+            }
+            optChip("Advanced", active: showFilterAdvanced) {
+                withAnimation(.easeOut(duration: 0.15)) { showFilterAdvanced.toggle() }
+            }
+            .accessibilityIdentifier("editorPro.filterAdvanced")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Space.md)
+        .frame(height: 38).background(Palette.ink.opacity(0.25))
     }
 
     /// CapCut filter cards — each shows a representative frame with the look applied, a name
@@ -496,39 +527,6 @@ struct ProEditorView: View {
 
     /// #8 AI report card — the self-review vision score + issues, and the
     /// deterministic lint scoreboard, both surfaced read-only exactly as the
-    /// pipeline computed them (never faked when absent — the caller only shows
-    /// this row when at least one is present).
-    private var reportCardRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let review = selfReview {
-                HStack(spacing: 6) {
-                    Text("REVIEW").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
-                    if let score = review["score"] as? Int {
-                        Text("\(score)/100").font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
-                    }
-                    if let issues = review["issues"] as? [String], !issues.isEmpty {
-                        Text(issues.prefix(2).joined(separator: " · "))
-                            .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
-                    }
-                }
-            }
-            if let lint {
-                HStack(spacing: 6) {
-                    Text("LINT").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
-                    let errors = lint["errors"] as? Int ?? 0
-                    let warns = lint["warns"] as? Int ?? 0
-                    Text(errors > 0 ? "\(errors) issue\(errors == 1 ? "" : "s")" : (warns > 0 ? "\(warns) minor" : "clean"))
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(errors > 0 ? Color.orange : .white.opacity(0.8))
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, Space.md).padding(.vertical, 6)
-        .background(Palette.ink.opacity(0.25))
-        .accessibilityIdentifier("editorPro.reportCard")
-    }
-
     /// Grab a representative frame for the filter cards (middle of the first kept interval).
     private func loadFilterPreview() async {
         guard let fs = filmstrip else { return }
@@ -661,16 +659,8 @@ struct ProEditorView: View {
                     optChip(label, active: o.font == v) { mutate([.captionOptions(font: v)]) }
                         .accessibilityIdentifier("editorPro.capFont.\(v)")
                 }
-                optDivider
-                // A2 feature #2: one-tap Hormozi/Submagic preset — thick outlined caps,
-                // gold keyword color, word-by-word grouping. A real style-bundle theme
-                // (via retheme) does the same for the WHOLE clip; this is the quick,
-                // caption-only version for creators who just want the look.
-                optChip("Hormozi", active: o.font == "anton" && o.strokePx >= 8) {
-                    mutate([.captionOptions(accent: "#FFD93D", uppercase: true,
-                                            font: "anton", grouping: "word", strokePx: 10)])
-                }
-                .accessibilityIdentifier("editorPro.capHormoziPreset")
+                // (The one-tap "Hormozi" chip was removed — the presets row above already has a
+                // Hormozi preset (capPreset.hormozi); this fine-tune row is just the manual knobs.)
             }
             .padding(.horizontal, Space.md)
         }
@@ -1790,11 +1780,8 @@ struct ProEditorView: View {
             if seg != nil {
                 backChevron { clearSelection() }
             } else if mode == .edit {
-                contextButton("Add", "plus.rectangle.on.rectangle") {
-                    player?.pause()
-                    withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
-                }
-                .accessibilityIdentifier("editorPro.addMediaBtn")
+                // Declutter: media is added from the timeline "+" tile or Effects → "Add b-roll".
+                // This duplicate "Add" was removed; "Clean up" stays as the root Edit tool.
                 contextButton("Clean up", "wand.and.sparkles") {
                     player?.pause(); cleanupSkip = []
                     withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
@@ -1821,9 +1808,7 @@ struct ProEditorView: View {
             contextButton("Move ▶", "arrow.right") { moveSelected(by: 1); bumpHaptic() }
                 .disabled(!canMoveSelected(by: 1)).opacity(canMoveSelected(by: 1) ? 1 : 0.35)
                 .accessibilityIdentifier("editorPro.moveRight")
-            if mode == .sound, let s = seg {
-                contextButton(mutedState(s) ? "Unmute" : "Mute", "speaker.slash") { toggleMute(s); bumpHaptic() }
-            }
+            // (Mute moved to the Sound drawer next to Clip volume — all audio on one surface.)
             Spacer()
             if seg == nil {
                 Text("Tap a clip").font(AppFont.caption).foregroundStyle(.white.opacity(0.45))

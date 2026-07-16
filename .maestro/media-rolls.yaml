@@ -13,8 +13,10 @@ name: R9 — media rolls lane + add-media panel
     visible: { id: "editorPro.playPause" }
     timeout: 12000
 - tapOn: { id: "editorPro.coachDismiss", optional: true }
-# ADD MEDIA: Edit drawer → media panel
-- tapOn: { id: "editorPro.addMediaBtn" }
+# ADD MEDIA: Effects tab → "Add b-roll" → media panel (the duplicate context-strip "Add"
+# was removed in the declutter; media is added from Effects or the timeline "+" tile).
+- tapOn: { id: "editorPro.mode.effects" }
+- tapOn: { id: "editorPro.addBroll" }
 - extendedWaitUntil:
     visible: { id: "editorPro.mediaPanel" }
     timeout: 4000

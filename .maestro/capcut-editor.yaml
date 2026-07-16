@@ -27,8 +27,9 @@ name: R10 — CapCut mimicry (transport, filter cards, keywords, cleanup, fullsc
     visible: { id: "editorPro.filterIntensity" }
     timeout: 4000
 - takeScreenshot: /tmp/cc-02-filter-cards
-# KEYWORD HIGHLIGHT: Text mode → Keywords toggle paints notable words
+# KEYWORD HIGHLIGHT: Text mode → Customize (reveal fine-tune row) → Keywords toggle
 - tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.capCustomize" }
 - extendedWaitUntil:
     visible: { id: "editorPro.capKeywords" }
     timeout: 4000
