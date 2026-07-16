@@ -1174,8 +1174,9 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
     # Script-aware cutting: the intended script (soft reference) — only when a REAL script
     # was read (scripted take). Freestyle sends script={} → no block, edit from transcript alone.
     _s = script or {}
-    _script_hook = (_s.get("hook") or "").strip()
-    _script_body = (_s.get("body") or "").strip()
+    _hook_raw = _s.get("hook")   # may be a plain string OR a {text, signal, strength} dict
+    _script_hook = str((_hook_raw.get("text") if isinstance(_hook_raw, dict) else _hook_raw) or "").strip()
+    _script_body = str(_s.get("body") or "").strip()
     script_line = ""
     if _script_body or _script_hook:
         _parts = []

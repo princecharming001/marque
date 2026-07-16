@@ -776,7 +776,8 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     hints = hints or {}
     hook_text = (hints.get("hook_text") or "").strip()
     if not hook_text:
-        script_hook = ((script or {}).get("hook") or "").strip()
+        _hk = (script or {}).get("hook")   # string OR {text, ...} dict
+        script_hook = str((_hk.get("text") if isinstance(_hk, dict) else _hk) or "").strip()
         if script_hook:
             hook_text = " ".join(script_hook.split()[:6])
     if not hook_text:
@@ -1296,7 +1297,11 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     if "retake" in enabled:
         # Script-aware: feed the intended script text (empty for freestyle) so a reworded
         # redo of a scripted line is caught even when transcript-only similarity misses it.
-        _script_text = " ".join(str((script or {}).get(k, "")) for k in ("hook", "body")).strip()
+        # hook may be a plain string or a {text,...} dict — extract text either way.
+        _s = script or {}
+        _hk = _s.get("hook")
+        _hook_txt = _hk.get("text") if isinstance(_hk, dict) else _hk
+        _script_text = " ".join(str(x or "") for x in (_hook_txt, _s.get("body"))).strip()
         edl = _safe_pass("dedupe_retakes", edl, dedupe_retakes, words, _script_text)
 
     if "pacing" in enabled and prefs.get("pacing") is not False:

@@ -15,6 +15,15 @@ def test_edit_plan_prompt_includes_script_when_scripted():
     assert "IF AN INTENDED SCRIPT IS PROVIDED" in sys_s   # soft-reference guidance always present
 
 
+def test_edit_plan_prompt_handles_dict_hook():
+    # hook may arrive as a {text, signal, strength} dict (not just a string) — must not crash.
+    words = [{"word": "hello", "start_ms": 0, "end_ms": 300}]
+    _sys, usr = prompts.edit_plan_prompt(
+        "talking_head", words,
+        {"hook": {"text": "the one metric that matters", "signal": "curiosity"}, "body": "b"}, {})
+    assert "the one metric that matters" in usr
+
+
 def test_edit_plan_prompt_omits_script_when_freestyle():
     words = [{"word": "hello", "start_ms": 0, "end_ms": 300}]
     _sys, usr = prompts.edit_plan_prompt("talking_head", words, {}, {})   # freestyle → {}
