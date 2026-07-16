@@ -10,7 +10,7 @@ struct CelebrationView: View {
             Spacer()
             Image("FlameIcon").resizable().scaledToFit().frame(width: 96, height: 96)
             Text("That's a wrap").font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-            Text("You showed up. That's \(store.streak) \(store.streak == 1 ? "session" : "sessions") in.")
+            Text("You showed up. That's \(store.reelsShot) \(store.reelsShot == 1 ? "reel" : "reels") shot.")
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)
             Spacer()

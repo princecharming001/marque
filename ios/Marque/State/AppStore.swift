@@ -20,6 +20,7 @@ final class AppStore {
     var hasOnboarded = false
     var streak = 0
     var lastStreakDate: Date? = nil      // C-06: day-based streak gate
+    var reelsShot = 0                     // lifetime count of takes shot (the "That's a wrap" number)
 
     // V3: conversation memory + readied scripts + chat + edit prefs
     var memory = CreatorMemory()
@@ -645,6 +646,7 @@ final class AppStore {
         // C-06: consecutive-DAY streak (the flame reads as a day-streak) — increments
         // only on the first completed session of a calendar day.
         bumpDailyStreak()
+        reelsShot += 1                 // one recording session = one reel shot
         save()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
@@ -750,6 +752,7 @@ final class AppStore {
         // suppresses its own celebration for this path (celebrate: false) so nothing
         // double-fires or double-bumps.
         bumpDailyStreak()
+        reelsShot += 1                 // one take = one reel shot (celebrate:false path skips its own below)
         showCelebration = true
         save()
 
@@ -828,6 +831,7 @@ final class AppStore {
         // streak optimistically at submit time — don't repeat it here.
         if celebrate {
             bumpDailyStreak()
+            reelsShot += 1             // one take = one reel shot (instant-submit path already counted its own)
             save()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
         }
@@ -1604,6 +1608,7 @@ final class AppStore {
         var lastStreakDate: Date? = nil                // C-06
         var likedPicks: [UUID]? = nil                  // I-2: Today's-picks feedback
         var dismissedPicks: [UUID]? = nil
+        var reelsShot: Int? = nil                      // lifetime reels-shot count ("That's a wrap")
     }
 
     func save() {
@@ -1615,7 +1620,8 @@ final class AppStore {
                             brandSummary: brandSummary, chatPersona: chatPersona,
                             chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes,
                             lastStreakDate: lastStreakDate,
-                            likedPicks: likedPicks, dismissedPicks: dismissedPicks)
+                            likedPicks: likedPicks, dismissedPicks: dismissedPicks,
+                            reelsShot: reelsShot)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -1663,6 +1669,9 @@ final class AppStore {
         lastStreakDate = snap.lastStreakDate
         likedPicks = snap.likedPicks ?? []
         dismissedPicks = snap.dismissedPicks ?? []
+        // Back-compat: pre-counter installs seed the lifetime count from clips already in the
+        // library so the wrap number isn't absurdly low on first upgrade.
+        reelsShot = snap.reelsShot ?? clips.count
         migrateFootageIntoMedia()
     }
 

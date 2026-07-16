@@ -20,7 +20,13 @@ extension ProEditorView {
             return
         }
         guard let result, let edlDict = result["edl"] as? [String: Any] else {
-            phase = .failed("Couldn't load this clip's edit — the session may have expired.")
+            // The job is gone (404/410 → a body with no `edl`). If we still hold the local
+            // take, the editor is recoverable — offer to re-create the edit from footage
+            // rather than dead-ending.
+            editorRecoverable = (clip.localVideoPath != nil)
+            phase = .failed(editorRecoverable
+                ? "This edit session expired. Re-create it from your footage to keep editing."
+                : "Couldn't load this clip's edit — the session may have expired.")
             return
         }
         let doc = EditorDocument(edl: edlDict)
@@ -835,7 +841,18 @@ extension ProEditorView {
         VStack(spacing: Space.md) {
             Image(systemName: "exclamationmark.triangle").font(.system(size: 32)).foregroundStyle(.white.opacity(0.5))
             Text(msg).font(AppFont.body).foregroundStyle(.white.opacity(0.8)).multilineTextAlignment(.center)
-            Button("Close") { dismiss() }.tint(Palette.accent)
+            if editorRecoverable {
+                // Re-create the edit from the local take (store.retryClipJob re-uploads +
+                // starts a fresh job in place when the server lost this one), then close so
+                // the Library shows it re-processing.
+                Button("Re-create this edit") {
+                    Task { await store.retryClipJob(clip) }
+                    dismiss()
+                }.tint(Palette.accent).font(AppFont.callout.weight(.semibold))
+                Button("Close") { dismiss() }.tint(.white.opacity(0.5))
+            } else {
+                Button("Close") { dismiss() }.tint(Palette.accent)
+            }
         }.padding(Space.xl).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
