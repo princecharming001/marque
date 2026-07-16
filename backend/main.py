@@ -99,6 +99,13 @@ POSTFORME_BASE = os.environ.get("POSTFORME_BASE", "https://api.postforme.dev/v1"
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 BROLL_CANDIDATES = int(os.environ.get("BROLL_CANDIDATES", "6"))   # P4.1: Pexels per_page for vision re-rank
+# Part 5.2 — culturally-relevant b-roll: licensed reaction/meme GIF source (GIPHY primary, Tenor
+# stub). Keyless → fail-soft empty (memes just don't resolve). "Powered By GIPHY" attribution is a
+# production-key requirement (see docs/BROLL-PLACEMENT-SOURCES.md §5.2). BROLL_MEMES gates the whole
+# meme path (prompt doctrine + resolver): default ON in code; prod deploys OFF, flips after live E2E.
+GIPHY_KEY = os.environ.get("GIPHY_KEY", "")
+TENOR_KEY = os.environ.get("TENOR_KEY", "")
+BROLL_MEMES = os.environ.get("BROLL_MEMES", "1").lower() in ("1", "true", "on")
 _HIGGSFIELD_MAX_PER_JOB = int(os.environ.get("HIGGSFIELD_MAX_PER_JOB", "2"))  # credit + latency cap
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
@@ -2547,6 +2554,12 @@ async def _restore_clip_job(job_id: str) -> dict | None:
     # (double-spend + "server restarted"). The persisted render_id/bucket_name (now
     # written mid-render) make this possible; _poll_remotion_render is idempotent.
     if job is state:                    # we won the restore (first to materialize it)
+        # A7: _theme (the resolved Theme object) is nulled before persist (it's a runtime-only
+        # pydantic object; theme_id is the durable record). Re-resolve it from theme_id here so
+        # a restored themed job actually renders themed — omitting this made every job restored
+        # after a restart run with theme=None (silent style-loss, live since EDIT_THEMES=1).
+        if EDIT_THEMES and not job.get("_theme") and job.get("theme_id"):
+            job["_theme"] = themes_mod.get_theme(job["theme_id"])
         _reattach_in_flight_renders(job)
     return job
 
@@ -4473,7 +4486,10 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
                 theme_label=_theme_for_plan.label if _theme_for_plan else "",
                 theme_blurb=_theme_for_plan.blurb if _theme_for_plan else "",
                 broll_coverage=(job.get("config") or {}).get("broll_coverage", ""),
-                energy=(job.get("config") or {}).get("energy", ""))
+                energy=(job.get("config") or {}).get("energy", ""),
+                # Only offer memes to the LLM when they can actually resolve (flag ON + a GIF key
+                # configured) — otherwise it emits meme cues that drop at resolve, wasting the beat.
+                memes_enabled=BROLL_MEMES and bool(GIPHY_KEY or TENOR_KEY))
             plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
         except HTTPException as e:
             # NEVER swallow silently: a swallowed HTTPException here (e.g. a schema the
@@ -4643,6 +4659,12 @@ async def _run_edit(job_id: str, words: list[dict]):
         _broll_cov = (job.get("config") or {}).get("broll_coverage", "")
         if _broll_cov:
             prefs = {**prefs, "broll_coverage": _broll_cov}
+        # Energy (Part 5): high-energy takes get tighter b-roll spacing (≥2s vs ≥3s) and unlock
+        # memes even on non-entertainment video_types. Optional config key; entertainment
+        # video_type already triggers tight spacing without it, so this is additive/future-proof.
+        _energy = (job.get("config") or {}).get("energy", "")
+        if _energy in ("low", "medium", "high"):
+            prefs = {**prefs, "energy": _energy}
         if prefs:
             hints = []
             if prefs.get("auto_captions") is False:
@@ -4836,6 +4858,9 @@ async def _run_edit(job_id: str, words: list[dict]):
         # clip job (the tweak path already guards this the same way — audit B-05/F4).
         try:
             _force_broll = (job.get("config") or {}).get("broll_coverage") == "full"
+            # Part 5.2: rewrite queries to be specific/contemporary BEFORE resolving (so the URL
+            # cache keys on the rewritten query). Fail-soft; skips on tweak re-renders.
+            edl_data = await _culturalize_broll_queries(edl_data, job)
             edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
                                             corpus=job.get("broll_corpus"),
                                             force_broll=_force_broll)
@@ -4852,6 +4877,10 @@ async def _run_edit(job_id: str, words: list[dict]):
             _m_urls: list[str] = []
             for _b in (edl_data.get("broll") or []):
                 _u = _b.get("resolved_url")
+                # Exclude reaction/meme GIFs (source=giphy / need=meme) from the hook-flash
+                # montage — a meme in a rapid listicle intro is off-grammar (Part 5.2).
+                if _b.get("source") == "giphy" or _b.get("need") == "meme":
+                    continue
                 if _u and _u not in _m_urls:
                     _m_urls.append(_u)
             if _vtype == "listicle" and len(_m_urls) >= 4:
@@ -6321,8 +6350,8 @@ async def connect_preview(req: ConnectPreviewRequest):
     return await preview_tiktok(handle)
 
 
-_creator_profile_cache: dict[str, dict] = {}
-_CREATOR_PROFILE_TTL_S = 21600   # 6h — profile pic/follower count move slowly
+_reel_creator_cache: dict[str, dict] = {}
+_REEL_CREATOR_TTL_S = 21600   # 6h — profile pic/follower count move slowly
 
 
 @app.get("/v1/reels/creator")
@@ -6336,8 +6365,8 @@ async def reel_creator_profile(handle: str = "", platform: str = "instagram"):
     if not h:
         return {"found": False, "handle": "", "platform": plat}
     key = f"{plat}:{h.lower()}"
-    ent = _creator_profile_cache.get(key)
-    if ent and (time.time() - ent.get("ts", 0)) < _CREATOR_PROFILE_TTL_S:
+    ent = _reel_creator_cache.get(key)
+    if ent and (time.time() - ent.get("ts", 0)) < _REEL_CREATOR_TTL_S:
         return ent["data"]
     try:
         prof = await (preview_tiktok(h) if plat == "tiktok" else preview_instagram(h))
@@ -6348,8 +6377,8 @@ async def reel_creator_profile(handle: str = "", platform: str = "instagram"):
             "follower_count": int(prof.get("followers", 0) or 0),
             "display_name": prof.get("displayName", h),
             "profile_url": _creator_profile_url(h, plat)}
-    _creator_profile_cache[key] = {"data": data, "ts": time.time()}
-    _cap_evict(_creator_profile_cache, 2000)
+    _reel_creator_cache[key] = {"data": data, "ts": time.time()}
+    _cap_evict(_reel_creator_cache, 2000)
     return data
 
 
@@ -6650,6 +6679,71 @@ async def _fetch_pexels_candidates(query: str, n: int = 1) -> list[dict]:
     return out
 
 
+async def _fetch_giphy_candidates(query: str, n: int = 1) -> list[dict]:
+    """Part 5.2: fetch up to n reaction/meme GIFs for `query` → [{link, thumb}]. `link` is the
+    **MP4 rendition** (images.original.mp4) — a raw animated .gif routes to Remotion <Img>, which
+    does NOT time-sync animated GIFs on Lambda (parallel-chunk render → frozen/seamed frames); the
+    MP4 rides the existing OffthreadVideo path, so the renderer needs zero changes. Falls back to
+    the .gif URL only if no mp4 rendition exists. `thumb` = a still for the vision re-rank. Fail-soft
+    to [] (no key / error / no results). rating=pg-13 keeps it brand-safe. Monkeypatchable in tests."""
+    if not GIPHY_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://api.giphy.com/v1/gifs/search",
+                                 params={"api_key": GIPHY_KEY, "q": query, "limit": max(1, n),
+                                         "rating": "pg-13", "lang": "en", "bundle": "messaging_non_clips"})
+        if r.status_code != 200:
+            return []
+        gifs = r.json().get("data", [])
+    except (httpx.HTTPError, ValueError) as e:
+        logging.warning("giphy fetch failed: %s", e)
+        return []
+    out: list[dict] = []
+    for g in gifs:
+        imgs = (g.get("images") or {})
+        orig = imgs.get("original") or {}
+        link = orig.get("mp4") or orig.get("url")     # prefer MP4 rendition (renders deterministically)
+        thumb = (imgs.get("original_still") or {}).get("url") or orig.get("url")
+        if link:
+            out.append({"link": link, "thumb": thumb})
+    return out
+
+
+async def _fetch_tenor_candidates(query: str, n: int = 1) -> list[dict]:
+    """Part 5.2: Tenor (Google) fallback GIF source behind TENOR_KEY — stub, keyless fail-soft.
+    Tenor requires 'Via Tenor' attribution. Prefers the mp4 media format like GIPHY."""
+    if not TENOR_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://tenor.googleapis.com/v2/search",
+                                 params={"key": TENOR_KEY, "q": query, "limit": max(1, n),
+                                         "contentfilter": "medium", "media_filter": "mp4,gif"})
+        if r.status_code != 200:
+            return []
+        results = r.json().get("results", [])
+    except (httpx.HTTPError, ValueError) as e:
+        logging.warning("tenor fetch failed: %s", e)
+        return []
+    out: list[dict] = []
+    for res in results:
+        mf = res.get("media_formats") or {}
+        link = (mf.get("mp4") or {}).get("url") or (mf.get("gif") or {}).get("url")
+        thumb = (mf.get("gifpreview") or mf.get("gif") or {}).get("url")
+        if link:
+            out.append({"link": link, "thumb": thumb})
+    return out
+
+
+async def _fetch_meme_candidates(query: str, n: int = 1) -> list[dict]:
+    """Reaction/meme GIF candidates from the licensed ladder (GIPHY → Tenor). Fail-soft []."""
+    cands = await _fetch_giphy_candidates(query, n)
+    if not cands:
+        cands = await _fetch_tenor_candidates(query, n)
+    return cands
+
+
 async def _fetch_pexels(query: str) -> str | None:
     """Single best b-roll link for `query` (back-compat single-candidate path)."""
     cands = await _fetch_pexels_candidates(query, 1)
@@ -6745,6 +6839,62 @@ def _score_broll_corpus(cue_text: str, corpus: list[dict]) -> tuple[dict | None,
 
 _OWN_MEDIA_FLOOR = float(os.environ.get("OWN_MEDIA_BROLL_FLOOR", "0.45"))
 
+_broll_query_cache: dict[str, str] = {}          # (niche::query) -> culturally-rewritten query
+
+
+async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
+    """Part 5.2: one Haiku pass that rewrites b-roll search queries to be specific & contemporary
+    ('person working' → 'founder typing on a macbook in a dark neon office'; a `meme` cue → a
+    canonical GIF search like 'mind blown'). Runs ONCE per job (not per cue), BEFORE _resolve_broll
+    so the URL cache keys on the rewritten query. Niche + up to 10 trending reel titles are passed
+    as SIGNAL only (never republished). Fail-soft: keyless / error / bad index → original query
+    untouched. Idempotent (guarded by edl['_queries_rewritten']) so tweak re-renders skip it."""
+    if edl.get("_queries_rewritten") or not ANTHROPIC_KEY:
+        return edl
+    broll = edl.get("broll") or []
+    cues = [{"i": i, "cue_text": b.get("cue_text", ""),
+             "broll_query": b.get("broll_query") or b.get("cue_text", ""),
+             "need": b.get("need", "action")}
+            for i, b in enumerate(broll)
+            if (b.get("broll_query") or b.get("cue_text")) and not b.get("resolved_url")]
+    if not cues:
+        return edl
+    niche = ((job.get("brand") or {}).get("niche") or (job.get("dossier") or {}).get("niche") or "").strip()
+    # Serve fully from cache when every cue is a hit — avoids the LLM call on re-edits of the
+    # same niche/queries.
+    ck = lambda q: f"{niche.lower()}::{q.lower()}"
+    if cues and all(ck(c["broll_query"]) in _broll_query_cache for c in cues):
+        for c in cues:
+            broll[c["i"]]["broll_query"] = _broll_query_cache[ck(c["broll_query"])]
+        edl["_queries_rewritten"] = True
+        return edl
+    trends: list[str] = []
+    try:
+        for entry in list(_niche_reels_cache.values()):
+            for r in (entry.get("data") or entry.get("reels") or [])[:3]:
+                t = (r.get("caption") or r.get("title") or "").strip()
+                if t:
+                    trends.append(t[:120])
+            if len(trends) >= 10:
+                break
+    except Exception:
+        trends = []
+    try:
+        sys = prompts.broll_query_rewrite_system()
+        usr = json.dumps({"niche": niche, "trending_titles": trends[:10], "cues": cues})
+        out = await anthropic_json(sys, usr, prompts.BROLL_QUERY_REWRITE_SCHEMA, model=HAIKU, temperature=0.2)
+        for item in (out.get("queries") or []):
+            i, q = item.get("i"), (item.get("query") or "").strip()
+            if isinstance(i, int) and 0 <= i < len(broll) and q:
+                orig = broll[i].get("broll_query") or broll[i].get("cue_text") or ""
+                broll[i]["broll_query"] = q
+                _broll_query_cache[ck(orig)] = q
+        _cap_evict(_broll_query_cache, 10_000)
+    except Exception as e:
+        logging.warning("broll query rewrite failed (using originals): %s", e)
+    edl["_queries_rewritten"] = True
+    return edl
+
 
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
                          allow_generation: bool = True,
@@ -6758,7 +6908,8 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     if not broll:
         return edl
     has_stock = PEXELS_KEY or higgsfield_mod.CONFIGURED
-    can_resolve = has_stock or corpus
+    has_meme = BROLL_MEMES and (GIPHY_KEY or TENOR_KEY)      # Part 5.2 GIF ladder
+    can_resolve = has_stock or corpus or has_meme
     generated_count = 0
     for b in broll if can_resolve else []:
         if b.get("resolved_url"):
@@ -6771,6 +6922,27 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             continue
         query = (b.get("broll_query") or b.get("cue_text") or "").strip()
         if not query:
+            continue
+        # Memes (Part 5.2): the `meme` need resolves ONLY from the licensed GIF ladder
+        # (GIPHY → Tenor), never own_media/Pexels/Higgsfield — a stock clip standing in for a
+        # joke is worse than staying on the face. If nothing resolves, leave it unresolved (the
+        # tier pass drops it). Cache keyed distinctly so a meme query never collides with a
+        # stock query of the same words.
+        if b.get("need") == "meme":
+            if not has_meme:
+                continue
+            mkey = f"meme::{query}"
+            if mkey in _broll_url_cache:
+                b["resolved_url"] = _broll_url_cache[mkey]
+                b["source"] = "giphy"
+                continue
+            mcands = await _fetch_meme_candidates(query, BROLL_CANDIDATES)
+            murl = await _rerank_broll(b.get("cue_text") or query, mcands, dossier)
+            if murl:
+                _broll_url_cache[mkey] = murl
+                _cap_evict(_broll_url_cache, 10_000)
+                b["resolved_url"] = murl
+                b["source"] = "giphy"
             continue
         # Own media first — the creator's real footage beats stock when it matches.
         if corpus:
@@ -6842,6 +7014,12 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             else:
                 log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
                             "why": "no asset and no fallback text"})
+            continue
+        # A meme that didn't resolve from the GIF ladder is DROPPED (never a stock/card stand-in
+        # for a joke) — explicit rather than leaving a phantom that build_render_plan strips later.
+        if need == "meme" and not resolved:
+            log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
+                        "why": "no meme GIF resolved"})
             continue
         # everything else keeps v1 behavior; resolved assets dedupe a repeat within 15s
         u = b.get("resolved_url") or b.get("asset_id") or ""

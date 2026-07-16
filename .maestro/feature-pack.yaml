@@ -28,12 +28,13 @@ name: FP1 — speed, transitions, filters, text stickers, caption drag
     timeout: 4000
 - tapOn: { id: "editorPro.ctx.transition.fade_black" }
 - takeScreenshot: /tmp/fp-02-transition
-# FILTERS: Film preset + a warm adjust
+# FILTERS: Film preset + a warm adjust (Adjust knobs now hide behind "Advanced")
 - tapOn: { id: "editorPro.mode.filters" }
 - extendedWaitUntil:
     visible: { id: "editorPro.filter.film" }
     timeout: 4000
 - tapOn: { id: "editorPro.filter.film" }
+- tapOn: { id: "editorPro.filterAdvanced" }
 - extendedWaitUntil:
     visible: { id: "editorPro.adjustRow" }
     timeout: 4000
