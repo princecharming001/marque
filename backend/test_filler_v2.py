@@ -223,3 +223,28 @@ def test_strip_fillers_v2_superset_of_v1_drops():
     assert any(d.reason == "filler" for d in v1_drops)   # "um" caught by both
     assert len(v2_drops) > len(v1_drops)                 # v2 ALSO catches "you know"
     assert _covered(v2_drops, 150, 500, reason="filler")
+
+
+# ── ASR over-tag guard (research: "like"-as-filler precision ~79%) ────────────
+
+def test_asr_filler_tag_does_not_cut_mid_sentence_discourse_marker():
+    # AssemblyAI mistags a CONTENT "like" as a filler; mid-sentence (no clause boundary)
+    # it must be KEPT — our clause-boundary gate overrides the ASR tag for polysemous markers.
+    words = [_w("I", 0, 200), _w("feel", 210, 450),
+             _w("like", 460, 650, type="filler"), _w("this", 660, 850), _w("works", 860, 1100)]
+    kept, _ = strip_fillers(words)
+    assert "like" in [w["word"] for w in kept]
+
+
+def test_asr_filler_tag_still_cuts_clause_opening_marker():
+    # "So" opening the take (clause boundary) is a real filler → cut, even without the ASR tag.
+    words = [_w("So", 0, 200), _w("today", 700, 950), _w("we", 960, 1100), _w("start", 1110, 1350)]
+    kept, _ = strip_fillers(words)
+    assert "So" not in [w["word"] for w in kept]
+
+
+def test_um_uh_always_cut_even_mid_sentence():
+    words = [_w("the", 0, 200), _w("um", 210, 400, type="filler"), _w("point", 410, 700)]
+    kept, _ = strip_fillers(words)
+    assert "um" not in [w["word"] for w in kept]
+    assert {"the", "point"} <= set(w["word"] for w in kept)
