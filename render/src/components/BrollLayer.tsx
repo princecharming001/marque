@@ -20,7 +20,8 @@ export const BrollLayer: React.FC<{ broll: BRoll[] }> = ({ broll }) => (
       const mode = b.mode === "panel" || b.mode === "card" ? b.mode : "full";
       return (
         <Sequence key={i} from={b.frame_in} durationInFrames={dur} layout="none">
-          <BrollClip url={b.resolved_url as string} durationInFrames={dur} mode={mode} />
+          <BrollClip url={b.resolved_url as string} durationInFrames={dur} mode={mode}
+                     source={b.source} />
         </Sequence>
       );
     })}
@@ -34,14 +35,28 @@ const PANEL = { left: 40, right: 40, top: 130, height: 0.46 * 1920, radius: 20 }
 // yet, and the speaker is horizontally centered so either shoulder is safe).
 const CARD = { width: 0.44 * 1080, height: 0.35 * 1920 * 0.72, top: 220, right: 48, radius: 18 };
 
-const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string }> = ({
-  url, durationInFrames, mode,
+// "Powered By GIPHY" attribution — GIPHY's API terms require it wherever their content
+// displays. Small pill, bottom-right of the insert; only rendered for source="giphy".
+const GiphyBadge: React.FC = () => (
+  <div style={{
+    position: "absolute", right: 8, bottom: 8, zIndex: 2,
+    padding: "2px 7px", borderRadius: 5, background: "rgba(0,0,0,0.6)",
+    color: "#fff", fontSize: 13, fontWeight: 700, letterSpacing: 0.2,
+    fontFamily: "Inter, Helvetica, Arial, sans-serif",
+  }}>
+    Powered By GIPHY
+  </div>
+);
+
+const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string; source?: string }> = ({
+  url, durationInFrames, mode, source,
 }) => {
   const frame = useCurrentFrame(); // local to the Sequence (0 at clip start)
   const kenBurns = interpolate(frame, [0, durationInFrames], [1.06, 1.12], {
     extrapolateRight: "clamp",
   });
   const isImage = /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url);
+  const isGiphy = source === "giphy";
   const media = (style: React.CSSProperties) =>
     isImage ? <Img src={url} style={style} /> : <OffthreadVideo src={url} muted style={style} />;
 
@@ -55,6 +70,7 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string 
       }}>
         {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
                  objectFit: "cover", transform: `scale(${kenBurns})` })}
+        {isGiphy && <GiphyBadge />}
       </div>
     );
   }
@@ -78,13 +94,17 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string 
                  // (contain) over a dark backing rather than cropping the evidence.
                  objectFit: isImage ? "contain" : "cover", background: "#101014",
                  transform: `scale(${kenBurns})` })}
+        {isGiphy && <GiphyBadge />}
       </div>
     );
   }
 
   // mode "full" — the v1 full-frame cover insert.
-  return media({
-    position: "absolute", inset: 0, width: "100%", height: "100%",
-    objectFit: "cover", transform: `scale(${kenBurns})`,
-  });
+  return (
+    <>
+      {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
+               objectFit: "cover", transform: `scale(${kenBurns})` })}
+      {isGiphy && <GiphyBadge />}
+    </>
+  );
 };
