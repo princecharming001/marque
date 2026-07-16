@@ -57,11 +57,10 @@ extension ProEditorView {
         if let all = await store.backend.editorCapabilities() { caps = all[doc.style] }
         captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
         await MusicCatalog.hydrate(using: store.backend)   // show the same beds the render uses
-        // A7/#8: the active theme (if EDIT_THEMES produced one) + report card fields —
-        // all optional, absent-safe (older jobs / EDIT_THEMES off never carry them).
+        // A7: the active theme (if EDIT_THEMES produced one) — optional, absent-safe
+        // (older jobs / EDIT_THEMES off never carry it). The read-only report card was removed
+        // in the declutter (self_review/lint are still computed server-side, just not surfaced here).
         activeThemeId = result["theme_id"] as? String ?? ""
-        selfReview = result["self_review"] as? [String: Any]
-        lint = result["lint"] as? [String: Any]
         if themes.isEmpty { themes = await store.backend.fetchThemes() }
         phase = .editing
     }

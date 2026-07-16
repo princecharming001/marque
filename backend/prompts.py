@@ -926,6 +926,41 @@ def _genre_profile_block(video_type: str) -> str:
     return (f"GENRE ({video_type}): this content type typically wants " + ", ".join(bits) +
            " — a starting point, not a rule; override it when the actual take calls for something else.")
 
+
+# --- Part 5.2: cultural b-roll query rewrite (one Haiku pass per job) ----------------------
+BROLL_QUERY_REWRITE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["queries"],
+    "properties": {
+        "queries": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["i", "query"],
+            "properties": {"i": {"type": "integer"}, "query": {"type": "string"}}}},
+    },
+}
+
+
+def broll_query_rewrite_system() -> str:
+    """System prompt for _culturalize_broll_queries: rewrite each stock/meme search query to be
+    specific, contemporary, and on-brand for the niche — WITHOUT changing what the cue depicts."""
+    return (
+        "You rewrite b-roll stock-footage / GIF search queries so they return SPECIFIC, "
+        "CONTEMPORARY, on-brand footage instead of generic clichés. You are given a niche, a few "
+        "trending reel titles from that niche (as flavor/signal only — do NOT copy them), and a "
+        "list of cues, each with its cue_text, current broll_query, and need.\n"
+        "RULES:\n"
+        "- Rewrite ONLY the search phrasing; NEVER change what the cue depicts (a 'barbell' cue "
+        "stays a barbell, not a treadmill). Same subject, sharper query.\n"
+        "- For stock needs (entity/data/evidence/action/concept): make it a concrete SCENE — "
+        "subject + action + setting + a modern detail. 'person working' → 'founder typing on a "
+        "macbook in a dark neon-lit office'. Avoid stock clichés (generic handshake, faceless "
+        "suit, lightbulb-idea).\n"
+        "- For need=meme: output a CANONICAL reaction/meme search term the GIF library will have "
+        "('mind blown', 'side eye', 'this is fine', 'confused math lady', 'chefs kiss') — 1–3 words.\n"
+        "- Keep queries short (<= 8 words) and literally searchable. Return every cue's index i "
+        "with its rewritten query. If a query is already good, return it as-is.")
+
+
 EDIT_BRIEF_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "required": ["video_type", "is_scripted", "through_line", "hook_candidates",
@@ -1083,8 +1118,11 @@ EDIT_PLAN_JSON_SCHEMA = {
                            # media) or fall back to a text card; generic stock is only allowed
                            # for action/concept. `text` is the on-screen fallback card copy
                            # (the entity name / the number / the quote) used when no real asset.
+                           # `meme` (Part 5.2) = a reaction/meme GIF punctuating a punchline —
+                           # entertainment-class only, resolved from a licensed GIF API, rendered
+                           # as a panel (face stays), capped at 2/video.
                            "need": {"type": "string",
-                                    "enum": ["entity", "data", "evidence", "action", "concept"]},
+                                    "enum": ["entity", "data", "evidence", "action", "concept", "meme"]},
                            "text": _STR,
                            # Addendum Part 2: how the insert is composited —
                            # full = covers the frame (face hidden, <=3s) · panel = rounded
@@ -1126,7 +1164,8 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                      emphasis_spans: list | None = None, custom_instructions: str = "",
                      reference: dict | None = None, video_type: str = "",
                      theme_label: str = "", theme_blurb: str = "",
-                     broll_coverage: str = "", energy: str = "") -> tuple[str, str]:
+                     broll_coverage: str = "", energy: str = "",
+                     memes_enabled: bool = False) -> tuple[str, str]:
     """P3.1: ask the model for a typed EDIT PLAN (not an EDL). The assembler owns all
     mechanics (captions, filler drops, b-roll grammar, min-clip, layout); the model owns
     the editorial JUDGMENT (what to open on, what to cut and why, order, where punch-ins /
@@ -1292,7 +1331,14 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "acceptable. Otherwise, do NOT add b-roll to hit a quota — a filler cutaway devalues the real ones.\n"
         "For each b-roll set `need`: entity = named product/app/person/place/document · data = number/stat/"
         "comparison · evidence = a real message/review/receipt/screenshot · action = a process/event · "
-        "concept = an abstract idea.\n"
+        "concept = an abstract idea"
+        + (" · meme = a reaction/meme GIF punctuating a punchline" if memes_enabled else "") + ".\n"
+        + ("MEMES (`need`:meme) — ENTERTAINMENT ONLY (rant/story/hot-take/listicle; NEVER a tutorial or "
+           "explainer — a meme on an info beat distracts from the point). Place it ON the punchline, hot take, "
+           "or absurd stat — max 2 per video. `query` = a canonical reaction the audience knows ('side eye', "
+           "'mind blown', 'confused math lady', 'this is fine'). The assembler renders it as a panel (your face "
+           "stays for the joke) and pulls the GIF from a licensed library; if none fits, it stays on your face.\n"
+           if memes_enabled else "") +
         "RELEVANCE GATE (hard): entity/data/evidence must show the ACTUAL thing — the creator's own "
         "footage/screenshot (source:own_media). If they don't have it, DO NOT reach for generic stock (a "
         "'hands typing' clip over a specific product mention reads as filler and burns trust). Instead set "
@@ -1301,9 +1347,12 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "on the face, never decorative filler. action/concept MAY use stock — give a precise `query` "
         "(subject + verb + setting).\n"
         "TIMING: the b-roll illustrates ONE phrase — its range should cover roughly that phrase and NO "
-        "LONGER (an insert that outlasts the words it depicts detaches the audio and loses the viewer). The "
-        "assembler adds the J-cut lead, clamps the hold (~1.5–3s, 5s ceiling), spacing (≥3s, return to the "
-        "face between), and hook/CTA protection — but keep your ranges tight to the phrase.\n"
+        "LONGER (an insert that outlasts the words it depicts detaches the audio and loses the viewer). Keep "
+        "face-hiding cutaways SHORT (a named thing or number reads in ~1.5–2s; a process/metaphor can take "
+        "~2–3s) — vary the length by beat, don't hold every cutaway the same. The assembler adds the J-cut "
+        "lead, clamps the hold per `need` (short for entity/data, longer for action/concept; 2.5s cap "
+        "full-frame, 5s panel/card), spacing (≥3s, ≥2s for high-energy), and hook/CTA protection — but keep "
+        "your ranges tight to the phrase.\n"
         "BUDGET: full-frame b-roll HIDES the face; keep total face-hiding coverage well under ~40% of the "
         "video (the assembler drops overflow). Prefer fewer, well-placed cutaways over blanket coverage.\n"
         "For each insert pick `mode` (how it's composited):\n"

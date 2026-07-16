@@ -21,6 +21,7 @@ struct ReelFeedPager: View {
     // Lazily-fetched creator profiles (pfp + follower count), keyed by handle; and the set of
     // creators the user has tracked this session (reflected into brand.watchedCreators).
     @State private var profiles: [String: (pfp: String, followers: Int)] = [:]
+    @State private var fetchingProfiles: Set<String> = []   // in-flight handles (cells re-appear on scroll)
     @State private var justTracked: Set<String> = []
 
     private func isTracked(_ handle: String) -> Bool {
@@ -44,11 +45,15 @@ struct ReelFeedPager: View {
 
     private func fetchProfile(for reel: ReelItem) {
         let key = reel.creatorHandle.lowercased()
-        guard profiles[key] == nil, !reel.creatorHandle.isEmpty else { return }
+        // `.onAppear` fires every time a cell scrolls back into view; the cache guard only stops
+        // REFETCH after the first completes. Without an in-flight guard, scrolling a card in/out
+        // before the request returns fires duplicate network calls. Track pending handles too.
+        guard profiles[key] == nil, !fetchingProfiles.contains(key), !reel.creatorHandle.isEmpty else { return }
+        fetchingProfiles.insert(key)
         Task {
-            if let p = await store.backend.creatorProfile(handle: reel.creatorHandle, platform: reel.platform) {
-                profiles[key] = (p.pfpURL, p.followers)
-            }
+            let p = await store.backend.creatorProfile(handle: reel.creatorHandle, platform: reel.platform)
+            fetchingProfiles.remove(key)
+            if let p { profiles[key] = (p.pfpURL, p.followers) }
         }
     }
 

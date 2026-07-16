@@ -98,6 +98,79 @@ def test_broll_budget_does_not_touch_panel_modes():
     assert panel_frames > edl_mod._BROLL_RUNTIME_BUDGET * total      # panels exceed 40% freely
 
 
+def test_broll_hold_policy_per_need():
+    # Part 5: a named thing (entity) reads fast → capped SHORTER (≤60f) than a process
+    # (action, up to 90f), when both request a long hold. Face style so `full` applies.
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]
+    plan = {"broll": [
+        {"range": [200, 500], "cue": "the app", "query": "app", "source": "stock", "mode": "full", "need": "entity"},
+        {"range": [800, 1100], "cue": "the process", "query": "steps", "source": "stock", "mode": "full", "need": "action"},
+    ]}
+    d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
+    holds = {b["cue_text"]: b["src_out"] - b["src_in"] for b in d["broll"]}
+    assert holds["the app"] <= 60, f"entity hold {holds['the app']} should be short"
+    assert holds["the process"] > 60, f"action hold {holds['the process']} should breathe"
+
+
+def test_spacing_tightens_on_high_energy_or_entertainment():
+    # Part 5: entertainment video_type allows cutaways ≥2s apart (vs ≥3s default). Two cutaways
+    # spaced ~2.2s survive on a freestyle_rant but the SECOND is dropped on a neutral tutorial.
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(60)]
+    plan = {"broll": [
+        {"range": [150, 210], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [280, 340], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
+    ]}
+    ent = assemble_edl(plan, w, "talking_head", "myth-buster",
+                       brief={"video_type": "freestyle_rant"}).model_dump()
+    neu = assemble_edl(plan, w, "talking_head", "myth-buster",
+                       brief={"video_type": "tutorial"}).model_dump()
+    assert len(ent["broll"]) == 2, "entertainment tolerates the tighter pair"
+    assert len(neu["broll"]) == 1, "informational keeps ≥3s spacing → drops the close one"
+
+
+def test_floor_denser_and_alternates_hold_lengths():
+    # Part 5: coverage=full floor is denser (~1 per 9s) AND varies hold length (not metronomic).
+    # Words must be ALPHA content words (the floor rejects digits/stopwords) — cycle real nouns.
+    _nouns = ["interface", "product", "founder", "growth", "metric", "startup",
+              "revenue", "customer", "platform", "strategy"]
+    w = [{"word": _nouns[i % len(_nouns)], "start_ms": i * 400, "end_ms": i * 400 + 350}
+         for i in range(120)]  # ~48s
+    d = assemble_edl({"broll": []}, w, "broll_cutaway", "myth-buster",
+                     prefs={"broll": True, "broll_coverage": "full", "broll_mode": "full"}).model_dump()
+    holds = [b["src_out"] - b["src_in"] for b in d["broll"]]
+    assert len(holds) >= 3, f"denser floor should yield ≥3 over ~48s, got {len(holds)}"
+    assert len(set(holds)) >= 2, f"floor holds must vary, got {holds}"
+
+
+def test_meme_forces_panel_and_short_hold():
+    # Part 5.2: a meme need renders as a PANEL (face stays) with a short hold (≤75f), even when
+    # the plan asked for full-frame and a long hold. Entertainment video_type required.
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(60)]
+    plan = {"broll": [{"range": [400, 700], "cue": "wait what", "query": "side eye",
+                       "source": "stock", "mode": "full", "need": "meme"}]}
+    d = assemble_edl(plan, w, "talking_head", "myth-buster",
+                     brief={"video_type": "freestyle_rant"}).model_dump()
+    assert len(d["broll"]) == 1
+    b = d["broll"][0]
+    assert b["mode"] == "panel", "memes keep the face → panel, never full"
+    assert b["src_out"] - b["src_in"] <= 75, "a joke held too long dies"
+
+
+def test_meme_capped_at_two_and_blocked_on_info_and_hook():
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]
+    memes = [{"range": [g, g + 60], "cue": f"joke{i}", "query": "mind blown",
+              "source": "stock", "mode": "panel", "need": "meme"}
+             for i, g in enumerate((40, 400, 700, 1000))]     # first sits ON the hook (<90f)
+    ent = assemble_edl({"broll": memes}, w, "talking_head", "myth-buster",
+                       brief={"video_type": "story"}).model_dump()
+    assert len(ent["broll"]) <= 2, "≤2 memes per video"
+    assert all(b["src_in"] >= 90 for b in ent["broll"]), "no meme on the hook"
+    # informational video_type → memes are the seductive-details effect → all dropped
+    info = assemble_edl({"broll": memes}, w, "talking_head", "myth-buster",
+                        brief={"video_type": "tutorial"}).model_dump()
+    assert all(b.get("need") != "meme" for b in info["broll"]), "no memes on a tutorial"
+
+
 def test_buried_hook_pulled_forward_passes_invariant():
     fx = fixture("buried-hook-01")
     hook_f = ms_to_frame(fx["hook_ms"])

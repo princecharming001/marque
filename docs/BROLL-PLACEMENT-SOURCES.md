@@ -115,3 +115,85 @@ picture-superiority; Childers & Houston 1984 (J. Consumer Research); Brysbaert, 
 correlational:** Xue et al. 2026 MSV cadence model (arXiv 2604.19995) — peer-reviewed, organic, but
 correlational + generic-shot + US-only. **Conflicted/vendor (directional only):** TikTok Creative
 Codes / Neuro-Insight / Lumen / MediaScience (TikTok-commissioned), VidMob.
+
+---
+
+## Part 5 — 2026-07-15 retune research (shorter holds, cut more often, meme sources)
+
+Owner ask: "b-roll should be shorter some places, cut more often" + "more culturally relevant
+b-roll." Research-first mandate. Two research streams below (web + empirical), then the calibrated
+constants. Discipline unchanged: only Tier-1/2 (measured / corroborated-mechanic) claims move
+numbers; retention %s stay Tier-3 (recorded, not encoded); every constant stays inside a sanity band.
+
+### 5.1 Measured shot-length / cadence distributions (the calibration base)
+
+Four independent measured datasets converge on the same direction — modern high-retention short-form
+is **faster-cut than our current 2–3s hold implies**, and the biggest retention penalty is any single
+visual block that **outlasts ~4s**:
+
+| Source (tier) | N | Finding |
+|---|---|---|
+| DEV "200 viral TikToks" (T2 — measured, blog) | 200 @≥1M views | ASL <1.5s → 4.2M median views; 1.5–2.5s → 2.8M; 2.5–4s → 1.4M; **>4s → 800K** (5× cliff). Per-niche ASL: education **2.8s** (longest), cooking **1.6s** (shortest), comedy **1.2–5.1s** (most variable), fitness **1.9–2.2s** (tightest). Explicit caveat: "means visual *change* every 1.5–2.5s (cut/zoom/text/prop), not literally cut b-roll faster." |
+| Creedom "50 viral" (T2 — measured, blog) | 50 @≥10M views | Avg scene length **2.2s**; scenes **>4s → 15% retention drop** at 30s vs **2–3s → 7% drop**; pattern interrupt every 8–12s halves per-interval drop-off (22%→8%). |
+| OpusClip "Anatomy of a viral TikTok 2026" (T2/T3 — vendor, 13.5M) | 13.5M clips | Viral-tier length median **41s** (18% shorter than overall); burned-in animated captions on ~every viral clip; hook/product in first 3s. (Length not hold, but corroborates "tighter wins.") |
+| Xue et al. 2026 MSV (T1 — peer-reviewed, correlational) | — | Inverted-U on shot *count* — more cuts help up to a point, then hurt. Already cited (Part 4D); anchors the "don't cut for a quota" ceiling. |
+
+**Practitioner-mechanic consensus (T2, ≥2 independent sources each):** Hormozi jump-cut every **1–3s**
+on emphasis words, b-roll illustrative (1–3s). Cutaway-type holds: **reaction 1–2s, detail/close-up
+1.5–3s, insert/cutaway 1–3s, establishing 2–4s** (choppity/riverside/sendshort/quso, shootsta,
+storyblocks). Ling et al. 2022 (BU, 400 videos, T1): close-up/medium-shot scale correlates with
+virality, large/wide scale anti-correlates — reinforces "cutaways short + tight, return to the face."
+
+**Empirical spot-check (this session):** `eval/broll_cadence_probe.py` (new, rerunnable) —
+ffmpeg scene-detect + optional Haiku face/broll vision classify. Machinery validated end-to-end on a
+real short (2 cuts/1s, ASL 0.32s — an extreme fast-cut exemplar) and a synthetic self-test. A full
+N≥15 corpus run was **not** completed: the prod `/v1/reels` niche caches were cold (populated lazily
+via paid Apify scrapes), so no durable talking-head-with-b-roll corpus was available in-session. Per
+the decision rule (N<15 → "measured, not encoded"), the encoded numbers below are calibrated to the
+**published measured distributions above (N≈250 across DEV+Creedom + practitioner-type holds)**, kept
+conservative within band. The probe is committed so a future audit can run it once caches are warm
+(`python3 -m eval.broll_cadence_probe --from-api <base> --niche <n>`).
+
+### 5.2 Meme / reaction-insert grammar (the "culturally relevant" source)
+
+- **Source of footage = licensed API only** (GIPHY/Tenor), never scraped reels. Scraped IG/TikTok
+  reels are copyright — usable only as a *query/trend signal*, never republished as footage.
+- **GIPHY API terms (T1 — primary):** free API, but **every surface displaying GIPHY content must show
+  "Powered By GIPHY" attribution**; commercial deployment needs a **production key** (app review +
+  custom pricing). Tenor (Google) similarly requires "Via Tenor". → Owner action item; ships keyless
+  fail-soft until a key is provisioned. (support.giphy.com/hc/en-us/articles/360028134111,
+  developers.giphy.com/docs/api, .../360035158592 production-key conditions.)
+- **Placement grammar (T2 practitioner + Malodia 2022 T1 meme-marketing):** a reaction/meme GIF is
+  *commentary on the line* — it lands **on the punchline / hot-take / absurd stat**, stays **short**
+  (a joke held too long dies — reaction 1–2s), and is **entertainment-class only**. On informational/
+  educational beats it is the seductive-details effect made literal (Part 4D) → **banned there**.
+  Composition: keep the face visible (the joke is the juxtaposition) → **panel**, not full-frame.
+  Frequency ceiling: **≤2 per video** before it reads as try-hard.
+- **Render note (T1 — our own infra):** GIPHY/Tenor serve **MP4 renditions** (`images.original.mp4`);
+  use those. A raw animated `.gif` routes to Remotion `<Img>`, which does **not** time-sync animated
+  GIFs on Lambda (parallel-chunk render → frozen/seamed frames). MP4 rides the existing OffthreadVideo
+  path → zero render changes, no `PLAN_SCHEMA_VERSION` bump (`BRoll.source/mode` are plain strings,
+  `need` never reaches the renderer).
+
+### 5.3 Calibrated constants (encoded in `assemble_edl` + `knowledge/broll.md` + prompt, this commit)
+
+Direction is T2-strong (4 measured datasets agree); exact frames stay conservative in-band. @30fps.
+
+| Constant | Was | Now | Why (source) |
+|---|---|---|---|
+| `_BROLL_MAX_HOLD` (full mode) | 90f/3s | **75f/2.5s** | Caps a face-hiding cutaway below the >4s retention cliff (Creedom 2× drop) and at the top of the "<2.5s ASL" band (DEV). Band 60–90 ✓ |
+| `_BROLL_MIN_HOLD` (full mode) | 60f/2s | **45f/1.5s** | Enables flash/detail/reaction inserts (reaction 1–2s, detail 1.5s); 1.5s is the legible floor for a J-cut cutaway. Band 36–60 ✓ |
+| **per-need hold table** `_BROLL_HOLD_POLICY` | flat | see below | Institutionalizes hold *variety* (comedy ASL variance 1.2–5.1s; different beats want different holds). Named things/numbers read fast → short; process/metaphor needs to breathe → longer. |
+| spacing "tight" row | — | **60f/2s** when `energy=high` OR entertainment video_type | Cooking 1.6s ASL / Hormozi 1–3s / entertainment tolerates denser cutting; educational stays 90f/3s (coherence). Band 45–90 ✓ |
+| floor step divisor (coverage=full) | 360 (1/12s) | **270 (1/9s)** | Denser when the creator explicitly opts into b-roll ("cut more often"); floor also alternates min/mid holds for variety. Band 240–360 ✓ |
+| J-cut lead | 12f | **12f (kept)** | Leads stay fixed (FireCut 1–10f); the `s_out−s_in ≥ min_hold` guard protects legibility on 45f flashes. |
+
+`_BROLL_HOLD_POLICY` `(min_hold, full_max, partial_max)` frames: entity `(45,60,90)`, data `(45,60,90)`,
+evidence `(45,75,120)`, action `(60,90,150)`, concept `(60,90,150)`, meme `(45,60,75)`. `full_max`
+drives face-hiding cutaways (retention-critical → tighter); `partial_max` panel/card (face stays →
+may breathe). Meme is capped at 75f even in panel (jokes die held).
+
+**Still NOT encoded (unchanged discipline):** every retention % / view-multiplier above (Tier-3); the
+"exact right cadence" (left to the creator's own A/B loop). Direction encoded, magnitudes stay
+conservative. Research-gap register updated: *shorter-hold dose-response*, *meme-on-info-beat lift*,
+*panel-meme vs full-meme* now have live flags (`BROLL_MEMES`) to measure per-creator.

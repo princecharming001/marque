@@ -206,12 +206,10 @@ enum MediaCompressor {
             let capBudgetBps = Int(Double(maxBytes) * 8.0 / seconds) - audioBps
             let tierTarget = seconds <= 90 ? 3_800_000 : 2_600_000   // ≤90s vs 90–150s
             let videoBps = max(1_200_000, min(tierTarget, Int(Double(capBudgetBps) * 0.92)))
-            // TIMEOUT: the AVAssetReader→Writer transcode can STALL FOREVER on an imported
-            // Photos format the camera never makes (HDR 10-bit, ProRes, slow-mo) — the pump's
-            // copyNextSampleBuffer never returns and never signals end, so the whole upload
-            // hung at "uploading". Bound it; on timeout fall through to the robust export
-            // preset ladder (AVAssetExportSession tonemaps HDR→SDR and handles odd formats).
-            if let out = await withTimeout(seconds: 90, { await transcodeHEVC(asset, videoBps: videoBps) }) ?? nil,
+            // transcodeHEVC self-bounds via an internal 90s reader/writer-cancel deadline, so an
+            // undecodable import can't hang here — it returns nil and we fall through to the
+            // robust export preset ladder (AVAssetExportSession tonemaps HDR→SDR / handles odd formats).
+            if let out = await transcodeHEVC(asset, videoBps: videoBps),
                let size = fileSize(out), size <= maxBytes {
                 return out
             }
@@ -226,27 +224,13 @@ enum MediaCompressor {
             presets = [AVAssetExportPreset960x540]
         }
         for preset in presets {
-            // Same hang guard as the transcode path — AVAssetExportSession can also wedge on a
-            // pathological import; a bounded export that stalls just drops to the next preset / fails.
-            guard let out = await withTimeout(seconds: 120, { await export(source, preset: preset) }) ?? nil else { continue }
+            // export() self-bounds via its own cancelExport() deadline — a wedged export drops
+            // to the next preset / fails instead of hanging.
+            guard let out = await export(source, preset: preset) else { continue }
             if let size = fileSize(out), size <= maxBytes { return out }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
         return nil
-    }
-
-    /// Run `op`, or return nil if it doesn't finish within `seconds` (its task is cancelled).
-    /// Used to bound media compression, which can hang indefinitely on an undecodable imported
-    /// format. Cancellation may not interrupt a wedged AVFoundation C call immediately, but the
-    /// caller is unblocked and proceeds (upload the original / fail) instead of stranding forever.
-    private static func withTimeout<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async -> T?) async -> T?? {
-        await withTaskGroup(of: T??.self) { group in
-            group.addTask { await op() }
-            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)); return nil }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
     }
 
     private static func fileSize(_ url: URL) -> Int? {
@@ -316,6 +300,15 @@ enum MediaCompressor {
         }
         writer.startSession(atSourceTime: .zero)
 
+        // HARD deadline: on an undecodable import (HDR 10-bit / ProRes / slow-mo) the pump's
+        // copyNextSampleBuffer can block forever and never resume its continuation. A plain
+        // Task/taskGroup cancel does NOT interrupt that non-cooperative AVFoundation call —
+        // cancelReading()/cancelWriting() DO (subsequent copyNextSampleBuffer returns nil, the
+        // pump resumes, reader.status != .completed, we bail to the robust export ladder).
+        let deadline = Task {
+            try? await Task.sleep(nanoseconds: 90 * 1_000_000_000)
+            reader.cancelReading(); writer.cancelWriting()
+        }
         // Pump video + (optional) audio inputs concurrently; resume once both drain.
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await pump(writerVideoIn, from: readerVideoOut) }
@@ -323,6 +316,7 @@ enum MediaCompressor {
                 group.addTask { await pump(aIn, from: aOut) }
             }
         }
+        deadline.cancel()
 
         guard reader.status == .completed else {
             writer.cancelWriting(); try? FileManager.default.removeItem(at: out); return nil
@@ -370,11 +364,19 @@ enum MediaCompressor {
         session.outputFileType = .mov
         session.shouldOptimizeForNetworkUse = true
         return await withCheckedContinuation { cont in
+            // HARD deadline: an export can wedge on a pathological import. cancelExport()
+            // forces the completion handler to fire with .cancelled — a Task/taskGroup cancel
+            // does NOT touch the underlying AVFoundation work, so we cancel the SESSION itself.
+            let deadline = Task {
+                try? await Task.sleep(nanoseconds: 120 * 1_000_000_000)
+                session.cancelExport()
+            }
             session.exportAsynchronously {
+                deadline.cancel()
                 if session.status == .completed {
                     cont.resume(returning: out)
                 } else {
-                    try? FileManager.default.removeItem(at: out)   // don't leak a partial temp file
+                    try? FileManager.default.removeItem(at: out)   // partial/cancelled — don't leak
                     cont.resume(returning: nil)
                 }
             }
