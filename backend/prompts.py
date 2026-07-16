@@ -1164,7 +1164,8 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                      emphasis_spans: list | None = None, custom_instructions: str = "",
                      reference: dict | None = None, video_type: str = "",
                      theme_label: str = "", theme_blurb: str = "",
-                     broll_coverage: str = "", energy: str = "") -> tuple[str, str]:
+                     broll_coverage: str = "", energy: str = "",
+                     memes_enabled: bool = False) -> tuple[str, str]:
     """P3.1: ask the model for a typed EDIT PLAN (not an EDL). The assembler owns all
     mechanics (captions, filler drops, b-roll grammar, min-clip, layout); the model owns
     the editorial JUDGMENT (what to open on, what to cut and why, order, where punch-ins /
@@ -1330,12 +1331,14 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "acceptable. Otherwise, do NOT add b-roll to hit a quota — a filler cutaway devalues the real ones.\n"
         "For each b-roll set `need`: entity = named product/app/person/place/document · data = number/stat/"
         "comparison · evidence = a real message/review/receipt/screenshot · action = a process/event · "
-        "concept = an abstract idea · meme = a reaction/meme GIF punctuating a punchline.\n"
-        "MEMES (`need`:meme) — ENTERTAINMENT ONLY (rant/story/hot-take/listicle; NEVER a tutorial or "
-        "explainer — a meme on an info beat distracts from the point). Place it ON the punchline, hot take, "
-        "or absurd stat — max 2 per video. `query` = a canonical reaction the audience knows ('side eye', "
-        "'mind blown', 'confused math lady', 'this is fine'). The assembler renders it as a panel (your face "
-        "stays for the joke) and pulls the GIF from a licensed library; if none fits, it stays on your face.\n"
+        "concept = an abstract idea"
+        + (" · meme = a reaction/meme GIF punctuating a punchline" if memes_enabled else "") + ".\n"
+        + ("MEMES (`need`:meme) — ENTERTAINMENT ONLY (rant/story/hot-take/listicle; NEVER a tutorial or "
+           "explainer — a meme on an info beat distracts from the point). Place it ON the punchline, hot take, "
+           "or absurd stat — max 2 per video. `query` = a canonical reaction the audience knows ('side eye', "
+           "'mind blown', 'confused math lady', 'this is fine'). The assembler renders it as a panel (your face "
+           "stays for the joke) and pulls the GIF from a licensed library; if none fits, it stays on your face.\n"
+           if memes_enabled else "") +
         "RELEVANCE GATE (hard): entity/data/evidence must show the ACTUAL thing — the creator's own "
         "footage/screenshot (source:own_media). If they don't have it, DO NOT reach for generic stock (a "
         "'hands typing' clip over a specific product mention reads as filler and burns trust). Instead set "

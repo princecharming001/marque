@@ -4486,7 +4486,10 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
                 theme_label=_theme_for_plan.label if _theme_for_plan else "",
                 theme_blurb=_theme_for_plan.blurb if _theme_for_plan else "",
                 broll_coverage=(job.get("config") or {}).get("broll_coverage", ""),
-                energy=(job.get("config") or {}).get("energy", ""))
+                energy=(job.get("config") or {}).get("energy", ""),
+                # Only offer memes to the LLM when they can actually resolve (flag ON + a GIF key
+                # configured) — otherwise it emits meme cues that drop at resolve, wasting the beat.
+                memes_enabled=BROLL_MEMES and bool(GIPHY_KEY or TENOR_KEY))
             plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
         except HTTPException as e:
             # NEVER swallow silently: a swallowed HTTPException here (e.g. a schema the
