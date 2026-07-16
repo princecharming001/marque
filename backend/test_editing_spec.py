@@ -232,4 +232,4 @@ def test_render_plan_carries_mode_layout_montage():
     rp = edl.build_render_plan(d)
     assert rp["broll"][0]["mode"] == "card"
     assert rp["layout"]["speaker_treatment"] == "pip_circle"
-    assert rp["montage"]["items"] and rp["schema_version"] == edl.PLAN_SCHEMA_VERSION == 5
+    assert rp["montage"]["items"] and rp["schema_version"] == edl.PLAN_SCHEMA_VERSION == 6

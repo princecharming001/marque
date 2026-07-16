@@ -112,6 +112,7 @@ struct EditorCaptionOptions: Equatable {
     var grouping: String = "phrase"    // word | phrase (DEFAULT, P0.7) | line — mirrors edl.py
     var highlightWords: [String] = []  // normalized keywords painted in the accent color
     var strokePx: Double = 0           // A2: dual-span outline width (Hormozi/Submagic look)
+    var bg: String = ""                // v6: rounded background pill ("" = none; #RRGGBB[AA])
 }
 
 struct EditorVolumeRange: Equatable {
@@ -156,7 +157,8 @@ struct EditorDocument: Equatable {
                 font: co["font"] as? String ?? "inter",
                 grouping: co["grouping"] as? String ?? "phrase",
                 highlightWords: co["highlight_words"] as? [String] ?? [],
-                strokePx: co["stroke_px"] as? Double ?? 0)
+                strokePx: co["stroke_px"] as? Double ?? 0,
+                bg: co["bg"] as? String ?? "")
         }
         segments = (edl["segments"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }

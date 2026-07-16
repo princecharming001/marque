@@ -42,13 +42,14 @@ struct WireOp: Equatable {
                                accent: String? = nil, uppercase: Bool? = nil,
                                font: String? = nil, grouping: String? = nil,
                                highlightWords: [String]? = nil,
-                               strokePx: Double? = nil) -> WireOp {
+                               strokePx: Double? = nil, bg: String? = nil) -> WireOp {
         var s: [String: String] = [:]
         if let position { s["position"] = position }
         if let size { s["size"] = size }
         if let accent { s["accent"] = accent }
         if let font { s["font"] = font }
         if let grouping { s["grouping"] = grouping }
+        if let bg { s["bg"] = bg }   // v6: background pill ("" or "none" clears)
         var d: [String: Double] = [:]
         if let posY { d["pos_y"] = posY }
         if let scale { d["scale"] = scale }
@@ -219,6 +220,12 @@ enum LocalEDLEngine {
                 }
             }
             if let v = op.bool["uppercase"] { o.uppercase = v; changed = true }
+            if let v = op.s["bg"] {   // v6 background pill
+                if v.isEmpty || v == "none" { o.bg = ""; changed = true }
+                else if (v.count == 7 || v.count == 9), v.hasPrefix("#"), v.dropFirst().allSatisfy({ $0.isHexDigit }) {
+                    o.bg = v; changed = true
+                } else { return nil }
+            }
             if let hw = op.strings["highlight_words"] {
                 o.highlightWords = hw.map { $0.lowercased().filter { $0.isLetter || $0.isNumber } }
                     .filter { !$0.isEmpty }
