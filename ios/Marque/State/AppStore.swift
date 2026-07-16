@@ -1066,17 +1066,28 @@ final class AppStore {
         save()
         if await backend.retryClipJob(jobId: jobId) {
             await pollJob(jobId: jobId, clipIds: affected)
-        } else if !(await resubmitFailedClip(clip)) {
-            // The server no longer has the job (e.g. it was never persisted durably before
-            // a restart) AND there's no local footage to recover from. DON'T strand the clip
-            // in a fake "rendering" — put it back to .failed so the Try-again button stays.
-            for id in affected {
+        } else {
+            // The backend can't re-render the job. resubmitFailedClip only recovers THIS clip
+            // (re-uploads its own footage → a fresh single-clip job); any SIBLINGS from the same
+            // job we optimistically flipped to .rendering above would otherwise be orphaned in a
+            // fake spinner forever. Revert the siblings to .failed first (each keeps its own
+            // Try-again), then attempt local recovery of this clip.
+            let siblings = affected.filter { $0 != clip.id }
+            for id in siblings {
                 if let idx = clips.firstIndex(where: { $0.id == id }) {
                     clips[idx].status = .failed
                     clips[idx].lastError = "Couldn't restart the edit — tap Try again."
                 }
             }
-            save()
+            if !siblings.isEmpty { save() }
+            if !(await resubmitFailedClip(clip)) {
+                // No local footage to recover THIS clip from either — put it back to .failed too.
+                if let idx = clips.firstIndex(where: { $0.id == clip.id }) {
+                    clips[idx].status = .failed
+                    clips[idx].lastError = "Couldn't restart the edit — tap Try again."
+                }
+                save()
+            }
         }
     }
 

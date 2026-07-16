@@ -164,7 +164,17 @@ final class ChatStore {
             BackendClient.shared.reportClientEvent("chat_edit_failed", detail: why)
             updateCard(cardId, in: convoId, store: store) { $0.stage = .failed; $0.detail = why }
         }
-        guard !Task.isCancelled else { return }
+        // Cancellation (Stop / a new conversation) previously returned mid-stage, stranding the
+        // card on an .uploading/.analyzing/.editing spinner forever. Land it on a retryable
+        // .failed instead so the creator can pick it back up (or dismiss it).
+        func bail() {
+            updateCard(cardId, in: convoId, store: store) {
+                guard $0.stage != .ready else { return }
+                $0.stage = .failed
+                $0.detail = "Stopped — tap Try again."
+            }
+        }
+        guard !Task.isCancelled else { return bail() }
 
         // 3) Upload the source.
         updateCard(cardId, in: convoId, store: store) { $0.stage = .uploading }

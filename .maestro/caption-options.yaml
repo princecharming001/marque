@@ -13,8 +13,9 @@ name: Caption customizer — knobs render, sim reacts, save round-trips
     visible: { id: "editorPro.playPause" }
     timeout: 12000
 - tapOn: { id: "editorPro.coachDismiss", optional: true }
-# Text mode → the caption options row appears under the presets row
+# Text mode → tap "Customize" to reveal the fine-tune options row under the presets row
 - tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.capCustomize" }
 - extendedWaitUntil:
     visible: { id: "editorPro.captionOptions" }
     timeout: 4000
@@ -26,7 +27,7 @@ name: Caption customizer — knobs render, sim reacts, save round-trips
     start: "85%, 81%"
     end: "15%, 81%"
     duration: 400
-- tapOn: { id: "editorPro.capStyle.karaoke" }
+- tapOn: { id: "editorPro.capPreset.karaoke" }
 - tapOn: { id: "editorPro.capAccent.#34D399" }
 # Keywords chip lengthened the options row — scroll before the mid-row chips.
 - swipe:
@@ -56,6 +57,7 @@ name: Caption customizer — knobs render, sim reacts, save round-trips
     visible: { id: "editorPro.playPause" }
     timeout: 12000
 - tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.capCustomize" }
 - extendedWaitUntil:
     visible: { id: "editorPro.captionOptions" }
     timeout: 4000

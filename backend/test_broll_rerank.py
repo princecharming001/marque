@@ -83,3 +83,80 @@ def test_resolve_broll_uses_rerank(monkeypatch):
     edl = {"broll": [{"broll_query": "city street", "cue_text": "the city", "source": "stock"}]}
     out = _run(main._resolve_broll(edl, dossier={"framing": {"lighting": "soft"}}))
     assert out["broll"][0]["resolved_url"] == "two.mp4"
+
+
+# --- Part 5.2: GIPHY meme source ------------------------------------------------------------
+
+def test_fetch_giphy_keyless_empty(monkeypatch):
+    monkeypatch.setattr(main, "GIPHY_KEY", "")
+    assert _run(main._fetch_giphy_candidates("mind blown", 6)) == []
+
+
+def test_giphy_prefers_mp4_rendition(monkeypatch):
+    monkeypatch.setattr(main, "GIPHY_KEY", "gk")
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"data": [{"images": {
+                "original": {"mp4": "https://giphy/x.mp4", "url": "https://giphy/x.gif"},
+                "original_still": {"url": "https://giphy/x_still.gif"}}}]}
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None): return _Resp()
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    out = _run(main._fetch_giphy_candidates("mind blown", 3))
+    assert out == [{"link": "https://giphy/x.mp4", "thumb": "https://giphy/x_still.gif"}]  # mp4 wins, not gif
+
+
+def test_resolve_broll_routes_meme_to_giphy(monkeypatch):
+    monkeypatch.setattr(main, "GIPHY_KEY", "gk")
+    monkeypatch.setattr(main, "BROLL_MEMES", True)
+    monkeypatch.setattr(main, "PEXELS_KEY", "")           # no stock — prove it used the GIF ladder
+    main._broll_url_cache.clear()
+
+    called = {"giphy": 0, "pexels": 0}
+    async def fake_giphy(query, n):
+        called["giphy"] += 1
+        return [{"link": "meme.mp4", "thumb": "t"}]
+    async def fake_pexels(query, n):
+        called["pexels"] += 1
+        return [{"link": "stock.mp4", "thumb": "t"}]
+    async def fake_rerank(cue, cands, dossier):
+        return cands[0]["link"] if cands else None
+    monkeypatch.setattr(main, "_fetch_giphy_candidates", fake_giphy)
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+
+    edl = {"broll": [{"broll_query": "side eye", "cue_text": "wait what", "need": "meme", "source": "stock"}]}
+    out = _run(main._resolve_broll(edl))
+    assert out["broll"][0]["resolved_url"] == "meme.mp4"
+    assert out["broll"][0]["source"] == "giphy"
+    assert called["giphy"] == 1 and called["pexels"] == 0   # memes never touch stock
+
+
+def test_meme_unresolved_drops_not_stock_or_card(monkeypatch):
+    monkeypatch.setattr(main, "GIPHY_KEY", "gk")
+    monkeypatch.setattr(main, "BROLL_MEMES", True)
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")          # stock available…
+    main._broll_url_cache.clear()
+
+    async def empty_giphy(query, n):
+        return []                                          # …but the GIF ladder finds nothing
+    async def fake_pexels(query, n):
+        return [{"link": "stock.mp4", "thumb": "t"}]
+    async def fake_rerank(cue, cands, dossier):
+        return cands[0]["link"] if cands else None
+    monkeypatch.setattr(main, "_fetch_giphy_candidates", empty_giphy)
+    monkeypatch.setattr(main, "_fetch_tenor_candidates", empty_giphy)
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+
+    edl = {"broll": [{"broll_query": "side eye", "cue_text": "wait", "need": "meme",
+                      "src_in": 100, "src_out": 160, "fallback_text": "wait", "source": "stock"}]}
+    out = _run(main._resolve_broll(edl))
+    assert out["broll"] == []                              # dropped — no stock stand-in
+    assert not out.get("overlays")                         # and no text card
+    assert any(e["action"] == "dropped" for e in out.get("_broll_log", []))
