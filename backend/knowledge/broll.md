@@ -5,34 +5,31 @@ Numbers reconciled 2026-07-15 against a sourced placement study (see "Sources" +
 tiers at the bottom — the *mechanics* below are well-corroborated; retention percentages are
 marketing, not measurement, and are deliberately NOT encoded).
 
-## Rule 0 — classify before placing
+## Rule 0 — RELEVANCE is the switch (not quantity)
 
-Every line is one of three things; decide which BEFORE adding any b-roll:
-- **Illustrable** → b-roll candidate: names a concrete object/place/person, a number/stat, a
-  process/how-to step, or shows evidence/proof. "Show, don't tell."
-- **Face-protected** → never full-frame b-roll (see below).
-- **Neither** → stay on the face. Empty b-roll is a legitimate, high-performing choice.
+A **relevant, concrete** visual matching the words AIDS memory (dual coding); a **decorative /
+tangential** one HARMS it — it competes with the point (the *seductive-details* effect). Quantity
+was never the lever; relevance is. Fire a visual only when a relevant concrete asset exists for the
+beat. A beat that wants a visual change but has no relevant asset → a **punch-in** (cheaper,
+face-keeping) or nothing, **never a decorative clip**. Cadence (~1 change / 4–5s) is a loose PRIOR,
+not a target — prefer the **cheapest sufficient change** (punch-in / caption pop) over b-roll for a
+generic slot; don't add b-roll to hit a quota.
 
-## When to cut to b-roll
+**Format-conditioned:** educational / explainer / how-to → protect comprehension: HIGH relevance
+bar, SPARSE b-roll, literal illustrations only, no mood/decorative clips. entertainment / story /
+hot-take → attention-first: bar relaxes, evocative b-roll allowed where it fits the beat.
 
-- Cut on **concrete nouns, numbers, processes, evidence** — the word names something showable.
-  Abstract/filler words get no cutaway. One cutaway per concept; never stack on every word.
-- A cutaway also usefully **hides a jump cut** (a deleted pause/filler word).
-- **Don't cut to b-roll to hit a quota** — "if you underline everything, nothing matters." A
-  filler cutaway devalues the meaningful ones and the audience feels the padding.
+Classify each line: **Illustrable** (names a concrete object/place/person, number/stat, process,
+evidence) → candidate · **Face-protected** → never full-frame · **Neither** → stay on the face
+(empty b-roll is a legitimate, high-performing choice). A cutaway also usefully hides a jump cut.
 
-## Timing grammar (frames @30fps)
+## Timing grammar (enforced in code — assemble_edl constants)
 
-- **Audio leads the picture (J/L-cut).** The creator's voice runs continuously; the b-roll
-  *video* cuts in under it — never cut audio+video together. Lead ≈ **12 frames (~0.4s)** at the
-  cut; a scene-level b-roll block can overlap up to ~2s (4s "creates confusion").
-- **Align to the word it depicts** — start the insert on/just before the keyword; on the beat
-  when music is present, else on visible subject motion.
-- **Hold 1.5–3s (45–90 frames) for full-frame**; floor 45f (< that reads as a glitch). **5s
-  (150f) is a hard ceiling** — no cited source holds footage longer. Panel/card (face visible)
-  may run to the 5s ceiling; **never let a b-roll outlast the phrase it illustrates** (detaches
-  the audio from its anchor and loses the viewer).
-- **Spacing ≥ 3s (90 frames)** between cutaways; return to the face between them.
+- **Audio leads the picture (J/L-cut):** voice continuous, b-roll *video* cuts in under it (~0.4s
+  lead) — never cut audio+video together. **Align to the word it depicts.**
+- Hold **1.5–3s** full-frame (5s hard ceiling; **never outlast the phrase**), spacing **≥3s**,
+  return to the face between. The assembler enforces all these numbers; the model just keeps ranges
+  tight to the phrase.
 
 ## Protect the face (never full-frame b-roll here)
 
@@ -52,11 +49,10 @@ Every line is one of three things; decide which BEFORE adding any b-roll:
 
 ## Full-frame vs partial (panel / card / split)
 
-- **Full-frame** when the visual *is* the point and the words are illustrative (a demo, an
-  object, a location, proof the viewer must see unobstructed).
-- **Panel / card / split (face stays visible)** when you need the speaker AND the thing at once:
-  software/screen demos, reactions, before/after, credibility moments. Keep the face at least
-  partially visible on emotional/CTA beats — PiP, don't fully cover.
+- **Full-frame** when the visual *is* the point and the words are illustrative (demo, object,
+  location, proof to see unobstructed). **Panel / card / split** (face stays visible) when you need
+  the speaker AND the thing at once (screen demos, reactions, before/after) — and on emotional/CTA
+  beats, keep the face at least PiP-visible, don't fully cover.
 
 ## Relevance bar (real > generic)
 
@@ -69,15 +65,15 @@ Every line is one of three things; decide which BEFORE adding any b-roll:
 
 ## Audio
 
-- **Mute b-roll under the voice by default** (edit A-roll audio first for flow, then lay muted
-  b-roll on the cut points — the L-cut is why the voice never breaks). Optional: a *ducked*
-  nat-sound layer (≈ −6 to −10 dB under speech, short fades) for shots where real sound adds
-  presence, rising only in a speech gap.
+- **Mute b-roll under the voice by default** — the continuous A-roll voice under the picture (L-cut)
+  is why the cut never feels jarring. (Optional ducked nat-sound layer: see docs.)
 
-## Match the a-roll
+## Match the a-roll + avoid channel overload
 
-- Match palette + energy to the surrounding a-roll (the dossier gives look/energy); a bright
-  hyper-cut b-roll under a calm story beat breaks immersion. Prefer own-media over stock.
+- Match palette + energy to the surrounding a-roll; prefer own-media over stock. When captions are
+  dense, lighten competing on-screen text on the b-roll (redundancy principle) — two heavy text
+  layers at once overload the visual channel.
 
-Sources + reliability tiers: `docs/BROLL-PLACEMENT-SOURCES.md`. Mechanics are Tier-1; retention
-percentages are Tier-3 marketing, deliberately not encoded.
+Sources + reliability tiers: `docs/BROLL-PLACEMENT-SOURCES.md` (incl. the Part 4D audit: relevance
+> cadence, seductive-details, dual coding). Mechanics are Tier-1; cadence is a correlational prior;
+retention percentages are Tier-3 marketing, deliberately not encoded.
