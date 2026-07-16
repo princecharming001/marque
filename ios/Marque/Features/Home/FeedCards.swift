@@ -162,6 +162,7 @@ struct ReelCard: View {
             ZStack {
                 typographicGround
                 FailableVideoPlayer(url: vurl, muted: true, showsControls: false,
+                                    isActive: onScreen,   // pause the grid preview when it scrolls off
                                     onFailure: { videoFailed = true })
                 LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
                                        .init(color: .clear, location: 0.22),

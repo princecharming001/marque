@@ -93,11 +93,64 @@ struct ReelDetailSheet: View {
         }
     }
 
+    // MARK: Performance — honest public stats (retention/watch-time isn't available for
+    // other creators' posts, so we surface the metrics that ARE: reach, engagement rate,
+    // the interaction mix, and how it's aged).
+
+    private var engagementRate: Double { reel.views > 0 ? Double(reel.likes + reel.comments) / Double(reel.views) : 0 }
+
+    private var postedAgo: String? {
+        guard !reel.postedAt.isEmpty else { return nil }
+        let fmts = ["yyyy-MM-dd'T'HH:mm:ss.SSSZ", "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd'T'HH:mm:ss"]
+        let df = DateFormatter(); df.locale = Locale(identifier: "en_US_POSIX")
+        for f in fmts { df.dateFormat = f; if let d = df.date(from: reel.postedAt) {
+            let rel = RelativeDateTimeFormatter(); rel.unitsStyle = .full
+            return rel.localizedString(for: d, relativeTo: Date())
+        } }
+        return nil
+    }
+
+    @ViewBuilder private var performance: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            SectionLabel(text: "Performance", accent: Palette.accent)
+            // The headline metric creators optimize: engagement rate (likes+comments per view).
+            HStack(spacing: Space.md) {
+                statTile(String(format: "%.1f%%", engagementRate * 100), "engagement", strong: true)
+                statTile(compactNumber(reel.views), "views")
+                if reel.followerCount > 0 { statTile(compactNumber(reel.followerCount), "followers") }
+            }
+            HStack(spacing: Space.md) {
+                statTile(compactNumber(reel.likes), "likes")
+                if reel.comments > 0 { statTile(compactNumber(reel.comments), "comments") }
+                if reel.durationS > 0 { statTile("\(reel.durationS)s", "length") }
+            }
+            if let ago = postedAgo {
+                Text("Posted \(ago)").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            }
+            Text("Watch-time/retention isn't public for other creators' posts — engagement rate is the honest proxy.")
+                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func statTile(_ value: String, _ label: String, strong: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(strong ? AppFont.title : AppFont.headline)
+                .foregroundStyle(strong ? Palette.accent : Palette.textPrimary)
+            Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Space.sm)
+        .background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+    }
+
     // MARK: Detail — media + why it's working + structure
 
     private var detailContent: some View {
         VStack(alignment: .leading, spacing: Space.xl) {
             media
+
+            performance
 
             if !reel.whyTrending.isEmpty {
                 VStack(alignment: .leading, spacing: Space.sm) {

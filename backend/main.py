@@ -6321,6 +6321,38 @@ async def connect_preview(req: ConnectPreviewRequest):
     return await preview_tiktok(handle)
 
 
+_creator_profile_cache: dict[str, dict] = {}
+_CREATOR_PROFILE_TTL_S = 21600   # 6h — profile pic/follower count move slowly
+
+
+@app.get("/v1/reels/creator")
+async def reel_creator_profile(handle: str = "", platform: str = "instagram"):
+    """Per-creator profile (pfp + follower count) for a reel card, cached per handle. Reuses
+    the keyless public-profile scrape (same as /v1/connect/preview). The reel feed calls this
+    lazily as cards appear. Retention/watch-time isn't available for others' posts — the feed
+    shows follower count + engagement instead. Fail-soft: {found:false} → the card just omits."""
+    h = (handle or "").lstrip("@").strip()
+    plat = "tiktok" if platform == "tiktok" else "instagram"
+    if not h:
+        return {"found": False, "handle": "", "platform": plat}
+    key = f"{plat}:{h.lower()}"
+    ent = _creator_profile_cache.get(key)
+    if ent and (time.time() - ent.get("ts", 0)) < _CREATOR_PROFILE_TTL_S:
+        return ent["data"]
+    try:
+        prof = await (preview_tiktok(h) if plat == "tiktok" else preview_instagram(h))
+    except Exception:
+        prof = {}
+    data = {"found": bool(prof.get("found")), "handle": h, "platform": plat,
+            "pfp_url": prof.get("avatarUrl", ""),
+            "follower_count": int(prof.get("followers", 0) or 0),
+            "display_name": prof.get("displayName", h),
+            "profile_url": _creator_profile_url(h, plat)}
+    _creator_profile_cache[key] = {"data": data, "ts": time.time()}
+    _cap_evict(_creator_profile_cache, 2000)
+    return data
+
+
 # ----- publishing via Post for Me -----------------------------------------
 # Post for Me is the publish backend (per-post pricing, unlimited accounts, brings its
 # own approved IG/TikTok apps). The account-link flow is per-user: the app asks the
@@ -7958,7 +7990,21 @@ def _reel_from_post(post: dict, handle: str, platform: str, idx: int, watched: b
         "fmt_source": post.get("fmt_source") or "heuristic",
         "why_match": post.get("why_match")
                      or _WHY_MATCH.get(post.get("edit_format") or _classify_edit_format(post)[0], ""),
+        # Creator-helpful stats + linkout (parsed by _normalize_apify_post but previously
+        # dropped here). retention/watch-time is NOT available for others' posts, so we show
+        # the honest public metrics instead: comments, duration, posted date, and a permalink.
+        "comments": int(post.get("comments", 0) or 0),
+        "duration_s": int(post.get("duration_s", 0) or 0),
+        "posted_at": str(post.get("posted_at") or ""),
+        "profile_url": _creator_profile_url((post.get("author") or handle), platform),
     }
+
+
+def _creator_profile_url(handle: str, platform: str) -> str:
+    h = (handle or "").lstrip("@").strip()
+    if not h:
+        return ""
+    return f"https://www.tiktok.com/@{h}" if platform == "tiktok" else f"https://www.instagram.com/{h}"
 
 
 async def _refresh_watched_creator(platform: str, handle: str) -> None:
