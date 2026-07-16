@@ -10,6 +10,7 @@ struct ReelFeedPager: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     let feed: FeedStore
     let startReel: ReelItem
 
@@ -17,6 +18,47 @@ struct ReelFeedPager: View {
     @State private var detailReel: ReelItem?
     @State private var mimicking: ReelItem.ID?          // a mimic() is in flight for this reel
     @State private var mimicFailed: ReelItem.ID?
+    // Lazily-fetched creator profiles (pfp + follower count), keyed by handle; and the set of
+    // creators the user has tracked this session (reflected into brand.watchedCreators).
+    @State private var profiles: [String: (pfp: String, followers: Int)] = [:]
+    @State private var justTracked: Set<String> = []
+
+    private func isTracked(_ handle: String) -> Bool {
+        justTracked.contains(handle.lowercased())
+            || (store.brand.watchedCreators ?? []).contains { $0.handle.lowercased() == handle.lowercased() }
+    }
+
+    private func trackCreator(_ reel: ReelItem) {
+        let h = reel.creatorHandle
+        guard !isTracked(h) else { return }
+        justTracked.insert(h.lowercased())
+        let plat: SocialPlatform = reel.platform == "tiktok" ? .tiktok : .instagram
+        var list = store.brand.watchedCreators ?? []
+        if !list.contains(where: { $0.handle.lowercased() == h.lowercased() }) {
+            list.append(WatchedCreator(platform: plat, handle: h))
+            store.brand.watchedCreators = Array(list.suffix(20))   // keep the most-recent 20
+            store.save()
+            Task { _ = await store.backend.warmWatchedCreator(handle: h, platform: plat.rawValue) }
+        }
+    }
+
+    private func fetchProfile(for reel: ReelItem) {
+        let key = reel.creatorHandle.lowercased()
+        guard profiles[key] == nil, !reel.creatorHandle.isEmpty else { return }
+        Task {
+            if let p = await store.backend.creatorProfile(handle: reel.creatorHandle, platform: reel.platform) {
+                profiles[key] = (p.pfpURL, p.followers)
+            }
+        }
+    }
+
+    private func openProfile(_ reel: ReelItem) {
+        let s = reel.profileURL.isEmpty
+            ? (reel.platform == "tiktok" ? "https://www.tiktok.com/@\(reel.creatorHandle)"
+                                         : "https://www.instagram.com/\(reel.creatorHandle)")
+            : reel.profileURL
+        if let url = URL(string: s) { openURL(url) }
+    }
 
     var body: some View {
         ScrollView(.vertical) {
@@ -64,17 +106,7 @@ struct ReelFeedPager: View {
                 .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: Space.sm) {
                 Spacer()
-                HStack(spacing: 6) {
-                    Image(systemName: reel.platform == "instagram" ? "camera.fill" : "music.note")
-                        .font(.system(size: 11, weight: .semibold))
-                    Text("@\(reel.creatorHandle)").font(AppFont.headline).lineLimit(1)
-                    if reel.fromWatched {
-                        Text("WATCHING").font(AppFont.micro).tracking(0.5)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Palette.accent.opacity(0.25), in: Capsule())
-                    }
-                }
-                .foregroundStyle(.white)
+                creatorRow(reel)
                 if !reel.hookText.isEmpty {
                     Text(reel.hookText)
                         .font(AppFont.body).foregroundStyle(.white.opacity(0.95))
@@ -87,10 +119,77 @@ struct ReelFeedPager: View {
                 .font(AppFont.caption).foregroundStyle(.white.opacity(0.8))
                 actionRow(reel)
             }
+            .onAppear { fetchProfile(for: reel) }
             .padding(Space.lg)
-            .padding(.bottom, Space.xl)
+            // The pager .ignoresSafeArea() (so the video fills), so the overlay must add the
+            // bottom safe-area inset itself — otherwise the 50pt Mimic button is clipped under
+            // the home indicator ("mimic not visible properly").
+            .safeAreaPadding(.bottom, Space.sm)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
+    }
+
+    /// Creator identity: real profile pic + tappable @handle (→ their Instagram/TikTok) +
+    /// follower count. pfp/followers arrive lazily from GET /v1/reels/creator; until then the
+    /// avatar is a monogram placeholder and the follower line is hidden.
+    @ViewBuilder private func creatorRow(_ reel: ReelItem) -> some View {
+        let prof = profiles[reel.creatorHandle.lowercased()]
+        HStack(spacing: Space.sm) {
+            avatar(reel, pfp: prof?.pfp ?? "")
+            VStack(alignment: .leading, spacing: 1) {
+                Button { openProfile(reel) } label: {
+                    HStack(spacing: 5) {
+                        Text("@\(reel.creatorHandle)").font(AppFont.headline).lineLimit(1)
+                        Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .bold)).opacity(0.7)
+                    }.foregroundStyle(.white)
+                }.buttonStyle(.plain).accessibilityIdentifier("reelPager.handle")
+                if let f = prof?.followers, f > 0 {
+                    Text("\(compactNumber(f)) followers")
+                        .font(AppFont.micro).foregroundStyle(.white.opacity(0.75))
+                }
+            }
+            if reel.fromWatched {
+                Text("WATCHING").font(AppFont.micro).tracking(0.5)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .foregroundStyle(.white)
+                    .background(Palette.accent.opacity(0.25), in: Capsule())
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder private func avatar(_ reel: ReelItem, pfp: String) -> some View {
+        let ring = Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1.5)
+        Group {
+            if let url = URL(string: pfp), !pfp.isEmpty {
+                AsyncImage(url: url) { img in img.resizable().scaledToFill() }
+                placeholder: { monogram(reel.creatorHandle) }
+            } else {
+                monogram(reel.creatorHandle)
+            }
+        }
+        .frame(width: 34, height: 34).clipShape(Circle()).overlay(ring)
+    }
+
+    private func monogram(_ handle: String) -> some View {
+        Circle().fill(Palette.accent.opacity(0.35)).overlay(
+            Text(String(handle.prefix(1)).uppercased()).font(AppFont.caption.weight(.bold)).foregroundStyle(.white))
+    }
+
+    /// Elegant, minimal "track this creator" pill — feeds their reels into the feed as
+    /// inspiration for future videos. Reflects into brand.watchedCreators.
+    private func trackButton(_ reel: ReelItem) -> some View {
+        let tracked = isTracked(reel.creatorHandle)
+        return Button { trackCreator(reel) } label: {
+            Image(systemName: tracked ? "checkmark" : "plus")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(tracked ? Palette.accent : .white)
+                .frame(width: 50, height: 50)
+                .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(tracked)
+        .accessibilityIdentifier("reelPager.track")
     }
 
     private func actionRow(_ reel: ReelItem) -> some View {
@@ -113,8 +212,14 @@ struct ReelFeedPager: View {
             .disabled(mimicking == reel.id)
             .accessibilityIdentifier("reelPager.mimic")
 
-            Button { detailReel = reel } label: {
-                Image(systemName: "info.circle").font(.system(size: 18, weight: .semibold))
+            trackButton(reel)
+
+            Button {
+                var r = reel      // carry the lazily-fetched pfp/followers into the stats sheet
+                if let p = profiles[reel.creatorHandle.lowercased()] { r.pfpURL = p.pfp; r.followerCount = p.followers }
+                detailReel = r
+            } label: {
+                Image(systemName: "chart.bar.fill").font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(width: 50, height: 50)
                     .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
@@ -163,6 +268,7 @@ private struct ReelPagerMedia: View {
     var body: some View {
         if !reel.videoURL.isEmpty && !videoFailed, let url = URL(string: reel.videoURL) {
             FailableVideoPlayer(url: url, muted: !active, showsControls: false,
+                                isActive: active,      // only the current reel plays; others pause
                                 onFailure: { videoFailed = true })
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()

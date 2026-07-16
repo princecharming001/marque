@@ -9,6 +9,10 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
     let url: URL
     var muted: Bool = false
     var showsControls: Bool = true
+    /// Only the ACTIVE reel plays; scrolled-past reels pause. In a LazyVStack SwiftUI keeps
+    /// neighbor cells realized, so relying on teardown alone let off-screen reels keep playing.
+    /// This drives real play/pause from updateUIViewController (which was a no-op before).
+    var isActive: Bool = true
     let onFailure: () -> Void
     /// Reports the video's real width/height aspect once known, so the caller can size
     /// its frame to the FOOTAGE instead of assuming 9:16 — a landscape or square reel
@@ -31,11 +35,18 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
         // .resizeAspect for non-portrait footage as a belt-and-suspenders against crop
         // on callers that keep a fixed portrait frame.
         vc.videoGravity = .resizeAspectFill
+        context.coordinator.isActive = isActive
         context.coordinator.observe(item, player: player, vc: vc)
-        player.play()                            // autoplay — no tap-to-start
+        if isActive { player.play() }            // only the visible reel autoplays
         return vc
     }
-    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {}
+    func updateUIViewController(_ vc: AVPlayerViewController, context: Context) {
+        // Was a no-op — this is what actually pauses a reel when it scrolls off-screen and
+        // resumes it when it scrolls back, without tearing down the player.
+        context.coordinator.isActive = isActive
+        vc.player?.isMuted = muted
+        if isActive { vc.player?.play() } else { vc.player?.pause() }
+    }
 
     // Stop playback when the player leaves the hierarchy (sheet/preview dismissed) so a
     // reel keeps neither playing nor looping audio behind a closed popup.
@@ -47,6 +58,7 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
     final class Coordinator: NSObject {
         let onFailure: () -> Void
         let onAspect: ((CGFloat) -> Void)?
+        var isActive: Bool = true          // set from make/update; gates the loop restart
         private var obs: NSKeyValueObservation?
         private var sizeObs: NSKeyValueObservation?
         private var loop: NSObjectProtocol?
@@ -88,7 +100,7 @@ struct FailableVideoPlayer: UIViewControllerRepresentable {
             loop = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
                     self?.player?.seek(to: .zero)
-                    self?.player?.play()
+                    if self?.isActive == true { self?.player?.play() }   // don't resurrect a paused (off-screen) reel
                 }
         }
         deinit { if let loop { NotificationCenter.default.removeObserver(loop) } }

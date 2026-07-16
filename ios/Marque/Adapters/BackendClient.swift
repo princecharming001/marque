@@ -767,6 +767,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let transcribed: Bool?      // true = real spoken transcript, false = caption fallback
         // UX-A3: optional — absent on old backends, decode stays safe.
         let edit_format: String?; let why_match: String?; let sample: Bool?
+        // Creator-helpful stats + linkout (all optional → decode-safe on old payloads).
+        let comments: Int?; let duration_s: Int?; let posted_at: String?; let profile_url: String?
     }
     private struct TrendDTO: Decodable { let title: String; let why: String; let formatId: String? }
     private struct FeedItemDTO: Decodable {
@@ -791,7 +793,20 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                  formatId: d.format_id ?? "myth-buster", style: d.style ?? "talking_head",
                  fromWatched: d.from_watched ?? false, transcribed: d.transcribed ?? false,
                  editFormat: d.edit_format ?? "", whyMatch: d.why_match ?? "",
-                 sample: d.sample ?? false)
+                 sample: d.sample ?? false,
+                 comments: d.comments ?? 0, durationS: d.duration_s ?? 0,
+                 postedAt: d.posted_at ?? "", profileURL: d.profile_url ?? "")
+    }
+
+    /// Lazy per-creator profile (pfp + follower count) for a reel card — GET /v1/reels/creator.
+    /// Fail-soft: nil when the scrape misses, so the card just omits the avatar/followers.
+    func creatorProfile(handle: String, platform: String) async -> (pfpURL: String, followers: Int, profileURL: String)? {
+        let h = handle.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? handle
+        guard let data = await get("/v1/reels/creator?handle=\(h)&platform=\(platform)"),
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (j["found"] as? Bool) == true else { return nil }
+        return (j["pfp_url"] as? String ?? "", j["follower_count"] as? Int ?? 0,
+                j["profile_url"] as? String ?? "")
     }
 
     private func watchedParam(_ brand: BrandGraph) -> String {

@@ -707,6 +707,18 @@ struct ReelItem: Codable, Hashable, Identifiable {
     var editFormat: String = ""     // the edit TREATMENT this reel matches (EDIT_FORMATS key)
     var whyMatch: String = ""       // human "why this matches the treatment" line
     var sample: Bool = false        // true = curated exemplar, not a live scraped reel
+    // Creator-helpful stats + linkout (honest public metrics — retention isn't available for
+    // others' posts). comments/durationS/postedAt/profileURL come with the reel; pfpURL +
+    // followerCount are fetched lazily per creator via GET /v1/reels/creator.
+    var comments: Int = 0
+    var durationS: Int = 0
+    var postedAt: String = ""       // ISO-ish timestamp string
+    var profileURL: String = ""     // instagram.com/handle or tiktok.com/@handle
+    var pfpURL: String = ""
+    var followerCount: Int = 0
+
+    /// Interaction rate from public counts — the honest stand-in for the retention we can't see.
+    var engagementRate: Double { views > 0 ? Double(likes + comments) / Double(views) : 0 }
 }
 
 /// A "match a vibe" style option: an editing style (backend theme bundle) illustrated by
