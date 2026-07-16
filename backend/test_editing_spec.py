@@ -203,18 +203,20 @@ def test_broll_mode_and_need_survive_edl_roundtrip():
 
 def test_broll_panel_allows_longer_hold_and_hook_overlap():
     words = _sentence(["hello"] * 60, 0)
-    # panel over the hook (frame 30) — allowed because the face stays visible; and an
-    # 8s window survives (mode B would clamp to 3s and reject the hook overlap).
+    # panel over the hook (frame 30) — allowed because the face stays visible; and it may breathe
+    # PAST the full-frame cap (90f) up to the panel ceiling (105f). Realism pass: panel/card no
+    # longer stretch to 5s — a 100f phrase clamps into the [60,105] action-panel band.
     plan = {"cuts": [], "keeps": [],
-            "broll": [{"range": [30, 270], "cue": "c", "query": "q", "source": "stock",
+            "broll": [{"range": [30, 130], "cue": "c", "query": "q", "source": "stock",
                        "need": "action", "text": "", "mode": "panel"}]}
     d = edl.assemble_edl(plan, words, "broll_cutaway", "myth-buster").model_dump()
     assert d["broll"], "panel insert rejected"
     b = d["broll"][0]
-    assert (b["src_out"] - b["src_in"]) > 90        # longer than mode B's 3s cap
+    hold = b["src_out"] - b["src_in"]
+    assert 90 < hold <= 105        # breathes past full's 90f cap, but ≤ the 3.5s panel ceiling
     # same range as mode "full" is rejected (hook protection)
     plan2 = {"cuts": [], "keeps": [],
-             "broll": [{"range": [30, 270], "cue": "c", "query": "q", "source": "stock",
+             "broll": [{"range": [30, 130], "cue": "c", "query": "q", "source": "stock",
                         "need": "action", "text": "", "mode": "full"}]}
     d2 = edl.assemble_edl(plan2, words, "broll_cutaway", "myth-buster").model_dump()
     assert not d2["broll"]

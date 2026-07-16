@@ -136,15 +136,18 @@ struct ChatEditConfigSheet: View {
         .accessibilityIdentifier("chatEdit.style.\(index)")
     }
 
-    /// Maps the picked style to the backend config (same contract as RecordView): cutaway/
-    /// panel/card force the b-roll mode; green_screen/split_screen override the job style.
+    /// Maps the picked style to the backend config (same contract as RecordView.brollConfig):
+    /// cutaway/panel/card force the b-roll mode AND send broll_coverage:"full" (the opt-in that
+    /// arms the density floor + stock fallback — without it chat-edits got far fewer, action-only
+    /// inserts than the record flow from identical footage); green_screen/split_screen override
+    /// the job style; and a plain b-roll toggle still opts in via coverage.
     private func styleConfig() -> [String: String]? {
         switch selectedStyle {
-        case "cutaway": return ["broll_mode": "full"]
-        case "panel":   return ["broll_mode": "panel"]
-        case "card":    return ["broll_mode": "card"]
+        case "cutaway": return ["broll_mode": "full",  "broll_coverage": "full"]
+        case "panel":   return ["broll_mode": "panel", "broll_coverage": "full"]
+        case "card":    return ["broll_mode": "card",  "broll_coverage": "full"]
         case "green_screen", "split_screen": return ["composition_style": selectedStyle]
-        default: return nil
+        default: return toggles.broll ? ["broll_coverage": "full"] : nil
         }
     }
 

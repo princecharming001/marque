@@ -12,7 +12,8 @@ tangential** one HARMS it — the *seductive-details* effect. Quantity was never
 is. Fire a visual only when a relevant concrete asset exists. A beat wanting a visual change but no
 relevant asset → a **punch-in** (cheaper, face-keeping) or nothing, **never a decorative clip**.
 Cadence (~1 change / 4–5s) is a loose PRIOR, not a target — prefer the **cheapest sufficient
-change** over b-roll for a generic slot; don't add b-roll to hit a quota.
+change** over b-roll for a generic slot. On OPT-IN (coverage=full) the assembler GUARANTEES density
+(floor top-up + punch-in for unresolvable cues) — over-emit plausible cues, it prunes.
 
 **Format-conditioned:** educational / explainer / how-to → protect comprehension: HIGH relevance
 bar, SPARSE b-roll, literal illustrations only, no mood/decorative clips. entertainment / story /
@@ -27,7 +28,7 @@ evidence) → candidate · **Face-protected** → never full-frame · **Neither*
 - **Audio leads the picture (J/L-cut):** voice continuous, b-roll *video* cuts in under it (~0.4s
   lead) — never cut audio+video together. **Align to the word it depicts.**
 - Hold **1.5–2.5s** full-frame (Part-5: shorter — a face-hiding cutaway past ~4s is the biggest
-  retention penalty; panel/card breathe to 3–5s). **Vary by beat**: a named thing/number → short
+  retention penalty; panel/card breathe only to ~2.5–3.5s). **Vary by beat**: a named thing/number → short
   (1.5–2s), a process/metaphor → longer (2–3s). **Never outlast the phrase.** Spacing **≥3s** (**≥2s**
   high-energy). The assembler enforces these per-need (`_BROLL_HOLD_POLICY`); keep ranges tight.
 

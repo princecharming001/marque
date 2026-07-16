@@ -32,7 +32,7 @@ from contextlib import asynccontextmanager
 
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
-                     style_capabilities, TWEAK_OP_TYPES,
+                     style_capabilities, TWEAK_OP_TYPES, _BROLL_FLOOR_STOPWORDS,
                      assemble_edl, check_edl_invariants, clamp_edl_to_source)
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
@@ -98,7 +98,7 @@ POSTFORME_KEY = os.environ.get("POSTFORME_KEY", "")
 POSTFORME_BASE = os.environ.get("POSTFORME_BASE", "https://api.postforme.dev/v1")
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
-BROLL_CANDIDATES = int(os.environ.get("BROLL_CANDIDATES", "6"))   # P4.1: Pexels per_page for vision re-rank
+BROLL_CANDIDATES = int(os.environ.get("BROLL_CANDIDATES", "10"))  # P4.1: Pexels per_page for vision re-rank (realism pass: wider pool → likelier a genuinely-relevant clip exists)
 # Part 5.2 — culturally-relevant b-roll: licensed reaction/meme GIF source (GIPHY primary, Tenor
 # stub). Keyless → fail-soft empty (memes just don't resolve). "Powered By GIPHY" attribution is a
 # production-key requirement (see docs/BROLL-PLACEMENT-SOURCES.md §5.2). BROLL_MEMES gates the whole
@@ -3019,6 +3019,8 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         out["self_review"] = job["self_review"]
     if job.get("lint"):
         out["lint"] = job["lint"]
+    if job.get("broll_log"):
+        out["broll_log"] = job["broll_log"]        # per-cue decisions (tier/action/why) — observability
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint
         # is polled every 5s; the manual editor is the only caller that needs them.
@@ -3530,7 +3532,9 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
     try:
         if resolve_broll:
             try:
-                job["edl"] = await _resolve_broll(job["edl"], allow_generation=False)
+                _tweak_force = (job.get("config") or {}).get("broll_coverage") == "full"
+                job["edl"] = await _resolve_broll(job["edl"], allow_generation=False,
+                                                  force_broll=_tweak_force)
             except Exception:
                 clip.setdefault("warnings", []).append("broll_unresolved: resolve failed")
             # #16: a resolve that finds no stock clip (no key / no match) leaves the cue
@@ -4634,6 +4638,15 @@ async def _run_edit(job_id: str, words: list[dict]):
         _mark_stage(job, "editing")
         for c in job["clips"]: c["status"] = "editing"
         style = job["style"]
+        # Belt-and-braces: picking "Talking Head + B-roll" IS the b-roll opt-in. Old app builds
+        # (chat-edit ≤ build 36) never send broll_coverage → the density floor never fired and
+        # force_broll stayed off, so every literal cue silently vanished. Default coverage server-side
+        # for any b-roll format so old clients get the same density as the record flow. (prefs.broll
+        # is False still kills all b-roll downstream, so this is safe under the OFF toggle.)
+        _cfg = job.get("config") or {}
+        if not _cfg.get("broll_coverage") and (style == "broll_cutaway"
+                                               or job.get("edit_format") == "talking_head_broll"):
+            job["config"] = {**_cfg, "broll_coverage": "full"}
         script = job["script"]
         # Deterministic grounding: fillers from AssemblyAI disfluency tags (source of
         # truth for cuts) and emphasis regions for punch-in placement.
@@ -6703,8 +6716,8 @@ async def _fetch_giphy_candidates(query: str, n: int = 1) -> list[dict]:
     for g in gifs:
         imgs = (g.get("images") or {})
         orig = imgs.get("original") or {}
-        link = orig.get("mp4") or orig.get("url")     # prefer MP4 rendition (renders deterministically)
-        thumb = (imgs.get("original_still") or {}).get("url") or orig.get("url")
+        link = orig.get("mp4")                          # MP4 ONLY — a raw .gif renders FROZEN via
+        thumb = (imgs.get("original_still") or {}).get("url") or orig.get("url")  # Remotion <Img> on Lambda
         if link:
             out.append({"link": link, "thumb": thumb})
     return out
@@ -6729,7 +6742,7 @@ async def _fetch_tenor_candidates(query: str, n: int = 1) -> list[dict]:
     out: list[dict] = []
     for res in results:
         mf = res.get("media_formats") or {}
-        link = (mf.get("mp4") or {}).get("url") or (mf.get("gif") or {}).get("url")
+        link = (mf.get("mp4") or {}).get("url")         # MP4 ONLY (no frozen-.gif fallback)
         thumb = (mf.get("gifpreview") or mf.get("gif") or {}).get("url")
         if link:
             out.append({"link": link, "thumb": thumb})
@@ -6752,22 +6765,25 @@ async def _fetch_pexels(query: str) -> str | None:
 
 async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None) -> int | None:
     """One Haiku vision call scoring candidate thumbnails against the cue + the a-roll's
-    palette/energy (from the dossier). Returns the best index, or None to fall back to
-    top-1. Monkeypatched in tests; keyless → None."""
-    if not ANTHROPIC_KEY or len(thumbs) < 2:
+    palette/energy (from the dossier). Returns the best 0-based index, **-1 to REJECT ALL**
+    (no candidate genuinely depicts the cue — a wrong clip is worse than none), or None on a
+    transport/parse failure. Monkeypatched in tests; keyless → None."""
+    if not ANTHROPIC_KEY or len(thumbs) < 1:
         return None
     import base64
     fr = (dossier or {}).get("framing") or {}
     aroll_hint = f"a-roll look: lighting={fr.get('lighting')}, shot={fr.get('shot')}" if fr else ""
     content: list[dict] = [{"type": "text", "text":
         f"Pick the single best b-roll clip for the cue \"{cue}\". {aroll_hint}. "
-        f"Score cue relevance first, then palette/energy match to the a-roll. "
-        f"Return JSON {{\"best_index\": int}} (0-based)."}]
+        f"Score cue RELEVANCE first (does the clip actually depict the thing the cue names?), "
+        f"then palette/energy match to the a-roll. If NO candidate genuinely depicts the cue "
+        f"(wrong subject / unrelated scene), return best_index -1 — a wrong clip is worse than "
+        f"none. Return JSON {{\"best_index\": int}} (0-based, or -1 to reject all)."}]
     for t in thumbs[:BROLL_CANDIDATES]:
         content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                         "data": base64.b64encode(t).decode("ascii")}})
     body = {"model": HAIKU, "max_tokens": 100,
-            "system": "You are a b-roll art director. Choose the best-matching clip.",
+            "system": "You are a b-roll art director. Choose the best-matching clip, or reject all.",
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False, "required": ["best_index"],
@@ -6781,18 +6797,21 @@ async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None
             return None
         text = "".join(b.get("text", "") for b in r.json().get("content", []))
         idx = (json.loads(text) or {}).get("best_index")
-        return idx if isinstance(idx, int) and 0 <= idx < len(thumbs) else None
+        return idx if isinstance(idx, int) and -1 <= idx < len(thumbs) else None
     except (httpx.HTTPError, ValueError, KeyError):
         return None
 
 
 async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None = None) -> str | None:
-    """Choose the best candidate link via vision re-rank (fetch thumbnails → _broll_vision_pick),
-    falling back to top-1 on any miss. Keyless / single-candidate → top-1."""
+    """Choose the best candidate link via vision re-rank. **Keyed = affirmative-pick-ONLY**: a link
+    comes back only when the vision judge affirmatively picks a genuinely-relevant clip; a reject
+    (-1), a transport/parse failure, or no usable thumbnails all return None so the caller can retry
+    with a simpler query and then degrade to a punch-in — never a wrong stock clip. **Keyless →
+    top-1** (no way to judge relevance)."""
     if not candidates:
         return None
-    if len(candidates) == 1 or not ANTHROPIC_KEY:
-        return candidates[0]["link"]
+    if not ANTHROPIC_KEY:
+        return candidates[0]["link"]            # keyless: can't judge → keep the old top-1 behavior
     thumbs: list[bytes] = []
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -6803,14 +6822,13 @@ async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None =
                 tr = await client.get(c["thumb"])
                 thumbs.append(tr.content if tr.status_code == 200 else b"")
     except httpx.HTTPError:
-        return candidates[0]["link"]
-    valid = [t for t in thumbs if t]
-    if len(valid) < 2:
-        return candidates[0]["link"]
+        return None                             # can't judge relevance → reject (caller retries/degrades)
+    if not any(thumbs):
+        return None
     idx = await _broll_vision_pick(cue, thumbs, dossier)
-    if idx is None or idx >= len(candidates):
-        return candidates[0]["link"]
-    return candidates[idx]["link"]
+    if isinstance(idx, int) and 0 <= idx < len(candidates):
+        return candidates[idx]["link"]
+    return None                                 # -1 reject / None failure / out-of-range → reject
 
 
 _broll_url_cache: dict[str, str] = {}
@@ -6896,13 +6914,32 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
     return edl
 
 
+_broll_rejected: set[str] = set()               # queries the vision judge rejected (negative cache)
+
+
+def _simplify_broll_query(cue_text: str) -> str:
+    """Fallback query when a rewritten/cinematic query rejects: the first ≤3 CONTENT words of the
+    cue (lowercase, punctuation-stripped, stopwords + <4-char words dropped). Short literal queries
+    match stock libraries far better than long stylized phrases."""
+    words = []
+    for raw in (cue_text or "").lower().split():
+        w = raw.strip(".,!?;:'\"()[]")
+        if w.isalpha() and len(w) >= 4 and w not in _BROLL_FLOOR_STOPWORDS:
+            words.append(w)
+        if len(words) >= 3:
+            break
+    return " ".join(words)
+
+
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
                          allow_generation: bool = True,
                          corpus: list[dict] | None = None,
                          force_broll: bool = False) -> dict:
     """Resolve each b-roll cue to a real portrait video URL. WS4: try the creator's OWN
     analyzed media (corpus) FIRST — a matching own clip above the score floor becomes an
-    own_media hit — then fall back to Pexels stock, then Higgsfield generation. Cached by
+    own_media hit — then fall back to Pexels stock, then Higgsfield generation. The vision
+    judge may REJECT all stock (returns None) → retry once with a simplified literal query,
+    then leave unresolved (the tier pass degrades action/concept to a punch-in). Cached by
     query so re-renders don't re-hit Pexels/vision."""
     broll = edl.get("broll") or []
     if not broll:
@@ -6960,6 +6997,18 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             continue
         candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
         url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
+        # Vision REJECTED all stock (or found none). Retry ONCE with a short literal query — a
+        # rewritten/cinematic phrase often matches worse than the concrete nouns of the cue.
+        if not url and query not in _broll_rejected:
+            simple = _simplify_broll_query(b.get("cue_text") or query)
+            if simple and simple.lower() != query.lower():
+                candidates = await _fetch_pexels_candidates(simple, BROLL_CANDIDATES)
+                url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
+            if not url:
+                _broll_rejected.add(query)
+                if len(_broll_rejected) > 5000:
+                    _broll_rejected.clear()       # bounded; a rare full reset is fine
+                b["reject_reason"] = "vision_reject" if candidates else "no_candidates"
         # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
         # of silently dropping the cutaway. Runs ONLY on the initial edit pipeline
         # (allow_generation=False on tweak re-renders — generation inside the render
@@ -6989,8 +7038,10 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     # action/concept may keep stock. Also dedupe a repeated asset within ~15s (450f).
     _BROLL_REPEAT_FRAMES = 450
     _LITERAL_NEEDS = ("entity", "data", "evidence")
+    faceless = edl.get("style") == "faceless"
     kept: list[dict] = []
     fallback_cards: list[dict] = []
+    punch_fallbacks: list[dict] = []
     log: list[dict] = []
     seen_urls: list[tuple[str, int]] = []
     for b in broll:
@@ -7000,6 +7051,7 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         cue = b.get("cue_text", "")
         s_in, s_out = int(b.get("src_in", 0)), int(b.get("src_out", 0))
         txt = (b.get("fallback_text") or cue or "").strip()
+        rej = b.get("reject_reason")
         # LITERAL need (entity/data/evidence) without the real asset → text card, never
         # generic stock. This is the only case that overrides v1: action/concept and any
         # legacy item with no `need` field keep v1 behavior (kept, resolved or not).
@@ -7010,16 +7062,31 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             if txt and s_out > s_in:
                 fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
                 log.append({"need": need, "cue": cue, "tier": "stock" if resolved else "none",
-                            "action": "text_card", "why": "literal need with no real asset"})
+                            "action": "text_card", "why": rej or "literal need with no real asset"})
             else:
                 log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
-                            "why": "no asset and no fallback text"})
+                            "why": rej or "no asset and no fallback text"})
             continue
         # A meme that didn't resolve from the GIF ladder is DROPPED (never a stock/card stand-in
         # for a joke) — explicit rather than leaving a phantom that build_render_plan strips later.
         if need == "meme" and not resolved:
             log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
                         "why": "no meme GIF resolved"})
+            continue
+        # UNRESOLVED action/concept (vision rejected the stock / found nothing): don't silently
+        # vanish — degrade to a face-keeping PUNCH-IN at the cue frame (a visual change on the
+        # beat without a wrong clip). Faceless has no face to punch, so it just drops. Only when
+        # resolution was actually ATTEMPTED (stock/corpus available) — in a pure keyless/mock noop
+        # we leave the cue untouched (v1 passthrough) rather than mutating the EDL.
+        if need in ("action", "concept") and not is_own and not resolved and (has_stock or corpus):
+            if not faceless and s_out > s_in:
+                punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),  # ~1s punch
+                                        "scale": 1.08})
+                log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
+                            "why": rej or "no relevant asset — face-keeping visual change"})
+            else:
+                log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
+                            "why": rej or "no asset"})
             continue
         # everything else keeps v1 behavior; resolved assets dedupe a repeat within 15s
         u = b.get("resolved_url") or b.get("asset_id") or ""
@@ -7034,11 +7101,14 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                     "action": "broll"})
 
     edl["broll"] = kept
-    if fallback_cards:
+    if fallback_cards or punch_fallbacks:
         overlays = edl.get("overlays") or []
         for c in fallback_cards:
             overlays.append({"type": "text_card", "src_in": c["src_in"], "src_out": c["src_out"],
                              "scale": 1.0, "text": str(c["text"])[:200]})
+        for p in punch_fallbacks:
+            overlays.append({"type": "punch_in", "src_in": p["src_in"], "src_out": p["src_out"],
+                             "scale": p["scale"], "text": ""})
         edl["overlays"] = overlays
     edl["_broll_log"] = log
     return edl
