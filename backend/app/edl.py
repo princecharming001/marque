@@ -540,16 +540,31 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
     kept, drops = [], []
     prev_end = 0
     prev_was_filler = False
-    for w in words:
+    for i, w in enumerate(words):
         text = w.get("word", "").lower().strip(".,!?")
         start = w.get("start_ms", 0)
         end = w.get("end_ms", start + 100)
         clause_boundary = (prev_end == 0                       # first word of the take
                            or start - prev_end >= 250          # follows a real pause
                            or prev_was_filler)                 # "um, so, ..." chains cut whole
-        is_filler = ((use_disfluency_type and w.get("type") == "filler")
+        _asr_filler = use_disfluency_type and w.get("type") == "filler"
+        is_filler = (_asr_filler
                      or text in ALWAYS_FILLERS
                      or (text in DISCOURSE_MARKERS and clause_boundary))
+        # CONTENT carve-out (research: AssemblyAI over-tags polysemous discourse markers —
+        # "like"-as-filler precision is only ~79%, so a real "I feel LIKE this works" or "SO
+        # the point is" gets mistagged and wrongly cut). Keep a tagged marker ONLY when it's
+        # genuinely embedded content: tight (no adjacent pause), NOT clause-opening, and
+        # flanked by CONTENT words on BOTH sides. A marker next to a pause or another
+        # filler/marker ("posting, like, basically…") is the rambling-filler case — still cut.
+        if is_filler and text in DISCOURSE_MARKERS and not clause_boundary:
+            nxt = words[i + 1] if i + 1 < len(words) else None
+            next_text = _norm_word(nxt.get("word", "")) if nxt else ""
+            gap_before = (start - prev_end) if prev_end > 0 else 999
+            gap_after = (nxt.get("start_ms", 0) - w.get("end_ms", start)) if nxt else 999
+            if (gap_before < 200 and gap_after < 200 and not prev_was_filler
+                    and next_text and next_text not in FILLER_WORDS):
+                is_filler = False        # embedded content marker → keep the real word
         # Dead air before this word (measured from the previous word's end, filler or not).
         if prev_end > 0 and start - prev_end > gap_ms:
             gap_start_f, gap_end_f = ms_to_frame(prev_end), ms_to_frame(start)
