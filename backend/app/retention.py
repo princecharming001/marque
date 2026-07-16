@@ -184,11 +184,49 @@ def _shingle_sim(a: list[str], b: list[str]) -> float:
     return max(jaccard, containment if containment >= _RETAKE_CONTAIN else 0.0)
 
 
-def dedupe_retakes(edl: dict, words: list[dict]) -> dict:
+# Script-aware retake detection: when both utterances strongly match the SAME intended
+# script sentence, they're deliveries of that line even if their mutual token similarity
+# dips into this gray zone (a stumble reworded half the line). Conservative — only fires
+# with script corroboration, never on transcript-only similarity below _RETAKE_SIM.
+_RETAKE_GRAY_SIM = 0.45        # floor for the script-corroborated path (below _RETAKE_SIM=0.62)
+_SCRIPT_MATCH_CONTAIN = 0.60   # min containment of an utterance's tokens in a script sentence
+
+
+def _script_sentences(script_text: str) -> list[set]:
+    """Token sets for each script sentence (split on . ! ? and newlines), filler-normalized."""
+    import re
+    out: list[set] = []
+    for chunk in re.split(r"[.!?\n]+", script_text or ""):
+        toks = {_norm_word(w) for w in chunk.split() if _norm_word(w)}
+        if len(toks) >= _RETAKE_MIN_WORDS:
+            out.append(toks)
+    return out
+
+
+def _same_script_line(a: list[str], b: list[str], sentences: list[set]) -> bool:
+    """True when a and b each contain (≥_SCRIPT_MATCH_CONTAIN) the SAME script sentence —
+    i.e. both are deliveries of one intended line."""
+    if not sentences:
+        return False
+    sa, sb = set(a), set(b)
+    for s in sentences:
+        if not s:
+            continue
+        if len(sa & s) / len(s) >= _SCRIPT_MATCH_CONTAIN and len(sb & s) / len(s) >= _SCRIPT_MATCH_CONTAIN:
+            return True
+    return False
+
+
+def dedupe_retakes(edl: dict, words: list[dict], script_text: str = "") -> dict:
     """Drop the earlier of two near-duplicate utterances (a flubbed take re-delivered),
     keeping the LAST clean delivery. Compares each utterance to the next one AND the one
     after (when a short bridge like 'ugh, let me redo that' sits between the takes).
-    Frame-based drops, coalesced; fail-soft and floor-guarded like every other pass."""
+    Frame-based drops, coalesced; fail-soft and floor-guarded like every other pass.
+
+    Script-aware (when `script_text` is a real read script): two utterances that both
+    deliver the SAME script sentence are treated as retakes even if their mutual similarity
+    dips into the gray zone — catching a reworded redo that transcript-only matching misses.
+    Never fires below the gray floor, and always drops the EARLIER take."""
     edl = copy.deepcopy(edl)
     segments = edl.get("segments") or []
     drops = edl.get("drops") or []
@@ -204,6 +242,7 @@ def dedupe_retakes(edl: dict, words: list[dict]) -> dict:
     runs = _utterances(words)
     norms = [_norm_word(w.get("word", "")) for w in words]
     toks = [[norms[k] for k in range(a, b) if norms[k]] for a, b in runs]
+    script_sents = _script_sentences(script_text)
     total_frames = max(1, sum(hi - lo for lo, hi in kept))
     dropped_idx: set = set()
     retake_drops: list[dict] = []
@@ -220,7 +259,12 @@ def dedupe_retakes(edl: dict, words: list[dict]) -> dict:
                 continue
             if j == i + 2 and len(toks[i + 1]) > _RETAKE_BRIDGE_MAX_WORDS:
                 break     # the thing between them is real content, not a bridge — not a retake
-            if len(toks[j]) < _RETAKE_MIN_WORDS or _shingle_sim(toks[i], toks[j]) < _RETAKE_SIM:
+            if len(toks[j]) < _RETAKE_MIN_WORDS:
+                continue
+            sim = _shingle_sim(toks[i], toks[j])
+            # Standard gate OR the script-corroborated gray-zone gate.
+            if sim < _RETAKE_SIM and not (
+                    sim >= _RETAKE_GRAY_SIM and _same_script_line(toks[i], toks[j], script_sents)):
                 continue
             lo = ms_to_frame(words[runs[i][0]].get("start_ms", 0))
             hi = ms_to_frame(words[runs[i][1] - 1].get("end_ms",
@@ -1250,7 +1294,10 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     # Retake dedup runs AFTER the filler sweep (so utterance token sets are already
     # filler-light) and BEFORE pacing (so a dropped take isn't first sped up then cut).
     if "retake" in enabled:
-        edl = _safe_pass("dedupe_retakes", edl, dedupe_retakes, words)
+        # Script-aware: feed the intended script text (empty for freestyle) so a reworded
+        # redo of a scripted line is caught even when transcript-only similarity misses it.
+        _script_text = " ".join(str((script or {}).get(k, "")) for k in ("hook", "body")).strip()
+        edl = _safe_pass("dedupe_retakes", edl, dedupe_retakes, words, _script_text)
 
     if "pacing" in enabled and prefs.get("pacing") is not False:
         edl = _safe_pass("plan_pacing", edl, plan_pacing, words, style=style,

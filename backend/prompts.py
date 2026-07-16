@@ -1158,8 +1158,12 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
     _cov = {"minimal": "The creator prefers MINIMAL b-roll — keep the face on screen; use text "
                        "callouts for needs instead of cutaways. Emit b-roll only for a need the "
                        "face genuinely can't carry.",
-            "full": "The creator likes heavy b-roll coverage — cover every entity/action need "
-                    "that has a real asset; prefer mode 'full' inserts.",
+            "full": "B-ROLL IS REQUIRED: the creator EXPLICITLY chose b-roll cutaways. You MUST "
+                    "place b-roll on the concrete nouns / numbers / actions / illustrable moments "
+                    "in this take — an EMPTY broll array is NOT acceptable here. Aim for a cutaway "
+                    "on each genuinely illustrable beat (still honoring hook/CTA/payoff face-"
+                    "protection and the ≤40% budget). Prefer the creator's own footage; where "
+                    "there's none, give a precise stock `query` for the concrete thing named.",
             "partial": "The creator wants b-roll to SHARE the screen with their face — prefer "
                        "mode 'panel' or 'card' inserts over full-frame ones."}.get(
         (broll_coverage or "").lower(), "")
@@ -1167,6 +1171,21 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
            "medium": "Energy: MEDIUM — moderate pace and interrupt density.",
            "high": "Energy: HIGH — tight pace, dense visual changes."}.get((energy or "").lower(), "")
     config_line = ("\n" + "\n".join(x for x in (_cov, _en) if x) + "\n") if (_cov or _en) else ""
+    # Script-aware cutting: the intended script (soft reference) — only when a REAL script
+    # was read (scripted take). Freestyle sends script={} → no block, edit from transcript alone.
+    _s = script or {}
+    _script_hook = (_s.get("hook") or "").strip()
+    _script_body = (_s.get("body") or "").strip()
+    script_line = ""
+    if _script_body or _script_hook:
+        _parts = []
+        if _script_hook:
+            _parts.append(f"Hook: {_script_hook}")
+        if _script_body:
+            _parts.append(f"Body: {_script_body[:2000]}")
+        script_line = ("\nINTENDED SCRIPT (soft reference — approximately what they meant to say; "
+                       "the transcript above/below is ground truth for timing & exact words):\n"
+                       + "\n".join(_parts) + "\n")
     system = (
         "You are an elite short-form talking-head editor. Output a typed EDIT PLAN as JSON — DECISIONS ONLY, "
         "not an EDL. The assembler turns your plan into the final cut, so you never write caption arrays, "
@@ -1182,6 +1201,16 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "Then make every later decision (hook, cuts, order, b-roll, pacing) in service of that through-line and "
         "payoff. A line is 'weak' only relative to the intent — a tangent to one take is the whole point of "
         "another. Cut what doesn't serve the through-line; keep what builds to the payoff.\n\n"
+
+        "═══ IF AN INTENDED SCRIPT IS PROVIDED (below the transcript) ═══\n"
+        "When an INTENDED SCRIPT block appears, the creator READ FROM IT — it's approximately what they meant "
+        "to say. Use it to cut more accurately: (a) tell real content from flubs / false-starts / restarts; "
+        "(b) when they fumble a scripted line and redo it, keep the delivery CLOSEST to the script and cut the "
+        "earlier fumbles; (c) recognize the intended ENDING/payoff so you never cut it. BUT: the TRANSCRIPT is "
+        "ground truth for TIMING and the EXACT spoken words — cite only transcript [fN] anchors, never cut based "
+        "on the script's wording. Expect DRIFT — ad-libs, reordering, skipped lines, added asides, and timing "
+        "differences are all normal and usually worth keeping. The script is a soft reference, not a checklist; "
+        "if it's absent (freestyle), edit from the transcript + through-line alone.\n\n"
 
         "═══ THE CUT MODEL — READ THIS SECOND ═══\n"
         "`cuts` is your DELETION list. The final video = the WHOLE take MINUS the spans you put in `cuts` "
@@ -1246,7 +1275,9 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "CTA/closing line, and first-person EMOTIONAL beats ('I felt…', talking-to-you eye contact). The "
         "viewer stays for the face on these beats; covering them with stock wastes the moment.\n"
         "• NEITHER → stay on the face. Empty broll [] is correct for a hot-take/storytime that leans on "
-        "delivery + captions. Do NOT add b-roll to hit a quota — a filler cutaway devalues the real ones.\n"
+        "delivery + captions — UNLESS the config hints above say b-roll is REQUIRED (the creator explicitly "
+        "chose cutaways), in which case you MUST find the illustrable beats and place cutaways; empty is not "
+        "acceptable. Otherwise, do NOT add b-roll to hit a quota — a filler cutaway devalues the real ones.\n"
         "For each b-roll set `need`: entity = named product/app/person/place/document · data = number/stat/"
         "comparison · evidence = a real message/review/receipt/screenshot · action = a process/event · "
         "concept = an abstract idea.\n"
@@ -1288,7 +1319,7 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
     )
     user = (
         f"{brand_block(brand)}\nStyle: {style}\nSource last frame: {last_frame} (30fps)."
-        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}{theme_line}{genre_line}{config_line}\n"
+        f"{brief_line}{dossier_line}{ref_line}{emph_line}{custom_line}{theme_line}{genre_line}{config_line}{script_line}\n"
         f"Frame-anchored transcript:\n{_frame_anchored_transcript(transcript_words)}\n\n"
         "Produce the edit plan JSON."
     )

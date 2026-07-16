@@ -4637,6 +4637,12 @@ async def _run_edit(job_id: str, words: list[dict]):
         _broll_mode = (job.get("config") or {}).get("broll_mode", "")
         if _broll_mode in ("full", "panel", "card"):
             prefs = {**prefs, "broll_mode": _broll_mode}
+        # B-roll opt-in: coverage="full" means the creator EXPLICITLY chose b-roll — the
+        # assembler synthesizes a deterministic floor of cutaways when the plan emits none, so
+        # picking "Talking Head + B-roll" always yields visible b-roll (guarantee, not best-effort).
+        _broll_cov = (job.get("config") or {}).get("broll_coverage", "")
+        if _broll_cov:
+            prefs = {**prefs, "broll_coverage": _broll_cov}
         if prefs:
             hints = []
             if prefs.get("auto_captions") is False:
@@ -4829,8 +4835,10 @@ async def _run_edit(job_id: str, words: list[dict]):
         # is a NICETY: a failure here must degrade to a warning, never fail the whole
         # clip job (the tweak path already guards this the same way — audit B-05/F4).
         try:
+            _force_broll = (job.get("config") or {}).get("broll_coverage") == "full"
             edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
-                                            corpus=job.get("broll_corpus"))
+                                            corpus=job.get("broll_corpus"),
+                                            force_broll=_force_broll)
             # Addendum Part 8: surface the b-roll decision log (need → asset/tier → action)
             # for the report card. After the tier pass, edl["broll"] holds only kept assets,
             # so a literal need that fell back to a text card is no longer a "broll_unresolved".
@@ -6708,7 +6716,8 @@ _OWN_MEDIA_FLOOR = float(os.environ.get("OWN_MEDIA_BROLL_FLOOR", "0.45"))
 
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
                          allow_generation: bool = True,
-                         corpus: list[dict] | None = None) -> dict:
+                         corpus: list[dict] | None = None,
+                         force_broll: bool = False) -> dict:
     """Resolve each b-roll cue to a real portrait video URL. WS4: try the creator's OWN
     analyzed media (corpus) FIRST — a matching own clip above the score floor becomes an
     own_media hit — then fall back to Pexels stock, then Higgsfield generation. Cached by
@@ -6780,7 +6789,10 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # LITERAL need (entity/data/evidence) without the real asset → text card, never
         # generic stock. This is the only case that overrides v1: action/concept and any
         # legacy item with no `need` field keep v1 behavior (kept, resolved or not).
-        if need in _LITERAL_NEEDS and not is_own:
+        # EXCEPTION — force_broll (the creator EXPLICITLY opted into b-roll): a real stock
+        # clip beats a text card here, so keep a resolved literal item as a cutaway. Only an
+        # UNRESOLVED literal still falls back to a text card.
+        if need in _LITERAL_NEEDS and not is_own and not (force_broll and resolved):
             if txt and s_out > s_in:
                 fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
                 log.append({"need": need, "cue": cue, "tier": "stock" if resolved else "none",

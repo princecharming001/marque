@@ -1912,6 +1912,57 @@ _BROLL_CTA_PROTECT = 60                         # …or the CTA (last 2s)
 # runtime. Panel/card modes keep the face on screen, so they DON'T count against this budget.
 _BROLL_RUNTIME_BUDGET = 0.40                    # ≤40% of output covered by face-hiding b-roll
 _FACELESS_STYLES = {"faceless"}                # b-roll IS the visual channel → hook coverage ok
+
+# Deterministic b-roll FLOOR (the "guarantee it shows" path): when the creator explicitly
+# opts into b-roll (coverage="full") but the plan emitted none, synthesize cues from the
+# transcript's concrete words so there's always something to cut to.
+_BROLL_FLOOR_STOPWORDS = {
+    "about", "above", "after", "again", "against", "along", "also", "always", "another",
+    "around", "because", "before", "being", "below", "between", "could", "doing", "during",
+    "either", "every", "first", "gonna", "great", "having", "here", "just", "kind", "like",
+    "little", "maybe", "might", "much", "never", "really", "right", "should", "some", "something",
+    "still", "their", "them", "then", "there", "these", "they", "thing", "things", "think",
+    "this", "those", "through", "under", "until", "very", "want", "well", "were", "what",
+    "when", "where", "which", "while", "with", "would", "your", "yourself", "actually", "basically",
+}
+
+
+def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
+                            hook_protect: int, cta_protect: int) -> list[dict]:
+    """Build synthetic plan-style broll cues from concrete transcript words when the creator
+    opted into b-roll but the plan produced none. Prefers AssemblyAI-emphasized words, then
+    long content words; spaced ≥ (_BROLL_MIN_SPACING + hold) apart, off the hook/CTA. Returns
+    entries shaped like plan.broll ({range, cue, query, need, mode}) so the main loop applies
+    the same J-cut/hold/spacing/budget grammar."""
+    if total <= hook_protect + cta_protect:
+        return []
+    hold = _BROLL_MIN_HOLD
+    step = _BROLL_MIN_SPACING + hold
+    lo, hi = hook_protect + _BROLL_JCUT_LEAD, total - cta_protect
+    target = max(2, min(total // 360, int(_BROLL_RUNTIME_BUDGET * total) // step))  # ~1 per 12s, budget-capped
+    cands: list[tuple[int, str]] = []
+    for w in clean_words:
+        word = (w.get("word") or "").strip()
+        low = word.lower().strip(".,!?;:'\"")
+        if not low.isalpha():
+            continue
+        emph = bool(w.get("is_emphasized"))
+        content = len(low) >= 5 and low not in _BROLL_FLOOR_STOPWORDS
+        if not (emph or content):
+            continue
+        f = ms_to_frame(w.get("start_ms", 0))
+        if lo <= f <= hi:
+            cands.append((f, low, emph))  # type: ignore
+    # Prefer emphasized words; then walk in time picking spaced ones.
+    cands.sort(key=lambda c: (0 if c[2] else 1, c[0]))  # emphasized first, then by time
+    picked: list[tuple[int, str]] = []
+    for f, word, _emph in sorted(cands, key=lambda c: c[0]):
+        if len(picked) >= target:
+            break
+        if all(abs(f - pf) >= step for pf, _ in picked):
+            picked.append((f, word))
+    return [{"range": [f, f + hold], "cue": word, "query": word, "need": "concept", "mode": mode}
+            for f, word in sorted(picked)]
 _PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
 _PUNCH_HOLD = 30
 _TEXTCARD_HOLD = 60
@@ -2066,7 +2117,17 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     if prefs.get("broll") is not False:
         face_style = style not in _FACELESS_STYLES
         last_out = None
-        for b in (plan.get("broll") or []):
+        plan_broll = list(plan.get("broll") or [])
+        # GUARANTEE: the creator explicitly opted into b-roll (coverage="full") but the plan
+        # emitted none → synthesize a deterministic floor from concrete transcript words so a
+        # "Talking Head + B-roll" pick always yields visible cutaways. Uses the same grammar loop.
+        if prefs.get("broll_coverage") == "full" and not plan_broll and clean_words:
+            _floor_mode = prefs["broll_mode"] if prefs.get("broll_mode") in ("full", "panel", "card") else "full"
+            plan_broll = _synthesize_broll_floor(
+                clean_words, total, _floor_mode,
+                _BROLL_HOOK_PROTECT if face_style else 0,
+                _BROLL_CTA_PROTECT if face_style else 0)
+        for b in plan_broll:
             rng = b.get("range") or []
             if len(rng) != 2:
                 continue
