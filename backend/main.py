@@ -6729,7 +6729,13 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     can_resolve = has_stock or corpus
     generated_count = 0
     for b in broll if can_resolve else []:
-        if b.get("resolved_url") or b.get("source") == "own_media":
+        if b.get("resolved_url"):
+            continue
+        # own_media cues normally resolve ONLY via a corpus match (below). But when b-roll is
+        # FORCED (creator explicitly opted in) and there's no corpus / no match, an own_media
+        # cue with no real asset would render NOTHING — so let it fall back to stock. Without
+        # force_broll, keep v1: own_media cues are the creator's own footage, left as-is.
+        if b.get("source") == "own_media" and not force_broll:
             continue
         query = (b.get("broll_query") or b.get("cue_text") or "").strip()
         if not query:
@@ -6768,6 +6774,10 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             _broll_url_cache[query] = url
             _cap_evict(_broll_url_cache, 10_000)
             b["resolved_url"] = url
+            # A forced own_media cue that fell back to stock is now honestly a stock clip
+            # (so the tier pass keeps it as a real cutaway rather than a "no real asset" card).
+            if b.get("source") == "own_media":
+                b["source"] = "stock"
 
     # --- Addendum Part 4A: tier rule + no-repeat + decision log ---
     # entity/data/evidence needs must show the REAL thing (own_media = T1). If the only
