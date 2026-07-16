@@ -206,11 +206,16 @@ enum MediaCompressor {
             let capBudgetBps = Int(Double(maxBytes) * 8.0 / seconds) - audioBps
             let tierTarget = seconds <= 90 ? 3_800_000 : 2_600_000   // ≤90s vs 90–150s
             let videoBps = max(1_200_000, min(tierTarget, Int(Double(capBudgetBps) * 0.92)))
-            if let out = await transcodeHEVC(asset, videoBps: videoBps),
+            // TIMEOUT: the AVAssetReader→Writer transcode can STALL FOREVER on an imported
+            // Photos format the camera never makes (HDR 10-bit, ProRes, slow-mo) — the pump's
+            // copyNextSampleBuffer never returns and never signals end, so the whole upload
+            // hung at "uploading". Bound it; on timeout fall through to the robust export
+            // preset ladder (AVAssetExportSession tonemaps HDR→SDR and handles odd formats).
+            if let out = await withTimeout(seconds: 90, { await transcodeHEVC(asset, videoBps: videoBps) }) ?? nil,
                let size = fileSize(out), size <= maxBytes {
                 return out
             }
-            // Overshoot or writer failure → fall through to the preset ladder safety net.
+            // Overshoot / writer failure / transcode timeout → fall through to the preset ladder.
         }
 
         // Long takes, or a 1080p transcode that overshot: the export-preset ladder
@@ -221,11 +226,27 @@ enum MediaCompressor {
             presets = [AVAssetExportPreset960x540]
         }
         for preset in presets {
-            guard let out = await export(source, preset: preset) else { continue }
+            // Same hang guard as the transcode path — AVAssetExportSession can also wedge on a
+            // pathological import; a bounded export that stalls just drops to the next preset / fails.
+            guard let out = await withTimeout(seconds: 120, { await export(source, preset: preset) }) ?? nil else { continue }
             if let size = fileSize(out), size <= maxBytes { return out }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
         return nil
+    }
+
+    /// Run `op`, or return nil if it doesn't finish within `seconds` (its task is cancelled).
+    /// Used to bound media compression, which can hang indefinitely on an undecodable imported
+    /// format. Cancellation may not interrupt a wedged AVFoundation C call immediately, but the
+    /// caller is unblocked and proceeds (upload the original / fail) instead of stranding forever.
+    private static func withTimeout<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async -> T?) async -> T?? {
+        await withTaskGroup(of: T??.self) { group in
+            group.addTask { await op() }
+            group.addTask { try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000)); return nil }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     private static func fileSize(_ url: URL) -> Int? {

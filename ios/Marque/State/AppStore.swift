@@ -757,13 +757,25 @@ final class AppStore {
         save()
 
         let task = Task { [weak self] in
-            let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath)
             guard let self else { return }
-            let resp = await self.startAnalyzeJob(
-                script: isFreestyle ? nil : script, publicURL: publicURL,
-                customInstructions: customInstructions, reactSourceURL: reactSourceURL,
-                editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
-                config: config, autoConfirm: true, toggles: toggles)
+            // Hard deadline: even with the compression timeouts, NOTHING may leave the clip
+            // stuck at "uploading" forever — race upload+create against an 8-min ceiling. On
+            // timeout the clip reconciles to a retryable .failed card instead of stranding.
+            let resp: AnalyzeJobResponse? = await withTaskGroup(of: AnalyzeJobResponse?.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else { return nil }
+                    let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath)
+                    return await self.startAnalyzeJob(
+                        script: isFreestyle ? nil : script, publicURL: publicURL,
+                        customInstructions: customInstructions, reactSourceURL: reactSourceURL,
+                        editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
+                        config: config, autoConfirm: true, toggles: toggles)
+                }
+                group.addTask { try? await Task.sleep(nanoseconds: 480 * 1_000_000_000); return nil }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
             self.reconcileInstantSubmit(placeholderId: placeholderId, resp: resp,
                                         script: script, footagePath: footagePath)
             self.backgroundSubmits[placeholderId] = nil
