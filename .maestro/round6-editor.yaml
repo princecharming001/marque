@@ -19,12 +19,27 @@ name: R6 editor — reorder button, placeholder playback, caption track
 # select a clip → Move ▶ appears
 - tapOn: { id: "editorPro.clip.0" }
 - extendedWaitUntil:
+    visible: { id: "editorPro.ctx.split" }
+    timeout: 4000
+# Move ◀/▶ sit at the END of the scrolling clip vocabulary (frequency-ordered,
+# reference behavior) — swipe the bar left to reach them.
+- swipe:
+    start: "90%, 93%"
+    end: "15%, 93%"
+    duration: 400
+- extendedWaitUntil:
     visible: { id: "editorPro.moveRight" }
     timeout: 4000
 - tapOn: { id: "editorPro.moveRight" }
 - takeScreenshot: /tmp/r6-ed-03-reordered
 # One-bar model: pop the clip selection so the root tiles are back.
 - tapOn: { id: "editorPro.ctx.back" }
+# Playback may have run to the end by now — the fixed-center playhead then parks the
+# lanes far left of the viewport. Scrub back toward 0:00 so the caption lane is on-screen.
+- swipe:
+    start: "30%, 80%"
+    end: "95%, 80%"
+    duration: 500
 # caption track (phrase clips on the timeline; word strip retired)
 - tapOn: { id: "editorPro.root.captions" }
 - extendedWaitUntil:

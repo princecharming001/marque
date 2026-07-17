@@ -1681,6 +1681,23 @@ struct ProEditorView: View {
         return false
     }
 
+    /// A stable key for "which vocabulary is showing" — drives the scroll-to-start reset
+    /// so a row swiped deep (e.g. to reach Move ▶) never leaves the NEXT vocabulary
+    /// scrolled mid-row with drifted tap targets.
+    private var vocabularyKey: String {
+        switch toolbarState {
+        case .root: return "root"
+        case .clip: return "clip"
+        case .music: return "music"
+        case .phrase: return "phrase"
+        case .textSticker: return "sticker"
+        case .textCard: return "card"
+        case .punchIn: return "zoom"
+        case .boundary: return "boundary"
+        case .broll: return "broll"
+        }
+    }
+
     var oneBar: some View {
         HStack(spacing: 0) {
             // Fixed deselect tile — hidden at plain root (nothing to pop). Topmost layer
@@ -1694,9 +1711,15 @@ struct ProEditorView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("editorPro.ctx.back")
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.sm) { vocabularyTiles }
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Space.sm) {
+                        Color.clear.frame(width: 1, height: 1).id("barStart")
+                        vocabularyTiles
+                    }
                     .padding(.horizontal, Space.sm)
+                }
+                .onChange(of: vocabularyKey) { _, _ in proxy.scrollTo("barStart", anchor: .leading) }
             }
         }
         .frame(height: 84).background(Palette.ink)
