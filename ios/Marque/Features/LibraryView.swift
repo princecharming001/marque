@@ -188,11 +188,19 @@ struct ClipGridCell: View {
                            startPoint: .top, endPoint: .bottom)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
 
-            HStack {
-                Text(statusLabel).font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.9))
-                Spacer()
-                Text("\(clip.seconds)s").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack {
+                    Text(statusLabel).font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Spacer()
+                    Text("\(clip.seconds)s").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
+                }
+                // Very subtle "finished editing" timestamp so a finished clip is scannable by
+                // when it landed. Only shown once the edit is done and a stamp exists.
+                if let finishedAgo {
+                    Text(finishedAgo).font(.system(size: 8, weight: .medium)).monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.45))
+                }
             }
             .padding(6)
         }
@@ -210,6 +218,22 @@ struct ClipGridCell: View {
         case .failed:    return "FAILED"
         }
     }
+    /// "3h ago" / "just now" — only for finished clips that carry a stamp (old clips → nil).
+    private var finishedAgo: String? {
+        guard let f = clip.finishedAt,
+              clip.status == .ready || clip.status == .scheduled || clip.status == .posted
+        else { return nil }
+        return ClipTimeFormat.relative.localizedString(for: f, relativeTo: Date())
+    }
+}
+
+/// Shared abbreviated relative-time formatter ("3h ago") for finished-clip stamps.
+enum ClipTimeFormat {
+    static let relative: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f
+    }()
 }
 
 struct ClipDetailSheet: View {

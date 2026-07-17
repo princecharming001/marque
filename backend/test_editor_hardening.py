@@ -139,7 +139,7 @@ def test_tweak_render_failure_is_visible_on_the_clip(monkeypatch):
     clip = job["clips"][0]
     clip["render_url"] = "https://prev.example/v.mp4"
     job["tweaks"].append({"instruction": "cut the intro"})
-    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
         monkeypatch.setattr(main, k, "x")
 
     async def exploding_submit(*a, **k):
@@ -157,7 +157,7 @@ def test_confirmed_edit_renders_exactly_once(monkeypatch):
     # F-07: analyze-first confirm produces ONE clip → _run_edit submits ONE render,
     # not N byte-identical renders per requested format.
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
-    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
         monkeypatch.setattr(main, k, "x")
     words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
              for i, w in enumerate("one two three four".split())]
@@ -188,7 +188,7 @@ def test_run_edit_calls_retention_passes_with_the_authored_edl(monkeypatch):
     # regardless of the RETENTION_PASSES flag (the flag lives inside
     # apply_retention_passes itself — _run_edit always calls it).
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
-    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
         monkeypatch.setattr(main, k, "x")
     words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
              for i, w in enumerate("one two three four".split())]
@@ -226,7 +226,7 @@ def test_run_edit_derives_pacing_lift_hint_from_the_brief(monkeypatch):
     # a low-energy edit brief is the one signal available to EITHER author path
     # for a stronger-than-default pace lift.
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
-    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
         monkeypatch.setattr(main, k, "x")
     words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
              for i, w in enumerate("one two three four".split())]
@@ -265,7 +265,7 @@ def test_shadow_mode_fires_a_background_diff_without_shipping_it(monkeypatch):
     # itself blows up.
     monkeypatch.setattr(main, "EDL_AUTHOR", "shadow")
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
-    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
         monkeypatch.setattr(main, k, "x")
     words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
              for i, w in enumerate("one two three four".split())]
@@ -405,6 +405,7 @@ def _renderable_job(monkeypatch):
     job_id = _make_live_job(monkeypatch,
                             REMOTION_SERVE_URL="https://serve.example",
                             REMOTION_ACCESS_KEY="ak",
+                            REMOTION_SECRET="sk",
                             REMOTION_FUNCTION_NAME="fn")
     async def ok_probe(url): pass
     monkeypatch.setattr(main, "_validate_source_url", ok_probe)
@@ -1959,6 +1960,7 @@ def test_render_semaphore_caps_cross_job_concurrency(monkeypatch):
     monkeypatch.setattr(main, "_render_semaphore", asyncio.Semaphore(cap))
     monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
     monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
+    monkeypatch.setattr(main, "REMOTION_SECRET", "sk")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
 
     state = {"current": 0, "peak": 0}
@@ -2134,6 +2136,7 @@ def test_tweak_preview_flag_triggers_preview_not_full_render(monkeypatch):
     main._clip_jobs[job_id]["status"] = "ready"
     monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
     monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
+    monkeypatch.setattr(main, "REMOTION_SECRET", "sk")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
 
     async def fake_preview(jid, cid, edl_override=None): pass
@@ -2359,7 +2362,7 @@ def test_poll_transcription_never_returns_bool_highlights(monkeypatch):
 
 def _lint_wiring_job(monkeypatch):
     monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
-    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+    for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
         monkeypatch.setattr(main, k, "x")
     words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
              for i, w in enumerate("one two three four five six seven eight".split())]

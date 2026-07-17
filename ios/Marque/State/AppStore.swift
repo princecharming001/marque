@@ -920,6 +920,9 @@ final class AppStore {
                           let idx = clips.firstIndex(where: { $0.id == backendId }) else { continue }
                     clips[idx].status = clipStatus == "ready" ? .ready
                                       : clipStatus == "failed" ? .failed : .rendering
+                    // Stamp the finish time ONCE, on the first transition to ready (this poll
+                    // fires every few seconds while already-ready, so guard on nil).
+                    if clipStatus == "ready", clips[idx].finishedAt == nil { clips[idx].finishedAt = Date() }
                     let terminal = clipStatus == "ready" || clipStatus == "failed"
                     clips[idx].etaSeconds = terminal ? nil : etaSeconds
                     clips[idx].etaSetAt = terminal ? nil : Date()
@@ -988,6 +991,7 @@ final class AppStore {
                 if let backendId = UUID(uuidString: clipIdStr),
                    let idx = clips.firstIndex(where: { $0.id == backendId }) {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
+                    if clipStatus == "ready", clips[idx].finishedAt == nil { clips[idx].finishedAt = Date() }
                     let terminal = clipStatus == "ready" || clipStatus == "failed"
                     clips[idx].etaSeconds = terminal ? nil : etaSeconds
                     clips[idx].etaSetAt = terminal ? nil : Date()
@@ -1210,6 +1214,7 @@ final class AppStore {
     func applyTweakResult(_ clipId: UUID, remoteURL: String?) {
         if let idx = clips.firstIndex(where: { $0.id == clipId }) {
             clips[idx].status = .ready
+            clips[idx].finishedAt = Date()      // a tweak re-render is a fresh "finished editing"
             if let remoteURL, !remoteURL.isEmpty { updateRemoteURL(remoteURL, at: idx) }
             save()
             cacheRender(clipId: clipId)

@@ -4183,20 +4183,30 @@ def _owns_pipeline(job: dict, my_gen: int) -> bool:
 async def _validate_source_url(url: str) -> None:
     """Probe the source before handing it to AssemblyAI/Remotion — a bad URL used
     to hang the pipeline 5-15 minutes across two external services before failing.
-    HEAD first; some CDNs reject HEAD, so fall back to a 1-byte ranged GET."""
+    HEAD first; some CDNs reject HEAD, so fall back to a 1-byte ranged GET. RETRIES a
+    transient network blip / 5xx / 429 (2 extra tries) so a momentary hiccup on the CDN
+    doesn't hard-fail an otherwise-good edit; a real 4xx (gone/forbidden) fails fast."""
     if not url.startswith(("http://", "https://")):
         return
-    try:
-        async with httpx.AsyncClient(timeout=SOURCE_PROBE_TIMEOUT_S, follow_redirects=True) as client:
-            r = await client.head(url)
-            if r.status_code in (405, 501):
-                r = await client.get(url, headers={"Range": "bytes=0-0"})
-            if r.status_code not in (200, 206):
+    last = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=SOURCE_PROBE_TIMEOUT_S, follow_redirects=True) as client:
+                r = await client.head(url)
+                if r.status_code in (405, 501):
+                    r = await client.get(url, headers={"Range": "bytes=0-0"})
+            if r.status_code in (200, 206):
+                return
+            if 400 <= r.status_code < 500 and r.status_code not in (408, 429):
                 raise PipelineError("source_unreachable", f"source returned {r.status_code}", "transcribe")
-    except PipelineError:
-        raise
-    except Exception as e:
-        raise PipelineError("source_unreachable", str(e), "transcribe")
+            last = f"source returned {r.status_code}"          # 5xx / 408 / 429 → retry
+        except PipelineError:
+            raise
+        except Exception as e:
+            last = str(e)                                       # network/timeout → retry
+        if attempt < 2:
+            await asyncio.sleep(1.0 * (attempt + 1))
+    raise PipelineError("source_unreachable", last or "unreachable", "transcribe")
 
 
 def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
@@ -5313,7 +5323,10 @@ async def _render_all_clips(job_id: str) -> None:
     Invariant on exit: every touched clip is 'ready' (with render_url) or 'failed'."""
     job = _clip_jobs[job_id]
     edl_data = job["edl"]
-    _remotion_env = (REMOTION_SERVE_URL, REMOTION_ACCESS_KEY, REMOTION_FUNCTION_NAME)
+    # Include the SECRET in the completeness check: a rotated/missing secret otherwise sails
+    # through this gate and fails deep inside the Lambda call as an opaque bridge_error, hiding
+    # the real "check your REMOTION_* vars" cause.
+    _remotion_env = (REMOTION_SERVE_URL, REMOTION_ACCESS_KEY, REMOTION_SECRET, REMOTION_FUNCTION_NAME)
     if not all(_remotion_env):
         if any(_remotion_env):
             # PARTIAL env is prod misconfiguration (a rotated secret, a missed var
@@ -5413,20 +5426,40 @@ async def _render_all_clips(job_id: str) -> None:
 
 
 async def _submit_transcription(video_url: str) -> str | None:
+    """Submit the source to AssemblyAI, RETRYING transient failures (network blip, 429 rate
+    limit, 5xx) up to 3× with backoff before giving up — a single transient here used to hard-fail
+    the WHOLE edit (transcribe_submit_failed) with no recovery. A hard auth error (401/403 = bad/
+    expired key) fails immediately, no point retrying. Returns the transcript id or None."""
     if not ASSEMBLY_KEY:
         return None
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.post(
-            "https://api.assemblyai.com/v2/transcript",
-            headers={"authorization": ASSEMBLY_KEY},
-            # disfluencies=True tags um/uh/false-starts with type="filler" (source of
-            # truth for cuts); auto_highlights surfaces the key phrases for punch-ins.
-            json={"audio_url": video_url, "auto_highlights": True,
-                  "disfluencies": True, "speaker_labels": False},
-        )
-    if r.status_code != 200:
-        return None
-    return r.json().get("id")
+    last = ""
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.post(
+                    "https://api.assemblyai.com/v2/transcript",
+                    headers={"authorization": ASSEMBLY_KEY},
+                    # disfluencies=True tags um/uh/false-starts with type="filler" (source of
+                    # truth for cuts); auto_highlights surfaces the key phrases for punch-ins.
+                    json={"audio_url": video_url, "auto_highlights": True,
+                          "disfluencies": True, "speaker_labels": False},
+                )
+            if r.status_code == 200:
+                tid = r.json().get("id")
+                if tid:
+                    return tid
+                last = "200 but no transcript id"
+            elif r.status_code in (401, 403):
+                logging.error("AssemblyAI auth failed (%s) — check ASSEMBLYAI_KEY", r.status_code)
+                return None                                   # bad key: retrying won't help
+            else:
+                last = f"HTTP {r.status_code}"                 # 429 / 5xx → retry
+        except (httpx.HTTPError, ValueError) as e:
+            last = f"{type(e).__name__}: {e}"                  # network/timeout/JSON → retry
+        if attempt < 2:
+            await asyncio.sleep(1.5 * (attempt + 1))
+    logging.warning("AssemblyAI submit failed after 3 tries: %s", last)
+    return None
 
 
 def _normalize_words(raw: list[dict]) -> list[dict]:
@@ -5472,14 +5505,26 @@ async def _poll_transcription(transcript_id: str, max_wait_s: int | None = None)
     if not ASSEMBLY_KEY:
         return {"words": [], "auto_highlights": []}
     budget = max_wait_s if max_wait_s is not None else TRANSCRIBE_MAX_S
+    transient = 0
     for _ in range(max(1, budget // 5)):
         await asyncio.sleep(5)
-        async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                f"https://api.assemblyai.com/v2/transcript/{transcript_id}",
-                headers={"authorization": ASSEMBLY_KEY},
-            )
-        data = r.json()
+        # A transient blip mid-poll (network reset, a 5xx that returns HTML → r.json() raises)
+        # used to CRASH the whole poll and hard-fail the clip. Tolerate a burst of consecutive
+        # transient failures — the transcript is still being processed server-side; just keep
+        # polling within the budget. Only ~6 in a row (30s of solid failure) gives up.
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                r = await client.get(
+                    f"https://api.assemblyai.com/v2/transcript/{transcript_id}",
+                    headers={"authorization": ASSEMBLY_KEY},
+                )
+            data = r.json()
+            transient = 0
+        except (httpx.HTTPError, ValueError) as e:
+            transient += 1
+            if transient >= 6:
+                raise PipelineError("transcribe_failed", f"transcript polling kept failing: {e}", "transcribe")
+            continue
         if data.get("status") == "completed":
             words = _normalize_words(data.get("words", []))
             if not words:
