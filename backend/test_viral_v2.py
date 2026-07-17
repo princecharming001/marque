@@ -524,3 +524,63 @@ def test_concept_cue_becomes_text_card_not_stock():
     cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
     assert cards and cards[0]["text"] == "FAT · ACID · HEAT"
     assert any(e["action"] == "text_card" and e["tier"] == "card" for e in out["_broll_log"])
+
+
+# ---------- v7 P1/P2: Commons stills, Flux tier, hero promotion, hero whoosh ----------
+
+def test_commons_parse_filters_licenses_and_size():
+    pages = {
+        "1": {"imageinfo": [{"url": "https://c/a.jpg", "thumburl": "https://c/a_t.jpg",
+                             "width": 1200,
+                             "extmetadata": {"LicenseShortName": {"value": "CC0"}}}]},
+        "2": {"imageinfo": [{"url": "https://c/b.jpg", "thumburl": "https://c/b_t.jpg",
+                             "width": 1200,
+                             "extmetadata": {"LicenseShortName": {"value": "CC BY-SA 4.0"}}}]},
+        "3": {"imageinfo": [{"url": "https://c/c.jpg", "thumburl": "https://c/c_t.jpg",
+                             "width": 400,
+                             "extmetadata": {"LicenseShortName": {"value": "Public domain"}}}]},
+    }
+    out = main._parse_commons_pages(pages)
+    assert [o["link"] for o in out] == ["https://c/a_t.jpg"], \
+        "BY-SA and sub-700px candidates must be filtered"
+    assert out[0]["provider"] == "commons"
+
+
+def test_flux_tier_disarmed_without_key(monkeypatch):
+    monkeypatch.setattr(main, "FAL_KEY", "")
+    assert asyncio.run(main._generate_broll_still("gochujang jar")) is None
+
+
+def test_hero_promotion_picks_two_resolved_entities():
+    edl = {"segments": [{"src_in": 0, "src_out": 1500}], "broll": [
+        {"src_in": 40, "src_out": 60, "need": "entity", "mode": "smart",
+         "resolved_url": "https://x/1.mp4", "inset_rect": {"x": 0, "y": 0, "w": 0.4, "h": 0.1}},
+        {"src_in": 300, "src_out": 320, "need": "entity", "mode": "smart",
+         "resolved_url": "https://x/2.mp4", "inset_rect": {"x": 0, "y": 0, "w": 0.4, "h": 0.1}},
+        {"src_in": 500, "src_out": 520, "need": "meme", "mode": "panel",
+         "resolved_url": "https://x/3.mp4"},
+        {"src_in": 700, "src_out": 720, "need": "entity", "mode": "smart",
+         "resolved_url": "https://x/4.mp4"},
+        {"src_in": 900, "src_out": 920, "need": "entity", "mode": "smart",
+         "resolved_url": None},
+    ]}
+    main._promote_hero_inserts(edl)
+    heroes = [b for b in edl["broll"] if b.get("hero")]
+    assert len(heroes) == 2
+    assert heroes[0]["src_in"] == 300, "first insert is inside hook-protect and must be skipped"
+    assert all(b["mode"] == "full" and "inset_rect" not in b for b in heroes)
+    assert all(b["src_out"] - b["src_in"] >= 20 for b in heroes), "hero hold extends"
+    meme = next(b for b in edl["broll"] if b["need"] == "meme")
+    assert meme["mode"] == "panel", "memes never promote"
+
+
+def test_hero_whoosh_coupled_regardless_of_genre():
+    edl = {"segments": [{"src_in": 0, "src_out": 1800}], "drops": [],
+           "audio": {"sfx": []},
+           "broll": [{"src_in": 300, "src_out": 330, "need": "entity", "mode": "full",
+                      "hero": True, "resolved_url": "https://x/1.mp4"}]}
+    out = retention.couple_broll_sfx(
+        edl, sfx_assets={"pop": "https://s/pop.mp3", "whoosh": "https://s/whoosh.mp3"},
+        video_type="tutorial", energy="medium")
+    kinds = [c["kind"] for c in (out.get("audio") or {}).get("sfx", [])]
+    assert kinds == ["whoosh"], f"hero gets a whoosh even on educational takes, got {kinds}"

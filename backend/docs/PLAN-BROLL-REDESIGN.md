@@ -101,6 +101,18 @@ YouTube-CC/TikTok scraping (legal minefield).
 - **P3 (hero tier):** image-to-video from approved stills, 1–2 per video, flagged
   in the EDL for the editor to keep/kill.
 
+## Shutterstock eval — owner runbook (decision: run in parallel with free tier)
+
+1. Create a developer account at developers.shutterstock.com → apps → new app
+   (choose "Media API"); sandbox key is instant, production licensing requires the
+   sales form ("API — video licensing, programmatic, ~N clips/mo").
+2. Paste the sandbox key as `SHUTTERSTOCK_KEY` in Render env — the client wires
+   the same as Pexels (`GET /v2/videos/search?query=...&per_page=20`,
+   `Authorization: Bearer`); resolution stays gated by the pointwise scorer.
+3. Eval criteria before signing anything: niche hit-rate on 20 real cue queries
+   from prod jobs (target ≥60% usable vs Pexels' observed ~20%), per-clip license
+   cost at footage tier, portrait/vertical share of results.
+
 ## Owner decisions needed
 
 1. **Shutterstock Media API** is paid (sales-contact pricing) — worth an eval call,
