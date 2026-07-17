@@ -426,6 +426,10 @@ struct EditorTimeline: View {
         }
         .frame(height: 24, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Same accessibility-flattening fix as cleanupPanel/clip cells: without an explicit
+        // container element the phrase strips' own text elements flatten upward and this
+        // lane id never surfaces to automation.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.captionLane")
     }
 
@@ -442,6 +446,7 @@ struct EditorTimeline: View {
                     .onTapGesture { onTapVoice(c.segIdx) }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.voiceLane")
     }
 
