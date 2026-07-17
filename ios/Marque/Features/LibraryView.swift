@@ -332,11 +332,18 @@ struct ClipDetailSheet: View {
                             .padding(Space.sm)
                             .allowsHitTesting(false)
                         }
-                        if current.status == .rendering {
-                            Rectangle().fill(.black.opacity(0.45))
-                            VStack(spacing: Space.sm) {
-                                ProgressView().tint(.white)
-                                Text("Re-editing…").font(AppFont.caption).foregroundStyle(.white)
+                        if current.status == .rendering, let pp = PipelineProgress.from(current) {
+                            // Build 46: the real pipeline timeline lives here too, not a bare
+                            // spinner — a light chip pinned to the bottom of the player so it
+                            // reads on the video and matches the Library cards.
+                            Rectangle().fill(.black.opacity(0.35))
+                            VStack {
+                                Spacer()
+                                PipelineTimeline(progress: pp, compact: true)
+                                    .padding(.horizontal, Space.md).padding(.vertical, 10)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                    .padding(Space.md)
                             }
                         }
                     }
@@ -427,7 +434,12 @@ struct ClipDetailSheet: View {
 
                     if isDraft {
                         // Draft note — no caption/schedule tooling until the take is finished.
-                        Text("Saved mid-take. Pick up right where you left off — your script is queued in Film.")
+                        let hasFootage = clip.localVideoPath.map {
+                            FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path)
+                        } ?? false
+                        Text(hasFootage
+                             ? "Your take is saved here. Send it to the editor whenever you're ready."
+                             : "Saved mid-take. Pick up right where you left off — your script is queued in Film.")
                             .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     } else {
                         // Editable caption — creators tweak the copy before it goes out.
@@ -470,15 +482,32 @@ struct ClipDetailSheet: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if isDraft {
-                    // Drafts route back into the Film flow with the script preselected.
-                    PrimaryButton(title: "Finish this take", systemImage: "video.fill") {
-                        router.pendingFilmScriptId = clip.scriptId
-                        dismiss()
-                        router.showFilm = true
+                    // Build 46: a draft that HAS footage (recorded or uploaded) goes
+                    // straight to the editor — routing it back to Film by scriptId used to
+                    // drop an uploaded video's footage entirely. Script-only drafts (no
+                    // take yet) still route to Film to finish recording.
+                    let hasFootage = clip.localVideoPath.map {
+                        FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path)
+                    } ?? false
+                    if hasFootage {
+                        PrimaryButton(title: "Send to editor", systemImage: "wand.and.stars") {
+                            store.submitDraft(clip)
+                            dismiss()
+                            router.selectedTab = .library
+                        }
+                        .accessibilityIdentifier("library.sendDraftToEditor")
+                        .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                        .background(.ultraThinMaterial)
+                    } else {
+                        PrimaryButton(title: "Finish this take", systemImage: "video.fill") {
+                            router.pendingFilmScriptId = clip.scriptId
+                            dismiss()
+                            router.showFilm = true
+                        }
+                        .accessibilityIdentifier("library.finishDraft")
+                        .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                        .background(.ultraThinMaterial)
                     }
-                    .accessibilityIdentifier("library.finishDraft")
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
                 } else if current.status == .ready {
                     PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
                         store.updateClipCaption(clip, caption: caption)

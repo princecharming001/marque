@@ -907,6 +907,9 @@ struct RecordView: View {
     /// Keep the take without submitting it: footage + script land as a draft clip
     /// (Library › Drafts), resumable from the Film screen. No streak, no clips yet.
     private func saveDraftAndClose() {
+        // Build 46: the hoisted upload is wasted work once we're parking this as a draft —
+        // the draft stores the LOCAL footage and re-uploads fresh when sent to the editor.
+        uploadTask?.cancel(); uploadTask = nil
         // liveScript so inline teleprompter edits survive into the draft (same as makeClips).
         store.saveDraft(from: liveScript, footagePath: footagePath)
         dismiss()
