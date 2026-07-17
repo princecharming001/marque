@@ -79,6 +79,10 @@ struct ProEditorView: View {
     // FP1: canvas gestures — live drafts for caption drag/pinch + sticker drag/pinch.
     @State var capDragY: Double? = nil
     @State var capPinch: Double? = nil
+    // v6 direct manipulation of a b-roll inset on the canvas: tap selects, drag moves,
+    // pinch resizes; the live rect (normalized) previews until the gesture commits.
+    @State var selectedRoll: Int? = nil
+    @State var rollLiveRect: CGRect? = nil
     @State var stickerDrag: (idx: Int, x: Double, y: Double)? = nil
     @State var stickerPinch: (idx: Int, scale: Double)? = nil
     // FP1b: the VIDEO itself is canvas-interactable — tap selects the clip under the
@@ -680,12 +684,23 @@ struct ProEditorView: View {
         ZStack {
             // Video + captions scale together during a punch-in window (L1 preview of the
             // rendered zoom); the play/time controls below stay unscaled.
-            GeometryReader { canvasGeo in
+            GeometryReader { outerGeo in
+            // v6 canvas-fidelity: the composition is EXACTLY 9:16 (1080×1920); the canvas
+            // must be too, or every overlay (captions, rolls, stickers) lands at a
+            // different relative size than the render. Fit the 9:16 rect into the
+            // available space and lay out EVERYTHING against it.
+            let canvasSize: CGSize = {
+                let w = outerGeo.size.width, h = outerGeo.size.height
+                guard w > 0, h > 0 else { return CGSize(width: 9, height: 16) }
+                return w / h > 9.0 / 16.0
+                    ? CGSize(width: h * 9.0 / 16.0, height: h)
+                    : CGSize(width: w, height: w * 16.0 / 9.0)
+            }()
             ZStack {
                 // Formatting fix #1: style-aware framing backdrop (the colored/placeholder
                 // zone behind the framed card for green_screen/duet_split) — EmptyView for
                 // the other styles. See framingStyle/framingBackdrop below.
-                framingBackdrop(canvasGeo.size)
+                framingBackdrop(canvasSize)
                 Group {
                     if let player, !player.placeholder {
                         PlayerLayerView(player: player.player)
@@ -698,8 +713,8 @@ struct ProEditorView: View {
                 // Canvas transform preview of the clip under the playhead (CapCut model):
                 // drag repositions, pinch zooms; the render applies the same math per clip.
                 .scaleEffect(liveVideoScale)
-                .offset(x: liveVideoOffX * canvasGeo.size.width,
-                        y: liveVideoOffY * canvasGeo.size.height)
+                .offset(x: liveVideoOffX * canvasSize.width,
+                        y: liveVideoOffY * canvasSize.height)
                 // L1 look preview — SwiftUI approximations of the render's CSS filter chain.
                 .saturation(lookSaturation)
                 .contrast(lookContrast)
@@ -729,11 +744,11 @@ struct ProEditorView: View {
                 // region (green_screen, duet_split); every other style (incl. split_three,
                 // which dims/lines the SAME full-frame track — see framingChrome) passes
                 // through unmodified. L1 fidelity, not pixel-perfect.
-                .proEditorPlayerFraming(style: framingStyle, canvas: canvasGeo.size)
+                .proEditorPlayerFraming(style: framingStyle, canvas: canvasSize)
                 // Dividers/dimming — drawn UNDER the caption/sticker/text-card sim overlays
                 // below, matching the real compositions where Captions/TextStickers paint
                 // above the video panels and are never dimmed by the panel highlighting.
-                framingChrome(canvasGeo.size)
+                framingChrome(canvasSize)
                 rollSimOverlay
                 captionSimOverlay
                 textCardSimOverlay
@@ -745,8 +760,13 @@ struct ProEditorView: View {
             .scaleEffect(currentPunchScale)
             .animation(.easeInOut(duration: 0.25), value: currentPunchScale)
             // Video canvas gestures: LOW priority — stickers/captions grab theirs first.
-            .gesture(videoCanvasDrag(canvasGeo.size))
+            .gesture(videoCanvasDrag(canvasSize))
             .simultaneousGesture(videoCanvasPinch())
+            // v6 canvas-fidelity: pin the whole canvas to the fitted 9:16 rect, centered,
+            // clipped — the fill-gravity video crops exactly like the rendered composition.
+            .frame(width: canvasSize.width, height: canvasSize.height)
+            .clipped()
+            .position(x: outerGeo.size.width / 2, y: outerGeo.size.height / 2)
             }
             // R10: play/time controls moved to the transport strip (CapCut keeps the
             // picture clean); a toast surfaces mid-canvas for undo/redo/completion.
@@ -1032,7 +1052,7 @@ struct ProEditorView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let player, !player.placeholder {
-                PlayerLayerView(player: player.player)
+                PlayerLayerView(player: player.player, gravity: .resizeAspect)
                     .aspectRatio(9.0/16.0, contentMode: .fit)
             } else {
                 Image(systemName: "film").font(.system(size: 48)).foregroundStyle(.white.opacity(0.3))
@@ -1180,23 +1200,76 @@ struct ProEditorView: View {
                 // v4: render at the roll's TRUE geometry (full / panel / card / smart
                 // inset), mirroring BrollLayer's 1080×1920 constants — the creator must
                 // see the actual picture AND its position/size, not a full-frame stand-in.
+                // v6: directly manipulable — tap selects, drag moves, pinch resizes; a
+                // live normalized rect previews and commits as a set_broll_rect op.
                 GeometryReader { geo in
-                    let rect = Self.rollRect(roll, in: geo.size)
-                    let framed = roll.mode != "full"
+                    let baseRect = Self.rollRect(roll, in: geo.size)
+                    let rect = rollLiveRect.map {
+                        CGRect(x: $0.minX * geo.size.width, y: $0.minY * geo.size.height,
+                               width: $0.width * geo.size.width, height: $0.height * geo.size.height)
+                    } ?? baseRect
+                    let selected = selectedRoll == idx
+                    let framed = roll.mode != "full" || rollLiveRect != nil
                     let radius = framed ? 20 * geo.size.width / 1080 : 0
-                    rollFill(roll)
+                    let interactive = rollFill(roll)
                         .frame(width: rect.width, height: rect.height)
                         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
                         .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
-                            .strokeBorder(.white.opacity(framed ? 0.16 : 0), lineWidth: framed ? 1.5 : 0))
+                            .strokeBorder(selected ? Palette.accent : .white.opacity(framed ? 0.16 : 0),
+                                          style: selected
+                                              ? StrokeStyle(lineWidth: 1.5, dash: [6, 4])
+                                              : StrokeStyle(lineWidth: framed ? 1.5 : 0)))
                         .shadow(color: .black.opacity(framed ? 0.45 : 0),
                                 radius: framed ? 12 : 0, y: framed ? 6 : 0)
                         .position(x: rect.midX, y: rect.midY)
+                        .contentShape(Rectangle().path(in: rect))
+                        .onTapGesture { selectedRoll = selected ? nil : idx }
+                        .accessibilityIdentifier("editorPro.rollSim")
+                    if selected {
+                        interactive
+                            .highPriorityGesture(DragGesture(minimumDistance: 3)
+                                .onChanged { g in
+                                    // Translation is total-from-gesture-start, so apply it
+                                    // to the COMMITTED base rect, never the live one.
+                                    let start = Self.normRect(baseRect, in: geo.size)
+                                    var r = start
+                                    r.origin.x = min(1 - r.width, max(0, start.minX + g.translation.width / max(1, geo.size.width)))
+                                    r.origin.y = min(1 - r.height, max(0, start.minY + g.translation.height / max(1, geo.size.height)))
+                                    rollLiveRect = r
+                                }
+                                .onEnded { _ in commitRollRect(idx) })
+                            .simultaneousGesture(MagnificationGesture()
+                                .onChanged { v in
+                                    let start = Self.normRect(baseRect, in: geo.size)
+                                    let w = min(1.0, max(0.15, start.width * v))
+                                    let h = min(1.0, max(0.1, start.height * v))
+                                    let cx = start.midX, cy = start.midY
+                                    rollLiveRect = CGRect(x: min(1 - w, max(0, cx - w / 2)),
+                                                          y: min(1 - h, max(0, cy - h / 2)),
+                                                          width: w, height: h)
+                                }
+                                .onEnded { _ in commitRollRect(idx) })
+                    } else {
+                        interactive
+                    }
                 }
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("editorPro.rollSim")
+                .onChange(of: f >= roll.srcOut || f < roll.srcIn) { _, gone in
+                    if gone { selectedRoll = nil; rollLiveRect = nil }
+                }
             }
         }
+    }
+
+    private static func normRect(_ r: CGRect, in size: CGSize) -> CGRect {
+        CGRect(x: r.minX / max(1, size.width), y: r.minY / max(1, size.height),
+               width: r.width / max(1, size.width), height: r.height / max(1, size.height))
+    }
+
+    private func commitRollRect(_ idx: Int) {
+        guard let r = rollLiveRect else { return }
+        mutate([.brollRect(index: idx, x: r.minX, y: r.minY, w: r.width, h: r.height)])
+        rollLiveRect = nil
+        bumpHaptic()
     }
 
     @ViewBuilder private func rollFill(_ roll: EditorBroll) -> some View {
@@ -2130,7 +2203,7 @@ extension View {
     /// track rather than showing a distinct panel — see framingChrome) passes `self` through
     /// unmodified. Uses `.frame()/.position()` — never `.scaleEffect()`/other transforms — so
     /// the drag/pinch gestures already attached higher up the canvas ZStack keep working
-    /// exactly as before (they key off `canvasGeo.size`, which this doesn't change).
+    /// exactly as before (they key off `canvasSize`, which this doesn't change).
     @ViewBuilder func proEditorPlayerFraming(style: String?, canvas: CGSize) -> some View {
         switch style {
         case "green_screen":
