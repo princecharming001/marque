@@ -39,7 +39,8 @@ def test_known_bad_each_caught(b):
     if "plan" in b:
         plan = b["plan"]
         total_out = plan.get("total_frames", 0)
-        fails = edl_eval.check_no_slivers(plan) + edl_eval.check_broll_grammar(plan, total_out)
+        fails = (edl_eval.check_no_slivers(plan) + edl_eval.check_broll_grammar(plan, total_out)
+                 + edl_eval.check_hook_title(plan))
     else:
         r = edl_eval.evaluate_edl(b["edl"], b["words"], b.get("hook_ms", 0), b.get("total_override"))
         fails = r["failures"]

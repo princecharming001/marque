@@ -10,7 +10,7 @@ import { LAYOUT, karaokePop, fitTextBlock, boldWordFontSize, captionCenterY, cla
 
 interface Props { captions: CaptionWord[]; style?: CaptionStyle; options?: CaptionOptions | null; }
 
-const ACCENT = "#FFD60A";
+const ACCENT = "#FFD93D";
 // G6: "system-ui, -apple-system" resolves to San Francisco when previewing in
 // Remotion Studio on a Mac, but Lambda's headless Linux container has no Apple
 // fonts and falls back to whatever generic sans-serif ships in that container
@@ -61,7 +61,7 @@ const wordEnd = (c: CaptionWord): number => c.end_frame ?? c.frame + LAYOUT.DEFA
 
 // CapCut keyword highlight: a word whose normalized form is in highlight_words
 // renders in the accent color (default gold) regardless of active state.
-const HIGHLIGHT_DEFAULT = "#FFD60A";
+const HIGHLIGHT_DEFAULT = "#FFD93D";
 const normWord = (w: string): string => w.toLowerCase().replace(/[^a-z0-9]/g, "");
 const isHighlighted = (word: string, opts: CaptionOptions): boolean =>
   (opts.highlight_words ?? []).includes(normWord(word));

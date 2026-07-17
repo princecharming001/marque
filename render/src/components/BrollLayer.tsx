@@ -35,18 +35,20 @@ const PANEL = { left: 40, right: 40, top: 130, height: 0.46 * 1920, radius: 20 }
 // yet, and the speaker is horizontally centered so either shoulder is safe).
 const CARD = { width: 0.44 * 1080, height: 0.35 * 1920 * 0.72, top: 220, right: 48, radius: 18 };
 
-// "Powered By GIPHY" attribution — GIPHY's API terms require it wherever their content
-// displays. Small pill, bottom-right of the insert; only rendered for source="giphy".
-const GiphyBadge: React.FC = () => (
+// Provider attribution — both GIPHY's and KLIPY's API terms require a visible mark
+// wherever their content displays. Small pill, bottom-right of the insert.
+const ProviderBadge: React.FC<{ label: string }> = ({ label }) => (
   <div style={{
     position: "absolute", right: 8, bottom: 8, zIndex: 2,
     padding: "2px 7px", borderRadius: 5, background: "rgba(0,0,0,0.6)",
     color: "#fff", fontSize: 13, fontWeight: 700, letterSpacing: 0.2,
     fontFamily: "Inter, Helvetica, Arial, sans-serif",
   }}>
-    Powered By GIPHY
+    {label}
   </div>
 );
+const GiphyBadge: React.FC = () => <ProviderBadge label="Powered By GIPHY" />;
+const KlipyBadge: React.FC = () => <ProviderBadge label="Powered by KLIPY" />;
 
 const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string; source?: string }> = ({
   url, durationInFrames, mode, source,
@@ -54,6 +56,8 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   const frame = useCurrentFrame(); // local to the Sequence (0 at clip start)
   const isImage = /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url);
   const isGiphy = source === "giphy";
+  const isKlipy = source === "klipy";
+  const badge = isGiphy ? <GiphyBadge /> : isKlipy ? <KlipyBadge /> : null;
   // Stills (own_media photos) need a STRONGER Ken-Burns push than video so they don't read as a
   // frozen slide; motion footage moves on its own, so it keeps the gentle push.
   const kenBurns = interpolate(frame, [0, durationInFrames], isImage ? [1.05, 1.18] : [1.06, 1.12], {
@@ -63,23 +67,48 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
     isImage ? <Img src={url} style={style} /> : <OffthreadVideo src={url} muted style={style} />;
 
   if (mode === "panel") {
+    // Pop-in/pop-out so short inserts read as deliberate flashes, not render glitches.
+    // Ramps clamp to a third of the window so a 15f meme still gets in AND out.
+    const inLen = Math.min(5, Math.max(1, Math.floor(durationInFrames / 3)));
+    const outLen = Math.min(4, Math.max(1, Math.floor(durationInFrames / 3)));
+    const popIn = interpolate(frame, [0, inLen], [0.92, 1], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const popOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0.95], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const fadeIn = interpolate(frame, [0, inLen], [0, 1], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const fadeOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
     return (
       <div style={{
         position: "absolute", left: PANEL.left, right: PANEL.right, top: PANEL.top,
         height: PANEL.height, borderRadius: PANEL.radius, overflow: "hidden",
         border: "3px solid rgba(255,255,255,0.14)",
         boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+        transform: `scale(${popIn * popOut})`, transformOrigin: "center",
+        opacity: Math.min(fadeIn, fadeOut),
       }}>
         {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
                  objectFit: "cover", transform: `scale(${kenBurns})` })}
-        {isGiphy && <GiphyBadge />}
+        {badge}
       </div>
     );
   }
 
   if (mode === "card") {
-    // Scale-pop entrance over ~3 frames (spec §6.6) — instant thereafter.
+    // Scale-pop entrance over ~3 frames (spec §6.6) + symmetric pop-out.
+    const outLen = Math.min(3, Math.max(1, Math.floor(durationInFrames / 3)));
     const pop = interpolate(frame, [0, 3], [0.6, 1], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const popOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0.7], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const fadeOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0], {
       extrapolateLeft: "clamp", extrapolateRight: "clamp",
     });
     return (
@@ -89,24 +118,29 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
         borderRadius: CARD.radius, overflow: "hidden",
         border: "3px solid rgba(255,255,255,0.16)",
         boxShadow: "0 14px 40px rgba(0,0,0,0.5)",
-        transform: `scale(${pop})`, transformOrigin: "top right",
+        transform: `scale(${pop * popOut})`, transformOrigin: "top right",
+        opacity: fadeOut,
       }}>
         {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
                  // A card is usually a screenshot/tweet/receipt — show the WHOLE artifact
                  // (contain) over a dark backing rather than cropping the evidence.
                  objectFit: isImage ? "contain" : "cover", background: "#101014",
                  transform: `scale(${kenBurns})` })}
-        {isGiphy && <GiphyBadge />}
+        {badge}
       </div>
     );
   }
 
-  // mode "full" — the v1 full-frame cover insert.
+  // mode "full" — the v1 full-frame cover insert. Flash inserts (<1s) get a 2-frame
+  // punch-in entrance so the cut reads intentional; sustained cutaways keep the hard cut.
+  const flashPunch = durationInFrames < 30
+    ? interpolate(frame, [0, 2], [1.06, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+    : 1;
   return (
     <>
       {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
-               objectFit: "cover", transform: `scale(${kenBurns})` })}
-      {isGiphy && <GiphyBadge />}
+               objectFit: "cover", transform: `scale(${kenBurns * flashPunch})` })}
+      {badge}
     </>
   );
 };

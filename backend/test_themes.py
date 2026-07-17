@@ -50,11 +50,11 @@ def test_clean_creator_is_a_noop_on_a_bare_edl():
     assert out["caption_options"]["font"] == "inter"
     assert out["caption_options"]["uppercase"] is False
     assert out["caption_options"]["grouping"] == "phrase"
-    # look: clean_creator's grade is filter=None/intensity=1.0/identity adjust —
-    # byte-identical to Look()'s own default.
-    assert out["look"] == {"filter": None, "intensity": 1.0,
+    # v2 (E1): clean_creator is a no-op EXCEPT the "invisible polish" look — a subtle
+    # finishing filter + hairline vignette (research: imperceptible default polish).
+    assert out["look"] == {"filter": "finishing", "intensity": 0.55,
                            "adjust": {"brightness": 0.0, "contrast": 0.0, "saturation": 0.0,
-                                     "temperature": 0.0, "vignette": 0.0}}
+                                     "temperature": 0.0, "vignette": 0.04}}
 
 
 def test_clean_creator_render_plan_matches_no_theme_render_plan():
@@ -74,6 +74,11 @@ def test_clean_creator_render_plan_matches_no_theme_render_plan():
     plan_a.pop("schema_version", None); plan_b.pop("schema_version", None)
     assert plan_b["audio"]["duck"] == {"factor": 0.35, "window_f": 15, "ramp_f": 8}
     plan_a["audio"] = dict(plan_a["audio"]); plan_a["audio"]["duck"] = plan_b["audio"]["duck"]
+    # v2 (E1): the ONLY other permitted difference is the invisible-polish look.
+    assert plan_b["look"] == {"filter": "finishing", "intensity": 0.55, "grain": 0.0,
+                              "adjust": {"brightness": 0.0, "contrast": 0.0, "saturation": 0.0,
+                                        "temperature": 0.0, "vignette": 0.04}}
+    plan_a["look"] = plan_b["look"]
     assert plan_a == plan_b
 
 

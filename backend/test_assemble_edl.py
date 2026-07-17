@@ -60,7 +60,7 @@ def test_broll_grammar_enforced():
     d = edl.model_dump()
     for b in d["broll"]:
         hold = b["src_out"] - b["src_in"]
-        assert 60 <= hold <= 90, f"hold {hold} out of grammar"
+        assert 36 <= hold <= 75, f"hold {hold} out of grammar (v2 action band, jitter-clamped)"
 
 
 def test_broll_runtime_budget_caps_face_hiding_coverage():
@@ -100,17 +100,17 @@ def test_combined_visual_budget_caps_all_modes():
 
 
 def test_broll_hold_policy_per_need():
-    # Part 5: a named thing (entity) reads fast → capped SHORTER (≤60f) than a process
-    # (action, up to 90f), when both request a long hold. Face style so `full` applies.
+    # v2: a named thing (entity) caps at 54f (1.8s); a process (action) may breathe to 75f.
+    # Mid-length spans (~70f) show the split: entity clamps DOWN to ≤54, action keeps ~64-75.
     w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]
     plan = {"broll": [
-        {"range": [200, 500], "cue": "the app", "query": "app", "source": "stock", "mode": "full", "need": "entity"},
-        {"range": [800, 1100], "cue": "the process", "query": "steps", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [200, 270], "cue": "the app", "query": "app", "source": "stock", "mode": "full", "need": "entity"},
+        {"range": [800, 870], "cue": "the process", "query": "steps", "source": "stock", "mode": "full", "need": "action"},
     ]}
     d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
     holds = {b["cue_text"]: b["src_out"] - b["src_in"] for b in d["broll"]}
-    assert holds["the app"] <= 60, f"entity hold {holds['the app']} should be short"
-    assert holds["the process"] > 60, f"action hold {holds['the process']} should breathe"
+    assert holds["the app"] <= 54, f"entity hold {holds['the app']} should be short (≤54f)"
+    assert holds["the process"] > 54, f"action hold {holds['the process']} should breathe past entity's cap"
 
 
 def test_spacing_tightens_on_high_energy_or_entertainment():
@@ -157,19 +157,21 @@ def test_meme_forces_panel_and_short_hold():
     assert b["src_out"] - b["src_in"] <= 75, "a joke held too long dies"
 
 
-def test_meme_capped_at_two_and_blocked_on_info_and_hook():
-    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]
-    memes = [{"range": [g, g + 60], "cue": f"joke{i}", "query": "mind blown",
+def test_meme_caps_per_type_and_hook_block():
+    # v2: memes everywhere, per-type capped — entertainment ≤5, educational ≤2; hook-block holds.
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(200)]
+    memes = [{"range": [g, g + 30], "cue": f"joke{i}", "query": "mind blown",
               "source": "stock", "mode": "panel", "need": "meme"}
-             for i, g in enumerate((40, 400, 700, 1000))]     # first sits ON the hook (<90f)
+             for i, g in enumerate((40, 400, 700, 1000, 1300, 1600, 1900))]  # 7; first ON the hook
     ent = assemble_edl({"broll": memes}, w, "talking_head", "myth-buster",
                        brief={"video_type": "story"}).model_dump()
-    assert len(ent["broll"]) <= 2, "≤2 memes per video"
-    assert all(b["src_in"] >= 90 for b in ent["broll"]), "no meme on the hook"
-    # informational video_type → memes are the seductive-details effect → all dropped
+    ent_memes = [b for b in ent["broll"] if b.get("need") == "meme"]
+    assert len(ent_memes) <= 5, "entertainment memes cap at 5"
+    assert all(b["src_in"] >= 90 for b in ent_memes), "no meme on the hook"
+    # educational video_type → cap 2 (punchline beats only — placement is doctrine, cap is code)
     info = assemble_edl({"broll": memes}, w, "talking_head", "myth-buster",
                         brief={"video_type": "tutorial"}).model_dump()
-    assert all(b.get("need") != "meme" for b in info["broll"]), "no memes on a tutorial"
+    assert len([b for b in info["broll"] if b.get("need") == "meme"]) <= 2, "educational memes cap at 2"
 
 
 def test_buried_hook_pulled_forward_passes_invariant():
@@ -357,12 +359,15 @@ def test_partial_holds_capped_per_need():
 
 
 def test_long_phrase_biases_short_not_max():
-    # A 300f phrase (>> 2× action's 90f full cap) biases to lo+15 = 75, not pinned at 90.
+    # A 300f phrase (>> 2× action's 75f full cap) biases to lo+15 = 51 (±6f jitter), never
+    # pinned at the 75f max.
     w = _alpha_words(120)
     plan = {"broll": [{"range": [300, 600], "cue": "x", "query": "x", "source": "stock",
                        "mode": "full", "need": "action"}]}
     d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
-    assert d["broll"] and d["broll"][0]["src_out"] - d["broll"][0]["src_in"] == 75
+    assert d["broll"]
+    hold = d["broll"][0]["src_out"] - d["broll"][0]["src_in"]
+    assert 45 <= hold <= 57, f"long phrase must bias short (51±6), got {hold}"
 
 
 def test_topup_fires_with_one_weak_plan_cue():
@@ -389,17 +394,21 @@ def test_topup_respects_occupied_windows_and_spacing():
         assert b["src_in"] - a["src_out"] >= 60, "top-up violated spacing"
 
 
-def test_coverage_full_tightens_spacing():
-    # Two cues ~70f apart: both survive under coverage=full (60f spacing); the 2nd drops without it.
+def test_entertainment_tightens_spacing_not_coverage():
+    # v2 genre dial: ENTERTAINMENT tightens spacing to 45f (jitter 30..75); coverage=full alone
+    # does NOT (educational keeps ≥90f, jitter 75..120). Gap ~80f: always survives entertainment,
+    # always drops on the plain educational take.
     w = _alpha_words(60)
     plan = {"broll": [
-        {"range": [150, 210], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
-        {"range": [285, 345], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [150, 200], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [300, 350], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
     ]}
-    cov = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
-                       prefs={"broll": True, "broll_coverage": "full"}).model_dump()
+    ent = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                       brief={"video_type": "freestyle_rant"},
+                       prefs={"broll": True}).model_dump()
     plain = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
-                         prefs={"broll": True}).model_dump()
-    # coverage=full also tops up, so assert the tight PAIR both survive there:
-    assert any(b["cue_text"] == "a" for b in cov["broll"]) and any(b["cue_text"] == "b" for b in cov["broll"])
-    assert len([b for b in plain["broll"] if b["cue_text"] in ("a", "b")]) == 1  # default spacing drops one
+                         prefs={"broll": True, "broll_coverage": "full"}).model_dump()
+    assert any(b["cue_text"] == "a" for b in ent["broll"]) and any(b["cue_text"] == "b" for b in ent["broll"]), \
+        "entertainment spacing must admit the tight pair"
+    assert len([b for b in plain["broll"] if b["cue_text"] in ("a", "b")]) == 1, \
+        "educational spacing (≥90f even under coverage=full) drops one of the pair"

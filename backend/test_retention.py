@@ -632,7 +632,7 @@ def test_hook_overlay_falls_back_to_script_hook():
     script = {"hook": "You will not believe what happened next today"}
     out = retention.place_hook_overlay(edl, words, style="talking_head", hints={}, script=script)
     hook = next(o for o in out["overlays"] if o["type"] == "text_sticker")
-    assert hook["text"] == "You will not believe what happened"   # first 6 words
+    assert hook["text"] == "You will not believe what happened next today"   # first 8 words (v2)
 
 
 def test_hook_overlay_noop_with_no_text():
@@ -820,12 +820,12 @@ def test_sfx_respects_min_spacing():
 
 def test_sfx_respects_budget_per_30s():
     words = _steady_words(30000)
-    total_frames = ms_to_frame(30000)   # 900 frames -> budget = round(5 * 900/900) = 5
+    total_frames = ms_to_frame(30000)   # 900 frames -> budget = round(3 * 900/900) = 3 (v2: restraint)
     overlays = [{"type": "punch_in", "src_in": f, "src_out": f + 10, "scale": 1.08, "text": ""}
-               for f in range(50, total_frames - 50, 40)]   # far more than 5, well-spaced
+               for f in range(50, total_frames - 50, 40)]   # far more than 3, well-spaced
     edl = _bare_edl("talking_head", total_frames, overlays=overlays)
     out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
-    assert len(out["audio"]["sfx"]) == 5
+    assert len(out["audio"]["sfx"]) == 3
 
 
 def test_sfx_skips_last_15_frames():
@@ -1168,16 +1168,25 @@ def test_hook_package_adds_opening_punch():
     assert opens[0]["scale"] == retention._HOOK_PACK_OPEN_SCALE
 
 
-def test_hook_package_skips_when_open_already_occupied():
+def test_hook_package_open_punch_coexists_with_title_but_not_another_punch():
+    # C3 (v2): the hook TITLE sticker and the frame-1 open punch COEXIST (stacked hook —
+    # text + motion at frame 0); only another PUNCH occupying the open suppresses it.
     words = _steady_words(30000)
     total_frames = ms_to_frame(30000)
-    existing = {"type": "text_sticker", "src_in": 0, "src_out": 45, "text": "hook",
-               "scale": 1.0, "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0, "color": None,
+    sticker = {"type": "text_sticker", "src_in": 0, "src_out": 90, "text": "hook",
+               "scale": 1.0, "pos_x": 0.5, "pos_y": 0.24, "rotation": 0.0, "color": None,
                "bg": "box", "font": "inter"}
-    edl = _bare_edl("talking_head", total_frames, overlays=[existing])
+    edl = _bare_edl("talking_head", total_frames, overlays=[sticker])
     out = retention.apply_hook_package(edl, words, style="talking_head")
-    punches = [o for o in out["overlays"] if o["type"] == "punch_in"]
-    assert punches == []   # never stacks two competing opens
+    opens = [o for o in out["overlays"] if o["type"] == "punch_in" and o["src_in"] == 0]
+    assert opens, "title sticker must NOT suppress the frame-1 open punch (stacked hook)"
+
+    punch = {"type": "punch_in", "src_in": 0, "src_out": 30, "scale": 1.1, "text": ""}
+    edl2 = _bare_edl("talking_head", total_frames, overlays=[punch])
+    out2 = retention.apply_hook_package(edl2, words, style="talking_head")
+    opens2 = [o for o in out2["overlays"] if o["type"] == "punch_in"
+              and o["src_in"] == 0 and o.get("scale") == retention._HOOK_PACK_OPEN_SCALE]
+    assert opens2 == [], "never stacks two zooms on the open"
 
 
 def test_hook_package_first_cut_by_3s_rule_fires_on_a_static_open():
@@ -1276,11 +1285,11 @@ def test_plan_framing_uses_theme_scales():
     words = _steady_words(60000)
     total_frames = ms_to_frame(60000)
     edl = _bare_edl("talking_head", total_frames)
-    theme = _themes.get_theme("hormozi_punch")   # scales {wide:1.0, mid:1.2, close:1.4}
+    theme = _themes.get_theme("hormozi_punch")   # v2 scales {wide:1.0, mid:1.15, close:1.2} (≤120% cap)
     out = retention.plan_framing(edl, words, style="talking_head", theme=theme, job_seed="job-a")
     scales = {round(s["tx_scale"], 2) for s in out["segments"]}
-    assert scales <= {1.0, 1.2, 1.4}
-    assert 1.4 in scales or 1.2 in scales   # a non-wide framing actually happened
+    assert scales <= {1.0, 1.15, 1.2}
+    assert 1.2 in scales or 1.15 in scales   # a non-wide framing actually happened
 
 
 def test_schedule_interrupts_density_falls_back_to_theme():

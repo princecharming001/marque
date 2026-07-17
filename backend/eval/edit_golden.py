@@ -147,6 +147,15 @@ def known_bad() -> list[dict]:
     cases.append({"code": "residual_filler", "why": "um survives after its drop is deleted",
                   "edl": edl5, "words": fx5["words"], "hook_ms": 0})
 
+    # 8. Title v2 tripwire: a hook-title sticker flashed for 1.5s (the OLD hardcoded
+    #    hold — below the 2s readability floor). check_hook_title must catch it so a
+    #    regression back to fixed-45f can't ship silently.
+    p5 = _base_plan()
+    p5["overlays"] = [{"type": "text_sticker", "frame_in": 0, "frame_out": 45,
+                       "text": "Stop doing this", "scale": 1.05,
+                       "pos_x": 0.5, "pos_y": 0.24}]
+    cases.append({"code": "hook_title_hold", "why": "title flashed 1.5s (old fixed hold)", "plan": p5})
+
     return cases
 
 

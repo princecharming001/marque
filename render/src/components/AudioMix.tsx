@@ -30,6 +30,8 @@ const DUCK_FACTOR = 0.35;
 const FADE = 20;          // composition-level fade out (and intro ramp after the lead)
 const MUSIC_LEAD = 15;    // spec §7: the bed starts ~0.5s (15f@30) AFTER the first spoken
                           // word, so the hook lands over clean voice, never under music.
+const DROPOUT_RAMP = 6;   // punchline dropout: music ramps to 0 over this many frames on
+                          // each side of a dropout window (OUTPUT-frame coords).
 
 // P4: SFX one-shots — build_render_plan has already resolved each cue to an
 // output frame + hosted URL (an unresolved kind, or one whose anchor frame
@@ -100,11 +102,28 @@ export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
     return 1;
   };
 
+  // Punchline dropout ("silence as a tool"): the bed cuts to zero inside each
+  // dropouts window (OUTPUT frames, authored by the backend dropout pass) with a
+  // short ramp on both sides so the payoff line lands over clean voice.
+  const dropouts = music?.dropouts ?? [];
+  const dropoutAt = (f: number): number => {
+    let g = 1;
+    for (const d of dropouts) {
+      if (f >= d.frame_in && f < d.frame_out) return 0;
+      if (f >= d.frame_in - DROPOUT_RAMP && f < d.frame_in) {
+        g = Math.min(g, (d.frame_in - f) / DROPOUT_RAMP);
+      } else if (f >= d.frame_out && f < d.frame_out + DROPOUT_RAMP) {
+        g = Math.min(g, (f - d.frame_out) / DROPOUT_RAMP);
+      }
+    }
+    return g;
+  };
+
   return (
     <>
       {music && music.url && (
         <Audio src={music.url} loop
-               volume={(f) => music.volume * duckAt(f) * envAt(f) * startGate(f)} />
+               volume={(f) => music.volume * duckAt(f) * envAt(f) * startGate(f) * dropoutAt(f)} />
       )}
       {sfx.length > 0 && <SfxLayer sfx={sfx} />}
     </>
