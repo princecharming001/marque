@@ -3,25 +3,36 @@ import SwiftUI
 // MARK: - EditorTimeline — the direct-manipulation timeline: a fixed CENTER playhead over an
 // offset-driven filmstrip (no nested ScrollView — SwiftUI scroll momentum can't be pixel-synced
 // to playback and would fight the trim/reorder drags). Clips render as proportional blocks with
-// filmstrip thumbnails; tap selects, drag scrubs, edge handles trim, long-press enters reorder.
+// filmstrip thumbnails; tap selects (routed through the parent's select() choke point so the
+// one-bar toolbar's selection invariant holds), drag scrubs, edge handles trim.
 
 struct EditorTimeline: View {
     let document: EditorDocument
     let player: EditorPlayerController?
     let filmstrip: FilmstripCache?
     @Binding var pointsPerSecond: CGFloat
-    @Binding var selectedSeg: Int?
-    @Binding var selectedOverlay: Int?     // chip-lane selection (mutually exclusive with selectedSeg)
+    // Selection is OWNED BY THE PARENT (one-bar invariant): the timeline only reads it and
+    // reports taps — it never writes selection state directly (the old @Binding writes could
+    // not clear the music/phrase selections the parent also tracks).
+    var selectedSeg: Int? = nil
+    var selectedOverlay: Int? = nil        // chip-lane selection (mutually exclusive with selectedSeg)
     let onTrim: (Int, TrimEdge, Int) -> Void
     let onReorder: ([Int]) -> Void
+    var onTapClip: (Int) -> Void = { _ in }
+    var onTapOverlay: (Int) -> Void = { _ in }
+    var onTapBackground: () -> Void = {}
     // Track lanes (CapCut layout: captions under video, then effects, then audio lanes).
     var phrases: [CaptionPhrase] = []
     var captionsOn: Bool = false
+    var selectedPhraseID: Int? = nil       // CaptionPhrase.id (= startFrame), parent-owned
     var musicName: String? = nil           // nil = no music set
+    var musicSeed: String = ""             // track URL — stable waveform seed
     var musicVolume: Double = 0.15
-    var showMusicAdd: Bool = false         // empty-lane "+ Add sound" affordance (sound mode)
+    var selectedMusic: Bool = false
+    var showMusicAdd: Bool = false         // empty-lane "+ Add sound" affordance (sound panel)
     var onTapPhrase: (CaptionPhrase) -> Void = { _ in }
     var onTapMusic: () -> Void = {}
+    var onTapAddMusic: () -> Void = {}     // dashed add-strip — distinct from selecting real music
     var onTapVoice: (Int) -> Void = { _ in }
     // Transition diamonds at clip boundaries (CapCut's between-clips square): tapping
     // one selects that boundary; the context strip offers the dip styles.
@@ -105,8 +116,9 @@ struct EditorTimeline: View {
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
                 .offset(x: -playheadOffset + trimContentShift)   // scroll + leading-trim rubber-band
                 laneGutter                     // CapCut track heads, pinned at the left edge
-                // Fixed center playhead
-                Rectangle().fill(Palette.accent).frame(width: 2)
+                // Fixed center playhead — white (reference), not accent: the accent line read
+                // as related to the accent selection border it often crossed.
+                Rectangle().fill(Color.white).frame(width: 2)
                     .frame(maxHeight: .infinity).offset(x: mid - 1)
             }
             .contentShape(Rectangle())
@@ -116,12 +128,9 @@ struct EditorTimeline: View {
             // Double-tap the timeline background → reset zoom to the default scale.
             .onTapGesture(count: 2) { withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 } }
             // UX-8: tapping empty timeline space clears the selection (clip cells' own
-            // tap gestures win when a clip is hit).
-            .onTapGesture {
-                if selectedSeg != nil || selectedOverlay != nil {
-                    withAnimation(.easeOut(duration: 0.15)) { selectedSeg = nil; selectedOverlay = nil }
-                }
-            }
+            // tap gestures win when a clip is hit). The parent decides whether anything
+            // actually needs clearing (it also owns music/phrase selections).
+            .onTapGesture { onTapBackground() }
             .sensoryFeedback(.selection, trigger: snapTick)
         }
     }
@@ -150,17 +159,20 @@ struct EditorTimeline: View {
                         .overlay(Circle().strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
-                .offset(x: x - 9, y: 19)
+                .offset(x: x - 9, y: 23)   // re-centered for the 64pt filmstrip
                 .accessibilityIdentifier("editorPro.boundary.\(i)")
             }
         }
     }
 
     private func ruler(width: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            ForEach(0..<max(1, Int(totalSeconds / 3) + 1), id: \.self) { i in
-                Text("\(i * 3)s").font(.system(size: 8)).foregroundStyle(.white.opacity(0.4))
-                    .frame(width: 3 * pointsPerSecond, alignment: .leading)
+        // Adaptive label interval (CapCut): densest interval that keeps labels >= 36pt apart —
+        // 2s at the default 18 pt/s, 1s zoomed in, 5s at minimum zoom (pps clamps to 8...60).
+        let interval = [1, 2, 5].first { CGFloat($0) * pointsPerSecond >= 36 } ?? 5
+        return HStack(spacing: 0) {
+            ForEach(0..<max(1, Int(totalSeconds / Double(interval)) + 1), id: \.self) { i in
+                Text("\(i * interval)s").font(.system(size: 8)).foregroundStyle(.white.opacity(0.4))
+                    .frame(width: CGFloat(interval) * pointsPerSecond, alignment: .leading)
             }
         }.frame(height: 12)
     }
@@ -203,32 +215,36 @@ struct EditorTimeline: View {
         let dimmed = selectedSeg != nil && !selected
         ZStack {
             FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w)
-                .frame(width: w, height: 56).clipped()
-            RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Palette.accent : .white.opacity(0.15),
+                .frame(width: w, height: 64).clipped()
+            // Hard WHITE selection frame (reference) — accent is reserved for effect objects.
+            RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Color.white : .white.opacity(0.15),
                                                            lineWidth: selected ? 2.5 : 1)
         }
-        .frame(width: w, height: 56)
+        .frame(width: w, height: 64)
         .opacity(dimmed ? 0.55 : 1)
-        // Duration label — every editor shows clip lengths; hide on slivers.
-        .overlay(alignment: .bottomTrailing) {
-            if w >= 44 {
+        // Duration badge — top-leading on the SELECTED clip only (reference: "4.9s" appears
+        // with the selection frame). Leading inset clears the 11pt trim bracket that always
+        // accompanies it. Hidden on slivers.
+        .overlay(alignment: .topLeading) {
+            if selected, w >= 44 {
                 Text(String(format: "%.1fs", Double(outputFrames(frames, speed: speed)) / 30.0))
                     .font(.system(size: 8, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(.white.opacity(0.9))
                     .padding(.horizontal, 4).padding(.vertical, 1.5)
                     .background(Color.black.opacity(0.45)).clipShape(Capsule())
-                    .padding(3)
+                    .padding(.leading, 14).padding(.top, 3)
             }
         }
         // Speed badge — a retimed clip must say so (CapCut shows "2x" on the cell).
-        .overlay(alignment: .topLeading) {
+        // Top-TRAILING so it never collides with the selected clip's duration badge.
+        .overlay(alignment: .topTrailing) {
             if abs(speed - 1.0) > 0.01 {
                 Text(String(format: speed.truncatingRemainder(dividingBy: 1) == 0 ? "%.0fx" : "%.1fx", speed))
                     .font(.system(size: 8, weight: .bold)).monospacedDigit()
                     .foregroundStyle(.black)
                     .padding(.horizontal, 4).padding(.vertical, 1.5)
                     .background(Color(hex: 0xFFD60A)).clipShape(Capsule())
-                    .padding(3)
+                    .padding(.trailing, selected ? 14 : 3).padding(.top, 3)
             }
         }
         // (Mute state now lives on the voice lane below — the audio is a visible object there,
@@ -246,13 +262,9 @@ struct EditorTimeline: View {
         }
         .overlay(alignment: .leading) { if selected { trimHandle(.leading, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
         .overlay(alignment: .trailing) { if selected { trimHandle(.trailing, segIdx: segIdx, srcIn: srcIn, srcOut: srcOut) } }
-        .onTapGesture {
-            player?.pause()          // #10: freeze the playhead so Split cuts where they see
-            withAnimation(.easeOut(duration: 0.15)) {
-                selectedOverlay = nil
-                selectedSeg = (selectedSeg == segIdx) ? nil : segIdx
-            }
-        }
+        // #10: the parent's select() pauses the player, freezing the playhead so Split
+        // cuts where they see.
+        .onTapGesture { onTapClip(segIdx) }
         // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
         // when selected, the leading/trailing trimHandle overlays have their own
         // "editorPro.trimHandle.left/right" identifiers — without .accessibilityElement
@@ -271,13 +283,13 @@ struct EditorTimeline: View {
     private var laneGutter: some View {
         VStack(spacing: 2) {
             Color.clear.frame(width: 14, height: 12)                       // ruler
-            gutterIcon("film").frame(height: 56)
-            if captionsOn, !phrases.isEmpty { gutterIcon("captions.bubble").frame(height: 18) }
-            if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 20) }
-            if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 18) }
-            else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 18) }
+            gutterIcon("film").frame(height: 64)
+            if captionsOn, !phrases.isEmpty { gutterIcon("captions.bubble").frame(height: 24) }
+            if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 22) }
+            if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 22) }
+            else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 22) }
             if showVoice { gutterIcon("waveform").frame(height: 16) }
-            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 16) }
+            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 28) }
         }
         .padding(.leading, 3)
         .allowsHitTesting(false)
@@ -296,7 +308,7 @@ struct EditorTimeline: View {
         Button(action: onTapAddMedia) {
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.white.opacity(0.12))
-                .frame(width: 40, height: 56)
+                .frame(width: 40, height: 64)
                 .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.white))
         }
@@ -328,8 +340,8 @@ struct EditorTimeline: View {
     /// "+ Add b-roll" strip straight into the media panel.
     private var rollsAddLane: some View {
         AddLaneStrip(label: "Add b-roll", width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
-                     onTap: onTapAddMedia)
-            .frame(height: 18, alignment: .topLeading)
+                     height: 20, onTap: onTapAddMedia)
+            .frame(height: 22, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("editorPro.rollsLane.add")
     }
@@ -339,13 +351,13 @@ struct EditorTimeline: View {
         let rows = rollsRows
         return ZStack(alignment: .topLeading) {
             Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
-                              height: CGFloat(rows) * 18)
+                              height: CGFloat(rows) * 22)
             ForEach(placed, id: \.idx) { p in
                 rollStrip(p.idx, p.roll, p.span)
-                    .offset(x: CGFloat(p.span.start) * pointsPerSecond, y: CGFloat(p.row) * 18 + 1)
+                    .offset(x: CGFloat(p.span.start) * pointsPerSecond, y: CGFloat(p.row) * 22 + 1)
             }
         }
-        .frame(height: CGFloat(rows) * 18, alignment: .topLeading)
+        .frame(height: CGFloat(rows) * 22, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -358,7 +370,7 @@ struct EditorTimeline: View {
         let thumbPath = roll.resolvedURL.flatMap { rollThumbs[$0] }
         return ZStack {
             if let thumbPath {
-                RollThumb(path: thumbPath).frame(width: w, height: 16).clipped()
+                RollThumb(path: thumbPath).frame(width: w, height: 20).clipped()
                 Color.black.opacity(0.15)
             } else {
                 Color(hex: 0xB56635).opacity(selected ? 1 : 0.9)
@@ -375,7 +387,7 @@ struct EditorTimeline: View {
             .foregroundStyle(.white).shadow(radius: thumbPath != nil ? 2 : 0)
             .padding(.horizontal, 5).frame(width: w, alignment: .leading)
         }
-        .frame(width: w, height: 16, alignment: .leading)
+        .frame(width: w, height: 20, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? Color(hex: 0x30D6C4) : Color.white.opacity(0.15),
@@ -390,7 +402,7 @@ struct EditorTimeline: View {
     /// A roll's edge bracket — commits a retrim on release (no live rubber-band on the
     /// thin strip; the clip trim keeps the full rubber-band).
     private func rollTrimHandle(_ edge: TrimEdge, idx: Int) -> some View {
-        TrimBracket(edge: edge, height: 16)
+        TrimBracket(edge: edge, height: 20)
             .contentShape(Rectangle().inset(by: -16))
             .highPriorityGesture(
                 DragGesture()
@@ -403,15 +415,16 @@ struct EditorTimeline: View {
     // MARK: Caption track — one white phrase clip per caption group (CapCut's text lane).
     private var captionLane: some View {
         ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 18)
+            Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 24)
             ForEach(phrases) { p in
                 if let span = document.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) {
-                    CaptionClipStrip(phrase: p, span: span, pointsPerSecond: pointsPerSecond) { onTapPhrase(p) }
+                    CaptionClipStrip(phrase: p, span: span, pointsPerSecond: pointsPerSecond,
+                                     selected: selectedPhraseID == p.id) { onTapPhrase(p) }
                         .offset(y: 1)
                 }
             }
         }
-        .frame(height: 18, alignment: .topLeading)
+        .frame(height: 24, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("editorPro.captionLane")
     }
@@ -439,14 +452,18 @@ struct EditorTimeline: View {
             .map(\.volume).min() ?? 1.0
     }
 
-    // MARK: Music track — a named teal strip spanning the cut; "+ Add sound" when empty.
+    // MARK: Music track — a named teal waveform strip spanning the cut; "+ Add sound" when empty.
     @ViewBuilder private var musicLane: some View {
         let w = max(1, CGFloat(totalSeconds) * pointsPerSecond)
         if let name = musicName {
-            MusicStrip(name: name, width: w, volume: musicVolume, onTap: onTapMusic)
+            MusicStrip(name: name, width: w, volume: musicVolume, seedKey: musicSeed,
+                       selected: selectedMusic, onTap: onTapMusic)
                 .accessibilityIdentifier("editorPro.musicLane")
         } else {
-            AddLaneStrip(label: "Add sound", width: w, onTap: onTapMusic)
+            // Distinct callback from the strip: there is no music to SELECT here — the
+            // add-strip opens the picker instead (the old shared closure made tapping the
+            // empty lane "select" nonexistent music).
+            AddLaneStrip(label: "Add sound", width: w, height: 26, onTap: onTapAddMusic)
                 .accessibilityIdentifier("editorPro.musicLane.add")
         }
     }
@@ -458,14 +475,14 @@ struct EditorTimeline: View {
     private var overlayLane: some View {
         ZStack(alignment: .topLeading) {
             Color.clear
-                .frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 20)
+                .frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 22)
             ForEach(Array(document.overlays.enumerated()), id: \.offset) { idx, o in
                 if let span = document.outputSpan(srcIn: o.srcIn, srcOut: o.srcOut) {
                     overlayChip(idx: idx, overlay: o, span: span)
                 }
             }
         }
-        .frame(height: 20, alignment: .topLeading)
+        .frame(height: 22, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -484,7 +501,7 @@ struct EditorTimeline: View {
         // Zoom blocks read purple (the effect-block color: Screen Studio's zoom track,
         // CapCut effect clips); text cards stay neutral white.
         .foregroundStyle(selected ? .white : (o.type == "punch_in" ? zoomPurple : .white))
-        .frame(width: w, height: 16)
+        .frame(width: w, height: 20)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent)
@@ -493,18 +510,13 @@ struct EditorTimeline: View {
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent) : Color.white.opacity(0.2),
                           lineWidth: selected ? 1.5 : 0.5))
-        .offset(x: CGFloat(span.start) * pointsPerSecond, y: 2)
-        .onTapGesture {
-            withAnimation(.easeOut(duration: 0.15)) {
-                selectedSeg = nil
-                selectedOverlay = (selectedOverlay == idx) ? nil : idx
-            }
-        }
+        .offset(x: CGFloat(span.start) * pointsPerSecond, y: 1)
+        .onTapGesture { onTapOverlay(idx) }
         .accessibilityIdentifier("editorPro.overlay.\(idx)")
     }
 
     private func trimHandle(_ edge: TrimEdge, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
-        TrimBracket(edge: edge, height: 56)
+        TrimBracket(edge: edge, height: 64)
             .contentShape(Rectangle().inset(by: -14))     // 44pt-ish hit target
             .highPriorityGesture(
                 DragGesture()
@@ -571,7 +583,7 @@ struct EditorTimeline: View {
 // grip notch, used at the edges of a selected clip or roll.
 struct TrimBracket: View {
     let edge: TrimEdge
-    var height: CGFloat = 56
+    var height: CGFloat = 64
     var body: some View {
         ZStack {
             UnevenRoundedRectangle(
@@ -624,7 +636,7 @@ struct FilmstripThumbs: View {
                     if let img = images[sec] { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
                     else { Palette.ink.opacity(0.7) }
                 }
-                .frame(maxWidth: .infinity).frame(height: 56).clipped()
+                .frame(maxWidth: .infinity).frame(height: 64).clipped()
             }
         }
         .task(id: "\(srcIn)-\(srcOut)-\(width)") {

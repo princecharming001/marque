@@ -57,6 +57,7 @@ struct CaptionClipStrip: View {
     let phrase: CaptionPhrase
     let span: (start: Double, end: Double)
     let pointsPerSecond: CGFloat
+    var selected: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -68,8 +69,11 @@ struct CaptionClipStrip: View {
             .foregroundStyle(Palette.night)
             .lineLimit(1)
             .padding(.horizontal, 5)
-            .frame(width: w, height: 16, alignment: .leading)
+            .frame(width: w, height: 22, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.88)))
+            // Accent (not white) selection ring — a white ring is invisible on the near-white fill.
+            .overlay(RoundedRectangle(cornerRadius: 4)
+                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
             .offset(x: CGFloat(span.start) * pointsPerSecond)
             .onTapGesture(perform: onTap)
     }
@@ -117,25 +121,58 @@ struct VoiceStrip: View {
     }
 }
 
-/// The music track strip: spans the whole cut, named, tinted its own color (CapCut's music lane).
+/// The music track strip: spans the whole cut, named, tinted its own color (CapCut's music
+/// lane), with a deterministic pseudo-waveform under the name (reference parity — the real
+/// CapCut music strip shows one).
 struct MusicStrip: View {
     let name: String
     let width: CGFloat
     let volume: Double
+    var seedKey: String = ""          // the track URL — stable identity for the waveform
+    var selected: Bool = false
     let onTap: () -> Void
 
+    /// FNV-1a over the URL bytes — String.hashValue is SipHash-randomized per launch and
+    /// would re-roll the waveform every session; this stays stable.
+    private var seed: Double {
+        var h: UInt64 = 0xcbf29ce484222325
+        for b in seedKey.utf8 { h = (h ^ UInt64(b)) &* 0x100000001b3 }
+        return Double(h % 997)
+    }
+
     var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "music.note").font(.system(size: 8, weight: .semibold))
-            Text(name).font(.system(size: 9, weight: .medium)).lineLimit(1)
-            Spacer(minLength: 0)
-            Text("\(Int((volume * 100).rounded()))%")
-                .font(.system(size: 8, weight: .semibold)).monospacedDigit().opacity(0.7)
+        ZStack {
+            RoundedRectangle(cornerRadius: 4).fill(Color(hex: 0x2E7D6B).opacity(0.85))
+            Canvas { ctx, size in
+                let barW: CGFloat = 2, gap: CGFloat = 1.5
+                let n = max(1, Int(size.width / (barW + gap)))
+                for i in 0..<n {
+                    let x = CGFloat(i) * (barW + gap)
+                    let t = seed + Double(i)
+                    // Same double-sin jitter as VoiceStrip, constant 0.6 base (no speech frames).
+                    let jitter = CGFloat(abs(sin(t * 0.7)) * 0.35 + abs(sin(t * 0.23)) * 0.25)
+                    var h = size.height * min(1, 0.6 * (0.5 + jitter))
+                    h *= CGFloat(min(1.0, 0.35 + volume * 0.65))
+                    let rect = CGRect(x: x, y: (size.height - h) / 2, width: barW, height: h)
+                    ctx.fill(Path(roundedRect: rect, cornerRadius: 1),
+                             with: .color(.white.opacity(0.35)))
+                }
+            }
+            .padding(.horizontal, 2)
+            HStack(spacing: 4) {
+                Image(systemName: "music.note").font(.system(size: 8, weight: .semibold))
+                Text(name).font(.system(size: 9, weight: .medium)).lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(Int((volume * 100).rounded()))%")
+                    .font(.system(size: 8, weight: .semibold)).monospacedDigit().opacity(0.7)
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
         }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 6)
-        .frame(width: max(46, width), height: 16)
-        .background(RoundedRectangle(cornerRadius: 4).fill(Color(hex: 0x2E7D6B).opacity(0.85)))
+        .frame(width: max(46, width), height: 26)
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .overlay(RoundedRectangle(cornerRadius: 4)
+            .strokeBorder(selected ? Color.white : .clear, lineWidth: 2))
         .onTapGesture(perform: onTap)
     }
 }
@@ -144,6 +181,7 @@ struct MusicStrip: View {
 struct AddLaneStrip: View {
     let label: String
     let width: CGFloat
+    var height: CGFloat = 16
     let onTap: () -> Void
 
     var body: some View {
@@ -152,7 +190,7 @@ struct AddLaneStrip: View {
             Text(label).font(.system(size: 9, weight: .medium))
         }
         .foregroundStyle(.white.opacity(0.55))
-        .frame(width: max(80, width), height: 16)
+        .frame(width: max(80, width), height: height)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .strokeBorder(Color.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))

@@ -13,7 +13,19 @@ struct ProEditorView: View {
     let clip: Clip
 
     enum Phase: Equatable { case loading, editing, applying, rendering, failed(String) }
-    enum Mode: String, CaseIterable { case edit = "Edit", sound = "Sound", text = "Text", effects = "Effects", filters = "Filters" }
+    // One-bar model: the root panels a root tile can open (replaces the old 5-tab Mode bar).
+    enum RootPanel: Equatable { case sound, text, captions, effects, filters }
+    // A sub-tool expansion REPLACES the toolbar row while open (CapCut's volume/adjust sheets;
+    // also the small-screen budget — stacking above the bar starved the SE's preview).
+    // Exactly one open at a time; any selection/rootPanel change closes it.
+    enum Expansion: Equatable {
+        case speed(seg: Int)
+        case clipVolume(seg: Int)
+        case musicVolume
+        case captionStyle
+        case captionCustomize
+        case transitionDuration(boundary: Int)
+    }
 
     @State var phase: Phase = .loading
     @State var session: EditorSession?
@@ -21,9 +33,13 @@ struct ProEditorView: View {
     @State var filmstrip: FilmstripCache?
     @State var words: [WordSpan] = []
     @State var caps: [String: Bool]? = nil
-    @State var mode: Mode = .edit
+    @State var rootPanel: RootPanel? = nil      // nil = plain root vocabulary
+    @State var expansion: Expansion? = nil
     @State var selectedSeg: Int? = nil          // index into segments (source index)
     @State var selectedOverlay: Int? = nil      // index into draft.overlays (chip lane)
+    @State var selectedMusic = false            // INVARIANT: true only while draft.music != nil
+    @State var selectedPhraseID: Int? = nil     // CaptionPhrase.id (= startFrame) — never an
+                                                // array index; phrases recomputes per draft change
     @State var editingOverlayIndex: Int? = nil  // text-card text edit in flight
     @State var captionsOn = false               // #1: enabled-state tracked in the view (local
                                                 // captions may be empty while enabled → preview from words)
@@ -34,7 +50,6 @@ struct ProEditorView: View {
     @State var editorRecoverable = false        // gone job + local footage → offer re-create
     @State var showMusicSheet = false
     @State var showTextCardAlert = false
-    @State var showStickerInput = false
     @State var editDraft = ""
     @State var editingPhrase: CaptionPhrase?     // phrase-level caption edit in flight
     @State var showCaptionList = false           // the batch caption list editor
@@ -49,11 +64,9 @@ struct ProEditorView: View {
     @State private var confirmDiscard = false
     // FP1: transition boundary selection (source segIdx of the leading clip).
     @State var selectedBoundary: Int? = nil
-    // FP1: speed panel target + slider draft (one op per gesture, UX-4 pattern).
-    @State var speedPanelSeg: Int? = nil
+    // Expansion slider drafts (one op per gesture, UX-4 pattern).
     @State private var speedDraft: Double = 1.0
-    // FP1: adjust-knob slider drafts (commit on release).
-    @State private var adjustDraft: Double = 0
+    @State private var transDurDraft: Double = 0.4
     // A7 feature #1: theme picker + report card (#8) — the active bundle + whatever
     // the pipeline computed (self_review/lint), surfaced read-only.
     @State var themes: [ThemeChoice] = []
@@ -87,8 +100,6 @@ struct ProEditorView: View {
     @State var localMediaPreviews: [String: String] = [:]
     // R10: CapCut transport row + reclaimed layout.
     @State var showFullscreen = false            // fullScreenCover preview (transport ⛶)
-    @State var timelineExtra: CGFloat = 0         // drag-handle divider: extra timeline height
-    @State private var timelineExtraBase: CGFloat = 0
     @State var toast: String? = nil              // named-undo / completion toast text
     @State private var toastTick = 0             // drives auto-dismiss
     // R10: filter intensity (client-side preview blend; also written to the look op).
@@ -136,8 +147,6 @@ struct ProEditorView: View {
         .sheet(isPresented: $showThemeSheet) { themeSheet }
         .marqueInput($showTextCardAlert, title: "Text card", placeholder: "Card text",
                      text: $editDraft, confirm: "Add") { addTextCard(editDraft) }
-        .marqueInput($showStickerInput, title: "Add text", placeholder: "Say something",
-                     text: $editDraft, confirm: "Add") { addTextSticker(editDraft) }
         .marqueInput($showStockInput, title: "Stock clip", placeholder: "What should it show?",
                      text: $editDraft, confirm: "Add") { addStockRoll(editDraft) }
         .marqueInput(Binding(get: { editingPhrase != nil }, set: { if !$0 { editingPhrase = nil } }),
@@ -153,11 +162,13 @@ struct ProEditorView: View {
         .onChange(of: phase) { _, p in
             if p == .editing, !coachShown { showCoach = true }
         }
-        .onChange(of: mode) { _, m in
-            if m == .filters, filterPreviewImage == nil { Task { await loadFilterPreview() } }
-            // Collapse the declutter disclosures when leaving their tab so each opens fresh.
-            if m != .text { showCaptionCustomize = false }
-            if m != .filters { showFilterAdvanced = false }
+        .onChange(of: rootPanel) { _, p in
+            // The filter cards' representative frame loads lazily on first entry to Filters —
+            // this is its ONLY trigger (without it the cards show the placeholder gradient).
+            if p == .filters, filterPreviewImage == nil { Task { await loadFilterPreview() } }
+            // Collapse the declutter disclosures when leaving their panel so each opens fresh.
+            if p != .captions { showCaptionCustomize = false }
+            if p != .filters { showFilterAdvanced = false }
         }
         // R10: keyboard-first text commits when the on-canvas field loses focus.
         .onChange(of: stickerFieldFocused) { _, focused in
@@ -189,7 +200,7 @@ struct ProEditorView: View {
                 VStack(alignment: .leading, spacing: Space.sm) {
                     coachRow("hand.tap", "Tap a clip to select it — trim with the edge handles")
                     coachRow("square.split.2x1", "Split cuts at the playhead — scrub to the exact moment first")
-                    coachRow("textformat", "Tap a caption strip on the timeline to fix its words")
+                    coachRow("textformat", "Tap a caption strip, then Edit, to fix its words")
                 }
                 Button {
                     coachShown = true
@@ -269,28 +280,26 @@ struct ProEditorView: View {
             } else if showCleanup {
                 cleanupPanel
             } else {
-                transportRow                       // R10: CapCut transport strip + divider
+                transportRow                       // R10: CapCut transport strip
                 timelinePane
-                contextStrip
-                modeDrawer
-                modeToolbar
+                // One-bar model: an open expansion REPLACES the toolbar in the same slot
+                // (CapCut's volume/adjust sheets — and the iPhone SE height budget).
+                if let e = expansion {
+                    expansionRow(e)
+                } else {
+                    rootPanelRows
+                    oneBar
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
-    /// R10: the CapCut/TikTok transport strip — a drag-handle divider (pull up for more
-    /// timeline), then time readout · play · undo · redo · fullscreen. Replaces the play/time
-    /// controls that used to float ON the canvas (CapCut keeps the picture clean).
+    /// R10: the CapCut/TikTok transport strip — time readout · play · undo · redo ·
+    /// fullscreen. Replaces the play/time controls that used to float ON the canvas
+    /// (CapCut keeps the picture clean).
     private var transportRow: some View {
         VStack(spacing: 0) {
-            Capsule().fill(Color.white.opacity(0.25)).frame(width: 40, height: 4)
-                .padding(.vertical, 5)
-                .contentShape(Rectangle().inset(by: -14))
-                .gesture(DragGesture()
-                    .onChanged { g in timelineExtra = min(180, max(0, timelineExtraBase - g.translation.height)) }
-                    .onEnded { _ in timelineExtraBase = timelineExtra })
-                .accessibilityIdentifier("editorPro.timelineDivider")
             HStack(spacing: Space.lg) {
                 Text(timeReadout).font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.white.opacity(0.85))
@@ -321,23 +330,13 @@ struct ProEditorView: View {
         .background(Palette.night)
     }
 
-    /// An object selection (roll/boundary/overlay) swaps the palette row out for
-    /// the context strip — CapCut's one-bar model, and the canvas keeps the space.
-    private var objectSelectionActive: Bool {
-        selectedBroll != nil || selectedBoundary != nil || selectedOverlay != nil
-    }
+    // MARK: root panels — the content rows a root tile opens (render ABOVE the one bar)
 
-    @ViewBuilder private var modeDrawer: some View {
-        // Edit mode has no palette (its tools live in the always-on context strip),
-        // and an object selection replaces the palette with its context tools.
-        // Filters mode gets visual thumbnail cards instead of the chip drawer.
-        if mode != .edit, mode != .filters, !objectSelectionActive {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.md) {
-                switch mode {
-                case .edit:
-                    EmptyView()
-                case .sound:
+    @ViewBuilder private var rootPanelRows: some View {
+        switch rootPanel {
+        case .sound:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.md) {
                     drawerButton(session?.draft.music == nil ? "Add sound" : "Change sound", "music.note") { showMusicSheet = true }
                         .accessibilityIdentifier("editorPro.addSound")
                     if session?.draft.music != nil {
@@ -352,24 +351,26 @@ struct ProEditorView: View {
                                 .onAppear { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                         }
                     }
-                    if let seg = selectedSeg {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Clip volume").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
-                            Slider(value: $clipVolDraft, in: 0.0...2.0, onEditingChanged: { editing in
-                                if editing { clipVolDraft = clipVolume(seg) }
-                                else { setClipVolume(seg, clipVolDraft) }
-                            }).frame(width: 120).tint(Palette.accent)
-                                .accessibilityIdentifier("editorPro.clipVolume")
-                                .onAppear { clipVolDraft = clipVolume(seg) }
-                        }
-                        // Mute lives here now (was in the context strip) — all clip audio on one surface.
-                        drawerButton(mutedState(seg) ? "Unmute" : "Mute",
-                                     mutedState(seg) ? "speaker.slash.fill" : "speaker.wave.2") { toggleMute(seg); bumpHaptic() }
-                            .accessibilityIdentifier("editorPro.muteToggle")
-                    }
-                case .text:
+                }.padding(.horizontal, Space.md)
+            }
+            .frame(height: 52).background(Palette.ink.opacity(0.25))
+        case .text:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.md) {
                     drawerButton("Add text", "plus.square") { startTextEntry() }
                         .accessibilityIdentifier("editorPro.addSticker")
+                    // #5: text card is only supported for some styles — gate the button so a
+                    // creator doesn't type one only to be rejected.
+                    if textCardsSupported {
+                        drawerButton("Text card", "text.badge.plus") { editDraft = ""; showTextCardAlert = true }
+                            .accessibilityIdentifier("editorPro.addTextCard")
+                    }
+                }.padding(.horizontal, Space.md)
+            }
+            .frame(height: 52).background(Palette.ink.opacity(0.25))
+        case .captions:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.md) {
                     // #1: caption on/off reads the tracked state (captions can be turned back ON).
                     drawerButton(captionsOn ? "Captions on" : "Captions off",
                                  captionsOn ? "captions.bubble.fill" : "captions.bubble") { toggleCaptions(!captionsOn) }
@@ -387,15 +388,16 @@ struct ProEditorView: View {
                         }
                         .accessibilityIdentifier("editorPro.capCustomize")
                     }
-                    // Style is now a dedicated 10-preset picker row below (captionStyleRow),
-                    // not individual drawer buttons.
-                    // #5: text card is only supported for green-screen / duet styles — gate the
-                    // button so a talking-head creator doesn't type one only to be rejected.
-                    if textCardsSupported {
-                        drawerButton("Text card", "text.badge.plus") { editDraft = ""; showTextCardAlert = true }
-                            .accessibilityIdentifier("editorPro.addTextCard")
-                    }
-                case .effects:
+                }.padding(.horizontal, Space.md)
+            }
+            .frame(height: 52).background(Palette.ink.opacity(0.25))
+            if captionsOn {
+                captionStyleRow      // 10 popular styles
+                if showCaptionCustomize { captionOptionsRow }
+            }
+        case .effects:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.md) {
                     // #8: fall back to the LOCAL style capability when the server caps didn't
                     // load (keyless/network hiccup) so Zoom doesn't silently vanish.
                     if punchInsSupported { drawerButton("Punch-in", "plus.magnifyingglass") { addPunchInOnHook() }.accessibilityIdentifier("editorPro.addPunchIn") }
@@ -406,39 +408,22 @@ struct ProEditorView: View {
                         withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true }
                     }
                     .accessibilityIdentifier("editorPro.addBroll")
-                    if !punchInsSupported && !(caps?["broll"] ?? true) {
+                    if !punchInsSupported && !brollSupported {
                         Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
                     }
-                case .filters:
-                    // Filters has no chip drawer (this switch only renders for mode != .filters —
-                    // this case was dead). Its tools live in filterCardsRow + filterToolsRow below.
-                    EmptyView()
-                }
-            }.padding(.horizontal, Space.md)
-        }
-        .frame(height: 52).background(Palette.ink.opacity(0.25))
-        }
-        // Filters: visual thumbnail cards (real frame through each look) + a tools row
-        // (Theme + Advanced) + intensity when a filter is active. Manual color knobs (Adjust)
-        // hide behind "Advanced" to keep the idle Filters tab to two rows.
-        if mode == .filters, !objectSelectionActive {
+                }.padding(.horizontal, Space.md)
+            }
+            .frame(height: 52).background(Palette.ink.opacity(0.25))
+        case .filters:
+            // Visual thumbnail cards (real frame through each look) + a tools row
+            // (Theme + Advanced) + intensity when a filter is active. Manual color knobs
+            // (Adjust) hide behind "Advanced" to keep the idle Filters panel to two rows.
             filterCardsRow
             filterToolsRow
             if session?.draft.look.filter != nil { filterIntensityRow }
-        }
-        // Captions: the 10-preset row is always the scannable default; the fine-tune knobs
-        // (position/accent/case/grouping/font) hide behind the "Customize" disclosure.
-        if mode == .text, captionsOn {
-            captionStyleRow      // 10 popular styles
-            if showCaptionCustomize { captionOptionsRow }
-        }
-        // CapCut Speed → Normal: slider + chips, committed as ONE op on release (UX-4).
-        if let seg = speedPanelSeg {
-            speedRow(seg)
-        }
-        // CapCut Adjust: manual color knobs, behind "Advanced".
-        if mode == .filters, !objectSelectionActive, showFilterAdvanced {
-            adjustRow
+            if showFilterAdvanced { adjustRow }
+        case nil:
+            EmptyView()
         }
     }
 
@@ -533,39 +518,6 @@ struct ProEditorView: View {
         let startFrame = session?.draft.keptIntervals.first?.srcIn ?? 30
         let sec = Double(startFrame + 15) / 30.0
         if let img = await fs.thumbnail(atSourceSecond: sec) { filterPreviewImage = img }
-    }
-
-    private func speedRow(_ seg: Int) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: Space.md) {
-            Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
-            Slider(value: $speedDraft, in: 0.5...3.0, onEditingChanged: { editing in
-                if !editing { setSpeed(seg, speedDraft) }
-            })
-            .frame(maxWidth: 150).tint(Palette.accent)
-            .accessibilityIdentifier("editorPro.speedSlider")
-            Text(String(format: "%.1fx", speedDraft))
-                .font(.system(size: 12, weight: .bold)).monospacedDigit().foregroundStyle(.white)
-                .frame(width: 38)
-            ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { v in
-                let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
-                Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
-                    Text(v.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0fx", v) : String(format: "%.1fx", v))
-                        .font(.system(size: 11, weight: active ? .bold : .medium))
-                        .foregroundStyle(active ? Palette.ink : .white)
-                        .padding(.horizontal, 9).frame(height: 28)
-                        .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("editorPro.speed.\(v)")
-            }
-        }
-        .padding(.horizontal, Space.md)
-        }
-        .frame(height: 44).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.ink.opacity(0.25))
-        .accessibilityIdentifier("editorPro.speedRow")
     }
 
     private var adjustRow: some View {
@@ -962,11 +914,7 @@ struct ProEditorView: View {
     private func canvasTapSelect() {
         player?.pause()
         guard let idx = clipUnderPlayhead else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            selectedOverlay = nil; selectedBoundary = nil
-            selectedSeg = (selectedSeg == idx) ? nil : idx
-        }
-        bumpHaptic()
+        select(selectedSeg == idx ? nil : .seg(idx))
     }
 
     private var liveVideoScale: Double {
@@ -1025,19 +973,17 @@ struct ProEditorView: View {
 
     func doUndo() {
         guard let t = session?.undo() else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
-        }
-        refreshPlayer(); bumpHaptic()
+        // An undo can remove the selected object (or the values an open expansion edits) —
+        // clear EVERYTHING selection-shaped so the toolbar never shows a dead vocabulary.
+        select(nil)
+        refreshPlayer()
         showToast("Undo: \(opDisplayName(t))")
     }
 
     func doRedo() {
         guard let t = session?.redo() else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
-        }
-        refreshPlayer(); bumpHaptic()
+        select(nil)
+        refreshPlayer()
         showToast("Redo: \(opDisplayName(t))")
     }
 
@@ -1310,7 +1256,7 @@ struct ProEditorView: View {
                     stickerDrag = (idx,
                                    min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, o.posX + g.translation.width / max(1, geo.width))),
                                    min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, o.posY + g.translation.height / max(1, geo.height))))
-                    if selectedOverlay != idx { selectedOverlay = idx; selectedSeg = nil }
+                    if selectedOverlay != idx { select(.overlay(idx)) }
                 }
                 .onEnded { _ in
                     if let s = stickerDrag, s.idx == idx { commitStickerMove(idx, x: s.x, y: s.y) }
@@ -1325,10 +1271,7 @@ struct ProEditorView: View {
                 })
         .onTapGesture {
             if typing { return }
-            withAnimation(.easeOut(duration: 0.15)) {
-                selectedSeg = nil
-                selectedOverlay = (selectedOverlay == idx) ? nil : idx
-            }
+            select(selectedOverlay == idx ? nil : .overlay(idx))
         }
         // Same fix as cleanupPanel: when selected, stickerCornerHandles overlays 4 buttons
         // with their own "editorPro.sticker.<idx>.<action>" identifiers — without
@@ -1429,11 +1372,13 @@ struct ProEditorView: View {
                     }
                 }
                 .accessibilityIdentifier("editorPro.captionSim")
-                // Selection affordance: dashed bounds in Text mode invite the drag;
-                // accent while a gesture is live (TikTok's selection box).
+                // Selection affordance: dashed bounds invite the drag whenever captions are
+                // the working context (Captions panel open or a phrase selected); accent
+                // while a gesture is live (TikTok's selection box).
                 .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .strokeBorder(interacting ? Palette.accent
-                                              : (mode == .text ? Color.white.opacity(0.35) : .clear),
+                                              : (rootPanel == .captions || selectedPhraseID != nil
+                                                 ? Color.white.opacity(0.35) : .clear),
                                   style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])))
                 .position(x: geo.size.width / 2, y: effY * geo.size.height)
                 .highPriorityGesture(
@@ -1580,26 +1525,30 @@ struct ProEditorView: View {
 
     /// The lane stack is dynamic — the pane grows with the tracks it actually shows.
     private var timelineHeight: CGFloat {
-        var h: CGFloat = 12 + 2 + 56 + 8                                  // ruler + video + padding
-        if captionsOn, !phrases.isEmpty { h += 20 }
-        if !(session?.draft.overlays.isEmpty ?? true) { h += 22 }
+        var h: CGFloat = 12 + 2 + 64 + 8                                  // ruler + video + padding
+        if captionsOn, !phrases.isEmpty { h += 26 }
+        if !(session?.draft.overlays.isEmpty ?? true) { h += 24 }
         if let rolls = session?.draft.broll, !rolls.isEmpty {
-            // Matches rollsLane's stacking: 18pt per row, second row only on overlap.
+            // Matches rollsLane's stacking: 22pt per row, second row only on overlap.
             let sorted = rolls.sorted { $0.srcIn < $1.srcIn }
             let overlaps = zip(sorted, sorted.dropFirst()).contains { $0.srcOut > $1.srcIn }
-            h += overlaps ? 38 : 20
-        } else if mode == .edit || mode == .effects {
-            h += 20                                                        // "+ Add b-roll" strip
+            h += overlaps ? 46 : 24
+        } else if rootPanel == .effects {
+            h += 24                                                        // "+ Add b-roll" strip
         }
         if showVoiceLane { h += 18 }                                       // voice lane (collapses when idle)
-        if session?.draft.music != nil || mode == .sound { h += 20 }
-        return h + 8 + timelineExtra          // R10: drag-handle divider grows the pane
+        if session?.draft.music != nil || rootPanel == .sound { h += 30 }
+        return h + 8
     }
 
-    /// R10: the voice waveform lane collapses when idle — it appears in Sound mode or once
-    /// any clip's volume has been touched (muted / adjusted), so the idle timeline stays lean.
+    /// R10: the voice waveform lane collapses when idle — it appears with the Sound panel,
+    /// with a clip's Volume expansion, or once any clip's volume has been touched
+    /// (muted / adjusted), so the idle timeline stays lean.
     private var showVoiceLane: Bool {
-        mode == .sound || !(session?.draft.volumeRanges.isEmpty ?? true)
+        if !(session?.draft.volumeRanges.isEmpty ?? true) { return true }
+        if rootPanel == .sound { return true }
+        if case .clipVolume = expansion { return true }
+        return false
     }
 
     private var timelinePane: some View {
@@ -1608,42 +1557,36 @@ struct ProEditorView: View {
             player: player,
             filmstrip: filmstrip,
             pointsPerSecond: $pointsPerSecond,
-            selectedSeg: $selectedSeg,
-            selectedOverlay: $selectedOverlay,
+            selectedSeg: selectedSeg,
+            selectedOverlay: selectedOverlay,
             onTrim: { segIdx, edge, newFrame in trim(segIdx: segIdx, edge: edge, to: newFrame) },
             onReorder: { order in reorder(order) },
+            onTapClip: { i in select(selectedSeg == i ? nil : .seg(i)) },
+            onTapOverlay: { i in select(selectedOverlay == i ? nil : .overlay(i)) },
+            onTapBackground: { if anySelection { select(nil) } },
             phrases: phrases,
             captionsOn: captionsOn,
+            selectedPhraseID: selectedPhraseID,
             musicName: musicName,
+            musicSeed: session?.draft.music?.url ?? "",
             musicVolume: session?.draft.music?.volume ?? 0.15,
-            showMusicAdd: mode == .sound && session?.draft.music == nil,
-            onTapPhrase: { p in beginPhraseEdit(p); bumpHaptic() },
-            onTapMusic: { mode = .sound; showMusicSheet = session?.draft.music == nil },
+            selectedMusic: selectedMusic,
+            showMusicAdd: rootPanel == .sound && session?.draft.music == nil,
+            onTapPhrase: { p in select(selectedPhraseID == p.id ? nil : .phrase(p.id)) },
+            onTapMusic: { select(selectedMusic ? nil : .music) },
+            onTapAddMusic: { showMusicSheet = true },
             onTapVoice: { segIdx in
-                // Voice strip tap = select that clip in Sound mode — volume + mute right there.
-                mode = .sound
-                withAnimation(.easeOut(duration: 0.15)) { selectedOverlay = nil; selectedSeg = segIdx }
+                // Voice strip tap = select that clip with its Volume expansion open.
+                select(.seg(segIdx))
+                clipVolDraft = clipVolume(segIdx)
+                expansion = .clipVolume(seg: segIdx)
             },
             selectedBoundary: selectedBoundary,
-            onTapBoundary: { leading in
-                player?.pause()
-                withAnimation(.easeOut(duration: 0.15)) {
-                    selectedSeg = nil; selectedOverlay = nil; speedPanelSeg = nil; selectedBroll = nil
-                    selectedBoundary = (selectedBoundary == leading) ? nil : leading
-                }
-                bumpHaptic()
-            },
+            onTapBoundary: { leading in select(selectedBoundary == leading ? nil : .boundary(leading)) },
             selectedBroll: selectedBroll,
-            onTapBroll: { idx in
-                player?.pause()
-                withAnimation(.easeOut(duration: 0.15)) {
-                    selectedSeg = nil; selectedOverlay = nil; selectedBoundary = nil
-                    selectedBroll = (selectedBroll == idx) ? nil : idx
-                }
-                bumpHaptic()
-            },
+            onTapBroll: { idx in select(selectedBroll == idx ? nil : .broll(idx)) },
             onTapAddMedia: { player?.pause(); withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true } },
-            showRollsAdd: mode == .edit || mode == .effects,
+            showRollsAdd: rootPanel == .effects,
             rollThumbs: localMediaPreviews,
             onTrimRoll: { idx, edge, delta in trimRoll(idx, edge: edge, deltaFrames: delta); bumpHaptic() },
             showVoice: showVoiceLane
@@ -1652,225 +1595,438 @@ struct ProEditorView: View {
         .background(Palette.ink.opacity(0.6))
     }
 
-    // MARK: context strip (selection actions)
+    // MARK: selection choke point (the one-bar invariant's enforcement)
 
-    /// R10: CapCut back chevron — pops the selection context back to the mode's root row.
-    private func backChevron(_ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: "chevron.left").font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white).frame(width: 30, height: 34)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("editorPro.ctx.back")
+    enum SelectionTarget {
+        case seg(Int), overlay(Int), broll(Int), boundary(Int), music, phrase(Int)
     }
 
-    func clearSelection() {
+    private var anySelection: Bool {
+        selectedSeg != nil || selectedOverlay != nil || selectedBroll != nil
+            || selectedBoundary != nil || selectedMusic || selectedPhraseID != nil
+    }
+
+    /// The ONLY writer of selection state. Guarantees: at most one selection set; a selection
+    /// and a rootPanel are never both active; expansions never outlive their host; in-flight
+    /// sticker typing commits BEFORE anything touches the shared editDraft buffer.
+    func select(_ target: SelectionTarget?) {
+        if let idx = typingSticker { commitTyping(idx) }
+        player?.pause()
         withAnimation(.easeOut(duration: 0.15)) {
-            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil
-            selectedBoundary = nil; speedPanelSeg = nil
+            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
+            selectedMusic = false; selectedPhraseID = nil
+            expansion = nil
+            rootPanel = nil
+            switch target {
+            case .seg(let i): selectedSeg = i
+            case .overlay(let i): selectedOverlay = i
+            case .broll(let i): selectedBroll = i
+            case .boundary(let i): selectedBoundary = i
+            case .music: if session?.draft.music != nil { selectedMusic = true }
+            case .phrase(let id): selectedPhraseID = id
+            case nil: break
+            }
         }
         bumpHaptic()
     }
 
-    @ViewBuilder private var contextStrip: some View {
-        if let ri = selectedBroll, let roll = session?.draft.broll[safe: ri] {
-            // Roll rail (CapCut overlay clip): Replace / Duplicate / trim / Delete, scrollable.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.lg) {
-                    backChevron { clearSelection() }
-                    contextButton("Replace", "arrow.triangle.2.circlepath") { replaceRoll(ri); bumpHaptic() }
-                    contextButton("Duplicate", "plus.square.on.square") { duplicateRoll(ri); bumpHaptic() }
-                    contextButton("Shorter", "minus") { adjustRoll(ri, deltaFrames: -15); bumpHaptic() }
-                    contextButton("Longer", "plus") { adjustRoll(ri, deltaFrames: 15); bumpHaptic() }
-                    contextButton("Delete", "trash") { deleteRoll(ri); bumpHaptic() }
-                        .accessibilityIdentifier("editorPro.ctx.deleteRoll")
-                    Text(roll.source == "own_media" ? "Your media" : roll.cueText)
-                        .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
-                }
-                .padding(.horizontal, Space.md)
-            }
-            .frame(height: 44)
-            .background(Palette.ink.opacity(0.4))
-        } else if let b = selectedBoundary {
-            // Boundary selected: the transition styles (CapCut's between-clips picker) + duration.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.sm) {
-                    backChevron { clearSelection() }
-                    Text("TRANSITION").font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(.white.opacity(0.5))
-                    ForEach([("None", "none"), ("Fade", "fade_black"), ("White", "fade_white"), ("Flash", "flash")], id: \.1) { label, v in
-                        let active = (session?.draft.transitions.first { $0.afterSegment == b }?.style ?? "none") == v
-                        Button { setTransition(after: b, style: v); bumpHaptic() } label: {
-                            Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
-                                .foregroundStyle(active ? Palette.ink : .white)
-                                .padding(.horizontal, 12).frame(height: 30)
-                                .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("editorPro.ctx.transition.\(v)")
-                    }
-                    // Duration (0.1–1.5s) — only meaningful once a transition is set.
-                    if let t = session?.draft.transitions.first(where: { $0.afterSegment == b }) {
-                        optDivider
-                        Text("DUR").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
-                        Slider(value: Binding(
-                            get: { Double(t.frames) / 30.0 },
-                            set: { setTransitionDuration(after: b, seconds: $0) }), in: 0.1...1.5)
-                            .frame(width: 90).tint(Palette.accent)
-                            .accessibilityIdentifier("editorPro.transitionDuration")
-                        Text(String(format: "%.1fs", Double(t.frames) / 30.0))
-                            .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
-                    }
-                }
-                .padding(.horizontal, Space.md)
-            }
-            .frame(height: 44)
-            .background(Palette.ink.opacity(0.4))
-        } else if let ov = selectedOverlay, let overlay = session?.draft.overlays[safe: ov] {
-            // Overlay selected (chip lane): the strip swaps to overlay ops. Scrolls —
-            // the zoom controls (intensity + duration + delete) overflow a fixed row.
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.lg) {
-                    backChevron { clearSelection() }
-                    contextButton("Delete", "trash") { deleteOverlay(ov); bumpHaptic() }
-                        .accessibilityIdentifier("editorPro.ctx.deleteOverlay")
-                    if overlay.type == "text_card" {
-                        contextButton("Edit text", "pencil") { beginOverlayTextEdit(ov); bumpHaptic() }
-                            .accessibilityIdentifier("editorPro.ctx.editOverlayText")
-                    }
-                    if overlay.type == "punch_in" {
-                        // Zoom block controls (Screen Studio's model): intensity presets + duration.
-                        ForEach([("Subtle", 1.05), ("Medium", 1.1), ("Strong", 1.2)], id: \.0) { label, scale in
-                            Button { setZoomIntensity(ov, scale: scale); bumpHaptic() } label: {
-                                Text(label).font(.system(size: 10, weight: abs(overlay.scale - scale) < 0.02 ? .bold : .regular))
-                                    .fixedSize()
-                                    .foregroundStyle(abs(overlay.scale - scale) < 0.02 ? Palette.night : .white)
-                                    .padding(.horizontal, 8).padding(.vertical, 5)
-                                    .background(Capsule().fill(abs(overlay.scale - scale) < 0.02 ? Color.white : Color.white.opacity(0.12)))
-                            }
-                            .accessibilityIdentifier("editorPro.ctx.zoom\(label)")
-                        }
-                        contextButton("Shorter", "minus") { adjustOverlayDuration(ov, deltaFrames: -15); bumpHaptic() }
-                        contextButton("Longer", "plus") { adjustOverlayDuration(ov, deltaFrames: 15); bumpHaptic() }
-                        Text(String(format: "%.1fs", framesToSeconds(overlay.srcOut - overlay.srcIn)))
-                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).monospacedDigit()
-                    } else {
-                        Text(overlay.type == "text_sticker" ? "Text" : "Text card")
-                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
-                    }
-                }
-                .padding(.horizontal, Space.md)
-            }
-            .frame(height: 44)
-            .background(Palette.ink.opacity(0.4))
-        } else {
-            segContextStrip
+    /// Root tile tap: opens/toggles a panel (mutually exclusive with any selection).
+    func openRootPanel(_ p: RootPanel) {
+        if let idx = typingSticker { commitTyping(idx) }
+        withAnimation(.easeOut(duration: 0.15)) {
+            selectedSeg = nil; selectedOverlay = nil; selectedBroll = nil; selectedBoundary = nil
+            selectedMusic = false; selectedPhraseID = nil
+            expansion = nil
+            rootPanel = (rootPanel == p) ? nil : p
         }
+        bumpHaptic()
     }
 
-    @ViewBuilder private var segContextStrip: some View {
-        // Tools are ALWAYS visible (CapCut pattern) — disabled until a clip is selected, so
-        // the creator discovers what's possible instead of staring at a hint sentence.
-        let seg = selectedSeg
-        HStack(spacing: Space.lg) {
-            // A selected clip gets a back chevron to deselect (CapCut drill-out); with none
-            // selected the Add-media button leads the root Edit rail.
-            if seg != nil {
-                backChevron { clearSelection() }
-            } else if mode == .edit {
-                // Declutter: media is added from the timeline "+" tile or Effects → "Add b-roll".
-                // This duplicate "Add" was removed; "Clean up" stays as the root Edit tool.
-                contextButton("Clean up", "wand.and.sparkles") {
-                    player?.pause(); cleanupSkip = []
-                    withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
-                }
-                .accessibilityIdentifier("editorPro.cleanup")
+    // MARK: the one bar — a single contextual toolbar that swaps wholesale by selection
+    // (the CapCut/TikTok model). Root shows entry tiles; a selection shows that object's
+    // verbs; the fixed chevron-down tile deselects layer by layer.
+
+    enum ToolbarState {
+        case root
+        case clip(Int)
+        case music
+        case phrase(CaptionPhrase)
+        case textSticker(Int)
+        case textCard(Int)
+        case punchIn(Int)
+        case boundary(Int)
+        case broll(Int)
+    }
+
+    /// Priority order (belt-and-suspenders for any transient double-set window):
+    /// broll > boundary > overlay > phrase > music > seg > root.
+    var toolbarState: ToolbarState {
+        if let i = selectedBroll, session?.draft.broll[safe: i] != nil { return .broll(i) }
+        if let b = selectedBoundary { return .boundary(b) }
+        if let o = selectedOverlay, let ov = session?.draft.overlays[safe: o] {
+            switch ov.type {
+            case "punch_in": return .punchIn(o)
+            case "text_card": return .textCard(o)
+            default: return .textSticker(o)
             }
-            contextButton("Split", "square.split.2x1") { if let s = seg { splitSelected(s); bumpHaptic() } }
-                .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
-            contextButton("Speed", "gauge.with.needle") {
-                if let s = seg {
-                    speedDraft = session?.draft.segments[safe: s]?.speed ?? 1.0
-                    withAnimation(.easeOut(duration: 0.15)) { speedPanelSeg = (speedPanelSeg == s) ? nil : s }
+        }
+        if let pid = selectedPhraseID, let p = phrases.first(where: { $0.id == pid }) { return .phrase(p) }
+        if selectedMusic, session?.draft.music != nil { return .music }
+        if let s = selectedSeg, session?.draft.segments[safe: s] != nil { return .clip(s) }
+        return .root
+    }
+
+    private var atPlainRoot: Bool {
+        if case .root = toolbarState { return rootPanel == nil }
+        return false
+    }
+
+    var oneBar: some View {
+        HStack(spacing: 0) {
+            // Fixed deselect tile — hidden at plain root (nothing to pop). Topmost layer
+            // only: expansion → selection → rootPanel (see chevronTap).
+            if !atPlainRoot {
+                Button { chevronTap() } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white).frame(width: 44, height: 64)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.ctx.back")
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) { vocabularyTiles }
+                    .padding(.horizontal, Space.sm)
+            }
+        }
+        .frame(height: 84).background(Palette.ink)
+    }
+
+    /// Chevron pops the topmost layer only (CapCut drill-out): an open expansion first,
+    /// then the selection, then the root panel.
+    func chevronTap() {
+        withAnimation(.easeOut(duration: 0.15)) {
+            if expansion != nil { expansion = nil; return }
+        }
+        if anySelection { select(nil); return }
+        if rootPanel != nil { withAnimation(.easeOut(duration: 0.15)) { rootPanel = nil }; bumpHaptic() }
+    }
+
+    @ViewBuilder private var vocabularyTiles: some View {
+        switch toolbarState {
+        case .root:
+            barTile("Edit", "scissors", id: "editorPro.root.edit") { rootEditTap() }
+            barTile("Sound", "music.note", id: "editorPro.root.sound", active: rootPanel == .sound) { openRootPanel(.sound) }
+            barTile("Text", "textformat", id: "editorPro.root.text", active: rootPanel == .text) { openRootPanel(.text) }
+            barTile("Captions", "captions.bubble", id: "editorPro.root.captions", active: rootPanel == .captions) { openRootPanel(.captions) }
+            barTile("Clean up", "wand.and.sparkles", id: "editorPro.cleanup") {
+                player?.pause(); cleanupSkip = []
+                withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
+            }
+            if punchInsSupported || brollSupported {
+                barTile("Effects", "sparkles", id: "editorPro.root.effects", active: rootPanel == .effects) { openRootPanel(.effects) }
+            }
+            barTile("Filters", "camera.filters", id: "editorPro.root.filters", active: rootPanel == .filters,
+                    dot: filtersModified) { openRootPanel(.filters) }
+        case .clip(let s):
+            let speed = session?.draft.segments[safe: s]?.speed ?? 1.0
+            barTile("Split", "square.split.2x1", id: "editorPro.ctx.split") { splitSelected(s); bumpHaptic() }
+            barTile("Speed", "gauge.with.needle", id: "editorPro.ctx.speed", dot: abs(speed - 1.0) > 0.01) {
+                speedDraft = speed
+                withAnimation(.easeOut(duration: 0.15)) {
+                    expansion = (expansion == .speed(seg: s)) ? nil : .speed(seg: s)
+                }
+                bumpHaptic()
+            }
+            barTile("Volume", "speaker.wave.2", id: "editorPro.ctx.volume", dot: abs(clipVolume(s) - 1.0) > 0.01) {
+                clipVolDraft = clipVolume(s)
+                withAnimation(.easeOut(duration: 0.15)) {
+                    expansion = (expansion == .clipVolume(seg: s)) ? nil : .clipVolume(seg: s)
+                }
+                bumpHaptic()
+            }
+            barTile(mutedState(s) ? "Unmute" : "Mute",
+                    mutedState(s) ? "speaker.slash.fill" : "speaker.slash",
+                    id: "editorPro.muteToggle") { toggleMute(s); bumpHaptic() }
+            barTile("Delete", "trash", id: "editorPro.ctx.delete") { deleteSelected(s); bumpHaptic() }
+            barTile("Move ◀", "arrow.left", id: "editorPro.moveLeft", disabled: !canMoveSelected(by: -1)) {
+                moveSelected(by: -1); bumpHaptic()
+            }
+            barTile("Move ▶", "arrow.right", id: "editorPro.moveRight", disabled: !canMoveSelected(by: 1)) {
+                moveSelected(by: 1); bumpHaptic()
+            }
+        case .music:
+            let vol = session?.draft.music?.volume ?? 0.15
+            barTile("Replace", "arrow.triangle.2.circlepath", id: "editorPro.music.replace") { showMusicSheet = true }
+            barTile("Volume", "speaker.wave.2", id: "editorPro.music.volume", dot: abs(vol - 0.15) > 0.001) {
+                musicVolDraft = vol
+                withAnimation(.easeOut(duration: 0.15)) {
+                    expansion = (expansion == .musicVolume) ? nil : .musicVolume
+                }
+                bumpHaptic()
+            }
+            barTile("Delete", "trash", id: "editorPro.music.delete") { removeMusic(); bumpHaptic() }
+        case .phrase(let p):
+            barTile("Edit", "pencil", id: "editorPro.phrase.edit") { beginPhraseEdit(p); bumpHaptic() }
+            barTile("Edit all", "list.bullet.rectangle", id: "editorPro.editCaptions") { showCaptionList = true }
+            barTile("Style", "paintbrush", id: "editorPro.phrase.style", active: expansion == .captionStyle) {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    expansion = (expansion == .captionStyle) ? nil : .captionStyle
+                }
+                bumpHaptic()
+            }
+            barTile("Customize", "slider.horizontal.3", id: "editorPro.capCustomize", active: expansion == .captionCustomize) {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    expansion = (expansion == .captionCustomize) ? nil : .captionCustomize
+                }
+                bumpHaptic()
+            }
+            barTile("Remove fillers", "wand.and.sparkles", id: "editorPro.phrase.fillers") {
+                player?.pause(); cleanupSkip = []
+                withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
+            }
+        case .textSticker(let i):
+            barTile("Edit", "pencil", id: "editorPro.ctx.edit") { beginTypingSticker(i); bumpHaptic() }
+            barTile("Duplicate", "plus.square.on.square", id: "editorPro.ctx.duplicate") { duplicateSticker(i); bumpHaptic() }
+            barTile("Delete", "trash", id: "editorPro.ctx.deleteOverlay") { deleteOverlay(i); bumpHaptic() }
+        case .textCard(let i):
+            barTile("Edit", "pencil", id: "editorPro.ctx.editOverlayText") { beginOverlayTextEdit(i); bumpHaptic() }
+            barTile("Delete", "trash", id: "editorPro.ctx.deleteOverlay") { deleteOverlay(i); bumpHaptic() }
+        case .punchIn(let i):
+            let o = session?.draft.overlays[safe: i]
+            ForEach([("Subtle", 1.05), ("Medium", 1.1), ("Strong", 1.2)], id: \.0) { label, scale in
+                let active = abs((o?.scale ?? 1.08) - scale) < 0.02
+                barTile(label, active ? "plus.magnifyingglass" : "magnifyingglass",
+                        id: "editorPro.ctx.zoom\(label)", active: active) { setZoomIntensity(i, scale: scale); bumpHaptic() }
+            }
+            barTile("Shorter", "minus", id: "editorPro.ctx.shorter") { adjustOverlayDuration(i, deltaFrames: -15); bumpHaptic() }
+            barTile("Longer", "plus", id: "editorPro.ctx.longer") { adjustOverlayDuration(i, deltaFrames: 15); bumpHaptic() }
+            barTile("Delete", "trash", id: "editorPro.ctx.deleteOverlay") { deleteOverlay(i); bumpHaptic() }
+            if let o {
+                Text(String(format: "%.1fs", framesToSeconds(o.srcOut - o.srcIn)))
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).monospacedDigit()
+            }
+        case .boundary(let b):
+            Text("TRANSITION").font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(.white.opacity(0.5))
+            ForEach([("None", "none"), ("Fade", "fade_black"), ("White", "fade_white"), ("Flash", "flash")], id: \.1) { label, v in
+                let active = (session?.draft.transitions.first { $0.afterSegment == b }?.style ?? "none") == v
+                Button { setTransition(after: b, style: v); bumpHaptic() } label: {
+                    Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
+                        .foregroundStyle(active ? Palette.ink : .white)
+                        .padding(.horizontal, 12).frame(height: 30)
+                        .background(active ? Palette.onInk : Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.ctx.transition.\(v)")
+            }
+            if let t = session?.draft.transitions.first(where: { $0.afterSegment == b }) {
+                barTile("Duration", "timer", id: "editorPro.ctx.duration") {
+                    transDurDraft = Double(t.frames) / 30.0
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        expansion = (expansion == .transitionDuration(boundary: b)) ? nil : .transitionDuration(boundary: b)
+                    }
                     bumpHaptic()
                 }
+                Text(String(format: "%.1fs", Double(t.frames) / 30.0))
+                    .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
             }
-            .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
-            .accessibilityIdentifier("editorPro.ctx.speed")
-            contextButton("Delete", "trash") { if let s = seg { deleteSelected(s); bumpHaptic() } }
-                .disabled(seg == nil).opacity(seg == nil ? 0.35 : 1)
-            // I-7: explicit reorder (drag-to-reorder fights the timeline's other gestures).
-            contextButton("Move ◀", "arrow.left") { moveSelected(by: -1); bumpHaptic() }
-                .disabled(!canMoveSelected(by: -1)).opacity(canMoveSelected(by: -1) ? 1 : 0.35)
-                .accessibilityIdentifier("editorPro.moveLeft")
-            contextButton("Move ▶", "arrow.right") { moveSelected(by: 1); bumpHaptic() }
-                .disabled(!canMoveSelected(by: 1)).opacity(canMoveSelected(by: 1) ? 1 : 0.35)
-                .accessibilityIdentifier("editorPro.moveRight")
-            // (Mute moved to the Sound drawer next to Clip volume — all audio on one surface.)
-            Spacer()
-            if seg == nil {
-                Text("Tap a clip").font(AppFont.caption).foregroundStyle(.white.opacity(0.45))
+        case .broll(let ri):
+            barTile("Replace", "arrow.triangle.2.circlepath", id: "editorPro.ctx.replace") { replaceRoll(ri); bumpHaptic() }
+            barTile("Duplicate", "plus.square.on.square", id: "editorPro.ctx.duplicate") { duplicateRoll(ri); bumpHaptic() }
+            barTile("Shorter", "minus", id: "editorPro.ctx.shorter") { adjustRoll(ri, deltaFrames: -15); bumpHaptic() }
+            barTile("Longer", "plus", id: "editorPro.ctx.longer") { adjustRoll(ri, deltaFrames: 15); bumpHaptic() }
+            barTile("Delete", "trash", id: "editorPro.ctx.deleteRoll") { deleteRoll(ri); bumpHaptic() }
+            if let roll = session?.draft.broll[safe: ri] {
+                Text(roll.source == "own_media" ? "Your media" : roll.cueText)
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
             }
         }
-        .frame(height: 44).padding(.horizontal, Space.md)
-        .background(Palette.ink.opacity(0.4))
     }
 
-    private func contextButton(_ label: String, _ icon: String, _ action: @escaping () -> Void) -> some View {
+    /// Root "Edit" = select the clip under the playhead so its verbs appear. When playback
+    /// parked at/after the output end (clipUnderPlayhead nil — the half-open interval test
+    /// excludes the final frame), fall back to the LAST clip in play order (#9 convention).
+    private func rootEditTap() {
+        player?.pause()
+        if let idx = clipUnderPlayhead {
+            select(.seg(idx))
+        } else if let d = session?.draft {
+            let order = d.segmentOrder ?? Array(d.segments.indices)
+            if let last = order.last(where: { d.keptBounds(ofSegment: $0) != nil }) {
+                select(.seg(last))
+            }
+        }
+    }
+
+    /// One icon-over-label tile (~60pt wide, CapCut geometry) with an optional green
+    /// modified-from-default dot under the label.
+    private func barTile(_ label: String, _ icon: String, id: String, active: Bool = false,
+                         dot: Bool = false, disabled: Bool = false,
+                         _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: icon).font(.system(size: 15))
-                Text(label).font(.system(size: 9))
-            }.foregroundStyle(.white)
-        }.accessibilityIdentifier("editorPro.ctx.\(label.lowercased())")
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 19))
+                Text(label).font(.system(size: 10)).lineLimit(1)
+                Circle().fill(Color(hex: 0x34D399)).frame(width: 4, height: 4).opacity(dot ? 1 : 0)
+            }
+            .foregroundStyle(active ? Palette.accent : .white)
+            .frame(minWidth: 56)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.35 : 1)
+        .accessibilityIdentifier(id)
     }
 
-    // MARK: mode toolbar + drawers
+    // MARK: expansion rows — one sub-tool at a time, REPLACING the toolbar slot.
+    // Header: Reset (left, guarded — only emits when off-default) · content · checkmark
+    // (right, closes). Sliders keep the UX-4 draft + one-op-on-release pattern.
 
-    private var modeToolbar: some View {
-        HStack(spacing: 0) {
-            ForEach(visibleModes, id: \.self) { m in
-                Button {
-                    mode = m; openModeDrawer(m)
-                    withAnimation(.easeOut(duration: 0.15)) {
-                        selectedOverlay = nil; selectedBoundary = nil
-                        selectedBroll = nil; speedPanelSeg = nil
-                    }
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: iconFor(m)).font(.system(size: 18))
-                        Text(m.rawValue).font(.system(size: 11))
-                    }
-                    .foregroundStyle(mode == m ? Palette.accent : .white.opacity(0.7))
-                    .frame(maxWidth: .infinity)
+    @ViewBuilder func expansionRow(_ e: Expansion) -> some View {
+        HStack(spacing: Space.md) {
+            switch e {
+            case .speed(let seg):
+                expansionReset {
+                    let cur = session?.draft.segments[safe: seg]?.speed ?? 1.0
+                    if abs(cur - 1.0) > 0.01 { setSpeed(seg, 1.0) }
+                    speedDraft = 1.0
                 }
-                .accessibilityIdentifier("editorPro.mode.\(m.rawValue.lowercased())")
+                Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Slider(value: $speedDraft, in: 0.5...3.0, onEditingChanged: { editing in
+                    if !editing { setSpeed(seg, speedDraft) }
+                })
+                .tint(Palette.accent)
+                .accessibilityIdentifier("editorPro.speedSlider")
+                Text(String(format: "%.1fx", speedDraft))
+                    .font(.system(size: 12, weight: .bold)).monospacedDigit().foregroundStyle(.white)
+                    .frame(width: 38)
+                ForEach([1.0, 2.0], id: \.self) { v in
+                    let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
+                    Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
+                        Text(String(format: "%.0fx", v))
+                            .font(.system(size: 11, weight: active ? .bold : .medium))
+                            .foregroundStyle(active ? Palette.ink : .white)
+                            .padding(.horizontal, 9).frame(height: 28)
+                            .background(active ? Palette.onInk : Color.white.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editorPro.speed.\(v)")
+                }
+                expansionConfirm()
+            case .clipVolume(let seg):
+                expansionReset {
+                    if abs(clipVolume(seg) - 1.0) > 0.01 { setClipVolume(seg, 1.0) }
+                    clipVolDraft = 1.0
+                }
+                Text("VOLUME").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Slider(value: $clipVolDraft, in: 0.0...2.0, onEditingChanged: { editing in
+                    if editing { clipVolDraft = clipVolume(seg) }
+                    else { setClipVolume(seg, clipVolDraft) }
+                })
+                .tint(Palette.accent)
+                .accessibilityIdentifier("editorPro.clipVolume")
+                Text("\(Int((clipVolDraft * 100).rounded()))%")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .frame(width: 42)
+                expansionConfirm()
+            case .musicVolume:
+                expansionReset {
+                    if let m = session?.draft.music, abs(m.volume - 0.15) > 0.001 { setMusicVolume(0.15) }
+                    musicVolDraft = 0.15
+                }
+                Text("MUSIC").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Slider(value: $musicVolDraft, in: 0.0...0.5, onEditingChanged: { editing in
+                    if editing { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
+                    else { setMusicVolume(musicVolDraft) }
+                })
+                .tint(Palette.accent)
+                .accessibilityIdentifier("editorPro.musicVolume")
+                Text("\(Int((musicVolDraft * 100).rounded()))%")
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .frame(width: 42)
+                expansionConfirm()
+            case .captionStyle:
+                // Picker rows get no Reset — active state is visible on the chips.
+                captionStyleRow
+                expansionConfirm()
+            case .captionCustomize:
+                captionOptionsRow
+                expansionConfirm()
+            case .transitionDuration(let b):
+                expansionReset {
+                    if let t = session?.draft.transitions.first(where: { $0.afterSegment == b }),
+                       t.frames != 12 { setTransitionDuration(after: b, seconds: 0.4) }
+                    transDurDraft = 0.4
+                }
+                Text("DUR").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                // Draft + commit-on-release (UX-4) — the old inline slider committed one op
+                // per drag TICK, spraying undo steps.
+                Slider(value: $transDurDraft, in: 0.1...1.5, onEditingChanged: { editing in
+                    if !editing { setTransitionDuration(after: b, seconds: transDurDraft) }
+                })
+                .tint(Palette.accent)
+                .accessibilityIdentifier("editorPro.transitionDuration")
+                Text(String(format: "%.1fs", transDurDraft))
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .frame(width: 36)
+                expansionConfirm()
             }
         }
-        .frame(height: 64).background(Palette.ink)
+        .padding(.horizontal, Space.md)
+        .frame(height: 84).frame(maxWidth: .infinity)
+        .background(Palette.ink)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier({ if case .speed = e { return "editorPro.speedRow" } else { return "editorPro.expansionRow" } }())
+    }
+
+    private func expansionReset(_ action: @escaping () -> Void) -> some View {
+        Button { action(); bumpHaptic() } label: {
+            Text("Reset").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.7))
+                .padding(.vertical, 8).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("editorPro.expansion.reset")
+    }
+
+    private func expansionConfirm() -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { expansion = nil }
+            bumpHaptic()
+        } label: {
+            Image(systemName: "checkmark").font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white).frame(width: 36, height: 36)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("editorPro.expansion.confirm")
     }
 
     // #5/#8: capability helpers fall back to the LOCAL style rules (mirrors LocalEDLEngine's
-    // gates) so tabs/buttons stay STABLE when the server caps dict didn't load — punch-ins &
-    // text cards are locally supported for these styles regardless of the network.
+    // gates — kept in lockstep with backend _PUNCH_STYLES/_TEXTCARD_STYLES) so tiles/buttons
+    // stay STABLE when the server caps dict didn't load.
     private var draftStyle: String { session?.draft.style ?? "talking_head" }
-    var punchInsSupported: Bool { (caps?["punch_ins"] ?? false) || ["talking_head", "duet_split"].contains(draftStyle) }
-    var textCardsSupported: Bool { (caps?["text_cards"] ?? false) || ["green_screen", "duet_split"].contains(draftStyle) }
-
-    private var visibleModes: [Mode] {
-        // Effects is always available when zoom or b-roll could apply; never let a nil caps
-        // dict make the whole tab vanish.
-        Mode.allCases.filter { $0 != .effects || punchInsSupported || (caps?["broll"] ?? false) }
+    var punchInsSupported: Bool {
+        (caps?["punch_ins"] ?? false)
+            || ["talking_head", "duet_split", "green_screen", "broll_cutaway", "split_three"].contains(draftStyle)
     }
-    private func iconFor(_ m: Mode) -> String {
-        switch m { case .edit: "scissors"; case .sound: "music.note"; case .text: "textformat"; case .effects: "sparkles"; case .filters: "camera.filters" }
+    var textCardsSupported: Bool {
+        (caps?["text_cards"] ?? false)
+            || ["green_screen", "duet_split", "talking_head", "broll_cutaway"].contains(draftStyle)
     }
+    /// One definition, one nil-default: the backend always serves broll:true (BrollLayer is
+    /// drawn by every composition) and the local engine is style-universal — so a missing
+    /// caps dict must NOT hide the Effects tile (the old code had ?? false here and ?? true
+    /// in the empty-state, contradicting each other).
+    var brollSupported: Bool { caps?["broll"] ?? true }
 
-    private func openModeDrawer(_ m: Mode) {
-        // Sound mode no longer auto-pops the music sheet — the timeline's "+ Add sound"
-        // lane and the drawer button advertise it (empty lanes advertise themselves).
+    /// Green-dot condition for the Filters root tile (any look change off default).
+    private var filtersModified: Bool {
+        guard let look = session?.draft.look else { return false }
+        return look.filter != nil || !look.adjust.isNeutral || abs(look.intensity - 1.0) > 0.001
     }
 }
 
