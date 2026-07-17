@@ -223,6 +223,10 @@ class BRoll(BaseModel):
     asset_id: Optional[str] = None
     broll_query: Optional[str] = None
     source: str = "stock"           # stock (Pexels) | own_media
+    # v3 smart placement: normalized {x,y,w,h} inset rect chosen by faces.smart_inset_rect
+    # (OTS opposite-the-face). Only set for mode "smart"; render falls back to panel
+    # geometry when absent.
+    inset_rect: Optional[dict] = None
     resolved_url: Optional[str] = None   # filled by the backend Pexels-resolve step
     # Addendum Part 2 composition mode for this insert (schema v5):
     #   full  = mode B — covers the whole frame (v1 behavior, the default)
@@ -253,6 +257,9 @@ class ReactWindow(BaseModel):
 class Layout(BaseModel):
     style: str
     panels: int = 1
+    # v3 smart placement: median speaker face box (normalized {x,y,w,h}) from
+    # app/faces.py YuNet detection. Optional/additive; None = undetected.
+    face_box: Optional[dict] = None
     panel_boundaries: list[int] = []  # frame boundaries for split_three
     split_fraction: float = 0.58      # duet_split: top (source) panel height fraction
     # Addendum Part 1/2 (schema v5) — mode E: how the speaker appears when the source
@@ -1020,6 +1027,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
                 "cue_text": b.get("cue_text", ""),
                 "asset_id": b.get("asset_id"), "broll_query": b.get("broll_query"),
                 "source": b.get("source", "stock"),
+                "inset_rect": b.get("inset_rect"),   # v3 smart placement (None = n/a)
                 "resolved_url": b.get("resolved_url"),
                 # schema v5: composition mode (full = B / panel = C / card = D)
                 "mode": b.get("mode", "full"),
@@ -1958,8 +1966,11 @@ _BROLL_JCUT_LEAD = 12                           # ~0.4s: video leads in under th
 # (min_hold, full_max, partial_max). `full_max` bounds a FACE-HIDING (mode=full) cutaway;
 # `partial_max` bounds panel/card (face stays visible → may breathe SLIGHTLY, ceiling 3s).
 _BROLL_HOLD_POLICY: dict[str, tuple[int, int, int]] = {
-    "entity":   (36, 54, 72),     # a named person/place/brand — reads fast (1.2–1.8s)
-    "data":     (36, 54, 72),     # a number/stat — reads instantly
+    # v3 GLIMPSE grammar (Potter et al. 2014: concept recognition at 13ms; CapCut flash
+    # practice 0.3-0.5s stills; Captions.ai "tight and brief" detail shots): a NAMED
+    # thing flashes in and out — 0.5-0.8s full-frame, gone before it stalls the pacing.
+    "entity":   (15, 24, 60),     # named food/product/place — sub-second glimpse
+    "data":     (15, 24, 60),     # a number/stat — reads instantly
     "evidence": (45, 75, 90),     # proof/demo — needs reading time (unchanged)
     "action":   (36, 75, 90),     # a process/motion — 1.2–2.5s full-frame
     "concept":  (36, 75, 90),     # metaphor/abstract
@@ -1977,7 +1988,7 @@ def _hold_bounds(need: str, mode: str) -> tuple[int, int]:
     """(min_hold, max_hold) for a cutaway, per `need` and `mode` (Part-5 policy table). Face-hiding
     `full` uses the tighter full_max; face-visible panel/card may breathe to partial_max."""
     lo, full_max, partial_max = _BROLL_HOLD_POLICY.get(need, _BROLL_HOLD_POLICY["action"])
-    return lo, (partial_max if mode in ("panel", "card") else full_max)
+    return lo, (partial_max if mode in ("panel", "card", "smart") else full_max)
 
 
 _BROLL_MIN_SPACING = 90                          # ≥3s between cutaways (return to the face between)
@@ -2300,10 +2311,10 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             if len(rng) != 2:
                 return None
             need = b.get("need") if b.get("need") in _BROLL_NEEDS else "action"
-            mode = b.get("mode") if b.get("mode") in ("full", "panel", "card") else "full"
+            mode = b.get("mode") if b.get("mode") in ("full", "panel", "card", "smart") else "full"
             # Composition-style picker: the creator picked a specific look — force it over the LLM's
             # per-item mode (which otherwise mixes modes even when one treatment was asked for).
-            if prefs.get("broll_mode") in ("full", "panel", "card"):
+            if prefs.get("broll_mode") in ("full", "panel", "card", "smart"):
                 mode = prefs["broll_mode"]
             is_meme = need == "meme"
             if is_meme:

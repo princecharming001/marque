@@ -17,11 +17,11 @@ export const BrollLayer: React.FC<{ broll: BRoll[] }> = ({ broll }) => (
   <>
     {broll.filter((b) => b.resolved_url).map((b, i) => {
       const dur = Math.max(1, b.frame_out - b.frame_in);
-      const mode = b.mode === "panel" || b.mode === "card" ? b.mode : "full";
+      const mode = b.mode === "panel" || b.mode === "card" || b.mode === "smart" ? b.mode : "full";
       return (
         <Sequence key={i} from={b.frame_in} durationInFrames={dur} layout="none">
           <BrollClip url={b.resolved_url as string} durationInFrames={dur} mode={mode}
-                     source={b.source} />
+                     source={b.source} insetRect={b.inset_rect ?? null} />
         </Sequence>
       );
     })}
@@ -50,8 +50,11 @@ const ProviderBadge: React.FC<{ label: string }> = ({ label }) => (
 const GiphyBadge: React.FC = () => <ProviderBadge label="Powered By GIPHY" />;
 const KlipyBadge: React.FC = () => <ProviderBadge label="Powered by KLIPY" />;
 
-const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string; source?: string }> = ({
-  url, durationInFrames, mode, source,
+import { InsetRect } from "../types";
+
+const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
+                            source?: string; insetRect?: InsetRect | null }> = ({
+  url, durationInFrames, mode, source, insetRect,
 }) => {
   const frame = useCurrentFrame(); // local to the Sequence (0 at clip start)
   const isImage = /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url);
@@ -66,7 +69,40 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   const media = (style: React.CSSProperties) =>
     isImage ? <Img src={url} style={style} /> : <OffthreadVideo src={url} muted style={style} />;
 
-  if (mode === "panel") {
+  if (mode === "smart" && insetRect) {
+    // v3 OTS face-aware inset: rect precomputed backend-side (opposite the face,
+    // safe-zone + caption-band clean). Same pop-in/out language as panel.
+    const inLen = Math.min(5, Math.max(1, Math.floor(durationInFrames / 3)));
+    const outLen = Math.min(4, Math.max(1, Math.floor(durationInFrames / 3)));
+    const popIn = interpolate(frame, [0, inLen], [0.92, 1], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const popOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0.95], {
+      extrapolateLeft: "clamp", extrapolateRight: "clamp",
+    });
+    const fade = Math.min(
+      interpolate(frame, [0, inLen], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
+      interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0],
+                  { extrapolateLeft: "clamp", extrapolateRight: "clamp" }));
+    return (
+      <div style={{
+        position: "absolute",
+        left: insetRect.x * 1080, top: insetRect.y * 1920,
+        width: insetRect.w * 1080, height: insetRect.h * 1920,
+        borderRadius: 20, overflow: "hidden",
+        border: "3px solid rgba(255,255,255,0.14)",
+        boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
+        transform: `scale(${popIn * popOut})`, transformOrigin: "center",
+        opacity: fade,
+      }}>
+        {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
+                 objectFit: "cover", transform: `scale(${kenBurns})` })}
+        {badge}
+      </div>
+    );
+  }
+
+  if (mode === "panel" || mode === "smart") {
     // Pop-in/pop-out so short inserts read as deliberate flashes, not render glitches.
     // Ramps clamp to a third of the window so a 15f meme still gets in AND out.
     const inLen = Math.min(5, Math.max(1, Math.floor(durationInFrames / 3)));

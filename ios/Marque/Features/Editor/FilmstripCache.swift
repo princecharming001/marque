@@ -31,29 +31,38 @@ actor FilmstripCache {
 
     /// The thumbnail nearest a source-second, generating it on miss. nil in placeholder mode
     /// (no source video) — the timeline renders solid labeled cells instead.
-    func thumbnail(atSourceSecond sec: Double) -> UIImage? {
+    ///
+    /// Split-preview fix: an in-flight collision used to return nil PERMANENTLY (the
+    /// caller never retried), which is exactly how one subclip of a split lost its
+    /// filmstrip — both new cells requested the same rounded second concurrently and
+    /// the loser stayed blank forever. Now peers WAIT for the winner's result.
+    /// Generation uses the async image(at:) API (WWDC22 "Create a more responsive
+    /// media app") instead of the synchronous copyCGImage.
+    func thumbnail(atSourceSecond sec: Double) async -> UIImage? {
         guard let generator else { return nil }
         let key = Int(sec.rounded())
         if let img = cache.object(forKey: NSNumber(value: key)) { return img }
-        guard !inFlight.contains(key) else { return nil }
-        inFlight.insert(key)
-        let time = CMTime(seconds: Double(key), preferredTimescale: 600)
-        if let cg = try? generator.copyCGImage(at: time, actualTime: nil) {
-            let img = UIImage(cgImage: cg)
-            cache.setObject(img, forKey: NSNumber(value: key), cost: cg.bytesPerRow * cg.height)
-            inFlight.remove(key)
-            return img
+        while inFlight.contains(key) {
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            if let img = cache.object(forKey: NSNumber(value: key)) { return img }
         }
-        inFlight.remove(key)
-        return nil
+        if let img = cache.object(forKey: NSNumber(value: key)) { return img }
+        inFlight.insert(key)
+        defer { inFlight.remove(key) }
+        let time = CMTime(seconds: Double(key), preferredTimescale: 600)
+        guard let result = try? await generator.image(at: time) else { return nil }
+        let cg = result.image
+        let img = UIImage(cgImage: cg)
+        cache.setObject(img, forKey: NSNumber(value: key), cost: cg.bytesPerRow * cg.height)
+        return img
     }
 
     /// Warm tier-0 thumbnails across the whole source (fire and forget).
-    func warm(durationSeconds: Double, everySeconds: Double = 5) {
+    func warm(durationSeconds: Double, everySeconds: Double = 5) async {
         guard generator != nil, durationSeconds > 0 else { return }
         var t = 0.0
         while t < durationSeconds {
-            _ = thumbnail(atSourceSecond: t)
+            _ = await thumbnail(atSourceSecond: t)
             t += everySeconds
         }
     }

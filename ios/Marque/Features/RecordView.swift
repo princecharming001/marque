@@ -693,6 +693,7 @@ struct RecordView: View {
         guard editFormat == .talkingHeadBroll else { return nil }
         switch selectedBrollStyle {
         case "cutaway": return ["broll_mode": "full",  "broll_coverage": "full"]
+        case "smart":   return ["broll_mode": "smart", "broll_coverage": "full"]
         case "panel":   return ["broll_mode": "panel", "broll_coverage": "full"]
         case "card":    return ["broll_mode": "card",  "broll_coverage": "full"]
         case "green_screen", "split_screen":

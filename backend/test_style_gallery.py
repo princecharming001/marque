@@ -123,7 +123,7 @@ def test_broll_styles_options_are_composition_treatments():
     body = client.get("/v1/broll-styles").json()
     styles = body["styles"]
     assert body["mode"] == "live"
-    assert [s["id"] for s in styles] == ["cutaway", "panel", "card", "green_screen", "split_screen"]
+    assert [s["id"] for s in styles] == ["cutaway", "panel", "card", "smart", "green_screen", "split_screen"]
     assert all(s["label"] and s["blurb"] for s in styles)
     assert all(not s["sample"] for s in styles)
     # every option carries a distinct, durably-hosted demo
@@ -136,7 +136,7 @@ def test_broll_styles_config_keys_map_to_the_right_override():
     ids_by_key = {}
     for opt in main._COMPOSITION_STYLE_OPTIONS:
         ids_by_key.setdefault(opt["config_key"], []).append(opt["id"])
-    assert ids_by_key["broll_mode"] == ["cutaway", "panel", "card"]
+    assert ids_by_key["broll_mode"] == ["cutaway", "panel", "card", "smart"]
     assert ids_by_key["composition_style"] == ["green_screen", "split_screen"]
 
 

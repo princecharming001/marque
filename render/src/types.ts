@@ -29,10 +29,13 @@ export interface Look { filter: string | null; intensity: number; adjust: Adjust
 // resolved_url is filled by the backend Pexels-resolve step; frame_in/out are output coords.
 // mode (schema v5, additive — absent = "full"): full = covers the frame (v1) ·
 // panel = rounded upper panel, face visible · card = small floating card over one shoulder.
-export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; source?: string; resolved_url?: string; mode?: string; }
+export interface InsetRect { x: number; y: number; w: number; h: number; }
+// mode "smart" (v3, additive): OTS face-aware inset — inset_rect (normalized frame
+// fractions) is computed backend-side (faces.smart_inset_rect); absent → panel fallback.
+export interface BRoll { frame_in: number; frame_out: number; cue_text: string; asset_id?: string; broll_query?: string; source?: string; resolved_url?: string; mode?: string; inset_rect?: InsetRect | null; }
 // speaker_treatment/pip_position (schema v5, additive): mode E — how the speaker appears
 // when the source media is the primary layer (SourcePip composition).
-export interface Layout { style: string; panels: number; panel_boundaries: number[]; split_fraction?: number; speaker_treatment?: string; pip_position?: string; }
+export interface Layout { style: string; panels: number; panel_boundaries: number[]; split_fraction?: number; speaker_treatment?: string; pip_position?: string; face_box?: InsetRect | null; }
 // Mode H (schema v5, additive): listicle hook flash — full-frame items in rapid sequence.
 export interface Montage { frame_in: number; frames_per: number; items: string[]; }
 

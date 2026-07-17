@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 // MARK: - EditorTimeline — the direct-manipulation timeline: a fixed CENTER playhead over an
 // offset-driven filmstrip (no nested ScrollView — SwiftUI scroll momentum can't be pixel-synced
@@ -91,7 +92,6 @@ struct EditorTimeline: View {
     var body: some View {
         GeometryReader { geo in
             let mid = geo.size.width / 2
-            let playheadOffset = CGFloat(player?.currentOutputTime ?? 0) * pointsPerSecond
             ZStack(alignment: .leading) {
                 // UX-9: the ruler and the clips scroll TOGETHER under the fixed playhead —
                 // the ruler used to stay pinned, so its tick marks lied about position.
@@ -114,7 +114,12 @@ struct EditorTimeline: View {
                     if musicName != nil || showMusicAdd { musicLane }
                 }
                 .padding(.horizontal, mid)     // lets first/last clip reach the center playhead
-                .offset(x: -playheadOffset + trimContentShift)   // scroll + leading-trim rubber-band
+                // Perf (owner "laggy playback"): the playhead tick is read INSIDE this
+                // modifier's own body — the timeline's body no longer depends on it, so
+                // lanes/cells stop re-evaluating 30x/s during playback (WWDC23
+                // "Demystify SwiftUI performance": Observable tracks per-property per-view).
+                .modifier(PlayheadScroll(player: player, pointsPerSecond: pointsPerSecond,
+                                         shift: trimContentShift))
                 laneGutter                     // CapCut track heads, pinned at the left edge
                 // Fixed center playhead — white (reference), not accent: the accent line read
                 // as related to the accent selection border it often crossed.
@@ -372,6 +377,10 @@ struct EditorTimeline: View {
             if let thumbPath {
                 RollThumb(path: thumbPath).frame(width: w, height: 20).clipped()
                 Color.black.opacity(0.15)
+            } else if let remote = roll.resolvedURL, remote.hasPrefix("http") {
+                // Server-resolved stock/KLIPY roll → show the ACTUAL footage frame.
+                RemoteRollThumb(urlString: remote).frame(width: w, height: 20).clipped()
+                Color.black.opacity(0.15)
             } else {
                 Color(hex: 0xB56635).opacity(selected ? 1 : 0.9)
             }
@@ -620,6 +629,54 @@ struct RollThumb: View {
     }
 }
 
+/// Owner fix: the b-roll lane used to show amber placeholders for every SERVER-resolved
+/// (stock/KLIPY/GIPHY) roll — only imported own-media had a local frame. This pulls the
+/// actual first frame of the remote asset via AVAssetImageGenerator (streams a byte
+/// range, never the whole file) and caches it process-wide, so the lane and the canvas
+/// overlay both show the real footage that's in the video.
+actor RemoteRollThumbCache {
+    static let shared = RemoteRollThumbCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private var inFlight: Set<String> = []
+
+    func thumb(for urlString: String) async -> UIImage? {
+        if let hit = cache.object(forKey: urlString as NSString) { return hit }
+        while inFlight.contains(urlString) {
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            if let hit = cache.object(forKey: urlString as NSString) { return hit }
+        }
+        guard let url = URL(string: urlString) else { return nil }
+        inFlight.insert(urlString)
+        defer { inFlight.remove(urlString) }
+        let gen = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        gen.appliesPreferredTrackTransform = true
+        gen.maximumSize = CGSize(width: 240, height: 240)
+        let tol = CMTime(seconds: 1.0, preferredTimescale: 600)
+        gen.requestedTimeToleranceBefore = tol
+        gen.requestedTimeToleranceAfter = tol
+        guard let result = try? await gen.image(at: CMTime(seconds: 0.3, preferredTimescale: 600))
+        else { return nil }
+        let img = UIImage(cgImage: result.image)
+        cache.setObject(img, forKey: urlString as NSString)
+        return img
+    }
+}
+
+/// Strip fill for a server-resolved roll: real remote frame, amber while loading.
+struct RemoteRollThumb: View {
+    let urlString: String
+    @State private var img: UIImage?
+    var body: some View {
+        Group {
+            if let img { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
+            else { Color(hex: 0xB56635).opacity(0.9) }
+        }
+        .task(id: urlString) {
+            if img == nil { img = await RemoteRollThumbCache.shared.thumb(for: urlString) }
+        }
+    }
+}
+
 // Renders the filmstrip thumbnails across a clip's source span (async-loaded, placeholder solid).
 struct FilmstripThumbs: View {
     let filmstrip: FilmstripCache?
@@ -629,8 +686,11 @@ struct FilmstripThumbs: View {
     @State private var images: [Int: UIImage] = [:]
 
     private var sampleSeconds: [Int] {
+        // Trim-lag fix: density derives from the clip's DURATION only (≤12 samples),
+        // never from the live width — the width changes on every trim-drag tick and
+        // used to re-key the generation task each tick (the dominant drag lag).
         let start = Int(framesToSeconds(srcIn)), end = max(start + 1, Int(framesToSeconds(srcOut)))
-        let step = max(1, (end - start) / max(1, Int(width / 40)))
+        let step = max(1, (end - start) / 12)
         return Array(stride(from: start, to: end, by: step))
     }
 
@@ -644,11 +704,22 @@ struct FilmstripThumbs: View {
                 .frame(maxWidth: .infinity).frame(height: 64).clipped()
             }
         }
-        .task(id: "\(srcIn)-\(srcOut)-\(width)") {
+        .task(id: "\(srcIn)-\(srcOut)") {
             guard let filmstrip else { return }
             for sec in sampleSeconds {
                 if let img = await filmstrip.thumbnail(atSourceSecond: Double(sec)) { images[sec] = img }
             }
         }
+    }
+}
+
+
+/// Leaf scroll modifier: the ONLY timeline-side reader of the 30Hz playhead tick.
+struct PlayheadScroll: ViewModifier {
+    let player: EditorPlayerController?
+    let pointsPerSecond: CGFloat
+    let shift: CGFloat
+    func body(content: Content) -> some View {
+        content.offset(x: -CGFloat(player?.currentOutputTime ?? 0) * pointsPerSecond + shift)
     }
 }
