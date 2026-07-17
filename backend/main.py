@@ -4711,10 +4711,20 @@ async def _run_edit(job_id: str, words: list[dict]):
             prefs = {**prefs, "energy": _energy}
         # v4 gen-z dial: the post-record slider (0 off · 1 subtle · 2 memey · 3 brainrot)
         # scales meme caps/spacing in assemble_edl AND the plan prompt's meme mandate below.
+        # v5: it also drives CUT/PACING aggressiveness — brainrot flips filler trimming to
+        # aggressive (unless the creator explicitly turned trimming off) and marks the take
+        # high-energy (tight b-roll spacing + entertainment meme cap); level 2 gets a
+        # pacing hint to the planner below.
         _meme_level = (job.get("config") or {}).get("meme_intensity")
         if _meme_level is not None:
             try:
-                prefs = {**prefs, "meme_intensity": max(0, min(3, int(_meme_level)))}
+                _ml_val = max(0, min(3, int(_meme_level)))
+                prefs = {**prefs, "meme_intensity": _ml_val}
+                if _ml_val >= 3:
+                    if prefs.get("filler_trim") != "off":
+                        prefs = {**prefs, "filler_trim": "aggressive"}
+                    if not prefs.get("energy"):
+                        prefs = {**prefs, "energy": "high"}
             except (TypeError, ValueError):
                 pass
         if prefs:
@@ -4744,12 +4754,15 @@ async def _run_edit(job_id: str, words: list[dict]):
             elif _ml == 2:
                 hints.append("Meme level MEMEY: emit need=\"meme\" b-roll cues on 2-4 of the "
                              "strongest punchlines, hot takes, or absurd moments — a cultural "
-                             "reaction GIF beat, even in educational content.")
+                             "reaction GIF beat, even in educational content. PACING: cut "
+                             "noticeably tighter than usual — shorter segments, less breathing "
+                             "room between ideas.")
             elif _ml == 3:
                 hints.append("Meme level BRAINROT: this creator wants gen-z chaos — emit a "
                              "need=\"meme\" cue on EVERY punchline, hot take, absurd claim or "
                              "emotional pivot (aim for one per 8-10 seconds). Reaction memes, "
-                             "not illustrations.")
+                             "not illustrations. PACING: maximum velocity — ruthless cuts, no "
+                             "dead air, segments snap from beat to beat.")
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         used_safe_default = False

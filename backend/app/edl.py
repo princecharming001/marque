@@ -1991,9 +1991,9 @@ def _hold_bounds(need: str, mode: str) -> tuple[int, int]:
     return lo, (partial_max if mode in ("panel", "card", "smart") else full_max)
 
 
-_BROLL_MIN_SPACING = 75                          # ≥2.5s between cutaways (v4: owner wants denser)
-_BROLL_SPACING_TIGHT = 45                        # ≥1.5s for high-energy / entertainment takes (v2)
-_BROLL_SPACING_BRAINROT = 30                     # ≥1s at meme_intensity 3 (v4 dial ceiling)
+_BROLL_MIN_SPACING = 45                          # ≥1.5s between cutaways (v5: owner mandate — ≥3x density)
+_BROLL_SPACING_TIGHT = 30                        # ≥1s for high-energy / entertainment takes
+_BROLL_SPACING_BRAINROT = 24                     # ≥0.8s at meme_intensity 3 (dial ceiling)
 # v4: sub-second GLIMPSES (hold ≤ this) don't fatigue like 2s cutaways — they get half
 # spacing (floor 20f) so "gochujang → flash" can fire on every named thing in a list.
 _BROLL_GLIMPSE_HOLD_MAX = 24
@@ -2010,10 +2010,11 @@ _BROLL_RUNTIME_BUDGET = 0.40                    # ≤40% of output covered by FA
 # 30–40% band, entertainment tolerates 35–50%): entertainment 50%, everything else 40%.
 _BROLL_VISUAL_BUDGET = 0.50                     # entertainment / high-energy
 _BROLL_VISUAL_BUDGET_EDU = 0.40                 # educational / founder (lo-fi credibility evidence)
-# coverage="full" floor density is ALSO a genre dial (v4 retune, owner: "a lot more
-# frequent"): entertainment ~1 per 3s, educational ~1 per 5s, default ~1 per 9s.
-# Bigger divisor = sparser.
-_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 90, "full": 150, "default": 270}
+# coverage="full" floor density is ALSO a genre dial (v5 mandate, owner: "at least 3x
+# as frequent" vs the observed ~1 per 12s): entertainment ~1 per 2s, educational
+# ~1 per 3s, default ~1 per 5s. Bigger divisor = sparser. test_viral_v2's density
+# test pins the educational floor — tune THERE first if these move again.
+_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 60, "full": 90, "default": 150}
 # Meme caps per (meme_intensity level, content class). Level 1 = the v2 owner decision
 # (5 ent / 2 edu); 0 kills memes entirely; 2-3 are the gen-z dial the post-record
 # slider drives. Placement doctrine still governs WHERE they land.
@@ -2064,12 +2065,14 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     entries shaped like plan.broll so the main loop's _admit_cue applies the same grammar."""
     if total <= hook_protect + cta_protect:
         return []
-    # Floor cues are need="concept"; the main loop clamps their hold to concept's band and requires
-    # ≥spacing between windows. Base `step` on the LARGER alternating hold (the midpoint) so the
-    # synth's start-to-start spacing guarantees the loop's spacing survives.
+    # v5: the floor is GLIMPSE-heavy — it alternates sub-second entity flashes with
+    # short concept holds (avg ~1s), so density costs little budget and packs tight
+    # (the old concept-mid-hold costing at ~1.8s/insert silently capped the 3x mandate).
     _lo, _mx = _hold_bounds("concept", mode)
     _mid = (_lo + _mx) // 2
-    step = spacing + _mid
+    _glo, _ghi = _hold_bounds("entity", mode)
+    _avg_hold = (min(_glo + 6, _ghi) + _lo) // 2     # glimpse/short-concept alternation
+    step = spacing + _avg_hold + 3
     lo, hi = hook_protect + _BROLL_JCUT_LEAD, total - cta_protect
     # Budget cap divides by the per-insert HOLD (the actual budget cost), not `step`
     # (spacing+hold) — dividing by step silently over-throttled the density target
@@ -2077,7 +2080,7 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     # overrode the requested total//150). Face-hiding budget when the floor synthesizes
     # full-mode cues, visual budget otherwise.
     budget_frac = _BROLL_RUNTIME_BUDGET if mode == "full" else _BROLL_VISUAL_BUDGET
-    target = max(2, min(total // step_divisor, int(budget_frac * total) // max(_mid, 1)))
+    target = max(2, min(total // step_divisor, int(budget_frac * total) // max(_avg_hold, 1)))
     if max_cues is not None:
         target = min(target, max_cues)
         if target <= 0:
@@ -2112,18 +2115,18 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
         min_gap = step // 2 if emph else step
         if all(abs(f - pf) >= (min_gap if (emph or pe) else step) for pf, _, pe in picked):
             picked.append((f, word, emph))
-    # v4: an EMPHASIZED word (AssemblyAI inflection) becomes an entity GLIMPSE — sub-second
-    # flash of the named thing, the "say gochujang, see gochujang" grammar. Unemphasized long
-    # content words stay need="concept" (non-literal → always resolve via stock, never a text
-    # card) with alternating short/mid holds for variety (deterministic — no random jitter).
-    _glo, _ghi = _hold_bounds("entity", mode)
+    # v5: the floor alternates entity GLIMPSES (sub-second flash — the "say gochujang,
+    # see gochujang" grammar; every emphasized word gets one, and every other pick even
+    # without emphasis) with SHORT concept holds — the ~1s average is what makes the 3x
+    # density mandate affordable inside the visual budget. Concept cues stay non-literal
+    # (always resolve via stock, never a text card). Deterministic — no random jitter.
     out: list[dict] = []
     for i, (f, word, emph) in enumerate(sorted(picked)):
-        if emph:
+        if emph or i % 2 == 0:
             out.append({"range": [f, f + min(_glo + 6, _ghi)], "cue": word, "query": word,
                         "need": "entity", "mode": mode})
         else:
-            out.append({"range": [f, f + (_lo if i % 2 == 0 else _mid)], "cue": word,
+            out.append({"range": [f, f + _lo], "cue": word,
                         "query": word, "need": "concept", "mode": mode})
     return out
 _PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
@@ -2268,6 +2271,50 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         redelivered = sum(1 for t in inside if t in following_set or counts[t] >= 2)
         return redelivered / len(inside) >= 0.6             # real retake → re-delivered
 
+    # PRO-CUT head guard (2026-07-17 #2, prod job 41a4579c): the opening false_start cut
+    # [0,300] swallowed "most fusion fails for the same" — the first six words of the
+    # clean re-delivery — so the video OPENED mid-sentence ("…reason. You're matching"),
+    # which is also what an "abruptly beginning" voice sounds like. A head cut must end
+    # where a sentence STARTS: if the last removed word doesn't terminate a sentence
+    # (. ! ? … or a stumble dash), snap the cut end BACK to just after the last word
+    # inside that does. Only ever shrinks the cut — never deletes more.
+    _TERMINALS = (".", "!", "?", "…", "—")
+
+    def _ends_sentence(w: dict) -> bool:
+        return ((w.get("word") or "").rstrip("\"'’”)")).endswith(_TERMINALS)
+
+    def _head_cut_sentence_snap(a: int, b: int) -> tuple[int, int]:
+        # A HEAD cut = nothing kept before it (a mid-take retake whose range happens to
+        # start early is NOT one — shrinking those re-duplicates the stumble).
+        if any(ms_to_frame(w.get("start_ms", 0)) < a for w in words if w.get("word")):
+            return a, b
+        inside = [w for w in words if a <= ms_to_frame(w.get("start_ms", 0)) < b]
+        if not inside or _ends_sentence(inside[-1]):
+            return a, b                                 # opening already lands on a boundary
+        for w in reversed(inside[:-1]):
+            if _ends_sentence(w):
+                return a, ms_to_frame(w.get("end_ms", 0)) + 1
+        return a, b                                     # no boundary inside — leave as planned
+
+    # Natural seams (research-standard splice craft): speech must not resume clipped —
+    # keep ≥2 frames (~66ms) of breath before the first kept word after every content
+    # cut. The end-snap usually leaves this naturally; this guard makes it a guarantee
+    # (bounded below so it never re-introduces the tail phoneme of the removed word).
+    def _breath_pad(a: int, b: int) -> tuple[int, int]:
+        nxt = next((w for w in words if ms_to_frame(w.get("start_ms", 0)) >= b), None)
+        if nxt is None:
+            return a, b
+        wb = ms_to_frame(nxt.get("start_ms", 0))
+        inside_ends = [ms_to_frame(w.get("end_ms", 0)) for w in words
+                       if a <= ms_to_frame(w.get("start_ms", 0)) < b]
+        re_ = max(inside_ends) if inside_ends else a
+        # Resume ≥2f before the next word's onset when the silence allows it. NEVER
+        # extend the cut (contiguous words leave no room) and never re-introduce the
+        # removed word's tail phoneme.
+        if wb - 2 >= re_ + 1 and b > wb - 2:
+            b = max(a + 1, wb - 2)
+        return a, b
+
     content_cuts: list[tuple[int, int]] = []
     for c in (plan.get("cuts") or []):
         rng = c.get("range") or []
@@ -2275,11 +2322,15 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             continue
         cl = _clamp_range(snap_to_word(_frame_to_ms(rng[0]), words, "start"),
                           snap_to_word(_frame_to_ms(rng[1]), words, "end"), 0, total)
+        if cl:
+            cl = _breath_pad(*_head_cut_sentence_snap(*cl))
         if cl and _end_cut_allowed(*cl) and _interior_cut_allowed(*cl):
             content_cuts.append(cl)
     for cr in ((brief or {}).get("cut_regions") or []):
         if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
             cl = _clamp_range(cr["start_frame"], cr["end_frame"], 0, total)
+            if cl:
+                cl = _breath_pad(*_head_cut_sentence_snap(*cl))
             if cl and _end_cut_allowed(*cl) and _interior_cut_allowed(*cl):
                 content_cuts.append(cl)
 
