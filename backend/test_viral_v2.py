@@ -593,3 +593,41 @@ def test_hero_whoosh_coupled_regardless_of_genre():
         video_type="tutorial", energy="medium")
     kinds = [c["kind"] for c in (out.get("audio") or {}).get("sfx", [])]
     assert kinds == ["whoosh"], f"hero gets a whoosh even on educational takes, got {kinds}"
+
+
+# ---------- v7 fluidity: whole-breath-or-none seams + room-tone passthrough ----------
+
+def test_breath_pad_keeps_whole_breath_in_big_pocket():
+    # A big silence pocket before the resuming word keeps ~8f (267ms — most of a real
+    # inhale); the old 2f keep left a 67ms clipped-gasp fragment at the seam.
+    ws = [
+        {"word": "Start.", "start_ms": 0, "end_ms": 400},
+        {"word": "bad", "start_ms": 700, "end_ms": 1000},
+        {"word": "take", "start_ms": 1000, "end_ms": 1300},
+        # 800ms silence pocket (frames 39..63) — room for a breath
+        {"word": "Clean", "start_ms": 2100, "end_ms": 2400},
+        {"word": "bad", "start_ms": 2500, "end_ms": 2800},
+        {"word": "take", "start_ms": 2800, "end_ms": 3100},
+        {"word": "again.", "start_ms": 3100, "end_ms": 3400},
+        {"word": "More", "start_ms": 3800, "end_ms": 4000},
+        {"word": "content", "start_ms": 4000, "end_ms": 4300},
+        {"word": "here", "start_ms": 4300, "end_ms": 4600},
+        {"word": "to", "start_ms": 4600, "end_ms": 4700},
+        {"word": "keep.", "start_ms": 4700, "end_ms": 5000},
+    ]
+    cut_in, cut_out = ms_to_frame(700), ms_to_frame(1300)
+    edl = assemble_edl({"cuts": [{"range": [cut_in, cut_out], "reason": "false_start"}]},
+                       ws, "talking_head", "hot_take")
+    fs = [d for d in edl.drops if d.reason == "false_start"]
+    assert fs, "cut must survive"
+    wb = ms_to_frame(2100)
+    assert fs[0].src_out <= wb - 8, \
+        f"big pocket must keep ≥8f of breath (cut ends {fs[0].src_out}, word at {wb})"
+
+
+def test_room_tone_flows_into_render_plan():
+    from app.edl import build_render_plan, safe_default_edl
+    edl = safe_default_edl("talking_head", "hot_take", 300, []).model_dump()
+    edl["audio"]["room_tone"] = {"src_in": 100, "src_out": 140, "volume": 0.55}
+    plan = build_render_plan(edl)
+    assert plan["audio"]["room_tone"] == {"src_in": 100, "src_out": 140, "volume": 0.55}

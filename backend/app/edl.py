@@ -338,6 +338,10 @@ class Audio(BaseModel):
     volume_ranges: list[VolumeRange] = []
     sfx: list[SfxCue] = []        # P4: deterministic SFX one-shots (see SfxCue)
     duck: Optional[AudioDuck] = None    # A5a: optional duck-curve override (schema v3)
+    # v7 fluidity: same-recording room-tone bed window {src_in, src_out, volume} in
+    # SOURCE frames — declared here so tweak round-trips (pydantic re-validation)
+    # don't silently strip it, the exact MusicDropout lesson.
+    room_tone: Optional[dict] = None
 
 
 class CaptionOptions(BaseModel):
@@ -1096,6 +1100,9 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         "speech_frames": speech_frames_out,
         "sfx": sfx_out,
         "duck": audio_src.get("duck"),   # A5a (schema v3): optional duck-curve override
+        # v7 fluidity: room-tone bed window in SOURCE coords (deliberately NOT
+        # output-remapped — it loops independently of the cut; render AudioMix).
+        "room_tone": audio_src.get("room_tone"),
     }
 
     # P4: end_card is TAIL-anchored (not source-coord), so it skips map_point
@@ -2345,11 +2352,16 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         inside_ends = [ms_to_frame(w.get("end_ms", 0)) for w in words
                        if a <= ms_to_frame(w.get("start_ms", 0)) < b]
         re_ = max(inside_ends) if inside_ends else a
-        # Resume ≥2f before the next word's onset when the silence allows it. NEVER
-        # extend the cut (contiguous words leave no room) and never re-introduce the
-        # removed word's tail phoneme.
-        if wb - 2 >= re_ + 1 and b > wb - 2:
-            b = max(a + 1, wb - 2)
+        # v7 WHOLE-BREATH-OR-NONE (research: a clipped ~67ms inhale fragment at a seam
+        # is the audible "gasp tick" — worse than either a full breath or none; a real
+        # inhale runs 300-500ms). When the silence pocket before the resuming word is
+        # big enough to hold most of a breath (≥12f), keep 8f (~267ms) of it; in a
+        # tight pocket keep only 2f of attack room (too short to read as a breath).
+        # NEVER extend the cut and never re-introduce the removed word's tail phoneme.
+        pocket = wb - re_
+        keep = 8 if pocket >= 12 else 2
+        if wb - keep >= re_ + 1 and b > wb - keep:
+            b = max(a + 1, wb - keep)
         return a, b
 
     content_cuts: list[tuple[int, int]] = []

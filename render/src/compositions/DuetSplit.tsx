@@ -34,7 +34,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade transitions={edl.transitions} />}
         {edl && <EndCard endCard={edl.end_card} />}
-      <AudioMix audio={edl?.audio} />
+      <AudioMix audio={edl?.audio} sourceUrl={sourceUrl} />
       </AbsoluteFill>
     );
   }
@@ -105,7 +105,7 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade transitions={edl.transitions} />}
       {edl && <EndCard endCard={edl.end_card} />}
-      <AudioMix audio={edl?.audio} />
+      <AudioMix audio={edl?.audio} sourceUrl={sourceUrl} />
     </AbsoluteFill>
   );
 };

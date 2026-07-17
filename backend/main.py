@@ -4986,6 +4986,22 @@ async def _run_edit(job_id: str, words: list[dict]):
                 video_type=(job.get("edit_brief") or {}).get("video_type", ""),
                 energy=(job.get("config") or {}).get("energy", ""),
                 theme=job.get("_theme"))
+            # v7 fluidity: ROOM-TONE bed — pick the longest verified-silent stretch of
+            # the source as a loopable ambience window (dialogue-editing research: a
+            # continuous same-recording tone bed is "the glue" — it masks the noise-floor
+            # jump at every splice, the main "choppy voice" tell). ≥400ms of true
+            # silence required; window capped at ~2s; render loops it under everything.
+            _rt_spans = job.get("_silent_spans") or []
+            if _rt_spans:
+                _rt_best = max(_rt_spans, key=lambda s: s[1] - s[0])
+                if _rt_best[1] - _rt_best[0] >= 400:
+                    _rt_mid = (_rt_best[0] + _rt_best[1]) / 2
+                    _rt_half = min(1000.0, (_rt_best[1] - _rt_best[0]) / 2 * 0.8)
+                    _rt_in = int(round((_rt_mid - _rt_half) * 30 / 1000))
+                    _rt_out = int(round((_rt_mid + _rt_half) * 30 / 1000))
+                    if _rt_out - _rt_in >= 10:
+                        edl_data.setdefault("audio", {})["room_tone"] = {
+                            "src_in": _rt_in, "src_out": _rt_out, "volume": 0.55}
             # Addendum Part 8: surface the b-roll decision log (need → asset/tier → action)
             # for the report card. After the tier pass, edl["broll"] holds only kept assets,
             # so a literal need that fell back to a text card is no longer a "broll_unresolved".
