@@ -62,7 +62,7 @@ EDIT_FORMATS = {
             "Talking head with b-roll cutaways: emit a broll cue for EVERY concretely named "
             "thing (food, product, place, tool), EVERY number/stat, and every emphasized or "
             "emotionally inflected beat — named things render as sub-second glimpses that flash "
-            "in and out, so density is welcome (one cue every 3-5s of speech is the target, "
+            "in and out, so density is welcome (one cue every 2-4s of speech is the target, "
             "more when the take names things in a list); the hook and CTA stay on the "
             "creator's face."),
     },
@@ -1223,8 +1223,8 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
             "full": "B-ROLL IS REQUIRED: the creator EXPLICITLY chose b-roll cutaways. Emit a "
                     "candidate cue for EVERY concrete/illustrable beat — a named thing, number, "
                     "action, place, process, AND every emphasized or emotionally inflected line — "
-                    "expect roughly ONE per 3–4 seconds of speech for entertainment-class takes "
-                    "and ONE per 5–7 seconds for educational ones (named things flash as "
+                    "expect roughly ONE per 2–3 seconds of speech for entertainment-class takes "
+                    "and ONE per 3–4 seconds for educational ones (named things flash as "
                     "sub-second glimpses, so listing three foods means THREE cues); an "
                     "EMPTY broll array is NOT acceptable. Over-emission is SAFE: the assembler prunes "
                     "to grammar (spacing, hook/CTA protection, runtime budget) and GUARANTEES density "

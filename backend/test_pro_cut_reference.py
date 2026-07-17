@@ -163,3 +163,35 @@ def test_sentence_boundary_cut_still_allowed():
     t_in, t_out = ms_to_frame(1700), ms_to_frame(2100)           # "tangent"
     covered = any(d.src_in <= t_in and d.src_out >= t_out for d in edl.drops)
     assert covered, "sentence-boundary tangent cut was wrongly vetoed"
+
+
+def test_head_cut_snaps_back_to_sentence_start():
+    # Prod job 41a4579c: the opening false_start cut [0,300] swallowed the first six
+    # words of the clean re-delivery ("most fusion fails for the same") and the video
+    # OPENED mid-sentence ("…reason. You're matching"). The head cut must shrink back
+    # to the last sentence boundary inside it (the stumble dash on "you're—").
+    ws = [
+        _w("Most", 1033, 1366), _w("fusion—", 1366, 1800),
+        _w("most", 3200, 3700), _w("fusion", 3700, 5600),
+        _w("fails", 5633, 5966), _w("for", 6033, 6133), _w("the", 6133, 6233),
+        _w("same", 6233, 6466), _w("reason.", 6500, 6733),
+        _w("You're", 7066, 7200), _w("not", 7200, 7366), _w("matching—", 7433, 7766),
+        _w("you're—", 8300, 8833),
+        # clean re-delivery begins here — the cut below wrongly extends into it
+        _w("most", 8866, 9033), _w("fusion", 9033, 9300), _w("fails", 9400, 9633),
+        _w("for", 9733, 9800), _w("the", 9800, 9833), _w("same", 9833, 10000),
+        _w("reason.", 10066, 10300),
+        _w("You're", 10566, 10666), _w("matching", 10666, 10933),
+        _w("flavors", 10966, 11333), _w("instead", 11366, 11600),
+        _w("of", 11600, 11733), _w("fat,", 11833, 12133),
+        _w("acid,", 12300, 12566), _w("and", 12666, 12733), _w("heat.", 12733, 12900),
+    ]
+    cut = [0, ms_to_frame(10000)]        # planner overshoots into "…for the same"
+    edl = assemble_edl({"cuts": [{"range": cut, "reason": "false_start"}]},
+                       ws, "talking_head", "hot_take")
+    head_drop = max((d.src_out for d in edl.drops if d.src_in <= 35), default=0)
+    redelivery_start = ms_to_frame(8866)   # second "most"
+    assert head_drop <= redelivery_start, (
+        f"head cut ends at {head_drop}, swallowing the re-delivery that starts at "
+        f"{redelivery_start} — the video would open mid-sentence")
+    assert head_drop >= ms_to_frame(8300), "the real false-start block must still be cut"

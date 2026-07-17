@@ -126,7 +126,9 @@ def test_spacing_tightens_on_high_energy_or_entertainment():
     neu = assemble_edl(plan, w, "talking_head", "myth-buster",
                        brief={"video_type": "tutorial"}).model_dump()
     assert len(ent["broll"]) == 2, "entertainment tolerates the tighter pair"
-    assert len(neu["broll"]) == 1, "informational keeps ≥3s spacing → drops the close one"
+    # v5 density mandate: neutral spacing dropped to 45f (jitter 30..75), so this ~2.2s
+    # pair now survives informational takes too — by design, not by accident.
+    assert len(neu["broll"]) == 2, "v5: informational spacing (45f) admits the ~2.2s pair"
 
 
 def test_floor_denser_and_alternates_hold_lengths():
@@ -391,15 +393,17 @@ def test_topup_respects_occupied_windows_and_spacing():
                      prefs={"broll": True, "broll_coverage": "full", "broll_mode": "full"}).model_dump()
     ins = sorted(d["broll"], key=lambda b: b["src_in"])
     for a, b in zip(ins, ins[1:]):
-        assert b["src_in"] - a["src_out"] >= 60, "top-up violated spacing"
+        # v5 floor: educational spacing 45f jittered (≥30), halved for sub-second
+        # glimpses (≥20) — 20f is the absolute minimum any admitted pair may show.
+        assert b["src_in"] - a["src_out"] >= 20, "top-up violated spacing"
 
 
 def test_entertainment_tightens_spacing_not_coverage():
-    # v4 retune (owner: "a lot more frequent"): entertainment spacing 45f, educational 75f
-    # (was 90f). The jitter bands now overlap (ent 30..75, edu 60..105), so the educational
+    # v5 mandate (owner: "at least 3x as frequent"): entertainment spacing 30f, educational
+    # 45f. The jitter bands overlap (ent 15..60, edu 30..75), so the educational
     # floor is asserted as SPEC; the deterministic behavioral check is entertainment-side.
     from app.edl import _BROLL_MIN_SPACING as _sp_edu, _BROLL_SPACING_TIGHT as _sp_ent
-    assert _sp_ent == 45 and _sp_edu == 75, "v4 spacing dial drifted"
+    assert _sp_ent == 30 and _sp_edu == 45, "v5 spacing dial drifted"
     w = _alpha_words(60)
     plan = {"broll": [
         {"range": [150, 200], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},

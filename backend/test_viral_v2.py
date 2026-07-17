@@ -462,3 +462,15 @@ def test_unresolved_own_media_literal_degrades_to_text_card():
     assert cards, "must degrade to a text card"
     acts = [e["action"] for e in out["_broll_log"]]
     assert "text_card" in acts, out["_broll_log"]
+
+
+def test_density_mandate_3x_educational_floor():
+    # v5 owner mandate ("at least 3x as frequent — very important"): a plain educational
+    # coverage=full take with an EMPTY plan must land ≥1 b-roll insert per 4s of runtime
+    # (3x the observed ~1/12s baseline), driven entirely by the deterministic floor.
+    w = _alpha_words(150)                      # 150 words × 400ms = 60s take
+    total = ms_to_frame(w[-1]["end_ms"])
+    out = assemble_edl({}, w, "broll_cutaway", "myth-buster",
+                       prefs={"broll": True, "broll_coverage": "full"}).model_dump()
+    n = len(out["broll"])
+    assert n >= total // 120, f"density mandate missed: {n} inserts on a {total}f take (need ≥{total // 120})"
