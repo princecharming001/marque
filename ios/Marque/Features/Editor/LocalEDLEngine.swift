@@ -300,13 +300,16 @@ enum LocalEDLEngine {
                 d.captions.sort { $0.frame < $1.frame }
             } else { return nil }
         case "add_punch_in":
-            guard ["talking_head", "duet_split"].contains(d.style),
+            // MUST match backend _PUNCH_STYLES (edl.py) — a narrower list here silently drops
+            // ops the server would accept while the caps-gated button still shows.
+            guard ["talking_head", "duet_split", "green_screen", "broll_cutaway", "split_three"].contains(d.style),
                   let (a, b) = clamp(op.i["start_frame"] ?? 0, op.i["end_frame"] ?? 0) else { return nil }
             d.overlays.append(EditorOverlay(type: "punch_in", srcIn: a, srcOut: b,
                                             scale: min(1.35, max(1.02, op.d["scale"] ?? 1.08)), text: ""))
         case "add_text_card":
             let text = (op.s["text"] ?? "").trimmingCharacters(in: .whitespaces)
-            guard ["green_screen", "duet_split"].contains(d.style), !text.isEmpty,
+            // MUST match backend _TEXTCARD_STYLES (edl.py).
+            guard ["green_screen", "duet_split", "talking_head", "broll_cutaway"].contains(d.style), !text.isEmpty,
                   let (a, b) = clamp(op.i["start_frame"] ?? 0, op.i["end_frame"] ?? 0) else { return nil }
             d.overlays.append(EditorOverlay(type: "text_card", srcIn: a, srcOut: b, scale: 1.0, text: String(text.prefix(80))))
         case "edit_overlay":

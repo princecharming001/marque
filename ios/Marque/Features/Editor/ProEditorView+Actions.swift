@@ -168,7 +168,8 @@ extension ProEditorView {
     func deleteSelected(_ segIdx: Int) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
         mutate([.cut(seg.srcIn, seg.srcOut)], rejectMsg: "You can't delete the whole clip.")
-        selectedSeg = nil
+        // Every vocabulary's Delete clears its own selection (and any expansion on it).
+        select(nil)
     }
 
     func reorder(_ order: [Int]) { mutate([.reorder(order)]) }
@@ -210,7 +211,12 @@ extension ProEditorView {
         mutate([.segmentVolume(seg.srcIn, seg.srcOut, v)])
     }
     func pickMusic(_ track: MusicCatalog.Track) { mutate([.setMusic(url: track.url, volume: 0.15, duck: true)]); showMusicSheet = false }
-    func removeMusic() { mutate([.removeMusic()]) }
+    func removeMusic() {
+        mutate([.removeMusic()])
+        // The strip vanishes with the track — a stale music selection would leave the
+        // toolbar on a dead MUSIC vocabulary whose every tile no-ops.
+        if selectedMusic { select(nil) }
+    }
     func setMusicVolume(_ v: Double) {
         guard let m = session?.draft.music else { return }
         mutate([.setMusic(url: m.url, volume: v, duck: m.duckVoice)])
@@ -224,8 +230,9 @@ extension ProEditorView {
         if on, words.isEmpty { flash("No transcript to caption."); return }
         mutate([.captionsEnabled(on)])
         captionsOn = on
+        // The caption lane hides with the toggle — drop any phrase selection with it.
+        if !on, selectedPhraseID != nil { selectedPhraseID = nil }
     }
-    func setCaptionStyle(_ s: String) { mutate([.captionStyle(s)]) }
 
     /// Apply one of the 10 popular presets — sets the base render style AND a full options
     /// bundle so every knob is defined (switching presets resets outline/color/box/font/caps).
@@ -380,8 +387,7 @@ extension ProEditorView {
         guard !t.isEmpty, let (a, b) = insertWindow(len: 90) else { return }
         mutate([.addTextSticker(a, b, text: t)])
         if let idx = session?.draft.overlays.lastIndex(where: { $0.type == "text_sticker" && $0.srcIn == a }) {
-            selectedSeg = nil
-            selectedOverlay = idx
+            select(.overlay(idx))
         }
     }
 
@@ -394,7 +400,7 @@ extension ProEditorView {
         guard let (a, b) = insertWindow(len: 90) else { return }
         mutate([.addTextSticker(a, b, text: "Text")])
         guard let idx = session?.draft.overlays.lastIndex(where: { $0.type == "text_sticker" && $0.srcIn == a }) else { return }
-        selectedSeg = nil; selectedOverlay = idx
+        select(.overlay(idx))
         beginTypingSticker(idx, seed: "")   // start empty → placeholder shows; blank discards
     }
 
@@ -435,10 +441,6 @@ extension ProEditorView {
 
     func commitStickerScale(_ idx: Int, scale: Double) {
         mutate([.editSticker(index: idx, scale: scale)])
-    }
-
-    func setStickerStyle(_ idx: Int, color: String? = nil, bg: String? = nil, font: String? = nil) {
-        mutate([.editSticker(index: idx, color: color, bg: bg, font: font)])
     }
 
     /// Video canvas gesture end → one transform op for that clip.
@@ -504,15 +506,14 @@ extension ProEditorView {
 
     private func selectLastRoll() {
         if let idx = session?.draft.broll.indices.last {
-            selectedSeg = nil; selectedOverlay = nil; selectedBoundary = nil
-            selectedBroll = idx
+            select(.broll(idx))
         }
     }
 
     func deleteRoll(_ idx: Int) {
         guard let r = session?.draft.broll[safe: idx] else { return }
         mutate([.removeBroll(r.srcIn, r.srcOut)])
-        selectedBroll = nil
+        if selectedBroll != nil { select(nil) } else { selectedBroll = nil }
     }
 
     /// Grow/shrink a roll's tail — expressed as remove+re-add (no edit op exists).
@@ -586,10 +587,9 @@ extension ProEditorView {
             return
         }
         mutate([.addPunchIn(a, b, scale: 1.08)], rejectMsg: "Zooms aren't rendered for this style.")
-        // Select the new block so the intensity/duration controls appear immediately.
+        // Select the new block so the zoom vocabulary (intensity/duration) appears immediately.
         if let idx = session?.draft.overlays.lastIndex(where: { $0.type == "punch_in" && $0.srcIn == a }) {
-            selectedSeg = nil
-            selectedOverlay = idx
+            select(.overlay(idx))
         }
     }
 
@@ -619,7 +619,7 @@ extension ProEditorView {
     func deleteOverlay(_ idx: Int) {
         guard let o = session?.draft.overlays[safe: idx] else { return }
         mutate([.removeOverlay(kind: o.type, o.srcIn, o.srcOut)])
-        selectedOverlay = nil
+        if selectedOverlay != nil { select(nil) } else { selectedOverlay = nil }
     }
 
     func beginOverlayTextEdit(_ idx: Int) {
