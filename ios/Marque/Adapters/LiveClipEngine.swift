@@ -143,28 +143,37 @@ struct LiveClipEngine: ClipEngineProtocol {
         return ok ? publicURL : nil
     }
 
-    static func mintAndUpload(footagePath: String?) async -> String? {
+    static func mintAndUpload(footagePath: String?,
+                              onProgress: (@Sendable (Double) -> Void)? = nil) async -> String? {
         // Background-guarded: compression + PUT is the longest client-side critical
         // section — a brief app-switch must not kill an almost-done upload.
         await BackgroundGuard.run("take-upload") {
-            await _mintAndUpload(footagePath: footagePath)
+            await _mintAndUpload(footagePath: footagePath, onProgress: onProgress)
         }
     }
 
-    private static func _mintAndUpload(footagePath: String?) async -> String? {
+    private static func _mintAndUpload(footagePath: String?,
+                                       onProgress: (@Sendable (Double) -> Void)? = nil) async -> String? {
         guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else {
             return nil                                        // backend unreachable
         }
         let uploadURLString = mintData["upload_url"] as? String ?? ""
         let publicURL = mintData["public_url"] as? String ?? ""
         guard let footagePath, !footagePath.isEmpty, !uploadURLString.isEmpty else {
+            onProgress?(1.0)
             return publicURL                                  // mock mint or no footage: no bytes to move
         }
         let original = MediaStore.url(for: footagePath)
         let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
-        let compressed = await MediaCompressor.forUpload(original, maxBytes: cap)
+        // Build 45: compression fills the first 40% of the bar, the PUT the last 60% —
+        // so the creator sees continuous motion across both device-side phases.
+        let compressed = await MediaCompressor.forUpload(original, maxBytes: cap) { p in
+            onProgress?(min(0.4, p * 0.4))
+        }
         let toUpload = compressed ?? original
-        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
+        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload) { p in
+            onProgress?(0.4 + min(0.6, p * 0.6))
+        }
         if let compressed { try? FileManager.default.removeItem(at: compressed) }
         return ok ? publicURL : nil
     }
@@ -174,7 +183,8 @@ struct LiveClipEngine: ClipEngineProtocol {
     /// into memory). Content-Type matches what the mint request declared. Returns
     /// true only on a 2xx; any transport/HTTP failure returns false so makeClips
     /// falls back instead of creating a job with an empty source object.
-    private static func uploadFootage(to uploadURLString: String, fileURL: URL) async -> Bool {
+    private static func uploadFootage(to uploadURLString: String, fileURL: URL,
+                                      onProgress: (@Sendable (Double) -> Void)? = nil) async -> Bool {
         guard let url = URL(string: uploadURLString),
               FileManager.default.fileExists(atPath: fileURL.path) else {
             BackendClient.shared.reportClientEvent("upload_precondition_failed",
@@ -187,13 +197,16 @@ struct LiveClipEngine: ClipEngineProtocol {
         for attempt in 0..<3 {
             if attempt > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
+                onProgress?(0)                 // retry restarts the byte count
             }
             var req = URLRequest(url: url)
             req.httpMethod = "PUT"
             req.timeoutInterval = 300   // large upload, possibly on cellular
             req.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
             do {
-                let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL)
+                let delegate = onProgress.map { UploadProgressDelegate(onProgress: $0) }
+                let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL,
+                                                                   delegate: delegate)
                 if let http = resp as? HTTPURLResponse {
                     if (200..<300).contains(http.statusCode) { return true }
                     lastDetail = "http \(http.statusCode)"
@@ -236,11 +249,12 @@ enum MediaCompressor {
     private static let longTakeThresholdSec = 150.0 // above this, 1080p bitrate would be too low → 720p ladder
 
     /// `maxBytes` comes from the mint response so raising the storage tier is backend-only.
-    static func forUpload(_ source: URL, maxBytes: Int = defaultMaxUploadBytes) async -> URL? {
+    static func forUpload(_ source: URL, maxBytes: Int = defaultMaxUploadBytes,
+                          onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
         // OPT-7: skip re-encoding entirely when the source already fits — short takes
         // upload as-is instead of paying a full export on the critical path.
         let srcSize = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int
-        if let srcSize, srcSize <= maxBytes { return nil }   // caller uploads the original
+        if let srcSize, srcSize <= maxBytes { onProgress?(1.0); return nil }   // caller uploads the original
 
         let asset = AVURLAsset(url: source)
         let seconds = CMTimeGetSeconds(asset.duration)
@@ -270,10 +284,15 @@ enum MediaCompressor {
         if seconds.isFinite, seconds * 2_500_000 / 8 > Double(maxBytes) {
             presets = [AVAssetExportPreset960x540]
         }
+        // Build 45: cap the WHOLE ladder to one export budget so it can't chain two
+        // 120s cancel-deadlines back to back (a stalled ladder used to burn ~4 min
+        // before the outer submit ceiling caught it — that's the "stuck" window).
+        let ladderDeadline = Date().addingTimeInterval(140)
         for preset in presets {
+            if Date() > ladderDeadline { break }
             // export() self-bounds via its own cancelExport() deadline — a wedged export drops
             // to the next preset / fails instead of hanging.
-            guard let out = await export(source, preset: preset) else { continue }
+            guard let out = await export(source, preset: preset, onProgress: onProgress) else { continue }
             if let size = fileSize(out), size <= maxBytes { return out }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
@@ -403,7 +422,8 @@ enum MediaCompressor {
         }
     }
 
-    private static func export(_ source: URL, preset: String) async -> URL? {
+    private static func export(_ source: URL, preset: String,
+                               onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
         let asset = AVURLAsset(url: source)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { return nil }
         let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
@@ -418,9 +438,21 @@ enum MediaCompressor {
                 try? await Task.sleep(nanoseconds: 120 * 1_000_000_000)
                 session.cancelExport()
             }
+            // Poll session.progress on a light timer so the bar moves during compression
+            // (AVAssetExportSession has no progress callback). Ends when export completes.
+            let progressPoll = onProgress.map { cb in
+                Task {
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 250_000_000)
+                        cb(Double(session.progress))
+                    }
+                }
+            }
             session.exportAsynchronously {
                 deadline.cancel()
+                progressPoll?.cancel()
                 if session.status == .completed {
+                    onProgress?(1.0)
                     cont.resume(returning: out)
                 } else {
                     try? FileManager.default.removeItem(at: out)   // partial/cancelled — don't leak
@@ -428,6 +460,20 @@ enum MediaCompressor {
                 }
             }
         }
+    }
+}
+
+// Build 45: forwards URLSession upload byte-progress → a 0–1 fraction so the take card's
+// timeline shows a real bar during the PUT. Per-task delegate (iOS 15+), so it never
+// touches the shared session's global behavior.
+final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate {
+    private let onProgress: @Sendable (Double) -> Void
+    init(onProgress: @escaping @Sendable (Double) -> Void) { self.onProgress = onProgress }
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
+                    totalBytesExpectedToSend: Int64) {
+        guard totalBytesExpectedToSend > 0 else { return }
+        onProgress(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
     }
 }
 

@@ -759,19 +759,30 @@ final class AppStore {
         let task = Task { [weak self] in
             guard let self else { return }
             // Hard deadline: even with the compression timeouts, NOTHING may leave the clip
-            // stuck at "uploading" forever — race upload+create against an 8-min ceiling. On
-            // timeout the clip reconciles to a retryable .failed card instead of stranding.
+            // stuck at "uploading" forever — race upload+create against a ceiling. On timeout
+            // the clip reconciles to a retryable .failed card instead of stranding. Build 45:
+            // tightened 480s → 240s (upload+create realistically finishes in <60s; the
+            // compression ladder is now itself capped at 140s), so a genuinely-wedged submit
+            // fails FAST to a retry card instead of a 8-minute dead spinner.
             let resp: AnalyzeJobResponse? = await withTaskGroup(of: AnalyzeJobResponse?.self) { group in
                 group.addTask { [weak self] in
                     guard let self else { return nil }
-                    let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath)
+                    // Build 45: real upload progress → the placeholder's timeline bar.
+                    let pid = placeholderId
+                    let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath) { [weak self] frac in
+                        Task { @MainActor in
+                            guard let self, let i = self.clips.firstIndex(where: { $0.id == pid }),
+                                  self.clips[i].uploading else { return }
+                            self.clips[i].uploadProgress = frac
+                        }
+                    }
                     return await self.startAnalyzeJob(
                         script: isFreestyle ? nil : script, publicURL: publicURL,
                         customInstructions: customInstructions, reactSourceURL: reactSourceURL,
                         editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
                         config: config, autoConfirm: true, toggles: toggles)
                 }
-                group.addTask { try? await Task.sleep(nanoseconds: 480 * 1_000_000_000); return nil }
+                group.addTask { try? await Task.sleep(nanoseconds: 240 * 1_000_000_000); return nil }
                 let first = await group.next() ?? nil
                 group.cancelAll()
                 return first
@@ -1050,6 +1061,11 @@ final class AppStore {
                     clips[idx].status = clipStatus == "ready" ? .ready : clipStatus == "failed" ? .failed : .rendering
                     if clipStatus == "ready", clips[idx].finishedAt == nil { clips[idx].finishedAt = Date() }
                     let terminal = clipStatus == "ready" || clipStatus == "failed"
+                    // Pipeline visibility (build 45): keep the real backend stage so the card's
+                    // timeline advances through Analyze → Edit → Render instead of one frozen word.
+                    // Once the server owns the job the device-side upload is finished by definition.
+                    clips[idx].pipelineStage = terminal ? nil : status
+                    if !terminal { clips[idx].uploadProgress = 1.0; clips[idx].uploading = false }
                     clips[idx].etaSeconds = terminal ? nil : etaSeconds
                     clips[idx].etaSetAt = terminal ? nil : Date()
                     if let url = renderURL { updateRemoteURL(url, at: idx) }
@@ -1182,7 +1198,14 @@ final class AppStore {
             save()
         }
         // mintAndUpload returns nil if the local file is gone — then there's nothing to recover.
-        guard let publicURL = await LiveClipEngine.mintAndUpload(footagePath: path) else {
+        let cid = clip.id
+        guard let publicURL = await LiveClipEngine.mintAndUpload(footagePath: path, onProgress: { [weak self] frac in
+            Task { @MainActor in
+                guard let self, let i = self.clips.firstIndex(where: { $0.id == cid }),
+                      self.clips[i].uploading else { return }
+                self.clips[i].uploadProgress = frac
+            }
+        }) else {
             fail("Couldn't re-upload your footage — tap Try again."); return true
         }
         let script = scripts.first(where: { $0.id == clip.scriptId })
