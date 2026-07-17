@@ -29,9 +29,10 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         <CutVideo sourceUrl={sourceUrl} clips={edl?.clips ?? []} volumeRanges={edl?.audio?.volume_ranges} look={edl?.look} gain={edl?.audio?.gain} />
         {edl && <BrollLayer broll={edl.broll} />}
         {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
+      {edl && <Grade look={edl.look} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
         {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
-      {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <Grade transitions={edl.transitions} />}
         {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
       </AbsoluteFill>
@@ -99,9 +100,10 @@ export const DuetSplit: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
 
       {edl && <BrollLayer broll={edl.broll} />}
       {edl?.progress_bar && <ProgressBar totalFrames={edl.total_frames} />}
+      {edl && <Grade look={edl.look} />}
       {edl && <Captions captions={edl.captions} style={edl.caption_style} options={edl.caption_options} />}
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
-      {edl && <Grade look={edl.look} transitions={edl.transitions} />}
+      {edl && <Grade transitions={edl.transitions} />}
       {edl && <EndCard endCard={edl.end_card} />}
       <AudioMix audio={edl?.audio} />
     </AbsoluteFill>

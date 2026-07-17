@@ -82,3 +82,43 @@ test("TalkingHead and BrollCutaway render text cards via TextCardOverlay (litera
   const overlay = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "TextCardOverlay.tsx"), "utf8");
   assert.ok(/cardFit\(/.test(overlay), "TextCardOverlay must size text via cardFit");
 });
+
+test("viral-v2: BrollLayer carries KLIPY attribution + pop-in/pop-out ramps", () => {
+  const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "BrollLayer.tsx"), "utf8");
+  assert.ok(/KlipyBadge/.test(content), "BrollLayer must define/render KlipyBadge (KLIPY ToS attribution)");
+  assert.ok(/Powered by KLIPY/.test(content), "KLIPY badge label required");
+  assert.ok(/popIn/.test(content) && /popOut/.test(content), "panel needs pop-in AND pop-out ramps");
+  assert.ok(/flashPunch/.test(content), "full-mode flash inserts (<30f) need a punch entrance");
+});
+
+test("viral-v2: TextStickers has stacked-hook frame-0 render, exit anim, anton weight fix", () => {
+  const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "TextStickers.tsx"), "utf8");
+  assert.ok(/HOOK_STACKED_MAX_FRAME/.test(content), "hook sticker must render fully formed from frame 0");
+  assert.ok(/STICKER_EXIT_FRAMES/.test(content), "stickers need an exit animation");
+  assert.ok(/fontKey === "archivo" \|\| fontKey === "anton"/.test(content),
+    "anton ships only weight 400 — must not faux-bold");
+});
+
+test("viral-v2: AudioMix applies music dropouts", () => {
+  const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "AudioMix.tsx"), "utf8");
+  assert.ok(/dropoutAt/.test(content) && /DROPOUT_RAMP/.test(content), "music dropout gate missing");
+  assert.ok(/dropoutAt\(f\)/.test(content), "dropoutAt must be multiplied into the volume callback");
+});
+
+test("viral-v2: every composition mounts Grade look BELOW captions and Grade transitions ON TOP", () => {
+  // The vignette/grain must not darken caption text; transition dips must cover everything.
+  const offenders: string[] = [];
+  for (const file of COMPOSITION_FILES) {
+    const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, file), "utf8");
+    // For every Captions mount there must be a look-only Grade mount before it,
+    // and every transitions-only mount must come after the last TextStickers.
+    const lookIdx = content.indexOf("<Grade look={edl.look} />");
+    const capIdx = content.indexOf("<Captions");
+    if (capIdx >= 0 && (lookIdx < 0 || lookIdx > capIdx)) offenders.push(`${file}: look-Grade not before Captions`);
+    const trIdx = content.lastIndexOf("<Grade transitions=");
+    const stIdx = content.lastIndexOf("<TextStickers");
+    if (stIdx >= 0 && (trIdx < 0 || trIdx < stIdx)) offenders.push(`${file}: transitions-Grade not after TextStickers`);
+    if (/<Grade look=\{edl\.look\} transitions=/.test(content)) offenders.push(`${file}: combined Grade mount remains`);
+  }
+  assert.deepEqual(offenders, [], offenders.join(" | "));
+});

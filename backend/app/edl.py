@@ -2,6 +2,8 @@
 from __future__ import annotations
 from pydantic import BaseModel, model_validator
 from typing import Optional
+import hashlib
+import random
 import re
 
 # #19: version stamp for the render plan contract. build_render_plan stamps it into
@@ -253,6 +255,14 @@ class Layout(BaseModel):
     pip_position: str = "bottom_left"  # bottom_left | bottom_right | bottom_center
 
 
+class MusicDropout(BaseModel):
+    """Punchline music dropout window. DEVIATION from the source-coord norm: these are
+    OUTPUT-frame coords (like end_card) — authored by the post-timeline dropout pass
+    AFTER all cutting/speed passes, and read verbatim by the renderer's AudioMix."""
+    frame_in: int
+    frame_out: int
+
+
 class MusicTrack(BaseModel):
     """Background music. `url` is a direct audio URL (the app ships a small bundled
     catalog); `query` stores intent for future server-side resolution."""
@@ -260,6 +270,9 @@ class MusicTrack(BaseModel):
     query: Optional[str] = None
     volume: float = 0.15          # clamped 0.0–1.0 on apply
     duck_voice: bool = True       # duck music under speech (caption-activity proxy)
+    # "Silence as a tool": the bed cuts to zero inside these windows so the biggest
+    # claim lands over clean voice. Model field so tweak round-trips don't drop it.
+    dropouts: list[MusicDropout] = []
 
 
 class VolumeRange(BaseModel):
@@ -1931,25 +1944,26 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
 # hold 1.5–2.5s typical (3.5s hard ceiling), hook 0–3s + CTA face-protected, budgets below.
 _BROLL_JCUT_LEAD = 12                           # ~0.4s: video leads in under the continuous voice
 
-# Part-5 retune + realism pass (2026-07-16, docs/BROLL-PLACEMENT-SOURCES.md §5.3): shorter holds
-# EVERYWHERE, incl. panel/card — real talking-head cutaways cluster 1.5–2.5s regardless of
-# composition; a 4–5s panel reads as a slideshow. Frames @30fps: (min_hold, full_max, partial_max).
-# `full_max` bounds a FACE-HIDING (mode=full) cutaway; `partial_max` bounds panel/card (face stays
-# visible → may breathe SLIGHTLY, ceiling 3.5s). Named thing/number reads fast → short.
+# Viral-v2 retune (2026-07-17, docs/BROLL-PLACEMENT-SOURCES.md §6 — adversarially verified
+# vs OpusClip 13.5M-clip research + Aibrify/Captions.ai 2026 pacing models): contextual
+# inserts live in the 1.2–3.0s band (<1.2s doesn't register, >3s stalls short-form pacing);
+# meme/reaction pop-ins are a distinct 0.5–1.5s idiom. Frames @30fps:
+# (min_hold, full_max, partial_max). `full_max` bounds a FACE-HIDING (mode=full) cutaway;
+# `partial_max` bounds panel/card (face stays visible → may breathe SLIGHTLY, ceiling 3s).
 _BROLL_HOLD_POLICY: dict[str, tuple[int, int, int]] = {
-    "entity":   (45, 60, 75),     # a named person/place/brand — reads fast
-    "data":     (45, 60, 75),     # a number/stat — reads instantly
-    "evidence": (45, 75, 90),     # proof/demo — needs a beat to register
-    "action":   (60, 90, 105),    # a process/motion — must show the motion
-    "concept":  (60, 90, 105),    # metaphor/abstract — needs to land
-    "meme":     (45, 60, 75),     # reaction GIF — a joke held too long dies (capped even in panel)
+    "entity":   (36, 54, 72),     # a named person/place/brand — reads fast (1.2–1.8s)
+    "data":     (36, 54, 72),     # a number/stat — reads instantly
+    "evidence": (45, 75, 90),     # proof/demo — needs reading time (unchanged)
+    "action":   (36, 75, 90),     # a process/motion — 1.2–2.5s full-frame
+    "concept":  (36, 75, 90),     # metaphor/abstract
+    "meme":     (15, 30, 45),     # reaction pop-in: 0.5–1s full flash, ≤1.5s panel
 }
 _BROLL_NEEDS = tuple(_BROLL_HOLD_POLICY)         # valid `need` values (plan-schema clamp)
 # Global aliases derived from the policy so doctrine ↔ code never drift: min = shortest any need may
 # hold (the legibility floor + floor-synth base); max = longest face-hiding hold; partial = panel/card ceiling.
-_BROLL_MIN_HOLD = min(p[0] for p in _BROLL_HOLD_POLICY.values())          # 45f / 1.5s
-_BROLL_MAX_HOLD = max(p[1] for p in _BROLL_HOLD_POLICY.values())          # 90f / 3s
-_BROLL_PARTIAL_MAX_HOLD = max(p[2] for p in _BROLL_HOLD_POLICY.values())  # 105f / 3.5s ceiling (panel/card)
+_BROLL_MIN_HOLD = min(p[0] for p in _BROLL_HOLD_POLICY.values())          # 15f / 0.5s (meme flash)
+_BROLL_MAX_HOLD = max(p[1] for p in _BROLL_HOLD_POLICY.values())          # 75f / 2.5s
+_BROLL_PARTIAL_MAX_HOLD = max(p[2] for p in _BROLL_HOLD_POLICY.values())  # 90f / 3s ceiling (panel/card)
 
 
 def _hold_bounds(need: str, mode: str) -> tuple[int, int]:
@@ -1960,7 +1974,7 @@ def _hold_bounds(need: str, mode: str) -> tuple[int, int]:
 
 
 _BROLL_MIN_SPACING = 90                          # ≥3s between cutaways (return to the face between)
-_BROLL_SPACING_TIGHT = 60                        # ≥2s for high-energy / entertainment takes (Part 5)
+_BROLL_SPACING_TIGHT = 45                        # ≥1.5s for high-energy / entertainment takes (v2)
 _ENTERTAINMENT_VIDEO_TYPES = {"freestyle_rant", "listicle", "story", "reaction"}
 _BROLL_HOOK_PROTECT = 90                        # no full-frame b-roll over the hook (first 3s, face styles)
 _BROLL_CTA_PROTECT = 60                         # …or the CTA (last 2s)
@@ -1969,14 +1983,35 @@ _BROLL_CTA_PROTECT = 60                         # …or the CTA (last 2s)
 # runtime. Panel/card modes keep the face on screen, so they DON'T count against this budget.
 _BROLL_RUNTIME_BUDGET = 0.40                    # ≤40% of output covered by FACE-HIDING (full) b-roll
 # Combined ceiling across ALL modes (full+panel+card): panel/card keep the face visible so they may
-# exceed the 40% face-hiding bound, but they still colonize visual attention — cap total insert time
-# at 50% so the A-roll always reads as the spine (research 60/40 A:B, realism pass 2026-07-16).
-_BROLL_VISUAL_BUDGET = 0.50
-# coverage="full" opt-in → denser floor (~1 per 9s vs the default ~1 per 12s): the creator asked
-# for b-roll, so "cut more often" (Part 5). Bigger divisor = sparser.
-_BROLL_FLOOR_STEP_DIVISOR = {"full": 270, "default": 360}
-_BROLL_MEME_CAP = 2                             # ≤2 reaction/meme inserts per video (Part 5.2)
+# exceed the 40% face-hiding bound, but they still colonize visual attention. GENRE DIAL (v2,
+# OpusClip A/B: 40% coverage beat both 0% and 70%; commentary/founder content wants the LOWER
+# 30–40% band, entertainment tolerates 35–50%): entertainment 50%, everything else 40%.
+_BROLL_VISUAL_BUDGET = 0.50                     # entertainment / high-energy
+_BROLL_VISUAL_BUDGET_EDU = 0.40                 # educational / founder (lo-fi credibility evidence)
+# coverage="full" floor density is ALSO a genre dial (v2): entertainment ~1 per 5s, educational
+# ~1 per 8s (B2B tolerates 8–10s interrupt cadence), default (no opt-in) ~1 per 12s.
+# Bigger divisor = sparser.
+_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 150, "full": 240, "default": 360}
+# Meme caps per content class (owner decision 2026-07-17): entertainment/high-energy up to 5,
+# everything else up to 2 (punchline/reaction beats only — doctrine enforces placement).
+_BROLL_MEME_CAP = 5                             # entertainment / high-energy
+_BROLL_MEME_CAP_EDU = 2                         # educational / everything else
 _FACELESS_STYLES = {"faceless"}                # b-roll IS the visual channel → hook coverage ok
+
+# Cadence jitter (v2): a fixed insert interval is itself an AI tell — human editors vary
+# timing. Deterministic per job_seed (sha1-seeded; NEVER random.random()) so retries and
+# resume produce byte-identical EDLs. Spacing jitters −15..+30f, holds ±6f.
+_BROLL_SPACING_JITTER = (-15, 30)
+_BROLL_HOLD_JITTER = 6
+
+
+def _seeded_rng(*parts: str) -> random.Random:
+    """A random.Random seeded deterministically from arbitrary string parts, via
+    sha1 rather than Python's built-in hash() (which is salted per-process by
+    default) — so "same job_seed -> identical output" holds across process
+    restarts / redeploys, not just within one run."""
+    digest = hashlib.sha1(":".join(parts).encode()).hexdigest()
+    return random.Random(int(digest[:16], 16))
 
 # Deterministic b-roll FLOOR (the "guarantee it shows" path): when the creator explicitly
 # opts into b-roll (coverage="full") but the plan emitted none, synthesize cues from the
@@ -2012,7 +2047,13 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     _mid = (_lo + _mx) // 2
     step = spacing + _mid
     lo, hi = hook_protect + _BROLL_JCUT_LEAD, total - cta_protect
-    target = max(2, min(total // step_divisor, int(_BROLL_RUNTIME_BUDGET * total) // step))  # density, budget-capped
+    # Budget cap divides by the per-insert HOLD (the actual budget cost), not `step`
+    # (spacing+hold) — dividing by step silently over-throttled the density target
+    # (v2 fix: with spacing 45 + mid 42, step-division capped at ~total//217 and
+    # overrode the requested total//150). Face-hiding budget when the floor synthesizes
+    # full-mode cues, visual budget otherwise.
+    budget_frac = _BROLL_RUNTIME_BUDGET if mode == "full" else _BROLL_VISUAL_BUDGET
+    target = max(2, min(total // step_divisor, int(budget_frac * total) // max(_mid, 1)))
     if max_cues is not None:
         target = min(target, max_cues)
         if target <= 0:
@@ -2102,7 +2143,8 @@ def _range_overlaps_any(r: tuple[int, int], ranges: list[tuple[int, int]]) -> bo
 
 def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                  prefs: dict | None = None, brief: dict | None = None,
-                 silent_spans: list[tuple[int, int]] | None = None) -> EDL:
+                 silent_spans: list[tuple[int, int]] | None = None,
+                 job_seed: str = "") -> EDL:
     """Pure function: (typed plan, transcript words) -> a valid EDL.
 
     Guarantees the LLM cannot violate:
@@ -2205,13 +2247,18 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         face_style = style not in _FACELESS_STYLES
         video_type = (brief or {}).get("video_type", "")
         _coverage_full = prefs.get("broll_coverage") == "full"
-        # Part 5: entertainment / high-energy takes tolerate denser cutting (cooking ASL 1.6s,
-        # Hormozi 1-3s); coverage=full means the creator ASKED for b-roll → tight too; informational
-        # otherwise stays ≥3s (coherence — don't over-cut a tutorial).
-        spacing = (_BROLL_SPACING_TIGHT
-                   if (prefs.get("energy") == "high" or video_type in _ENTERTAINMENT_VIDEO_TYPES
-                       or _coverage_full)
-                   else _BROLL_MIN_SPACING)
+        # v2 GENRE DIAL: entertainment / high-energy takes get the tight spacing (research:
+        # interrupts every 3–5s, 2–3s aggressive); founder/educational content does NOT —
+        # B2B tolerates 8–10s cadence and lo-fi restraint outperforms there, so coverage=full
+        # alone no longer tightens spacing (it still raises the density floor, genre-scaled).
+        _entertainment = (prefs.get("energy") == "high"
+                          or video_type in _ENTERTAINMENT_VIDEO_TYPES)
+        spacing = _BROLL_SPACING_TIGHT if _entertainment else _BROLL_MIN_SPACING
+        meme_cap = _BROLL_MEME_CAP if _entertainment else _BROLL_MEME_CAP_EDU
+        visual_budget = _BROLL_VISUAL_BUDGET if _entertainment else _BROLL_VISUAL_BUDGET_EDU
+        # Deterministic cadence jitter (fixed intervals are an AI tell). Seeded per job so
+        # retries reproduce byte-identical EDLs; draw order is stable (cues sorted by start).
+        _rng = _seeded_rng("broll", job_seed)
         meme_count = 0
 
         def _admit_cue(b: dict, placed: list[tuple[int, int]]) -> dict | None:
@@ -2231,10 +2278,10 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 mode = prefs["broll_mode"]
             is_meme = need == "meme"
             if is_meme:
-                # Memes (Part 5.2): entertainment-class ONLY, capped, face stays (panel never full).
-                if not (video_type in _ENTERTAINMENT_VIDEO_TYPES or prefs.get("energy") == "high"):
-                    return None
-                if meme_count >= _BROLL_MEME_CAP:
+                # Memes (v2): allowed EVERYWHERE but per-type capped (entertainment 5,
+                # educational 2 — punchline beats only, doctrine enforces placement);
+                # face stays (panel never full).
+                if meme_count >= meme_cap:
                     return None
                 if mode == "full":
                     mode = "panel"
@@ -2246,6 +2293,8 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             # phrase" is impossible and real editors cut back to the face mid-phrase → bias SHORT
             # instead of pinning at max (which produced the "stays too long" monotony).
             hold = min(max_hold, lo_hold + 15) if span > 2 * max_hold else max(lo_hold, min(max_hold, span))
+            # Jitter the hold ±6f within the legal band (deterministic; see _rng above).
+            hold = max(lo_hold, min(max_hold, hold + _rng.randint(-_BROLL_HOLD_JITTER, _BROLL_HOLD_JITTER)))
             s_out = min(total, s_in + hold)
             # Full-frame hides the face — never over the hook/CTA. Panel/card keep the face (allowed
             # there) EXCEPT memes, which never sit on the hook (face-first, Part 5.2).
@@ -2255,9 +2304,11 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 return None
             if face_style and is_meme and s_in < _BROLL_HOOK_PROTECT:
                 return None
-            # Bidirectional spacing: reject if this window comes within `spacing` of ANY placed one
-            # (correct for both the chronological plan pass and the gap-filling top-up).
-            if any(not (s_in >= p_out + spacing or s_out <= p_in - spacing) for p_in, p_out in placed):
+            # Bidirectional spacing: reject if this window comes within `eff_spacing` of ANY placed
+            # one (correct for both the chronological plan pass and the gap-filling top-up).
+            # Per-cue jitter (−15..+30f, floor 30f) so the gap pattern never reads metronomic.
+            eff_spacing = max(30, spacing + _rng.randint(*_BROLL_SPACING_JITTER))
+            if any(not (s_in >= p_out + eff_spacing or s_out <= p_in - eff_spacing) for p_in, p_out in placed):
                 return None
             if s_out - s_in < lo_hold:
                 return None
@@ -2265,18 +2316,19 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 meme_count += 1
             return {"src_in": s_in, "src_out": s_out, "cue_text": b.get("cue", ""),
                     "broll_query": b.get("query") or b.get("cue", ""),
-                    "source": b.get("source") if b.get("source") in ("stock", "own_media", "giphy") else "stock",
+                    "source": b.get("source") if b.get("source") in ("stock", "own_media", "giphy", "klipy") else "stock",
                     # Addendum Part 2/4A: composition mode + need type + text-card fallback copy,
                     # carried so _resolve_broll enforces the tier rule and the renderer composites modes.
                     "mode": mode, "need": need, "fallback_text": (b.get("text") or b.get("cue", ""))[:80]}
 
         def _apply_budget(items: list[dict]) -> list[dict]:
             """Combined coverage budget: full-frame ≤40% (face-hiding parasocial bound) AND all modes
-            ≤50% (total visual-attention bound). Keeps the EARLIEST inserts (closer to the hook)."""
+            ≤ the genre visual budget (50% entertainment / 40% educational — v2 genre dial).
+            Keeps the EARLIEST inserts (closer to the hook)."""
             if not (face_style and total > 0):
                 return items
             full_budget = int(_BROLL_RUNTIME_BUDGET * total)
-            all_budget = int(_BROLL_VISUAL_BUDGET * total)
+            all_budget = int(visual_budget * total)
             used_full, used_all, kept = 0, 0, []
             for b in sorted(items, key=lambda x: x["src_in"]):
                 span = b["src_out"] - b["src_in"]
@@ -2300,12 +2352,14 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         broll = _apply_budget(broll)
 
         # Pass 2 — DENSITY TOP-UP (replaces the old only-on-empty floor): coverage=full means the
-        # creator explicitly asked for b-roll, so GUARANTEE a target density (~1 per 9s). If the
-        # plan under-delivered, synthesize extra cutaways over the remaining GAPS (avoiding placed
-        # windows), admit each through the same grammar, then re-budget. Empty-plan is subsumed
+        # creator explicitly asked for b-roll, so GUARANTEE a genre-scaled target density
+        # (entertainment ~1 per 5s, educational ~1 per 8s). If the plan under-delivered,
+        # synthesize extra cutaways over the remaining GAPS (avoiding placed windows), admit
+        # each through the same grammar, then re-budget. Empty-plan is subsumed
         # (broll=0 < target → full floor), preserving the old guarantee.
         if _coverage_full and clean_words and total > 0:
-            target = max(2, total // _BROLL_FLOOR_STEP_DIVISOR["full"])
+            _divisor = _BROLL_FLOOR_STEP_DIVISOR["full_ent" if _entertainment else "full"]
+            target = max(2, total // _divisor)
             if len(broll) < target:
                 _floor_mode = prefs["broll_mode"] if prefs.get("broll_mode") in ("full", "panel", "card") else "full"
                 occupied = [(b["src_in"], b["src_out"]) for b in broll]
@@ -2313,7 +2367,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                     clean_words, total, _floor_mode,
                     _BROLL_HOOK_PROTECT if face_style else 0,
                     _BROLL_CTA_PROTECT if face_style else 0,
-                    step_divisor=_BROLL_FLOOR_STEP_DIVISOR["full"],
+                    step_divisor=_divisor,
                     spacing=spacing, occupied=occupied, max_cues=target - len(broll))
                 placed = [(b["src_in"], b["src_out"]) for b in broll]
                 for e in extras:

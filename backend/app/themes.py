@@ -31,9 +31,11 @@ class Theme(BaseModel):
     hook: dict         # {sticker_bg, sticker_font, impact_sfx}
 
 
-# clean_creator MUST compile to today's exact default output (golden-diff
-# enforced by test_themes.py) — every value here matches what an untouched
-# EDL/CaptionOptions/Look/MusicTrack already defaults to.
+# clean_creator is a near-no-op default: identical to an untouched EDL EXCEPT the
+# v2 "invisible polish" grade (finishing @0.55 + hairline vignette) — the research-
+# mandated imperceptible default ("effects individually imperceptible"; lo-fi
+# credibility evidence argues against anything heavier). test_themes.py asserts
+# the no-op-except-look contract.
 THEMES: dict[str, Theme] = {
     "clean_creator": Theme(
         id="clean_creator", label="Clean Creator",
@@ -41,15 +43,15 @@ THEMES: dict[str, Theme] = {
         caption={"style": "clean", "options": {"font": "inter", "uppercase": False,
                                                "grouping": "phrase"}},
         transitions={"styles": ["fade_black"], "frames": 8, "at": "section_breaks"},
-        framing={"enabled": False, "scales": {"wide": 1.0, "mid": 1.18, "close": 1.35},
+        framing={"enabled": False, "scales": {"wide": 1.0, "mid": 1.1, "close": 1.18},
                 "rotate_s": [5, 8], "origin_y": 0.38},
         interrupts={"density": "standard", "jitter_frames": [90, 150],
                    "types": ["punch", "text_sticker"], "max_types": 2},
         sfx={"gain_db": -14},
         music={"vibe": "", "volume": 0.12, "duck": {"factor": 0.35, "window_f": 15, "ramp_f": 8}},
-        grade={"filter": None, "intensity": 1.0,
+        grade={"filter": "finishing", "intensity": 0.55,
               "adjust": {"brightness": 0.0, "contrast": 0.0, "saturation": 0.0,
-                        "temperature": 0.0, "vignette": 0.0}},
+                        "temperature": 0.0, "vignette": 0.04}},
         hook={"sticker_bg": "box", "sticker_font": "inter", "impact_sfx": False},
     ),
     "hormozi_punch": Theme(
@@ -59,7 +61,7 @@ THEMES: dict[str, Theme] = {
                 "options": {"font": "anton", "uppercase": True, "accent": "#FFD93D",
                            "grouping": "word", "stroke_px": 10, "sync_lead_frames": 4}},
         transitions={"styles": ["flash", "zoom_punch"], "frames": 6, "at": "all_cuts"},
-        framing={"enabled": True, "scales": {"wide": 1.0, "mid": 1.2, "close": 1.4},
+        framing={"enabled": True, "scales": {"wide": 1.0, "mid": 1.15, "close": 1.2},
                 "rotate_s": [4, 6], "origin_y": 0.38},
         interrupts={"density": "dense", "jitter_frames": [60, 100],
                    "types": ["punch", "framing_pop", "text_sticker"], "max_types": 3},
@@ -76,7 +78,7 @@ THEMES: dict[str, Theme] = {
         caption={"style": "clean", "options": {"font": "inter", "uppercase": False,
                                                "grouping": "phrase"}},
         transitions={"styles": ["fade_black"], "frames": 10, "at": "section_breaks"},
-        framing={"enabled": False, "scales": {"wide": 1.0, "mid": 1.12, "close": 1.22},
+        framing={"enabled": False, "scales": {"wide": 1.0, "mid": 1.1, "close": 1.18},
                 "rotate_s": [7, 10], "origin_y": 0.38},
         interrupts={"density": "calm", "jitter_frames": [150, 220],
                    "types": ["punch"], "max_types": 1},
@@ -93,7 +95,7 @@ THEMES: dict[str, Theme] = {
         caption={"style": "karaoke", "options": {"font": "baloo", "uppercase": False,
                                                  "grouping": "phrase", "highlight_persist_frames": 6}},
         transitions={"styles": ["flash"], "frames": 6, "at": "all_cuts"},
-        framing={"enabled": True, "scales": {"wide": 1.0, "mid": 1.15, "close": 1.3},
+        framing={"enabled": True, "scales": {"wide": 1.0, "mid": 1.12, "close": 1.2},
                 "rotate_s": [5, 7], "origin_y": 0.38},
         interrupts={"density": "dense", "jitter_frames": [70, 110],
                    "types": ["punch", "framing_pop"], "max_types": 2},
@@ -110,7 +112,7 @@ THEMES: dict[str, Theme] = {
         caption={"style": "bold-word", "options": {"font": "archivo", "uppercase": True,
                                                     "grouping": "word"}},
         transitions={"styles": ["fade_black"], "frames": 8, "at": "section_breaks"},
-        framing={"enabled": False, "scales": {"wide": 1.0, "mid": 1.15, "close": 1.3},
+        framing={"enabled": False, "scales": {"wide": 1.0, "mid": 1.12, "close": 1.2},
                 "rotate_s": [6, 9], "origin_y": 0.38},
         interrupts={"density": "standard", "jitter_frames": [90, 150],
                    "types": ["text_sticker"], "max_types": 1},

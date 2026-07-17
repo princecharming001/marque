@@ -8,7 +8,7 @@
 
 ## The five simultaneous hook layers (aim ≥3 in the first second)
 1. Visual pattern interrupt (motion / framing change / prop)
-2. Text overlay stating the promise (readable in <1s, ≤6 words, 55–75pt)
+2. Text overlay stating the promise (5–8 words, one line, sentence case, shown 2–5s until the first sentence ends)
 3. Caption of the first spoken words (word-synced)
 4. Voiceover delivering the hook line (energy ≥ the video's mean)
 5. Audio accent (bass hit / music entry inside 1–1.5s)

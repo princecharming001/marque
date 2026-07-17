@@ -139,8 +139,11 @@ def _check_same_framing_adjacent(seg_events: list[dict]) -> list[LintFinding]:
                              "at_out_frame": cur["out_start"],
                              "detail": f"cut at f{cur['out_start']} has only {delta:.0%} framing "
                                        f"delta — reads as a glitch, not an intentional cut",
+                             # v2 (E3): cap at the 1.20 spec ceiling — lint-fix runs AFTER
+                             # _clamp_combined_scale, so an uncapped bump here could
+                             # reintroduce a >120% frame under EDIT_LINT=fix.
                              "fix_op": {"type": "set_segment_transform", "index": cur["seg_idx"],
-                                        "scale": round(min(3.0, prev["tx_scale"] * 1.18), 3)}})
+                                        "scale": round(min(1.20, prev["tx_scale"] * 1.18), 3)}})
     return findings
 
 
