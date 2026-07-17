@@ -801,10 +801,13 @@ final class AppStore {
             guard let self else { return }
             // Hard deadline: even with the compression timeouts, NOTHING may leave the clip
             // stuck at "uploading" forever — race upload+create against a ceiling. On timeout
-            // the clip reconciles to a retryable .failed card instead of stranding. Build 45:
-            // tightened 480s → 240s (upload+create realistically finishes in <60s; the
-            // compression ladder is now itself capped at 140s), so a genuinely-wedged submit
-            // fails FAST to a retry card instead of a 8-minute dead spinner.
+            // the clip reconciles to a retryable .failed card instead of stranding. Build 48:
+            // the PUT is now a BACKGROUND session whose own 90s stall-timeout does the
+            // fast-fail (a wedged upload errors in ~90s → retry → reconcile), so this outer
+            // ceiling is a pure backstop set generously (420s) to never kill a legit slow
+            // large upload on foreground cellular. The Task.sleep pauses while the app is
+            // suspended, so it counts foreground time — the background upload keeps running
+            // independently and completes when the app returns.
             let resp: AnalyzeJobResponse? = await withTaskGroup(of: AnalyzeJobResponse?.self) { group in
                 group.addTask { [weak self] in
                     guard let self else { return nil }
@@ -823,7 +826,7 @@ final class AppStore {
                         editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
                         config: config, autoConfirm: true, toggles: toggles)
                 }
-                group.addTask { try? await Task.sleep(nanoseconds: 240 * 1_000_000_000); return nil }
+                group.addTask { try? await Task.sleep(nanoseconds: 420 * 1_000_000_000); return nil }
                 let first = await group.next() ?? nil
                 group.cancelAll()
                 return first
