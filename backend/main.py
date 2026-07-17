@@ -3675,7 +3675,7 @@ def _mock_edl(style: str, script: dict) -> dict:
         # Punch-ins only for styles whose composition draws them (mirrors _PUNCH_STYLES) —
         # a recap/faceless mock shouldn't carry a zoom the caps say isn't supported.
         "overlays": ([{"type": "punch_in", "src_in": 90, "src_out": 150, "scale": 1.08, "text": ""}]
-                     if style in ("talking_head", "duet_split") else []),
+                     if style in ("talking_head", "duet_split", "green_screen", "broll_cutaway", "split_three") else []),
         "broll": [], "layout": {"style": style, "panels": 1 if style != "split_three" else 3,
                                 "panel_boundaries": [240, 480] if style == "split_three" else []},
         "audio": {"lufs_target": -14.0},

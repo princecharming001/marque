@@ -18,7 +18,7 @@ name: R10 — CapCut mimicry (transport, filter cards, keywords, cleanup, fullsc
 - assertVisible: { id: "editorPro.undo" }
 - takeScreenshot: /tmp/cc-01-transport
 # FILTER CARDS: visual thumbnails + intensity slider
-- tapOn: { id: "editorPro.mode.filters" }
+- tapOn: { id: "editorPro.root.filters" }
 - extendedWaitUntil:
     visible: { id: "editorPro.filterCards" }
     timeout: 4000
@@ -28,7 +28,7 @@ name: R10 — CapCut mimicry (transport, filter cards, keywords, cleanup, fullsc
     timeout: 4000
 - takeScreenshot: /tmp/cc-02-filter-cards
 # KEYWORD HIGHLIGHT: Text mode → Customize (reveal fine-tune row) → Keywords toggle
-- tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.root.captions" }
 - tapOn: { id: "editorPro.capCustomize" }
 - extendedWaitUntil:
     visible: { id: "editorPro.capKeywords" }
@@ -36,7 +36,7 @@ name: R10 — CapCut mimicry (transport, filter cards, keywords, cleanup, fullsc
 - tapOn: { id: "editorPro.capKeywords" }
 - takeScreenshot: /tmp/cc-03-keywords
 # CLEANUP: Edit mode → transcript-driven filler/pause bulk cut
-- tapOn: { id: "editorPro.mode.edit" }
+# Clean up is a ROOT tile now (one-bar model) — no mode switch needed.
 - tapOn: { id: "editorPro.cleanup" }
 - extendedWaitUntil:
     visible: { id: "editorPro.cleanupPanel" }
