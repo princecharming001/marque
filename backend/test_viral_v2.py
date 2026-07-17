@@ -387,3 +387,78 @@ def test_broll_render_plan_carries_inset_rect():
 def test_talking_head_defaults_broll_on():
     import prompts as _p
     assert _p.EDIT_FORMATS["talking_head"]["toggles"]["broll"] is True
+
+
+# ---------- v4: gen-z meme dial + glimpse density + own_media degradation ----------
+
+def _meme_plan(n=12, gap=120):
+    return {"broll": [
+        {"range": [200 + i * gap, 200 + i * gap + 30], "cue": f"m{i}", "query": f"m{i}",
+         "source": "giphy", "mode": "panel", "need": "meme"} for i in range(n)]}
+
+
+def test_meme_intensity_zero_kills_memes():
+    w = _alpha_words(160)
+    out = assemble_edl(_meme_plan(), w, "broll_cutaway", "myth-buster",
+                       brief={"video_type": "freestyle_rant"},
+                       prefs={"broll": True, "meme_intensity": 0}).model_dump()
+    assert not [b for b in out["broll"] if b["need"] == "meme"], "level 0 must emit no memes"
+
+
+def test_meme_intensity_scales_caps():
+    w = _alpha_words(160)
+    def count(level):
+        out = assemble_edl(_meme_plan(), w, "broll_cutaway", "myth-buster",
+                           brief={"video_type": "freestyle_rant"},
+                           prefs={"broll": True, "meme_intensity": level}).model_dump()
+        return len([b for b in out["broll"] if b["need"] == "meme"])
+    c1, c3 = count(1), count(3)
+    assert c1 <= 5, f"level 1 keeps the v2 entertainment cap (got {c1})"
+    assert c3 > c1, f"brainrot must admit more memes than subtle ({c3} vs {c1})"
+
+
+def test_glimpse_pair_admitted_at_half_spacing():
+    # Two entity glimpses ~66f apart: glimpse holds (≤24f) HALVE effective spacing
+    # (max 52f after halving), so the pair is admitted for EVERY jitter draw — a
+    # 2s-cutaway pair at this gap would sit inside the educational rejection band.
+    w = _alpha_words(120)
+    plan = {"broll": [
+        {"range": [200, 218], "cue": "gochujang", "query": "gochujang", "source": "stock",
+         "mode": "full", "need": "entity"},
+        {"range": [290, 308], "cue": "carbonara", "query": "carbonara", "source": "stock",
+         "mode": "full", "need": "entity"},
+    ]}
+    out = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                       prefs={"broll": True}).model_dump()
+    names = [b["cue_text"] for b in out["broll"]]
+    assert "gochujang" in names and "carbonara" in names, \
+        f"glimpse spacing relief failed: {names}"
+
+
+def test_floor_emits_entity_glimpses_for_emphasized_words():
+    from app.edl import _synthesize_broll_floor
+    words = []
+    t = 0
+    for i in range(80):
+        words.append({"word": f"payload{i}" if i % 7 else "gochujang",
+                      "start_ms": t, "end_ms": t + 350,
+                      "is_emphasized": (i % 7 == 0)})
+        t += 400
+    cues = _synthesize_broll_floor(words, ms_to_frame(t), "full", 90, 60, step_divisor=90)
+    assert any(c["need"] == "entity" for c in cues), \
+        "emphasized (inflected) words must synthesize entity glimpses"
+
+
+def test_unresolved_own_media_literal_degrades_to_text_card():
+    # Prod job 90813e10: an own_media entity cue with no URL shipped as a blank b-roll item.
+    # The tier pass must now degrade it exactly like any unresolved literal.
+    edl = {"style": "broll_cutaway", "broll": [
+        {"src_in": 300, "src_out": 322, "cue_text": "gochujang jar", "broll_query": "",
+         "source": "own_media", "mode": "full", "need": "entity",
+         "fallback_text": "gochujang", "resolved_url": None}]}
+    out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
+    assert not out["broll"], "URL-less own_media literal must not survive as b-roll"
+    cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
+    assert cards, "must degrade to a text card"
+    acts = [e["action"] for e in out["_broll_log"]]
+    assert "text_card" in acts, out["_broll_log"]

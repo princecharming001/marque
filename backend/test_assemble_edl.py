@@ -395,9 +395,11 @@ def test_topup_respects_occupied_windows_and_spacing():
 
 
 def test_entertainment_tightens_spacing_not_coverage():
-    # v2 genre dial: ENTERTAINMENT tightens spacing to 45f (jitter 30..75); coverage=full alone
-    # does NOT (educational keeps ≥90f, jitter 75..120). Gap ~80f: always survives entertainment,
-    # always drops on the plain educational take.
+    # v4 retune (owner: "a lot more frequent"): entertainment spacing 45f, educational 75f
+    # (was 90f). The jitter bands now overlap (ent 30..75, edu 60..105), so the educational
+    # floor is asserted as SPEC; the deterministic behavioral check is entertainment-side.
+    from app.edl import _BROLL_MIN_SPACING as _sp_edu, _BROLL_SPACING_TIGHT as _sp_ent
+    assert _sp_ent == 45 and _sp_edu == 75, "v4 spacing dial drifted"
     w = _alpha_words(60)
     plan = {"broll": [
         {"range": [150, 200], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
@@ -406,9 +408,5 @@ def test_entertainment_tightens_spacing_not_coverage():
     ent = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
                        brief={"video_type": "freestyle_rant"},
                        prefs={"broll": True}).model_dump()
-    plain = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
-                         prefs={"broll": True, "broll_coverage": "full"}).model_dump()
     assert any(b["cue_text"] == "a" for b in ent["broll"]) and any(b["cue_text"] == "b" for b in ent["broll"]), \
         "entertainment spacing must admit the tight pair"
-    assert len([b for b in plain["broll"] if b["cue_text"] in ("a", "b")]) == 1, \
-        "educational spacing (≥90f even under coverage=full) drops one of the pair"

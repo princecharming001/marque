@@ -92,3 +92,74 @@ def test_genuine_signoff_still_cuttable_at_end():
     last_f = ms_to_frame(words[-1]["start_ms"])
     assert any(d["src_in"] <= last_f < d["src_out"] for d in edl["drops"]), \
         "a genuine trailing sign-off must remain cuttable"
+
+
+def _w(word, start_ms, end_ms):
+    return {"word": word, "start_ms": start_ms, "end_ms": end_ms}
+
+
+# 5. Mid-sentence integrity (prod job 90813e10): "Everyone tries to pair fusion by
+#    taste." lost "to pair fusion by" to a hallucinated false_start. The removed
+#    words are NOT re-delivered anywhere after the cut, and the seam starts
+#    mid-sentence ("tries" has no terminal punctuation) — the cut must be vetoed.
+_FUSION_WORDS = [
+    _w("Everyone", 13267, 13497), _w("tries", 13497, 13770),
+    _w("to", 13770, 13882), _w("pair", 13882, 14123), _w("fusion", 14123, 14363),
+    _w("by", 14833, 14933), _w("taste.", 14933, 15266),
+    _w("Gochujang", 15633, 16366), _w("tastes", 16700, 16900),
+    _w("bold,", 17000, 17333), _w("carbonara", 17566, 18066),
+    _w("tastes", 18066, 18366), _w("rich.", 18366, 18600),
+]
+
+
+def test_hallucinated_midsentence_false_start_is_vetoed():
+    cut_in = ms_to_frame(13770)   # "to"
+    cut_out = ms_to_frame(14933)  # through "by"
+    edl = assemble_edl({"cuts": [{"range": [cut_in, cut_out], "reason": "false_start"}]},
+                       _FUSION_WORDS, "talking_head", "hot_take")
+    pair_in, pair_out = ms_to_frame(13882), ms_to_frame(14363)   # "pair fusion"
+    overlapping = [d for d in edl.drops
+                   if d.reason == "false_start" and d.src_in < pair_out and d.src_out > pair_in]
+    assert not overlapping, \
+        "mid-sentence, never-re-delivered words were cut — interior guard failed"
+
+
+def test_real_midsentence_retake_still_cut():
+    # A genuine stumble re-delivers: "you're not— you're not matching flavors" —
+    # the removed tokens all reappear right after, so the cut stays allowed.
+    ws = [
+        _w("Look,", 0, 300), _w("you're", 400, 600), _w("not—", 600, 900),
+        _w("you're", 1400, 1600), _w("not", 1600, 1800),
+        _w("matching", 1800, 2200), _w("flavors.", 2200, 2700),
+        _w("Fat,", 3100, 3400), _w("acid,", 3500, 3800), _w("and", 3900, 4000),
+        _w("heat", 4000, 4300), _w("carry", 4300, 4600), _w("the", 4600, 4700),
+        _w("dish.", 4700, 5100), _w("That", 5600, 5800), _w("is", 5800, 5900),
+        _w("the", 5900, 6000), _w("whole", 6000, 6300), _w("trick.", 6300, 6700),
+    ]
+    cut_in = ms_to_frame(400)
+    cut_out = ms_to_frame(1400)
+    edl = assemble_edl({"cuts": [{"range": [cut_in, cut_out], "reason": "false_start"}]},
+                       ws, "talking_head", "hot_take")
+    drops = [d.model_dump() for d in edl.drops]
+    assert any(d["reason"] == "false_start" and d["src_out"] > d["src_in"] + 20 for d in drops), \
+        "a genuine re-delivered retake should still be cuttable"
+
+
+def test_sentence_boundary_cut_still_allowed():
+    # A whole-sentence tangent cut whose seam sits on terminal punctuation needs no
+    # re-delivery — classic false-start/tangent shape stays cuttable.
+    ws = [
+        _w("Great.", 0, 400),
+        _w("Anyway", 1000, 1300), _w("random", 1300, 1700), _w("tangent", 1700, 2100),
+        _w("here.", 2100, 2500),
+        _w("The", 3100, 3300), _w("point", 3300, 3600), _w("stands.", 3600, 4000),
+        _w("Structure", 4600, 5000), _w("beats", 5000, 5300), _w("flavor", 5300, 5700),
+        _w("every", 5700, 6000), _w("single", 6000, 6300), _w("time", 6300, 6600),
+        _w("you", 6600, 6700), _w("cook.", 6700, 7100),
+    ]
+    edl = assemble_edl({"cuts": [{"range": [ms_to_frame(1000), ms_to_frame(2600)],
+                                  "reason": "tangent"}]},
+                       ws, "talking_head", "hot_take")
+    t_in, t_out = ms_to_frame(1700), ms_to_frame(2100)           # "tangent"
+    covered = any(d.src_in <= t_in and d.src_out >= t_out for d in edl.drops)
+    assert covered, "sentence-boundary tangent cut was wrongly vetoed"

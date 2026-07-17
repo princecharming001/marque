@@ -1177,29 +1177,70 @@ struct ProEditorView: View {
             let f = playheadSourceFrame
             if let idx = d.broll.firstIndex(where: { $0.srcIn <= f && f < $0.srcOut }) {
                 let roll = d.broll[idx]
-                Group {
-                    if let url = roll.resolvedURL, let path = localMediaPreviews[url],
-                       let img = UIImage(contentsOfFile: MediaStore.url(for: path).path) {
-                        Image(uiImage: img).resizable().scaledToFill()
-                    } else if let url = roll.resolvedURL, url.hasPrefix("http") {
-                        RemoteRollFill(urlString: url)
-                    } else {
-                        ZStack {
-                            Rectangle().fill(Color(hex: 0xB56635).opacity(0.30))
-                            VStack(spacing: 6) {
-                                Image(systemName: roll.source == "own_media" ? "photo" : "film")
-                                    .font(.system(size: 26)).foregroundStyle(.white.opacity(0.8))
-                                Text(roll.source == "own_media" ? "Your media" : roll.cueText)
-                                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.8))
-                                    .lineLimit(1)
-                            }
-                        }
-                    }
+                // v4: render at the roll's TRUE geometry (full / panel / card / smart
+                // inset), mirroring BrollLayer's 1080×1920 constants — the creator must
+                // see the actual picture AND its position/size, not a full-frame stand-in.
+                GeometryReader { geo in
+                    let rect = Self.rollRect(roll, in: geo.size)
+                    let framed = roll.mode != "full"
+                    let radius = framed ? 20 * geo.size.width / 1080 : 0
+                    rollFill(roll)
+                        .frame(width: rect.width, height: rect.height)
+                        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .strokeBorder(.white.opacity(framed ? 0.16 : 0), lineWidth: framed ? 1.5 : 0))
+                        .shadow(color: .black.opacity(framed ? 0.45 : 0),
+                                radius: framed ? 12 : 0, y: framed ? 6 : 0)
+                        .position(x: rect.midX, y: rect.midY)
                 }
                 .allowsHitTesting(false)
-                .clipped()
                 .accessibilityIdentifier("editorPro.rollSim")
             }
+        }
+    }
+
+    @ViewBuilder private func rollFill(_ roll: EditorBroll) -> some View {
+        Group {
+            if let url = roll.resolvedURL, let path = localMediaPreviews[url],
+               let img = UIImage(contentsOfFile: MediaStore.url(for: path).path) {
+                Image(uiImage: img).resizable().scaledToFill()
+            } else if let url = roll.resolvedURL, url.hasPrefix("http") {
+                RemoteRollFill(urlString: url)
+            } else {
+                ZStack {
+                    Rectangle().fill(Color(hex: 0xB56635).opacity(0.30))
+                    VStack(spacing: 6) {
+                        Image(systemName: roll.source == "own_media" ? "photo" : "film")
+                            .font(.system(size: 26)).foregroundStyle(.white.opacity(0.8))
+                        Text(roll.source == "own_media" ? "Your media" : roll.cueText)
+                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.8))
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
+    }
+
+    /// The roll's canvas rect per mode, mirroring render BrollLayer's design-space
+    /// constants (PANEL: left/right 40, top 130, height 0.46·1920 · CARD: w 0.44·1080,
+    /// h 0.252·1920, top 220, right 48 — all in a 1080×1920 frame).
+    private static func rollRect(_ roll: EditorBroll, in size: CGSize) -> CGRect {
+        let W = size.width, H = size.height
+        switch roll.mode {
+        case "smart":
+            if let x = roll.insetX, let y = roll.insetY,
+               let w = roll.insetW, let h = roll.insetH {
+                return CGRect(x: x * W, y: y * H, width: w * W, height: h * H)
+            }
+            fallthrough                        // no inset rect → panel geometry (render parity)
+        case "panel":
+            let l = 40.0 / 1080 * W
+            return CGRect(x: l, y: 130.0 / 1920 * H, width: W - 2 * l, height: 0.46 * H)
+        case "card":
+            let w = 0.44 * W, h = 0.252 * H
+            return CGRect(x: W - 48.0 / 1080 * W - w, y: 220.0 / 1920 * H, width: w, height: h)
+        default:
+            return CGRect(x: 0, y: 0, width: W, height: H)
         }
     }
 
