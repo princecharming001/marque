@@ -329,3 +329,61 @@ def test_theme_music_volume_overrides_default():
             "audio": None}
     out2 = main._apply_plan_music_vibe(edl2, {"music": True}, {"wanted": True})
     assert out2["audio"]["music"]["volume"] == 0.12       # default unchanged
+
+
+# --- v3: glimpse bands + smart placement -------------------------------------
+
+def test_entity_glimpse_band():
+    # A named thing flashes: full-mode entity holds clamp to 15-24f (0.5-0.8s).
+    w = _alpha_words(80)
+    plan = {"broll": [{"range": [300, 400], "cue": "gochujang", "query": "gochujang paste",
+                       "source": "stock", "mode": "full", "need": "entity"}]}
+    d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
+    assert d["broll"], "entity glimpse dropped"
+    hold = d["broll"][0]["src_out"] - d["broll"][0]["src_in"]
+    assert 15 <= hold <= 24, f"entity glimpse must flash 0.5-0.8s, got {hold}f"
+
+
+def test_smart_mode_admitted_and_carried():
+    w = _alpha_words(80)
+    plan = {"broll": [{"range": [300, 360], "cue": "app demo", "query": "app",
+                       "source": "stock", "mode": "smart", "need": "action"}]}
+    d = assemble_edl(plan, w, "talking_head", "myth-buster",
+                     prefs={"broll": True, "broll_mode": "smart"}).model_dump()
+    assert d["broll"] and d["broll"][0]["mode"] == "smart"
+
+
+def test_smart_inset_rect_ots_rule():
+    from app.faces import smart_inset_rect
+    right = smart_inset_rect({"x": 0.05, "y": 0.3, "w": 0.35, "h": 0.25})  # face left
+    left = smart_inset_rect({"x": 0.60, "y": 0.3, "w": 0.35, "h": 0.25})   # face right
+    assert right and right["x"] > 0.4, "face-left → inset RIGHT"
+    assert left and left["x"] < 0.1, "face-right → inset LEFT"
+    for r in (right, left):
+        assert r["y"] >= 140 / 1920 - 1e-3, "must clear the platform top UI (4dp rounding tol)"
+        assert r["y"] + r["h"] < 0.53, "must clear the caption band"
+    assert smart_inset_rect(None) is None
+
+
+def test_smart_inset_degrades_when_no_clear_spot():
+    from app.faces import smart_inset_rect
+    # A huge centered face fills the top band → no clear spot at any shrink step.
+    assert smart_inset_rect({"x": 0.05, "y": 0.02, "w": 0.9, "h": 0.6}) is None
+
+
+def test_broll_render_plan_carries_inset_rect():
+    from app.edl import build_render_plan
+    w = _alpha_words(80)
+    plan = {"broll": [{"range": [300, 360], "cue": "x", "query": "x",
+                       "source": "stock", "mode": "smart", "need": "action"}]}
+    edl = assemble_edl(plan, w, "talking_head", "myth-buster",
+                       prefs={"broll": True, "broll_mode": "smart"}).model_dump()
+    edl["broll"][0]["resolved_url"] = "https://x/clip.mp4"
+    edl["broll"][0]["inset_rect"] = {"x": 0.05, "y": 0.08, "w": 0.42, "h": 0.13}
+    rp = build_render_plan(edl)
+    assert rp["broll"][0]["inset_rect"] == {"x": 0.05, "y": 0.08, "w": 0.42, "h": 0.13}
+
+
+def test_talking_head_defaults_broll_on():
+    import prompts as _p
+    assert _p.EDIT_FORMATS["talking_head"]["toggles"]["broll"] is True

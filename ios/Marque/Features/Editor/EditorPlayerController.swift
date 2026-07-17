@@ -66,9 +66,21 @@ final class EditorPlayerController {
         player.volume = Float(min(1.0, max(0.0, v)))
         // Music ducks under speech: drop to 40% of its set volume near any speech frame.
         if let mp = musicPlayer {
-            let nearSpeech = musicDucks && speechFrames.contains { abs($0 - f) < 15 }
+            // Perf: binary search the (sorted) speech frames — the linear contains{} scan
+            // ran on every 30Hz tick and compounded the caption-change hitch.
+            let nearSpeech = musicDucks && Self.hasNear(speechFrames, f, within: 15)
             mp.volume = Float(min(1.0, musicVolume * (nearSpeech ? 0.4 : 1.0)))
         }
+    }
+
+    /// Binary search: any element within ±window of x in a SORTED array.
+    static func hasNear(_ sorted: [Int], _ x: Int, within window: Int) -> Bool {
+        var lo = 0, hi = sorted.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if sorted[mid] < x - window { lo = mid + 1 } else { hi = mid }
+        }
+        return lo < sorted.count && abs(sorted[lo] - x) < window
     }
 
     /// Create/replace/remove the looping preview player for the draft's music track.
@@ -145,8 +157,12 @@ final class EditorPlayerController {
         guard !placeholder else { return }
         if pendingSeek { queuedSeekTarget = nil; return }   // drop stale preview targets
         pendingSeek = true
+        // Trim-lag fix: a WIDE-tolerance seek during the drag (WWDC22: zero-tolerance
+        // forces dependent-frame decode and stalls; keyframe-snapped is instant). The
+        // exact frame lands on gesture end via the normal zero-tolerance seek path.
+        let tol = CMTime(seconds: 0.15, preferredTimescale: 600)
         player.seek(to: CMTime(seconds: max(0, srcSec), preferredTimescale: 600),
-                    toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                    toleranceBefore: tol, toleranceAfter: tol) { [weak self] _ in
             self?.pendingSeek = false
         }
     }

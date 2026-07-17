@@ -41,11 +41,17 @@ EDIT_FORMATS = {
     "talking_head": {
         "label": "Talking head",
         "style": "talking_head",
-        "toggles": {"broll": False, "punch_ins": True, "music": False},
+        # v3 (owner + glimpse research): plain talking-head now defaults to LIGHT b-roll —
+        # sub-second entity glimpses on named things ("gochujang" → flash of the food),
+        # NOT full cutaway coverage. The creator can still flip it off.
+        "toggles": {"broll": True, "punch_ins": True, "music": False},
         "default_theme": "clean_creator",   # A7
         "brief_hint": (
             "Classic talking-head cut: tight filler trims, open on the strongest hook, "
-            "punch-ins on emphasized lines, captions carry the words."),
+            "punch-ins on emphasized lines, captions carry the words. Emit a broll cue for "
+            "each concretely NAMED thing (food, product, place, tool) — these render as "
+            "sub-second full-frame glimpses that flash in and out; sparse, never blanket "
+            "coverage, hook/CTA stay on the face."),
     },
     "talking_head_broll": {
         "label": "Talking head + B-roll",

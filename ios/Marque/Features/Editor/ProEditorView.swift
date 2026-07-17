@@ -1181,6 +1181,8 @@ struct ProEditorView: View {
                     if let url = roll.resolvedURL, let path = localMediaPreviews[url],
                        let img = UIImage(contentsOfFile: MediaStore.url(for: path).path) {
                         Image(uiImage: img).resizable().scaledToFill()
+                    } else if let url = roll.resolvedURL, url.hasPrefix("http") {
+                        RemoteRollFill(urlString: url)
                     } else {
                         ZStack {
                             Rectangle().fill(Color(hex: 0xB56635).opacity(0.30))
@@ -1202,6 +1204,7 @@ struct ProEditorView: View {
     }
 
     // MARK: FP1 — text stickers on the canvas (drag anywhere / pinch / tap-select)
+
 
     @ViewBuilder private var stickerSimOverlay: some View {
         if let d = session?.draft {
@@ -1371,7 +1374,12 @@ struct ProEditorView: View {
                         RoundedRectangle(cornerRadius: 10, style: .continuous).fill(colorFromHex(o.bg))
                     }
                 }
+                .drawingGroup()   // flatten the word stack to one layer — kills the per-change raster spike
                 .accessibilityIdentifier("editorPro.captionSim")
+                // Owner ask (intuitive select-all): tapping the caption on the canvas selects
+                // the WHOLE caption track — the style/position controls open right there, no
+                // hunting for a button. (Style/position were already track-wide.)
+                .onTapGesture { rootPanel = .captions }
                 // Selection affordance: dashed bounds invite the drag whenever captions are
                 // the working context (Captions panel open or a phrase selected); accent
                 // while a gesture is live (TikTok's selection box).
@@ -1472,7 +1480,9 @@ struct ProEditorView: View {
     /// them is the active one. nil during silences (UX-3) or before the first word.
     private func currentCaptionGroup(_ d: EditorDocument) -> (words: [String], activeInGroup: Int)? {
         let srcFrame = secondsToFrame(d.sourceSeconds(forOutput: player?.currentOutputTime ?? 0))
-        guard let activeIdx = d.captions.lastIndex(where: { $0.frame <= srcFrame }) else { return nil }
+        // Perf: binary search (captions are frame-sorted) — the linear lastIndex scan ran
+        // 30x/s and spiked exactly at caption-group changes (the owner's playback hitch).
+        guard let activeIdx = Self.lastIndexAtOrBefore(d.captions, frame: srcFrame) else { return nil }
         let cap = d.captions[activeIdx]
         // UX-3 / formatting fix #12: bound the display window with the transcript so a
         // caption doesn't burn on screen through a silence — mirrors Captions.tsx's two-tier
@@ -1501,6 +1511,16 @@ struct ProEditorView: View {
             hi = min(d.captions.count - 1, lo + 4)
         }
         return (d.captions[lo...hi].map(\.word), activeIdx - lo)
+    }
+
+    /// Binary search: index of the last caption whose frame <= target (frame-sorted array).
+    static func lastIndexAtOrBefore(_ captions: [EditorCaption], frame: Int) -> Int? {
+        var lo = 0, hi = captions.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if captions[mid].frame <= frame { lo = mid + 1 } else { hi = mid }
+        }
+        return lo > 0 ? lo - 1 : nil
     }
 
     // (internal: +Actions' split-at-playhead reads it too)
@@ -2124,5 +2144,22 @@ private struct AdjustKnob: View {
         }
         .onAppear { if !seeded { value = initial; seeded = true } }
         .accessibilityIdentifier("editorPro.adjust.\(label.lowercased())")
+    }
+}
+
+
+/// Canvas-size fill of a remote roll's first frame (owner fix: show the ACTUAL b-roll
+/// footage on the manual-edit preview, not an amber placeholder).
+struct RemoteRollFill: View {
+    let urlString: String
+    @State private var img: UIImage?
+    var body: some View {
+        Group {
+            if let img { Image(uiImage: img).resizable().scaledToFill() }
+            else { Rectangle().fill(Color(hex: 0xB56635).opacity(0.30)) }
+        }
+        .task(id: urlString) {
+            if img == nil { img = await RemoteRollThumbCache.shared.thumb(for: urlString) }
+        }
     }
 }

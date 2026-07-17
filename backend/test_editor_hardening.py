@@ -1679,9 +1679,10 @@ _TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
                     "pos_x", "pos_y", "rotation", "color", "bg", "font"}
 _TS_BROLL_KEYS = {"frame_in", "frame_out", "cue_text", "asset_id", "broll_query",
                   "source", "resolved_url",
-                  "mode"}                             # schema v5 (panel/card)
+                  "mode",
+                  "inset_rect"}                             # schema v5 (panel/card)
 _TS_LAYOUT_KEYS = {"style", "panels", "panel_boundaries", "split_fraction",
-                   "speaker_treatment", "pip_position"}   # schema v5 (SourcePip)
+                   "speaker_treatment", "pip_position", "face_box"}   # schema v5 (SourcePip)
 _TS_REACT_SOURCE_KEYS = {"resolved_url", "kind", "credit_label"}
 _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_gain"}
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}

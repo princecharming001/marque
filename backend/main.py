@@ -2329,6 +2329,8 @@ _COMPOSITION_STYLE_OPTIONS = [
      "blurb": "B-roll drops into a rounded panel up top — your face stays on screen."},
     {"id": "card", "label": "Floating Cards", "config_key": "broll_mode",
      "blurb": "Small b-roll card floats over your shoulder while you talk."},
+    {"id": "smart", "label": "Smart Placement", "config_key": "broll_mode",
+     "blurb": "B-roll auto-places in the open side of the frame — never over your face."},
     {"id": "green_screen", "label": "Green Screen", "config_key": "composition_style",
      "blurb": "You're composited over what you're reacting to, like a real green screen."},
     {"id": "split_screen", "label": "Split Screen", "config_key": "composition_style",
@@ -4692,7 +4694,7 @@ async def _run_edit(job_id: str, words: list[dict]):
         # (assemble_edl's broll loop, app/edl.py) rather than leaving it to the LLM's
         # per-item discretion — the creator picked a specific look, so it must be honored.
         _broll_mode = (job.get("config") or {}).get("broll_mode", "")
-        if _broll_mode in ("full", "panel", "card"):
+        if _broll_mode in ("full", "panel", "card", "smart"):
             prefs = {**prefs, "broll_mode": _broll_mode}
         # B-roll opt-in: coverage="full" means the creator EXPLICITLY chose b-roll — the
         # assembler synthesizes a deterministic floor of cutaways when the plan emits none, so
@@ -4911,6 +4913,27 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
                                             corpus=job.get("broll_corpus"),
                                             force_broll=_force_broll)
+            # v3 SMART PLACEMENT: when any kept insert is mode "smart", detect the speaker
+            # face (YuNet on sampled frames — app/faces.py, fail-soft) and compute each
+            # smart item's OTS inset rect (opposite the face, safe-zone/caption-band
+            # clean). Degrades per-item to panel when no face / no clear spot exists.
+            _smart_items = [b for b in (edl_data.get("broll") or [])
+                            if b.get("mode") == "smart" and b.get("resolved_url")]
+            if _smart_items:
+                from app import faces as faces_mod
+                _fbox = await asyncio.to_thread(
+                    faces_mod.detect_face_box, job.get("source_url") or "")
+                if _fbox:
+                    edl_data.setdefault("layout", {})["face_box"] = _fbox
+                _copts = edl_data.get("caption_options") or {}
+                _cpy = _copts.get("pos_y") or 0.62
+                _band = (max(0.0, _cpy - 0.09), min(1.0, _cpy + 0.09))
+                for _b in _smart_items:
+                    _rect = faces_mod.smart_inset_rect(_fbox, caption_band=_band)
+                    if _rect:
+                        _b["inset_rect"] = _rect
+                    else:
+                        _b["mode"] = "panel"      # no face / no clear spot → safe default
             # v2 (A5): meme pop-in SFX coupling — POST-resolve (an unresolved insert that the
             # tier pass dropped must never leave an orphan cue). Restrained: memes only,
             # entertainment/high-energy only, global budget respected.
