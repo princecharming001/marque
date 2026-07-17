@@ -148,9 +148,10 @@ def test_trim_levels_table_monotonic():
 
 
 def test_aggressive_level_tightens_gap_threshold():
-    # A 300ms gap: below aggressive's 250ms threshold trigger point (300>250, cuts)
-    # but below conservative's 450ms threshold (300<450, no cut).
-    words = [_w("hello", 0, 500), _w("world", 800, 1100)]
+    # A 550ms gap: above aggressive's 450ms trigger (cuts) but below conservative's
+    # 700ms (no cut). Pro-cut calibration moved all thresholds up — natural sentence
+    # pauses (300-550ms) are rhythm, not dead air.
+    words = [_w("hello", 0, 500), _w("world", 1050, 1350)]
     _, agg_drops = strip_fillers_v2(words, "aggressive")
     _, cons_drops = strip_fillers_v2(words, "conservative")
     assert any(d.reason == "dead_air" for d in agg_drops)
