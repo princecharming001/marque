@@ -70,6 +70,10 @@ struct WireOp: Equatable {
     /// The creator's own photo/video as a roll — direct URL (already uploaded).
     static func addMediaRoll(_ a: Int, _ b: Int, url: String) -> WireOp { WireOp(type: "add_broll", i: ["start_frame": a, "end_frame": b], s: ["url": url]) }
     static func removeBroll(_ a: Int, _ b: Int) -> WireOp { WireOp(type: "remove_broll", i: ["start_frame": a, "end_frame": b]) }
+    /// v6 direct manipulation: place a roll at an exact normalized canvas rect (drag/pinch).
+    static func brollRect(index: Int, x: Double, y: Double, w: Double, h: Double) -> WireOp {
+        WireOp(type: "set_broll_rect", i: ["index": index], d: ["x": x, "y": y, "w": w, "h": h])
+    }
     static func setMusic(url: String, volume: Double, duck: Bool) -> WireOp { WireOp(type: "set_music", d: ["volume": volume], s: ["url": url], bool: ["enabled": true, "duck_voice": duck]) }
     static func removeMusic() -> WireOp { WireOp(type: "set_music", bool: ["enabled": false]) }
     static func splitFraction(_ v: Double) -> WireOp { WireOp(type: "set_split_fraction", d: ["value": v]) }
@@ -355,6 +359,17 @@ enum LocalEDLEngine {
             let before = d.broll.count
             d.broll.removeAll { r in a == nil || b == nil || !(r.srcOut <= a! || r.srcIn >= b!) }
             guard d.broll.count < before else { return nil }
+        case "set_broll_rect":
+            // v6 direct manipulation (backend parity): normalized inset rect + mode smart.
+            guard let idx = op.i["index"], d.broll.indices.contains(idx),
+                  let x = op.d["x"], let y = op.d["y"],
+                  let w = op.d["w"], let h = op.d["h"] else { return nil }
+            let cx = min(0.9, max(0.0, x)), cy = min(0.9, max(0.0, y))
+            d.broll[idx].insetX = cx
+            d.broll[idx].insetY = cy
+            d.broll[idx].insetW = min(min(1.0, max(0.12, w)), 1.0 - cx)
+            d.broll[idx].insetH = min(min(1.0, max(0.08, h)), 1.0 - cy)
+            d.broll[idx].mode = "smart"
         case "set_split_fraction":
             break   // no local visual sim — applied server-side on Save; return doc unchanged-but-dirty
         default:

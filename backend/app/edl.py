@@ -1165,7 +1165,7 @@ TWEAK_OP_TYPES = [
     "set_caption_style", "set_caption_options", "set_captions_enabled",
     "cut_range", "restore_range",
     "remove_overlays", "add_punch_in", "add_text_card", "add_text_sticker",
-    "add_broll", "remove_broll", "set_split_fraction", "trim_start", "trim_end",
+    "add_broll", "remove_broll", "set_broll_rect", "set_split_fraction", "trim_start", "trim_end",
     "undo", "reorder_segments", "set_music", "set_segment_volume", "mute_range",
     "split_segment", "edit_caption", "edit_overlay",
     "set_segment_speed", "set_segment_transform", "set_transition", "set_filter", "set_adjust",
@@ -1713,6 +1713,30 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                         applied = True
                     else:
                         reason = "no b-roll found" + (" in that range" if r else "")
+
+            elif t == "set_broll_rect":
+                # v6 direct manipulation: the editor drags/pinches a roll on the canvas.
+                # Writes a normalized inset rect and flips the item to mode "smart" —
+                # the render's absolute-rect branch then draws it at exactly that
+                # geometry (BrollLayer honors inset_rect for mode smart).
+                idx = op.get("index")
+                items = edl.get("broll") or []
+                if not isinstance(idx, int) or not (0 <= idx < len(items)):
+                    reason = "no such b-roll item"
+                else:
+                    try:
+                        x = min(0.9, max(0.0, float(op.get("x"))))
+                        y = min(0.9, max(0.0, float(op.get("y"))))
+                        w = min(1.0, max(0.12, float(op.get("w"))))
+                        h = min(1.0, max(0.08, float(op.get("h"))))
+                    except (TypeError, ValueError):
+                        reason = "bad rect"
+                    else:
+                        w, h = min(w, 1.0 - x), min(h, 1.0 - y)
+                        items[idx]["inset_rect"] = {"x": round(x, 4), "y": round(y, 4),
+                                                    "w": round(w, 4), "h": round(h, 4)}
+                        items[idx]["mode"] = "smart"
+                        applied = True
 
             elif t == "set_split_fraction":
                 if edl.get("style") != "duet_split":
