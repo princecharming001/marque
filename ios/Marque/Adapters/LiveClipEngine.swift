@@ -183,64 +183,37 @@ struct LiveClipEngine: ClipEngineProtocol {
     /// into memory). Content-Type matches what the mint request declared. Returns
     /// true only on a 2xx; any transport/HTTP failure returns false so makeClips
     /// falls back instead of creating a job with an empty source object.
-    // Dedicated upload session (no session-level delegate → per-task delegates allowed,
-    // unlike URLSession.shared). Long resource timeout for large cellular uploads.
-    private static let uploadSession: URLSession = {
-        let cfg = URLSessionConfiguration.default
-        cfg.timeoutIntervalForRequest = 300
-        cfg.timeoutIntervalForResource = 900
-        cfg.waitsForConnectivity = true
-        return URLSession(configuration: cfg)
-    }()
-
     private static func uploadFootage(to uploadURLString: String, fileURL: URL,
                                       onProgress: (@Sendable (Double) -> Void)? = nil) async -> Bool {
-        guard let url = URL(string: uploadURLString),
-              FileManager.default.fileExists(atPath: fileURL.path) else {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
             BackendClient.shared.reportClientEvent("upload_precondition_failed",
-                                                   detail: "missing file or bad url")
+                                                   detail: "missing file")
             return false
         }
-        // Up to 3 attempts with backoff — a single transient network blip on a large
-        // cellular upload used to hard-fail the whole edit with no retry.
-        var lastDetail = ""
+        // Build 48: the PUT goes through a BACKGROUND URLSession (BackgroundUploader) — it
+        // keeps running when the app is suspended (the #1 "stuck on upload" cause: switching
+        // apps mid-transfer used to stall it after ~30s), has its own 90s stall-timeout so a
+        // wedged connection fast-fails instead of sitting, and handles connectivity drops.
+        // Up to 3 attempts: the session self-retries connectivity, but an HTTP 5xx / reset
+        // still benefits from a fresh task.
+        var ok = false
         for attempt in 0..<3 {
             if attempt > 0 {
                 try? await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
                 onProgress?(0)                 // retry restarts the byte count
             }
-            var req = URLRequest(url: url)
-            req.httpMethod = "PUT"
-            req.timeoutInterval = 300   // large upload, possibly on cellular
-            req.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
-            do {
-                // Build 47 CRASH FIX: URLSession.shared THROWS an NSException when handed a
-                // per-task delegate ("task-specific delegates are prohibited on the shared
-                // session") — build 45's progress bar always passes one on the edit-upload
-                // path, so every first upload-for-editing crashed. A dedicated session with
-                // no session-level delegate accepts task delegates; `.shared` (no delegate)
-                // stays for the delegate-less path.
-                let delegate = onProgress.map { UploadProgressDelegate(onProgress: $0) }
-                let session = delegate != nil ? Self.uploadSession : URLSession.shared
-                let (_, resp) = try await session.upload(for: req, fromFile: fileURL,
-                                                         delegate: delegate)
-                if let http = resp as? HTTPURLResponse {
-                    if (200..<300).contains(http.statusCode) { return true }
-                    lastDetail = "http \(http.statusCode)"
-                    if (400..<500).contains(http.statusCode) { break }   // permanent — don't retry
-                } else {
-                    lastDetail = "non-http response"
-                }
-            } catch {
-                lastDetail = error.localizedDescription
-            }
+            if Task.isCancelled { break }
+            ok = await BackgroundUploader.shared.upload(fileURL: fileURL, to: uploadURLString,
+                                                        onProgress: onProgress)
+            if ok || Task.isCancelled { break }
         }
-        // Surface the failure server-side so a client-only breakage is diagnosable from
-        // Render logs (this failure class previously left ZERO server trace).
-        let mb = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int).flatMap { $0 } ?? 0
-        BackendClient.shared.reportClientEvent("upload_failed",
-                                               detail: "\(lastDetail) | \(mb / 1_000_000)MB")
-        return false
+        if !ok {
+            // Surface the failure server-side so a client-only breakage is diagnosable from
+            // Render logs (this failure class previously left ZERO server trace).
+            let mb = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int).flatMap { $0 } ?? 0
+            BackendClient.shared.reportClientEvent("upload_failed", detail: "bg-session | \(mb / 1_000_000)MB")
+        }
+        return ok
     }
 
     func render(clipId: UUID) async -> ClipStatus {
@@ -480,19 +453,9 @@ enum MediaCompressor {
     }
 }
 
-// Build 45: forwards URLSession upload byte-progress → a 0–1 fraction so the take card's
-// timeline shows a real bar during the PUT. Per-task delegate (iOS 15+), so it never
-// touches the shared session's global behavior.
-final class UploadProgressDelegate: NSObject, URLSessionTaskDelegate {
-    private let onProgress: @Sendable (Double) -> Void
-    init(onProgress: @escaping @Sendable (Double) -> Void) { self.onProgress = onProgress }
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
-                    totalBytesExpectedToSend: Int64) {
-        guard totalBytesExpectedToSend > 0 else { return }
-        onProgress(Double(totalBytesSent) / Double(totalBytesExpectedToSend))
-    }
-}
+// Build 48: byte-progress now comes from BackgroundUploader's own session delegate
+// (see BackgroundUploader.swift) — the old per-task UploadProgressDelegate on the
+// foreground session is gone with the background-upload switch.
 
 // MARK: - BackendClient extensions for Phase 1
 
