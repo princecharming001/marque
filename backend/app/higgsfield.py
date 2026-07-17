@@ -94,6 +94,30 @@ def _video_url(payload: dict) -> str | None:
     return None
 
 
+async def generate_still(cue: str) -> str | None:
+    """v7 P2 still tier: Soul text→image ONLY (no DoP i2v step) — a 9:16 photoreal
+    frame the render then Ken-Burns'es. This is the cheap default generated tier
+    (one image call, no video generation): equivalent job to fal.ai Flux, on the
+    Higgsfield key we already have. Returns an image URL or None; never raises.
+    Caller MUST vision-gate the result before use (generation can miss too)."""
+    if not CONFIGURED or not (cue or "").strip():
+        return None
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + min(HIGGSFIELD_TIMEOUT_S, 60)   # a still shouldn't need 150s
+    try:
+        img_req = await _submit(_T2I_MODEL, {
+            "prompt": f"{cue.strip()} — extreme closeup macro, warm natural side lighting, "
+                      f"shallow depth of field, photorealistic, appetizing, no text, no watermark",
+            "aspect_ratio": "9:16", "resolution": "720p"})
+        if not img_req:
+            return None
+        img_done = await _poll_request(img_req, deadline)
+        return _first_image_url(img_done or {})
+    except Exception as e:
+        log.warning("higgsfield generate_still failed: %s", e)
+        return None
+
+
 async def generate_broll(cue: str, duration_s: int = 5) -> str | None:
     """Generate one 9:16 b-roll clip for `cue`: Soul t2i → DoP i2v. Returns a playable
     mp4 URL or None (keyless / disabled / any failure / timeout). Never raises."""

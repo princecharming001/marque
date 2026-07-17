@@ -6988,26 +6988,33 @@ def _parse_commons_pages(pages: dict) -> list[dict]:
 
 
 async def _generate_broll_still(query: str) -> str | None:
-    """v7 P2: one Flux 1.1 Pro still via fal.ai. The caller MUST gate the result
-    through _broll_vision_score_one before use (generation can miss too — melted
-    food, wrong subject). Returns a hosted image URL or None."""
-    if not FAL_KEY:
-        return None
-    prompt = (f"{query}, extreme closeup macro shot, warm natural side lighting, "
-              f"shallow depth of field, photorealistic, appetizing, vertical composition, "
-              f"no text, no watermark")
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            r = await client.post("https://fal.run/fal-ai/flux-pro/v1.1",
-                                  headers={"Authorization": f"Key {FAL_KEY}",
-                                           "Content-Type": "application/json"},
-                                  json={"prompt": prompt, "image_size": "portrait_16_9"})
-        if r.status_code != 200:
+    """v7 P2 still tier: generate one 9:16 photoreal still for `query`. Prefers
+    HIGGSFIELD (Soul text→image, the key we already run) and falls back to fal.ai
+    Flux only if FAL_KEY is set — so ONE vendor suffices. The caller MUST gate the
+    result through _broll_vision_score_one before use (generation misses too —
+    melted food, wrong subject). Returns a hosted image URL or None."""
+    # Tier A: Higgsfield Soul (same key that powers the video-hero fallback).
+    if higgsfield_mod.CONFIGURED:
+        url = await higgsfield_mod.generate_still(query)
+        if url:
+            return url
+    # Tier B: fal.ai Flux 1.1 Pro (optional second vendor).
+    if FAL_KEY:
+        prompt = (f"{query}, extreme closeup macro shot, warm natural side lighting, "
+                  f"shallow depth of field, photorealistic, appetizing, vertical composition, "
+                  f"no text, no watermark")
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                r = await client.post("https://fal.run/fal-ai/flux-pro/v1.1",
+                                      headers={"Authorization": f"Key {FAL_KEY}",
+                                               "Content-Type": "application/json"},
+                                      json={"prompt": prompt, "image_size": "portrait_16_9"})
+            if r.status_code == 200:
+                imgs = r.json().get("images") or []
+                return (imgs[0] or {}).get("url") if imgs else None
+        except (httpx.HTTPError, ValueError):
             return None
-        imgs = r.json().get("images") or []
-        return (imgs[0] or {}).get("url") if imgs else None
-    except (httpx.HTTPError, ValueError):
-        return None
+    return None
 
 
 async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
@@ -7419,9 +7426,11 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                 url = await _rerank_broll(b.get("cue_text") or query, ccands, dossier)
                 if url:
                     b["source"] = "commons"
-        # v7 P2 tier: Flux still generation (armed by FAL_KEY) — gated through the
-        # SAME pointwise scorer before use; a failed gate negative-caches the query.
-        if not url and FAL_KEY and b.get("need") in ("entity", "data", "evidence") \
+        # v7 P2 tier: generated still (Higgsfield Soul, or fal.ai Flux) — gated
+        # through the SAME pointwise scorer before use; a failed gate negative-
+        # caches the query. Armed by EITHER vendor being configured.
+        if not url and (higgsfield_mod.CONFIGURED or FAL_KEY) \
+                and b.get("need") in ("entity", "data", "evidence") \
                 and allow_generation and query not in _broll_gen_failed:
             still = await _generate_broll_still(b.get("cue_text") or query)
             passed = False
