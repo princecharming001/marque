@@ -1650,7 +1650,9 @@ def test_strip_fillers_no_overlap_with_fillers_before_gap():
         {"word": "uh", "start_ms": 550, "end_ms": 600, "type": "filler"},
         {"word": "world", "start_ms": 1000, "end_ms": 1200},
     ]
-    _, drops = strip_fillers(words, gap_ms=300)
+    # Explicit legacy knobs: this test exercises drop-overlap MECHANICS, not the
+    # pro-cut policy defaults (which now keep short pauses entirely).
+    _, drops = strip_fillers(words, gap_ms=300, keep_pause_frames=6)
     spans = sorted((d.src_in, d.src_out) for d in drops)
     # No two drops may overlap.
     for (a1, b1), (a2, b2) in zip(spans, spans[1:]):

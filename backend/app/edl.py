@@ -95,10 +95,17 @@ TRAILING_SIGNOFF_PHRASES = (
 # silence knob (was previously just a hint the LLM prompt carried with no code-side
 # effect; `trim_aggressiveness="aggressive"` used to be a complete no-op). Every
 # level's gap_ms also drives strip_fillers' dead-air detection.
+# PRO-CUT CALIBRATION (2026-07-17, eval/pro_cut_reference.py): measured against a
+# professional editor's cut of the same raw take, the old thresholds (350ms trigger →
+# 200ms residual) sprayed ~19 dead-air micro-cuts per 50s take — a splice every ~1.5s —
+# where the pro made ZERO: they kept every natural 350–480ms sentence pause VERBATIM
+# (raw 385→pro 385ms, 481→481, 368→369…) and tightened only the two longest (577→129,
+# 690→~330). Natural speech rhythm IS the smoothness; only genuinely long stalls get
+# tightened, and the residual pause stays a real beat (~333ms), not a gasp.
 TRIM_LEVELS: dict[str, dict[str, float]] = {
-    "conservative": {"gap_ms": 450, "keep_pause_frames": 7, "stutter_ms": 250, "phrase_mode": 0, "conf_cut": 0.0},
-    "default":      {"gap_ms": 350, "keep_pause_frames": 6, "stutter_ms": 350, "phrase_mode": 1, "conf_cut": 0.35},
-    "aggressive":   {"gap_ms": 250, "keep_pause_frames": 4, "stutter_ms": 450, "phrase_mode": 2, "conf_cut": 0.50},
+    "conservative": {"gap_ms": 700, "keep_pause_frames": 12, "stutter_ms": 250, "phrase_mode": 0, "conf_cut": 0.0},
+    "default":      {"gap_ms": 600, "keep_pause_frames": 10, "stutter_ms": 350, "phrase_mode": 1, "conf_cut": 0.35},
+    "aggressive":   {"gap_ms": 450, "keep_pause_frames": 8, "stutter_ms": 450, "phrase_mode": 2, "conf_cut": 0.50},
 }
 # phrase_mode: 0 = clause-boundary only, 1 = clause-boundary OR pause-flanked,
 # 2 = any pause-flanked occurrence (still never bare mid-sentence).
@@ -527,9 +534,9 @@ def _covered_by_silence(a_ms: float, b_ms: float,
     return False
 
 
-def strip_fillers(words: list[dict], gap_ms: int = 300,
+def strip_fillers(words: list[dict], gap_ms: int = 600,
                   use_disfluency_type: bool = True,
-                  keep_pause_frames: int = 6,
+                  keep_pause_frames: int = 10,
                   silent_spans: list[tuple[int, int]] | None = None) -> tuple[list[dict], list[Drop]]:
     """Remove filler words and tighten (not eliminate) dead-air gaps; return clean
     word list + drop list.
@@ -546,7 +553,7 @@ def strip_fillers(words: list[dict], gap_ms: int = 300,
 
     #1b silence tightening: a gap longer than gap_ms is no longer removed WHOLE —
     a hard butt-splice between two words with zero air between them reads as an
-    obvious edit. Instead `keep_pause_frames` (~200ms at the default level) of
+    obvious edit. Instead `keep_pause_frames` (~333ms at the default level) of
     natural pause survives, split roughly 2/3 before the cut and 1/3 after (so the
     residual breathes right up to the next word's onset rather than lingering after
     the previous one). Below ~4 remaining frames of droppable middle the tighten is
@@ -2172,6 +2179,28 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     clean_words, filler_drops = strip_fillers(words, silent_spans=silent_spans)
     filler_dicts: list[dict] = [] if prefs.get("filler_trim") == "off" else [d.model_dump() for d in filler_drops]
 
+    # PRO-CUT ending guard (2026-07-17): the closing lines are the PAYOFF/CTA, and the
+    # pro reference kept them in full — yet the plan LLM once labeled "…then it works.
+    # Rate that version 7/10. Follow for the next collision test." a "false_start" and
+    # nuked 5.3s of ending. A cut that swallows the take's FINAL words is legitimate
+    # ONLY when those words are a real sign-off ("thanks for watching…", lexicon below)
+    # or a trailing fragment (<3 words). Anything else is rejected — a wrongly-KEPT
+    # closing line is recoverable; a nuked CTA is not.
+    def _end_cut_allowed(a: int, b: int) -> bool:
+        last_end_f = ms_to_frame(words[-1].get("end_ms", 0)) if words else 0
+        if b < last_end_f - 15:
+            return True                                     # doesn't reach the ending
+        inside = [_norm_word(w.get("word", "")) for w in words
+                  if a <= ms_to_frame(w.get("start_ms", 0)) < b]
+        inside = [w for w in inside if w]
+        if len(inside) < 3:
+            return True                                     # trailing fragment / dead air
+        for phrase in TRAILING_SIGNOFF_PHRASES:
+            n = len(phrase)
+            if any(tuple(inside[i:i + n]) == phrase for i in range(len(inside) - n + 1)):
+                return True                                 # genuine sign-off — cuttable
+        return False
+
     content_cuts: list[tuple[int, int]] = []
     for c in (plan.get("cuts") or []):
         rng = c.get("range") or []
@@ -2179,12 +2208,12 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             continue
         cl = _clamp_range(snap_to_word(_frame_to_ms(rng[0]), words, "start"),
                           snap_to_word(_frame_to_ms(rng[1]), words, "end"), 0, total)
-        if cl:
+        if cl and _end_cut_allowed(*cl):
             content_cuts.append(cl)
     for cr in ((brief or {}).get("cut_regions") or []):
         if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
             cl = _clamp_range(cr["start_frame"], cr["end_frame"], 0, total)
-            if cl:
+            if cl and _end_cut_allowed(*cl):
                 content_cuts.append(cl)
 
     # open_on: pull a buried hook forward = a content cut of the pre-hook intro. GUARDED so
