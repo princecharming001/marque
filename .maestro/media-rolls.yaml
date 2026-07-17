@@ -15,7 +15,7 @@ name: R9 — media rolls lane + add-media panel
 - tapOn: { id: "editorPro.coachDismiss", optional: true }
 # ADD MEDIA: Effects tab → "Add b-roll" → media panel (the duplicate context-strip "Add"
 # was removed in the declutter; media is added from Effects or the timeline "+" tile).
-- tapOn: { id: "editorPro.mode.effects" }
+- tapOn: { id: "editorPro.root.effects" }
 - tapOn: { id: "editorPro.addBroll" }
 - extendedWaitUntil:
     visible: { id: "editorPro.mediaPanel" }

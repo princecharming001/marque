@@ -34,14 +34,14 @@ name: E-25 exit gate — drive ProEditorView on a seeded ready clip
     id: "editorPro.playPause"
 - takeScreenshot: /tmp/r5-editor-02-play
 - tapOn:
-    id: "editorPro.mode.text"
+    id: "editorPro.root.text"
 - takeScreenshot: /tmp/r5-editor-03-text
 - tapOn:
-    id: "editorPro.mode.sound"
+    id: "editorPro.root.sound"
 - takeScreenshot: /tmp/r5-editor-04-sound
 - tapOn:
-    id: "editorPro.mode.effects"
+    id: "editorPro.root.effects"
 - takeScreenshot: /tmp/r5-editor-05-effects
 - tapOn:
-    id: "editorPro.mode.edit"
+    id: "editorPro.root.edit"
 - takeScreenshot: /tmp/r5-editor-06-edit

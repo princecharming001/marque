@@ -23,8 +23,10 @@ name: R6 editor — reorder button, placeholder playback, caption track
     timeout: 4000
 - tapOn: { id: "editorPro.moveRight" }
 - takeScreenshot: /tmp/r6-ed-03-reordered
-# caption track in Text mode (phrase clips on the timeline; word strip retired)
-- tapOn: { id: "editorPro.mode.text" }
+# One-bar model: pop the clip selection so the root tiles are back.
+- tapOn: { id: "editorPro.ctx.back" }
+# caption track (phrase clips on the timeline; word strip retired)
+- tapOn: { id: "editorPro.root.captions" }
 - extendedWaitUntil:
     visible: { id: "editorPro.captionLane" }
     timeout: 4000

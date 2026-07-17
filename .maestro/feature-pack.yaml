@@ -28,8 +28,10 @@ name: FP1 — speed, transitions, filters, text stickers, caption drag
     timeout: 4000
 - tapOn: { id: "editorPro.ctx.transition.fade_black" }
 - takeScreenshot: /tmp/fp-02-transition
+# One-bar model: the root tiles only show at root — pop the boundary selection first.
+- tapOn: { id: "editorPro.ctx.back" }
 # FILTERS: Film preset + a warm adjust (Adjust knobs now hide behind "Advanced")
-- tapOn: { id: "editorPro.mode.filters" }
+- tapOn: { id: "editorPro.root.filters" }
 - extendedWaitUntil:
     visible: { id: "editorPro.filter.film" }
     timeout: 4000
@@ -40,7 +42,7 @@ name: FP1 — speed, transitions, filters, text stickers, caption drag
     timeout: 4000
 - takeScreenshot: /tmp/fp-03-filter
 # TEXT STICKER: keyboard-first add (types straight on the canvas), then commit + drag
-- tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.root.text" }
 - tapOn: { id: "editorPro.addSticker" }
 - inputText: "WAIT FOR IT"
 # commit-on-blur: a neutral canvas tap dismisses the field and commits the text

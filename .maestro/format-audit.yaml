@@ -108,15 +108,17 @@ name: "LOOP U — app/UI formatting audit (see .maestro/ui-manifest.json)"
 - takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-timeline
 
 - tapOn:
-    id: "editorPro.mode.text"
+    id: "editorPro.root.captions"
 - extendedWaitUntil:
     visible:
       id: "editorPro.captionsToggle"
     timeout: 5000
 - takeScreenshot: /Users/home/Marque/.shots/format-audit-editor-caption-drawer
 
+# Clean up is a ROOT tile now (one-bar model) — close the captions panel via the
+# chevron so the root vocabulary is back at its leading edge, then tap it directly.
 - tapOn:
-    id: "editorPro.mode.edit"
+    id: "editorPro.ctx.back"
 - extendedWaitUntil:
     visible:
       id: "editorPro.cleanup"

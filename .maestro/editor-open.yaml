@@ -84,5 +84,5 @@ name: Open ProEditorView on a real clip + verify controls
     timeout: 10000
 - takeScreenshot: /tmp/r5-editor
 - tapOn:
-    id: "editorPro.mode.text"
+    id: "editorPro.root.text"
 - takeScreenshot: /tmp/r5-editor-text

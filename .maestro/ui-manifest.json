@@ -1,80 +1,117 @@
 {
-  "version": 1,
-  "description": "LOOP U — the ~12 screens format-audit.yaml walks for app/UI formatting QA. Each entry's expect_visible_ids/expect_visible_text are asserted by the free (default) Maestro tier; screenshot is the filename format-audit.yaml writes under .shots/, consumed by the optional vision tier (backend/eval/ui_eval.py) against backend/knowledge/ui_rubric.md.",
-  "screens": [
-    {
-      "id": "home",
-      "label": "Home — tab bar + feed",
-      "screenshot": "format-audit-home.png",
-      "expect_visible_ids": ["film.open"],
-      "expect_visible_text": ["Home", "Chat", "Library", "Performance"]
-    },
-    {
-      "id": "library-empty",
-      "label": "Library — empty state (no clips yet)",
-      "screenshot": "format-audit-library-empty.png",
-      "expect_visible_text": ["No clips yet"]
-    },
-    {
-      "id": "settings",
-      "label": "Settings sheet (via Home → profile → gearshape)",
-      "screenshot": "format-audit-settings.png",
-      "expect_visible_ids": ["settings.autoCaptions", "settings.captionStyle", "settings.fillerTrim"]
-    },
-    {
-      "id": "onboarding-landing",
-      "label": "Onboarding — landing step",
-      "screenshot": "format-audit-onboarding-landing.png",
-      "expect_visible_text": ["Get started"],
-      "expect_visible_ids": ["onboard.start"]
-    },
-    {
-      "id": "library-ready",
-      "label": "Library — one READY clip seeded",
-      "screenshot": "format-audit-library-ready.png",
-      "expect_visible_ids": ["library.clip"]
-    },
-    {
-      "id": "editor-timeline",
-      "label": "ProEditorView — default timeline (talking_head)",
-      "screenshot": "format-audit-editor-timeline.png",
-      "expect_visible_ids": ["editorPro.playPause", "editorPro.timeReadout", "editorPro.undo", "editorPro.redo"]
-    },
-    {
-      "id": "editor-caption-drawer",
-      "label": "ProEditorView — text mode / caption drawer",
-      "screenshot": "format-audit-editor-caption-drawer.png",
-      "expect_visible_ids": ["editorPro.captionsToggle"]
-    },
-    {
-      "id": "editor-cleanup-panel",
-      "label": "ProEditorView — cleanup (filler-removal) panel",
-      "screenshot": "format-audit-editor-cleanup-panel.png",
-      "expect_visible_ids": ["editorPro.cleanupPanel", "editorPro.cleanup.cancel"]
-    },
-    {
-      "id": "editor-transition-dip",
-      "label": "ProEditorView — transition preview dip (formatting fix #11)",
-      "screenshot": "format-audit-editor-transition-dip.png",
-      "expect_visible_ids": ["editorPro.transitionDip"]
-    },
-    {
-      "id": "framing-green-screen",
-      "label": "ProEditorView — composition framing preview, green_screen (formatting fix #1)",
-      "screenshot": "format-audit-framing-green-screen.png",
-      "expect_visible_ids": ["editorPro.framing.green_screen"]
-    },
-    {
-      "id": "framing-duet-split",
-      "label": "ProEditorView — composition framing preview, duet_split (formatting fix #1)",
-      "screenshot": "format-audit-framing-duet-split.png",
-      "expect_visible_ids": ["editorPro.framing.duet_split"]
-    },
-    {
-      "id": "framing-split-three",
-      "label": "ProEditorView — composition framing preview, split_three (formatting fix #1)",
-      "screenshot": "format-audit-framing-split-three.png",
-      "expect_visible_ids": ["editorPro.framing.split_three"]
-    }
-  ]
+ "version": 1,
+ "description": "LOOP U \u2014 the ~12 screens format-audit.yaml walks for app/UI formatting QA. Each entry's expect_visible_ids/expect_visible_text are asserted by the free (default) Maestro tier; screenshot is the filename format-audit.yaml writes under .shots/, consumed by the optional vision tier (backend/eval/ui_eval.py) against backend/knowledge/ui_rubric.md.",
+ "screens": [
+  {
+   "id": "home",
+   "label": "Home \u2014 tab bar + feed",
+   "screenshot": "format-audit-home.png",
+   "expect_visible_ids": [
+    "film.open"
+   ],
+   "expect_visible_text": [
+    "Home",
+    "Chat",
+    "Library",
+    "Performance"
+   ]
+  },
+  {
+   "id": "library-empty",
+   "label": "Library \u2014 empty state (no clips yet)",
+   "screenshot": "format-audit-library-empty.png",
+   "expect_visible_text": [
+    "No clips yet"
+   ]
+  },
+  {
+   "id": "settings",
+   "label": "Settings sheet (via Home \u2192 profile \u2192 gearshape)",
+   "screenshot": "format-audit-settings.png",
+   "expect_visible_ids": [
+    "settings.autoCaptions",
+    "settings.captionStyle",
+    "settings.fillerTrim"
+   ]
+  },
+  {
+   "id": "onboarding-landing",
+   "label": "Onboarding \u2014 landing step",
+   "screenshot": "format-audit-onboarding-landing.png",
+   "expect_visible_text": [
+    "Get started"
+   ],
+   "expect_visible_ids": [
+    "onboard.start"
+   ]
+  },
+  {
+   "id": "library-ready",
+   "label": "Library \u2014 one READY clip seeded",
+   "screenshot": "format-audit-library-ready.png",
+   "expect_visible_ids": [
+    "library.clip"
+   ]
+  },
+  {
+   "id": "editor-timeline",
+   "label": "ProEditorView \u2014 default timeline (talking_head)",
+   "screenshot": "format-audit-editor-timeline.png",
+   "expect_visible_ids": [
+    "editorPro.playPause",
+    "editorPro.timeReadout",
+    "editorPro.undo",
+    "editorPro.redo"
+   ]
+  },
+  {
+   "id": "editor-caption-drawer",
+   "label": "ProEditorView \u2014 Captions root panel (one-bar model)",
+   "screenshot": "format-audit-editor-caption-drawer.png",
+   "expect_visible_ids": [
+    "editorPro.captionsToggle"
+   ]
+  },
+  {
+   "id": "editor-cleanup-panel",
+   "label": "ProEditorView \u2014 cleanup (filler-removal) panel",
+   "screenshot": "format-audit-editor-cleanup-panel.png",
+   "expect_visible_ids": [
+    "editorPro.cleanupPanel",
+    "editorPro.cleanup.cancel"
+   ]
+  },
+  {
+   "id": "editor-transition-dip",
+   "label": "ProEditorView \u2014 transition preview dip (formatting fix #11)",
+   "screenshot": "format-audit-editor-transition-dip.png",
+   "expect_visible_ids": [
+    "editorPro.transitionDip"
+   ]
+  },
+  {
+   "id": "framing-green-screen",
+   "label": "ProEditorView \u2014 composition framing preview, green_screen (formatting fix #1)",
+   "screenshot": "format-audit-framing-green-screen.png",
+   "expect_visible_ids": [
+    "editorPro.framing.green_screen"
+   ]
+  },
+  {
+   "id": "framing-duet-split",
+   "label": "ProEditorView \u2014 composition framing preview, duet_split (formatting fix #1)",
+   "screenshot": "format-audit-framing-duet-split.png",
+   "expect_visible_ids": [
+    "editorPro.framing.duet_split"
+   ]
+  },
+  {
+   "id": "framing-split-three",
+   "label": "ProEditorView \u2014 composition framing preview, split_three (formatting fix #1)",
+   "screenshot": "format-audit-framing-split-three.png",
+   "expect_visible_ids": [
+    "editorPro.framing.split_three"
+   ]
+  }
+ ]
 }

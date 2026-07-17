@@ -15,7 +15,7 @@ name: Track lanes — caption strip, voice lane, music affordance, zoom blocks
 - tapOn: { id: "editorPro.coachDismiss", optional: true }
 - takeScreenshot: /tmp/trD-01-open
 # Text mode → batch caption editor
-- tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.root.captions" }
 - takeScreenshot: /tmp/trD-02-textmode
 - tapOn: { id: "editorPro.editCaptions" }
 - takeScreenshot: /tmp/trD-03-captionlist
@@ -29,7 +29,7 @@ name: Track lanes — caption strip, voice lane, music affordance, zoom blocks
 - takeScreenshot: /tmp/trD-03c-phrasesaved
 - tapOn: { id: "editorPro.captionList.done" }
 # Sound mode → music add affordance visible in timeline
-- tapOn: { id: "editorPro.mode.sound" }
+- tapOn: { id: "editorPro.root.sound" }
 - takeScreenshot: /tmp/trD-04-soundmode
 # Zoom block: select the seeded punch_in chip → intensity controls → Strong
 - tapOn: { id: "editorPro.overlay.0" }

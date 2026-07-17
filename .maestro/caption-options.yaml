@@ -14,7 +14,7 @@ name: Caption customizer — knobs render, sim reacts, save round-trips
     timeout: 12000
 - tapOn: { id: "editorPro.coachDismiss", optional: true }
 # Text mode → tap "Customize" to reveal the fine-tune options row under the presets row
-- tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.root.captions" }
 - tapOn: { id: "editorPro.capCustomize" }
 - extendedWaitUntil:
     visible: { id: "editorPro.captionOptions" }
@@ -56,7 +56,7 @@ name: Caption customizer — knobs render, sim reacts, save round-trips
 - extendedWaitUntil:
     visible: { id: "editorPro.playPause" }
     timeout: 12000
-- tapOn: { id: "editorPro.mode.text" }
+- tapOn: { id: "editorPro.root.captions" }
 - tapOn: { id: "editorPro.capCustomize" }
 - extendedWaitUntil:
     visible: { id: "editorPro.captionOptions" }
