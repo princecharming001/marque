@@ -546,9 +546,18 @@ def test_commons_parse_filters_licenses_and_size():
     assert out[0]["provider"] == "commons"
 
 
-def test_flux_tier_disarmed_without_key(monkeypatch):
+def test_still_tier_disarmed_without_any_key(monkeypatch):
     monkeypatch.setattr(main, "FAL_KEY", "")
+    monkeypatch.setattr(main.higgsfield_mod, "CONFIGURED", False)
     assert asyncio.run(main._generate_broll_still("gochujang jar")) is None
+
+
+def test_still_tier_prefers_higgsfield_soul(monkeypatch):
+    monkeypatch.setattr(main, "FAL_KEY", "")
+    monkeypatch.setattr(main.higgsfield_mod, "CONFIGURED", True)
+    async def fake_soul(q): return "https://h/soul.jpg"
+    monkeypatch.setattr(main.higgsfield_mod, "generate_still", fake_soul)
+    assert asyncio.run(main._generate_broll_still("gochujang jar")) == "https://h/soul.jpg"
 
 
 def test_hero_promotion_picks_two_resolved_entities():

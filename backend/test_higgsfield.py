@@ -208,3 +208,27 @@ def test_failed_generation_negative_cached(monkeypatch):
     asyncio.run(main._resolve_broll(edl))               # second pass: negative cache holds
     assert len(calls) == 1
     main._broll_gen_failed.clear()
+
+
+def test_generate_still_soul_only(monkeypatch):
+    import asyncio
+    from app import higgsfield as hf
+    monkeypatch.setattr(hf, "CONFIGURED", True)
+    submitted = []
+    async def fake_submit(model, body):
+        submitted.append(model)
+        return "req-1"
+    async def fake_poll(rid, deadline):
+        return {"images": [{"url": "https://h/still.jpg"}]}
+    monkeypatch.setattr(hf, "_submit", fake_submit)
+    monkeypatch.setattr(hf, "_poll_request", fake_poll)
+    url = asyncio.run(hf.generate_still("gochujang jar closeup"))
+    assert url == "https://h/still.jpg"
+    assert submitted == [hf._T2I_MODEL], "still tier must call SOUL only, never DoP"
+
+
+def test_generate_still_keyless_noop(monkeypatch):
+    import asyncio
+    from app import higgsfield as hf
+    monkeypatch.setattr(hf, "CONFIGURED", False)
+    assert asyncio.run(hf.generate_still("x")) is None
