@@ -863,18 +863,7 @@ final class AppStore {
     /// relaunch mid-render) gets its job re-polled until it resolves, so nothing
     /// spins forever locally while the backend finished long ago.
     func repollRenderingClips() {
-        // WS4 orphan recovery: an instant-submit "Uploading…" placeholder (jobId nil,
-        // uploading true) is reconciled by a store-owned task in `backgroundSubmits`. If the
-        // app was KILLED mid-upload that task is gone (never persisted), so on relaunch the
-        // placeholder would spin "UPLOADING" forever with nothing to resolve it. Any such
-        // placeholder with no live task is a casualty → surface a retriable failed card
-        // (the footage is still at localVideoPath) instead of an eternal spinner.
-        for idx in clips.indices where clips[idx].uploading && clips[idx].jobId == nil
-            && backgroundSubmits[clips[idx].id] == nil {
-            clips[idx].uploading = false
-            clips[idx].status = .failed
-            clips[idx].lastError = "upload_interrupted"
-        }
+        reconcileTransientState()
 
         let stuck = clips.filter { $0.status == .rendering && $0.jobId != nil }
         for (jobId, group) in Dictionary(grouping: stuck, by: { $0.jobId! })
@@ -886,6 +875,74 @@ final class AppStore {
                 activeRepolls.remove(jobId)
             }
         }
+    }
+
+    /// Liveness v2: clips a sweep already auto-resumed once this launch — a resume that
+    /// fails lands on a retryable .failed card instead of resume-looping forever.
+    private var autoResumedUploads: Set<UUID> = []
+
+    /// Liveness v2 — the universal stranded-state sweep. Runs on COLD START, app
+    /// FOREGROUND, and Library appear (previously Library-appear only, so a clip
+    /// killed mid-upload showed "UPLOADING" forever unless the user happened to visit
+    /// the Library tab). Two sweeps:
+    ///
+    /// 1. Clips: an instant-submit placeholder (uploading, jobId nil) whose store-owned
+    ///    task is gone (app killed/suspended-to-death mid-upload) AUTO-RESUMES silently
+    ///    when the take is still on disk — the upload restarts from the persisted local
+    ///    file, once per clip per launch. Only when the file is gone (or the resume
+    ///    itself failed) does it land on a retryable .failed card. Never a dead spinner.
+    ///
+    /// 2. Chat-edit cards: a persisted ClipEditState stuck at a transient stage with no
+    ///    LIVE task (ChatStore.liveEditCardIds is process-global and empty after a kill)
+    ///    lands on .failed with its stored footagePath intact, so "Try again" re-runs the
+    ///    whole edit without re-picking videos.
+    func reconcileTransientState() {
+        var changed = false
+        for idx in clips.indices where clips[idx].uploading && clips[idx].jobId == nil
+            && backgroundSubmits[clips[idx].id] == nil {
+            let clip = clips[idx]
+            let hasLocalFile = clip.localVideoPath.map {
+                FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path)
+            } ?? false
+            if hasLocalFile && !autoResumedUploads.contains(clip.id) {
+                // Silent self-heal: restart the upload from the local take. Registered in
+                // backgroundSubmits so a second sweep (foreground + Library appear firing
+                // together) can't double-resume the same clip.
+                autoResumedUploads.insert(clip.id)
+                backend.reportClientEvent("upload_auto_resumed", detail: clip.id.uuidString)
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    _ = await self.resubmitFailedClip(clip)
+                    self.backgroundSubmits[clip.id] = nil
+                }
+                backgroundSubmits[clip.id] = task
+            } else {
+                clips[idx].uploading = false
+                clips[idx].status = .failed
+                clips[idx].lastError = "upload_interrupted"
+                changed = true
+            }
+        }
+
+        for ci in conversations.indices {
+            for mi in conversations[ci].messages.indices {
+                guard var s = conversations[ci].messages[mi].clipEdit else { continue }
+                switch s.stage {
+                case .stitching, .uploading, .analyzing, .editing:
+                    guard !ChatStore.liveEditCardIds.contains(conversations[ci].messages[mi].id)
+                    else { continue }                      // a live task owns this card
+                    s.stage = .failed
+                    s.detail = s.footagePath.isEmpty
+                        ? "Interrupted — please pick your videos again."
+                        : "Interrupted — tap Try again to resume."
+                    conversations[ci].messages[mi].clipEdit = s
+                    changed = true
+                default:
+                    break
+                }
+            }
+        }
+        if changed { save() }
     }
 
     /// AF-I4: a permanently-gone job (404 never-existed / 410 swept) fails its clips
@@ -1044,6 +1101,10 @@ final class AppStore {
             return "Something unexpected happened while processing this clip. Tap to try again."
         case "job_expired":
             return "This edit session has expired. Re-record and try again."
+        case "upload_interrupted":
+            return "The upload was interrupted before it finished. Tap Try again to resume."
+        case "upload_failed":
+            return "Your take couldn't be uploaded — check your connection and tap Try again."
         default:
             if let detail, !detail.isEmpty {
                 return "This clip didn't finish (\(detail)). Tap to try again."

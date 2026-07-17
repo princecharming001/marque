@@ -99,8 +99,16 @@ struct RootView: View {
                 // UX-F2: foregrounding with a >15min-stale feed → silent revalidate
                 // (no skeletons; the snapshot keeps painting until fresh data lands).
                 Task { await feed.revalidateIfStale(store: store) }
+                // Liveness v2: every return to foreground reconciles stranded transient
+                // state (auto-resumes killed uploads, re-polls stuck renders, fails
+                // orphaned chat cards) — previously ONLY the Library tab did this, so a
+                // clip could show "UPLOADING" forever from any other screen.
+                store.repollRenderingClips()
             }
         }
+        // Liveness v2: same sweep once per cold start, regardless of which screen the
+        // app opens on (scenePhase's initial transition isn't guaranteed to fire).
+        .task { store.repollRenderingClips() }
         .onChange(of: net.isOnline) { _, online in
             if online { Task { await store.retryPendingPublishes() } }
         }

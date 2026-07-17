@@ -101,6 +101,12 @@ final class ChatStore {
         }
     }
 
+    /// Liveness v2: cards with a LIVE driving task this process. Static (survives the
+    /// per-view ChatStore lifecycle) so AppStore.reconcileTransientState can tell a
+    /// genuinely-orphaned persisted card (app was killed → set is empty) from one whose
+    /// pipeline is mid-flight right now.
+    static var liveEditCardIds: Set<UUID> = []
+
     private func updateCard(_ cardId: UUID, in convoId: UUID, store: AppStore,
                             _ mutate: (inout ClipEditState) -> Void) {
         guard let ci = store.conversations.firstIndex(where: { $0.id == convoId }),
@@ -175,6 +181,23 @@ final class ChatStore {
             }
         }
         guard !Task.isCancelled else { return bail() }
+        // Liveness v2: register as live (blocks the orphan sweep) + a 10-min hard
+        // watchdog — the record path has a 480s ceiling but this path had NONE, so a
+        // wedged poll could spin the card forever even with the app foregrounded.
+        ChatStore.liveEditCardIds.insert(cardId)
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 600 * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            self?.updateCard(cardId, in: convoId, store: store) {
+                guard $0.stage != .ready && $0.stage != .failed else { return }
+                $0.stage = .failed
+                $0.detail = "This edit took too long — tap Try again."
+            }
+        }
+        defer {
+            ChatStore.liveEditCardIds.remove(cardId)
+            watchdog.cancel()
+        }
 
         // 3) Upload the source.
         updateCard(cardId, in: convoId, store: store) { $0.stage = .uploading }
