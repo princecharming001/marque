@@ -409,6 +409,9 @@ struct Clip: Codable, Hashable, Identifiable {
     var etaSeconds: Int? = nil
     var etaSetAt: Date? = nil
     var createdAt: Date = Date()
+    // Stamped when the clip FIRST becomes .ready (edit finished). Optional-with-default so old
+    // persisted clips decode as nil (no timestamp shown). Drives the subtle "finished at" label.
+    var finishedAt: Date? = nil
 }
 
 // UX-C1: playback gating. The library bug: LocalVideoPlayer prefers `path` over
