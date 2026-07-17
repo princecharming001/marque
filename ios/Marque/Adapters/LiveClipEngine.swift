@@ -1,6 +1,39 @@
 import Foundation
 import UserNotifications
 import AVFoundation
+import UIKit
+
+/// Liveness v2: runs an async operation under a UIKit background-task assertion so an
+/// app-switch mid-upload gives the OS ~30s of continued execution to finish the network
+/// critical section instead of freezing it mid-flight. Expiration just releases the
+/// assertion — losing the race is SAFE because the take persists on disk and the
+/// launch/foreground reconcile sweep (AppStore.reconcileTransientState) auto-resumes
+/// the upload; this guard exists so short backgroundings (a notification peek, an app
+/// switch) don't interrupt an upload that was seconds from finishing.
+enum BackgroundGuard {
+    @MainActor private final class Token { var id: UIBackgroundTaskIdentifier = .invalid }
+
+    static func run<T: Sendable>(_ name: String, _ op: @Sendable () async -> T) async -> T {
+        let token = await MainActor.run { () -> Token in
+            let t = Token()
+            t.id = UIApplication.shared.beginBackgroundTask(withName: name) {
+                if t.id != .invalid {
+                    UIApplication.shared.endBackgroundTask(t.id)
+                    t.id = .invalid
+                }
+            }
+            return t
+        }
+        let result = await op()
+        await MainActor.run {
+            if token.id != .invalid {
+                UIApplication.shared.endBackgroundTask(token.id)
+                token.id = .invalid
+            }
+        }
+        return result
+    }
+}
 
 // Live clip engine: mints a signed upload URL, uploads the raw take to storage
 // (Supabase Storage), creates a server-side clip job pointing at the public URL,
@@ -88,6 +121,12 @@ struct LiveClipEngine: ClipEngineProtocol {
     /// Upload any media file (photo or video) for a roll — mintAndUpload with a
     /// caller-chosen filename (content-type follows it) and no compressor for images.
     static func uploadMedia(path: String, filename: String) async -> String? {
+        await BackgroundGuard.run("media-upload") {
+            await _uploadMedia(path: path, filename: filename)
+        }
+    }
+
+    private static func _uploadMedia(path: String, filename: String) async -> String? {
         guard let mintData = await BackendClient.shared.mintUploadURL(filename: filename) else { return nil }
         let uploadURLString = mintData["upload_url"] as? String ?? ""
         let publicURL = mintData["public_url"] as? String ?? ""
@@ -105,6 +144,14 @@ struct LiveClipEngine: ClipEngineProtocol {
     }
 
     static func mintAndUpload(footagePath: String?) async -> String? {
+        // Background-guarded: compression + PUT is the longest client-side critical
+        // section — a brief app-switch must not kill an almost-done upload.
+        await BackgroundGuard.run("take-upload") {
+            await _mintAndUpload(footagePath: footagePath)
+        }
+    }
+
+    private static func _mintAndUpload(footagePath: String?) async -> String? {
         guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else {
             return nil                                        // backend unreachable
         }

@@ -156,8 +156,11 @@ struct ClipCell: View {
                             Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
                         }
                     }
-                    // Status why-line
-                    Text(clip.status.whyLine)
+                    // Status why-line (uploading is a distinct phase — don't claim the
+                    // AI is editing while the bytes are still leaving the phone)
+                    Text(clip.uploading && clip.status == .rendering
+                         ? "Uploading your take — it resumes automatically if you leave."
+                         : clip.status.whyLine)
                         .font(AppFont.micro).tracking(0.2)
                         .foregroundStyle(clip.status.railColor.opacity(0.8))
                 }
@@ -364,7 +367,11 @@ struct ClipDetailSheet: View {
                             Label(store.friendlyRenderError(current.lastError, detail: current.lastErrorDetail), systemImage: "exclamationmark.triangle")
                                 .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
-                            if clip.jobId != nil {
+                            // Liveness v2: an upload that died before a job existed has
+                            // jobId nil but the take on disk — retryClipJob recovers it via
+                            // resubmitFailedClip, so show the button for that case too
+                            // (previously hidden → an unretryable dead card).
+                            if clip.jobId != nil || clip.localVideoPath != nil {
                                 PrimaryButton(title: "Try again", systemImage: "arrow.clockwise") {
                                     Task { await store.retryClipJob(clip) }
                                 }
