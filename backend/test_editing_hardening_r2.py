@@ -153,7 +153,7 @@ def test_retry_stamps_stage_clock():
 
 def test_render_started_at_restamped_after_semaphore_wait(monkeypatch):
     async def scenario():
-        for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
             monkeypatch.setattr(main, k, "x")
 
         async def bridge(*args, timeout_s=None, **kwargs):
@@ -238,6 +238,8 @@ def test_poll_error_counter_resets_on_success(monkeypatch):
 
 def test_submit_sends_props_via_stdin(monkeypatch):
     monkeypatch.setattr(main, "REMOTION_SERVE_URL", "https://serve.example")
+    monkeypatch.setattr(main, "REMOTION_ACCESS_KEY", "ak")
+    monkeypatch.setattr(main, "REMOTION_SECRET", "sk")
     monkeypatch.setattr(main, "REMOTION_FUNCTION_NAME", "fn")
     seen = {}
     async def bridge(*args, timeout_s=None, **kwargs):
@@ -532,7 +534,7 @@ def test_tweak_commit_rechecks_state_after_llm_await(monkeypatch):
 
 def test_superseded_render_skips_lambda_submit(monkeypatch):
     async def scenario():
-        for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_FUNCTION_NAME"):
+        for k in ("REMOTION_SERVE_URL", "REMOTION_ACCESS_KEY", "REMOTION_SECRET", "REMOTION_FUNCTION_NAME"):
             monkeypatch.setattr(main, k, "x")
         submits = {"n": 0}
 
