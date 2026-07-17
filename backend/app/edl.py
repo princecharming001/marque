@@ -2095,7 +2095,7 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     _lo, _mx = _hold_bounds("concept", mode)
     _mid = (_lo + _mx) // 2
     _glo, _ghi = _hold_bounds("entity", mode)
-    _avg_hold = (min(_glo + 6, _ghi) + _lo) // 2     # glimpse/short-concept alternation
+    _avg_hold = min(_glo + 6, _ghi)                  # v7: floor is all-glimpse
     step = spacing + _avg_hold + 3
     lo, hi = hook_protect + _BROLL_JCUT_LEAD, total - cta_protect
     # Budget cap divides by the per-insert HOLD (the actual budget cost), not `step`
@@ -2110,8 +2110,25 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
         if target <= 0:
             return []
     occ = occupied or []
-    cands: list[tuple[int, str]] = []
-    for w in clean_words:
+
+    def _clean(idx: int) -> str:
+        w = (clean_words[idx].get("word") or "").lower().strip(".,!?;:'\"—")
+        return w if w.isalpha() else ""
+
+    # v7 P0 (kill bare-noun cues — research: cues must do narrative work; the bare word
+    # "seasons" became a "four seasons montage" insert): the QUERY is the anchor word
+    # plus its neighboring content words, so the culturalize rewriter sees "season the
+    # gochujang", not a lone homonym.
+    def _context_query(idx: int, anchor: str) -> str:
+        parts: list[str] = []
+        for j in range(max(0, idx - 2), min(len(clean_words), idx + 3)):
+            t = _clean(j)
+            if t and (j == idx or (len(t) >= 4 and t not in _BROLL_FLOOR_STOPWORDS)):
+                parts.append(t if j != idx else anchor)
+        return " ".join(parts[:4]) or anchor
+
+    cands: list[tuple[int, str, bool, int]] = []
+    for wi, w in enumerate(clean_words):
         word = (w.get("word") or "").strip()
         low = word.lower().strip(".,!?;:'\"")
         if not low.isalpha():
@@ -2127,31 +2144,27 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
         # the top-up should fill GAPS, not stack next to the plan's own cutaways.
         if any(f - spacing < ob and f + _mid + spacing > oa for oa, ob in occ):
             continue
-        cands.append((f, low, emph))  # type: ignore
+        cands.append((f, low, emph, wi))
     # Prefer emphasized words; then walk in time picking spaced ones.
     cands.sort(key=lambda c: (0 if c[2] else 1, c[0]))  # emphasized first, then by time
-    picked: list[tuple[int, str, bool]] = []
-    for f, word, emph in sorted(cands, key=lambda c: c[0]):
+    picked: list[tuple[int, str, bool, int]] = []
+    for f, word, emph, wi in sorted(cands, key=lambda c: c[0]):
         if len(picked) >= target:
             break
-        # Glimpses (emphasized words) pack tighter than concept cutaways — half step,
-        # matching _admit_cue's glimpse spacing relief (v4 "words and inflections" density).
+        # Glimpses pack tighter than cutaways — half step, matching _admit_cue's
+        # glimpse spacing relief (v4 "words and inflections" density).
         min_gap = step // 2 if emph else step
-        if all(abs(f - pf) >= (min_gap if (emph or pe) else step) for pf, _, pe in picked):
-            picked.append((f, word, emph))
-    # v5: the floor alternates entity GLIMPSES (sub-second flash — the "say gochujang,
-    # see gochujang" grammar; every emphasized word gets one, and every other pick even
-    # without emphasis) with SHORT concept holds — the ~1s average is what makes the 3x
-    # density mandate affordable inside the visual budget. Concept cues stay non-literal
-    # (always resolve via stock, never a text card). Deterministic — no random jitter.
+        if all(abs(f - pf) >= (min_gap if (emph or pe) else step) for pf, _, pe, _ in picked):
+            picked.append((f, word, emph, wi))
+    # v7 P0: every floor cue is an entity GLIMPSE with a CONTEXT query (anchor +
+    # neighboring content words) — bare single-word cues produced literal nonsense
+    # ("seasons" → four-seasons montage) and mid-length concept holds both cost
+    # budget and read generic. Sub-second flashes of named things only; anything the
+    # resolver can't verify degrades downstream (card/punch-in), never a wrong clip.
     out: list[dict] = []
-    for i, (f, word, emph) in enumerate(sorted(picked)):
-        if emph or i % 2 == 0:
-            out.append({"range": [f, f + min(_glo + 6, _ghi)], "cue": word, "query": word,
-                        "need": "entity", "mode": mode})
-        else:
-            out.append({"range": [f, f + _lo], "cue": word,
-                        "query": word, "need": "concept", "mode": mode})
+    for f, word, _emph, wi in sorted(picked):
+        out.append({"range": [f, f + min(_glo + 6, _ghi)], "cue": _context_query(wi, word),
+                    "query": _context_query(wi, word), "need": "entity", "mode": mode})
     return out
 _PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
 _PUNCH_HOLD = 30

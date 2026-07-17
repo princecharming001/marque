@@ -6933,31 +6933,43 @@ async def _fetch_pexels(query: str) -> str | None:
     return cands[0]["link"] if cands else None
 
 
-async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None) -> int | None:
-    """One Haiku vision call scoring candidate thumbnails against the cue + the a-roll's
-    palette/energy (from the dossier). Returns the best 0-based index, **-1 to REJECT ALL**
-    (no candidate genuinely depicts the cue — a wrong clip is worse than none), or None on a
-    transport/parse failure. Monkeypatched in tests; keyless → None."""
-    if not ANTHROPIC_KEY or len(thumbs) < 1:
+# v7 P0: POINTWISE scorer floor — a candidate must clear this to be usable at all.
+_BROLL_SCORE_FLOOR = 60
+
+
+async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
+    """Score ONE candidate thumbnail against the cue, independently. Describe-then-judge:
+    the model must first commit to what the image ACTUALLY shows (3-6 words) before
+    scoring — the documented antidote to VLM yes-bias (POPE), which is how corn puffs
+    got accepted for 'gochujang jar / bold red paste closeup' under the old listwise
+    pick. Returns {"shows", "score", "subject_match", "closeup"} or None on failure."""
+    if not ANTHROPIC_KEY or not thumb:
         return None
     import base64
-    fr = (dossier or {}).get("framing") or {}
-    aroll_hint = f"a-roll look: lighting={fr.get('lighting')}, shot={fr.get('shot')}" if fr else ""
-    content: list[dict] = [{"type": "text", "text":
-        f"Pick the single best b-roll clip for the cue \"{cue}\". {aroll_hint}. "
-        f"Score cue RELEVANCE first (does the clip actually depict the thing the cue names?), "
-        f"then palette/energy match to the a-roll. If NO candidate genuinely depicts the cue "
-        f"(wrong subject / unrelated scene), return best_index -1 — a wrong clip is worse than "
-        f"none. Return JSON {{\"best_index\": int}} (0-based, or -1 to reject all)."}]
-    for t in thumbs[:BROLL_CANDIDATES]:
-        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
-                        "data": base64.b64encode(t).decode("ascii")}})
-    body = {"model": HAIKU, "max_tokens": 100,
-            "system": "You are a b-roll art director. Choose the best-matching clip, or reject all.",
+    content = [
+        {"type": "text", "text":
+            f"B-roll candidate audit for the cue: \"{cue}\".\n"
+            f"Step 1 — state what this frame LITERALLY shows in 3-6 words (be concrete: "
+            f"name the actual objects, not what the cue hopes for).\n"
+            f"Step 2 — subject_match: does the frame depict the SPECIFIC thing the cue "
+            f"names (right object class, right state — a paste is not a snack, a montage "
+            f"is not an ingredient)? Plausible-but-wrong lookalikes are false.\n"
+            f"Step 3 — closeup: does the main subject fill at least a third of the frame "
+            f"(legible when displayed small)?\n"
+            f"Step 4 — score 0-100 for literal depiction + legibility. Wrong subject "
+            f"caps the score at 20 regardless of beauty."},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                     "data": base64.b64encode(thumb).decode("ascii")}}]
+    body = {"model": HAIKU, "max_tokens": 150,
+            "system": "You are a ruthless b-roll fact-checker. Wrong subject is worse than no clip.",
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": {
-                "type": "object", "additionalProperties": False, "required": ["best_index"],
-                "properties": {"best_index": {"type": "integer"}}}}}}
+                "type": "object", "additionalProperties": False,
+                "required": ["shows", "subject_match", "closeup", "score"],
+                "properties": {"shows": {"type": "string"},
+                               "subject_match": {"type": "boolean"},
+                               "closeup": {"type": "boolean"},
+                               "score": {"type": "integer"}}}}}}
     try:
         client = _get_anthropic_client()
         r = await client.post(ANTHROPIC_URL,
@@ -6966,10 +6978,36 @@ async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None
         if r.status_code != 200:
             return None
         text = "".join(b.get("text", "") for b in r.json().get("content", []))
-        idx = (json.loads(text) or {}).get("best_index")
-        return idx if isinstance(idx, int) and -1 <= idx < len(thumbs) else None
+        out = json.loads(text) or {}
+        return out if isinstance(out.get("score"), int) else None
     except (httpx.HTTPError, ValueError, KeyError):
         return None
+
+
+async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None) -> int | None:
+    """v7 P0 (research: forced-choice listwise picking is a REFUTED pattern — aligned
+    VLMs pick from garbage even when told they may reject, arXiv 2409.00113): score each
+    candidate INDEPENDENTLY (describe-then-judge, concurrent), then take the best index
+    whose score clears the floor AND whose subject genuinely matches. -1 = all rejected.
+    None on transport failure. Same signature as v1 — monkeypatched in tests."""
+    if not ANTHROPIC_KEY or len(thumbs) < 1:
+        return None
+    scored = await asyncio.gather(
+        *(_broll_vision_score_one(cue, t) for t in thumbs[:5]))
+    best_idx, best_score = -1, -1
+    any_answered = False
+    for i, s in enumerate(scored):
+        if s is None:
+            continue
+        any_answered = True
+        if not s.get("subject_match"):
+            continue
+        score = s["score"] + (8 if s.get("closeup") else 0)   # legibility bias
+        if score >= _BROLL_SCORE_FLOOR and score > best_score:
+            best_idx, best_score = i, score
+    if not any_answered:
+        return None                                # transport-dead → caller retries
+    return best_idx                                # -1 when nothing clears the bar
 
 
 async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None = None) -> str | None:
@@ -7139,6 +7177,7 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
                           "trending_titles": trends[:10],
                           "trending_clips": klipy_trends, "cues": cues})
         out = await anthropic_json(sys, usr, prompts.BROLL_QUERY_REWRITE_SCHEMA, model=HAIKU, temperature=0.2)
+        _memes_before = _meme_total
         for item in (out.get("queries") or []):
             i, q = item.get("i"), (item.get("query") or "").strip()
             if isinstance(i, int) and 0 <= i < len(broll) and q:
@@ -7150,6 +7189,12 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
                 _apply_rewrite(i, q, need)
                 _broll_query_cache[ck(orig)] = {"query": q, "need": broll[i].get("need", need)}
         _cap_evict(_broll_query_cache, 10_000)
+        # v7 P0 observability: the meme mandate at level ≥2 is prompt-enforced ("MUST
+        # reclassify at least one") — if the model still returned none, say so loudly
+        # so a memeless render is diagnosable from logs instead of a mystery.
+        if _meme_level >= 2 and _meme_total == _memes_before and _meme_total == 0:
+            logging.warning("[broll] meme mandate UNMET: level=%d, zero meme cues after rewrite "
+                            "(%d cues in)", _meme_level, len(cues))
     except Exception as e:
         logging.warning("broll query rewrite failed (using originals): %s", e)
     edl["_queries_rewritten"] = True
@@ -7198,6 +7243,12 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # cue with no real asset would render NOTHING — so let it fall back to stock. Without
         # force_broll, keep v1: own_media cues are the creator's own footage, left as-is.
         if b.get("source") == "own_media" and not force_broll:
+            continue
+        # v7 P0 (research: ~70/30 norm is designed motion-graphics for abstractions,
+        # and footage-library searches for concepts return exactly the abstract-3D-render
+        # garbage observed in prod): CONCEPT cues never search stock — they become
+        # designed text cards in the tier pass below. Skip resolution entirely.
+        if b.get("need") == "concept":
             continue
         query = (b.get("broll_query") or b.get("cue_text") or "").strip()
         if not query:
@@ -7330,7 +7381,15 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
                         "why": "no meme GIF resolved"})
             continue
-        # UNRESOLVED action/concept (vision rejected the stock / found nothing): don't silently
+        # v7 P0: a CONCEPT cue with card copy becomes a designed text card (never stock,
+        # never a punch-in — the research's ~70/30 motion-graphics norm for abstractions).
+        if need == "concept" and not resolved and txt and s_out > s_in:
+            s_out = max(s_out, s_in + 45)              # card read-time floor
+            fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
+            log.append({"need": need, "cue": cue, "tier": "card",
+                        "action": "text_card", "why": "concept beats take designed cards"})
+            continue
+        # UNRESOLVED action (vision rejected the stock / found nothing): don't silently
         # vanish — degrade to a face-keeping PUNCH-IN at the cue frame (a visual change on the
         # beat without a wrong clip). Faceless has no face to punch, so it just drops. Only when
         # resolution was actually ATTEMPTED (stock/corpus available) — in a pure keyless/mock noop

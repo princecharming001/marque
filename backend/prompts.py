@@ -977,9 +977,11 @@ def broll_query_rewrite_system() -> str:
         "absurd stat, an emotional pivot), set reaction=true and make query a canonical "
         "reaction/clip term. At 0 NEVER reclassify. At 1 reclassify sparingly (only a beat where "
         "a knowing wink clearly beats an illustration). At 2 reclassify readily — any punchline "
-        "or hot take. At 3 (brainrot) reclassify AGGRESSIVELY — every beat with the slightest "
-        "comedic/reactive charge becomes a meme; when in doubt, meme. An explanation mid-flow "
-        "stays literal at every level. The assembler enforces per-video caps.\n"
+        "or hot take — and you MUST set reaction=true on AT LEAST ONE cue (pick the beat "
+        "nearest a punchline or absurd claim; every take has one). At 3 (brainrot) reclassify "
+        "AGGRESSIVELY — every beat with the slightest comedic/reactive charge becomes a meme; "
+        "when in doubt, meme. An explanation mid-flow stays literal at every level. The "
+        "assembler enforces per-video caps.\n"
         "- Keep queries literally searchable (2–4 words for stock; 1–3 for memes). Return every "
         "cue's index i with its rewritten query. If a query is already good, return it as-is.")
 
