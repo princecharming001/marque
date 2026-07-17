@@ -4972,6 +4972,12 @@ async def _run_edit(job_id: str, words: list[dict]):
                         _b["inset_rect"] = _rect
                     else:
                         _b["mode"] = "panel"      # no face / no clear spot → safe default
+            # v7 HERO treatment (owner decision 2026-07-17): the video's 1-2 strongest
+            # resolved named-thing inserts briefly OWN the frame — pro 9:16 cutaways
+            # are mostly full-frame; insets shrink already-compressed vertical footage.
+            # Skipped when the creator explicitly picked panel/card (they chose a look).
+            if (job.get("config") or {}).get("broll_mode") not in ("panel", "card"):
+                _promote_hero_inserts(edl_data)
             # v2 (A5): meme pop-in SFX coupling — POST-resolve (an unresolved insert that the
             # tier pass dropped must never leave an orphan cue). Restrained: memes only,
             # entertainment/high-energy only, global budget respected.
@@ -6936,6 +6942,73 @@ async def _fetch_pexels(query: str) -> str | None:
 # v7 P0: POINTWISE scorer floor — a candidate must clear this to be usable at all.
 _BROLL_SCORE_FLOOR = 60
 
+# v7 P2: fal.ai Flux 1.1 Pro still generation (~$0.04/image) — the tier every
+# production tool (OpusClip/Captions/VEED) uses for niche subjects stock can't cover.
+# Keyless → tier disarmed, fail-soft. Owner sets FAL_KEY in Render env to arm.
+FAL_KEY = os.environ.get("FAL_KEY", "")
+
+
+async def _fetch_commons_candidates(query: str, n: int = 8) -> list[dict]:
+    """v7 P2 free tier: Wikimedia Commons IMAGE stills — real niche-ingredient
+    closeups Pexels lacks (research: 83 gochujang stills vs Pexels' zero). License
+    filter is CC0/Public-Domain ONLY — no attribution obligation to render; CC-BY
+    needs an on-video credit badge we don't draw yet, BY-SA is share-alike-viral.
+    Image URLs render natively as Ken Burns stills (BrollLayer isImage branch)."""
+    params = {"action": "query", "format": "json", "generator": "search",
+              "gsrsearch": f"filetype:bitmap {query}", "gsrnamespace": "6",
+              "gsrlimit": str(min(n, 20)), "prop": "imageinfo",
+              "iiprop": "url|extmetadata|size", "iiurlwidth": "900"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            r = await client.get("https://commons.wikimedia.org/w/api.php", params=params,
+                                 headers={"User-Agent": "MarqueBroll/1.0 (getmarque.app)"})
+        pages = ((r.json().get("query") or {}).get("pages") or {}) if r.status_code == 200 else {}
+    except (httpx.HTTPError, ValueError):
+        return []
+    return _parse_commons_pages(pages)
+
+
+def _parse_commons_pages(pages: dict) -> list[dict]:
+    out: list[dict] = []
+    for p in pages.values():
+        info = (p.get("imageinfo") or [{}])[0]
+        meta = info.get("extmetadata") or {}
+        lic = ((meta.get("LicenseShortName") or {}).get("value") or "").strip().lower()
+        free = lic in ("cc0", "pd", "public domain") or lic.startswith("public domain")
+        if not free:
+            continue
+        if (info.get("width") or 0) < 700:
+            continue                                    # too small to hold a Ken Burns zoom
+        link = info.get("thumburl") or info.get("url")
+        if not link:
+            continue
+        out.append({"link": link, "thumb": info.get("thumburl") or link,
+                    "provider": "commons"})
+    return out
+
+
+async def _generate_broll_still(query: str) -> str | None:
+    """v7 P2: one Flux 1.1 Pro still via fal.ai. The caller MUST gate the result
+    through _broll_vision_score_one before use (generation can miss too — melted
+    food, wrong subject). Returns a hosted image URL or None."""
+    if not FAL_KEY:
+        return None
+    prompt = (f"{query}, extreme closeup macro shot, warm natural side lighting, "
+              f"shallow depth of field, photorealistic, appetizing, vertical composition, "
+              f"no text, no watermark")
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post("https://fal.run/fal-ai/flux-pro/v1.1",
+                                  headers={"Authorization": f"Key {FAL_KEY}",
+                                           "Content-Type": "application/json"},
+                                  json={"prompt": prompt, "image_size": "portrait_16_9"})
+        if r.status_code != 200:
+            return None
+        imgs = r.json().get("images") or []
+        return (imgs[0] or {}).get("url") if imgs else None
+    except (httpx.HTTPError, ValueError):
+        return None
+
 
 async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
     """Score ONE candidate thumbnail against the cue, independently. Describe-then-judge:
@@ -7218,6 +7291,36 @@ def _simplify_broll_query(cue_text: str) -> str:
     return " ".join(words)
 
 
+def _promote_hero_inserts(edl: dict, max_heroes: int = 2) -> None:
+    """v7 hero treatment: promote the earliest 1-2 RESOLVED entity/data inserts
+    (outside the hook/CTA protect zones) to full-frame takeovers with a ≥1s hold,
+    bounded so the extension never collides with the next insert. Deterministic;
+    mutates in place. Meme/action/concept items and unresolved cues never promote."""
+    from app.edl import _BROLL_HOOK_PROTECT, _BROLL_CTA_PROTECT
+    items = sorted((b for b in (edl.get("broll") or [])), key=lambda b: b.get("src_in", 0))
+    total = max((s.get("src_out", 0) for s in (edl.get("segments") or [])), default=0)
+    heroes = 0
+    for i, b in enumerate(items):
+        if heroes >= max_heroes:
+            break
+        if b.get("need") not in ("entity", "data") or not b.get("resolved_url"):
+            continue
+        if b.get("src_in", 0) < _BROLL_HOOK_PROTECT + 12:
+            continue
+        if total and b.get("src_out", 0) > total - _BROLL_CTA_PROTECT:
+            continue
+        nxt = items[i + 1].get("src_in", total or 10**9) if i + 1 < len(items) else (total or 10**9)
+        hold_cap = min(b.get("src_in", 0) + 30, nxt - 20,
+                       (total - _BROLL_CTA_PROTECT) if total else 10**9)
+        if hold_cap <= b.get("src_in", 0):
+            continue
+        b["mode"] = "full"
+        b.pop("inset_rect", None)
+        b["src_out"] = max(b.get("src_out", 0), hold_cap)
+        b["hero"] = True
+        heroes += 1
+
+
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
                          allow_generation: bool = True,
                          corpus: list[dict] | None = None,
@@ -7308,6 +7411,33 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                 if len(_broll_rejected) > 5000:
                     _broll_rejected.clear()       # bounded; a rare full reset is fine
                 b["reject_reason"] = "vision_reject" if candidates else "no_candidates"
+        # v7 P2 tier: Wikimedia Commons stills — real niche closeups Pexels lacks,
+        # rendered as Ken Burns stills. Same pointwise vision gate as stock.
+        if not url and b.get("need") in ("entity", "data", "evidence"):
+            ccands = await _fetch_commons_candidates(b.get("cue_text") or query)
+            if ccands:
+                url = await _rerank_broll(b.get("cue_text") or query, ccands, dossier)
+                if url:
+                    b["source"] = "commons"
+        # v7 P2 tier: Flux still generation (armed by FAL_KEY) — gated through the
+        # SAME pointwise scorer before use; a failed gate negative-caches the query.
+        if not url and FAL_KEY and b.get("need") in ("entity", "data", "evidence") \
+                and allow_generation and query not in _broll_gen_failed:
+            still = await _generate_broll_still(b.get("cue_text") or query)
+            passed = False
+            if still:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as _sc_client:
+                        _tr = await _sc_client.get(still)
+                    _sc = await _broll_vision_score_one(
+                        b.get("cue_text") or query, _tr.content) if _tr.status_code == 200 else None
+                except httpx.HTTPError:
+                    _sc = None
+                if _sc and _sc.get("subject_match") and _sc.get("score", 0) >= _BROLL_SCORE_FLOOR:
+                    url, passed = still, True
+                    b["source"] = "generated"
+            if not passed:
+                _broll_gen_failed.add(query)
         # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
         # of silently dropping the cutaway. Runs ONLY on the initial edit pipeline
         # (allow_generation=False on tweak re-renders — generation inside the render

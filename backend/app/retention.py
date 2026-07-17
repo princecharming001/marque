@@ -1482,18 +1482,22 @@ def plan_music_dropout(edl: dict, words: list[dict], *, style: str,
 def couple_broll_sfx(edl: dict, *, sfx_assets: dict[str, str | None] | None = None,
                      video_type: str = "", energy: str = "", theme=None) -> dict:
     from app.edl import _ENTERTAINMENT_VIDEO_TYPES as _ENT
-    if not (video_type in _ENT or energy == "high"):
-        return edl
-    sfx_assets = sfx_assets or {}
-    pop_url = sfx_assets.get("pop")
-    if not pop_url:
-        return edl
     broll = edl.get("broll") or []
-    memes = sorted((b for b in broll
-                    if b.get("resolved_url")
-                    and (b.get("need") == "meme" or b.get("source") in ("giphy", "klipy"))),
-                   key=lambda b: int(b.get("src_in", 0)))
-    if not memes:
+    # v7 P1: HERO full-frame takeovers get a whoosh entry regardless of genre —
+    # a hero cut with no sound reads unfinished (foley-under-inserts research).
+    # Meme pops stay entertainment/high-energy-only (restraint doctrine).
+    sfx_assets = sfx_assets or {}
+    heroes = sorted((b for b in broll if b.get("hero") and b.get("resolved_url")),
+                    key=lambda b: int(b.get("src_in", 0))) if sfx_assets.get("whoosh") else []
+    if not (video_type in _ENT or energy == "high"):
+        memes: list[dict] = []
+    else:
+        pop_url = sfx_assets.get("pop")
+        memes = sorted((b for b in broll
+                        if pop_url and b.get("resolved_url")
+                        and (b.get("need") == "meme" or b.get("source") in ("giphy", "klipy"))),
+                       key=lambda b: int(b.get("src_in", 0)))
+    if not memes and not heroes:
         return edl
     edl = copy.deepcopy(edl)
     audio = dict(edl.get("audio") or {})
@@ -1507,6 +1511,16 @@ def couple_broll_sfx(edl: dict, *, sfx_assets: dict[str, str | None] | None = No
     theme_gain_db = (theme.sfx.get("gain_db") if theme is not None else None)
     gain = (10 ** (theme_gain_db / 20)) if theme_gain_db is not None else SFX_GAIN_DEFAULT
     added = []
+    # Heroes first (they're 1-2 per video and the priority accents), then meme pops.
+    for b in heroes:
+        if len(added) >= budget:
+            break
+        f = int(b.get("src_in", 0))
+        if any(abs(f - p) < _SFX_MIN_SPACING_FRAMES for p in placed):
+            continue
+        added.append({"src_in": f, "kind": "whoosh", "gain": gain,
+                      "url": sfx_assets["whoosh"]})
+        placed.append(f)
     for b in memes:
         if len(added) >= budget:
             break

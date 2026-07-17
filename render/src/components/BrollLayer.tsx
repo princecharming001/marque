@@ -66,8 +66,16 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   const kenBurns = interpolate(frame, [0, durationInFrames], isImage ? [1.05, 1.18] : [1.06, 1.12], {
     extrapolateRight: "clamp",
   });
-  const media = (style: React.CSSProperties) =>
-    isImage ? <Img src={url} style={style} /> : <OffthreadVideo src={url} muted style={style} />;
+  // v7 P1 conform: stock/still inserts get a gentle normalization (knock down
+  // blown-white stock, nudge contrast) so they sit inside the a-roll's grade —
+  // the #1 "reads as stock" tell is color mismatch. Memes keep their punch.
+  const conform = isGiphy || isKlipy ? "" : "saturate(0.96) brightness(0.97) contrast(1.02)";
+  const media = (style: React.CSSProperties) => {
+    const merged = conform
+      ? { ...style, filter: [style.filter, conform].filter(Boolean).join(" ") }
+      : style;
+    return isImage ? <Img src={url} style={merged} /> : <OffthreadVideo src={url} muted style={merged} />;
+  };
 
   if (mode === "smart" && insetRect) {
     // v3 OTS face-aware inset: rect precomputed backend-side (opposite the face,
