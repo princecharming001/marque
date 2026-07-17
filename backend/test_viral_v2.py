@@ -474,3 +474,53 @@ def test_density_mandate_3x_educational_floor():
                        prefs={"broll": True, "broll_coverage": "full"}).model_dump()
     n = len(out["broll"])
     assert n >= total // 120, f"density mandate missed: {n} inserts on a {total}f take (need ≥{total // 120})"
+
+
+# ---------- v7 P0: pointwise scorer, context floor cues, concept→cards ----------
+
+def test_pointwise_scorer_rejects_wrong_subject(monkeypatch):
+    # The corn-puffs case: a beautiful wrong-subject candidate must NOT win.
+    async def fake_score(cue, thumb):
+        return ({"shows": "corn puff snacks", "subject_match": False, "closeup": True, "score": 85}
+                if thumb == b"corn" else
+                {"shows": "red chili paste jar", "subject_match": True, "closeup": True, "score": 72})
+    monkeypatch.setattr(main, "_broll_vision_score_one", fake_score)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    idx = asyncio.run(main._broll_vision_pick("gochujang jar closeup", [b"corn", b"paste"], None))
+    assert idx == 1, "wrong-subject candidate must lose to the true match"
+
+
+def test_pointwise_scorer_rejects_all_below_floor(monkeypatch):
+    async def fake_score(cue, thumb):
+        return {"shows": "office people", "subject_match": True, "closeup": False, "score": 35}
+    monkeypatch.setattr(main, "_broll_vision_score_one", fake_score)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    idx = asyncio.run(main._broll_vision_pick("gochujang jar", [b"a", b"b"], None))
+    assert idx == -1, "below-floor candidates must all be rejected, never argmaxed"
+
+
+def test_floor_cues_carry_context_not_bare_words():
+    from app.edl import _synthesize_broll_floor
+    words = []
+    t = 0
+    for w in ["so", "you", "season", "the", "gochujang", "with", "vinegar", "and",
+              "the", "whole", "sauce", "just", "works", "better", "every", "time"] * 6:
+        words.append({"word": w, "start_ms": t, "end_ms": t + 350})
+        t += 400
+    cues = _synthesize_broll_floor(words, ms_to_frame(t), "full", 90, 60, step_divisor=90)
+    assert cues, "floor must emit cues"
+    assert all(c["need"] == "entity" for c in cues), "v7 floor is all-glimpse"
+    assert any(" " in c["query"] for c in cues), \
+        f"queries must carry neighboring context, got {[c['query'] for c in cues][:5]}"
+
+
+def test_concept_cue_becomes_text_card_not_stock():
+    edl = {"style": "broll_cutaway", "broll": [
+        {"src_in": 300, "src_out": 350, "cue_text": "graphic of three axes", "broll_query": "axes",
+         "source": "stock", "mode": "smart", "need": "concept",
+         "fallback_text": "FAT · ACID · HEAT", "resolved_url": None}]}
+    out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
+    assert not out["broll"], "concept cues must never ship as footage"
+    cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
+    assert cards and cards[0]["text"] == "FAT · ACID · HEAT"
+    assert any(e["action"] == "text_card" and e["tier"] == "card" for e in out["_broll_log"])
