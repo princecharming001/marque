@@ -49,8 +49,8 @@ def test_rewrite_batches_one_call_and_applies(monkeypatch):
 def test_rewrite_cache_hit_skips_call(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
     main._broll_query_cache.clear()
-    main._broll_query_cache["startup::person working"] = "founder at a laptop"
-    main._broll_query_cache["startup::surprised"] = "shocked pikachu"
+    main._broll_query_cache["startup::person working"] = {"query": "founder at a laptop", "need": "action"}
+    main._broll_query_cache["startup::surprised"] = {"query": "shocked pikachu", "need": "concept"}
     calls = {"n": 0}
 
     async def fake_json(system, user, schema, model=None, temperature=None):

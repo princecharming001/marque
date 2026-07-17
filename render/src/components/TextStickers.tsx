@@ -16,7 +16,16 @@ const CAPTION_BAND_HEIGHT_PX: Record<CaptionStyle, number> = {
 // Free-position text stickers (the TikTok text tool): style-agnostic — every
 // composition renders them, unlike the style-gated text_card slab. Position is a
 // fraction of frame size (center anchor), sized by `scale` against a 64px base,
-// rotated, colored, with an optional dark label plate. Pop-in over ~5 frames.
+// rotated, colored, with an optional dark label plate. Pop-in over ~5 frames,
+// pop-out over the last ~10 frames (stickers ≥20f only — interrupt keyword
+// flashes are too short to spend a third of their life exiting).
+// Stacked-hook exception: a sticker starting at/near frame 0 (the auto hook
+// title) renders fully formed from its first frame — the text hook must be
+// legible AT frame 0/1 (TikTok uses frame 1 as the feed cover), so it gets no
+// entrance animation at all.
+const HOOK_STACKED_MAX_FRAME = 9;
+const STICKER_EXIT_FRAMES = 10;
+const STICKER_EXIT_MIN_DUR = 20;
 export const TextStickers: React.FC<{
   overlays: Overlay[];
   captions?: CaptionWord[];
@@ -45,8 +54,19 @@ export const TextStickers: React.FC<{
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       {active.map((o, i) => {
-        const pop = interpolate(frame, [o.frame_in, o.frame_in + 5], [0.6, 1],
-          { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+        const pop = o.frame_in <= HOOK_STACKED_MAX_FRAME
+          ? 1
+          : interpolate(frame, [o.frame_in, o.frame_in + 5], [0.6, 1],
+              { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+        const dur = o.frame_out - o.frame_in;
+        const exit = dur >= STICKER_EXIT_MIN_DUR
+          ? interpolate(frame, [o.frame_out - STICKER_EXIT_FRAMES, o.frame_out], [1, 0],
+              { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+          : 1;
+        const exitScale = dur >= STICKER_EXIT_MIN_DUR
+          ? interpolate(frame, [o.frame_out - STICKER_EXIT_FRAMES, o.frame_out], [1, 0.92],
+              { extrapolateLeft: "clamp", extrapolateRight: "clamp" })
+          : 1;
         const fontKey = (o.font in FONTS ? o.font : "inter") as keyof typeof FONTS;
         const clamped = clampSticker(o.pos_x ?? 0.5, o.pos_y ?? 0.5);
         // ~half the sticker's own height as a fraction of frame height, for the
@@ -58,13 +78,16 @@ export const TextStickers: React.FC<{
             position: "absolute",
             left: `${clamped.x * 100}%`,
             top: `${nudge.y * 100}%`,
-            transform: `translate(-50%, -50%) rotate(${o.rotation ?? 0}deg) scale(${pop * nudge.shrink})`,
+            transform: `translate(-50%, -50%) rotate(${o.rotation ?? 0}deg) scale(${pop * exitScale * nudge.shrink})`,
+            opacity: exit,
             maxWidth: "86%",
           }}>
             <span style={{
               fontFamily: FONTS[fontKey],
               fontSize: 64 * (o.scale || 1),
-              fontWeight: fontKey === "archivo" ? 400 : 800,
+              // Archivo Black and Anton each ship a single 400 weight — heavier
+              // requests trigger faux-bold (same rule as Captions.weightFor).
+              fontWeight: fontKey === "archivo" || fontKey === "anton" ? 400 : 800,
               lineHeight: 1.15,
               color: o.color ?? "white",
               textAlign: "center",

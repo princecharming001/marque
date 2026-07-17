@@ -33,7 +33,8 @@ from contextlib import asynccontextmanager
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
                      style_capabilities, TWEAK_OP_TYPES, _BROLL_FLOOR_STOPWORDS,
-                     assemble_edl, check_edl_invariants, clamp_edl_to_source)
+                     assemble_edl, check_edl_invariants, clamp_edl_to_source,
+                     _ENTERTAINMENT_VIDEO_TYPES, _BROLL_MEME_CAP, _BROLL_MEME_CAP_EDU)
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
@@ -99,12 +100,14 @@ POSTFORME_BASE = os.environ.get("POSTFORME_BASE", "https://api.postforme.dev/v1"
 APIFY_KEY = os.environ.get("APIFY_KEY", "")
 PEXELS_KEY = os.environ.get("PEXELS_KEY", "")
 BROLL_CANDIDATES = int(os.environ.get("BROLL_CANDIDATES", "10"))  # P4.1: Pexels per_page for vision re-rank (realism pass: wider pool → likelier a genuinely-relevant clip exists)
-# Part 5.2 — culturally-relevant b-roll: licensed reaction/meme GIF source (GIPHY primary, Tenor
-# stub). Keyless → fail-soft empty (memes just don't resolve). "Powered By GIPHY" attribution is a
-# production-key requirement (see docs/BROLL-PLACEMENT-SOURCES.md §5.2). BROLL_MEMES gates the whole
-# meme path (prompt doctrine + resolver): default ON in code; prod deploys OFF, flips after live E2E.
+# v2 — culturally-relevant b-roll sources. PRIMARY: KLIPY (api.klipy.com — the post-Tenor
+# industry standard; Discord/WhatsApp/Bluesky migrated 2026-07): Clips (≤10s movie/TV/viral
+# moments) + GIFs verticals, both with MP4 renditions. FALLBACK: GIPHY. Tenor was DELETED —
+# Google shut the Tenor API down 2026-06-30. Keyless → fail-soft empty (memes just don't
+# resolve). Attribution: "Powered by KLIPY" (ToS §4) / "Powered By GIPHY" badges render on the
+# inserts (BrollLayer). BROLL_MEMES gates the whole meme path (prompt doctrine + resolver).
 GIPHY_KEY = os.environ.get("GIPHY_KEY", "")
-TENOR_KEY = os.environ.get("TENOR_KEY", "")
+KLIPY_KEY = os.environ.get("KLIPY_KEY", "")
 BROLL_MEMES = os.environ.get("BROLL_MEMES", "1").lower() in ("1", "true", "on")
 _HIGGSFIELD_MAX_PER_JOB = int(os.environ.get("HIGGSFIELD_MAX_PER_JOB", "2"))  # credit + latency cap
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -2789,7 +2792,8 @@ SFX_ASSETS: dict[str, str | None] = {
 }
 
 
-def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None) -> dict:
+def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None,
+                      theme_volume: float | None = None) -> dict:
     """Post-process an EDL per the creator's editing preferences."""
     if not edl or not prefs:
         return edl
@@ -2835,8 +2839,10 @@ def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None
                                         montage=montage, seed=len(edl.get("segments") or []))
             # A montage recap is music-forward (louder, no duck); a talking cut sits
             # the track quietly under the voice.
+            # v2 (D4): theme music.volume (previously dead config) overrides the default.
+            _vol = 0.3 if montage else max(0.0, min(1.0, theme_volume if theme_volume is not None else 0.12))
             audio["music"] = {"url": track["url"], "query": None, "bpm": track.get("bpm"),
-                              "volume": 0.3 if montage else 0.12,
+                              "volume": _vol,
                               "duck_voice": not montage}
     return edl
 
@@ -3535,6 +3541,13 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
                 _tweak_force = (job.get("config") or {}).get("broll_coverage") == "full"
                 job["edl"] = await _resolve_broll(job["edl"], allow_generation=False,
                                                   force_broll=_tweak_force)
+                # v2 (A5): idempotent meme-pop coupling on tweak re-renders too (the 15f
+                # bidirectional proximity check skips inserts that already have a cue).
+                job["edl"] = retention_mod.couple_broll_sfx(
+                    job["edl"], sfx_assets=SFX_ASSETS,
+                    video_type=(job.get("edit_brief") or {}).get("video_type", ""),
+                    energy=(job.get("config") or {}).get("energy", ""),
+                    theme=job.get("_theme"))
             except Exception:
                 clip.setdefault("warnings", []).append("broll_unresolved: resolve failed")
             # #16: a resolve that finds no stock clip (no key / no match) leaves the cue
@@ -3979,7 +3992,7 @@ def _mock_tweak(instruction: str) -> tuple[str, list[dict]]:
             return "Captions now show one word at a time.", [{"type": "set_caption_options", "grouping": "word"}]
         if any(p in low for p in ("in phrases", "few words", "chunks")):
             return "Captions grouped into short phrases.", [{"type": "set_caption_options", "grouping": "phrase"}]
-        for name, hexv in (("yellow", "#FFD60A"), ("gold", "#FFD60A"), ("green", "#34D399"),
+        for name, hexv in (("yellow", "#FFD93D"), ("gold", "#FFD93D"), ("green", "#34D399"),
                            ("pink", "#F472B6"), ("blue", "#60A5FA"), ("white", "default")):
             if name in low:
                 return (f"Caption highlight set to {name}.",
@@ -4503,7 +4516,7 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
                 energy=(job.get("config") or {}).get("energy", ""),
                 # Only offer memes to the LLM when they can actually resolve (flag ON + a GIF key
                 # configured) — otherwise it emits meme cues that drop at resolve, wasting the beat.
-                memes_enabled=BROLL_MEMES and bool(GIPHY_KEY or TENOR_KEY))
+                memes_enabled=BROLL_MEMES and bool(KLIPY_KEY or GIPHY_KEY))
             plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
         except HTTPException as e:
             # NEVER swallow silently: a swallowed HTTPException here (e.g. a schema the
@@ -4529,7 +4542,8 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
             job["_silent_spans"] = None
     try:
         edl_obj = assemble_edl(plan, words, style, format_id, prefs=prefs, brief=brief,
-                               silent_spans=job.get("_silent_spans"))
+                               silent_spans=job.get("_silent_spans"),
+                               job_seed=str(job.get("job_id") or ""))
     except Exception as e:
         logging.warning("assemble_edl failed (%s) → safe default", e)
         return None, llm_contributed, plan
@@ -4608,7 +4622,8 @@ def _extract_plan_retention_hints(plan: dict) -> dict:
 _MUSIC_VIBE_TRACK_INDEX = {"upbeat": 0, "chill": 1, "driving": 2}
 
 
-def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None) -> dict:
+def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None,
+                           theme_volume: float | None = None) -> dict:
     """P5: honor the plan author's music{wanted,vibe} decision when the creator
     hasn't explicitly toggled prefs.music either way. The creator's own toggle
     always wins over the plan's suggestion: prefs.music is False -> never;
@@ -4634,8 +4649,11 @@ def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None)
     track = _select_music_track(vibe=music_hint.get("vibe") or "",
                                 tone=(prefs.get("brand_tone") or ""),
                                 montage=montage, seed=seed)
+    # v2 (D4): a theme's music.volume (previously dead config) overrides the 0.12
+    # talking default; montage keeps its own hotter level.
+    vol = 0.3 if montage else max(0.0, min(1.0, theme_volume if theme_volume is not None else 0.12))
     audio["music"] = {"url": track["url"], "query": None, "bpm": track.get("bpm"),
-                      "volume": 0.3 if montage else 0.12, "duck_voice": not montage}
+                      "volume": vol, "duck_voice": not montage}
     return edl_data
 
 
@@ -4787,7 +4805,10 @@ async def _run_edit(job_id: str, words: list[dict]):
                                                  [d.model_dump() for d in filler_drops])
             edl_data = await verify_and_repair_edl(style, edl_data, words, script,
                                                    emphasis_spans=emphasis_spans)
-            edl_data = _apply_edit_prefs(edl_data, prefs, emphasis_spans=emphasis_spans)
+            edl_data = _apply_edit_prefs(
+                edl_data, prefs, emphasis_spans=emphasis_spans,
+                theme_volume=(job["_theme"].music.get("volume")
+                              if job.get("_theme") is not None else None))
 
         # Ownership check after the authoring awaits: a watchdog kill + retry may
         # have started a NEWER pipeline while the LLM was thinking. Bail before
@@ -4832,7 +4853,10 @@ async def _run_edit(job_id: str, words: list[dict]):
         _theme_for_music = job.get("_theme")
         if _theme_for_music is not None and not music_hint.get("vibe"):
             music_hint["vibe"] = _theme_for_music.music.get("vibe", "")
-        edl_data = _apply_plan_music_vibe(edl_data, prefs, music_hint)
+        edl_data = _apply_plan_music_vibe(
+            edl_data, prefs, music_hint,
+            theme_volume=(_theme_for_music.music.get("volume")
+                          if _theme_for_music is not None else None))
         trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
         # A9: genre profile's interrupt_density is a pre-resolved plain string —
         # the LOWEST-precedence fallback (llm hint > theme > genre > style
@@ -4887,6 +4911,14 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
                                             corpus=job.get("broll_corpus"),
                                             force_broll=_force_broll)
+            # v2 (A5): meme pop-in SFX coupling — POST-resolve (an unresolved insert that the
+            # tier pass dropped must never leave an orphan cue). Restrained: memes only,
+            # entertainment/high-energy only, global budget respected.
+            edl_data = retention_mod.couple_broll_sfx(
+                edl_data, sfx_assets=SFX_ASSETS,
+                video_type=(job.get("edit_brief") or {}).get("video_type", ""),
+                energy=(job.get("config") or {}).get("energy", ""),
+                theme=job.get("_theme"))
             # Addendum Part 8: surface the b-roll decision log (need → asset/tier → action)
             # for the report card. After the tier pass, edl["broll"] holds only kept assets,
             # so a literal need that fell back to a text card is no longer a "broll_unresolved".
@@ -4902,7 +4934,7 @@ async def _run_edit(job_id: str, words: list[dict]):
                 _u = _b.get("resolved_url")
                 # Exclude reaction/meme GIFs (source=giphy / need=meme) from the hook-flash
                 # montage — a meme in a rapid listicle intro is off-grammar (Part 5.2).
-                if _b.get("source") == "giphy" or _b.get("need") == "meme":
+                if _b.get("source") in ("giphy", "klipy") or _b.get("need") == "meme":
                     continue
                 if _u and _u not in _m_urls:
                     _m_urls.append(_u)
@@ -6764,41 +6796,73 @@ async def _fetch_giphy_candidates(query: str, n: int = 1) -> list[dict]:
         link = orig.get("mp4")                          # MP4 ONLY — a raw .gif renders FROZEN via
         thumb = (imgs.get("original_still") or {}).get("url") or orig.get("url")  # Remotion <Img> on Lambda
         if link:
-            out.append({"link": link, "thumb": thumb})
+            out.append({"link": link, "thumb": thumb, "provider": "giphy"})
     return out
 
 
-async def _fetch_tenor_candidates(query: str, n: int = 1) -> list[dict]:
-    """Part 5.2: Tenor (Google) fallback GIF source behind TENOR_KEY — stub, keyless fail-soft.
-    Tenor requires 'Via Tenor' attribution. Prefers the mp4 media format like GIPHY."""
-    if not TENOR_KEY:
+async def _fetch_klipy_candidates(query: str, n: int = 1, kind: str = "clips") -> list[dict]:
+    """v2: KLIPY search → [{link, thumb, provider:"klipy"}]. kind ∈ {"clips","gifs"} — NOT
+    "memes": KLIPY's static-memes vertical is png/webp ONLY (no video rendition, verified
+    against docs.klipy.com 2026-07-17), so it can never feed a video insert. Clips = ≤10s
+    movie/TV/viral moments (rendered muted); gifs = reaction GIFs. MP4 rendition ONLY (same
+    frozen-.gif Lambda constraint as GIPHY). Response shape differs per vertical:
+      clips → item.file.mp4 is a FLAT URL string; dims live in item.file_meta.mp4
+      gifs  → item.file.{hd,md,sm,xs}.mp4.url (nested rendition objects)
+    ToS notes: no caching of assets (we cache URLs only, never download/rehost); no mixing
+    KLIPY results with other providers' in one user-facing grid (we don't — a single insert
+    is picked server-side); "Powered by KLIPY" badge renders on the insert (BrollLayer).
+    per_page min is 8 on search. content_filter=high (the clips library is not yet fully
+    MPA-rated). Keyless/error fail-soft to []. Monkeypatchable in tests."""
+    if not KLIPY_KEY:
         return []
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get("https://tenor.googleapis.com/v2/search",
-                                 params={"key": TENOR_KEY, "q": query, "limit": max(1, n),
-                                         "contentfilter": "medium", "media_filter": "mp4,gif"})
+            r = await client.get(
+                f"https://api.klipy.com/api/v1/{KLIPY_KEY}/{kind}/search",
+                params={"q": query, "per_page": max(8, min(max(1, n), 50)),
+                        "customer_id": "marque", "content_filter": "high"})
         if r.status_code != 200:
             return []
-        results = r.json().get("results", [])
+        items = ((r.json().get("data") or {}).get("data")) or []
     except (httpx.HTTPError, ValueError) as e:
-        logging.warning("tenor fetch failed: %s", e)
+        logging.warning("klipy fetch failed (%s): %s", kind, e)
         return []
     out: list[dict] = []
-    for res in results:
-        mf = res.get("media_formats") or {}
-        link = (mf.get("mp4") or {}).get("url")         # MP4 ONLY (no frozen-.gif fallback)
-        thumb = (mf.get("gifpreview") or mf.get("gif") or {}).get("url")
+    for item in items:
+        f = item.get("file") or {}
+        link = None
+        thumb = None
+        mp4 = f.get("mp4")
+        if isinstance(mp4, str) and mp4:                     # clips: flat URL strings
+            link = mp4
+            thumb = f.get("webp") if isinstance(f.get("webp"), str) else (
+                f.get("gif") if isinstance(f.get("gif"), str) else None)
+        else:                                                # gifs: nested renditions
+            for size in ("hd", "md", "sm"):
+                rend = f.get(size) or {}
+                url = ((rend.get("mp4") or {}).get("url")) if isinstance(rend, dict) else None
+                if url:
+                    link = url
+                    thumb = ((rend.get("webp") or {}).get("url")
+                             or (rend.get("jpg") or {}).get("url")
+                             or (rend.get("gif") or {}).get("url"))
+                    break
         if link:
-            out.append({"link": link, "thumb": thumb})
+            out.append({"link": link, "thumb": thumb, "provider": "klipy"})
+        if len(out) >= max(1, n):
+            break
     return out
 
 
 async def _fetch_meme_candidates(query: str, n: int = 1) -> list[dict]:
-    """Reaction/meme GIF candidates from the licensed ladder (GIPHY → Tenor). Fail-soft []."""
-    cands = await _fetch_giphy_candidates(query, n)
+    """Cultural-insert candidates: KLIPY clips first (movie/TV/viral moments — the
+    culturally-relevant source), then KLIPY gifs, then GIPHY as the fallback ladder.
+    Keyless KLIPY ⇒ byte-identical to the old GIPHY-only path. Fail-soft []."""
+    cands = await _fetch_klipy_candidates(query, max(1, n // 2), kind="clips")
+    if len(cands) < n:
+        cands += await _fetch_klipy_candidates(query, max(1, n - len(cands)), kind="gifs")
     if not cands:
-        cands = await _fetch_tenor_candidates(query, n)
+        cands = await _fetch_giphy_candidates(query, n)
     return cands
 
 
@@ -6877,6 +6941,9 @@ async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None =
 
 
 _broll_url_cache: dict[str, str] = {}
+# Paired provenance for meme:: cache entries (url alone can't tell klipy from giphy on a
+# tweak re-render, and the render badge + montage exclusion key off `source`).
+_meme_source_cache: dict[str, str] = {}
 
 
 # Queries whose GENERATION already failed once — never re-burn credits/latency on them
@@ -6902,7 +6969,37 @@ def _score_broll_corpus(cue_text: str, corpus: list[dict]) -> tuple[dict | None,
 
 _OWN_MEDIA_FLOOR = float(os.environ.get("OWN_MEDIA_BROLL_FLOOR", "0.45"))
 
-_broll_query_cache: dict[str, str] = {}          # (niche::query) -> culturally-rewritten query
+_broll_query_cache: dict[str, dict] = {}         # (niche::query) -> {"query": rewritten, "need": need}
+# v2: KLIPY /clips/trending titles as an extra cultural signal for the rewrite pass
+# (what movie/TV/viral moments are actually circulating right now). TTL-cached, fail-soft.
+_klipy_trending_cache: dict = {"titles": [], "ts": 0.0}
+_KLIPY_TRENDING_TTL_S = 6 * 3600
+
+
+async def _klipy_trending_titles() -> list[str]:
+    """Top trending KLIPY clip titles (≤10), as rewrite signal only (never republished).
+    Fail-soft to [] — keyless, error, or empty all degrade to the niche-reels signal alone."""
+    import time as _time
+    now = _time.time()
+    if _klipy_trending_cache["titles"] and now - _klipy_trending_cache["ts"] < _KLIPY_TRENDING_TTL_S:
+        return _klipy_trending_cache["titles"]
+    if not KLIPY_KEY:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(f"https://api.klipy.com/api/v1/{KLIPY_KEY}/clips/trending",
+                                 params={"per_page": 10, "customer_id": "marque",
+                                         "content_filter": "high"})
+        if r.status_code != 200:
+            return _klipy_trending_cache["titles"]
+        items = ((r.json().get("data") or {}).get("data")) or []
+        titles = [str(i.get("title") or "").strip()[:80] for i in items if i.get("title")][:10]
+        if titles:
+            _klipy_trending_cache["titles"] = titles
+            _klipy_trending_cache["ts"] = now
+        return _klipy_trending_cache["titles"]
+    except (httpx.HTTPError, ValueError):
+        return _klipy_trending_cache["titles"]
 
 
 async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
@@ -6923,12 +7020,37 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
     if not cues:
         return edl
     niche = ((job.get("brand") or {}).get("niche") or (job.get("dossier") or {}).get("niche") or "").strip()
+    # v2 reaction-reclassify guards. This pass runs POST-assembly (after _admit_cue applied the
+    # meme gate/cap/panel-force), so a need flip here must re-enforce that grammar in code:
+    # per-type cap, panel mode (unless the picker forces one), and a pop-in-length window.
+    _vtype = (job.get("edit_brief") or {}).get("video_type", "")
+    _energy = (job.get("config") or {}).get("energy", "")
+    _entertainment = _vtype in _ENTERTAINMENT_VIDEO_TYPES or _energy == "high"
+    _meme_cap = _BROLL_MEME_CAP if _entertainment else _BROLL_MEME_CAP_EDU
+    _forced_mode = (job.get("config") or {}).get("broll_mode")
+    _meme_total = sum(1 for b in broll if b.get("need") == "meme")
+
+    def _apply_rewrite(i: int, q: str, need: str) -> None:
+        nonlocal _meme_total
+        b = broll[i]
+        if q:
+            b["broll_query"] = q
+        if need == "meme" and b.get("need") != "meme":
+            if _meme_total >= _meme_cap:
+                return                                     # cap reached — keep literal need
+            b["need"] = "meme"
+            if _forced_mode not in ("panel", "card"):
+                b["mode"] = "panel"                        # face stays; memes never full
+            b["src_out"] = min(int(b.get("src_out", 0)), int(b.get("src_in", 0)) + 45)
+            _meme_total += 1
+
     # Serve fully from cache when every cue is a hit — avoids the LLM call on re-edits of the
     # same niche/queries.
     ck = lambda q: f"{niche.lower()}::{q.lower()}"
     if cues and all(ck(c["broll_query"]) in _broll_query_cache for c in cues):
         for c in cues:
-            broll[c["i"]]["broll_query"] = _broll_query_cache[ck(c["broll_query"])]
+            hit = _broll_query_cache[ck(c["broll_query"])]
+            _apply_rewrite(c["i"], hit.get("query", ""), hit.get("need", c["need"]))
         edl["_queries_rewritten"] = True
         return edl
     trends: list[str] = []
@@ -6942,16 +7064,23 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
                 break
     except Exception:
         trends = []
+    klipy_trends = await _klipy_trending_titles()
     try:
         sys = prompts.broll_query_rewrite_system()
-        usr = json.dumps({"niche": niche, "trending_titles": trends[:10], "cues": cues})
+        usr = json.dumps({"niche": niche, "video_type": _vtype,
+                          "trending_titles": trends[:10],
+                          "trending_clips": klipy_trends, "cues": cues})
         out = await anthropic_json(sys, usr, prompts.BROLL_QUERY_REWRITE_SCHEMA, model=HAIKU, temperature=0.2)
         for item in (out.get("queries") or []):
             i, q = item.get("i"), (item.get("query") or "").strip()
             if isinstance(i, int) and 0 <= i < len(broll) and q:
                 orig = broll[i].get("broll_query") or broll[i].get("cue_text") or ""
-                broll[i]["broll_query"] = q
-                _broll_query_cache[ck(orig)] = q
+                # `reaction` may reclassify an action/concept cue whose beat lands better as a
+                # shared cultural moment than literal stock (guards in _apply_rewrite).
+                want_meme = bool(item.get("reaction")) and broll[i].get("need") in ("action", "concept")
+                need = "meme" if want_meme else (broll[i].get("need") or "action")
+                _apply_rewrite(i, q, need)
+                _broll_query_cache[ck(orig)] = {"query": q, "need": broll[i].get("need", need)}
         _cap_evict(_broll_query_cache, 10_000)
     except Exception as e:
         logging.warning("broll query rewrite failed (using originals): %s", e)
@@ -6990,7 +7119,7 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     if not broll:
         return edl
     has_stock = PEXELS_KEY or higgsfield_mod.CONFIGURED
-    has_meme = BROLL_MEMES and (GIPHY_KEY or TENOR_KEY)      # Part 5.2 GIF ladder
+    has_meme = BROLL_MEMES and (KLIPY_KEY or GIPHY_KEY)      # v2 cultural ladder (KLIPY→GIPHY)
     can_resolve = has_stock or corpus or has_meme
     generated_count = 0
     for b in broll if can_resolve else []:
@@ -7016,15 +7145,21 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             mkey = f"meme::{query}"
             if mkey in _broll_url_cache:
                 b["resolved_url"] = _broll_url_cache[mkey]
-                b["source"] = "giphy"
+                # Provenance restored from the paired cache so tweak re-renders keep
+                # the correct attribution badge (klipy vs giphy).
+                b["source"] = _meme_source_cache.get(mkey, "giphy")
                 continue
             mcands = await _fetch_meme_candidates(query, BROLL_CANDIDATES)
             murl = await _rerank_broll(b.get("cue_text") or query, mcands, dossier)
             if murl:
+                prov = next((c.get("provider", "giphy") for c in mcands
+                             if c.get("link") == murl), "giphy")
                 _broll_url_cache[mkey] = murl
+                _meme_source_cache[mkey] = prov
                 _cap_evict(_broll_url_cache, 10_000)
+                _cap_evict(_meme_source_cache, 10_000)
                 b["resolved_url"] = murl
-                b["source"] = "giphy"
+                b["source"] = prov
             continue
         # Own media first — the creator's real footage beats stock when it matches.
         if corpus:
@@ -7105,6 +7240,9 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # UNRESOLVED literal still falls back to a text card.
         if need in _LITERAL_NEEDS and not is_own and not (force_broll and resolved):
             if txt and s_out > s_in:
+                # v2 read-time guard: entity/data insert windows shrank to ~1.2-1.8s, but a
+                # TEXT card needs >=1.5s to read twice — extend the card (never the clip).
+                s_out = max(s_out, s_in + 45)
                 fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
                 log.append({"need": need, "cue": cue, "tier": "stock" if resolved else "none",
                             "action": "text_card", "why": rej or "literal need with no real asset"})

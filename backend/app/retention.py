@@ -23,31 +23,37 @@ Pass order (all implemented as of P4):
 """
 from __future__ import annotations
 import copy
-import hashlib
 import os
-import random
 
 from app.edl import (
     ALWAYS_FILLERS, TRIM_LEVELS, ms_to_frame, _frame_to_ms, snap_to_word,
     detect_disfluencies, split_segment_in_place, _PUNCH_STYLES,
     _kept_intervals, _kept_frames, _coalesce_drops, _norm_word,
     _MIN_DURATION_FRAMES, MIN_CLIP_OUTPUT_FRAMES, check_edl_invariants, SFX_GAIN_DEFAULT,
+    _seeded_rng,
 )
 from app import themes as themes_mod
 
-# csv of pass names to run; "" (default) = everything off = today's live behavior.
-# "all" enables every implemented pass. Individual names: filler, pacing, emphasis,
-# interrupts, sfx, structure (hook/end_card/loop_tail).
+# csv of pass names to run; "" (default) = everything off. "all" (standalone OR as a
+# csv member) expands to the core set; framing/hook_pack/jitter/cold_open/dropout are
+# opt-in extras that must be listed explicitly (e.g. "all,framing,hook_pack,jitter").
+# Individual names: filler, retake, pacing, emphasis, interrupts, sfx,
+# structure (hook/end_card/loop_tail), cold_open, dropout, framing, hook_pack, jitter.
 _ENV_PASSES = os.environ.get("RETENTION_PASSES", "")
+_ALL_PASSES = {"filler", "retake", "pacing", "emphasis", "interrupts", "sfx", "structure"}
 
 
 def _enabled_passes() -> set[str]:
     raw = _ENV_PASSES.strip()
     if not raw:
         return set()
-    if raw == "all":
-        return {"filler", "retake", "pacing", "emphasis", "interrupts", "sfx", "structure"}
-    return {p.strip() for p in raw.split(",") if p.strip()}
+    tokens = {p.strip() for p in raw.split(",") if p.strip()}
+    # v2 FIX (live prod bug): "all" was only expanded when it was the ENTIRE value —
+    # "all,framing,hook_pack,jitter" left a literal "all" token and silently disabled
+    # filler/retake/pacing/emphasis/interrupts/sfx/structure. Expand it as a member too.
+    if "all" in tokens:
+        tokens = (tokens - {"all"}) | _ALL_PASSES
+    return tokens
 
 
 def _play_order(edl: dict) -> list[int]:
@@ -56,15 +62,6 @@ def _play_order(edl: dict) -> list[int]:
     if order is not None and sorted(order) == list(range(len(segs))):
         return list(order)
     return list(range(len(segs)))
-
-
-def _seeded_rng(*parts: str) -> random.Random:
-    """A random.Random seeded deterministically from arbitrary string parts, via
-    sha1 rather than Python's built-in hash() (which is salted per-process by
-    default) — so "same job_seed -> identical output" holds across process
-    restarts / redeploys, not just within one run."""
-    digest = hashlib.sha1(":".join(parts).encode()).hexdigest()
-    return random.Random(int(digest[:16], 16))
 
 
 def _safe_pass(name: str, edl: dict, fn, *args, **kwargs) -> dict:
@@ -294,6 +291,62 @@ def dedupe_retakes(edl: dict, words: list[dict], script_text: str = "") -> dict:
 # trim. Generalized to respect segment_order (assemble_edl's original never
 # needed to — it runs before any reorder exists).
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Cold open (v2) — 50-60% of short-form drop-off happens in the first 3s and the
+# first spoken word must land within ~0.3-0.5s of frame 0 (TikTok/creator-guide
+# consensus). Nothing else trims leading pre-speech (strip_fillers skips the gap
+# before the first word by design; trim_loop_tail is tail-only), so this pass
+# tightens the head of the FIRST PLAYED segment up to the first kept word, minus
+# a natural-padding guard that also guarantees the word onset is never clipped.
+# Runs AFTER retake dedupe (a dropped flubbed opener changes which word is
+# first) and BEFORE pacing/framing (their hook-protect zones then cover the real
+# content open instead of dead lead). Own opt-in token "cold_open".
+# ---------------------------------------------------------------------------
+
+_COLD_OPEN_MAX_ONSET_OUT = 12   # ~0.4s: onset later than this output frame → trim
+_COLD_OPEN_PAD_FRAMES = 8       # natural padding kept before the word (~0.27s, in 3-9f band)
+_COLD_OPEN_MIN_TRIM = 4         # don't bother shaving fewer frames than this
+
+
+def trim_cold_open(edl: dict, words: list[dict]) -> dict:
+    edl = copy.deepcopy(edl)
+    segments = edl.get("segments") or []
+    if not segments or not words:
+        return edl
+    drops = edl.get("drops") or []
+    kept = _kept_intervals(segments, drops)
+    if not kept:
+        return edl
+    first_kept = kept[0][0]
+    # First word whose start lands in kept footage at/after the open.
+    onset: int | None = None
+    for w in words:
+        wf = ms_to_frame(w.get("start_ms", 0))
+        if wf >= first_kept and any(lo <= wf < hi for lo, hi in kept):
+            onset = wf
+            break
+    if onset is None:
+        return edl
+    # Output lead before the onset (speeds are 1.0 this early — pacing runs later).
+    lead_out = sum(min(hi, onset) - lo for lo, hi in kept if lo < onset)
+    if lead_out <= _COLD_OPEN_MAX_ONSET_OUT:
+        return edl                                 # already starts hot
+    head_idx = _play_order(edl)[0]
+    head = segments[head_idx]
+    new_src_in = max(head["src_in"], onset - _COLD_OPEN_PAD_FRAMES)
+    if new_src_in - head["src_in"] < _COLD_OPEN_MIN_TRIM or new_src_in >= head["src_out"]:
+        return edl
+    trimmed = dict(head)
+    trimmed["src_in"] = new_src_in
+    new_segments = list(segments)
+    new_segments[head_idx] = trimmed
+    # Floor guard: never trim the take below the minimum output duration.
+    if _kept_frames({"segments": new_segments, "drops": drops}) < _MIN_DURATION_FRAMES:
+        return edl
+    edl["segments"] = new_segments
+    return edl
+
 
 def trim_loop_tail(edl: dict, words: list[dict], max_tail_frames: int = 10) -> dict:
     edl = copy.deepcopy(edl)   # never mutate the caller's dict
@@ -709,8 +762,62 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
 _EMPHASIS_TOP_N = 3
 _EMPHASIS_PUNCH_GUARD_FRAMES = 30   # skip inserting a punch within this many frames of an existing overlay
 _EMPHASIS_HIGHLIGHT_CAP = 12
-_HOOK_OVERLAY_HOLD_FRAMES = 45
+# Title v2 (2026-07-17, research-verified): the hook title stays up until the first spoken
+# sentence ENDS, clamped 2–5s in OUTPUT frames (the old fixed 45 src frames shrank below the
+# ~2s readability floor whenever the open had filler drops or a pacing lift). Fallback 3s
+# when no sentence boundary is derivable (punctuation-free transcripts).
+_HOOK_HOLD_MIN_OUT = 60      # 2s — readability floor ("read it twice")
+_HOOK_HOLD_MAX_OUT = 150     # 5s — TikTok talking-head guidance ceiling
+_HOOK_HOLD_FALLBACK_OUT = 90  # 3s
+_HOOK_SENTENCE_SCAN_MS = 8000  # look for the first sentence end within ~8s of speech
+_HOOK_TEXT_MAX_CHARS = 60    # word-boundary clamp (~8 words; ≤2 rendered lines at 67px/86%)
 _HOOK_SKIP_STYLES = {"duet_split"}   # the reacted-to clip owns the open
+
+_HOOK_ABBREVIATIONS = {"mr.", "mrs.", "ms.", "dr.", "st.", "vs.", "etc.", "e.g.", "i.e.",
+                       "u.s.", "a.m.", "p.m.", "no.", "inc.", "co.", "jr.", "sr."}
+
+
+def _normalize_hook_text(text: str, uppercase: bool = False) -> str:
+    """Deterministic title copy normalization (never trust the LLM's formatting):
+    collapse whitespace; strip terminal '.'/'…' (keep '?'/'!' — question/claim phrasing
+    is the convention); clamp to _HOOK_TEXT_MAX_CHARS on a WORD boundary (no ellipsis,
+    no mid-word chops); sentence case is preserved AS AUTHORED (Title Case was refuted —
+    "looks like PowerPoint"; the 2026 native idiom is sentence-case questions/claims);
+    ALL CAPS only when the caption grammar is uppercase (high-energy themes) so the
+    title and captions never disagree."""
+    t = " ".join((text or "").split())
+    while t and t[-1] in ".…":
+        t = t[:-1].rstrip()
+    if len(t) > _HOOK_TEXT_MAX_CHARS:
+        clipped = t[:_HOOK_TEXT_MAX_CHARS + 1]
+        cut = clipped.rfind(" ")
+        t = (clipped[:cut] if cut > 0 else t[:_HOOK_TEXT_MAX_CHARS]).rstrip(" ,;:—-")
+    if uppercase:
+        t = t.upper()
+    return t
+
+
+def _first_sentence_end_frame(words: list[dict], first_kept: int) -> int | None:
+    """Source frame where the first kept sentence ends (word whose text ends in ./!/?,
+    abbreviation-guarded), scanning ≤ _HOOK_SENTENCE_SCAN_MS past the first kept word.
+    AssemblyAI keeps punctuation (format_text default on); fixtures without punctuation
+    return None and the caller uses the fallback hold."""
+    started = False
+    t0: int | None = None
+    for w in words:
+        wf = ms_to_frame(w.get("start_ms", 0))
+        if not started:
+            if wf < first_kept:
+                continue
+            started = True
+            t0 = int(w.get("start_ms", 0))
+        if t0 is not None and int(w.get("start_ms", 0)) - t0 > _HOOK_SENTENCE_SCAN_MS:
+            return None
+        token = str(w.get("word") or "").strip()
+        if token and token[-1] in ".!?" and token.lower() not in _HOOK_ABBREVIATIONS:
+            end_ms = w.get("end_ms") or w.get("start_ms", 0)
+            return ms_to_frame(end_ms)
+    return None
 
 
 def align_emphasis(edl: dict, words: list[dict], *, style: str,
@@ -762,15 +869,17 @@ def align_emphasis(edl: dict, words: list[dict], *, style: str,
 
 
 def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
-                       hints: dict | None = None, script: dict | None = None) -> dict:
-    """WS4a: synthesize a hook-text text_sticker over the first ~1.5s so the
-    promise restates visually the instant the video opens (Hormozi/Submagic
-    pattern) — text_sticker renders in ALL 7 compositions (text_card only
-    renders in 2), so this is the one overlay type guaranteed to work
-    everywhere. Skipped for duet_split (the reacted-to clip owns the open),
-    when there's no candidate hook text, or when another overlay already
-    occupies the first 60 source-adjacent frames (never stack two competing
-    opens)."""
+                       hints: dict | None = None, script: dict | None = None,
+                       theme=None) -> dict:
+    """WS4a → Title v2: synthesize the hook-title text_sticker over the video's open.
+    Duration = end of the first spoken sentence, computed in OUTPUT frames and clamped
+    [2s, 5s] (fallback 3s) — the sticker window is stored in source coords but sized so
+    its OUTPUT hold hits the target after drops/speed remapping. Copy is normalized by
+    _normalize_hook_text (sentence case as-authored, CAPS iff captions are uppercase).
+    Theme styling: sticker_font/sticker_bg come from theme.hook (previously dead config —
+    also fixes the live mixed-fonts lint error where themed captions got anton/baloo but
+    the sticker hardcoded inter). Skipped for duet_split, when there's no candidate hook
+    text, or when another overlay already occupies the first 60 source-adjacent frames."""
     if style in _HOOK_SKIP_STYLES:
         return edl
     hints = hints or {}
@@ -779,7 +888,7 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
         _hk = (script or {}).get("hook")   # string OR {text, ...} dict
         script_hook = str((_hk.get("text") if isinstance(_hk, dict) else _hk) or "").strip()
         if script_hook:
-            hook_text = " ".join(script_hook.split()[:6])
+            hook_text = " ".join(script_hook.split()[:8])
     if not hook_text:
         return edl
 
@@ -787,7 +896,8 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     segments = edl.get("segments") or []
     if not segments:
         return edl
-    kept = _kept_intervals(segments, edl.get("drops") or [])
+    drops = edl.get("drops") or []
+    kept = _kept_intervals(segments, drops)
     if not kept:
         return edl
     first_kept = kept[0][0]
@@ -797,11 +907,38 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
         return edl
 
     caption_opts = edl.get("caption_options") or {}
-    pos_y = 0.62 if caption_opts.get("position") == "top" else 0.30
+    hook_text = _normalize_hook_text(hook_text, uppercase=bool(caption_opts.get("uppercase")))
+    if not hook_text:
+        return edl
+
+    # Output-frame hold: end of the first kept sentence, clamped [60,150]f; fallback 90f.
+    index, total_out = _build_output_index(segments, drops, _play_order(edl))
+    start_out = _src_to_out(index, first_kept) or 0
+    sent_end_src = _first_sentence_end_frame(words, first_kept)
+    hold_out = _HOOK_HOLD_FALLBACK_OUT
+    if sent_end_src is not None:
+        sent_end_out = _src_to_out(index, sent_end_src)
+        if sent_end_out is not None and sent_end_out > start_out:
+            hold_out = sent_end_out - start_out
+    hold_out = max(_HOOK_HOLD_MIN_OUT, min(_HOOK_HOLD_MAX_OUT, hold_out))
+    # Map the output end back to a source frame (clamped to kept footage) so the sticker
+    # window survives build_render_plan's source→output remap at the right size.
+    end_src = _out_to_src(index, min(start_out + hold_out, max(0, total_out - 1)))
+    if end_src is None or end_src <= first_kept:
+        end_src = first_kept + hold_out
+    end_src = min(end_src, kept[-1][1])
+
+    # Face-aware-ish placement: eyes sit in the upper third (~y 0.33), so the old 0.30
+    # center put the box on the face — 0.24 clears both the eye line and every platform's
+    # top dead zone (Reels top 14% is the binding one). Captions-on-top variant unchanged.
+    pos_y = 0.62 if caption_opts.get("position") == "top" else 0.24
+    hook_cfg = (theme.hook if theme is not None else {}) or {}
     edl["overlays"] = overlays + [{
-        "type": "text_sticker", "src_in": first_kept, "src_out": first_kept + _HOOK_OVERLAY_HOLD_FRAMES,
-        "text": hook_text[:42], "scale": 1.05, "pos_x": 0.5, "pos_y": pos_y,
-        "rotation": 0.0, "color": None, "bg": "box", "font": "inter",
+        "type": "text_sticker", "src_in": first_kept, "src_out": end_src,
+        "text": hook_text, "scale": 1.05, "pos_x": 0.5, "pos_y": pos_y,
+        "rotation": 0.0, "color": None,
+        "bg": hook_cfg.get("sticker_bg") or "box",
+        "font": hook_cfg.get("sticker_font") or "inter",
     }]
     return edl
 
@@ -843,9 +980,13 @@ def apply_hook_package(edl: dict, words: list[dict], *, style: str,
     first_kept = kept[0][0]
     overlays = edl.get("overlays") or []
 
-    # (1) frame-1 motion — skip if something already occupies the very open
-    # (e.g. a hand-authored overlay), never stacking two competing opens.
-    if not any(o["src_in"] <= first_kept < o.get("src_out", o["src_in"]) for o in overlays):
+    # (1) frame-1 motion — skip only if another PUNCH already occupies the very open
+    # (never stack two zooms). C3 fix: the hook TITLE sticker sits at exactly first_kept
+    # (structure runs before hook_pack), and the old any-overlay guard meant the open
+    # punch never fired in the common prod path — but stacked title + frame-1 zoom
+    # coexisting IS the mandated stacked-hook pattern.
+    if not any(o.get("type") == "punch_in"
+               and o["src_in"] <= first_kept < o.get("src_out", o["src_in"]) for o in overlays):
         open_src_hi = _out_to_src(index, _HOOK_PACK_OPEN_PUNCH_FRAMES)
         if open_src_hi is None or open_src_hi <= first_kept:
             open_src_hi = first_kept + _HOOK_PACK_OPEN_PUNCH_FRAMES
@@ -1128,10 +1269,14 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
             word_text = next((w["word"] for out, w in words_by_out if out == anchor), "")
             if not word_text:
                 return None
+            # B3: keyword-pop stickers take the theme's hook font/bg too — hardcoded
+            # "inter" fired edit_lint's mixed-fonts ERROR under any non-inter theme.
+            _hcfg = (theme.hook if theme is not None else {}) or {}
             new_overlays.append({"type": "text_sticker", "src_in": src_lo, "src_out": src_hi,
                                  "scale": 1.0, "text": word_text[:24],
                                  "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0,
-                                 "color": None, "bg": "box", "font": "inter"})
+                                 "color": None, "bg": _hcfg.get("sticker_bg") or "box",
+                                 "font": _hcfg.get("sticker_font") or "inter"})
             it_type = "text_sticker"
         inserted += 1
         last_type = it_type
@@ -1185,27 +1330,31 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
 # overlay everything else already placed.
 # ---------------------------------------------------------------------------
 
-_SFX_BUDGET_PER_30S = 5
+# v2 (D1): 5 → 3. "Two or three well-placed sounds beat ten poorly-timed ones" is the
+# 2026 consensus; whoosh/pop oversaturation now reads as "marketing-guru content" and
+# triggers production blindness (Hormozi's own team stripped most SFX).
+_SFX_BUDGET_PER_30S = 3
 _SFX_MIN_SPACING_FRAMES = 15   # ~0.5s @ 30fps
 _SFX_END_GUARD_FRAMES = 15     # none in the last 15 source frames
 
 
 def synthesize_sfx(edl: dict, words: list[dict], *,
-                   sfx_assets: dict[str, str | None] | None = None, theme=None) -> dict:
-    """WS4d: deterministically place SFX one-shots at transitions and at every
-    punch_in overlay (whichever pass placed it — align_emphasis, the interrupt
-    scheduler, or a hand-authored one), budget-capped at ~5 per 30s of KEPT
-    source, >=15f apart, none in the last 15f. Only emits a cue for a `kind`
-    that actually has a resolved URL in `sfx_assets` (main.py's SFX_ASSETS) —
-    build_render_plan drops any cue whose url is falsy too, so this is
-    belt-and-suspenders, not the only guard.
+                   sfx_assets: dict[str, str | None] | None = None, theme=None,
+                   emphasis_spans: list | None = None) -> dict:
+    """WS4d → v2: deterministically place SFX one-shots, budget-capped at ~3 per 30s of
+    KEPT source, >=15f apart (bidirectional), none in the last 15f. Only emits a cue for
+    a `kind` with a resolved URL in `sfx_assets` (build_render_plan double-guards).
 
-    Simplification: every punch_in overlay is tagged "pop" regardless of which
-    pass created it (there's no provenance field on Overlay to distinguish
-    "emphasis punch" from "interrupt punch", and adding one purely for SFX
-    tagging isn't worth the schema surface) — transitions get "whoosh". The
-    plan's original hook/hit + emphasis/pop + interrupt/whoosh three-way split
-    is a sound-design nicety on top of this, not implemented here."""
+    v2 additions:
+    - "hit" (previously a dead catalog asset) is RESERVED first for the start of the
+      single strongest emphasis span (longest — length is the only honest ranking signal
+      left after _extract_emphasis_regions merges; tie → earliest). Reservation, not
+      candidate competition: with budget 3 a mid-take hit would otherwise be crowded out
+      by earlier pops.
+    - the hook title sticker gets an entrance "pop" when the theme's hook.impact_sfx is
+      set (previously dead theme config) — the sticker sits at kept[0][0] exactly.
+
+    Every punch_in overlay is tagged "pop" (no provenance field); transitions "whoosh"."""
     edl = copy.deepcopy(edl)
     sfx_assets = sfx_assets or {}
     segments = edl.get("segments") or []
@@ -1230,29 +1379,144 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
     for o in edl.get("overlays") or []:
         if o.get("type") == "punch_in":
             candidates.add((o["src_in"], "pop"))
+        elif (o.get("type") == "text_sticker" and o.get("src_in") == kept[0][0]
+              and theme is not None and (theme.hook or {}).get("impact_sfx")):
+            # D5: hook-title entrance pop (earliest frame → placed first below).
+            candidates.add((o["src_in"], "pop"))
 
     # A7: a theme's gain_db (dB) overrides the module SFX_GAIN_DEFAULT (already
     # -14dB) when the bundle wants its one-shots hotter/quieter than the default.
     theme_gain_db = (theme.sfx.get("gain_db") if theme is not None else None)
     gain = (10 ** (theme_gain_db / 20)) if theme_gain_db is not None else SFX_GAIN_DEFAULT
 
-    ordered = sorted(c for c in candidates if _inside(c[0]))
     sfx: list[dict] = []
-    last_placed = -_SFX_MIN_SPACING_FRAMES
-    for f, kind in ordered:
-        if len(sfx) >= budget:
-            break
-        if f - last_placed < _SFX_MIN_SPACING_FRAMES or f >= last_frame - _SFX_END_GUARD_FRAMES:
-            continue
+    placed_frames: list[int] = []
+
+    def _try_place(f: int, kind: str) -> None:
+        if len(sfx) >= budget or not _inside(f) or f >= last_frame - _SFX_END_GUARD_FRAMES:
+            return
+        if any(abs(f - p) < _SFX_MIN_SPACING_FRAMES for p in placed_frames):
+            return
         url = sfx_assets.get(kind)
         if not url:
-            continue
+            return
         sfx.append({"src_in": f, "kind": kind, "gain": gain, "url": url})
-        last_placed = f
+        placed_frames.append(f)
+
+    # D2: reserve the reveal hit at the top emphasis span BEFORE the main loop.
+    spans = [s for s in (emphasis_spans or []) if isinstance(s, (list, tuple)) and len(s) == 2]
+    if spans and sfx_assets.get("hit"):
+        top = max(spans, key=lambda s: (s[1] - s[0], -s[0]))
+        _try_place(int(top[0]), "hit")
+
+    for f, kind in sorted(candidates):
+        _try_place(f, kind)
 
     if sfx:
+        sfx.sort(key=lambda c: c["src_in"])
         audio = dict(edl.get("audio") or {})
         audio["sfx"] = (audio.get("sfx") or []) + sfx
+        edl["audio"] = audio
+    return edl
+
+
+# ---------------------------------------------------------------------------
+# v2 (D3) — punchline music dropout ("silence as a tool"): cut the bed to zero
+# under the single biggest claim so it lands over clean voice. OUTPUT-frame
+# coords (the one deviation from the source-coord norm, like end_card) — this
+# pass MUST run after every timeline-mutating pass (drops, speeds, tail trim);
+# the orchestrator slots it last, just before _clamp_combined_scale. A tweak
+# re-edit that changes timing does NOT recompute dropouts (same staleness class
+# as speech_frames — acceptable, documented).
+# ---------------------------------------------------------------------------
+
+_MUSIC_DROPOUT_MIN_SPAN_F = 15   # spans shorter than this aren't a "biggest claim"
+_MUSIC_DROPOUT_PRE_F = 6         # bed cuts just before the line…
+_MUSIC_DROPOUT_POST_F = 9        # …and breathes back in just after
+
+
+def plan_music_dropout(edl: dict, words: list[dict], *, style: str,
+                       emphasis_spans: list | None = None) -> dict:
+    if style == "fast_cuts":                       # music-forward montage — never dropout
+        return edl
+    music = ((edl.get("audio") or {}).get("music")) or {}
+    if not music.get("url") or music.get("dropouts"):
+        return edl
+    spans = [s for s in (emphasis_spans or []) if isinstance(s, (list, tuple)) and len(s) == 2
+             and (s[1] - s[0]) >= _MUSIC_DROPOUT_MIN_SPAN_F]
+    if not spans:
+        return edl
+    segments = edl.get("segments") or []
+    if not segments:
+        return edl
+    edl = copy.deepcopy(edl)
+    index, total_out = _build_output_index(segments, edl.get("drops") or [], _play_order(edl))
+    top = max(spans, key=lambda s: (s[1] - s[0], -s[0]))
+    a_out = _src_to_out(index, int(top[0]))
+    b_out = _src_to_out(index, int(top[1]))
+    if a_out is None or b_out is None or b_out <= a_out:
+        return edl
+    win_in = a_out - _MUSIC_DROPOUT_PRE_F
+    win_out = b_out + _MUSIC_DROPOUT_POST_F
+    # Whole window must clear the hook (also clears MUSIC_LEAD+FADE ramp-in) and the CTA.
+    if win_in < HOOK_PROTECT_OUT_FRAMES or win_out > total_out - CTA_PROTECT_OUT_FRAMES:
+        return edl
+    audio = dict(edl.get("audio") or {})
+    music = dict(audio.get("music") or {})
+    music["dropouts"] = [{"frame_in": int(win_in), "frame_out": int(win_out)}]
+    audio["music"] = music
+    edl["audio"] = audio
+    return edl
+
+
+# ---------------------------------------------------------------------------
+# v2 (A5) — b-roll SFX coupling, RESTRAINED: memes get one entrance "pop"
+# (a silent meme pop-in reads AI-assembled), everything else stays silent
+# (over-coupling is the "marketing-guru" tell). Runs POST-_resolve_broll from
+# main.py (NOT inside apply_retention_passes): synthesize_sfx runs pre-resolve,
+# and an unresolved-then-dropped insert would orphan its cue. The bidirectional
+# 15f proximity check against ALL existing cues doubles as idempotency for
+# tweak re-renders.
+# ---------------------------------------------------------------------------
+
+def couple_broll_sfx(edl: dict, *, sfx_assets: dict[str, str | None] | None = None,
+                     video_type: str = "", energy: str = "", theme=None) -> dict:
+    from app.edl import _ENTERTAINMENT_VIDEO_TYPES as _ENT
+    if not (video_type in _ENT or energy == "high"):
+        return edl
+    sfx_assets = sfx_assets or {}
+    pop_url = sfx_assets.get("pop")
+    if not pop_url:
+        return edl
+    broll = edl.get("broll") or []
+    memes = sorted((b for b in broll
+                    if b.get("resolved_url")
+                    and (b.get("need") == "meme" or b.get("source") in ("giphy", "klipy"))),
+                   key=lambda b: int(b.get("src_in", 0)))
+    if not memes:
+        return edl
+    edl = copy.deepcopy(edl)
+    audio = dict(edl.get("audio") or {})
+    existing = list(audio.get("sfx") or [])
+    placed = [int(c.get("src_in", 0)) for c in existing]
+    segments = edl.get("segments") or []
+    kept = _kept_intervals(segments, edl.get("drops") or []) if segments else []
+    total_kept = sum(hi - lo for lo, hi in kept) if kept else 0
+    budget = max(0, max(1, round(_SFX_BUDGET_PER_30S * total_kept / (30 * 30))) - len(existing)) \
+        if total_kept else 0
+    theme_gain_db = (theme.sfx.get("gain_db") if theme is not None else None)
+    gain = (10 ** (theme_gain_db / 20)) if theme_gain_db is not None else SFX_GAIN_DEFAULT
+    added = []
+    for b in memes:
+        if len(added) >= budget:
+            break
+        f = int(b.get("src_in", 0))
+        if any(abs(f - p) < _SFX_MIN_SPACING_FRAMES for p in placed):
+            continue
+        added.append({"src_in": f, "kind": "pop", "gain": gain, "url": pop_url})
+        placed.append(f)
+    if added:
+        audio["sfx"] = sorted(existing + added, key=lambda c: c["src_in"])
         edl["audio"] = audio
     return edl
 
@@ -1304,6 +1568,13 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         _script_text = " ".join(str(x or "") for x in (_hook_txt, _s.get("body"))).strip()
         edl = _safe_pass("dedupe_retakes", edl, dedupe_retakes, words, _script_text)
 
+    # v2 cold open — opt-in token "cold_open" (bakes independently, like framing/
+    # hook_pack). Slotted after retake (a dropped flubbed opener changes which word is
+    # first) and before pacing/framing so their hook-protect zones cover the REAL
+    # content open instead of up to a second of dead lead.
+    if "cold_open" in enabled:
+        edl = _safe_pass("trim_cold_open", edl, trim_cold_open, words)
+
     if "pacing" in enabled and prefs.get("pacing") is not False:
         edl = _safe_pass("plan_pacing", edl, plan_pacing, words, style=style,
                          emphasis_spans=emphasis_spans, dossier=dossier, hints=hints)
@@ -1336,7 +1607,7 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         else:
             edl = _safe_pass("trim_loop_tail", edl, trim_loop_tail, words)
         edl = _safe_pass("place_hook_overlay", edl, place_hook_overlay, words,
-                         style=style, hints=hints, script=script)
+                         style=style, hints=hints, script=script, theme=theme)
 
     # A6: hook PACKAGE (frame-1 motion + first-cut-by-3s) — opt-in via
     # "hook_pack", layered on top of place_hook_overlay's sticker above, so it
@@ -1356,10 +1627,20 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
                          genre_density=genre_density)
 
     # sfx runs LAST of all: it sees every transition/overlay every prior pass
-    # (including interrupts) placed.
+    # (including interrupts) placed. v2: also receives emphasis_spans so the reveal
+    # "hit" reservation can anchor on the strongest span.
     if "sfx" in enabled:
         edl = _safe_pass("synthesize_sfx", edl, synthesize_sfx, words,
-                         sfx_assets=sfx_assets, theme=theme)
+                         sfx_assets=sfx_assets, theme=theme,
+                         emphasis_spans=emphasis_spans)
+
+    # v2 dropout — opt-in token "dropout". MUST run after every timeline-mutating pass
+    # (drops/speeds/tail-trim all precede it here); its windows are OUTPUT-frame coords
+    # read verbatim by AudioMix, so anything that changes output timing after this point
+    # would silently desync them.
+    if "dropout" in enabled:
+        edl = _safe_pass("plan_music_dropout", edl, plan_music_dropout, words,
+                         style=style, emphasis_spans=emphasis_spans)
 
     # FINAL: cap combined framing×punch scale to the 120% ceiling (spec §6.1 / HC7).
     # A punch overlay multiplies on top of the playing segment's tx_scale in the renderer,
@@ -1375,12 +1656,14 @@ _COMBINED_SCALE_CAP = 1.20     # 1080-source ceiling; punch × framing must not 
 
 def _clamp_combined_scale(edl: dict, cap: float = _COMBINED_SCALE_CAP) -> dict:
     """For every punch_in overlay, lower any segment it overlaps (in source frames) so that
-    segment.tx_scale × punch.scale <= cap. Only ever reduces tx_scale (floor 1.0)."""
+    segment.tx_scale × punch.scale <= cap. v2 (E3): ALSO cap BARE framing scales — theme
+    close-frames (hormozi 1.4 / energetic 1.3) previously shipped >1.2 whenever no punch
+    overlapped them, breaching the 120% spec ceiling. Only ever reduces (floor 1.0)."""
     try:
         segments = edl.get("segments") or []
-        punches = [o for o in (edl.get("overlays") or []) if o.get("type") == "punch_in"]
-        if not segments or not punches:
+        if not segments:
             return edl
+        punches = [o for o in (edl.get("overlays") or []) if o.get("type") == "punch_in"]
         for o in punches:
             ps = float(o.get("scale") or 1.0)
             if ps <= 1.0:
@@ -1392,6 +1675,11 @@ def _clamp_combined_scale(edl: dict, cap: float = _COMBINED_SCALE_CAP) -> dict:
                 cur = float(seg.get("tx_scale") or 1.0)
                 if cur * ps > cap:
                     seg["tx_scale"] = max(1.0, round(cap / ps, 4))
+        # E3: bare-framing sweep — catches theme close scales, _insert_framing_pop bumps,
+        # and hook_pack's 1.12 first-cut bump when nothing punches over them.
+        for seg in segments:
+            if float(seg.get("tx_scale") or 1.0) > cap:
+                seg["tx_scale"] = cap
         edl["segments"] = segments
     except Exception:
         pass
