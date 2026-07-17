@@ -34,7 +34,8 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
                      style_capabilities, TWEAK_OP_TYPES, _BROLL_FLOOR_STOPWORDS,
                      assemble_edl, check_edl_invariants, clamp_edl_to_source,
-                     _ENTERTAINMENT_VIDEO_TYPES, _BROLL_MEME_CAP, _BROLL_MEME_CAP_EDU)
+                     _ENTERTAINMENT_VIDEO_TYPES, _BROLL_MEME_CAP, _BROLL_MEME_CAP_EDU,
+                     _BROLL_MEME_CAPS)
 from app import audio as audio_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
@@ -4708,6 +4709,14 @@ async def _run_edit(job_id: str, words: list[dict]):
         _energy = (job.get("config") or {}).get("energy", "")
         if _energy in ("low", "medium", "high"):
             prefs = {**prefs, "energy": _energy}
+        # v4 gen-z dial: the post-record slider (0 off · 1 subtle · 2 memey · 3 brainrot)
+        # scales meme caps/spacing in assemble_edl AND the plan prompt's meme mandate below.
+        _meme_level = (job.get("config") or {}).get("meme_intensity")
+        if _meme_level is not None:
+            try:
+                prefs = {**prefs, "meme_intensity": max(0, min(3, int(_meme_level)))}
+            except (TypeError, ValueError):
+                pass
         if prefs:
             hints = []
             if prefs.get("auto_captions") is False:
@@ -4725,6 +4734,22 @@ async def _run_edit(job_id: str, words: list[dict]):
                 hints.append("B-roll is OFF — output an empty broll array.")
             if prefs.get("punch_ins") is False:
                 hints.append("Punch-ins are OFF — do not add any punch_in overlays.")
+            # v4 gen-z dial → the plan LLM's meme mandate. Level 0 forbids; 2-3 MANDATE
+            # counts — "no memes appeared" root-caused to the planner simply never
+            # emitting need=meme cues for educational takes (the KLIPY ladder had
+            # nothing to fetch). Placement rules still come from the core doctrine.
+            _ml = prefs.get("meme_intensity")
+            if _ml == 0:
+                hints.append("Meme level OFF — never emit need=\"meme\" b-roll cues.")
+            elif _ml == 2:
+                hints.append("Meme level MEMEY: emit need=\"meme\" b-roll cues on 2-4 of the "
+                             "strongest punchlines, hot takes, or absurd moments — a cultural "
+                             "reaction GIF beat, even in educational content.")
+            elif _ml == 3:
+                hints.append("Meme level BRAINROT: this creator wants gen-z chaos — emit a "
+                             "need=\"meme\" cue on EVERY punchline, hot take, absurd claim or "
+                             "emotional pivot (aim for one per 8-10 seconds). Reaction memes, "
+                             "not illustrations.")
             if hints:
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         used_safe_default = False
@@ -7049,7 +7074,13 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
     _vtype = (job.get("edit_brief") or {}).get("video_type", "")
     _energy = (job.get("config") or {}).get("energy", "")
     _entertainment = _vtype in _ENTERTAINMENT_VIDEO_TYPES or _energy == "high"
-    _meme_cap = _BROLL_MEME_CAP if _entertainment else _BROLL_MEME_CAP_EDU
+    # v4 gen-z dial: caps follow the slider (0 off · 1 subtle · 2 memey · 3 brainrot).
+    try:
+        _meme_level = max(0, min(3, int((job.get("config") or {}).get("meme_intensity", 1))))
+    except (TypeError, ValueError):
+        _meme_level = 1
+    _cap_ent, _cap_edu = _BROLL_MEME_CAPS[_meme_level]
+    _meme_cap = _cap_ent if _entertainment else _cap_edu
     _forced_mode = (job.get("config") or {}).get("broll_mode")
     _meme_total = sum(1 for b in broll if b.get("need") == "meme")
 
@@ -7062,7 +7093,7 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
             if _meme_total >= _meme_cap:
                 return                                     # cap reached — keep literal need
             b["need"] = "meme"
-            if _forced_mode not in ("panel", "card"):
+            if _forced_mode not in ("panel", "card", "smart"):
                 b["mode"] = "panel"                        # face stays; memes never full
             b["src_out"] = min(int(b.get("src_out", 0)), int(b.get("src_in", 0)) + 45)
             _meme_total += 1
@@ -7091,6 +7122,7 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
     try:
         sys = prompts.broll_query_rewrite_system()
         usr = json.dumps({"niche": niche, "video_type": _vtype,
+                          "meme_intensity": _meme_level,
                           "trending_titles": trends[:10],
                           "trending_clips": klipy_trends, "cues": cues})
         out = await anthropic_json(sys, usr, prompts.BROLL_QUERY_REWRITE_SCHEMA, model=HAIKU, temperature=0.2)
@@ -7261,7 +7293,13 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # EXCEPTION — force_broll (the creator EXPLICITLY opted into b-roll): a real stock
         # clip beats a text card here, so keep a resolved literal item as a cutaway. Only an
         # UNRESOLVED literal still falls back to a text card.
-        if need in _LITERAL_NEEDS and not is_own and not (force_broll and resolved):
+        # v4: under force_broll, an UNRESOLVED own_media cue is not "the creator's own
+        # footage", it's nothing — resolution (incl. the stock fallback) was attempted and
+        # failed (prod job 90813e10: the gochujang glimpse shipped URL-less and rendered
+        # blank), so it degrades like any other miss. WITHOUT force_broll the v1 passthrough
+        # stands: a manual-editor own_media roll racing its upload must never be deleted.
+        if need in _LITERAL_NEEDS and ((not resolved and (force_broll or not is_own))
+                                       or (resolved and not is_own and not force_broll)):
             if txt and s_out > s_in:
                 # v2 read-time guard: entity/data insert windows shrank to ~1.2-1.8s, but a
                 # TEXT card needs >=1.5s to read twice — extend the card (never the clip).
@@ -7284,7 +7322,7 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # beat without a wrong clip). Faceless has no face to punch, so it just drops. Only when
         # resolution was actually ATTEMPTED (stock/corpus available) — in a pure keyless/mock noop
         # we leave the cue untouched (v1 passthrough) rather than mutating the EDL.
-        if need in ("action", "concept") and not is_own and not resolved and (has_stock or corpus):
+        if need in ("action", "concept") and not resolved and (force_broll or not is_own) and (has_stock or corpus):
             if not faceless and s_out > s_in:
                 punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),  # ~1s punch
                                         "scale": 1.08})

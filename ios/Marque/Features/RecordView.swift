@@ -68,6 +68,9 @@ struct RecordView: View {
     // edit via config.broll_coverage + the b-roll toggle ("none" switches cutaways off).
     @State private var brollStyles: [BrollStyleOption] = []
     @State private var selectedBrollStyle: String = "cutaway"
+    // v4 gen-z dial: how meme-heavy the edit should be (0 off · 1 subtle · 2 memey ·
+    // 3 brainrot). Drives config.meme_intensity → meme cue mandate + caps server-side.
+    @State private var memeLevel: Double = 1
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -384,8 +387,12 @@ struct RecordView: View {
                         // toggles + instructions live here (moved from the brief screen)
                         // so submit goes straight to the render with no approve stop.
                         VStack(spacing: Space.xs) {
+                            // v4: the b-roll ON/OFF toggle was redundant — picking the
+                            // "Talking head + B-roll" format at the top IS the opt-in
+                            // (syncBrollToggle keeps briefToggles.broll in step). In its
+                            // place: the gen-z meme dial.
                             if briefCapability("broll") {
-                                briefToggleRow("B-roll cutaways", isOn: $briefToggles.broll)
+                                memeSliderRow
                             }
                             if briefCapability("punch_ins") {
                                 briefToggleRow("Punch-ins for emphasis", isOn: $briefToggles.punchIns)
@@ -514,8 +521,10 @@ struct RecordView: View {
                 }
 
                 VStack(spacing: Space.xs) {
+                    // v4: b-roll on/off follows the picked format (no redundant toggle);
+                    // the meme dial replaces it here too.
                     if briefCapability("broll") {
-                        briefToggleRow("B-roll cutaways", isOn: $briefToggles.broll)
+                        memeSliderRow
                     }
                     if briefCapability("punch_ins") {
                         briefToggleRow("Punch-ins for emphasis", isOn: $briefToggles.punchIns)
@@ -690,16 +699,42 @@ struct RecordView: View {
     /// green_screen/split_screen override the whole job style (composition_style). Nil for
     /// plain Talking Head (no b-roll).
     private func brollConfig() -> [String: String]? {
-        guard editFormat == .talkingHeadBroll else { return nil }
-        switch selectedBrollStyle {
-        case "cutaway": return ["broll_mode": "full",  "broll_coverage": "full"]
-        case "smart":   return ["broll_mode": "smart", "broll_coverage": "full"]
-        case "panel":   return ["broll_mode": "panel", "broll_coverage": "full"]
-        case "card":    return ["broll_mode": "card",  "broll_coverage": "full"]
-        case "green_screen", "split_screen":
-            return ["composition_style": selectedBrollStyle]
-        default: return ["broll_coverage": "full"]   // format is TH+broll but no style yet → still want b-roll
+        // v4: the meme dial rides along for EVERY b-roll-capable format (plain Talking
+        // Head has glimpse b-roll server-side, so memes can fire there too).
+        let meme = ["meme_intensity": String(Int(memeLevel))]
+        guard editFormat == .talkingHeadBroll else {
+            return editFormat == .talkingHead ? meme : nil
         }
+        switch selectedBrollStyle {
+        case "cutaway": return meme.merging(["broll_mode": "full",  "broll_coverage": "full"]) { a, _ in a }
+        case "smart":   return meme.merging(["broll_mode": "smart", "broll_coverage": "full"]) { a, _ in a }
+        case "panel":   return meme.merging(["broll_mode": "panel", "broll_coverage": "full"]) { a, _ in a }
+        case "card":    return meme.merging(["broll_mode": "card",  "broll_coverage": "full"]) { a, _ in a }
+        case "green_screen", "split_screen":
+            return meme.merging(["composition_style": selectedBrollStyle]) { a, _ in a }
+        default: return meme.merging(["broll_coverage": "full"]) { a, _ in a }   // TH+broll, no style yet
+        }
+    }
+
+    /// v4 gen-z dial: Off · Subtle · Memey · Brainrot. A discrete 4-stop slider — how
+    /// culturally unhinged the b-roll gets (meme frequency + reclassification server-side).
+    private static let memeLevelNames = ["Off", "Subtle", "Memey", "Brainrot"]
+    private var memeSliderRow: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack {
+                Text("MEME ENERGY").font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(.white.opacity(0.6))
+                Spacer(minLength: Space.md)
+                Text(Self.memeLevelNames[Int(memeLevel)])
+                    .font(AppFont.caption).foregroundStyle(Palette.accent)
+            }
+            Slider(value: $memeLevel, in: 0...3, step: 1)
+                .tint(Palette.accent)
+                .accessibilityIdentifier("record.memeLevel")
+        }
+        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
+        .background(Color.white.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
     }
 
     private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {

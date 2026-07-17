@@ -59,8 +59,12 @@ EDIT_FORMATS = {
         "toggles": {"broll": True, "punch_ins": True, "music": False},
         "default_theme": "clean_creator",   # A7
         "brief_hint": (
-            "Talking head with b-roll cutaways: find 3-5 broll_moments on concrete visual "
-            "nouns/actions (roughly one every 4-6s); the hook and CTA stay on the creator's face."),
+            "Talking head with b-roll cutaways: emit a broll cue for EVERY concretely named "
+            "thing (food, product, place, tool), EVERY number/stat, and every emphasized or "
+            "emotionally inflected beat — named things render as sub-second glimpses that flash "
+            "in and out, so density is welcome (one cue every 3-5s of speech is the target, "
+            "more when the take names things in a list); the hook and CTA stay on the "
+            "creator's face."),
     },
     "recap_music": {
         "label": "Recap with music",
@@ -968,11 +972,14 @@ def broll_query_rewrite_system() -> str:
         "have ('mind blown', 'side eye', 'this is fine', 'confused math lady', 'chefs kiss') — 1–3 "
         "words. You may also be given trending_clips (titles of currently-circulating movie/TV/"
         "viral moments) as extra signal for what cultural references are alive right now.\n"
-        "- RECLASSIFY sparingly: when an action/concept cue's beat would land HARDER as a shared "
-        "cultural reaction than as literal stock (a punchline, an absurd stat, an emotional "
-        "pivot), set reaction=true and make query a canonical reaction/clip term. Only for beats "
-        "where a knowing wink beats an illustration — an explanation mid-flow stays literal "
-        "(reaction=false or omitted). The assembler enforces per-video caps.\n"
+        "- RECLASSIFY per meme_intensity (0-3, in the input): when an action/concept cue's beat "
+        "would land HARDER as a shared cultural reaction than as literal stock (a punchline, an "
+        "absurd stat, an emotional pivot), set reaction=true and make query a canonical "
+        "reaction/clip term. At 0 NEVER reclassify. At 1 reclassify sparingly (only a beat where "
+        "a knowing wink clearly beats an illustration). At 2 reclassify readily — any punchline "
+        "or hot take. At 3 (brainrot) reclassify AGGRESSIVELY — every beat with the slightest "
+        "comedic/reactive charge becomes a meme; when in doubt, meme. An explanation mid-flow "
+        "stays literal at every level. The assembler enforces per-video caps.\n"
         "- Keep queries literally searchable (2–4 words for stock; 1–3 for memes). Return every "
         "cue's index i with its rewritten query. If a query is already good, return it as-is.")
 
@@ -1215,8 +1222,10 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
                        "face genuinely can't carry.",
             "full": "B-ROLL IS REQUIRED: the creator EXPLICITLY chose b-roll cutaways. Emit a "
                     "candidate cue for EVERY concrete/illustrable beat — a named thing, number, "
-                    "action, place, or process — expect roughly ONE per 4–6 seconds of speech for "
-                    "entertainment-class takes and ONE per 7–10 seconds for educational ones; an "
+                    "action, place, process, AND every emphasized or emotionally inflected line — "
+                    "expect roughly ONE per 3–4 seconds of speech for entertainment-class takes "
+                    "and ONE per 5–7 seconds for educational ones (named things flash as "
+                    "sub-second glimpses, so listing three foods means THREE cues); an "
                     "EMPTY broll array is NOT acceptable. Over-emission is SAFE: the assembler prunes "
                     "to grammar (spacing, hook/CTA protection, runtime budget) and GUARANTEES density "
                     "(it tops up gaps and degrades unresolvable cues to face-keeping punch-ins), so "

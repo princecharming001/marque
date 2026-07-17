@@ -1991,8 +1991,12 @@ def _hold_bounds(need: str, mode: str) -> tuple[int, int]:
     return lo, (partial_max if mode in ("panel", "card", "smart") else full_max)
 
 
-_BROLL_MIN_SPACING = 90                          # ≥3s between cutaways (return to the face between)
+_BROLL_MIN_SPACING = 75                          # ≥2.5s between cutaways (v4: owner wants denser)
 _BROLL_SPACING_TIGHT = 45                        # ≥1.5s for high-energy / entertainment takes (v2)
+_BROLL_SPACING_BRAINROT = 30                     # ≥1s at meme_intensity 3 (v4 dial ceiling)
+# v4: sub-second GLIMPSES (hold ≤ this) don't fatigue like 2s cutaways — they get half
+# spacing (floor 20f) so "gochujang → flash" can fire on every named thing in a list.
+_BROLL_GLIMPSE_HOLD_MAX = 24
 _ENTERTAINMENT_VIDEO_TYPES = {"freestyle_rant", "listicle", "story", "reaction"}
 _BROLL_HOOK_PROTECT = 90                        # no full-frame b-roll over the hook (first 3s, face styles)
 _BROLL_CTA_PROTECT = 60                         # …or the CTA (last 2s)
@@ -2006,14 +2010,16 @@ _BROLL_RUNTIME_BUDGET = 0.40                    # ≤40% of output covered by FA
 # 30–40% band, entertainment tolerates 35–50%): entertainment 50%, everything else 40%.
 _BROLL_VISUAL_BUDGET = 0.50                     # entertainment / high-energy
 _BROLL_VISUAL_BUDGET_EDU = 0.40                 # educational / founder (lo-fi credibility evidence)
-# coverage="full" floor density is ALSO a genre dial (v2): entertainment ~1 per 5s, educational
-# ~1 per 8s (B2B tolerates 8–10s interrupt cadence), default (no opt-in) ~1 per 12s.
+# coverage="full" floor density is ALSO a genre dial (v4 retune, owner: "a lot more
+# frequent"): entertainment ~1 per 3s, educational ~1 per 5s, default ~1 per 9s.
 # Bigger divisor = sparser.
-_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 150, "full": 240, "default": 360}
-# Meme caps per content class (owner decision 2026-07-17): entertainment/high-energy up to 5,
-# everything else up to 2 (punchline/reaction beats only — doctrine enforces placement).
-_BROLL_MEME_CAP = 5                             # entertainment / high-energy
-_BROLL_MEME_CAP_EDU = 2                         # educational / everything else
+_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 90, "full": 150, "default": 270}
+# Meme caps per (meme_intensity level, content class). Level 1 = the v2 owner decision
+# (5 ent / 2 edu); 0 kills memes entirely; 2-3 are the gen-z dial the post-record
+# slider drives. Placement doctrine still governs WHERE they land.
+_BROLL_MEME_CAPS = {0: (0, 0), 1: (5, 2), 2: (7, 4), 3: (10, 6)}
+_BROLL_MEME_CAP = _BROLL_MEME_CAPS[1][0]        # entertainment / high-energy (legacy alias)
+_BROLL_MEME_CAP_EDU = _BROLL_MEME_CAPS[1][1]    # educational / everything else (legacy alias)
 _FACELESS_STYLES = {"faceless"}                # b-roll IS the visual channel → hook coverage ok
 
 # Cadence jitter (v2): a fixed insert interval is itself an AI tell — human editors vary
@@ -2097,18 +2103,29 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
         cands.append((f, low, emph))  # type: ignore
     # Prefer emphasized words; then walk in time picking spaced ones.
     cands.sort(key=lambda c: (0 if c[2] else 1, c[0]))  # emphasized first, then by time
-    picked: list[tuple[int, str]] = []
-    for f, word, _emph in sorted(cands, key=lambda c: c[0]):
+    picked: list[tuple[int, str, bool]] = []
+    for f, word, emph in sorted(cands, key=lambda c: c[0]):
         if len(picked) >= target:
             break
-        if all(abs(f - pf) >= step for pf, _ in picked):
-            picked.append((f, word))
-    # Alternate short / mid holds for variety (deterministic — no random jitter). Floor cues are
-    # need="concept" (non-literal → always resolve via stock, never a text card); concept's legal
-    # hold band is [60,90], so alternate its floor and midpoint (computed above for the step math).
-    return [{"range": [f, f + (_lo if i % 2 == 0 else _mid)], "cue": word, "query": word,
-             "need": "concept", "mode": mode}
-            for i, (f, word) in enumerate(sorted(picked))]
+        # Glimpses (emphasized words) pack tighter than concept cutaways — half step,
+        # matching _admit_cue's glimpse spacing relief (v4 "words and inflections" density).
+        min_gap = step // 2 if emph else step
+        if all(abs(f - pf) >= (min_gap if (emph or pe) else step) for pf, _, pe in picked):
+            picked.append((f, word, emph))
+    # v4: an EMPHASIZED word (AssemblyAI inflection) becomes an entity GLIMPSE — sub-second
+    # flash of the named thing, the "say gochujang, see gochujang" grammar. Unemphasized long
+    # content words stay need="concept" (non-literal → always resolve via stock, never a text
+    # card) with alternating short/mid holds for variety (deterministic — no random jitter).
+    _glo, _ghi = _hold_bounds("entity", mode)
+    out: list[dict] = []
+    for i, (f, word, emph) in enumerate(sorted(picked)):
+        if emph:
+            out.append({"range": [f, f + min(_glo + 6, _ghi)], "cue": word, "query": word,
+                        "need": "entity", "mode": mode})
+        else:
+            out.append({"range": [f, f + (_lo if i % 2 == 0 else _mid)], "cue": word,
+                        "query": word, "need": "concept", "mode": mode})
+    return out
 _PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
 _PUNCH_HOLD = 30
 _TEXTCARD_HOLD = 60
@@ -2212,6 +2229,45 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 return True                                 # genuine sign-off — cuttable
         return False
 
+    # PRO-CUT interior guard (2026-07-17): "Everyone tries to pair fusion by taste."
+    # shipped as "Everyone tries … taste." — a hallucinated false_start cut removed
+    # "to pair fusion by" (prod job 90813e10, frames 413–448). The doctrine rule
+    # "a false start requires later re-delivery" was PROMPT TEXT only; this enforces
+    # it. A cut whose seam starts MID-SENTENCE (the last kept word before it has no
+    # terminal punctuation) must remove words that ARE re-delivered among the words
+    # that follow it — real retakes/false starts always are. Otherwise it's vetoed:
+    # a wrongly-kept phrase is recoverable, a mid-sentence hole is not. Head cuts,
+    # sentence-boundary cuts, and near-wordless cuts (breaths) stay allowed.
+    def _interior_cut_allowed(a: int, b: int) -> bool:
+        last_end_f = ms_to_frame(words[-1].get("end_ms", 0)) if words else 0
+        if b >= last_end_f - 15:
+            return True                                     # tail cut — _end_cut_allowed governs
+        # _norm_word keeps stumble dashes ("not—"); strip ALL punctuation here so a
+        # stumbled token matches its clean re-delivery.
+        def _bare(t: str) -> str:
+            return re.sub(r"[^\w']", "", _norm_word(t)).lower()
+        inside = [_bare(w.get("word", "")) for w in words
+                  if a <= ms_to_frame(w.get("start_ms", 0)) < b]
+        inside = [t for t in inside if t]
+        if len(inside) < 2:
+            return True                                     # breath / stray fragment
+        prev = [w for w in words if ms_to_frame(w.get("start_ms", 0)) < a and w.get("word")]
+        if not prev:
+            return True                                     # head cut — nothing kept before
+        if (prev[-1].get("word") or "").rstrip("\"'’”)").endswith((".", "!", "?", "…", "—")):
+            return True                                     # seam sits on a sentence boundary
+        following = [_bare(w.get("word", "")) for w in words
+                     if ms_to_frame(w.get("start_ms", 0)) >= b][:40]
+        following_set = {t for t in following if t}
+        # A token repeated WITHIN the cut is its own re-delivery evidence — snap_to_word
+        # routinely widens a retake cut to swallow the first word of the re-delivery
+        # ("you're not— you're | not matching" → the second "you're" lands inside).
+        counts: dict[str, int] = {}
+        for t in inside:
+            counts[t] = counts.get(t, 0) + 1
+        redelivered = sum(1 for t in inside if t in following_set or counts[t] >= 2)
+        return redelivered / len(inside) >= 0.6             # real retake → re-delivered
+
     content_cuts: list[tuple[int, int]] = []
     for c in (plan.get("cuts") or []):
         rng = c.get("range") or []
@@ -2219,12 +2275,12 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             continue
         cl = _clamp_range(snap_to_word(_frame_to_ms(rng[0]), words, "start"),
                           snap_to_word(_frame_to_ms(rng[1]), words, "end"), 0, total)
-        if cl and _end_cut_allowed(*cl):
+        if cl and _end_cut_allowed(*cl) and _interior_cut_allowed(*cl):
             content_cuts.append(cl)
     for cr in ((brief or {}).get("cut_regions") or []):
         if cr.get("reason") in ("flub", "ramble", "tangent") and cr.get("end_frame", 0) > cr.get("start_frame", 0):
             cl = _clamp_range(cr["start_frame"], cr["end_frame"], 0, total)
-            if cl and _end_cut_allowed(*cl):
+            if cl and _end_cut_allowed(*cl) and _interior_cut_allowed(*cl):
                 content_cuts.append(cl)
 
     # open_on: pull a buried hook forward = a content cut of the pre-hook intro. GUARDED so
@@ -2293,8 +2349,17 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         # alone no longer tightens spacing (it still raises the density floor, genre-scaled).
         _entertainment = (prefs.get("energy") == "high"
                           or video_type in _ENTERTAINMENT_VIDEO_TYPES)
+        # v4 gen-z dial: the post-record slider (0 off · 1 subtle · 2 memey · 3 brainrot)
+        # scales meme caps and, at 3, tightens spacing for everyone.
+        try:
+            meme_level = max(0, min(3, int(prefs.get("meme_intensity", 1))))
+        except (TypeError, ValueError):
+            meme_level = 1
         spacing = _BROLL_SPACING_TIGHT if _entertainment else _BROLL_MIN_SPACING
-        meme_cap = _BROLL_MEME_CAP if _entertainment else _BROLL_MEME_CAP_EDU
+        if meme_level >= 3:
+            spacing = min(spacing, _BROLL_SPACING_BRAINROT)
+        _cap_ent, _cap_edu = _BROLL_MEME_CAPS[meme_level]
+        meme_cap = _cap_ent if _entertainment else _cap_edu
         visual_budget = _BROLL_VISUAL_BUDGET if _entertainment else _BROLL_VISUAL_BUDGET_EDU
         # Deterministic cadence jitter (fixed intervals are an AI tell). Seeded per job so
         # retries reproduce byte-identical EDLs; draw order is stable (cues sorted by start).
@@ -2347,7 +2412,11 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             # Bidirectional spacing: reject if this window comes within `eff_spacing` of ANY placed
             # one (correct for both the chronological plan pass and the gap-filling top-up).
             # Per-cue jitter (−15..+30f, floor 30f) so the gap pattern never reads metronomic.
+            # v4: sub-second glimpses get HALF spacing (floor 20f) — a flash doesn't fatigue,
+            # and "name three things, see three things" needs back-to-back windows.
             eff_spacing = max(30, spacing + _rng.randint(*_BROLL_SPACING_JITTER))
+            if hold <= _BROLL_GLIMPSE_HOLD_MAX:
+                eff_spacing = max(20, eff_spacing // 2)
             if any(not (s_in >= p_out + eff_spacing or s_out <= p_in - eff_spacing) for p_in, p_out in placed):
                 return None
             if s_out - s_in < lo_hold:
@@ -2401,7 +2470,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             _divisor = _BROLL_FLOOR_STEP_DIVISOR["full_ent" if _entertainment else "full"]
             target = max(2, total // _divisor)
             if len(broll) < target:
-                _floor_mode = prefs["broll_mode"] if prefs.get("broll_mode") in ("full", "panel", "card") else "full"
+                _floor_mode = prefs["broll_mode"] if prefs.get("broll_mode") in ("full", "panel", "card", "smart") else "full"
                 occupied = [(b["src_in"], b["src_out"]) for b in broll]
                 extras = _synthesize_broll_floor(
                     clean_words, total, _floor_mode,

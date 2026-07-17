@@ -68,9 +68,16 @@ struct EditorBroll: Equatable {
     var srcIn: Int
     var srcOut: Int
     var cueText: String = ""
-    var source: String = "stock"        // stock | own_media
+    var source: String = "stock"        // stock | own_media | giphy | klipy
     var resolvedURL: String? = nil
     var localPath: String? = nil        // sim-only, never serialized
+    // v4: the composition mode + smart-mode inset (normalized frame fractions) so the
+    // canvas sim shows the roll at its TRUE position/size, not always full-frame.
+    var mode: String = "full"           // full | panel | card | smart
+    var insetX: Double? = nil
+    var insetY: Double? = nil
+    var insetW: Double? = nil
+    var insetH: Double? = nil
 }
 
 struct EditorTransition: Equatable {
@@ -190,10 +197,16 @@ struct EditorDocument: Equatable {
         speechFrames = edl["speech_frames"] as? [Int] ?? []
         broll = (edl["broll"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["src_in"] as? Int, let b = $0["src_out"] as? Int else { return nil }
+            let inset = $0["inset_rect"] as? [String: Any]
             return EditorBroll(srcIn: a, srcOut: b,
                                cueText: $0["cue_text"] as? String ?? "",
                                source: $0["source"] as? String ?? "stock",
-                               resolvedURL: $0["resolved_url"] as? String)
+                               resolvedURL: $0["resolved_url"] as? String,
+                               mode: $0["mode"] as? String ?? "full",
+                               insetX: (inset?["x"] as? NSNumber)?.doubleValue,
+                               insetY: (inset?["y"] as? NSNumber)?.doubleValue,
+                               insetW: (inset?["w"] as? NSNumber)?.doubleValue,
+                               insetH: (inset?["h"] as? NSNumber)?.doubleValue)
         }
         transitions = (edl["transitions"] as? [[String: Any]] ?? []).compactMap {
             guard let a = $0["after_segment"] as? Int else { return nil }

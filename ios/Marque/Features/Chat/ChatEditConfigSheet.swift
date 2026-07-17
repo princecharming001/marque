@@ -21,6 +21,8 @@ struct ChatEditConfigSheet: View {
     @State private var toggles = EditToggles(broll: true, punchIns: true, music: false)
     @State private var instruction = ""
     @State private var reactSourceURL = ""
+    // v4 gen-z dial (parity with RecordView): 0 off · 1 subtle · 2 memey · 3 brainrot.
+    @State private var memeLevel: Double = 1
     @State private var visibleDemos: Set<String> = []
     @State private var failedDemos: Set<String> = []
 
@@ -62,6 +64,22 @@ struct ChatEditConfigSheet: View {
                         MarqueToggleRow(title: "B-roll cutaways", subtitle: nil, isOn: $toggles.broll)
                         MarqueToggleRow(title: "Punch-ins for emphasis", subtitle: nil, isOn: $toggles.punchIns)
                         MarqueToggleRow(title: "Background music", subtitle: nil, isOn: $toggles.music)
+                        if toggles.broll {
+                            VStack(alignment: .leading, spacing: Space.xs) {
+                                HStack {
+                                    SectionLabel(text: "Meme energy")
+                                    Spacer(minLength: Space.md)
+                                    Text(["Off", "Subtle", "Memey", "Brainrot"][Int(memeLevel)])
+                                        .font(AppFont.caption).foregroundStyle(Palette.accent)
+                                }
+                                Slider(value: $memeLevel, in: 0...3, step: 1)
+                                    .tint(Palette.accent)
+                                    .accessibilityIdentifier("chatEdit.memeLevel")
+                            }
+                            .padding(Space.md)
+                            .background(Palette.surfaceRaised)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: Space.xs) {
@@ -142,13 +160,15 @@ struct ChatEditConfigSheet: View {
     /// inserts than the record flow from identical footage); green_screen/split_screen override
     /// the job style; and a plain b-roll toggle still opts in via coverage.
     private func styleConfig() -> [String: String]? {
+        // v4: the meme dial rides along whenever b-roll is in play.
+        let meme = ["meme_intensity": String(Int(memeLevel))]
         switch selectedStyle {
-        case "cutaway": return ["broll_mode": "full",  "broll_coverage": "full"]
-        case "smart":   return ["broll_mode": "smart", "broll_coverage": "full"]
-        case "panel":   return ["broll_mode": "panel", "broll_coverage": "full"]
-        case "card":    return ["broll_mode": "card",  "broll_coverage": "full"]
-        case "green_screen", "split_screen": return ["composition_style": selectedStyle]
-        default: return toggles.broll ? ["broll_coverage": "full"] : nil
+        case "cutaway": return meme.merging(["broll_mode": "full",  "broll_coverage": "full"]) { a, _ in a }
+        case "smart":   return meme.merging(["broll_mode": "smart", "broll_coverage": "full"]) { a, _ in a }
+        case "panel":   return meme.merging(["broll_mode": "panel", "broll_coverage": "full"]) { a, _ in a }
+        case "card":    return meme.merging(["broll_mode": "card",  "broll_coverage": "full"]) { a, _ in a }
+        case "green_screen", "split_screen": return meme.merging(["composition_style": selectedStyle]) { a, _ in a }
+        default: return toggles.broll ? meme.merging(["broll_coverage": "full"]) { a, _ in a } : nil
         }
     }
 
