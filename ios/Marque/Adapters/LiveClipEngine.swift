@@ -183,6 +183,16 @@ struct LiveClipEngine: ClipEngineProtocol {
     /// into memory). Content-Type matches what the mint request declared. Returns
     /// true only on a 2xx; any transport/HTTP failure returns false so makeClips
     /// falls back instead of creating a job with an empty source object.
+    // Dedicated upload session (no session-level delegate → per-task delegates allowed,
+    // unlike URLSession.shared). Long resource timeout for large cellular uploads.
+    private static let uploadSession: URLSession = {
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 300
+        cfg.timeoutIntervalForResource = 900
+        cfg.waitsForConnectivity = true
+        return URLSession(configuration: cfg)
+    }()
+
     private static func uploadFootage(to uploadURLString: String, fileURL: URL,
                                       onProgress: (@Sendable (Double) -> Void)? = nil) async -> Bool {
         guard let url = URL(string: uploadURLString),
@@ -204,9 +214,16 @@ struct LiveClipEngine: ClipEngineProtocol {
             req.timeoutInterval = 300   // large upload, possibly on cellular
             req.setValue("video/quicktime", forHTTPHeaderField: "Content-Type")
             do {
+                // Build 47 CRASH FIX: URLSession.shared THROWS an NSException when handed a
+                // per-task delegate ("task-specific delegates are prohibited on the shared
+                // session") — build 45's progress bar always passes one on the edit-upload
+                // path, so every first upload-for-editing crashed. A dedicated session with
+                // no session-level delegate accepts task delegates; `.shared` (no delegate)
+                // stays for the delegate-less path.
                 let delegate = onProgress.map { UploadProgressDelegate(onProgress: $0) }
-                let (_, resp) = try await URLSession.shared.upload(for: req, fromFile: fileURL,
-                                                                   delegate: delegate)
+                let session = delegate != nil ? Self.uploadSession : URLSession.shared
+                let (_, resp) = try await session.upload(for: req, fromFile: fileURL,
+                                                         delegate: delegate)
                 if let http = resp as? HTTPURLResponse {
                     if (200..<300).contains(http.statusCode) { return true }
                     lastDetail = "http \(http.statusCode)"
