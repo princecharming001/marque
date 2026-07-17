@@ -589,15 +589,14 @@ final class AppStore {
     /// Nothing is submitted for editing — no streak, no celebration, no notification.
     func saveDraft(from script: Script, footagePath: String?) {
         // Keep the footage safe: absolute paths point outside the app container (e.g. the
-        // OS temp dir, which gets reaped), so copy those in. Documents-relative paths from
-        // MediaStore.save already live in the container and are stored as-is — the same
-        // form LocalThumbnail / MediaStore.url resolve everywhere else.
+        // OS temp dir, which gets reaped), so copy those in without loading the whole file
+        // into memory (a library video can be hundreds of MB). Documents-relative paths
+        // from MediaStore.save/saveFile already live in the container and are stored as-is.
         var storedPath = footagePath
-        if let p = footagePath, p.hasPrefix("/"),
-           let data = try? Data(contentsOf: MediaStore.url(for: p)) {
-            storedPath = MediaStore.save(data, ext: "mov")
+        if let p = footagePath, p.hasPrefix("/") {
+            storedPath = MediaStore.saveFile(from: MediaStore.url(for: p), ext: "mov") ?? p
         }
-        let draft = Clip(scriptId: script.id, formatId: script.formatId,
+        var draft = Clip(scriptId: script.id, formatId: script.formatId,
                          formatName: Catalog.format(script.formatId).name,
                          title: script.title.isEmpty ? script.hook.text : script.title,
                          caption: script.cta, predictedScore: script.predictedScore,
@@ -605,6 +604,48 @@ final class AppStore {
                          localVideoPath: storedPath)
         clips.insert(draft, at: 0)
         save()
+        // Build 46: generate + persist a poster frame so the draft card shows WHICH video
+        // was saved (the whole point of a draft) instead of a blank tile. Off the main
+        // actor; patched back onto the clip when ready.
+        if let sp = storedPath {
+            let cid = draft.id
+            Task.detached {
+                guard let poster = MediaStore.poster(for: MediaStore.url(for: sp)),
+                      let data = poster.jpegData(compressionQuality: 0.7) else { return }
+                let thumbPath = MediaStore.save(data, ext: "jpg")
+                await MainActor.run {
+                    if let i = self.clips.firstIndex(where: { $0.id == cid }) {
+                        self.clips[i].thumbnailPath = thumbPath
+                        self.save()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Build 46: send a footage-bearing DRAFT straight to the editor — the draft was a
+    /// dead-end (its "Finish" button routed to Film by scriptId, which drops an
+    /// uploaded video's footage entirely). Submits the stored take through the normal
+    /// instant pipeline and removes the draft (submitTakeInstant inserts its own card).
+    @discardableResult
+    func submitDraft(_ clip: Clip) -> UUID? {
+        guard let path = clip.localVideoPath,
+              FileManager.default.fileExists(atPath: MediaStore.url(for: path).path) else { return nil }
+        let script = scripts.first(where: { $0.id == clip.scriptId })
+        let effective = script ?? Script(
+            pillarName: "Freestyle", title: clip.title.isEmpty ? "Uploaded video" : clip.title,
+            summary: "Imported footage", style: VideoStyle.talkingHead.rawValue,
+            formatId: clip.formatId,
+            hook: Hook(text: clip.title.isEmpty ? "Uploaded video" : clip.title, signal: .narrative, strength: 70),
+            altHooks: [], body: "", cta: "", shotPlan: [], targetSeconds: max(1, clip.seconds),
+            predictedScore: clip.predictedScore)
+        let pid = submitTakeInstant(script: effective, footagePath: path, isFreestyle: script == nil,
+                                    customInstructions: "", reactSourceURL: "",
+                                    editFormat: EditFormat.talkingHead.rawValue,
+                                    referenceReel: nil, toggles: EditToggles())
+        clips.removeAll { $0.id == clip.id }
+        save()
+        return pid
     }
 
     func makeClips(from script: Script, formats: [String], footagePath: String? = nil,

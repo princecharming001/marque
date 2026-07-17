@@ -70,15 +70,24 @@ private final class InkPlayerHostView: UIView {
 
 private struct InkPlayerLayerHost: UIViewRepresentable {
     let player: AVPlayer
+    var cornerRadius: CGFloat = 0
     func makeUIView(context: Context) -> UIView {
         let v = InkPlayerHostView()
         v.backgroundColor = .black
         v.playerLayer.player = player
         v.playerLayer.videoGravity = .resizeAspectFill   // fill — no pillarbox bars
+        // Round the AVPlayerLayer DIRECTLY: a SwiftUI .clipShape mask does not reliably
+        // clip a UIViewRepresentable-hosted AVPlayerLayer (it composites separately and
+        // overdraws its bounds), which is why the detail player showed square corners
+        // under a rounded container. masksToBounds on the layer itself always clips.
+        v.layer.cornerRadius = cornerRadius
+        v.layer.masksToBounds = true
         return v
     }
     func updateUIView(_ v: UIView, context: Context) {
         (v as? InkPlayerHostView)?.playerLayer.player = player
+        v.layer.cornerRadius = cornerRadius
+        v.layer.masksToBounds = true
     }
 }
 
@@ -99,7 +108,7 @@ struct InkVideoPlayer: View {
 
     var body: some View {
         ZStack {
-            InkPlayerLayerHost(player: model.player)
+            InkPlayerLayerHost(player: model.player, cornerRadius: cornerRadius)
 
             // Whole-surface tap target: toggle play/pause and flash the chrome.
             Color.black.opacity(0.001)
