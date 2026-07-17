@@ -156,13 +156,16 @@ struct ClipCell: View {
                             Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
                         }
                     }
-                    // Status why-line (uploading is a distinct phase — don't claim the
-                    // AI is editing while the bytes are still leaving the phone)
-                    Text(clip.uploading && clip.status == .rendering
-                         ? "Uploading your take — it resumes automatically if you leave."
-                         : clip.status.whyLine)
-                        .font(AppFont.micro).tracking(0.2)
-                        .foregroundStyle(clip.status.railColor.opacity(0.8))
+                    // Build 45: an in-pipeline clip shows the live PipelineTimeline (real
+                    // stage + progress) instead of a single frozen word; everything else
+                    // keeps its plain why-line.
+                    if let pp = PipelineProgress.from(clip), !pp.isFailed {
+                        PipelineTimeline(progress: pp).padding(.top, 2)
+                    } else {
+                        Text(clip.status.whyLine)
+                            .font(AppFont.micro).tracking(0.2)
+                            .foregroundStyle(clip.status.railColor.opacity(0.8))
+                    }
                 }
                 Spacer()
             }
@@ -191,7 +194,12 @@ struct ClipGridCell: View {
                            startPoint: .top, endPoint: .bottom)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 3) {
+                // Build 45: compact rails on in-pipeline clips so a grid tile also shows
+                // live motion, not a frozen "UPLOADING".
+                if let pp = PipelineProgress.from(clip), !pp.isFailed {
+                    PipelineTimeline(progress: pp, compact: true, showLine: false)
+                }
                 HStack {
                     Text(statusLabel).font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.white.opacity(0.9))
@@ -217,7 +225,10 @@ struct ClipGridCell: View {
         case .ready:     return "READY"
         case .scheduled: return "SCHED"
         case .posted:    return "POSTED"
-        case .rendering: return clip.uploading ? "UPLOADING" : "RENDERING"
+        case .rendering:
+            // Build 45: name the real phase (UPLOAD/ANALYZE/EDIT/RENDER) rather than
+            // one static word for the whole minute-long pipeline.
+            return (PipelineProgress.from(clip)?.active.label ?? "Working").uppercased()
         case .failed:    return "FAILED"
         }
     }

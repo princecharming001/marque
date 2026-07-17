@@ -408,6 +408,13 @@ struct Clip: Codable, Hashable, Identifiable {
     // taken), NOT createdAt — the server value is already remaining-from-now.
     var etaSeconds: Int? = nil
     var etaSetAt: Date? = nil
+    // Pipeline visibility (build 45): the backend reports a granular stage on every poll
+    // (transcribing/analyzing/editing/rendering) but iOS used to collapse it all to one
+    // static "RENDERING" word — so a 40s job read as a frozen spinner. `pipelineStage`
+    // stores the real backend stage; `uploadProgress` is the 0–1 device-side upload
+    // fraction (export + PUT bytes). Both optional-with-default → Snapshot-safe.
+    var pipelineStage: String? = nil
+    var uploadProgress: Double? = nil
     var createdAt: Date = Date()
     // Stamped when the clip FIRST becomes .ready (edit finished). Optional-with-default so old
     // persisted clips decode as nil (no timestamp shown). Drives the subtle "finished at" label.
