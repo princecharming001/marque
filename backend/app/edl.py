@@ -235,6 +235,11 @@ class BRoll(BaseModel):
     # need/fallback_text: Part 4A bookkeeping (what KIND of visual + the text-card copy).
     mode: str = "full"
     need: Optional[str] = None
+    # v7 Ralph: True for density-floor-synthesized cues — the tier pass degrades an
+    # unresolved floor cue to a PUNCH-IN (visual variety, no wrong asset), never a
+    # text card (floor anchors are heuristic words; card-spamming them reads awful).
+    # Internal bookkeeping — build_render_plan does not forward it to the renderer.
+    floor: bool = False
     fallback_text: Optional[str] = None
 
 
@@ -2147,9 +2152,14 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
         f = ms_to_frame(w.get("start_ms", 0))
         if not (lo <= f <= hi):
             continue
-        # Skip candidates whose ~window collides (within spacing) with an already-placed insert —
-        # the top-up should fill GAPS, not stack next to the plan's own cutaways.
-        if any(f - spacing < ob and f + _mid + spacing > oa for oa, ob in occ):
+        # Skip candidates whose ~window collides with an already-placed insert — the
+        # top-up should fill GAPS, not stack next to the plan's own cutaways. v7 fix:
+        # the margin is GLIMPSE-scale (half spacing + the glimpse hold), matching what
+        # _admit_cue will actually enforce — the old full-spacing + concept-mid margin
+        # blocked ~160f around every planned insert and STARVED the floor (observed
+        # live: 5 planned cues blocked every candidate on a 50s take).
+        _g_sp = max(20, spacing // 2)
+        if any(f - _g_sp < ob and f + _avg_hold + _g_sp > oa for oa, ob in occ):
             continue
         cands.append((f, low, emph, wi))
     # Prefer emphasized words; then walk in time picking spaced ones.
@@ -2158,10 +2168,11 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     for f, word, emph, wi in sorted(cands, key=lambda c: c[0]):
         if len(picked) >= target:
             break
-        # Glimpses pack tighter than cutaways — half step, matching _admit_cue's
-        # glimpse spacing relief (v4 "words and inflections" density).
-        min_gap = step // 2 if emph else step
-        if all(abs(f - pf) >= (min_gap if (emph or pe) else step) for pf, _, pe, _ in picked):
+        # v7 Ralph: pace picks at the ADMISSION-SAFE glimpse cycle (hold + halved
+        # spacing + jitter headroom) — half-step over-packed the pool and admission
+        # rejections wasted the emission budget; full step under-filled real gaps.
+        min_gap = _avg_hold + max(20, spacing // 2) + 8
+        if all(abs(f - pf) >= min_gap for pf, _, _, _ in picked):
             picked.append((f, word, emph, wi))
     # v7 P0: every floor cue is an entity GLIMPSE with a CONTEXT query (anchor +
     # neighboring content words) — bare single-word cues produced literal nonsense
@@ -2171,7 +2182,8 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     out: list[dict] = []
     for f, word, _emph, wi in sorted(picked):
         out.append({"range": [f, f + min(_glo + 6, _ghi)], "cue": _context_query(wi, word),
-                    "query": _context_query(wi, word), "need": "entity", "mode": mode})
+                    "query": _context_query(wi, word), "need": "entity", "mode": mode,
+                    "floor": True})
     return out
 _PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
 _PUNCH_HOLD = 30
@@ -2525,6 +2537,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 meme_count += 1
             return {"src_in": s_in, "src_out": s_out, "cue_text": b.get("cue", ""),
                     "broll_query": b.get("query") or b.get("cue", ""),
+                    "floor": bool(b.get("floor")),
                     "source": b.get("source") if b.get("source") in ("stock", "own_media", "giphy", "klipy") else "stock",
                     # Addendum Part 2/4A: composition mode + need type + text-card fallback copy,
                     # carried so _resolve_broll enforces the tier rule and the renderer composites modes.

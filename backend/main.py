@@ -7285,12 +7285,34 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
                 _apply_rewrite(i, q, need)
                 _broll_query_cache[ck(orig)] = {"query": q, "need": broll[i].get("need", need)}
         _cap_evict(_broll_query_cache, 10_000)
-        # v7 P0 observability: the meme mandate at level ≥2 is prompt-enforced ("MUST
-        # reclassify at least one") — if the model still returned none, say so loudly
-        # so a memeless render is diagnosable from logs instead of a mystery.
-        if _meme_level >= 2 and _meme_total == _memes_before and _meme_total == 0:
-            logging.warning("[broll] meme mandate UNMET: level=%d, zero meme cues after rewrite "
-                            "(%d cues in)", _meme_level, len(cues))
+        # v7 Ralph: the meme mandate at level ≥2 was prompt-enforced ("MUST reclassify
+        # at least one") and the model STILL returned zero on live runs — so enforce it
+        # in code: one tiny follow-up call that picks THE single best beat + a canonical
+        # reaction query, applied through the same guarded _apply_rewrite (caps, panel
+        # force, window shrink). Fail-soft: if the pick fails too, log and move on.
+        if _meme_level >= 2 and _meme_total == _memes_before and _meme_total == 0 and cues:
+            logging.warning("[broll] meme mandate UNMET after rewrite: level=%d, %d cues — "
+                            "forcing a pick", _meme_level, len(cues))
+            try:
+                _pick = await anthropic_json(
+                    "You are a gen-z short-form editor. From these b-roll cues, pick THE "
+                    "single beat where a reaction meme lands hardest (a punchline, hot "
+                    "take, or absurd claim — prefer later cues; payoffs cluster at the "
+                    "end). Return its index i and a CANONICAL 1-3 word reaction/meme "
+                    "search query the GIF library will definitely have ('side eye', "
+                    "'chefs kiss', 'mind blown', 'this is fine').",
+                    json.dumps({"cues": cues}),
+                    {"type": "object", "additionalProperties": False,
+                     "required": ["i", "query"],
+                     "properties": {"i": {"type": "integer"}, "query": {"type": "string"}}},
+                    model=HAIKU, temperature=0.2)
+                _pi, _pq = _pick.get("i"), (_pick.get("query") or "").strip()
+                if isinstance(_pi, int) and 0 <= _pi < len(broll) and _pq \
+                        and broll[_pi].get("need") in ("action", "concept"):
+                    _apply_rewrite(_pi, _pq, "meme")
+                    logging.info("[broll] meme mandate: forced pick i=%d query=%r", _pi, _pq)
+            except Exception as _e:
+                logging.warning("[broll] meme force-pick failed: %s", _e)
     except Exception as e:
         logging.warning("broll query rewrite failed (using originals): %s", e)
     edl["_queries_rewritten"] = True
@@ -7395,7 +7417,11 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                 b["source"] = _meme_source_cache.get(mkey, "giphy")
                 continue
             mcands = await _fetch_meme_candidates(query, BROLL_CANDIDATES)
-            murl = await _rerank_broll(b.get("cue_text") or query, mcands, dossier)
+            # v7 Ralph: memes DON'T go through the literal-depiction scorer — a reaction
+            # GIF is deliberately non-literal (the scorer correctly noted "chefs kiss"
+            # doesn't depict vinegar, and killed every meme). A canonical reaction query
+            # against a GIF library is high-precision; the top candidate wins.
+            murl = mcands[0]["link"] if mcands else None
             if murl:
                 prov = next((c.get("provider", "giphy") for c in mcands
                              if c.get("link") == murl), "giphy")
@@ -7512,6 +7538,20 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # EXCEPTION — force_broll (the creator EXPLICITLY opted into b-roll): a real stock
         # clip beats a text card here, so keep a resolved literal item as a cutaway. Only an
         # UNRESOLVED literal still falls back to a text card.
+        # v7 Ralph: an unresolved FLOOR cue (heuristic density top-up, not a planner
+        # cue) degrades to a face-keeping PUNCH-IN — never a text card. Floor anchors
+        # are transcript words; card-spamming every abstract one buried the video in
+        # text tiles the moment the floor got dense enough to matter.
+        if b.get("floor") and not resolved:
+            if not faceless and s_out > s_in:
+                punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
+                                        "scale": 1.08})
+                log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
+                            "why": rej or "floor cue unresolved — visual beat, no wrong asset"})
+            else:
+                log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
+                            "why": rej or "floor cue unresolved"})
+            continue
         # v4: under force_broll, an UNRESOLVED own_media cue is not "the creator's own
         # footage", it's nothing — resolution (incl. the stock fallback) was attempted and
         # failed (prod job 90813e10: the gochujang glimpse shipped URL-less and rendered
@@ -7519,6 +7559,19 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # stands: a manual-editor own_media roll racing its upload must never be deleted.
         if need in _LITERAL_NEEDS and ((not resolved and (force_broll or not is_own))
                                        or (resolved and not is_own and not force_broll)):
+            # v7 Ralph: cap designed text cards at 2 per video — beyond that a card
+            # stops being a deliberate graphic moment and starts being wallpaper.
+            # Overflow degrades to a punch-in instead.
+            if txt and s_out > s_in and len(fallback_cards) >= 2:
+                if not faceless:
+                    punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
+                                            "scale": 1.08})
+                    log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
+                                "why": "card cap reached — visual beat instead"})
+                else:
+                    log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
+                                "why": "card cap reached"})
+                continue
             if txt and s_out > s_in:
                 # v2 read-time guard: entity/data insert windows shrank to ~1.2-1.8s, but a
                 # TEXT card needs >=1.5s to read twice — extend the card (never the clip).
@@ -7538,7 +7591,15 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             continue
         # v7 P0: a CONCEPT cue with card copy becomes a designed text card (never stock,
         # never a punch-in — the research's ~70/30 motion-graphics norm for abstractions).
+        # v7 Ralph: subject to the same 2-card cap; overflow → punch-in.
         if need == "concept" and not resolved and txt and s_out > s_in:
+            if len(fallback_cards) >= 2:
+                if not faceless:
+                    punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
+                                            "scale": 1.08})
+                    log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
+                                "why": "card cap reached — visual beat instead"})
+                continue
             s_out = max(s_out, s_in + 45)              # card read-time floor
             fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
             log.append({"need": need, "cue": cue, "tier": "card",

@@ -631,3 +631,67 @@ def test_room_tone_flows_into_render_plan():
     edl["audio"]["room_tone"] = {"src_in": 100, "src_out": 140, "volume": 0.55}
     plan = build_render_plan(edl)
     assert plan["audio"]["room_tone"] == {"src_in": 100, "src_out": 140, "volume": 0.55}
+
+
+# ---------- v7 Ralph loop: floor density, floor degrade, card cap, meme gate ----------
+
+def test_floor_not_starved_by_planned_cues():
+    # 5 planned panel cues on a 50s take must still leave room for the floor to hit
+    # the density minimum (the old occupied-margin blocked ~160f per insert).
+    w = _alpha_words(125)                       # 50s
+    total = ms_to_frame(w[-1]["end_ms"])
+    plan = {"broll": [
+        {"range": [300 + i * 200, 350 + i * 200], "cue": f"p{i}", "query": f"planned {i}",
+         "source": "stock", "mode": "panel", "need": "entity"} for i in range(5)]}
+    out = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
+                       prefs={"broll": True, "broll_coverage": "full",
+                              "broll_mode": "panel"}).model_dump()
+    # 5 planned windows + legal spacing bound this geometry near ~12 events; the
+    # starved behavior this guards against was 8 total with only 3 floor cues.
+    assert len(out["broll"]) >= 10, f"floor starved: {len(out['broll'])}"
+    assert sum(1 for b in out["broll"] if b.get("floor")) >= 4, "floor must contribute"
+
+
+def test_unresolved_floor_cue_degrades_to_punch_in_not_card():
+    edl = {"style": "broll_cutaway", "broll": [
+        {"src_in": 300, "src_out": 321, "cue_text": "collapses flavor", "broll_query": "x",
+         "source": "stock", "mode": "panel", "need": "entity", "floor": True,
+         "fallback_text": "collapses flavor", "resolved_url": None}]}
+    out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
+    assert not out["broll"]
+    assert not [o for o in (out.get("overlays") or []) if o["type"] == "text_card"], \
+        "floor cues must NEVER become text cards"
+    assert [o for o in (out.get("overlays") or []) if o["type"] == "punch_in"]
+
+
+def test_text_cards_capped_at_two():
+    items = [{"src_in": 200 + i * 200, "src_out": 250 + i * 200, "cue_text": f"c{i}",
+              "broll_query": "", "source": "stock", "mode": "panel", "need": "concept",
+              "fallback_text": f"CARD {i}", "resolved_url": None} for i in range(5)]
+    out = asyncio.run(main._resolve_broll({"style": "broll_cutaway", "broll": items},
+                                          force_broll=True))
+    cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
+    punches = [o for o in (out.get("overlays") or []) if o["type"] == "punch_in"]
+    assert len(cards) == 2, f"card cap: got {len(cards)}"
+    assert len(punches) == 3, "overflow concepts must degrade to punch-ins"
+
+
+def test_meme_resolution_bypasses_literal_scorer(monkeypatch):
+    # A reaction GIF is deliberately non-literal — the pointwise depiction scorer must
+    # NOT gate memes (it killed every meme by noting "chefs kiss" isn't vinegar).
+    async def fake_cands(q, n, kind="clips"):
+        return [{"link": "https://klipy/chefs-kiss.mp4", "thumb": "t", "provider": "klipy"}]
+    async def exploding_rerank(cue, cands, dossier=None):
+        raise AssertionError("memes must not go through the literal rerank")
+    monkeypatch.setattr(main, "_fetch_meme_candidates", lambda q, n: fake_cands(q, n))
+    monkeypatch.setattr(main, "_rerank_broll", exploding_rerank)
+    monkeypatch.setattr(main, "BROLL_MEMES", True)
+    monkeypatch.setattr(main, "KLIPY_KEY", "k")
+    main._broll_url_cache.clear(); main._meme_source_cache.clear()
+    edl = {"style": "broll_cutaway", "broll": [
+        {"src_in": 400, "src_out": 430, "cue_text": "the fix in action",
+         "broll_query": "chefs kiss", "source": "stock", "mode": "panel",
+         "need": "meme", "fallback_text": "", "resolved_url": None}]}
+    out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
+    assert out["broll"] and out["broll"][0]["resolved_url"] == "https://klipy/chefs-kiss.mp4"
+    assert out["broll"][0]["source"] == "klipy"
