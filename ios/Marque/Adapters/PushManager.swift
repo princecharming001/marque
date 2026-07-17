@@ -54,9 +54,13 @@ final class PushManager: NSObject, UIApplicationDelegate, UNUserNotificationCent
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         let info = notification.request.content.userInfo
         if let jobId = info["job_id"] as? String { receivedJobIds.insert(jobId) }
-        if notification.request.content.categoryIdentifier == "clips_ready",
-           notification.request.trigger is UNPushNotificationTrigger {
-            completionHandler([])                       // in-app moment already handles it
+        // Suppress the clips_ready banner in the foreground for BOTH the remote push AND
+        // the local fallback (identified by category now, not just the push trigger). While
+        // the app is open the Library updates live, so a banner is redundant — and one that
+        // pops on another screen while a clip is mid-render reads as "premature." When the
+        // app is backgrounded, willPresent isn't called, so the notification still delivers.
+        if notification.request.content.categoryIdentifier == "clips_ready" {
+            completionHandler([])
         } else {
             completionHandler([.banner, .sound])
         }

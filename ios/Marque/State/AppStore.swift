@@ -1070,7 +1070,12 @@ final class AppStore {
             // Edited clips landed — nudge the creator. ("mock_ready" is the keyless backend's
             // ready; the .ready count guard keeps failed/empty jobs silent either way.)
             if done && status != "failed" {
-                let readyCount = clips.filter { clipIds.contains($0.id) && $0.status == .ready }.count
+                // Premature-guard: count ONLY clips that delivered a real playable render
+                // (status .ready AND a non-empty remoteURL) — never notify on the status
+                // flag alone, so "your clip is ready" can't fire before the video exists.
+                let readyCount = clips.filter {
+                    clipIds.contains($0.id) && $0.status == .ready && !($0.remoteURL ?? "").isEmpty
+                }.count
                 notifyClipsReady(count: readyCount, jobId: jobId)
             }
         }
@@ -1479,6 +1484,9 @@ final class AppStore {
         content.title = "Your clip is ready 🎬"
         content.body = "The AI finished editing — review it in your Library and schedule it."
         content.sound = .default
+        // Tag the category so PushManager.willPresent suppresses the banner in-foreground
+        // (same treatment as the remote push) — the Library reflects readiness live.
+        content.categoryIdentifier = "clips_ready"
         if let jobId { content.userInfo = ["job_id": jobId] }
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "marque.clipsReady.\(jobId ?? UUID().uuidString)",
