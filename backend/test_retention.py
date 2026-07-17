@@ -203,25 +203,40 @@ def _padded_take(target_word_count, target_duration_ms=4000, pad_ms=5000, pad_wo
     return words, edl, ms_to_frame(pad_ms), ms_to_frame(pad_ms + target_duration_ms)
 
 
-def test_pacing_low_info_region_very_sparse_gets_the_steeper_band():
-    # target_word_count=2 -> the whole hook/CTA-clipped span's wpm falls well
-    # under 0.85x the take median (see _padded_take's docstring for why 2, not a
-    # smaller/larger number, and why this isn't solved by hand-algebra).
-    words, edl, zone_lo, zone_hi = _padded_take(target_word_count=2)
-    out = retention.plan_pacing(edl, words, style="talking_head", hints={})
-    sped = [s for s in out["segments"] if s.get("speed", 1.0) > 1.1]
-    assert len(sped) == 1
-    # 1.25 (steep band) * 1.03 (talking_head's default "subtle" lift)
-    assert abs(sped[0]["speed"] - 1.25 * 1.03) < 0.01
+def _cadence_run(start_ms, n, word_ms, gap_ms, tag):
+    """n words at a steady cadence; inter-word gap < 350ms keeps them ONE sentence."""
+    words, t = [], start_ms
+    for i in range(n):
+        words.append({"word": f"{tag}{i}", "start_ms": t, "end_ms": t + word_ms})
+        t += word_ms + gap_ms
+    return words, t
 
 
-def test_pacing_low_info_region_moderately_sparse_gets_the_gentler_band():
-    # target_word_count=10 -> the clipped span's wpm falls in [0.85, 1.0)x median.
-    words, edl, zone_lo, zone_hi = _padded_take(target_word_count=10)
+def test_pacing_v7_slow_sentence_gets_normalized_toward_target():
+    # v7: fast sentence (~200wpm) . SLOW sentence (~100wpm) . fast sentence — the
+    # slow one gets its own speed toward the WPM target (JND-smoothed from its
+    # neighbor, quantized to 0.05); the fast ones keep the bare lift.
+    a, t = _cadence_run(0, 20, 200, 100, "a"); a[-1]["word"] += "."
+    b, t = _cadence_run(t + 400, 12, 300, 300, "b"); b[-1]["word"] += "."
+    c, t = _cadence_run(t + 400, 20, 200, 100, "c"); c[-1]["word"] += "."
+    words = a + b + c
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": ms_to_frame(t)}], drops=[])
     out = retention.plan_pacing(edl, words, style="talking_head", hints={})
-    sped = [s for s in out["segments"] if s.get("speed", 1.0) > 1.1]
-    assert len(sped) == 1
-    assert abs(sped[0]["speed"] - 1.15 * 1.03) < 0.01
+    sped = [s for s in out["segments"] if s.get("speed", 1.0) > 1.06]
+    assert sped, f"the slow sentence must be sped up: {[(s['src_in'], s['src_out'], s.get('speed')) for s in out['segments']]}"
+    for s in sped:
+        assert s["speed"] <= retention.SPOKEN_SPEED_CAP + 1e-9
+        assert abs(s["speed"] * 20 - round(s["speed"] * 20)) < 1e-6   # 0.05 quantization
+
+
+def test_pacing_v7_adjacent_speeds_within_jnd():
+    # Tempo JND: adjacent PLAYED segments never differ by more than 0.10 (the
+    # across-pause cap; contiguous speech caps tighter at 0.05).
+    words, edl, *_ = _padded_take(target_word_count=2)
+    out = retention.plan_pacing(edl, words, style="talking_head", hints={})
+    speeds = [s.get("speed", 1.0) for s in out["segments"] if s.get("speed", 1.0) <= 1.35]
+    for a, b in zip(speeds, speeds[1:]):
+        assert abs(a - b) <= retention.RATE_DELTA_ACROSS_PAUSE + 1e-6, (a, b)
 
 
 def test_pacing_normal_density_take_gets_no_speed_up():
@@ -229,7 +244,7 @@ def test_pacing_normal_density_take_gets_no_speed_up():
     # relative to the take median (ratio ~1.0 everywhere) -> lift-only.
     words, edl, *_ = _padded_take(target_word_count=20, target_duration_ms=5000)
     out = retention.plan_pacing(edl, words, style="talking_head", hints={})
-    assert all(abs(s.get("speed", 1.0) - 1.03) < 1e-9 for s in out["segments"])
+    assert all(abs(s.get("speed", 1.0) - 1.05) < 1e-9 for s in out["segments"])
 
 
 def test_pacing_splits_land_on_word_boundaries():
@@ -247,7 +262,7 @@ def test_pacing_never_speeds_a_stretch_overlapping_emphasis():
     # The sparse target zone IS the emphasis span -> must be protected, not sped up.
     out = retention.plan_pacing(edl, words, style="talking_head",
                                 emphasis_spans=[(zone_lo, zone_hi)], hints={})
-    assert all(abs(s.get("speed", 1.0) - 1.03) < 1e-9 for s in out["segments"])
+    assert all(abs(s.get("speed", 1.0) - 1.05) < 1e-9 for s in out["segments"])
 
 
 def test_pacing_skips_duet_split_entirely():
@@ -260,11 +275,11 @@ def test_pacing_skips_duet_split_entirely():
 def test_pacing_global_lift_style_default_vs_hint_override():
     words, edl, *_ = _padded_take(target_word_count=20, target_duration_ms=5000)   # no low-info region
     out_default = retention.plan_pacing(edl, words, style="talking_head", hints={})
-    assert all(abs(s["speed"] - 1.03) < 1e-9 for s in out_default["segments"])   # style default "subtle"
+    assert all(abs(s["speed"] - 1.05) < 1e-9 for s in out_default["segments"])   # style default "subtle"
 
     out_medium = retention.plan_pacing(edl, words, style="talking_head",
                                        hints={"pacing": {"lift": "medium"}})
-    assert all(abs(s["speed"] - 1.06) < 1e-9 for s in out_medium["segments"])   # hint overrides style
+    assert all(abs(s["speed"] - 1.08) < 1e-9 for s in out_medium["segments"])   # hint overrides style
 
     out_fastcuts = retention.plan_pacing(edl, words, style="fast_cuts", hints={})
     assert all(abs(s["speed"] - 1.0) < 1e-9 for s in out_fastcuts["segments"])   # fast_cuts default "none"
@@ -295,14 +310,19 @@ def test_pacing_speed_through_silence_replaces_the_drop():
     assert fast[0]["src_in"] == pause_lo and fast[0]["src_out"] == pause_hi
 
 
-def test_pacing_speed_through_silence_off_by_default_leaves_the_drop():
+def test_pacing_speed_through_silence_on_by_default_and_hint_disables():
+    # v7 (Overcast/TimeBolt principle): silence fast-forward defaults ON — compress
+    # silence before ever touching speech rate. The hint can still disable it.
     words = _dense_run(0, 6000, 20, "a") + _dense_run(7800, 6000, 20, "b")
     pause_lo, pause_hi = ms_to_frame(6000) + 4, ms_to_frame(7800) - 2
     total_frames = ms_to_frame(13800)
     edl = _base_edl(segments=[{"src_in": 0, "src_out": total_frames}],
                     drops=[{"src_in": pause_lo, "src_out": pause_hi, "reason": "dead_air"}])
-    out = retention.plan_pacing(edl, words, style="talking_head", hints={})   # no fast_forward_silences
-    assert out["drops"] == [{"src_in": pause_lo, "src_out": pause_hi, "reason": "dead_air"}]
+    out = retention.plan_pacing(edl, words, style="talking_head", hints={})   # defaults ON
+    assert out["drops"] == [], "silence FF must run by default"
+    out_off = retention.plan_pacing(edl, words, style="talking_head",
+                                    hints={"pacing": {"fast_forward_silences": False}})
+    assert out_off["drops"] == [{"src_in": pause_lo, "src_out": pause_hi, "reason": "dead_air"}]
 
 
 def test_pacing_silence_speed_can_exceed_the_spoken_cap():
@@ -356,9 +376,13 @@ def test_pacing_output_passes_invariants():
 
 def test_pacing_applied_via_orchestrator():
     retention._ENV_PASSES = "pacing"
-    words, edl, *_ = _padded_take(target_word_count=6)
+    a, t = _cadence_run(0, 20, 200, 100, "a"); a[-1]["word"] += "."
+    b, t = _cadence_run(t + 400, 12, 300, 300, "b"); b[-1]["word"] += "."
+    c, t = _cadence_run(t + 400, 20, 200, 100, "c"); c[-1]["word"] += "."
+    words = a + b + c
+    edl = _base_edl(segments=[{"src_in": 0, "src_out": ms_to_frame(t)}], drops=[])
     out = retention.apply_retention_passes(edl, words, style="talking_head")
-    assert any(s.get("speed", 1.0) > 1.1 for s in out["segments"])
+    assert any(s.get("speed", 1.0) > 1.06 for s in out["segments"])
 
 
 def test_pacing_orchestrator_respects_prefs_pacing_off():

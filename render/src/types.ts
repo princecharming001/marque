@@ -77,6 +77,11 @@ export interface CaptionOptions {
 // the bed cuts to silence so a punchline lands over clean voice.
 export interface MusicDropout { frame_in: number; frame_out: number; }
 export interface MusicTrack { url?: string | null; query?: string | null; volume: number; duck_voice: boolean; dropouts?: MusicDropout[]; }
+// v7 fluidity (additive/optional): a quiet window of the SOURCE recording, looped as a
+// low-level ambience bed under the whole output. Dialogue-editing research: room tone
+// is "the glue" — without a continuous bed, the noise floor jumps at every splice and
+// the voice reads as choppy. Same-recording tone masks those jumps by construction.
+export interface RoomTone { src_in: number; src_out: number; volume: number; }
 export interface VolumeRange { frame_in: number; frame_out: number; volume: number; }
 // speech_frames: word-start output frames for the ducking heuristic, independent
 // of whether captions are visually enabled (G3) — always present when the
@@ -94,7 +99,7 @@ export interface SfxCue { frame: number; kind: string; gain: number; url: string
 // constants as the fallback for any missing field — an absent `duck` (every
 // pre-v3 plan) behaves byte-identically to today.
 export interface DuckParams { factor?: number; window_f?: number; ramp_f?: number; }
-export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; sfx: SfxCue[]; duck?: DuckParams | null; }
+export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTrack | null; volume_ranges: VolumeRange[]; speech_frames: number[]; sfx: SfxCue[]; duck?: DuckParams | null; room_tone?: RoomTone | null; }
 
 // P4: a tail-of-video CTA card. Tail-anchored (not a source-coord remap) —
 // start_frame is where the last kept clip ends, and total_frames on the plan

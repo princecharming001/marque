@@ -139,7 +139,11 @@ export const CutVideo: React.FC<{
   // seam smooths the discontinuity without an audible "fade". First-clip-start and
   // last-clip-end are the true video boundaries — the composition owns those, so we skip
   // them to avoid double-fading.
-  const SEAM_FADE_FRAMES = 3;
+  // v7 fluidity: 3f (100ms) voice fades smear adjacent phonemes (research: ~5-20ms is
+  // the pro voice-splice band; the LONG fade belongs on the room-tone layer, which the
+  // AudioMix bed now provides). 2 frames (~67ms) is the shortest clean fade at 30fps
+  // frame granularity that still declicks the butt-splice.
+  const SEAM_FADE_FRAMES = 2;
   const seamFade = (localF: number, len: number, fadeIn: boolean, fadeOut: boolean): number => {
     if (len <= 2 * SEAM_FADE_FRAMES) return 1;   // clip too short to fade cleanly
     // Symmetric ramp over SEAM_FADE_FRAMES frames on each internal edge. The +1 divisor

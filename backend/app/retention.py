@@ -378,7 +378,10 @@ _STYLE_PACE_LIFT_DEFAULT = {
     "talking_head": "subtle", "broll_cutaway": "subtle", "green_screen": "subtle",
     "split_three": "subtle", "fast_cuts": "none", "faceless": "none", "duet_split": "none",
 }
-PACING_LIFT_MULT = {"none": 1.0, "subtle": 1.03, "medium": 1.06}
+# v7 pacing research: global baseline 1.05–1.15x is the community norm and 1.05 sits
+# exactly at the speech-tempo JND (Weber fraction ~5%, Quené 2007) — imperceptible
+# even in A/B comparison. "subtle" 1.03→1.05.
+PACING_LIFT_MULT = {"none": 1.0, "subtle": 1.05, "medium": 1.08}
 SPOKEN_SPEED_CAP = 1.35          # comprehension/artifact bound for SPOKEN stretches
 SILENCE_SPEED_CAP = 3.0          # silence has no speech to distort — much higher cap
 LOW_INFO_MIN_FRAMES = 60          # 2s — never speed up a stretch shorter than this
@@ -389,6 +392,22 @@ PACING_SPLIT_BUDGET = 24          # bounds Lambda seek cost + rounding accumulat
 SILENCE_FF_MIN_FRAMES = 36        # ~1.2s — below this, strip_fillers' own tightening covers it
 SILENCE_FF_MAX_FRAMES = 75        # ~2.5s — above this, a hard cut reads better than a 3x blur
 SILENCE_FF_DIVISOR = 14           # gap_frames / 14 -> perceived pause of ~460ms at 1x
+
+# v7 SENTENCE-RATE NORMALIZATION (the "when to speed up" engine, research-grounded):
+# normalize slow sentences toward a target words-per-minute instead of hunting one
+# low-info stretch per segment. Sources: conversational baseline 120-150wpm vs
+# short-form target 160-185wpm; tempo JND ~5% (adjacent-step cap 0.05 in continuous
+# speech, 0.10 across a ≥300ms pause — the pause resets the tempo anchor); 1.25x is
+# the comfort ceiling, 1.30 our per-sentence cap under the 1.35 spoken hard cap;
+# silence compressed FIRST (Overcast/TimeBolt principle — silence FF now defaults ON).
+RATE_TARGET_WPM_MIN = 162         # normalize up toward at least this...
+RATE_TARGET_WPM_MAX = 185         # ...but never chase a rate above this
+RATE_SENTENCE_GAP_MS = 350        # sentence boundary when no terminal punctuation
+RATE_MIN_ACTION_FRAMES = 45       # ~1.5s — shortest run worth a split
+RATE_SENT_SPEED_CAP = 1.30        # per-sentence ceiling (1.25 comfort + headroom, < 1.35 hard cap)
+RATE_DELTA_CONTIGUOUS = 0.05      # max step vs previous sentence, continuous speech (1 JND)
+RATE_DELTA_ACROSS_PAUSE = 0.10    # max step across a ≥300ms pause
+RATE_JND_DEADBAND = 0.95          # sentences within 5% of target are left alone
 
 
 def _segment_kept_ranges(seg: dict, drops: list[dict]) -> list[tuple[int, int]]:
@@ -432,6 +451,156 @@ def _dossier_energy(dossier: dict | None, lo_frame: int, hi_frame: int) -> float
             if isinstance(c, dict) and c.get("f1", 0) > lo_frame and c.get("f0", 0) < hi_frame
             and isinstance(c.get("energy"), (int, float))]
     return min(vals) if vals else None
+
+
+def _sentences_from_words(words: list[dict]) -> list[tuple[float, float, int]]:
+    """[(start_ms, end_ms, word_count)] — split on terminal punctuation (. ! ? …) or a
+    ≥RATE_SENTENCE_GAP_MS silence (covers punctuation-free ASR output)."""
+    sents: list[tuple[float, float, int]] = []
+    cur_start: float | None = None
+    cur_n = 0
+    last_end: float | None = None
+    for w in words:
+        if not w.get("word"):
+            continue
+        s, e = w.get("start_ms", 0), w.get("end_ms", 0)
+        if cur_start is not None and last_end is not None and s - last_end >= RATE_SENTENCE_GAP_MS:
+            sents.append((cur_start, last_end, cur_n))
+            cur_start, cur_n = None, 0
+        if cur_start is None:
+            cur_start = s
+        cur_n += 1
+        last_end = e
+        if (w.get("word") or "").rstrip("\"'’”)").endswith((".", "!", "?", "…")):
+            sents.append((cur_start, e, cur_n))
+            cur_start, cur_n = None, 0
+    if cur_start is not None and cur_n and last_end is not None:
+        sents.append((cur_start, last_end, cur_n))
+    return sents
+
+
+def _protect_source_zones(edl: dict) -> list[tuple[int, int]]:
+    """Hook (first ~3s) + CTA (last ~2s) of KEPT footage as source-coord ranges,
+    walked in play order — index-free, so it stays correct after any splits."""
+    segs = edl.get("segments") or []
+    drops = edl.get("drops") or []
+    order = _play_order(edl)
+    kept_by_seg = {i: _segment_kept_ranges(segs[i], drops) for i in range(len(segs))}
+    zones: list[tuple[int, int]] = []
+    remaining = HOOK_PROTECT_OUT_FRAMES
+    for i in order:
+        if remaining <= 0:
+            break
+        for lo, hi in kept_by_seg.get(i, []):
+            if remaining <= 0:
+                break
+            take = min(remaining, hi - lo)
+            zones.append((lo, lo + take))
+            remaining -= take
+    remaining = CTA_PROTECT_OUT_FRAMES
+    for i in reversed(order):
+        if remaining <= 0:
+            break
+        for lo, hi in reversed(kept_by_seg.get(i, [])):
+            if remaining <= 0:
+                break
+            take = min(remaining, hi - lo)
+            zones.append((hi - take, hi))
+            remaining -= take
+    return zones
+
+
+def _subtract_zone(rng: tuple[int, int], zone: tuple[int, int]) -> list[tuple[int, int]]:
+    lo, hi = rng
+    z_lo, z_hi = zone
+    if z_hi <= lo or z_lo >= hi:
+        return [rng]
+    out = []
+    if z_lo > lo:
+        out.append((lo, z_lo))
+    if z_hi < hi:
+        out.append((z_hi, hi))
+    return out
+
+
+def _normalize_sentence_rates(edl: dict, words: list[dict], *,
+                              emphasis_spans: list[tuple[int, int]],
+                              lift_mult: float, splits_used: int, frames_saved: int,
+                              total_kept_frames: int, take_wpm: float) -> tuple[int, int]:
+    """v7 sentence-rate normalization: every sentence slower than the WPM target gets
+    its own speed toward the target — clamped to the 1.30 sentence cap, quantized to
+    0.05 steps, and SMOOTHED so adjacent sentences never differ by more than one tempo
+    JND (0.05 in continuous speech, 0.10 across a ≥300ms pause — the pause resets the
+    listener's tempo anchor). Speed changes therefore only ever land AT sentence
+    boundaries, never mid-phrase — the tempo-lurch fluidity artifact of the old
+    engine. Hook/CTA zones and emphasis spans are excluded (never speed the payoff).
+    Mutates edl in place; returns updated (splits_used, frames_saved)."""
+    if take_wpm <= 0 or not words:
+        return splits_used, frames_saved
+    target = min(RATE_TARGET_WPM_MAX, max(RATE_TARGET_WPM_MIN, take_wpm))
+    protect = _protect_source_zones(edl)
+    actions: list[tuple[int, int, float]] = []
+    prev_speed, prev_end_ms = lift_mult, None
+    for s_ms, e_ms, n in _sentences_from_words(words):
+        lo, hi = int(round(s_ms * 30 / 1000)), int(round(e_ms * 30 / 1000))
+        if hi - lo <= 0 or n == 0:
+            continue
+        wpm = _wpm(n, hi - lo)
+        gap_ms = (s_ms - prev_end_ms) if prev_end_ms is not None else 10_000.0
+        want = lift_mult
+        if 0 < wpm < target * RATE_JND_DEADBAND:
+            want = min(RATE_SENT_SPEED_CAP, target / wpm)
+        cap = RATE_DELTA_ACROSS_PAUSE if gap_ms >= 300 else RATE_DELTA_CONTIGUOUS
+        want = max(prev_speed - cap, min(prev_speed + cap, want))
+        want = max(lift_mult, min(SPOKEN_SPEED_CAP, int(want * 20 + 1e-6) / 20))
+        prev_speed, prev_end_ms = want, e_ms
+        if want <= lift_mult + 0.01:
+            continue
+        ranges = [(lo, hi)]
+        for zone in protect + list(emphasis_spans or []):
+            ranges = [r for rng in ranges for r in _subtract_zone(rng, zone)]
+        for r_lo, r_hi in ranges:
+            if r_hi - r_lo >= RATE_MIN_ACTION_FRAMES:
+                actions.append((r_lo, r_hi, want))
+    # Merge adjacent same-speed sentences into one run — fewer splits, steadier tempo.
+    actions.sort(key=lambda a: a[0])
+    merged: list[list] = []
+    for lo, hi, spd in actions:
+        if merged and abs(merged[-1][2] - spd) < 1e-6 and lo - merged[-1][1] <= 10:
+            merged[-1][1] = hi
+        else:
+            merged.append([lo, hi, spd])
+    # Apply last→first so split indices stay valid for the not-yet-processed runs.
+    for lo, hi, spd in sorted(merged, key=lambda a: -a[0]):
+        if splits_used + 2 > PACING_SPLIT_BUDGET:
+            break
+        segs = edl["segments"]
+        idx = next((i for i, sg in enumerate(segs)
+                    if sg["src_in"] <= lo < sg["src_out"]), None)
+        if idx is None:
+            continue
+        sg = segs[idx]
+        if abs(sg.get("speed", 1.0) - lift_mult) > 1e-6:
+            continue                        # already carries a silence-FF speed — don't stack
+        a, b = max(lo, sg["src_in"]), min(hi, sg["src_out"])
+        if b - a < RATE_MIN_ACTION_FRAMES:
+            continue
+        projected_out = round((b - a) / spd)
+        if projected_out < MIN_CLIP_OUTPUT_FRAMES:
+            continue
+        save = (b - a) - projected_out
+        if total_kept_frames and (frames_saved + save) / total_kept_frames > COMPRESSION_CAP_FRACTION:
+            continue
+        if a > sg["src_in"]:
+            split_segment_in_place(edl, idx, a)
+            splits_used += 1
+            idx += 1
+        if b < edl["segments"][idx]["src_out"]:
+            split_segment_in_place(edl, idx, b)
+            splits_used += 1
+        edl["segments"][idx]["speed"] = spd
+        frames_saved += save
+    return splits_used, frames_saved
 
 
 def plan_pacing(edl: dict, words: list[dict], *, style: str,
@@ -509,7 +678,9 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
             cta_bound[i] = hi - take
             remaining -= take
 
-    fast_forward_silences = bool(pacing_hints.get("fast_forward_silences"))
+    # v7: defaults ON (Overcast/TimeBolt principle — compress silence before touching
+    # speech rate); the plan author can still disable via the hint.
+    fast_forward_silences = bool(pacing_hints.get("fast_forward_silences", True))
 
     splits_used = 0
     frames_saved = 0
@@ -559,59 +730,14 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
                 segments[target_idx]["speed"] = silence_speed
                 continue   # this segment's one action is spent
 
-        # --- priority 2: low-info speed-up (only reached if no silence action ran) ---
-        best: tuple[int, int, float] | None = None   # (zone_lo, zone_hi, ratio)
-        for lo, hi in per_seg_kept.get(i, []):
-            zone_lo = max(lo, safe_lo)
-            zone_hi = min(hi, safe_hi)
-            if zone_hi - zone_lo < LOW_INFO_MIN_FRAMES:
-                continue
-            if any(not (e_hi <= zone_lo or e_lo >= zone_hi) for e_lo, e_hi in emphasis_spans):
-                continue   # never speed a stretch overlapping an emphasis span
-            word_count = _words_in_range(words, _frame_to_ms(zone_lo), _frame_to_ms(zone_hi))
-            local_wpm = _wpm(word_count, zone_hi - zone_lo)
-            ratio = (local_wpm / take_median_wpm) if take_median_wpm else 1.0
-            if ratio >= 1.0:
-                continue   # not low-info
-            if best is None or ratio < best[2] or (ratio == best[2] and zone_hi - zone_lo > best[1] - best[0]):
-                best = (zone_lo, zone_hi, ratio)
-        if best is None:
-            continue
-        zone_lo, zone_hi, ratio = best
-        speed_mult = 1.25 if ratio < 0.85 else 1.15
-        energy = _dossier_energy(dossier, zone_lo, zone_hi)
-        if energy is not None and energy <= 0.3:
-            speed_mult += 0.05
-        combined = min(SPOKEN_SPEED_CAP, speed_mult * lift_mult)
+        # v7: the old one-low-info-stretch-per-segment branch is replaced by
+        # sentence-level rate normalization AFTER this loop (it covers every slow
+        # sentence in the take, not one stretch per original segment).
 
-        # snap to word boundaries so the speed change never lands mid-word
-        snap_lo = max(zone_lo, snap_to_word(_frame_to_ms(zone_lo), words, "start"))
-        snap_hi = min(zone_hi, snap_to_word(_frame_to_ms(zone_hi), words, "end"))
-        if snap_hi - snap_lo < LOW_INFO_MIN_FRAMES:
-            continue
-        projected_out = round((snap_hi - snap_lo) / combined)
-        if projected_out < MIN_CLIP_OUTPUT_FRAMES:
-            continue
-        projected_save = (snap_hi - snap_lo) - projected_out
-        if total_kept_frames and (frames_saved + projected_save) / total_kept_frames > COMPRESSION_CAP_FRACTION:
-            continue
-        if splits_used + 2 > PACING_SPLIT_BUDGET:
-            continue
-
-        target_idx = i
-        if snap_lo > segments[target_idx]["src_in"]:
-            split_segment_in_place(edl, target_idx, snap_lo)
-            segments = edl["segments"]
-            splits_used += 1
-            target_idx += 1
-        if snap_hi < segments[target_idx]["src_out"]:
-            split_segment_in_place(edl, target_idx, snap_hi)
-            segments = edl["segments"]
-            splits_used += 1
-        segments[target_idx]["speed"] = combined
-        frames_saved += projected_save
-
-    edl["segments"] = segments
+    splits_used, frames_saved = _normalize_sentence_rates(
+        edl, words, emphasis_spans=emphasis_spans, lift_mult=lift_mult,
+        splits_used=splits_used, frames_saved=frames_saved,
+        total_kept_frames=total_kept_frames, take_wpm=take_median_wpm)
     return edl
 
 

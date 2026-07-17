@@ -48,15 +48,31 @@ const SfxLayer: React.FC<{ sfx: AudioPlan["sfx"] }> = ({ sfx }) => (
   </>
 );
 
-export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
+export const AudioMix: React.FC<{ audio?: AudioPlan | null; sourceUrl?: string }> = ({ audio, sourceUrl }) => {
   const music = audio?.music;
   const { durationInFrames } = useVideoConfig();
   const sfx = audio?.sfx ?? [];
+  const roomTone = audio?.room_tone;
+
+  // v7 fluidity: same-recording ROOM-TONE bed looped under the whole output —
+  // dialogue-editing research calls tone "the glue": without a continuous bed the
+  // noise floor jumps at every splice and the voice reads as choppy. The window is
+  // a quiet stretch of the SOURCE take (backend-selected), so it masks per-cut
+  // ambience jumps by construction. Rendered regardless of music (it sits far below).
+  const toneBed = roomTone && sourceUrl && roomTone.src_out > roomTone.src_in ? (
+    <Audio
+      src={sourceUrl}
+      trimBefore={roomTone.src_in}
+      trimAfter={roomTone.src_out}
+      loop
+      volume={Math.max(0, Math.min(1, roomTone.volume))}
+    />
+  ) : null;
 
   // P4: music and SFX are independent layers — a clip with SFX cues but no
   // (or unset) music must still hear them, so this can no longer early-return
   // just because there's no music track.
-  if ((!music || !music.url) && sfx.length === 0) return null;
+  if ((!music || !music.url) && sfx.length === 0) return <>{toneBed}</>;
 
   // A5a (schema v3): optional per-plan duck-curve override, each field read
   // independently with the module constant as its fallback — an absent
@@ -121,6 +137,7 @@ export const AudioMix: React.FC<{ audio?: AudioPlan | null }> = ({ audio }) => {
 
   return (
     <>
+      {toneBed}
       {music && music.url && (
         <Audio src={music.url} loop
                volume={(f) => music.volume * duckAt(f) * envAt(f) * startGate(f) * dropoutAt(f)} />
