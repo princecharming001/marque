@@ -69,7 +69,11 @@ export interface CaptionOptions {
 }
 
 // Audio plan (output coords for volume_ranges; music plays across the whole output).
-export interface MusicTrack { url?: string | null; query?: string | null; volume: number; duck_voice: boolean; }
+// dropouts (additive, OUTPUT-frame coords like end_card — the one deviation from the
+// source-coord norm, authored post-timeline by the backend dropout pass): windows where
+// the bed cuts to silence so a punchline lands over clean voice.
+export interface MusicDropout { frame_in: number; frame_out: number; }
+export interface MusicTrack { url?: string | null; query?: string | null; volume: number; duck_voice: boolean; dropouts?: MusicDropout[]; }
 export interface VolumeRange { frame_in: number; frame_out: number; volume: number; }
 // speech_frames: word-start output frames for the ducking heuristic, independent
 // of whether captions are visually enabled (G3) — always present when the

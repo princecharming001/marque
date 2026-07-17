@@ -44,8 +44,11 @@ from eval.edit_fixtures import FIXTURES, take_total_frames
 
 # --- Invariant thresholds (the ONLY place these live) -------------------------
 HOOK_MAX_OUT_FRAMES = 90          # the hook must land within 3s of the output start
-BROLL_MIN_HOLD, BROLL_MAX_HOLD = 45, 105   # 1.5–3.5s (2–3s target ± tolerance)
-BROLL_MIN_SPACING = 90            # ≥3s between b-roll cutaways
+BROLL_MIN_HOLD, BROLL_MAX_HOLD = 15, 90    # v2: meme pop-ins 0.5s floor; panel/card 3s ceiling
+BROLL_MIN_SPACING = 30            # v2: jittered tight spacing floors at 45-15=30f
+# Title v2: the hook-title sticker must hold 2–5s in OUTPUT frames and stay ≤60 chars.
+HOOK_TITLE_MIN_OUT, HOOK_TITLE_MAX_OUT = 60, 150
+HOOK_TITLE_MAX_CHARS = 60
 HOOK_PROTECT_FRAMES = 90          # no b-roll over the speaker's hook (first 3s)
 CTA_PROTECT_FRAMES = 60           # …or the CTA (last 2s)
 CAPTION_COVERAGE_MIN = 0.90       # ≥90% of mappable kept words captioned
@@ -196,6 +199,22 @@ def check_residual_filler(plan: dict, words: list[dict]) -> list[str]:
     return fails
 
 
+def check_hook_title(plan: dict) -> list[str]:
+    """Title v2 tripwire: the hook-title text_sticker (an overlay starting within the
+    first ~15 output frames) must hold 2–5s and stay ≤60 chars. Conditional — plans
+    with no early sticker (goldens, faceless keyword pops at ≥45f) pass vacuously."""
+    fails: list[str] = []
+    for o in plan.get("overlays") or []:
+        if o.get("type") != "text_sticker" or o.get("frame_in", 0) > 15:
+            continue
+        hold = o.get("frame_out", 0) - o.get("frame_in", 0)
+        if hold < HOOK_TITLE_MIN_OUT or hold > HOOK_TITLE_MAX_OUT:
+            fails.append(f"hook_title_hold: {hold}f outside [{HOOK_TITLE_MIN_OUT},{HOOK_TITLE_MAX_OUT}]")
+        if len(o.get("text") or "") > HOOK_TITLE_MAX_CHARS:
+            fails.append(f"hook_title_len: {len(o.get('text') or '')} chars > {HOOK_TITLE_MAX_CHARS}")
+    return fails
+
+
 # --- Aggregate over a full EDL case -------------------------------------------
 
 def evaluate_edl(edl: dict, words: list[dict], hook_ms: int, total_source: int | None = None) -> dict:
@@ -213,6 +232,7 @@ def evaluate_edl(edl: dict, words: list[dict], hook_ms: int, total_source: int |
         + check_broll_grammar(plan, total_out)
         + check_drops_within_take(edl, total_source)
         + check_residual_filler(plan, words)
+        + check_hook_title(plan)
     )
     return {"failures": failures, "plan": plan}
 
@@ -234,7 +254,8 @@ def self_check() -> tuple[bool, list[str]]:
             plan = b["plan"]
             total_out = plan.get("total_frames", 0)
             fails = (check_no_slivers(plan)
-                     + check_broll_grammar(plan, total_out))
+                     + check_broll_grammar(plan, total_out)
+                     + check_hook_title(plan))
         else:
             r = evaluate_edl(b["edl"], b["words"], b.get("hook_ms", 0), b.get("total_override"))
             fails = r["failures"]

@@ -124,7 +124,8 @@ def test_giphy_prefers_mp4_rendition(monkeypatch):
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
 
     out = _run(main._fetch_giphy_candidates("mind blown", 3))
-    assert out == [{"link": "https://giphy/x.mp4", "thumb": "https://giphy/x_still.gif"}]  # mp4 wins, not gif
+    assert out == [{"link": "https://giphy/x.mp4", "thumb": "https://giphy/x_still.gif",
+                    "provider": "giphy"}]  # mp4 wins, not gif
 
 
 def test_resolve_broll_routes_meme_to_giphy(monkeypatch):
@@ -165,8 +166,10 @@ def test_meme_unresolved_drops_not_stock_or_card(monkeypatch):
         return [{"link": "stock.mp4", "thumb": "t"}]
     async def fake_rerank(cue, cands, dossier):
         return cands[0]["link"] if cands else None
+    async def empty_klipy(query, n, kind="clips"):
+        return []
     monkeypatch.setattr(main, "_fetch_giphy_candidates", empty_giphy)
-    monkeypatch.setattr(main, "_fetch_tenor_candidates", empty_giphy)
+    monkeypatch.setattr(main, "_fetch_klipy_candidates", empty_klipy)
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
     monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
 
@@ -199,28 +202,113 @@ def test_giphy_mp4_only_no_gif_fallback(monkeypatch):
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
 
     out = _run(main._fetch_giphy_candidates("mind blown", 5))
-    assert out == [{"link": "https://giphy/ok.mp4", "thumb": "s2"}]   # gif-only omitted
+    assert out == [{"link": "https://giphy/ok.mp4", "thumb": "s2", "provider": "giphy"}]   # gif-only omitted
 
 
-def test_tenor_mp4_only(monkeypatch):
-    monkeypatch.setattr(main, "TENOR_KEY", "tk")
+def test_klipy_clips_flat_mp4_parse(monkeypatch):
+    # KLIPY clips vertical: file.mp4 is a FLAT URL string (docs.klipy.com verified 2026-07-17);
+    # items without an mp4 are omitted (frozen-.gif Lambda constraint).
+    monkeypatch.setattr(main, "KLIPY_KEY", "kk")
 
     class _Resp:
         status_code = 200
         def json(self):
-            return {"results": [
-                {"media_formats": {"gif": {"url": "https://tenor/x.gif"}}},        # no mp4 → dropped
-                {"media_formats": {"mp4": {"url": "https://tenor/x.mp4"},
-                                   "gifpreview": {"url": "s"}}},
-            ]}
+            return {"result": True, "data": {"data": [
+                {"title": "no mp4", "file": {"gif": "https://k/x.gif", "webp": "https://k/x.webp"}},
+                {"title": "ok", "file": {"mp4": "https://k/ok.mp4", "webp": "https://k/ok.webp"},
+                 "file_meta": {"mp4": {"width": 720, "height": 1280}}},
+            ]}}
     class _Client:
         async def __aenter__(self): return self
         async def __aexit__(self, *a): return False
-        async def get(self, url, params=None): return _Resp()
+        async def get(self, url, params=None):
+            assert "/clips/search" in url and params["per_page"] >= 8   # per_page min 8
+            return _Resp()
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
 
-    out = _run(main._fetch_tenor_candidates("mind blown", 5))
-    assert out == [{"link": "https://tenor/x.mp4", "thumb": "s"}]
+    out = _run(main._fetch_klipy_candidates("side eye", 2, kind="clips"))
+    assert out == [{"link": "https://k/ok.mp4", "thumb": "https://k/ok.webp", "provider": "klipy"}]
+
+
+def test_klipy_gifs_nested_mp4_parse(monkeypatch):
+    # KLIPY gifs vertical: file.{hd,md,sm}.mp4.url nested renditions; hd preferred.
+    monkeypatch.setattr(main, "KLIPY_KEY", "kk")
+
+    class _Resp:
+        status_code = 200
+        def json(self):
+            return {"result": True, "data": {"data": [
+                {"title": "g", "file": {
+                    "hd": {"mp4": {"url": "https://k/hd.mp4"}, "webp": {"url": "https://k/hd.webp"}},
+                    "md": {"mp4": {"url": "https://k/md.mp4"}}}},
+            ]}}
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None):
+            assert "/gifs/search" in url
+            return _Resp()
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    out = _run(main._fetch_klipy_candidates("mind blown", 1, kind="gifs"))
+    assert out == [{"link": "https://k/hd.mp4", "thumb": "https://k/hd.webp", "provider": "klipy"}]
+
+
+def test_klipy_keyless_empty():
+    # No KLIPY_KEY → fail-soft [] and the meme ladder is byte-identical GIPHY-only.
+    assert _run(main._fetch_klipy_candidates("x", 3)) == []
+
+
+def test_meme_ladder_klipy_first_giphy_fallback(monkeypatch):
+    monkeypatch.setattr(main, "KLIPY_KEY", "kk")
+    calls = {"klipy": 0, "giphy": 0}
+
+    async def fake_klipy(query, n, kind="clips"):
+        calls["klipy"] += 1
+        return [{"link": f"https://k/{kind}.mp4", "thumb": "t", "provider": "klipy"}]
+    async def fake_giphy(query, n):
+        calls["giphy"] += 1
+        return [{"link": "https://g/x.mp4", "thumb": "t", "provider": "giphy"}]
+    monkeypatch.setattr(main, "_fetch_klipy_candidates", fake_klipy)
+    monkeypatch.setattr(main, "_fetch_giphy_candidates", fake_giphy)
+
+    out = _run(main._fetch_meme_candidates("side eye", 4))
+    assert out and all(c["provider"] == "klipy" for c in out)
+    assert calls["giphy"] == 0, "GIPHY only fires when KLIPY is empty"
+
+    async def empty_klipy(query, n, kind="clips"):
+        return []
+    monkeypatch.setattr(main, "_fetch_klipy_candidates", empty_klipy)
+    out2 = _run(main._fetch_meme_candidates("side eye", 4))
+    assert out2 and all(c["provider"] == "giphy" for c in out2)
+
+
+def test_meme_resolution_tags_klipy_source_and_caches_it(monkeypatch):
+    monkeypatch.setattr(main, "KLIPY_KEY", "kk")
+    monkeypatch.setattr(main, "BROLL_MEMES", True)
+    main._broll_url_cache.clear()
+    main._meme_source_cache.clear()
+
+    async def fake_memes(query, n):
+        return [{"link": "https://k/clip.mp4", "thumb": "t", "provider": "klipy"}]
+    async def fake_rerank(cue, cands, dossier):
+        return cands[0]["link"] if cands else None
+    monkeypatch.setattr(main, "_fetch_meme_candidates", fake_memes)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+
+    edl = {"broll": [{"broll_query": "side eye", "cue_text": "wait", "need": "meme",
+                      "src_in": 100, "src_out": 130, "fallback_text": "", "source": "stock"}]}
+    out = _run(main._resolve_broll(edl))
+    assert out["broll"][0]["source"] == "klipy"
+
+    # Second resolve hits the cache — provenance must survive (tweak re-render path).
+    async def boom(query, n):
+        raise AssertionError("cache hit must not refetch")
+    monkeypatch.setattr(main, "_fetch_meme_candidates", boom)
+    edl2 = {"broll": [{"broll_query": "side eye", "cue_text": "wait", "need": "meme",
+                       "src_in": 100, "src_out": 130, "fallback_text": "", "source": "stock"}]}
+    out2 = _run(main._resolve_broll(edl2))
+    assert out2["broll"][0]["source"] == "klipy"
 
 
 def test_simplify_broll_query():

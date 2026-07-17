@@ -204,8 +204,8 @@ def test_broll_mode_and_need_survive_edl_roundtrip():
 def test_broll_panel_allows_longer_hold_and_hook_overlap():
     words = _sentence(["hello"] * 60, 0)
     # panel over the hook (frame 30) — allowed because the face stays visible; and it may breathe
-    # PAST the full-frame cap (90f) up to the panel ceiling (105f). Realism pass: panel/card no
-    # longer stretch to 5s — a 100f phrase clamps into the [60,105] action-panel band.
+    # PAST the full-frame cap (75f) up to the panel ceiling (90f). v2: a 100f phrase clamps into
+    # the [36,90] action-panel band (±6f jitter stays inside it).
     plan = {"cuts": [], "keeps": [],
             "broll": [{"range": [30, 130], "cue": "c", "query": "q", "source": "stock",
                        "need": "action", "text": "", "mode": "panel"}]}
@@ -213,7 +213,7 @@ def test_broll_panel_allows_longer_hold_and_hook_overlap():
     assert d["broll"], "panel insert rejected"
     b = d["broll"][0]
     hold = b["src_out"] - b["src_in"]
-    assert 90 < hold <= 105        # breathes past full's 90f cap, but ≤ the 3.5s panel ceiling
+    assert 75 < hold <= 90         # breathes past full's 75f cap, but ≤ the 3s panel ceiling
     # same range as mode "full" is rejected (hook protection)
     plan2 = {"cuts": [], "keeps": [],
              "broll": [{"range": [30, 130], "cue": "c", "query": "q", "source": "stock",
