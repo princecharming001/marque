@@ -134,3 +134,19 @@ def test_self_review_no_frames_failsoft(monkeypatch):
     _run(main._self_review_edl("srev"))
     assert "self_review" not in job   # bailed before scoring, EDL untouched
     main._clip_jobs.pop("srev", None)
+
+
+def test_review_frame_times_targets_boundaries():
+    # WS2 boundary-driven sampling: samples at b-roll INs + hook/mid/tail, capped, deduped.
+    plan = {"total_frames": 900,
+            "broll": [{"frame_in": 120, "frame_out": 180}, {"frame_in": 500, "frame_out": 560}],
+            "overlays": [{"frame_in": 30}],
+            "captions": [{"frame_in": i} for i in range(0, 900, 45)]}
+    times = main._review_frame_times(plan)
+    assert times, "should produce sample points"
+    assert len(times) <= 10
+    assert times[0] == 0.0                      # hook
+    assert 4.0 in times                         # b-roll IN at frame 120 → 4.0s
+    assert times == sorted(times)               # ascending, deduped
+    assert all(0 <= t <= 30 for t in times)     # clamped to duration
+    assert main._review_frame_times({"total_frames": 0}) == []   # empty plan → uniform fallback
