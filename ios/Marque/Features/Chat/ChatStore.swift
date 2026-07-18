@@ -201,7 +201,7 @@ final class ChatStore {
 
         // 3) Upload the source.
         updateCard(cardId, in: convoId, store: store) { $0.stage = .uploading }
-        guard let sourceURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath) else {
+        guard let sourceURL = await LiveClipEngine.mintAndUpload(uploadId: UUID().uuidString, footagePath: footagePath) else {
             return fail("Couldn't upload your clips — check your connection and try again.")
         }
         guard !Task.isCancelled else { return }

@@ -23,7 +23,7 @@ import tempfile
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 
 import prompts
@@ -2457,6 +2457,9 @@ R2_PUBLIC_BASE = os.environ.get("R2_PUBLIC_BASE", "https://media.marque.app")
 # is PUBLIC so AssemblyAI + Remotion Lambda can fetch the source by URL; keys are
 # unguessable UUIDs. Storage is "live" whenever the Supabase project is configured.
 SUPABASE_STORAGE_BUCKET = os.environ.get("SUPABASE_STORAGE_BUCKET", "marque-clips")
+# Build 49: Supabase signed-upload tokens default to ~2h; the client re-mints proactively
+# using this value (returned as `expires_in`) tracked against the mint's `server_time`.
+SUPABASE_UPLOAD_TTL = int(os.environ.get("SUPABASE_UPLOAD_TTL", "7200"))
 STORAGE_CONFIGURED = bool(SUPABASE_URL and SUPABASE_KEY) or bool(R2_ACCESS_KEY)
 ASSEMBLY_KEY = os.environ.get("ASSEMBLYAI_KEY", "")
 REMOTION_SERVE_URL = os.environ.get("REMOTION_SERVE_URL", "")
@@ -2647,57 +2650,29 @@ async def _mint_supabase_upload(filename: str) -> dict | None:
         "key": key,
         "public_url": f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}",
         "max_upload_bytes": MAX_UPLOAD_BYTES,
+        # Build 49: the client tracks signed-URL expiry with SERVER-relative time (never the
+        # device clock) so it re-mints proactively. Supabase upload tokens default to ~2h.
+        "expires_in": SUPABASE_UPLOAD_TTL,
+        "server_time": time.time(),
     }
 
 
 @app.post("/v1/uploads/mint")
 async def mint_upload_url(req: UploadMintRequest):
-    # Primary: Supabase Storage (R2 was never provisioned — see STORAGE_CONFIGURED).
+    # Supabase Storage is the only real backend (R2 was never provisioned). Build 49 deleted
+    # the dead hand-rolled AWS4/R2 presigner branch — it was never exercised against a live
+    # bucket and only risked serving a broken signed URL if R2_ACCESS_KEY were ever set.
     supa = await _mint_supabase_upload(req.filename)
     if supa:
         return supa
-    if not R2_ACCESS_KEY:
-        # No storage backend configured: return a clearly-mock response. `public_url`
-        # is deliberately empty (not a real-looking dead domain) so a client can tell
-        # this apart from a live mint and fall back to local/mock clips instead of
-        # creating a live job whose source can never be fetched.
-        key = f"mock/{uuid.uuid4()}/{req.filename}"
-        return {"mode": "mock", "upload_url": "", "key": key, "public_url": "",
-                "max_upload_bytes": MAX_UPLOAD_BYTES}
-    # P-06 NOTE (removal-or-fix): this hand-rolled AWS4 presigner below is DEAD in
-    # practice — R2 was never provisioned (R2_ACCESS_KEY unset everywhere; Supabase
-    # Storage above is the real path) and it has never been exercised against a live
-    # bucket. If R2 is ever provisioned, replace this with boto3/aws4 presigning and
-    # verify content-type-signed PUTs end-to-end; until then prefer deleting it over
-    # trusting it. Kept only because removing the env-gated branch changes no behavior.
-    import hmac, hashlib, datetime
-    key = f"uploads/{uuid.uuid4()}/{req.filename}"
-    public_url = f"{R2_PUBLIC_BASE}/{key}"
-    endpoint = f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com/{R2_BUCKET}/{key}"
-    now = datetime.datetime.utcnow()
-    date_str = now.strftime("%Y%m%dT%H%M%SZ")
-    date_short = now.strftime("%Y%m%d")
-    region = "auto"
-    service = "s3"
-    scope = f"{date_short}/{region}/{service}/aws4_request"
-    canonical = (f"PUT\n/{R2_BUCKET}/{key}\n"
-                 f"X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential={R2_ACCESS_KEY}%2F{scope}"
-                 f"&X-Amz-Date={date_str}&X-Amz-Expires=3600&X-Amz-SignedHeaders=content-type%3Bhost\n"
-                 f"host:{R2_ACCOUNT_ID}.r2.cloudflarestorage.com\ncontent-type:{req.content_type}\n\n"
-                 f"content-type;host\nUNSIGNED-PAYLOAD")
-    str_to_sign = (f"AWS4-HMAC-SHA256\n{date_str}\n{scope}\n"
-                   + hashlib.sha256(canonical.encode()).hexdigest())
-    def _hmac(key, msg):
-        return hmac.new(key, msg.encode(), hashlib.sha256).digest()
-    signing_key = _hmac(_hmac(_hmac(_hmac(
-        f"AWS4{R2_SECRET_KEY}".encode(), date_short), region), service), "aws4_request")
-    sig = hmac.new(signing_key, str_to_sign.encode(), hashlib.sha256).hexdigest()
-    upload_url = (f"{endpoint}?X-Amz-Algorithm=AWS4-HMAC-SHA256"
-                  f"&X-Amz-Credential={R2_ACCESS_KEY}%2F{scope}"
-                  f"&X-Amz-Date={date_str}&X-Amz-Expires=3600"
-                  f"&X-Amz-SignedHeaders=content-type%3Bhost&X-Amz-Signature={sig}")
-    return {"mode": "live", "upload_url": upload_url, "key": key, "public_url": public_url,
-            "max_upload_bytes": MAX_UPLOAD_BYTES}
+    # No storage backend configured: return a clearly-mock response. `public_url` is
+    # deliberately empty (not a real-looking dead domain) so a client can tell this apart
+    # from a live mint and fall back to local/mock clips instead of creating a live job whose
+    # source can never be fetched.
+    key = f"mock/{uuid.uuid4()}/{req.filename}"
+    return {"mode": "mock", "upload_url": "", "key": key, "public_url": "",
+            "max_upload_bytes": MAX_UPLOAD_BYTES,
+            "expires_in": SUPABASE_UPLOAD_TTL, "server_time": time.time()}
 
 
 # Server-side music catalog (same tracks the iOS Sound-mode ships) — the source for
@@ -2850,8 +2825,32 @@ def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None
     return edl
 
 
+# Build 49: bounded in-memory idempotency for /v1/clips. A resume that re-issues the same
+# Idempotency-Key (the client's uploadId) within the TTL replays the first response instead of
+# spawning a duplicate job. In-memory is sufficient — a resume happens within seconds/minutes on
+# the same process; a cross-restart duplicate is already guarded client-side (journal putComplete
+# + HEAD check before re-create).
+_CLIP_IDEMPOTENCY: dict[str, tuple[float, dict]] = {}
+_CLIP_IDEMPOTENCY_TTL = 900
+
+
 @app.post("/v1/clips")
-async def create_clip_job(req: ClipJobRequest):
+async def create_clip_job(req: ClipJobRequest,
+                          idempotency_key: str | None = Header(None, alias="Idempotency-Key")):
+    if idempotency_key:
+        now = time.time()
+        for k in [k for k, (ts, _) in _CLIP_IDEMPOTENCY.items() if now - ts > _CLIP_IDEMPOTENCY_TTL]:
+            _CLIP_IDEMPOTENCY.pop(k, None)
+        hit = _CLIP_IDEMPOTENCY.get(idempotency_key)
+        if hit:
+            return hit[1]
+    resp = await _create_clip_job_impl(req)
+    if idempotency_key and isinstance(resp, dict):
+        _CLIP_IDEMPOTENCY[idempotency_key] = (time.time(), resp)
+    return resp
+
+
+async def _create_clip_job_impl(req: ClipJobRequest):
     """Create a clip editing job (analyze-first). Returns immediately; analysis runs async."""
     # Cutover: the old single-shot flow (pick a format up front → immediate render) is
     # gone. A request without analyze_first is a stale client — fail loud and clear so it

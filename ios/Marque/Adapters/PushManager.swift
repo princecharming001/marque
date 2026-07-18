@@ -47,6 +47,21 @@ final class PushManager: NSObject, UIApplicationDelegate, UNUserNotificationCent
         print("[push] remote registration failed: \(error.localizedDescription)")
     }
 
+    // Build 49 — background-upload relaunch contract. When a background PUT completes while
+    // the app is suspended/terminated, iOS relaunches us and calls this with the session's
+    // identifier. Handing the completion handler to BackgroundUploader lets its delegate
+    // drain the pending events (updating the upload journal) and then signal the system that
+    // we're done, so the OS can suspend us again cleanly. Without this the completed transfer
+    // is never surfaced and iOS deprioritizes the session.
+    func application(_ application: UIApplication,
+                     handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        guard identifier == BackgroundUploader.sessionIdentifier else {
+            completionHandler(); return
+        }
+        BackgroundUploader.shared.setSystemCompletionHandler(completionHandler)
+    }
+
     // Foreground arrival: suppress the clips_ready banner (the in-app poll loop +
     // celebration already covers the moment) but remember the job id for dedup.
     func userNotificationCenter(_ center: UNUserNotificationCenter,

@@ -921,7 +921,7 @@ struct RecordView: View {
     private func beginUpload() {
         guard uploadTask == nil else { return }
         let path = footagePath
-        uploadTask = Task { await LiveClipEngine.mintAndUpload(footagePath: path) }
+        uploadTask = Task { await LiveClipEngine.mintAndUpload(uploadId: UUID().uuidString, footagePath: path) }
     }
 
     /// H-02 analyze-first submit: await the hoisted upload → create the analyze job →
