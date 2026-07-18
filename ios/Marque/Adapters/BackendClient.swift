@@ -15,13 +15,14 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
 
     // MARK: HTTP
 
-    func post(_ path: String, _ body: [String: Any]) async -> Data? {
+    func post(_ path: String, _ body: [String: Any], headers: [String: String] = [:]) async -> Data? {
         guard let url = URL(string: AppConfig.backendBaseURL + path) else { return nil }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 90
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }

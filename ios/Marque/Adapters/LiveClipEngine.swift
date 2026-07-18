@@ -68,7 +68,8 @@ struct LiveClipEngine: ClipEngineProtocol {
             let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
             let compressed = await MediaCompressor.forUpload(original, maxBytes: cap)
             let toUpload = compressed ?? original
-            let ok = await Self.uploadFootage(to: uploadURLString, fileURL: toUpload)
+            let ok = await Self.uploadFootage(to: uploadURLString, fileURL: toUpload,
+                                              uploadId: UUID().uuidString)
             if let compressed { try? FileManager.default.removeItem(at: compressed) }
             guard ok else { return await fallback.makeClips(from: script, formats: formats) }
         }
@@ -138,82 +139,160 @@ struct LiveClipEngine: ClipEngineProtocol {
             let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
             if let compressed = await MediaCompressor.forUpload(original, maxBytes: cap) { toUpload = compressed; cleanup = compressed }
         }
-        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload)
+        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload,
+                                     uploadId: UUID().uuidString,
+                                     contentType: contentType(forFilename: filename))
         if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
         return ok ? publicURL : nil
     }
 
-    static func mintAndUpload(footagePath: String?,
+    /// Build 49: the instant-submit upload, journaled end to end. `uploadId` (client UUID =
+    /// server Idempotency-Key) keys the durable journal so a kill/relaunch resumes with full
+    /// fidelity. The caller creates the journal entry (with the analyze payload) first.
+    static func mintAndUpload(uploadId: String, footagePath: String?,
                               onProgress: (@Sendable (Double) -> Void)? = nil) async -> String? {
-        // Background-guarded: compression + PUT is the longest client-side critical
-        // section — a brief app-switch must not kill an almost-done upload.
+        // Background-guarded only for the SYNCHRONOUS setup (mint/compress kickoff); the PUT
+        // itself is a background-session task that outlives the assertion.
         await BackgroundGuard.run("take-upload") {
-            await _mintAndUpload(footagePath: footagePath, onProgress: onProgress)
+            await _mintAndUpload(uploadId: uploadId, footagePath: footagePath, onProgress: onProgress)
         }
     }
 
-    private static func _mintAndUpload(footagePath: String?,
-                                       onProgress: (@Sendable (Double) -> Void)? = nil) async -> String? {
-        guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else {
-            return nil                                        // backend unreachable
-        }
-        let uploadURLString = mintData["upload_url"] as? String ?? ""
+    /// Mint a fresh signed-upload URL and record it in the journal. Returns (signedUrl,
+    /// publicUrl, cap) or nil when the backend is unreachable. Empty signedUrl ⇒ mock mint.
+    private static func mintInto(uploadId: String) async -> (signed: String, publicURL: String, cap: Int)? {
+        guard let mintData = await BackendClient.shared.mintUploadURL(filename: "footage.mov") else { return nil }
+        let signed = mintData["upload_url"] as? String ?? ""
         let publicURL = mintData["public_url"] as? String ?? ""
-        guard let footagePath, !footagePath.isEmpty, !uploadURLString.isEmpty else {
+        let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
+        UploadJournal.shared.update(uploadId: uploadId) {
+            $0.signedUrl = signed
+            $0.publicUrl = publicURL
+            $0.storageKey = mintData["key"] as? String
+            $0.expiresIn = (mintData["expires_in"] as? Double) ?? (mintData["expires_in"] as? Int).map(Double.init)
+            $0.mintedAtServerEpoch = (mintData["server_time"] as? Double) ?? (mintData["server_time"] as? Int).map(Double.init)
+            $0.mintedAtLocalEpoch = Date().timeIntervalSince1970
+        }
+        return (signed, publicURL, cap)
+    }
+
+    private static func _mintAndUpload(uploadId: String, footagePath: String?,
+                                       onProgress: (@Sendable (Double) -> Void)? = nil) async -> String? {
+        guard let mint = await mintInto(uploadId: uploadId) else { return nil }  // backend unreachable
+        var publicURL = mint.publicURL
+        guard let footagePath, !footagePath.isEmpty, !mint.signed.isEmpty else {
             onProgress?(1.0)
             return publicURL                                  // mock mint or no footage: no bytes to move
         }
+        // Compress into a stable per-upload dir under Documents (survives relaunch, unlike
+        // tmp/ which the OS can purge mid-transfer). Build 45: compression fills 0–40% of the
+        // bar, the PUT the last 60%.
+        UploadJournal.shared.update(uploadId: uploadId) { $0.state = .compressing }
         let original = MediaStore.url(for: footagePath)
-        let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
-        // Build 45: compression fills the first 40% of the bar, the PUT the last 60% —
-        // so the creator sees continuous motion across both device-side phases.
-        let compressed = await MediaCompressor.forUpload(original, maxBytes: cap) { p in
+        let workDir = UploadJournal.workDir(uploadId: uploadId)
+        let compressed = await MediaCompressor.forUpload(original, maxBytes: mint.cap, into: workDir) { p in
             onProgress?(min(0.4, p * 0.4))
         }
         let toUpload = compressed ?? original
-        let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload) { p in
+        if let compressed {
+            UploadJournal.shared.update(uploadId: uploadId) { $0.compressedPath = compressed.path }
+        }
+        let ok = await uploadFootage(to: mint.signed, fileURL: toUpload, uploadId: uploadId,
+                                     contentType: "video/quicktime",
+                                     remint: { await mintInto(uploadId: uploadId)?.signed }) { p in
             onProgress?(0.4 + min(0.6, p * 0.6))
         }
-        if let compressed { try? FileManager.default.removeItem(at: compressed) }
+        // On success the object is durable; publicURL may have changed if we re-minted.
+        publicURL = UploadJournal.shared.entry(uploadId: uploadId)?.publicUrl ?? publicURL
         return ok ? publicURL : nil
     }
 
-    /// PUT the recorded take to the minted signed-upload URL. Streams from the file
-    /// on disk (a full talking-head take is tens/hundreds of MB — never load it all
-    /// into memory). Content-Type matches what the mint request declared. Returns
-    /// true only on a 2xx; any transport/HTTP failure returns false so makeClips
-    /// falls back instead of creating a job with an empty source object.
-    private static func uploadFootage(to uploadURLString: String, fileURL: URL,
+    /// Content-type from a filename extension (fixes the build-48 bug where images uploaded
+    /// via `uploadMedia` were tagged `video/quicktime`).
+    static func contentType(forFilename name: String) -> String {
+        let n = name.lowercased()
+        if n.hasSuffix(".mp4") { return "video/mp4" }
+        if n.hasSuffix(".mov") { return "video/quicktime" }
+        if n.hasSuffix(".jpg") || n.hasSuffix(".jpeg") { return "image/jpeg" }
+        if n.hasSuffix(".png") { return "image/png" }
+        if n.hasSuffix(".heic") { return "image/heic" }
+        return "application/octet-stream"
+    }
+
+    /// PUT the file to the minted signed-upload URL on the background session, with the
+    /// build-49 retry policy: full-jitter backoff on transient/5xx, park-and-resume on
+    /// network loss, and — when `remint` is supplied — a fresh mint on a 403/expiry (a
+    /// Supabase signed-upload token is single-use, so a reused URL 400s). Returns true only
+    /// on a 2xx. Journals every state transition so a relaunch can resume.
+    @discardableResult
+    private static func uploadFootage(to initialURL: String, fileURL: URL,
+                                      uploadId: String,
+                                      contentType: String = "video/quicktime",
+                                      remint: (() async -> String?)? = nil,
                                       onProgress: (@Sendable (Double) -> Void)? = nil) async -> Bool {
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            BackendClient.shared.reportClientEvent("upload_precondition_failed",
-                                                   detail: "missing file")
+            BackendClient.shared.reportClientEvent("upload_precondition_failed", detail: "missing file")
+            UploadJournal.shared.update(uploadId: uploadId) {
+                $0.state = .failedRetryable; $0.lastErrorCode = "missing_file"
+            }
             return false
         }
-        // Build 48: the PUT goes through a BACKGROUND URLSession (BackgroundUploader) — it
-        // keeps running when the app is suspended (the #1 "stuck on upload" cause: switching
-        // apps mid-transfer used to stall it after ~30s), has its own 90s stall-timeout so a
-        // wedged connection fast-fails instead of sitting, and handles connectivity drops.
-        // Up to 3 attempts: the session self-retries connectivity, but an HTTP 5xx / reset
-        // still benefits from a fresh task.
-        var ok = false
-        for attempt in 0..<3 {
-            if attempt > 0 {
-                try? await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
-                onProgress?(0)                 // retry restarts the byte count
+        var signedURL = initialURL
+        var attempt = 0
+        while attempt < UploadRetryPolicy.maxAttemptsPerSession {
+            if Task.isCancelled { break }
+            // Re-mint if the token is (server-relative) expired before we even start.
+            if attempt > 0, let e = UploadJournal.shared.entry(uploadId: uploadId), e.signedURLExpired(),
+               let fresh = await remint?() { signedURL = fresh }
+
+            UploadJournal.shared.update(uploadId: uploadId) { $0.attemptCount = attempt + 1 }
+            let result = await BackgroundUploader.shared.upload(
+                uploadId: uploadId, fileURL: fileURL, contentType: contentType,
+                to: signedURL, onProgress: onProgress)
+            if result.ok {
+                UploadJournal.shared.update(uploadId: uploadId) { $0.state = .putComplete }
+                return true
             }
             if Task.isCancelled { break }
-            ok = await BackgroundUploader.shared.upload(fileURL: fileURL, to: uploadURLString,
-                                                        onProgress: onProgress)
-            if ok || Task.isCancelled { break }
+
+            let decision = UploadRetryPolicy.decide(
+                status: result.statusCode, attempt: attempt,
+                networkSatisfied: BackgroundUploader.shared.networkSatisfied, nsError: result.error)
+            switch decision {
+            case .retry(let delay):
+                UploadJournal.shared.update(uploadId: uploadId) { $0.state = .retrying }
+                onProgress?(0)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            case .remintThenRetry:
+                if let fresh = await remint?() { signedURL = fresh } else { attempt = .max }
+                onProgress?(0)
+            case .waitForNetwork:
+                UploadJournal.shared.update(uploadId: uploadId) { $0.state = .waitingForNetwork }
+                await waitForNetwork()
+                onProgress?(0)
+                continue   // don't burn an attempt just parking for connectivity
+            case .fail:
+                attempt = .max
+            }
+            attempt += 1
         }
-        if !ok {
-            // Surface the failure server-side so a client-only breakage is diagnosable from
-            // Render logs (this failure class previously left ZERO server trace).
-            let mb = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int).flatMap { $0 } ?? 0
-            BackendClient.shared.reportClientEvent("upload_failed", detail: "bg-session | \(mb / 1_000_000)MB")
+        // Give up: keep the local take so "Try again" works.
+        let mb = (try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int).flatMap { $0 } ?? 0
+        BackendClient.shared.reportClientEvent("upload_failed",
+                                               detail: "uid=\(uploadId.prefix(8)) | \(mb / 1_000_000)MB")
+        UploadJournal.shared.update(uploadId: uploadId) {
+            if $0.state != .putComplete { $0.state = .failedRetryable }
         }
-        return ok
+        return false
+    }
+
+    /// Park until connectivity is restored (or ~2 min elapses, then let the caller retry).
+    private static func waitForNetwork() async {
+        for _ in 0..<60 {
+            if Task.isCancelled { return }
+            if BackgroundUploader.shared.networkSatisfied { return }
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
     }
 
     func render(clipId: UUID) async -> ClipStatus {
@@ -239,8 +318,13 @@ enum MediaCompressor {
     private static let longTakeThresholdSec = 150.0 // above this, 1080p bitrate would be too low → 720p ladder
 
     /// `maxBytes` comes from the mint response so raising the storage tier is backend-only.
+    /// `into` (build 49): the output directory. Instant uploads pass a stable per-upload dir
+    /// under Documents so the compressed file survives a relaunch mid-transfer; legacy callers
+    /// default to tmp/.
     static func forUpload(_ source: URL, maxBytes: Int = defaultMaxUploadBytes,
+                          into dir: URL? = nil,
                           onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
+        let outDir = dir ?? FileManager.default.temporaryDirectory
         // OPT-7: skip re-encoding entirely when the source already fits — short takes
         // upload as-is instead of paying a full export on the critical path.
         let srcSize = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int
@@ -260,7 +344,7 @@ enum MediaCompressor {
             // transcodeHEVC self-bounds via an internal 90s reader/writer-cancel deadline, so an
             // undecodable import can't hang here — it returns nil and we fall through to the
             // robust export preset ladder (AVAssetExportSession tonemaps HDR→SDR / handles odd formats).
-            if let out = await transcodeHEVC(asset, videoBps: videoBps),
+            if let out = await transcodeHEVC(asset, videoBps: videoBps, into: outDir),
                let size = fileSize(out), size <= maxBytes {
                 return out
             }
@@ -282,7 +366,7 @@ enum MediaCompressor {
             if Date() > ladderDeadline { break }
             // export() self-bounds via its own cancelExport() deadline — a wedged export drops
             // to the next preset / fails instead of hanging.
-            guard let out = await export(source, preset: preset, onProgress: onProgress) else { continue }
+            guard let out = await export(source, preset: preset, into: outDir, onProgress: onProgress) else { continue }
             if let size = fileSize(out), size <= maxBytes { return out }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
@@ -296,9 +380,9 @@ enum MediaCompressor {
     /// Native-resolution HEVC transcode at an explicit average bitrate (AVAssetReader →
     /// AVAssetWriter). Preserves the source dimensions + orientation so 1080p stays 1080p
     /// (the whole point — no upscale in the render). Re-encodes audio to AAC at `audioBps`.
-    private static func transcodeHEVC(_ asset: AVURLAsset, videoBps: Int) async -> URL? {
+    private static func transcodeHEVC(_ asset: AVURLAsset, videoBps: Int, into dir: URL) async -> URL? {
         guard let vTrack = asset.tracks(withMediaType: .video).first else { return nil }
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        let out = dir.appendingPathComponent(UUID().uuidString + ".mov")
         guard let reader = try? AVAssetReader(asset: asset),
               let writer = try? AVAssetWriter(outputURL: out, fileType: .mov) else { return nil }
 
@@ -412,11 +496,11 @@ enum MediaCompressor {
         }
     }
 
-    private static func export(_ source: URL, preset: String,
+    private static func export(_ source: URL, preset: String, into dir: URL,
                                onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
         let asset = AVURLAsset(url: source)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { return nil }
-        let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".mov")
+        let out = dir.appendingPathComponent(UUID().uuidString + ".mov")
         session.outputURL = out
         session.outputFileType = .mov
         session.shouldOptimizeForNetworkUse = true
@@ -507,6 +591,7 @@ extension BackendClient {
                           config: [String: String]? = nil,
                           autoConfirm: Bool = false,
                           toggles: EditToggles? = nil,
+                          idempotencyKey: String? = nil,
                           corpus: [[String: Any]] = []) async -> AnalyzeJobResponse? {
         var body: [String: Any] = [
             "analyze_first": true,
@@ -562,7 +647,10 @@ extension BackendClient {
                 "formatId": script.formatId,
             ]
         }
-        guard let data = await post("/v1/clips", body) else { return nil }
+        // Build 49: idempotency-key = the client uploadId, so a resume that re-issues the
+        // same create never spawns a duplicate job (server replays the first response).
+        let headers = idempotencyKey.map { ["Idempotency-Key": $0] } ?? [:]
+        guard let data = await post("/v1/clips", body, headers: headers) else { return nil }
         return try? JSONDecoder().decode(AnalyzeJobResponse.self, from: data)
     }
 

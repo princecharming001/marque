@@ -705,7 +705,8 @@ final class AppStore {
                          themeId: String? = nil,
                          config: [String: String]? = nil,
                          autoConfirm: Bool = false,
-                         toggles: EditToggles? = nil) async -> AnalyzeJobResponse? {
+                         toggles: EditToggles? = nil,
+                         idempotencyKey: String? = nil) async -> AnalyzeJobResponse? {
         guard !AppConfig.backendBaseURL.isEmpty, let publicURL else { return nil }
         // Send the analyzed own-media corpus at create time (the job persists it). The
         // backend only USES it when b-roll is on, so sending it unconditionally is harmless
@@ -720,7 +721,8 @@ final class AppStore {
                                               themeId: themeId,
                                               config: config,
                                               autoConfirm: autoConfirm,
-                                              toggles: toggles, corpus: corpus)
+                                              toggles: toggles,
+                                              idempotencyKey: idempotencyKey, corpus: corpus)
     }
 
     /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min
@@ -786,6 +788,22 @@ final class AppStore {
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
 
+        // Build 49 — durable journal entry BEFORE the upload starts, capturing the full
+        // analyze payload so a kill/relaunch resumes with the creator's real edit settings
+        // (the old resume path re-uploaded with a bare EditToggles(), dropping them).
+        let uploadId = UUID().uuidString
+        if let footagePath, !footagePath.isEmpty {
+            let payload = UploadPayload(
+                scriptId: isFreestyle ? nil : script.id.uuidString, isFreestyle: isFreestyle,
+                customInstructions: customInstructions, reactSourceURL: reactSourceURL,
+                editFormat: editFormat, themeId: themeId, config: config,
+                referenceReelId: referenceReel?.id, broll: toggles.broll,
+                punchIns: toggles.punchIns, music: toggles.music)
+            UploadJournal.shared.upsert(UploadJournalEntry(
+                uploadId: uploadId, placeholderId: placeholderId.uuidString,
+                sourcePath: footagePath, contentType: "video/quicktime", payload: payload))
+        }
+
         // Instant reward: "That's a wrap" is the payoff for FINISHING the take, so fire it
         // now — not after mintAndUpload + createAnalyzeJob (two network hops) return, which
         // landed the popup seconds late, well after the recorder dismissed. Streak bumps
@@ -799,21 +817,20 @@ final class AppStore {
 
         let task = Task { [weak self] in
             guard let self else { return }
-            // Hard deadline: even with the compression timeouts, NOTHING may leave the clip
-            // stuck at "uploading" forever — race upload+create against a ceiling. On timeout
-            // the clip reconciles to a retryable .failed card instead of stranding. Build 48:
-            // the PUT is now a BACKGROUND session whose own 90s stall-timeout does the
-            // fast-fail (a wedged upload errors in ~90s → retry → reconcile), so this outer
-            // ceiling is a pure backstop set generously (420s) to never kill a legit slow
-            // large upload on foreground cellular. The Task.sleep pauses while the app is
-            // suspended, so it counts foreground time — the background upload keeps running
-            // independently and completes when the app returns.
+            // Backstop ceiling for the IN-PROCESS await only (this Task, not the transfer).
+            // Build 49: real stall fast-fail now lives in BackgroundUploader's foreground
+            // watchdog (Apple ignores timeoutIntervalForRequest on background sessions, so the
+            // old "90s" claim was false). The background transfer keeps running independently
+            // and its result is journaled, so if this await is abandoned at the ceiling the
+            // reconcile sweep finalizes it from the journal (re-attach / skip-to-create-job)
+            // instead of re-uploading. The Task.sleep pauses while suspended, so 420s counts
+            // foreground time — generous enough to never kill a legit slow large upload.
             let resp: AnalyzeJobResponse? = await withTaskGroup(of: AnalyzeJobResponse?.self) { group in
                 group.addTask { [weak self] in
                     guard let self else { return nil }
                     // Build 45: real upload progress → the placeholder's timeline bar.
                     let pid = placeholderId
-                    let publicURL = await LiveClipEngine.mintAndUpload(footagePath: footagePath) { [weak self] frac in
+                    let publicURL = await LiveClipEngine.mintAndUpload(uploadId: uploadId, footagePath: footagePath) { [weak self] frac in
                         Task { @MainActor in
                             guard let self, let i = self.clips.firstIndex(where: { $0.id == pid }),
                                   self.clips[i].uploading else { return }
@@ -824,7 +841,7 @@ final class AppStore {
                         script: isFreestyle ? nil : script, publicURL: publicURL,
                         customInstructions: customInstructions, reactSourceURL: reactSourceURL,
                         editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
-                        config: config, autoConfirm: true, toggles: toggles)
+                        config: config, autoConfirm: true, toggles: toggles, idempotencyKey: uploadId)
                 }
                 group.addTask { try? await Task.sleep(nanoseconds: 420 * 1_000_000_000); return nil }
                 let first = await group.next() ?? nil
@@ -843,9 +860,17 @@ final class AppStore {
     private func reconcileInstantSubmit(placeholderId: UUID, resp: AnalyzeJobResponse?,
                                         script: Script, footagePath: String?) {
         clips.removeAll { $0.id == placeholderId }
+        let journalEntry = UploadJournal.shared.entry(placeholderId: placeholderId.uuidString)
         guard let resp, let stubs = resp.clips, !stubs.isEmpty else {
             // Submit failed — surface a failed card the creator can retry, never a silent drop.
             // Breadcrumb → Render logs (client-side failures here previously left no trace).
+            // The journal entry stays (state failedRetryable) so the reconcile sweep can resume
+            // it — never removed on failure.
+            if let uid = journalEntry?.uploadId {
+                UploadJournal.shared.update(uploadId: uid) {
+                    if $0.state != .putComplete && $0.state != .jobCreated { $0.state = .failedRetryable }
+                }
+            }
             backend.reportClientEvent("instant_submit_failed",
                                       detail: resp == nil ? "upload or create-job returned nil"
                                                           : "create-job returned no clips")
@@ -859,6 +884,12 @@ final class AppStore {
             clips.insert(failed, at: 0)
             save()
             return
+        }
+        // Server owns it now — retire the durable journal entry (its purpose was surviving
+        // the pre-job window). jobId recorded first for good measure.
+        if let uid = journalEntry?.uploadId {
+            UploadJournal.shared.update(uploadId: uid) { $0.jobId = resp.jobId; $0.state = .jobCreated }
+            UploadJournal.shared.remove(uploadId: uid)
         }
         primeBrollCorpus()   // warm own-media analysis (no-op without media / b-roll off)
         // celebrate:false — submitTakeInstant already fired the wrap popup + streak bump
@@ -952,33 +983,120 @@ final class AppStore {
     ///    lands on .failed with its stored footagePath intact, so "Try again" re-runs the
     ///    whole edit without re-picking videos.
     func reconcileTransientState() {
+        // Build 49: the upload-clip sweep is journal-aware and needs the background session's
+        // live-task list (async), so it runs in its own task. The chat-card sweep below stays
+        // synchronous.
+        Task { await reconcileUploads() }
+
+        var changed = false
+        _reconcileChatCards(&changed)
+        if changed { save() }
+    }
+
+    /// Build 49 — journal-driven upload recovery. For each placeholder still "uploading" with
+    /// no server job and no live in-process task: re-attach a still-running background transfer,
+    /// finalize a PUT that already completed (even after a kill) WITHOUT re-uploading, resume
+    /// from the local take, or fail — in that order. This is what makes an app-kill mid-upload
+    /// recover cleanly instead of restarting from byte 0 or spinning forever.
+    func reconcileUploads() async {
+        let liveIds = await BackgroundUploader.shared.liveUploadIds()
         var changed = false
         for idx in clips.indices where clips[idx].uploading && clips[idx].jobId == nil
             && backgroundSubmits[clips[idx].id] == nil {
             let clip = clips[idx]
+            let entry = UploadJournal.shared.entry(placeholderId: clip.id.uuidString)
+
+            // (a) A background transfer for this clip is still running — leave it, reflect
+            //     truthful progress, and let the delegate + a later sweep finalize it.
+            if let entry, liveIds.contains(entry.uploadId) {
+                clips[idx].uploadProgress = entry.bytesTotal > 0
+                    ? Double(entry.bytesConfirmed) / Double(entry.bytesTotal) : clips[idx].uploadProgress
+                continue
+            }
+            // (b) The PUT already succeeded (possibly after a kill) — skip re-upload and just
+            //     create the analyze job from the durable object, with full edit fidelity.
+            if let entry, entry.state == .putComplete, let publicURL = entry.publicUrl,
+               !publicURL.isEmpty, !autoResumedUploads.contains(clip.id) {
+                autoResumedUploads.insert(clip.id)
+                backend.reportClientEvent("upload_finalized_from_journal", detail: entry.uploadId)
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    await self.finalizeUploadFromJournal(clip: clip, entry: entry, publicURL: publicURL)
+                    self.backgroundSubmits[clip.id] = nil
+                }
+                backgroundSubmits[clip.id] = task
+                continue
+            }
+            // (c) No durable bytes and no live task — resume from the local take if present.
             let hasLocalFile = clip.localVideoPath.map {
                 FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path)
             } ?? false
             if hasLocalFile && !autoResumedUploads.contains(clip.id) {
-                // Silent self-heal: restart the upload from the local take. Registered in
-                // backgroundSubmits so a second sweep (foreground + Library appear firing
-                // together) can't double-resume the same clip.
                 autoResumedUploads.insert(clip.id)
-                backend.reportClientEvent("upload_auto_resumed", detail: clip.id.uuidString)
+                backend.reportClientEvent("upload_auto_resumed",
+                                          detail: "reattach=\(entry != nil) | \(clip.id.uuidString)")
                 let task = Task { [weak self] in
                     guard let self else { return }
                     _ = await self.resubmitFailedClip(clip)
                     self.backgroundSubmits[clip.id] = nil
                 }
                 backgroundSubmits[clip.id] = task
-            } else {
+            } else if !hasLocalFile {
                 clips[idx].uploading = false
                 clips[idx].status = .failed
                 clips[idx].lastError = "upload_interrupted"
+                if let entry { UploadJournal.shared.remove(uploadId: entry.uploadId) }
                 changed = true
             }
         }
+        if changed { save() }
+    }
 
+    /// Create the analyze job for an upload whose bytes are already durable (journal
+    /// putComplete). Reconstructs the submit with the persisted payload — no re-upload.
+    private func finalizeUploadFromJournal(clip: Clip, entry: UploadJournalEntry, publicURL: String) async {
+        let p = entry.payload
+        let script = p?.scriptId.flatMap { sid in scripts.first(where: { $0.id.uuidString == sid }) }
+                     ?? scripts.first(where: { $0.id == clip.scriptId })
+        let toggles = EditToggles(broll: p?.broll ?? false, punchIns: p?.punchIns ?? true,
+                                  music: p?.music ?? false)
+        // The reference reel is a vibe-only nudge and isn't re-hydrated across a kill (its feed
+        // object isn't persisted); every load-bearing setting (toggles/format/theme/config) is.
+        guard let resp = await startAnalyzeJob(
+                script: (p?.isFreestyle ?? (script == nil)) ? nil : script,
+                publicURL: publicURL,
+                customInstructions: p?.customInstructions ?? "",
+                reactSourceURL: p?.reactSourceURL ?? "",
+                editFormat: p?.editFormat ?? "",
+                referenceReel: nil, themeId: p?.themeId, config: p?.config,
+                autoConfirm: true, toggles: toggles, idempotencyKey: entry.uploadId),
+              !resp.jobId.isEmpty, let stubs = resp.clips, !stubs.isEmpty else {
+            // Job creation failed — leave a retryable failed card; the durable object stays.
+            if let i = clips.firstIndex(where: { $0.id == clip.id }) {
+                clips[i].uploading = false; clips[i].status = .failed
+                clips[i].lastError = "upload_failed"
+            }
+            UploadJournal.shared.update(uploadId: entry.uploadId) { $0.state = .failedRetryable }
+            save()
+            return
+        }
+        clips.removeAll { $0.id == clip.id }
+        UploadJournal.shared.update(uploadId: entry.uploadId) { $0.jobId = resp.jobId; $0.state = .jobCreated }
+        UploadJournal.shared.remove(uploadId: entry.uploadId)
+        let effScript = script ?? Script(
+            pillarName: "Freestyle", title: clip.title, summary: "", style: VideoStyle.talkingHead.rawValue,
+            formatId: clip.formatId, hook: Hook(text: clip.title, signal: .narrative, strength: 70),
+            altHooks: [], body: "", cta: clip.caption, shotPlan: [], targetSeconds: max(1, clip.seconds),
+            predictedScore: clip.predictedScore)
+        trackSubmittedClips(jobId: resp.jobId, script: effScript, footagePath: clip.localVideoPath,
+                            stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
+                            etaSeconds: resp.etaSeconds, celebrate: false)
+    }
+
+    /// The chat-edit card sweep (unchanged behavior, factored out of reconcileTransientState).
+    /// A persisted ClipEditState stuck at a transient stage with no LIVE task lands on .failed
+    /// with its stored footagePath intact, so "Try again" re-runs without re-picking videos.
+    private func _reconcileChatCards(_ changed: inout Bool) {
         for ci in conversations.indices {
             for mi in conversations[ci].messages.indices {
                 guard var s = conversations[ci].messages[mi].clipEdit else { continue }
@@ -997,7 +1115,6 @@ final class AppStore {
                 }
             }
         }
-        if changed { save() }
     }
 
     /// AF-I4: a permanently-gone job (404 never-existed / 410 swept) fails its clips
@@ -1241,9 +1358,26 @@ final class AppStore {
             }
             save()
         }
+        // Reuse the existing durable journal entry (preserves the original analyze payload) or
+        // create a fresh one — so a retry resumes with the creator's real edit settings.
+        let script = scripts.first(where: { $0.id == clip.scriptId })
+        let uploadId: String
+        if let existing = UploadJournal.shared.entry(placeholderId: clip.id.uuidString) {
+            uploadId = existing.uploadId
+            UploadJournal.shared.update(uploadId: uploadId) { $0.state = .queued; $0.lastErrorCode = nil }
+        } else {
+            uploadId = UUID().uuidString
+            let payload = UploadPayload(
+                scriptId: script?.id.uuidString, isFreestyle: script == nil,
+                customInstructions: "", reactSourceURL: "", editFormat: "", themeId: nil, config: nil,
+                referenceReelId: nil, broll: false, punchIns: true, music: false)
+            UploadJournal.shared.upsert(UploadJournalEntry(
+                uploadId: uploadId, placeholderId: clip.id.uuidString,
+                sourcePath: path, contentType: "video/quicktime", payload: payload))
+        }
         // mintAndUpload returns nil if the local file is gone — then there's nothing to recover.
         let cid = clip.id
-        guard let publicURL = await LiveClipEngine.mintAndUpload(footagePath: path, onProgress: { [weak self] frac in
+        guard let publicURL = await LiveClipEngine.mintAndUpload(uploadId: uploadId, footagePath: path, onProgress: { [weak self] frac in
             Task { @MainActor in
                 guard let self, let i = self.clips.firstIndex(where: { $0.id == cid }),
                       self.clips[i].uploading else { return }
@@ -1252,9 +1386,18 @@ final class AppStore {
         }) else {
             fail("Couldn't re-upload your footage — tap Try again."); return true
         }
-        let script = scripts.first(where: { $0.id == clip.scriptId })
+        // Restore the creator's real edit settings from the journal payload (build 49) instead
+        // of the bare EditToggles() that used to silently drop them on every resume.
+        let jp = UploadJournal.shared.entry(uploadId: uploadId)?.payload
+        let toggles = EditToggles(broll: jp?.broll ?? false, punchIns: jp?.punchIns ?? true,
+                                  music: jp?.music ?? false)
         guard let resp = await startAnalyzeJob(script: script, publicURL: publicURL,
-                                               autoConfirm: true, toggles: EditToggles()),
+                                               customInstructions: jp?.customInstructions ?? "",
+                                               reactSourceURL: jp?.reactSourceURL ?? "",
+                                               editFormat: jp?.editFormat ?? "",
+                                               themeId: jp?.themeId, config: jp?.config,
+                                               autoConfirm: true, toggles: toggles,
+                                               idempotencyKey: uploadId),
               !resp.jobId.isEmpty else {
             fail("Couldn't restart the edit — tap Try again."); return true
         }
@@ -1262,6 +1405,8 @@ final class AppStore {
             clips[i].jobId = resp.jobId
             clips[i].uploading = false
         }
+        UploadJournal.shared.update(uploadId: uploadId) { $0.jobId = resp.jobId; $0.state = .jobCreated }
+        UploadJournal.shared.remove(uploadId: uploadId)
         save()
         await pollJob(jobId: resp.jobId, clipIds: [clip.id])
         return true
@@ -1945,7 +2090,7 @@ final class AppStore {
         // Upload in the background so it's postable (real publishing needs a remote URL).
         let cid = clip.id
         Task {
-            if let remote = await LiveClipEngine.mintAndUpload(footagePath: path), !remote.isEmpty {
+            if let remote = await LiveClipEngine.mintAndUpload(uploadId: UUID().uuidString, footagePath: path), !remote.isEmpty {
                 if let idx = clips.firstIndex(where: { $0.id == cid }) { clips[idx].remoteURL = remote; save() }
             }
         }
