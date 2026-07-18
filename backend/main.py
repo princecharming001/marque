@@ -5126,6 +5126,62 @@ async def _sample_render_frames(url: str, n: int = 6) -> list[bytes]:
     return out
 
 
+def _review_frame_times(plan: dict, fps: int = 30, cap: int = 10) -> list[float]:
+    """WS2 (build 49) — boundary-driven review sampling. Uniform sampling misses the exact
+    moments defects hide (a bad b-roll insert, a caption collision at a cut). Instead sample
+    at the OUTPUT boundaries the plan already knows: every b-roll/overlay IN point, a couple of
+    caption-change points, plus evenly-spaced anchors so a plan with no inserts still samples
+    the arc. Returns seconds, deduped and clamped. Empty ⇒ caller uses the uniform fallback."""
+    total = int(plan.get("total_frames") or 0)
+    if total <= 0:
+        return []
+    marks: set[int] = set()
+    for key in ("broll", "overlays"):
+        for item in plan.get(key) or []:
+            fi = item.get("frame_in")
+            if isinstance(fi, int):
+                marks.add(fi)
+                marks.add(min(total - 1, fi + fps // 2))   # mid-insert, where the hold reads
+    caps = [c.get("frame_in") for c in (plan.get("captions") or []) if isinstance(c.get("frame_in"), int)]
+    if caps:  # a few evenly-spaced caption boundaries (not every word)
+        step = max(1, len(caps) // 3)
+        for f in caps[::step][:3]:
+            marks.add(f)
+    # Always cover the hook (first 3s) + a mid + the tail (last 2s → loop/CTA).
+    marks.update({0, fps, total // 2, max(0, total - 2 * fps), max(0, total - 1)})
+    ordered = sorted(f for f in marks if 0 <= f < total)
+    # Thin to `cap`, keeping the extremes.
+    if len(ordered) > cap:
+        keep = {ordered[0], ordered[-1]}
+        stride = len(ordered) / (cap - len(keep))
+        keep.update(ordered[int(i * stride)] for i in range(cap - len(keep)))
+        ordered = sorted(keep)
+    return [round(f / fps, 2) for f in ordered]
+
+
+async def _sample_frames_at_times(url: str, times: list[float]) -> list[bytes]:
+    """Extract one jpeg per timestamp (seconds) from `url` via ffmpeg -ss seeks. Fail-soft to
+    [] (no ffmpeg / unreadable / no times). Monkeypatched in tests alongside
+    `_sample_render_frames`."""
+    import shutil, tempfile, subprocess
+    if not shutil.which("ffmpeg") or not url or not times:
+        return []
+    out: list[bytes] = []
+    with tempfile.TemporaryDirectory() as td:
+        for i, t in enumerate(times):
+            p = os.path.join(td, f"rev_{i:03d}.jpg")
+            try:
+                subprocess.run(["ffmpeg", "-y", "-ss", str(max(0.0, t)), "-i", url,
+                                "-frames:v", "1", "-vf", "scale=360:-1", "-q:v", "5", p],
+                               capture_output=True, timeout=60)
+                if os.path.exists(p):
+                    with open(p, "rb") as fh:
+                        out.append(fh.read())
+            except (subprocess.SubprocessError, OSError):
+                continue
+    return out
+
+
 async def _score_edl_vision(frames: list[bytes], plan: dict,
                             lint_findings: list | None = None) -> dict | None:
     """One Claude-vision call scoring sampled frames + the render plan against the review
@@ -5262,7 +5318,14 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
     except Exception as e:
         logging.warning("self-review preview render failed: %s", e)
         return
-    frames = await _sample_render_frames(preview_url, 6)
+    # WS2: sample at edit BOUNDARIES (b-roll/overlay/caption INs + hook/mid/tail) where
+    # defects actually hide, not a uniform 1fps sweep. Fall back to the uniform sampler when
+    # the plan has no usable boundaries or the seek-sampler comes up empty.
+    _plan = build_render_plan(job["edl"])
+    _times = _review_frame_times(_plan)
+    frames = await _sample_frames_at_times(preview_url, _times) if _times else []
+    if not frames:
+        frames = await _sample_render_frames(preview_url, 6)
     if not frames:
         return
     # A1: hand the vision judge whatever deterministic lint already found (unresolved
@@ -5276,7 +5339,7 @@ async def _self_review_edl(job_id: str, is_rerender: bool = False) -> None:
                 theme=job.get("_theme")) if f["severity"] == "error"]
         except Exception:
             lint_for_review = None
-    review = await _score_edl_vision(frames, build_render_plan(job["edl"]), lint_for_review)
+    review = await _score_edl_vision(frames, _plan, lint_for_review)
     if not isinstance(review, dict):
         return
     job["self_review"] = {"score": review.get("score_0_100"), "issues": review.get("issues", [])}
