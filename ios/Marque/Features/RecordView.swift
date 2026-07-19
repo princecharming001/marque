@@ -36,6 +36,10 @@ struct RecordView: View {
     // Analyze-first (H-02): mint+upload starts the moment a take lands (runs while the
     // creator reviews), so the public URL usually exists before "Submit for editing".
     @State private var uploadTask: Task<String?, Never>? = nil
+    // Phase 3.1 (build 49): the hoisted upload's journal id — passed to submitTakeInstant
+    // so the instant path CONSUMES the already-running upload instead of cancelling it and
+    // re-uploading from byte 0 (the single biggest perceived-speed win in the pipeline).
+    @State private var hoistedUploadId: String? = nil
     // AF-I3: the submit/analyze task is tracked so dismissal cancels it — an orphaned
     // task otherwise inserted clips, bumped the streak, and yanked navigation minutes
     // after the user left this screen.
@@ -893,6 +897,8 @@ struct RecordView: View {
     private func reRecord() {
         uploadTask?.cancel()   // H-02: stale footage — restart the hoisted upload fresh
         uploadTask = nil
+        if let uid = hoistedUploadId { UploadJournal.shared.remove(uploadId: uid) }
+        hoistedUploadId = nil
         submitFailedMessage = nil
         analyzeJobId = nil
         brief = nil
@@ -910,6 +916,8 @@ struct RecordView: View {
         // Build 46: the hoisted upload is wasted work once we're parking this as a draft —
         // the draft stores the LOCAL footage and re-uploads fresh when sent to the editor.
         uploadTask?.cancel(); uploadTask = nil
+        if let uid = hoistedUploadId { UploadJournal.shared.remove(uploadId: uid) }
+        hoistedUploadId = nil
         // liveScript so inline teleprompter edits survive into the draft (same as makeClips).
         store.saveDraft(from: liveScript, footagePath: footagePath)
         dismiss()
@@ -921,7 +929,17 @@ struct RecordView: View {
     private func beginUpload() {
         guard uploadTask == nil else { return }
         let path = footagePath
-        uploadTask = Task { await LiveClipEngine.mintAndUpload(uploadId: UUID().uuidString, footagePath: path) }
+        // Phase 3.1 (build 49): the hoisted upload is journaled from the START (minimal
+        // entry — the analyze payload lands at submit time), so a kill mid-hoist recovers
+        // through the same journal machinery as the instant path.
+        let uid = UUID().uuidString
+        hoistedUploadId = uid
+        if let path, !path.isEmpty {
+            UploadJournal.shared.upsert(UploadJournalEntry(
+                uploadId: uid, placeholderId: "", sourcePath: path,
+                contentType: "video/quicktime"))
+        }
+        uploadTask = Task { await LiveClipEngine.mintAndUpload(uploadId: uid, footagePath: path) }
     }
 
     /// H-02 analyze-first submit: await the hoisted upload → create the analyze job →
@@ -942,14 +960,22 @@ struct RecordView: View {
         // the store owns the upload → create-job → reconcile so dismissing never cancels it.
         // (The legacy brief-approve path below still awaits inline — it needs the brief on
         //  screen before the creator can act.)
-        if uploadTask != nil { uploadTask?.cancel(); uploadTask = nil }   // store re-runs the upload
+        // Phase 3.1 (build 49): CONSUME the hoisted upload instead of cancelling it — the
+        // old path threw away an upload that was usually nearly done and re-ran it from
+        // byte 0 (the single biggest perceived-speed loss in the pipeline). Ownership of
+        // the task transfers to the store; clear the local refs WITHOUT cancelling.
+        let hoisted: (id: String, task: Task<String?, Never>)? =
+            (uploadTask != nil && hoistedUploadId != nil)
+                ? (id: hoistedUploadId!, task: uploadTask!) : nil
+        uploadTask = nil; hoistedUploadId = nil
         store.submitTakeInstant(script: isFreestyle ? liveScript : liveScript,
                                 footagePath: footagePath, isFreestyle: isFreestyle,
                                 customInstructions: customInstructions,
                                 reactSourceURL: reactSourceURL.trimmingCharacters(in: .whitespacesAndNewlines),
                                 editFormat: editFormat.rawValue, referenceReel: referenceReel,
                                 config: brollConfig(),
-                                toggles: briefToggles)
+                                toggles: briefToggles,
+                                hoistedUpload: hoisted)
         dismiss()
         router.selectedTab = .library
         router.showFilm = false
@@ -1049,6 +1075,8 @@ struct RecordView: View {
             // with the cached nil result could never succeed (review finding).
             uploadTask?.cancel()
             uploadTask = nil
+            if let uid = hoistedUploadId { UploadJournal.shared.remove(uploadId: uid) }
+            hoistedUploadId = nil
             phase = .recorded
             submitFailedMessage = "Couldn't reach the editor — your take is saved. Tap Submit to try again."
             return

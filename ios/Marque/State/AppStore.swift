@@ -775,7 +775,8 @@ final class AppStore {
                            editFormat: String, referenceReel: ReelItem?,
                            themeId: String? = nil,
                            config: [String: String]? = nil,
-                           toggles: EditToggles) -> UUID {
+                           toggles: EditToggles,
+                           hoistedUpload: (id: String, task: Task<String?, Never>)? = nil) -> UUID {
         let placeholderId = UUID()
         var ph = Clip(id: placeholderId, scriptId: script.id, formatId: script.formatId,
                       formatName: Catalog.format(script.formatId).name,
@@ -791,7 +792,10 @@ final class AppStore {
         // Build 49 — durable journal entry BEFORE the upload starts, capturing the full
         // analyze payload so a kill/relaunch resumes with the creator's real edit settings
         // (the old resume path re-uploaded with a bare EditToggles(), dropping them).
-        let uploadId = UUID().uuidString
+        // Phase 3.1: a hoisted upload already owns a journal entry keyed by ITS id —
+        // adopt that id and fill in the placeholder + payload it couldn't know at
+        // record time, so the in-flight transfer and the recovery machinery stay joined.
+        let uploadId = hoistedUpload?.id ?? UUID().uuidString
         if let footagePath, !footagePath.isEmpty {
             let payload = UploadPayload(
                 scriptId: isFreestyle ? nil : script.id.uuidString, isFreestyle: isFreestyle,
@@ -799,9 +803,17 @@ final class AppStore {
                 editFormat: editFormat, themeId: themeId, config: config,
                 referenceReelId: referenceReel?.id, broll: toggles.broll,
                 punchIns: toggles.punchIns, music: toggles.music)
-            UploadJournal.shared.upsert(UploadJournalEntry(
-                uploadId: uploadId, placeholderId: placeholderId.uuidString,
-                sourcePath: footagePath, contentType: "video/quicktime", payload: payload))
+            if hoistedUpload != nil,
+               UploadJournal.shared.update(uploadId: uploadId, {
+                   $0.placeholderId = placeholderId.uuidString
+                   $0.payload = payload
+               }) != nil {
+                // adopted the hoisted entry in place
+            } else {
+                UploadJournal.shared.upsert(UploadJournalEntry(
+                    uploadId: uploadId, placeholderId: placeholderId.uuidString,
+                    sourcePath: footagePath, contentType: "video/quicktime", payload: payload))
+            }
         }
 
         // Instant reward: "That's a wrap" is the payoff for FINISHING the take, so fire it
@@ -830,11 +842,28 @@ final class AppStore {
                     guard let self else { return nil }
                     // Build 45: real upload progress → the placeholder's timeline bar.
                     let pid = placeholderId
-                    let publicURL = await LiveClipEngine.mintAndUpload(uploadId: uploadId, footagePath: footagePath) { [weak self] frac in
-                        Task { @MainActor in
-                            guard let self, let i = self.clips.firstIndex(where: { $0.id == pid }),
-                                  self.clips[i].uploading else { return }
-                            self.clips[i].uploadProgress = frac
+                    // Phase 3.1: consume the hoisted upload's result when one was handed
+                    // over (it started the moment the take landed — usually nearly done by
+                    // now). nil (hoist failed / mock mint) falls back to a fresh run so
+                    // reliability is never worse than the non-hoisted path.
+                    var publicURL: String?
+                    if let hoisted = hoistedUpload {
+                        publicURL = await hoisted.task.value
+                        if publicURL != nil {
+                            Task { @MainActor in
+                                if let i = self.clips.firstIndex(where: { $0.id == pid }) {
+                                    self.clips[i].uploadProgress = 1.0
+                                }
+                            }
+                        }
+                    }
+                    if publicURL == nil {
+                        publicURL = await LiveClipEngine.mintAndUpload(uploadId: uploadId, footagePath: footagePath) { [weak self] frac in
+                            Task { @MainActor in
+                                guard let self, let i = self.clips.firstIndex(where: { $0.id == pid }),
+                                      self.clips[i].uploading else { return }
+                                self.clips[i].uploadProgress = frac
+                            }
                         }
                     }
                     return await self.startAnalyzeJob(
@@ -1000,6 +1029,14 @@ final class AppStore {
     /// recover cleanly instead of restarting from byte 0 or spinning forever.
     func reconcileUploads() async {
         let liveIds = await BackgroundUploader.shared.liveUploadIds()
+        // Audit (build 50): GC hoisted-upload journal entries that never got a placeholder
+        // (app killed on the record screen before submit; the take itself survives in
+        // Footage). Without this the journal file grows one orphan per abandoned take.
+        for e in UploadJournal.shared.unfinished()
+        where e.placeholderId.isEmpty && !liveIds.contains(e.uploadId)
+            && Date().timeIntervalSince1970 - e.createdAtEpoch > 24 * 3600 {
+            UploadJournal.shared.remove(uploadId: e.uploadId)
+        }
         var changed = false
         for idx in clips.indices where clips[idx].uploading && clips[idx].jobId == nil
             && backgroundSubmits[clips[idx].id] == nil {

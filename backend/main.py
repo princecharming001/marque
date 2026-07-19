@@ -38,6 +38,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      _BROLL_MEME_CAPS)
 from app import audio as audio_mod
 from app import enhance as enhance_mod
+from app import multipart as multipart_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
 from app import push as push_mod
@@ -1320,6 +1321,26 @@ class VoiceSessionRequest(Brand):
 class UploadMintRequest(BaseModel):
     filename: str = "footage.mov"
     content_type: str = "video/quicktime"
+
+
+# Upload Phase 2 (build 49) — multipart request models. Keyless-armed: without the
+# SUPABASE_S3_* env keys every route reports supported:false and the client stays on
+# the proven single-PUT path.
+class MultipartCreateRequest(BaseModel):
+    filename: str = "footage.mov"
+    content_type: str = "video/quicktime"
+    size_bytes: int = 0
+
+
+class MultipartCompleteRequest(BaseModel):
+    key: str
+    upload_id: str
+    parts: list[dict] = []          # [{n, etag}]
+
+
+class MultipartAbortRequest(BaseModel):
+    key: str
+    upload_id: str
 
 
 class ClipJobRequest(BaseModel):
@@ -2725,6 +2746,39 @@ async def _mint_supabase_upload(filename: str) -> dict | None:
         "expires_in": SUPABASE_UPLOAD_TTL,
         "server_time": time.time(),
     }
+
+
+# Upload Phase 2 (build 49) — multipart routes, keyless-armed (app/multipart.py).
+@app.post("/v1/uploads/multipart")
+async def create_multipart_upload(req: MultipartCreateRequest):
+    out = await multipart_mod.create(req.filename, req.size_bytes, req.content_type)
+    if not out:
+        return {"supported": False}
+    out.update({"supported": True, "server_time": time.time()})
+    return out
+
+
+@app.post("/v1/uploads/multipart/complete")
+async def complete_multipart_upload(req: MultipartCompleteRequest):
+    ok = await multipart_mod.complete(req.key, req.upload_id, req.parts)
+    if not ok:
+        raise HTTPException(status_code=409, detail="multipart_complete_failed")
+    base = SUPABASE_URL.rstrip("/")
+    return {"ok": True,
+            "public_url": f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{req.key}"}
+
+
+@app.post("/v1/uploads/multipart/abort")
+async def abort_multipart_upload(req: MultipartAbortRequest):
+    return {"ok": await multipart_mod.abort(req.key, req.upload_id)}
+
+
+@app.get("/v1/uploads/multipart/status")
+async def multipart_status(key: str, upload_id: str):
+    out = await multipart_mod.status(key, upload_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail="multipart_unavailable")
+    return out
 
 
 @app.post("/v1/uploads/mint")
@@ -5642,6 +5696,17 @@ async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
                 return None
             wav_url = f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{wav_key}"
             enhanced_bytes = await enhance_mod.denoise_audio_url(wav_url)
+            # The hosted wav is only needed for the fal fetch — delete it immediately
+            # (audit: nothing else GCs uploads/, and own-media rolls live under the same
+            # prefix so a blanket sweep is unsafe; targeted delete is the only safe GC).
+            try:
+                async with httpx.AsyncClient(timeout=30) as c:
+                    await c.request("DELETE",
+                                    f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{wav_key}",
+                                    headers={"Authorization": f"Bearer {SUPABASE_KEY}",
+                                             "apikey": SUPABASE_KEY})
+            except Exception:
+                pass
             if not enhanced_bytes:
                 return None
             enhanced_path = os.path.join(td, "enhanced_audio")
@@ -8155,8 +8220,11 @@ async def register_post(req: PostRegisterRequest):
     # offline replay has (action, propensity, reward) triples. Best-effort join: the clip's
     # job may already be TTL-swept — then the post just learns script dims like before.
     try:
+        # Case-insensitive compare: iOS uuidString is UPPERCASE, backend uuid4() lowercase —
+        # a plain == never matches (the exact bug class AppStore fixed for clip polling).
+        _want = (req.clip_id or "").lower()
         for j in _clip_jobs.values():
-            if any(c.get("clip_id") == req.clip_id for c in (j.get("clips") or [])):
+            if any((c.get("clip_id") or "").lower() == _want for c in (j.get("clips") or [])):
                 if j.get("edit_knobs"):
                     post_data["edit_knobs"] = j["edit_knobs"]
                 break
