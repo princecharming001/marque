@@ -87,3 +87,45 @@ def test_voice_polish_args_deterministic():
     a = audio.voice_polish_args("u", "/tmp/o.mp4")
     b = audio.voice_polish_args("u", "/tmp/o.mp4")
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# WS1 (build 49) — polish-into-finalize + SNR gate helpers
+# ---------------------------------------------------------------------------
+
+def test_loudnorm_pass2_polish_prepends_voice_chain():
+    measured = {"input_i": -20.0, "input_tp": -3.0, "input_lra": 6.0,
+                "input_thresh": -30.0, "target_offset": 0.2}
+    plain = audio.loudnorm_pass2_args("u.mp4", measured, "o.mp4")
+    polished = audio.loudnorm_pass2_args("u.mp4", measured, "o.mp4", polish=True)
+    af_plain = plain[plain.index("-af") + 1]
+    af_pol = polished[polished.index("-af") + 1]
+    assert af_plain.startswith("loudnorm=")                 # default unchanged
+    assert af_pol.startswith("highpass=f=90")               # polish chain first
+    assert af_pol.endswith(af_plain)                        # ...loudnorm LAST (keeps target)
+    assert "-c:v" in polished and polished[polished.index("-c:v") + 1] == "copy"
+
+
+def test_parse_astats_snr():
+    stderr = """
+[Parsed_astats_0 @ 0x0] Overall
+[Parsed_astats_0 @ 0x0] RMS level dB: -18.4
+[Parsed_astats_0 @ 0x0] RMS peak dB: -12.0
+[Parsed_astats_0 @ 0x0] RMS trough dB: -52.7
+"""
+    out = audio.parse_astats_snr(stderr)
+    assert out is not None
+    assert abs(out["snr_db"] - 34.3) < 0.01
+    # missing trough → None (fail-closed: never enhance the unmeasurable)
+    assert audio.parse_astats_snr("RMS level dB: -18.4") is None
+    # -inf (digital silence) → None
+    assert audio.parse_astats_snr("RMS level dB: -18\nRMS trough dB: -inf") is None
+
+
+def test_snr_and_remux_argv_shapes():
+    probe = audio.snr_probe_args("in.mp4")
+    assert probe[0] == "ffmpeg" and "astats=measure_perchannel=none" in probe
+    remux = audio.remux_enhanced_audio_args("v.mp4", "a.wav", "o.mp4")
+    assert remux[remux.index("-c:v") + 1] == "copy" and "-shortest" in remux
+    extract = audio.extract_audio_args("v.mp4", "o.wav")
+    assert "-vn" in extract and "48000" in extract

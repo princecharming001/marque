@@ -37,6 +37,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      _ENTERTAINMENT_VIDEO_TYPES, _BROLL_MEME_CAP, _BROLL_MEME_CAP_EDU,
                      _BROLL_MEME_CAPS)
 from app import audio as audio_mod
+from app import enhance as enhance_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
 from app import push as push_mod
@@ -4449,6 +4450,14 @@ EDIT_LINT = os.environ.get("EDIT_LINT", "").lower()
 # A5b: true 2-pass loudness normalization on the FINAL rendered mp4. "" = off
 # (today's behavior — CutVideo.tsx's per-source-gain normalization only).
 AUDIO_FINALIZE = os.environ.get("AUDIO_FINALIZE", "").lower() in ("1", "true", "on")
+# WS1 (build 49): audio-truth flags, both riding the AUDIO_FINALIZE step.
+# VOICE_POLISH prepends the (previously orphaned) A5c polish chain — HPF/EQ/
+# de-esser/compressor/limiter — to the finalize re-encode. VOICE_ENHANCE arms the
+# SNR-gated DeepFilterNet3 denoise tier; it additionally needs FAL_KEY (owner) and
+# only fires when the measured SNR proxy is below app.audio.SNR_ENHANCE_THRESHOLD_DB
+# AND the enhanced result re-measures better — a denoiser must never smear a clean take.
+VOICE_POLISH = os.environ.get("VOICE_POLISH", "").lower() in ("1", "true", "on")
+VOICE_ENHANCE = os.environ.get("VOICE_ENHANCE", "").lower() in ("1", "true", "on")
 # A7: style bundles. "" (default) = off — job["_theme"] stays None, every
 # theme-aware pass's `theme=None` default keeps today's behavior unchanged.
 EDIT_THEMES = os.environ.get("EDIT_THEMES", "").lower() in ("1", "true", "on")
@@ -5396,6 +5405,92 @@ async def _ffprobe_duration_s(src: str, timeout_s: float = 30.0) -> float | None
         return None
 
 
+async def _probe_speech_snr(url: str) -> float | None:
+    """WS1: astats SNR proxy (RMS level − RMS trough, dB) for the enhancement gate.
+    None = unmeasurable → callers must NOT enhance (fail-closed)."""
+    if not url or shutil.which("ffmpeg") is None:
+        return None
+    try:
+        p = await asyncio.create_subprocess_exec(
+            *audio_mod.snr_probe_args(url),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(p.communicate(), timeout=60)
+        stats = audio_mod.parse_astats_snr(stderr.decode("utf-8", "ignore"))
+        return stats["snr_db"] if stats else None
+    except Exception:
+        return None
+
+
+async def _enhance_render_audio(render_url: str, job_id: str) -> str | None:
+    """WS1 (keyless-armed): SNR-gated DeepFilterNet3 denoise of the final render's audio.
+    Gate 1: measured SNR proxy below threshold (clean takes are never touched — enhancers
+    smear clean audio). Gate 2: the enhanced remux must RE-MEASURE better by ≥3dB AND
+    duration-match, else it's discarded. Returns a hosted enhanced mp4 URL or None.
+    Every failure path returns None; never raises; never load-bearing."""
+    snr = await _probe_speech_snr(render_url)
+    if snr is None or snr >= audio_mod.SNR_ENHANCE_THRESHOLD_DB:
+        return None
+    try:
+        base = SUPABASE_URL.rstrip("/")
+        with tempfile.TemporaryDirectory() as td:
+            wav = os.path.join(td, "voice.wav")
+            p = await asyncio.create_subprocess_exec(
+                *audio_mod.extract_audio_args(render_url, wav),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await asyncio.wait_for(p.communicate(), timeout=90)
+            if p.returncode != 0 or not os.path.exists(wav):
+                return None
+            # Host the wav so fal can fetch it (temp object; GC'd with uploads/ sweeps).
+            with open(wav, "rb") as f:
+                wav_bytes = f.read()
+            wav_key = f"uploads/enhance-{job_id}.wav"
+            async with httpx.AsyncClient(timeout=90) as c:
+                up = await c.post(
+                    f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{wav_key}",
+                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
+                             "Content-Type": "audio/wav", "x-upsert": "true"},
+                    content=wav_bytes)
+            if not (200 <= up.status_code < 300):
+                return None
+            wav_url = f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{wav_key}"
+            enhanced_bytes = await enhance_mod.denoise_audio_url(wav_url)
+            if not enhanced_bytes:
+                return None
+            enhanced_path = os.path.join(td, "enhanced_audio")
+            with open(enhanced_path, "wb") as f:
+                f.write(enhanced_bytes)
+            remuxed = os.path.join(td, "enhanced.mp4")
+            p2 = await asyncio.create_subprocess_exec(
+                *audio_mod.remux_enhanced_audio_args(render_url, enhanced_path, remuxed),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await asyncio.wait_for(p2.communicate(), timeout=90)
+            if p2.returncode != 0 or not os.path.exists(remuxed):
+                return None
+            orig_dur = await _ffprobe_duration_s(render_url)
+            new_dur = await _ffprobe_duration_s(remuxed)
+            if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.15:
+                return None
+            new_snr = await _probe_speech_snr(remuxed)
+            if new_snr is None or new_snr < snr + 3.0:
+                logging.info("[enhance] job=%s not adopted (snr %.1f→%s)", job_id, snr, new_snr)
+                return None
+            with open(remuxed, "rb") as f:
+                data = f.read()
+        key = f"finalized/{job_id}-enhanced.mp4"
+        async with httpx.AsyncClient(timeout=90) as c:
+            up2 = await c.post(
+                f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
+                headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
+                         "Content-Type": "video/mp4", "x-upsert": "true"},
+                content=data)
+        if 200 <= up2.status_code < 300:
+            logging.info("[enhance] job=%s adopted (snr %.1f→%.1f)", job_id, snr, new_snr)
+            return f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
+    except Exception as e:
+        logging.warning("[enhance] job=%s failed: %s", job_id, e)
+    return None
+
+
 async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     """A5b: true 2-pass loudness normalization on the FINAL rendered mp4 (the
     Lambda output). Video is stream-copied (untouched) throughout; the audio is
@@ -5409,8 +5504,16 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     if not (SUPABASE_URL and SUPABASE_KEY):
         return None
     try:
+        # WS1: SNR-gated enhancement tier. When armed (VOICE_ENHANCE + FAL_KEY) and the
+        # take measures noisy, denoise FIRST and normalize the enhanced audio; adopt the
+        # enhanced source only when it re-measures better. Fail-soft to the original.
+        source_url = render_url
+        if VOICE_ENHANCE and enhance_mod.armed():
+            enhanced = await _enhance_render_audio(render_url, job_id)
+            if enhanced:
+                source_url = enhanced
         p1 = await asyncio.create_subprocess_exec(
-            *audio_mod.loudnorm_pass1_args(render_url),
+            *audio_mod.loudnorm_pass1_args(source_url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         _, stderr1 = await asyncio.wait_for(p1.communicate(), timeout=60)
         measured = audio_mod.parse_loudnorm_json(stderr1.decode("utf-8", "ignore"))
@@ -5418,7 +5521,9 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
             return None
         with tempfile.TemporaryDirectory() as td:
             out_path = os.path.join(td, "finalized.mp4")
-            args2 = audio_mod.loudnorm_pass2_args(render_url, measured, out_path)
+            # WS1: VOICE_POLISH rides the same re-encode (polish chain → loudnorm last).
+            args2 = audio_mod.loudnorm_pass2_args(source_url, measured, out_path,
+                                                  polish=VOICE_POLISH)
             if not args2:
                 return None
             p2 = await asyncio.create_subprocess_exec(
