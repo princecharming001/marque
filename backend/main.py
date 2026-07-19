@@ -4483,6 +4483,9 @@ AUDIO_FINALIZE = os.environ.get("AUDIO_FINALIZE", "").lower() in ("1", "true", "
 # AND the enhanced result re-measures better — a denoiser must never smear a clean take.
 VOICE_POLISH = os.environ.get("VOICE_POLISH", "").lower() in ("1", "true", "on")
 VOICE_ENHANCE = os.environ.get("VOICE_ENHANCE", "").lower() in ("1", "true", "on")
+# WS4 (build 49): face-aware framing (eyes at the top-third line). Default OFF —
+# it visibly changes every punched shot; the owner flips it after eyeballing a render.
+FRAMING_FACE_AWARE = os.environ.get("FRAMING_FACE_AWARE", "").lower() in ("1", "true", "on")
 # A7: style bundles. "" (default) = off — job["_theme"] stays None, every
 # theme-aware pass's `theme=None` default keeps today's behavior unchanged.
 EDIT_THEMES = os.environ.get("EDIT_THEMES", "").lower() in ("1", "true", "on")
@@ -4624,6 +4627,56 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
 # so they're independently testable, matching _extract_emphasis_regions/
 # _merge_drops/_apply_edit_prefs' own pattern.
 # ---------------------------------------------------------------------------
+
+# WS5 (build 49) — hook-concreteness calibration. Upworthy meta-analysis (35,910 headline
+# tests, Nature Sci Rep 2024): CTR vs concreteness is CURVILINEAR — over-concrete hooks
+# lose ~10% CTR at the high bound, and 50.9% of tested headlines sat ABOVE the harm
+# threshold. So the scorer mostly PULLS BACK specificity (keep the curiosity gap), and
+# only rewrites when the score leaves the mid-band. HAIKU (one tiny call), fail-soft to
+# the original text on any miss. Kill-switch: HOOK_CALIBRATE=off.
+HOOK_CALIBRATE = os.environ.get("HOOK_CALIBRATE", "on").lower() not in ("0", "false", "off")
+_HOOK_CONC_LO, _HOOK_CONC_HI = 2.0, 4.0
+
+_HOOK_CONC_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["score", "rewrite"],
+    "properties": {
+        "score": {"type": "number"},
+        "rewrite": {"type": "string"},
+    },
+}
+
+
+async def _calibrate_hook_concreteness(hook_text: str, topic: str = "") -> str:
+    """Score the hook title's concreteness 1-5; rewrite ONLY outside [2,4]. Returns the
+    (possibly rewritten) hook — always ≤8 words, never empty, original on any failure."""
+    text = (hook_text or "").strip()
+    if not text or not HOOK_CALIBRATE or not ANTHROPIC_KEY:
+        return hook_text
+    sys_p = ("You calibrate short-form video hook titles. Concreteness 1-5: 1 = pure vague "
+             "curiosity bait ('this changed everything'), 5 = fully spelled out (the payoff is "
+             "in the title, nothing left to watch for). The research optimum is the MIDDLE: a "
+             "concrete anchor + an open loop. If score < 2: add ONE concrete anchor from the "
+             "topic. If score > 4: generalize the payoff so curiosity survives, keep the "
+             "subject concrete. Rewrite must be 5-8 words, sentence case, no terminal period. "
+             "If the score is within [2,4], return the text UNCHANGED as the rewrite.")
+    user_p = f"HOOK TITLE: {text}\nTOPIC: {topic[:200]}"
+    try:
+        out = await anthropic_json(sys_p, user_p, _HOOK_CONC_SCHEMA,
+                                   model=prompts.HAIKU, max_tokens=200)
+        if not isinstance(out, dict):
+            return hook_text
+        score = float(out.get("score") or 3.0)
+        rewrite = " ".join(str(out.get("rewrite") or "").split())
+        if _HOOK_CONC_LO <= score <= _HOOK_CONC_HI or not rewrite:
+            return hook_text
+        if len(rewrite.split()) > 10 or len(rewrite) > 70:   # runaway guard
+            return hook_text
+        logging.info("[hook-calibrate] %.1f: %r -> %r", score, text, rewrite)
+        return rewrite
+    except Exception:
+        return hook_text
+
 
 def _extract_plan_retention_hints(plan: dict) -> dict:
     """Distill the raw plan dict into the hints shape apply_retention_passes
@@ -4937,6 +4990,14 @@ async def _run_edit(job_id: str, words: list[dict]):
         # prompts.GENRE_PROFILES.
         _video_type_for_genre = (job.get("edit_brief") or {}).get("video_type", "")
         genre_density = prompts.GENRE_PROFILES.get(_video_type_for_genre, {}).get("interrupt_density", "")
+        # WS5: calibrate the hook title's concreteness BEFORE the retention passes place
+        # the sticker — over-concrete titles measurably lose CTR; rewrites happen only
+        # outside the mid-band and fail-soft to the original.
+        if retention_hints.get("hook_text"):
+            retention_hints["hook_text"] = await _calibrate_hook_concreteness(
+                retention_hints["hook_text"],
+                topic=(script or {}).get("hook", "") if isinstance((script or {}).get("hook"), str)
+                      else str(((script or {}).get("hook") or {}).get("text", "")))
         # WS3: the selected music track's offline beat grid (None until the catalog
         # carries grids — beat_snap is then a guaranteed no-op even when its token is on).
         _beat_grid, _beat_conf = _music_beat_meta(edl_data)
@@ -5008,6 +5069,24 @@ async def _run_edit(job_id: str, words: list[dict]):
                         _b["inset_rect"] = _rect
                     else:
                         _b["mode"] = "panel"      # no face / no clear spot → safe default
+            # WS4 (build 49): face-aware framing — eyes at the top-third line under each
+            # punched segment's own scale (AutoFlip static-crop rule). SHADOW-GATED
+            # (FRAMING_FACE_AWARE, default off) until the owner eyeballs a render:
+            # this visibly changes every framed shot. Reuses the smart-placement face
+            # box when present; detects one otherwise.
+            if FRAMING_FACE_AWARE:
+                _fa_box = (edl_data.get("layout") or {}).get("face_box")
+                if not _fa_box:
+                    try:
+                        from app import faces as faces_mod
+                        _fa_box = await asyncio.to_thread(
+                            faces_mod.detect_face_box, job.get("source_url") or "")
+                        if _fa_box:
+                            edl_data.setdefault("layout", {})["face_box"] = _fa_box
+                    except Exception:
+                        _fa_box = None
+                if _fa_box:
+                    edl_data = retention_mod.face_aware_reframe(edl_data, _fa_box)
             # v7 HERO treatment (owner decision 2026-07-17): the video's 1-2 strongest
             # resolved named-thing inserts briefly OWN the frame — pro 9:16 cutaways
             # are mostly full-frame; insets shrink already-compressed vertical footage.
@@ -5580,12 +5659,57 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     return None
 
 
+# WS5 (build 49) — smart cover selection (Netflix-AVA pattern, deterministic version):
+# instead of blindly grabbing the 0.6s frame, score a handful of candidates on
+# sharpness (Laplacian variance), exposure sanity, face presence/size (YuNet — feeds
+# crop to a center square in grids, so a big centered face wins), and pick the best.
+# Kill-switch: COVER_SELECT=off → the historical fixed 0.6s frame.
+COVER_SELECT = os.environ.get("COVER_SELECT", "on").lower() not in ("0", "false", "off")
+
+
+def _score_cover_frame(img_path: str) -> float | None:
+    """0-100ish cover score for one candidate jpeg. cv2 is already a dependency
+    (faces.py); None = unreadable frame."""
+    try:
+        import cv2
+        img = cv2.imread(img_path)
+        if img is None:
+            return None
+        h, w = img.shape[:2]
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Sharpness: Laplacian variance, log-compressed so it doesn't dominate.
+        import math
+        sharp = math.log10(max(1.0, float(cv2.Laplacian(gray, cv2.CV_64F).var()))) * 12
+        # Exposure sanity: mean luma comfortably inside [40, 210].
+        mean = float(gray.mean())
+        expo = 20.0 - min(20.0, abs(mean - 125.0) / 4.0)
+        # Face: biggest detected face, weighted by size and closeness to center
+        # (feed grids crop to a center square — an edge face gets cropped out).
+        face = 0.0
+        try:
+            from app import faces as faces_mod
+            det = cv2.FaceDetectorYN.create(faces_mod._MODEL_PATH, "", (w, h), 0.6)
+            det.setInputSize((w, h))
+            _, found = det.detect(img)
+            if found is not None and len(found):
+                fx, fy, fw, fh = max(((f[0], f[1], f[2], f[3]) for f in found),
+                                     key=lambda b: b[2] * b[3])
+                size_frac = (fw * fh) / (w * h)
+                cx = (fx + fw / 2) / w
+                center = 1.0 - min(1.0, abs(cx - 0.5) * 2)
+                face = min(30.0, size_frac * 400) + center * 10
+        except Exception:
+            pass
+        return sharp + expo + face
+    except Exception:
+        return None
+
+
 async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | None:
-    """Extract a single poster frame from the finished render and host it, so Library
-    cards have a real thumbnail instead of a gray placeholder. ffmpeg range-reads the
-    remote mp4 (fast keyframe seek at ~0.6s to skip a black first frame) — no full
-    download. Fully fail-soft: any missing binary / bad frame / upload failure returns
-    None and the card just keeps its play-icon placeholder. Never raises."""
+    """Extract a poster frame from the finished render and host it. WS5: candidates at
+    several timestamps are SCORED (sharpness/exposure/face) and the best becomes the
+    cover; fail-soft at every step to the historical fixed 0.6s frame, then to None
+    (the card keeps its play-icon placeholder). Never raises."""
     if not render_url or shutil.which("ffmpeg") is None:
         return None
     if not (SUPABASE_URL and SUPABASE_KEY):
@@ -5593,14 +5717,34 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
     try:
         with tempfile.TemporaryDirectory() as td:
             out_path = os.path.join(td, "poster.jpg")
-            args = ["ffmpeg", "-y", "-ss", "0.6", "-i", render_url,
-                    "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4",
-                    "-f", "image2", out_path]
-            p = await asyncio.create_subprocess_exec(
-                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            await asyncio.wait_for(p.communicate(), timeout=45)
-            if p.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-                return None
+            if COVER_SELECT:
+                # Candidates across the first ~10s (the hook zone reads best as a cover);
+                # scored at 540px width — the same size we host.
+                best_score, best_path = None, None
+                for i, t in enumerate([0.6, 1.5, 3.0, 5.0, 8.0]):
+                    cand = os.path.join(td, f"cand{i}.jpg")
+                    p = await asyncio.create_subprocess_exec(
+                        "ffmpeg", "-y", "-ss", str(t), "-i", render_url,
+                        "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4",
+                        "-f", "image2", cand,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    await asyncio.wait_for(p.communicate(), timeout=30)
+                    if p.returncode != 0 or not os.path.exists(cand) or os.path.getsize(cand) == 0:
+                        continue
+                    s = _score_cover_frame(cand)
+                    if s is not None and (best_score is None or s > best_score):
+                        best_score, best_path = s, cand
+                if best_path:
+                    out_path = best_path
+            if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                args = ["ffmpeg", "-y", "-ss", "0.6", "-i", render_url,
+                        "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4",
+                        "-f", "image2", out_path]
+                p = await asyncio.create_subprocess_exec(
+                    *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                await asyncio.wait_for(p.communicate(), timeout=45)
+                if p.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+                    return None
             with open(out_path, "rb") as f:
                 data = f.read()
         base = SUPABASE_URL.rstrip("/")
