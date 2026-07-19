@@ -38,7 +38,8 @@ from app import themes as themes_mod
 # csv member) expands to the core set; framing/hook_pack/jitter/cold_open/dropout are
 # opt-in extras that must be listed explicitly (e.g. "all,framing,hook_pack,jitter").
 # Individual names: filler, retake, pacing, emphasis, interrupts, sfx,
-# structure (hook/end_card/loop_tail), cold_open, dropout, framing, hook_pack, jitter.
+# structure (hook/end_card/loop_tail), cold_open, dropout, framing, hook_pack, jitter,
+# beat_snap (WS3 — needs catalog beat grids; inert without them).
 _ENV_PASSES = os.environ.get("RETENTION_PASSES", "")
 _ALL_PASSES = {"filler", "retake", "pacing", "emphasis", "interrupts", "sfx", "structure"}
 
@@ -1666,7 +1667,9 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
                            dossier: dict | None = None, hints: dict | None = None,
                            script: dict | None = None, level: str = "default",
                            sfx_assets: dict[str, str | None] | None = None,
-                           job_seed: str = "", theme=None, genre_density: str = "") -> dict:
+                           job_seed: str = "", theme=None, genre_density: str = "",
+                           beat_grid: list | None = None,
+                           beat_conf: float | None = None) -> dict:
     """Entry point called once from `_run_edit`, after EITHER author path builds
     its EDL and before `_resolve_broll`/`build_render_plan`. `hints` carries the
     plan author's typed decisions (pacing/interrupt_density/hook_text/end_card/
@@ -1782,12 +1785,128 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         edl = _safe_pass("plan_music_dropout", edl, plan_music_dropout, words,
                          style=style, emphasis_spans=emphasis_spans)
 
+    # WS3 (build 49) beat_snap — opt-in token "beat_snap". Same ordering contract as
+    # dropout (after every timeline-mutating pass: it maps source anchors through the
+    # final output index). Inert without a catalog beat grid (main threads it from the
+    # selected track's offline-computed metadata) — so enabling the token before the
+    # music catalog carries grids is a safe no-op.
+    if "beat_snap" in enabled:
+        edl = _safe_pass("beat_snap", edl, beat_snap, words,
+                         beat_grid=beat_grid, beat_conf=beat_conf)
+
     # FINAL: cap combined framing×punch scale to the 120% ceiling (spec §6.1 / HC7).
     # A punch overlay multiplies on top of the playing segment's tx_scale in the renderer,
     # so a close-framed (1.18) segment under a 1.12 punch would hit ~1.32. Runs after every
     # pass so it catches punches added by interrupts/emphasis/hook_pack too. Deterministic,
     # never raises — a plain clamp, not a _safe_pass (it can only lower a scale).
     edl = _clamp_combined_scale(edl)
+    return edl
+
+
+# ---------------------------------------------------------------------------
+# WS3 (build 49) — beat_snap: align visual events to the music's beat grid.
+# Music that visibly ignores the cut rhythm is a strong "AI-assembled" tell;
+# editors snap INSERT/pop events to beats but deliberately NOT dialogue cuts.
+# The grid comes from the offline catalog pipeline (scripts/build_music_catalog.py:
+# librosa beat_track per track → beat times in seconds + a confidence proxy);
+# low-confidence grids (lo-fi/ambient where trackers guess) disable snapping
+# entirely — a wrong grid is worse than none. madmom research (Böck ISMIR'16):
+# F1 0.86-0.94 on produced western music, 0.52 on expressive material — hence
+# the gate.
+#
+# Mechanics: the music track starts at OUTPUT frame 0 (AudioMix plays it from
+# composition start; the MUSIC_LEAD gate only shapes volume), so beat time t
+# lands at output frame round(t*fps). Events are stored in SOURCE coords →
+# convert via the same _build_output_index/_src_to_out machinery the interrupt
+# scheduler uses, shift by the small output delta (divided by the segment's
+# speed back to source frames), and verify the shifted position still maps into
+# kept footage. Events land ONE frame BEFORE the beat (the craft rule: the cut
+# reads as "on" the beat when the new image is already up as it hits). Runs in
+# the dropout slot (after every timeline-mutating pass) — same ordering
+# contract as plan_music_dropout.
+# ---------------------------------------------------------------------------
+
+_BEAT_SNAP_MIN_CONF = 0.5      # below this the grid is a guess — never snap
+_BEAT_SNAP_TOLERANCE_OUT = 4   # only move events already within ~130ms of a beat
+_BEAT_SNAP_LAND_BEFORE = 1     # land this many frames BEFORE the beat
+_BEAT_SNAP_HOOK_GUARD_OUT = 30 # never touch the first second (hook open is sacred)
+
+
+def beat_snap(edl: dict, words: list[dict], *, beat_grid: list | None = None,
+              beat_conf: float | None = None, fps: int = 30) -> dict:
+    """Snap b-roll IN points, interrupt text-sticker pops, and punch-in overlays to the
+    nearest beat within ±_BEAT_SNAP_TOLERANCE_OUT output frames. Never moves segments
+    (dialogue cuts), the hook open, or anything when the grid is absent/low-confidence.
+    Holds are preserved (src_out shifts with src_in)."""
+    if not beat_grid or (beat_conf is not None and beat_conf < _BEAT_SNAP_MIN_CONF):
+        return edl
+    music = (edl.get("audio") or {}).get("music") or {}
+    if not music.get("url"):
+        return edl
+    segments = edl.get("segments") or []
+    if not segments:
+        return edl
+    edl = copy.deepcopy(edl)
+    index, total_out = _build_output_index(edl.get("segments") or [],
+                                           edl.get("drops") or [], _play_order(edl))
+    beat_frames = sorted({round(float(t) * fps) for t in beat_grid
+                          if isinstance(t, (int, float)) and t >= 0})
+    beat_frames = [b for b in beat_frames if b < total_out]
+    if not beat_frames:
+        return edl
+
+    def _snap_delta_out(out_pos: int) -> int | None:
+        """Output-frame delta to land 1f before the nearest beat, or None if no beat
+        is within tolerance / the event is inside the hook guard."""
+        if out_pos < _BEAT_SNAP_HOOK_GUARD_OUT:
+            return None
+        nearest = min(beat_frames, key=lambda b: abs(b - out_pos))
+        if abs(nearest - out_pos) > _BEAT_SNAP_TOLERANCE_OUT:
+            return None
+        target = max(0, nearest - _BEAT_SNAP_LAND_BEFORE)
+        return target - out_pos
+
+    def _seg_speed_at(src: int) -> float:
+        for lo, hi, _, speed in index:
+            if lo <= src < hi:
+                return speed
+        return 1.0
+
+    def _shift(item: dict) -> bool:
+        src_in = item.get("src_in")
+        if not isinstance(src_in, int):
+            return False
+        out_pos = _src_to_out(index, src_in)
+        if out_pos is None:
+            return False
+        delta_out = _snap_delta_out(out_pos)
+        if delta_out is None or delta_out == 0:
+            return False
+        delta_src = round(delta_out * _seg_speed_at(src_in))
+        if delta_src == 0:
+            return False
+        new_in = src_in + delta_src
+        # The shifted anchor must still map into kept footage near the target —
+        # crossing a drop/segment boundary would teleport the event; skip instead.
+        new_out = _src_to_out(index, new_in)
+        if new_out is None or abs(new_out - (out_pos + delta_out)) > 1:
+            return False
+        item["src_in"] = new_in
+        if isinstance(item.get("src_out"), int):
+            item["src_out"] = item["src_out"] + delta_src   # preserve the hold
+        return True
+
+    snapped = 0
+    for b in edl.get("broll") or []:
+        if _shift(b):
+            snapped += 1
+    for o in edl.get("overlays") or []:
+        # Interrupt stickers + punch-ins snap; the hook sticker (inside the hook guard)
+        # and every other overlay type are left alone.
+        if o.get("type") in ("text_sticker", "punch_in") and _shift(o):
+            snapped += 1
+    if snapped:
+        edl.setdefault("_beat_snap", {})["snapped"] = snapped
     return edl
 
 

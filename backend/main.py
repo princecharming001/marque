@@ -2732,6 +2732,13 @@ _TONE_TO_TRACK_TONE = {
 }
 
 
+def _bpm_band_sorted(tracks: list[dict]) -> list[dict]:
+    """WS3: within a matched group, prefer the 80-120 BPM band (the talking-head
+    sweet spot — slow enough to sit under speech, fast enough to drive cuts).
+    Stable sort so the seed-pick distribution inside each band is unchanged."""
+    return sorted(tracks, key=lambda t: 0 if 80 <= (t.get("bpm") or 0) <= 120 else 1)
+
+
 def _select_music_track(vibe: str = "", tone: str = "", montage: bool = False,
                         seed: int = 0) -> dict:
     """Pick the best-matching track: brand tone first, then the plan's vibe, then a
@@ -2739,11 +2746,11 @@ def _select_music_track(vibe: str = "", tone: str = "", montage: bool = False,
     cat = MUSIC_TRACKS or _BUILTIN_MUSIC_TRACKS
     want_tone = _TONE_TO_TRACK_TONE.get((tone or "").strip().lower())
     if want_tone:
-        matches = [t for t in cat if (t.get("tone") or "").lower() == want_tone]
+        matches = _bpm_band_sorted([t for t in cat if (t.get("tone") or "").lower() == want_tone])
         if matches:
             return matches[seed % len(matches)]
     if vibe:
-        matches = [t for t in cat if (t.get("vibe") or "").lower() == vibe.strip().lower()]
+        matches = _bpm_band_sorted([t for t in cat if (t.get("vibe") or "").lower() == vibe.strip().lower()])
         if matches:
             return matches[seed % len(matches)]
     if montage:
@@ -2751,6 +2758,24 @@ def _select_music_track(vibe: str = "", tone: str = "", montage: bool = False,
         if hi:
             return hi[seed % len(hi)]
     return cat[seed % len(cat)]
+
+
+def _music_beat_meta(edl: dict) -> tuple[list | None, float | None]:
+    """WS3: the selected track's offline beat grid + confidence, looked up by the URL
+    the vibe pass stamped into the EDL. The grid deliberately does NOT live on the EDL
+    (it would leak into the render plan and churn the _TS_* contract) — it's threaded
+    as a retention-pass parameter instead. (None, None) until the owner's catalog
+    (scripts/build_music_catalog.py) carries grids."""
+    url = ((edl.get("audio") or {}).get("music") or {}).get("url")
+    if not url:
+        return (None, None)
+    for t in (MUSIC_TRACKS or []):
+        if t.get("url") == url:
+            grid = t.get("beat_grid")
+            conf = t.get("beat_conf")
+            return (grid if isinstance(grid, list) and grid else None,
+                    float(conf) if isinstance(conf, (int, float)) else None)
+    return (None, None)
 
 # P4: kind -> hosted one-shot SFX URL, read by retention.synthesize_sfx (passed in
 # as sfx_assets=SFX_ASSETS, never imported the other direction — main.py already
@@ -4912,11 +4937,14 @@ async def _run_edit(job_id: str, words: list[dict]):
         # prompts.GENRE_PROFILES.
         _video_type_for_genre = (job.get("edit_brief") or {}).get("video_type", "")
         genre_density = prompts.GENRE_PROFILES.get(_video_type_for_genre, {}).get("interrupt_density", "")
+        # WS3: the selected music track's offline beat grid (None until the catalog
+        # carries grids — beat_snap is then a guaranteed no-op even when its token is on).
+        _beat_grid, _beat_conf = _music_beat_meta(edl_data)
         edl_data = retention_mod.apply_retention_passes(
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
             dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
             sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"),
-            genre_density=genre_density)
+            genre_density=genre_density, beat_grid=_beat_grid, beat_conf=_beat_conf)
         # A1: deterministic pre-render lint — a live scoreboard of "amateur tells"
         # (dead stretches, glitch cuts, metronomic pacing, off-anchor effects, mixed
         # caption/transition grammars) on WHATEVER the two author paths + retention
