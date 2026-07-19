@@ -443,6 +443,75 @@ DIMENSIONS = ["pillar", "style", "format_id", "hook_signal"]
 KAPPA = 5.0
 EXPLORATION_FLOOR = 0.15
 
+# WS6 (build 49) — EDITING-knob bandit dimensions, layered on the same Thompson/arm_stats
+# machinery that already learns script-level dims. Arms are keyed "edit_<knob>:<value>".
+# EDIT_BANDIT=off (default) → the pipeline behaves exactly as today BUT every job still
+# LOGS its knob values + propensities (job["edit_knobs"]), so offline replay evaluation
+# has data from day one and flipping the flag later starts from a warm log, not zero.
+# v1 knob: meme_intensity when the creator did NOT explicitly set it (an explicit choice
+# is never overridden — the bandit only owns the default).
+EDIT_BANDIT = os.environ.get("EDIT_BANDIT", "").lower() in ("1", "true", "on")
+EDIT_KNOBS: dict[str, list[str]] = {
+    "meme_intensity": ["0", "1", "2", "3"],
+}
+_PROPENSITY_DRAWS = 64   # Monte-Carlo draws to estimate each arm's win probability
+
+
+def _knob_propensities(creator_id: str, knob: str, values: list[str],
+                       niche: str = "") -> dict[str, float]:
+    """P(arm wins a Thompson draw) per value, via Monte-Carlo over the Beta posteriors —
+    the logged propensity that makes offline replay (IPS/DR) possible later. Uniform when
+    the creator has no arm data yet."""
+    import random as _rnd
+    stats = _arm_stats.get(creator_id, {})
+    posts = []
+    for v in values:
+        s = stats.get(f"edit_{knob}:{v}", {})
+        posts.append((max(0.01, float(s.get("alpha", 1.0))),
+                      max(0.01, float(s.get("beta", 1.0)))))
+    wins = [0] * len(values)
+    for _ in range(_PROPENSITY_DRAWS):
+        draws = [_rnd.betavariate(a, b) for a, b in posts]
+        wins[draws.index(max(draws))] += 1
+    return {v: round(w / _PROPENSITY_DRAWS, 3) for v, w in zip(values, wins)}
+
+
+def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") -> dict:
+    """Decide the bandit-owned editing knobs for one job and ALWAYS return the propensity
+    log. Explicit creator choices pass through untouched (propensity 1.0, chosen_by
+    'creator'). With EDIT_BANDIT off, defaults are used but propensities are still
+    computed and logged."""
+    import random as _rnd
+    config = config or {}
+    out: dict = {"bandit_active": EDIT_BANDIT, "knobs": {}, "knowledge_version":
+                 os.environ.get("KNOWLEDGE_VERSION", "")}
+    for knob, values in EDIT_KNOBS.items():
+        explicit = str(config.get(knob)) if config.get(knob) is not None else None
+        if explicit is not None and explicit in values:
+            out["knobs"][knob] = {"value": explicit, "chosen_by": "creator",
+                                  "propensity": 1.0}
+            continue
+        props = _knob_propensities(creator_id, knob, values, niche)
+        if EDIT_BANDIT:
+            # One true Thompson draw decides; its logged propensity is the MC estimate.
+            stats = _arm_stats.get(creator_id, {})
+            best_v, best_d = values[0], -1.0
+            for v in values:
+                s = stats.get(f"edit_{knob}:{v}", {})
+                d = _rnd.betavariate(max(0.01, float(s.get("alpha", 1.0))),
+                                     max(0.01, float(s.get("beta", 1.0))))
+                if d > best_d:
+                    best_v, best_d = v, d
+            out["knobs"][knob] = {"value": best_v, "chosen_by": "bandit",
+                                  "propensity": props.get(best_v, 0.0),
+                                  "propensities": props}
+        else:
+            default = "1" if knob == "meme_intensity" else values[0]
+            out["knobs"][knob] = {"value": default, "chosen_by": "default",
+                                  "propensity": props.get(default, 0.0),
+                                  "propensities": props}
+    return out
+
 # Cold-start: seed a new arm's Beta prior from its niche so Thompson sampling favors
 # what tends to over-index in that niche BEFORE the creator has their own data. Small
 # pseudo-count → a handful of real posts dominate it. Neutral arms (and every arm when
@@ -2939,6 +3008,18 @@ async def _create_clip_job_impl(req: ClipJobRequest):
     }
     job["custom_instructions"] = req.custom_instructions
     job["creator_id"] = req.creator_id                       # UX-B1a: keys push + learning
+    # WS6 (build 49): decide + LOG the bandit-owned editing knobs. Propensities are
+    # recorded on every job (offline-replay data from day one); values only change
+    # behavior when EDIT_BANDIT is on AND the creator didn't set the knob explicitly.
+    try:
+        job["edit_knobs"] = _select_edit_knobs(
+            req.creator_id, req.config, _creator_niche.get(req.creator_id, ""))
+        if EDIT_BANDIT:
+            for k, meta in job["edit_knobs"]["knobs"].items():
+                if meta.get("chosen_by") == "bandit":
+                    job["config"].setdefault(k, meta["value"])
+    except Exception as e:
+        logging.warning("edit-knob selection failed (non-fatal): %s", e)
     if req.toggles:
         job["toggles"] = req.toggles                          # explicit beats every default
     # Split screen with no reacted-to clip silently degrades to plain talking-head
@@ -8069,6 +8150,18 @@ async def register_post(req: PostRegisterRequest):
         "predicted_score": req.predicted_score,
         "settled": False,
     }
+    # WS6 (build 49): carry the clip's EDITING-knob decisions (+ logged propensities) into
+    # the post record, so the settle path can update edit-knob arms with real outcomes and
+    # offline replay has (action, propensity, reward) triples. Best-effort join: the clip's
+    # job may already be TTL-swept — then the post just learns script dims like before.
+    try:
+        for j in _clip_jobs.values():
+            if any(c.get("clip_id") == req.clip_id for c in (j.get("clips") or [])):
+                if j.get("edit_knobs"):
+                    post_data["edit_knobs"] = j["edit_knobs"]
+                break
+    except Exception:
+        pass
     _post_registry[req.post_id] = {**post_data, "outcome_y": None, "metrics": None}
     if _supabase_client:
         try:
@@ -8159,6 +8252,14 @@ async def ingest_metrics(req: MetricsIngestRequest):
         val = entry.get(dim, "")
         if val:
             await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche)
+
+    # WS6 (build 49): edit-knob arms settle through the SAME machinery. Only knobs the
+    # BANDIT or DEFAULT chose update arms — an explicit creator choice isn't an experiment
+    # (its propensity is 1.0 and updating would just echo the creator's taste back).
+    for knob, meta in ((entry.get("edit_knobs") or {}).get("knobs") or {}).items():
+        if isinstance(meta, dict) and meta.get("chosen_by") in ("bandit", "default") \
+                and meta.get("value") is not None:
+            await _update_arm(creator_id, f"edit_{knob}:{meta['value']}", y, raw, niche)
 
     # Attribute the just-settled post to ITS OWN driving dimension (not the creator's
     # globally strongest arm). Honest by construction — only driver/error bands it can
