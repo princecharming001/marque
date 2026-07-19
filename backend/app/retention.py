@@ -1804,6 +1804,50 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
 
 
 # ---------------------------------------------------------------------------
+# WS4 (build 49) — face-aware framing (AutoFlip's static-crop rule). The generic
+# framing pass punches in about the frame CENTER with a fixed -0.02 nudge; with a
+# real YuNet face box we can place the EYE LINE at ~1/3 of the frame instead —
+# the single strongest "a human framed this" signal. STATIC by design: one
+# vertical offset per segment scale, no per-frame tracking (AutoFlip's own
+# finding: static beats tracking for a single speaker; tracking reads as AI).
+# Gated by main's FRAMING_FACE_AWARE env (default OFF until the owner eyeballs a
+# render) — this function is pure and deterministic.
+# ---------------------------------------------------------------------------
+
+_FACE_TARGET_EYE_Y = 0.33     # rule of thirds: eyes at the top third line
+_FACE_MAX_SHIFT = 0.08        # never pan more than 8% of frame height
+_FACE_MIN_SHIFT = 0.005       # sub-noise adjustments round to zero
+
+
+def face_aware_reframe(edl: dict, face_box: dict | None) -> dict:
+    """Set each PUNCHED-IN segment's tx_y so the speaker's eye line sits at the top-third
+    line under that segment's own scale. Wide (scale≈1) segments are left alone — the
+    full frame is the framing. No-op without a face box."""
+    if not face_box:
+        return edl
+    try:
+        eye_y = float(face_box["y"]) + 0.35 * float(face_box["h"])   # eyes ≈ 35% into the box
+    except (KeyError, TypeError, ValueError):
+        return edl
+    if not (0.0 < eye_y < 1.0):
+        return edl
+    segments = edl.get("segments") or []
+    for seg in segments:
+        s = float(seg.get("tx_scale") or 1.0)
+        if s <= 1.02:
+            continue                       # wide shot: never pan the base frame
+        # Point eye_y maps to 0.5 + (eye_y - 0.5)·s after a center-scale; tx_y closes
+        # the gap to the target line.
+        shift = _FACE_TARGET_EYE_Y - (0.5 + (eye_y - 0.5) * s)
+        shift = max(-_FACE_MAX_SHIFT, min(_FACE_MAX_SHIFT, shift))
+        if abs(shift) < _FACE_MIN_SHIFT:
+            shift = 0.0
+        seg["tx_y"] = round(shift, 4)
+    edl["segments"] = segments
+    return edl
+
+
+# ---------------------------------------------------------------------------
 # WS3 (build 49) — beat_snap: align visual events to the music's beat grid.
 # Music that visibly ignores the cut rhythm is a strong "AI-assembled" tell;
 # editors snap INSERT/pop events to beats but deliberately NOT dialogue cuts.

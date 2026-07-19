@@ -26,7 +26,7 @@ from app.edl import ms_to_frame
 log = logging.getLogger("dossier")
 
 DOSSIER_VERSION = "dossier-v1"
-VIDEO_UNDERSTANDING = os.environ.get("VIDEO_UNDERSTANDING", "off")   # twelvelabs|claude_frames|off
+VIDEO_UNDERSTANDING = os.environ.get("VIDEO_UNDERSTANDING", "off")   # twelvelabs|claude_frames|claude_frames_sparse|off
 TWELVELABS_KEY = os.environ.get("TWELVELABS_KEY", "")
 TWELVELABS_INDEX_ID = os.environ.get("TWELVELABS_INDEX_ID", "")
 TWELVELABS_BASE = os.environ.get("TWELVELABS_BASE", "https://api.twelvelabs.io/v1.3")
@@ -72,6 +72,18 @@ async def generate_dossier(source_url: str, duration_ms: int,
             return await _claude_frames_dossier(source_url, duration_ms)
         except Exception as e:
             log.warning("dossier: claude_frames error (%s) → no dossier", e)
+            return None
+
+    # WS4 (build 49): sparse decision-point sampling — scene-change frames (ffmpeg
+    # scene filter) + first frame, cap 20, LONG EDGE ≤730px (~500 vision tokens/frame
+    # on 9:16; a 720-WIDE portrait frame costs ~1,200 — the sizing is the cost lever).
+    # Cheaper and better-targeted than uniform 0.5fps for the PLANNER use case: the
+    # planner needs eyes at the moments something changes, not a flat filmstrip.
+    if provider == "claude_frames_sparse":
+        try:
+            return await _claude_frames_sparse_dossier(source_url, duration_ms)
+        except Exception as e:
+            log.warning("dossier: claude_frames_sparse error (%s) → no dossier", e)
             return None
 
     return None
@@ -279,6 +291,74 @@ async def _vision_json(system: str, user: str, images: list[bytes], schema: dict
         r.raise_for_status()
         text = "".join(b.get("text", "") for b in r.json().get("content", []))
     return _coerce_json(text)
+
+
+async def _extract_sparse_frames(source_url: str, duration_ms: int,
+                                 cap: int = 20) -> list[tuple[int, bytes]]:
+    """WS4: decision-point frames — the full-res first frame + ffmpeg scene-change
+    frames (select='gt(scene,0.3)'), long edge ≤730px, capped. Falls back to a
+    coarse even sample when the scene filter finds nothing (a static talking head
+    has few scene changes — that's fine, the planner mostly needs the open + a few
+    mid anchors there). [] on any failure (caller fails the provider down)."""
+    import shutil, tempfile, subprocess, glob
+    if not shutil.which("ffmpeg"):
+        return []
+    scale = "scale=w='if(gte(iw,ih),730,-2)':h='if(gte(iw,ih),-2,730)'"
+    frames: list[tuple[int, bytes]] = []
+    with tempfile.TemporaryDirectory() as td:
+        first = os.path.join(td, "first.jpg")
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", source_url, "-frames:v", "1",
+                            "-vf", scale, "-q:v", "3", first],
+                           capture_output=True, timeout=60)
+            if os.path.exists(first):
+                with open(first, "rb") as fh:
+                    frames.append((0, fh.read()))
+        except (subprocess.SubprocessError, OSError):
+            pass
+        pat = os.path.join(td, "sc_%04d.jpg")
+        try:
+            subprocess.run(["ffmpeg", "-y", "-i", source_url,
+                            "-vf", f"select='gt(scene,0.3)',{scale}", "-vsync", "vfr",
+                            "-q:v", "4", pat], capture_output=True, timeout=120)
+        except (subprocess.SubprocessError, OSError):
+            pass
+        scene_paths = sorted(glob.glob(os.path.join(td, "sc_*.jpg")))
+        if not scene_paths:
+            # Static take: even anchors every ~5s instead.
+            try:
+                subprocess.run(["ffmpeg", "-y", "-i", source_url,
+                                "-vf", f"fps=1/5,{scale}", "-q:v", "4", pat],
+                               capture_output=True, timeout=120)
+                scene_paths = sorted(glob.glob(os.path.join(td, "sc_*.jpg")))
+            except (subprocess.SubprocessError, OSError):
+                pass
+        step = max(1, len(scene_paths) // max(1, cap - len(frames)))
+        for i, p in enumerate(scene_paths[::step][:cap - len(frames)]):
+            try:
+                with open(p, "rb") as fh:
+                    # Timestamps unknown for scene frames; approximate by even spread.
+                    approx_ms = int((i + 1) * (duration_ms or 60000) / (len(scene_paths[::step][:cap]) + 1))
+                    frames.append((approx_ms, fh.read()))
+            except OSError:
+                continue
+    return frames
+
+
+async def _claude_frames_sparse_dossier(source_url: str, duration_ms: int) -> dict | None:
+    frames = await _extract_sparse_frames(source_url, duration_ms)
+    if not frames:
+        return None
+    user = (f"{_GENERATE_INSTRUCTIONS}\n\nThe {len(frames)} images are DECISION-POINT frames "
+            f"of a {duration_ms//1000}s take: the opening frame first, then frames where the "
+            f"visual content changed. Times you report are approximate — anchor observations "
+            f"to what you SEE, and focus on framing quality, gaffes, energy shifts, and any "
+            f"on-screen text.")
+    raw = await _vision_json("You analyze short-form video frames into a visual dossier.",
+                             user, [b for _, b in frames], _CLAUDE_FRAMES_SCHEMA)
+    if not isinstance(raw, dict):
+        return None
+    return _normalize(raw, "claude_frames_sparse")
 
 
 async def _claude_frames_dossier(source_url: str, duration_ms: int) -> dict | None:

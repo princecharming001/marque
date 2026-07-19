@@ -1428,7 +1428,11 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "anti-pattern); never invent a claim they didn't make. \"\" if redundant.\n"
         "- end_card: wanted=true ONLY when the creator gives an explicit CTA worth holding on "
         "(follow/subscribe/link-in-bio) — text is that CTA verbatim-ish. This REPLACES the loop ending, so "
-        "default wanted=false (a loop ending serves CTA-less takes better).\n\n"
+        "default wanted=false (a loop ending serves CTA-less takes better). WS5 loop craft: when the "
+        "take's LAST sentence grammatically continues into its OPENING line (the creator wrote a loop), "
+        "protect that final sentence with a keep and set wanted=false — replays now count 1:1 on IG/"
+        "Shorts, and a seamless grammatical loop is the strongest replay trigger there is. Never "
+        "manufacture one by cutting mid-thought; only protect a loop the creator actually spoke.\n\n"
         f"{kb_block}\n\n"
         "Reply with ONLY the JSON object. No prose, no code fences."
     )

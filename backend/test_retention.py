@@ -1437,3 +1437,29 @@ def test_beat_snap_token_registered_and_inert_without_grid(monkeypatch):
     out = retention.apply_retention_passes(edl, words, style="talking_head",
                                            beat_grid=None, beat_conf=None)
     assert out["broll"][0]["src_in"] == edl["broll"][0]["src_in"]   # no grid → no-op
+
+
+# ---------------------------------------------------------------------------
+# WS4 (build 49) — face-aware reframe (AutoFlip static-crop rule)
+# ---------------------------------------------------------------------------
+
+def test_face_aware_reframe_targets_eye_line_only_on_punched_segments():
+    # Face box centered-high: eyes at y+0.35h = 0.30+0.35*0.20 = 0.37.
+    face = {"x": 0.35, "y": 0.30, "w": 0.30, "h": 0.20}
+    edl = {"segments": [
+        {"src_in": 0, "src_out": 100, "tx_scale": 1.0},     # wide → untouched
+        {"src_in": 100, "src_out": 200, "tx_scale": 1.15},  # punched → eye line to 1/3
+    ]}
+    out = retention.face_aware_reframe(edl, face)
+    assert "tx_y" not in out["segments"][0] or out["segments"][0].get("tx_y") in (None, 0.0)
+    # expected: 0.33 - (0.5 + (0.37-0.5)*1.15) = 0.33 - 0.3505 = -0.0205
+    assert abs(out["segments"][1]["tx_y"] - (-0.0205)) < 0.001
+
+
+def test_face_aware_reframe_clamps_and_noop_without_box():
+    edl = {"segments": [{"src_in": 0, "src_out": 100, "tx_scale": 1.18}]}
+    # Face very low in frame → huge upward shift, clamped to ±0.08.
+    out = retention.face_aware_reframe(dict(edl), {"x": 0.3, "y": 0.7, "w": 0.3, "h": 0.25})
+    assert abs(out["segments"][0]["tx_y"]) <= 0.08
+    assert retention.face_aware_reframe(dict(edl), None) == edl          # no box → no-op
+    assert retention.face_aware_reframe(dict(edl), {"x": 0.1}) == edl    # malformed → no-op
