@@ -1373,3 +1373,67 @@ def test_synthesize_sfx_theme_none_uses_module_default():
                     overlays=[{"type": "punch_in", "src_in": 300, "src_out": 340, "scale": 1.08, "text": ""}])
     out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
     assert out["audio"]["sfx"][0]["gain"] == retention.SFX_GAIN_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# WS3 (build 49) — beat_snap
+# ---------------------------------------------------------------------------
+
+def _beat_edl(broll_in=118, sticker_in=208):
+    return {
+        "segments": [{"src_in": 0, "src_out": 600, "speed": 1.0}],
+        "drops": [],
+        "audio": {"music": {"url": "https://cdn/track.mp3", "volume": 0.12, "duck_voice": True}},
+        "broll": [{"src_in": broll_in, "src_out": broll_in + 45, "need": "entity"}],
+        "overlays": [{"type": "text_sticker", "src_in": sticker_in, "src_out": sticker_in + 60,
+                      "text": "POP"}],
+    }
+
+
+def test_beat_snap_snaps_broll_one_frame_before_beat():
+    # Beat every 0.5s (120 BPM) → beat frames 0,15,30,...  b-roll at 118 is 2f from
+    # the beat at 120 → snaps to 119 (one frame BEFORE), hold preserved.
+    grid = [i * 0.5 for i in range(40)]
+    out = retention.beat_snap(_beat_edl(), [], beat_grid=grid, beat_conf=0.9)
+    b = out["broll"][0]
+    assert b["src_in"] == 119
+    assert b["src_out"] == 119 + 45              # hold length unchanged
+    st = [o for o in out["overlays"] if o["type"] == "text_sticker"][0]
+    assert st["src_in"] == 209                    # 208 → beat 210 − 1
+
+
+def test_beat_snap_low_confidence_and_missing_grid_are_noops():
+    edl = _beat_edl()
+    assert retention.beat_snap(edl, [], beat_grid=[0.5, 1.0], beat_conf=0.2) == edl
+    assert retention.beat_snap(edl, [], beat_grid=None, beat_conf=0.9) == edl
+    no_music = _beat_edl(); no_music["audio"] = {}
+    assert retention.beat_snap(no_music, [], beat_grid=[0.5], beat_conf=0.9) == no_music
+
+
+def test_beat_snap_never_moves_far_events_segments_or_hook_zone():
+    grid = [i * 0.5 for i in range(40)]
+    edl = _beat_edl(broll_in=127)                 # 7f from nearest beat — outside ±4 tolerance
+    edl["broll"].append({"src_in": 10, "src_out": 40, "need": "entity"})   # hook guard zone
+    out = retention.beat_snap(edl, [], beat_grid=grid, beat_conf=0.9)
+    assert out["broll"][0]["src_in"] == 127       # too far → untouched
+    assert out["broll"][1]["src_in"] == 10        # inside first second → untouched
+    assert out["segments"] == edl["segments"]     # dialogue cuts NEVER move
+
+
+def test_beat_snap_respects_speed_and_kept_mapping():
+    # Segment at 2x speed: output frame = src/2. Beat at 2.0s = out 60 → src 120.
+    # b-roll src 116 → out 58, delta_out +1 (target 59) → delta_src +2.
+    edl = _beat_edl(broll_in=116)
+    edl["segments"] = [{"src_in": 0, "src_out": 600, "speed": 2.0}]
+    grid = [2.0]
+    out = retention.beat_snap(edl, [], beat_grid=grid, beat_conf=0.9)
+    assert out["broll"][0]["src_in"] == 118
+
+
+def test_beat_snap_token_registered_and_inert_without_grid(monkeypatch):
+    monkeypatch.setattr(retention, "_ENV_PASSES", "beat_snap")
+    edl = _beat_edl()
+    words = [{"text": "hi", "start": 0, "end": 400}]
+    out = retention.apply_retention_passes(edl, words, style="talking_head",
+                                           beat_grid=None, beat_conf=None)
+    assert out["broll"][0]["src_in"] == edl["broll"][0]["src_in"]   # no grid → no-op
