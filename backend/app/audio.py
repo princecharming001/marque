@@ -151,12 +151,23 @@ def parse_loudnorm_json(stderr_text: str) -> dict | None:
 
 
 def loudnorm_pass2_args(url: str, measured: dict, out_path: str,
-                        target_lufs: float = DEFAULT_TARGET_LUFS) -> list[str] | None:
+                        target_lufs: float = DEFAULT_TARGET_LUFS,
+                        polish: bool = False) -> list[str] | None:
     """ffmpeg argv for loudnorm APPLY pass 2 — video stream-copied (duration
     stays byte-identical, so a caller can ffprobe-verify before adopting the
     output), audio re-encoded through loudnorm seeded with pass 1's measured
     stats. Returns None if `measured` is missing a required key (caller keeps
-    the un-normalized source in that case)."""
+    the un-normalized source in that case).
+
+    `polish` (WS1, build 49): prepend the voice-polish chain (HPF/EQ/de-esser/
+    compressor/limiter — the previously ORPHANED `_VOICE_POLISH_FILTER`, built in
+    A5c with zero callers) BEFORE loudnorm, so polish + normalization land in the
+    ONE audio re-encode this step already pays for. loudnorm last keeps the final
+    integrated loudness on target regardless of what the polish chain did to
+    levels. Note the loudnorm measurement (pass 1) is taken on the UN-polished
+    audio; the compressor/limiter changes dynamics slightly, so linear mode may
+    fall back to dynamic — acceptable for speech, and the caller's duration guard
+    still applies."""
     required = ("input_i", "input_tp", "input_lra", "input_thresh")
     if not all(k in measured for k in required):
         return None
@@ -165,8 +176,74 @@ def loudnorm_pass2_args(url: str, measured: dict, out_path: str,
             f"measured_I={measured['input_i']}:measured_TP={measured['input_tp']}:"
             f"measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}:"
             f"offset={offset}:linear=true")
+    if polish:
+        filt = f"{_VOICE_POLISH_FILTER},{filt}"
     return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", url,
             "-c:v", "copy", "-af", filt, out_path]
+
+
+# ---------------------------------------------------------------------------
+# WS1 (build 49) — cheap reference-free speech-quality gate. Enhancement models
+# (DeepFilterNet-class) audibly smear ALREADY-CLEAN audio, so they must only run
+# on takes that measurably need them. Rather than shipping torch/SQUIM to the
+# server (a ~800MB dependency), the gate is an ffmpeg `astats` SNR proxy:
+# "RMS level" ≈ programme level, "RMS trough" ≈ the noise floor between words —
+# their difference approximates SNR for continuous speech over steady noise.
+# Below ~25dB the take is noticeably noisy (phone-in-kitchen class) and worth a
+# denoise pass; clean voice memos measure 35-50dB. Pure argv/parse helpers —
+# the caller (main.py) runs ffmpeg and owns thresholds/fail-soft.
+# ---------------------------------------------------------------------------
+
+SNR_ENHANCE_THRESHOLD_DB = 25.0
+
+def snr_probe_args(url: str) -> list[str]:
+    """ffmpeg argv that prints astats measurements (incl. RMS level/trough) to stderr."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-i", url,
+            "-af", "astats=measure_perchannel=none", "-f", "null", "-"]
+
+
+def parse_astats_snr(stderr_text: str) -> dict | None:
+    """Parse Overall 'RMS level' + 'RMS trough' (dB) from astats stderr output →
+    {"rms_db", "noise_floor_db", "snr_db"}. None when either stat is missing or
+    non-finite (silent take / parse miss) — callers must then SKIP enhancement
+    (fail-closed: never enhance what can't be measured)."""
+    rms = trough = None
+    for line in stderr_text.splitlines():
+        line = line.strip()
+        if "RMS level dB:" in line:
+            rms = _parse_db(line.rsplit(":", 1)[-1])
+        elif "RMS trough dB:" in line:
+            trough = _parse_db(line.rsplit(":", 1)[-1])
+    if rms is None or trough is None:
+        return None
+    return {"rms_db": rms, "noise_floor_db": trough, "snr_db": rms - trough}
+
+
+def _parse_db(token: str) -> float | None:
+    token = token.strip()
+    if token in ("-inf", "inf", "nan", ""):
+        return None
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def remux_enhanced_audio_args(video_url: str, enhanced_audio_path: str, out_path: str) -> list[str]:
+    """ffmpeg argv to marry the ORIGINAL video stream (copied, untouched) with an
+    enhanced audio file. -shortest guards against a denoiser that returned a
+    slightly longer tail; the caller still ffprobe-verifies duration before adopting."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-y",
+            "-i", video_url, "-i", enhanced_audio_path,
+            "-map", "0:v", "-map", "1:a", "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "128k", "-shortest", out_path]
+
+
+def extract_audio_args(video_url: str, out_wav_path: str) -> list[str]:
+    """ffmpeg argv to pull the audio track as 48k mono wav (what DeepFilterNet-class
+    enhancers expect)."""
+    return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", video_url,
+            "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", out_wav_path]
 
 
 # ---------------------------------------------------------------------------
