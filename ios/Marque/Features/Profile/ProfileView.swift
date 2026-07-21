@@ -38,6 +38,12 @@ struct ProfileView: View {
                 .padding(.horizontal, Space.screenH)
                 .staggerReveal(0)
 
+                // The Marque Path — the creator's current rank + progress to the next.
+                rankCard
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.bottom, Space.lg)
+                    .staggerReveal(1)
+
                 // Brand summary — the AI-written card (skeleton until the first fetch lands)
                 brandSummaryCard
                     .padding(.horizontal, Space.screenH)
@@ -109,6 +115,51 @@ struct ProfileView: View {
     }
 
     // MARK: - Brand summary card
+
+    // The Marque Path rank card — seal + tier + a gold progress bar to the next rank.
+    private var rankCard: some View {
+        let rank = store.creatorRank
+        let xp = store.creatorXP
+        let progress = RankSystem.progress(xp: xp, in: rank)
+        let toNext = rank.nextXP.map { max(0, $0 - xp) }
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.md) {
+                RankSeal(level: rank.level, size: 52)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("The Marque Path").font(AppFont.micro).tracking(Track.label)
+                        .foregroundStyle(Palette.textTertiary)
+                    Text(rank.title).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    Text(rank.subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            // Progress rail
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Palette.surfaceSunken)
+                    Capsule().fill(Palette.gold).frame(width: max(4, geo.size.width * progress))
+                }
+            }
+            .frame(height: 6)
+            HStack {
+                Text("\(store.reelsShot) \(store.reelsShot == 1 ? "reel" : "reels") shot")
+                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                Spacer()
+                if let toNext, !rank.isMax {
+                    Text("\(toNext) XP to \(RankSystem.rank(atLevel: rank.level + 1).title)")
+                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                } else {
+                    Text("Top rank reached").font(AppFont.micro).foregroundStyle(Palette.gold)
+                }
+            }
+        }
+        .padding(Space.md)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
 
     private var brandSummaryCard: some View {
         VStack(alignment: .leading, spacing: Space.sm) {

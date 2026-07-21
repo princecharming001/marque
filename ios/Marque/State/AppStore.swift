@@ -39,6 +39,40 @@ final class AppStore {
     // Transient
     var isGenerating = false
     var showCelebration = false
+    // The Marque Path (build 52): set when the creator just crossed into a new rank, so the
+    // wrap celebration upgrades itself into a level-up moment. Cleared when the sheet dismisses.
+    var pendingRankUp: CreatorRank? = nil
+
+    // MARK: The Marque Path (rank ladder)
+
+    private static let rankFloorKey = "marque.rank.floorLevel"
+
+    /// Transparent, monotone XP: lifetime takes shot + a streak bonus.
+    var creatorXP: Int { RankSystem.xp(reelsShot: reelsShot, streak: streak) }
+
+    /// Current rank, never below the persisted floor (a streak dip can't demote you).
+    var creatorRank: CreatorRank {
+        let computed = RankSystem.rank(forXP: creatorXP)
+        let floor = UserDefaults.standard.integer(forKey: Self.rankFloorKey)
+        return computed.level >= floor ? computed : RankSystem.rank(atLevel: max(1, floor))
+    }
+
+    /// Detect a level-up. Called right before every "that's a wrap" moment. Bumps the
+    /// persisted floor and, on a genuine promotion (not the first-run baseline), arms the
+    /// level-up celebration.
+    func checkRankUp() {
+        let d = UserDefaults.standard
+        let floor = d.integer(forKey: Self.rankFloorKey)
+        let now = RankSystem.rank(forXP: creatorXP)
+        if floor == 0 {                       // first run: seed the floor silently
+            d.set(now.level, forKey: Self.rankFloorKey)
+            return
+        }
+        if now.level > floor {
+            d.set(now.level, forKey: Self.rankFloorKey)
+            pendingRankUp = now               // a real promotion → celebrate it
+        }
+    }
     var coaching = ""                    // this-week coaching line (interpretInsights)
 
     // Learning loop
@@ -689,6 +723,7 @@ final class AppStore {
         bumpDailyStreak()
         reelsShot += 1                 // one recording session = one reel shot
         save()
+        checkRankUp()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
     }
 
@@ -824,6 +859,7 @@ final class AppStore {
         // double-fires or double-bumps.
         bumpDailyStreak()
         reelsShot += 1                 // one take = one reel shot (celebrate:false path skips its own below)
+        checkRankUp()
         showCelebration = true
         save()
 
@@ -960,6 +996,7 @@ final class AppStore {
             bumpDailyStreak()
             reelsShot += 1             // one take = one reel shot (instant-submit path already counted its own)
             save()
+            checkRankUp()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self.showCelebration = true }
         }
     }

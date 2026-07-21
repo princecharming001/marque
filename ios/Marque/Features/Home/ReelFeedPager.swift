@@ -125,12 +125,19 @@ struct ReelFeedPager: View {
                 actionRow(reel)
             }
             .onAppear { fetchProfile(for: reel) }
-            .padding(Space.lg)
+            // build 52 formatting fix: FILL the cell FIRST, then inset. Previously
+            // `.padding(Space.lg)` ran BEFORE `.frame(maxWidth:.infinity)`, and the action
+            // row's Mimic button (`.frame(maxWidth:.infinity)`) already stretched the VStack
+            // to full width — so the padding pushed it to screen+2·lg and the row overflowed:
+            // the avatar clipped on the left, the Details button on the right, and the Mimic
+            // button read "too wide". Filling first keeps every edge inside the screen.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .padding(.horizontal, Space.lg)
+            .padding(.bottom, Space.lg)
             // The pager .ignoresSafeArea() (so the video fills), so the overlay must add the
             // bottom safe-area inset itself — otherwise the 50pt Mimic button is clipped under
             // the home indicator ("mimic not visible properly").
-            .safeAreaPadding(.bottom, Space.sm)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .safeAreaPadding(.bottom, Space.xs)
         }
     }
 
@@ -206,7 +213,8 @@ struct ReelFeedPager: View {
                         Text("Rewriting…").font(AppFont.headline)
                     } else {
                         Image(systemName: "wand.and.stars").font(.system(size: 15, weight: .semibold))
-                        Text(mimicFailed == reel.id ? "Try again" : "Mimic in my voice").font(AppFont.headline)
+                        Text(mimicFailed == reel.id ? "Try again" : "Mimic in my voice")
+                            .font(AppFont.headline).lineLimit(1).minimumScaleFactor(0.85)
                     }
                 }
                 .foregroundStyle(Palette.onInk)

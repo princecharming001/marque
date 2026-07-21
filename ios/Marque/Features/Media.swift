@@ -195,16 +195,26 @@ struct LocalVideoPlayer: View {
 struct ClipPreviewPlayer: View {
     let path: String?
     var remoteURL: String? = nil
+    // build 52: the "founder corners" radius, applied in EVERY state. Previously only the
+    // InkVideoPlayer branch rounded (via its own player-layer cornerRadius); the
+    // no-URL-yet placeholder relied on the caller's outer .clipShape — but SwiftUI's
+    // clipShape doesn't clip an AVPlayerLayer, so an in-progress clip (no render URL yet,
+    // showing the placeholder or the raw take at a different radius) read with square
+    // corners. Now the component owns its rounding at the caller's exact radius.
+    var cornerRadius: CGFloat = Radius.lg
     var body: some View {
-        if let url = resolved {
-            InkVideoPlayer(url: url, loops: false, startMuted: false)
-        } else {
-            ZStack {
-                Palette.surfaceSunken
-                VStack(spacing: Space.sm) {
-                    Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
-                    Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+        Group {
+            if let url = resolved {
+                InkVideoPlayer(url: url, loops: false, startMuted: false, cornerRadius: cornerRadius)
+            } else {
+                ZStack {
+                    Palette.surfaceSunken
+                    VStack(spacing: Space.sm) {
+                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
+                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    }
                 }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
         }
     }
