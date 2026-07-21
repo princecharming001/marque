@@ -757,7 +757,10 @@ def plan_pacing(edl: dict, words: list[dict], *, style: str,
 _FRAMING_SKIP_STYLES = {"duet_split", "split_three"}     # reaction/multi-pane grammars own their own framing
 # Spec §6.1 punch-in ladder: 100 / 110 / 118, capped at 118% so the framing transform
 # never breaches the 120% ceiling on a 1080 source (the old 135% "close" blew past it).
-_FRAMING_SCALES = {"wide": 1.0, "mid": 1.10, "close": 1.18}
+# Build 54 tone-down (was 1.10/1.18) — bounded below by the ≥8% adjacent-delta floor:
+# a framing change under 8% reads as a glitch, not an intentional camera change (the
+# same_framing_adjacent lint enforces exactly this), so "subtle" can't go below ~1.09.
+_FRAMING_SCALES = {"wide": 1.0, "mid": 1.09, "close": 1.14}
 # Cyclic pattern crossing through "wide" so adjacent deltas are 10% / 18% (never 0);
 # the lint's same_framing_adjacent floor is relaxed to 0.08 to accept the spec's steps.
 _FRAMING_PATTERN = ("wide", "mid", "wide", "close")
@@ -1060,12 +1063,19 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     # top dead zone (Reels top 14% is the binding one). Captions-on-top variant unchanged.
     pos_y = 0.62 if caption_opts.get("position") == "top" else 0.24
     hook_cfg = (theme.hook if theme is not None else {}) or {}
+    # Build 54: when the creator explicitly picked a caption treatment (record screen or
+    # editor font knob), the hook TITLE adopts the same font — one typographic voice
+    # across captions and title blocks. caption_options.font is only ever non-default
+    # when someone chose it (assemble folds the record-screen pick in; the editor's
+    # font chips write it directly), so the theme keeps control otherwise.
+    _cap_font = (caption_opts.get("font") or "").strip()
     edl["overlays"] = overlays + [{
         "type": "text_sticker", "src_in": first_kept, "src_out": end_src,
         "text": hook_text, "scale": 1.05, "pos_x": 0.5, "pos_y": pos_y,
         "rotation": 0.0, "color": None,
         "bg": hook_cfg.get("sticker_bg") or "box",
-        "font": hook_cfg.get("sticker_font") or "inter",
+        "font": (_cap_font if _cap_font not in ("", "inter") else "")
+                 or hook_cfg.get("sticker_font") or "inter",
     }]
     return edl
 
@@ -1139,7 +1149,7 @@ def apply_hook_package(edl: dict, words: list[dict], *, style: str,
                 if target_idx is not None and split_segment_in_place(edl, target_idx, anchor_word):
                     for seg in edl["segments"]:
                         if seg["src_in"] == anchor_word:
-                            seg["tx_scale"] = max(seg.get("tx_scale", 1.0), 1.12)
+                            seg["tx_scale"] = max(seg.get("tx_scale", 1.0), 1.08)   # build 54 tone-down (was 1.12)
                             break
 
     edl["overlays"] = overlays
@@ -1166,7 +1176,16 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
     if not end_card_hint.get("wanted") or not text:
         return edl
     edl = copy.deepcopy(edl)
-    edl["end_card"] = {"text": text, "frames": 75, "show_handle": True}
+    ec = {"text": text, "frames": 75, "show_handle": True}
+    # Build 54 (outro builder): the creator's @handle + uploaded logo ride the hint.
+    handle = str(end_card_hint.get("handle") or "").strip()
+    if handle:
+        ec["handle"] = handle[:40]
+    logo = str(end_card_hint.get("logo_url") or "").strip()
+    if logo.startswith("http"):
+        ec["logo_url"] = logo
+        ec["frames"] = 90        # a logo needs a beat more read time (still within the 30-150 clamp)
+    edl["end_card"] = ec
     return edl
 
 
@@ -1179,9 +1198,11 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
 # placed and never double-covers them.
 # ---------------------------------------------------------------------------
 
+# Build 54 tone-down: fewer synthesized zooms (cadence 120→150 core styles) — the owner
+# read the old density as "doesn't look good"; b-roll + real cuts carry the interrupts.
 _INTERRUPT_CADENCE = {
-    "talking_head": 120, "green_screen": 120, "split_three": 120,
-    "broll_cutaway": 150, "faceless": 90,
+    "talking_head": 150, "green_screen": 150, "split_three": 150,
+    "broll_cutaway": 180, "faceless": 110,
     # fast_cuts / duet_split: native cadence already high enough — skip entirely.
 }
 _DENSITY_MULT = {"calm": 1.5, "standard": 1.0, "dense": 0.75}
@@ -1189,9 +1210,9 @@ _INTERRUPT_CADENCE_FLOOR = 60
 _INTERRUPT_HOOK_GUARD = 45     # never insert in the first ~1.5s of OUTPUT
 _INTERRUPT_CTA_GUARD = 60      # never insert in the last ~2s of OUTPUT
 _INTERRUPT_MIN_SPACING = 60    # from any existing overlay/broll edge
-_INTERRUPT_MAX_PER_CLIP = 12
+_INTERRUPT_MAX_PER_CLIP = 8    # build 54 tone-down (was 12)
 _INTERRUPT_HOLD_FRAMES = 75    # max width of a synthesized punch/pop window
-_INTERRUPT_SCALES = (1.06, 1.10)   # alternates, so consecutive cuts read as multi-cam
+_INTERRUPT_SCALES = (1.04, 1.07)   # alternates; build 54 tone-down (was 1.06/1.10)
 
 # A4 (superintelligence epic) — jittered cadence + type variety, opt-in via the
 # "jitter" pass token (never folded into the fixed-cadence default so prod's

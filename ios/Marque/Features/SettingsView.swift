@@ -11,6 +11,8 @@ struct SettingsView: View {
     @State private var showDeleteConfirm = false
     @State private var showSignOutConfirm = false
     @State private var restoring = false
+    @State private var showProPaywall = false          // build 54: Yunicorn Pro upsell sheet
+    @State private var entitlements = Entitlements.shared
     @State private var notifPublished = UserDefaults.standard.bool(forKey: "notif.published")
     @State private var demoTier: String = UserDefaults.standard.string(forKey: "demo.tier") ?? "growth"
     @State private var demoTierInfo: String = ""
@@ -97,6 +99,36 @@ struct SettingsView: View {
                         }
                         .padding(.horizontal, Space.md).padding(.vertical, 10)
                         .accessibilityIdentifier("settings.currentPlan")
+
+                        Divider().padding(.leading, Space.md)
+
+                        // Build 54: the Pro tier (watermark-free exports etc.) — mock
+                        // entitlement until StoreKit lands; opens the Yunicorn Pro paywall.
+                        Button { showProPaywall = true } label: {
+                            HStack(spacing: Space.md) {
+                                iconTile("sparkles", tint: Palette.accent)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(entitlements.isPro ? "Yunicorn Pro — active"
+                                                            : "Go Pro")
+                                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                    Text(entitlements.isPro ? "Clean exports, every look, priority renders."
+                                                            : "Remove the watermark from your exports.")
+                                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                }
+                                Spacer()
+                                if entitlements.isPro {
+                                    Chip(text: "Pro", tint: Palette.positive)
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Palette.textTertiary)
+                                }
+                            }
+                            .padding(.horizontal, Space.md).padding(.vertical, 10)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.goPro")
 
                         Divider().padding(.leading, Space.md)
 
@@ -262,6 +294,7 @@ struct SettingsView: View {
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Settings")
+            .sheet(isPresented: $showProPaywall) { YunicornProPaywall() }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
             .marqueConfirm($showSignOutConfirm, title: "Sign out?", message: "Your brand stays on this device.",

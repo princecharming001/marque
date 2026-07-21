@@ -541,6 +541,18 @@ extension ProEditorView {
         readdRoll(r, a: a, b: b)
     }
 
+    /// Build 54: drag-move a roll — shift the WHOLE window in time (both edges), clamped to
+    /// the take's bounds with the window length preserved. Same remove+re-add wire as trims.
+    func moveRoll(_ idx: Int, deltaFrames: Int) {
+        guard deltaFrames != 0, let r = session?.draft.broll[safe: idx] else { return }
+        let extent = session?.draft.segments.map(\.srcOut).max() ?? r.srcOut
+        let len = r.srcOut - r.srcIn
+        let a = max(0, min(extent - len, r.srcIn + deltaFrames))
+        let b = a + len
+        guard a != r.srcIn else { return }
+        readdRoll(r, a: a, b: b)
+    }
+
     /// Duplicate a roll one window-length later (CapCut Duplicate).
     func duplicateRoll(_ idx: Int) {
         guard let r = session?.draft.broll[safe: idx] else { return }

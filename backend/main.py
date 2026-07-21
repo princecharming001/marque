@@ -4977,6 +4977,25 @@ async def _run_edit(job_id: str, words: list[dict]):
                         prefs = {**prefs, "energy": "high"}
             except (TypeError, ValueError):
                 pass
+        # Build 54: pre-submit caption treatment from the record screen. iOS sends these
+        # ONLY on an explicit pick ("Auto" sends nothing), so the planner's own style choice
+        # survives untouched by default. Style slots into the existing edit_prefs surface;
+        # size + the style→font mapping fold into caption_options in assemble_edl. The
+        # mapped font ALSO restyles the hook TITLE sticker (place_hook_overlay) — the
+        # "caption preset influences the title blocks" contract.
+        _cap_style = (job.get("config") or {}).get("caption_style", "")
+        if _cap_style in ("clean", "bold-word", "karaoke") and not prefs.get("caption_style"):
+            prefs = {**prefs, "caption_style": _cap_style}
+            _cap_font = {"bold-word": "archivo", "karaoke": "montserrat"}.get(_cap_style)
+            if _cap_font:
+                prefs = {**prefs, "caption_font": _cap_font}
+        _cap_size = (job.get("config") or {}).get("caption_size", "")
+        if _cap_size in ("small", "medium", "large"):
+            prefs = {**prefs, "caption_size": _cap_size}
+        # Build 54: free-tier renders carry the "powered by Yunicorn" watermark. Only an
+        # EXPLICIT is_pro=="0" turns it on — older clients (key absent) and Pro users
+        # render clean, so this can never watermark an existing user by surprise.
+        job["watermark"] = (job.get("config") or {}).get("is_pro") == "0"
         if prefs:
             hints = []
             if prefs.get("auto_captions") is False:
@@ -5001,6 +5020,11 @@ async def _run_edit(job_id: str, words: list[dict]):
             _ml = prefs.get("meme_intensity")
             if _ml == 0:
                 hints.append("Meme level OFF — never emit need=\"meme\" b-roll cues.")
+            elif _ml == 1:
+                hints.append("Meme level SUBTLE: if the take has a clear punchline, hot take, "
+                             "or absurd beat, emit need=\"meme\" on the SINGLE strongest one "
+                             "(at most 2 in a long take) — a tasteful reaction GIF, never "
+                             "brainrot. Skip entirely when nothing genuinely lands.")
             elif _ml == 2:
                 hints.append("Meme level MEMEY: emit need=\"meme\" b-roll cues on 2-4 of the "
                              "strongest punchlines, hot takes, or absurd moments — a cultural "
@@ -5135,6 +5159,18 @@ async def _run_edit(job_id: str, words: list[dict]):
         retention_hints = ({"pacing": {"lift": "medium" if brief_pacing.get("energy") == "low" else "subtle"}}
                            if brief_pacing.get("energy") else {})
         retention_hints.update(_extract_plan_retention_hints(plan_data))
+        # Build 54: the creator's OUTRO builder overrides any plan-authored end card — an
+        # explicit pick on the record screen beats the LLM's judgment. Handle + logo ride
+        # the same hint into place_end_card.
+        _outro_cfg = job.get("config") or {}
+        _outro_text = str(_outro_cfg.get("outro_text") or "").strip()
+        if _outro_text:
+            _ec_hint = {"wanted": True, "text": _outro_text[:120]}
+            if str(_outro_cfg.get("outro_handle") or "").strip():
+                _ec_hint["handle"] = str(_outro_cfg["outro_handle"]).strip()[:40]
+            if str(_outro_cfg.get("outro_logo_url") or "").strip().startswith("http"):
+                _ec_hint["logo_url"] = str(_outro_cfg["outro_logo_url"]).strip()
+            retention_hints["end_card"] = _ec_hint
         # A7: a theme's own vibe is a FALLBACK under the plan's own vibe choice —
         # never forces music on/off (that's still purely prefs/plan-driven, so
         # clean_creator stays a golden-diff no-op); it only flavors track
@@ -5315,6 +5351,9 @@ async def _run_edit(job_id: str, words: list[dict]):
             for c in job["clips"]:
                 c.setdefault("warnings", []).extend(f"broll_unresolved: {q}"[:120] for q in unresolved)
         edl_data = _attach_react_source(edl_data, job)
+        # Build 54: free-tier watermark rides the EDL so every later re-plan (tweaks,
+        # re-render from job["edl"]) keeps it without re-consulting the config.
+        edl_data["watermark"] = bool(job.get("watermark"))
         # A duet_split react window whose length a cut/reorder would desync gets
         # silently dropped by build_render_plan's length-preservation guard (see
         # app/edl.py) — surface it the same way as the broll_unresolved warning
@@ -7628,7 +7667,7 @@ async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None
     if not ANTHROPIC_KEY or len(thumbs) < 1:
         return None
     scored = await asyncio.gather(
-        *(_broll_vision_score_one(cue, t) for t in thumbs[:5]))
+        *(_broll_vision_score_one(cue, t) for t in thumbs[:8]))
     best_idx, best_score = -1, -1
     any_answered = False
     for i, s in enumerate(scored):

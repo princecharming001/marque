@@ -1672,7 +1672,8 @@ _TS_RENDER_PLAN_KEYS = {"style", "format_id", "clips", "captions", "overlays", "
                         "caption_options", "transitions", "look", "audio", "total_frames",
                         "schema_version",
                         "end_card", "progress_bar",   # P4 (schema v2)
-                        "montage"}                    # mode H (schema v5)
+                        "montage",                    # mode H (schema v5)
+                        "watermark"}                  # build 54 (schema v7)
 _TS_CLIP_KEYS = {"src_in", "src_out", "speed", "tx_scale", "tx_x", "tx_y"}
 _TS_CAPTION_KEYS = {"word", "frame", "end_frame"}
 _TS_OVERLAY_KEYS = {"type", "frame_in", "frame_out", "scale", "text",
@@ -1688,7 +1689,8 @@ _TS_REACT_WINDOW_KEYS = {"state", "frame_in", "frame_out", "clip_from", "audio_g
 _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
 _TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
 _TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames", "sfx", "duck", "room_tone"}
-_TS_END_CARD_KEYS = {"text", "start_frame", "frames", "show_handle"}   # P4
+_TS_END_CARD_KEYS = {"text", "start_frame", "frames", "show_handle",
+                     "handle", "logo_url"}   # P4; +outro builder (schema v7)
 _TS_SFX_KEYS = {"frame", "kind", "gain", "url"}                        # P4
 
 
@@ -1778,7 +1780,8 @@ def test_end_card_extends_total_frames_by_its_own_length():
     plan = build_render_plan(edl_with_card)
     assert plan["total_frames"] == base_total + 60
     assert plan["end_card"] == {"text": "Follow along", "start_frame": base_total,
-                                "frames": 60, "show_handle": True}
+                                "frames": 60, "show_handle": True,
+                                "handle": "", "logo_url": None}   # build 54 outro fields, defaulted
 
 
 def test_end_card_with_blank_text_is_dropped():

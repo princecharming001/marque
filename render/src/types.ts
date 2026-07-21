@@ -104,7 +104,12 @@ export interface AudioPlan { lufs_target: number; gain?: number; music?: MusicTr
 // P4: a tail-of-video CTA card. Tail-anchored (not a source-coord remap) —
 // start_frame is where the last kept clip ends, and total_frames on the plan
 // already includes its `frames` (build_render_plan extends it there).
-export interface EndCardPlan { text: string; start_frame: number; frames: number; show_handle: boolean; }
+export interface EndCardPlan {
+  text: string; start_frame: number; frames: number; show_handle: boolean;
+  // Build 54 (outro builder): the creator's real @handle + an uploaded logo image.
+  handle?: string;
+  logo_url?: string | null;
+}
 
 export interface RenderPlan {
   style: string;
@@ -123,6 +128,7 @@ export interface RenderPlan {
   audio?: AudioPlan | null;
   end_card?: EndCardPlan | null;   // P4
   progress_bar?: boolean;          // P4
+  watermark?: boolean;             // build 54: free-tier "powered by Yunicorn" badge
   montage?: Montage | null;        // mode H (schema v5)
   total_frames: number;
   // #19: backend build_render_plan's contract version — compared against
@@ -140,7 +146,7 @@ export interface RenderPlan {
 // the "finishing" filter preset.
 // v5 (Addendum composition modes): broll.mode (panel/card), layout.speaker_treatment/
 // pip_position (SourcePip), montage (listicle hook flash). All additive/defaulted.
-export const PLAN_SCHEMA_VERSION = 6;
+export const PLAN_SCHEMA_VERSION = 7;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a

@@ -9,6 +9,7 @@ import { Captions } from "../components/Captions";
 import { usePunchScale } from "../components/PunchZoom";
 import { ProgressBar } from "../components/ProgressBar";
 import { EndCard } from "../components/EndCard";
+import { Watermark } from "../components/Watermark";
 import { CompositionProps } from "../types";
 
 // Three stacked panels of the same cut track; the active third lights up in sequence.
@@ -48,6 +49,7 @@ export const SplitThree: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
         {edl && <Grade transitions={edl.transitions} />}
         {edl && <EndCard endCard={edl.end_card} />}
+        {edl?.watermark && <Watermark />}
         <AudioMix audio={edl?.audio} sourceUrl={sourceUrl} />
       </AbsoluteFill>
     </AbsoluteFill>

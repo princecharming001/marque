@@ -46,10 +46,19 @@ struct EditorTimeline: View {
     var showRollsAdd: Bool = false            // empty-lane "+ Add b-roll" affordance
     var rollThumbs: [String: String] = [:]    // roll url → local file path (own-media preview)
     var onTrimRoll: (Int, TrimEdge, Int) -> Void = { _, _, _ in }   // drag-trim a roll window
+    var onMoveRoll: (Int, Int) -> Void = { _, _ in }   // build 54: drag a selected roll in time
     var showVoice: Bool = true                // R10: collapse the voice lane when idle
 
     @State private var dragBaseOffset: CGFloat?
-    @GestureState private var pinch: CGFloat = 1
+    // Build 54: pinch zoom anchors to the scale at GESTURE START (the old per-tick ratio
+    // compounded rounding and dropped ticks); non-nil also means "a pinch is live", which
+    // suppresses the one-finger scrub so two fingers never scrub-fight the zoom.
+    @State private var pinchBasePPS: CGFloat? = nil
+    // Build 54: long-press-lift clip reorder (CapCut). The lifted cell follows the finger;
+    // the drop slot is derived from the cell's center against the visible strip widths.
+    @State private var reorderDrag: (segIdx: Int, translation: CGFloat)? = nil
+    // Build 54: a SELECTED roll drags horizontally to move its whole window in time.
+    @State private var rollDrag: (idx: Int, dx: CGFloat)? = nil
     // Live trim rubber-band: the in-flight drag's effect, applied to the selected cell's
     // width + a floating duration badge, committed as ONE op on release.
     @State private var trimPreview: (segIdx: Int, edge: TrimEdge, deltaFrames: Int)?
@@ -70,6 +79,11 @@ struct EditorTimeline: View {
     }
 
     private var totalSeconds: Double { document.outputSeconds }
+    /// Build 54: quantized zoom level for filmstrip density — crossed only by real pinch
+    /// zooms, so trim drags (which never change pps) never re-key thumbnail generation.
+    private var zoomBucket: Int {
+        pointsPerSecond < 14 ? 0 : pointsPerSecond < 28 ? 1 : pointsPerSecond < 56 ? 2 : 3
+    }
     private func width(_ frames: Int) -> CGFloat { CGFloat(framesToSeconds(frames)) * pointsPerSecond }
     private func width(_ frames: Int, speed: Double) -> CGFloat {
         CGFloat(framesToSeconds(outputFrames(frames, speed: speed))) * pointsPerSecond
@@ -128,8 +142,10 @@ struct EditorTimeline: View {
             }
             .contentShape(Rectangle())
             .gesture(scrubGesture(mid: mid))
-            .gesture(MagnificationGesture().updating($pinch) { v, s, _ in s = v }
-                .onChanged { v in pointsPerSecond = max(8, min(60, pointsPerSecond * v / max(pinch, 0.01))) })
+            // Build 54: attached SIMULTANEOUSLY — with a plain .gesture the scrub drag
+            // (one finger already moving when the second lands) claimed the sequence and
+            // the pinch "didn't work". Range widened 8...60 → 6...110 for word-level trims.
+            .simultaneousGesture(zoomGesture)
             // Double-tap the timeline background → reset zoom to the default scale.
             .onTapGesture(count: 2) { withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 } }
             // UX-8: tapping empty timeline space clears the selection (clip cells' own
@@ -219,7 +235,7 @@ struct EditorTimeline: View {
         // I-7: dim the other clips when one is selected so the target is unmistakable.
         let dimmed = selectedSeg != nil && !selected
         ZStack {
-            FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w)
+            FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w, zoomBucket: zoomBucket)
                 .frame(width: w, height: 64).clipped()
             // Hard WHITE selection frame (reference) — accent is reserved for effect objects.
             RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Color.white : .white.opacity(0.15),
@@ -270,6 +286,15 @@ struct EditorTimeline: View {
         // #10: the parent's select() pauses the player, freezing the playhead so Split
         // cuts where they see.
         .onTapGesture { onTapClip(segIdx) }
+        // Build 54: CapCut reorder — long-press lifts the cell (scale + shadow), drag slides
+        // it along the strip, release drops it into the slot under its center. Quick taps
+        // still select; the trim brackets' highPriorityGesture still wins at the edges.
+        .scaleEffect(reorderDrag?.segIdx == segIdx ? 1.07 : 1)
+        .shadow(color: .black.opacity(reorderDrag?.segIdx == segIdx ? 0.55 : 0), radius: 10, y: 4)
+        .offset(x: reorderDrag?.segIdx == segIdx ? (reorderDrag?.translation ?? 0) : 0)
+        .zIndex(reorderDrag?.segIdx == segIdx ? 10 : 0)
+        .gesture(reorderGesture(segIdx: segIdx))
+        .animation(.easeOut(duration: 0.15), value: reorderDrag?.segIdx == segIdx)
         // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
         // when selected, the leading/trailing trimHandle overlays have their own
         // "editorPro.trimHandle.left/right" identifiers — without .accessibilityElement
@@ -289,12 +314,12 @@ struct EditorTimeline: View {
         VStack(spacing: 2) {
             Color.clear.frame(width: 14, height: 12)                       // ruler
             gutterIcon("film").frame(height: 64)
-            if captionsOn, !phrases.isEmpty { gutterIcon("captions.bubble").frame(height: 24) }
-            if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 22) }
-            if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 22) }
-            else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 22) }
-            if showVoice { gutterIcon("waveform").frame(height: 16) }
-            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 28) }
+            if captionsOn, !phrases.isEmpty { gutterIcon("captions.bubble").frame(height: 28) }
+            if !document.overlays.isEmpty { gutterIcon("sparkles").frame(height: 26) }
+            if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 28) }
+            else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 26) }
+            if showVoice { gutterIcon("waveform").frame(height: 20) }
+            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 32) }
         }
         .padding(.leading, 3)
         .allowsHitTesting(false)
@@ -345,8 +370,8 @@ struct EditorTimeline: View {
     /// "+ Add b-roll" strip straight into the media panel.
     private var rollsAddLane: some View {
         AddLaneStrip(label: "Add b-roll", width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
-                     height: 20, onTap: onTapAddMedia)
-            .frame(height: 22, alignment: .topLeading)
+                     height: 24, onTap: onTapAddMedia)
+            .frame(height: 26, alignment: .topLeading)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("editorPro.rollsLane.add")
     }
@@ -356,13 +381,13 @@ struct EditorTimeline: View {
         let rows = rollsRows
         return ZStack(alignment: .topLeading) {
             Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond),
-                              height: CGFloat(rows) * 22)
+                              height: CGFloat(rows) * 28)
             ForEach(placed, id: \.idx) { p in
                 rollStrip(p.idx, p.roll, p.span)
-                    .offset(x: CGFloat(p.span.start) * pointsPerSecond, y: CGFloat(p.row) * 22 + 1)
+                    .offset(x: CGFloat(p.span.start) * pointsPerSecond, y: CGFloat(p.row) * 28 + 1)
             }
         }
-        .frame(height: CGFloat(rows) * 22, alignment: .topLeading)
+        .frame(height: CGFloat(rows) * 28, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -375,43 +400,66 @@ struct EditorTimeline: View {
         let thumbPath = roll.resolvedURL.flatMap { rollThumbs[$0] }
         return ZStack {
             if let thumbPath {
-                RollThumb(path: thumbPath).frame(width: w, height: 20).clipped()
+                RollThumb(path: thumbPath).frame(width: w, height: 26).clipped()
                 Color.black.opacity(0.15)
             } else if let remote = roll.resolvedURL, remote.hasPrefix("http") {
                 // Server-resolved stock/KLIPY roll → show the ACTUAL footage frame.
-                RemoteRollThumb(urlString: remote).frame(width: w, height: 20).clipped()
+                RemoteRollThumb(urlString: remote).frame(width: w, height: 26).clipped()
                 Color.black.opacity(0.15)
             } else {
                 Color(hex: 0xB56635).opacity(selected ? 1 : 0.9)
             }
             HStack(spacing: 3) {
                 Image(systemName: roll.source == "own_media" ? "photo.fill" : "film.fill")
-                    .font(.system(size: 8, weight: .semibold))
-                Text(w > 64 ? "\(letter)-roll" : letter).font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 9, weight: .semibold))
+                Text(w > 64 ? "\(letter)-roll" : letter).font(.system(size: 10, weight: .bold))
                 if w > 120, thumbPath == nil, !roll.cueText.isEmpty {
-                    Text(roll.cueText).font(.system(size: 8)).lineLimit(1).opacity(0.8)
+                    Text(roll.cueText).font(.system(size: 9)).lineLimit(1).opacity(0.8)
                 }
                 Spacer(minLength: 0)
             }
             .foregroundStyle(.white).shadow(radius: thumbPath != nil ? 2 : 0)
             .padding(.horizontal, 5).frame(width: w, alignment: .leading)
         }
-        .frame(width: w, height: 20, alignment: .leading)
+        .frame(width: w, height: 26, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? Color(hex: 0x30D6C4) : Color.white.opacity(0.15),
                           lineWidth: selected ? 2 : 0.5))
+        // Build 54: a SELECTED roll drags to move its whole window in time (CapCut). The
+        // hit-area overlay exists ONLY while selected, so unselected strips keep plain
+        // tap-to-select and background scrubbing; it mounts BELOW the brackets so the
+        // edge trims still win at the edges. Tap on it toggles selection off, as before.
+        .overlay {
+            if selected {
+                Color.clear.contentShape(Rectangle())
+                    .onTapGesture { onTapBroll(idx) }
+                    .gesture(rollMoveGesture(idx: idx))
+            }
+        }
         // Selected rolls get real bracket handles — drag to retrim the window (CapCut).
         .overlay(alignment: .leading) { if selected { rollTrimHandle(.leading, idx: idx) } }
         .overlay(alignment: .trailing) { if selected { rollTrimHandle(.trailing, idx: idx) } }
+        .offset(x: rollDrag?.idx == idx ? (rollDrag?.dx ?? 0) : 0)
         .onTapGesture { onTapBroll(idx) }
         .accessibilityIdentifier("editorPro.roll.\(idx)")
+    }
+
+    /// Build 54: horizontal drag on a selected roll = move the window (both edges) in time.
+    private func rollMoveGesture(idx: Int) -> some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { g in rollDrag = (idx, g.translation.width) }
+            .onEnded { g in
+                rollDrag = nil
+                let delta = secondsToFrame(Double(g.translation.width / pointsPerSecond))
+                if delta != 0 { onMoveRoll(idx, delta) }
+            }
     }
 
     /// A roll's edge bracket — commits a retrim on release (no live rubber-band on the
     /// thin strip; the clip trim keeps the full rubber-band).
     private func rollTrimHandle(_ edge: TrimEdge, idx: Int) -> some View {
-        TrimBracket(edge: edge, height: 20)
+        TrimBracket(edge: edge, height: 26)
             .contentShape(Rectangle().inset(by: -16))
             .highPriorityGesture(
                 DragGesture()
@@ -424,7 +472,7 @@ struct EditorTimeline: View {
     // MARK: Caption track — one white phrase clip per caption group (CapCut's text lane).
     private var captionLane: some View {
         ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 24)
+            Color.clear.frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 28)
             ForEach(phrases) { p in
                 if let span = document.outputSpan(srcIn: p.startFrame, srcOut: p.endFrame) {
                     CaptionClipStrip(phrase: p, span: span, pointsPerSecond: pointsPerSecond,
@@ -433,7 +481,7 @@ struct EditorTimeline: View {
                 }
             }
         }
-        .frame(height: 24, alignment: .topLeading)
+        .frame(height: 28, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
         // Same accessibility-flattening fix as cleanupPanel/clip cells: without an explicit
         // container element the phrase strips' own text elements flatten upward and this
@@ -477,7 +525,7 @@ struct EditorTimeline: View {
             // Distinct callback from the strip: there is no music to SELECT here — the
             // add-strip opens the picker instead (the old shared closure made tapping the
             // empty lane "select" nonexistent music).
-            AddLaneStrip(label: "Add sound", width: w, height: 26, onTap: onTapAddMusic)
+            AddLaneStrip(label: "Add sound", width: w, height: 30, onTap: onTapAddMusic)
                 .accessibilityIdentifier("editorPro.musicLane.add")
         }
     }
@@ -489,14 +537,14 @@ struct EditorTimeline: View {
     private var overlayLane: some View {
         ZStack(alignment: .topLeading) {
             Color.clear
-                .frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 22)
+                .frame(width: max(1, CGFloat(totalSeconds) * pointsPerSecond), height: 26)
             ForEach(Array(document.overlays.enumerated()), id: \.offset) { idx, o in
                 if let span = document.outputSpan(srcIn: o.srcIn, srcOut: o.srcOut) {
                     overlayChip(idx: idx, overlay: o, span: span)
                 }
             }
         }
-        .frame(height: 22, alignment: .topLeading)
+        .frame(height: 26, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -515,7 +563,7 @@ struct EditorTimeline: View {
         // Zoom blocks read purple (the effect-block color: Screen Studio's zoom track,
         // CapCut effect clips); text cards stay neutral white.
         .foregroundStyle(selected ? .white : (o.type == "punch_in" ? zoomPurple : .white))
-        .frame(width: w, height: 20)
+        .frame(width: w, height: 24)
         .background(
             RoundedRectangle(cornerRadius: 4)
                 .fill(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent)
@@ -557,6 +605,53 @@ struct EditorTimeline: View {
             .accessibilityIdentifier("editorPro.trimHandle.\(edge == .leading ? "left" : "right")")
     }
 
+    /// Build 54: long-press → drag reorder. Sequenced so a plain tap still selects and a
+    /// plain scroll still scrubs; the lift begins only after the 0.35s hold lands.
+    private func reorderGesture(segIdx: Int) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.35)
+            .sequenced(before: DragGesture())
+            .onChanged { value in
+                switch value {
+                case .first(true):
+                    if reorderDrag == nil { reorderDrag = (segIdx, 0); snapTick += 1; player?.pause() }
+                case .second(true, let drag):
+                    reorderDrag = (segIdx, drag?.translation.width ?? 0)
+                default: break
+                }
+            }
+            .onEnded { value in
+                defer { reorderDrag = nil }
+                if case .second(true, let drag?) = value {
+                    commitReorder(segIdx: segIdx, dx: drag.translation.width)
+                }
+            }
+    }
+
+    /// Map the drop offset to a play-order slot and emit the FULL source-index permutation
+    /// (fully-dropped/hidden segments keep their relative positions — reorder_segments
+    /// validates a complete permutation, so we splice within the existing order).
+    private func commitReorder(segIdx: Int, dx: CGFloat) {
+        let cs = clips
+        guard cs.count > 1, let from = cs.firstIndex(where: { $0.segIdx == segIdx }) else { return }
+        let widths = cs.map { max(30, width($0.keptFrames, speed: $0.speed)) + 3 }
+        let center = widths.prefix(from).reduce(0, +) + widths[from] / 2 + dx
+        var acc: CGFloat = 0
+        var to = cs.count - 1
+        for (i, w) in widths.enumerated() {
+            if center < acc + w { to = i; break }
+            acc += w
+        }
+        guard to != from else { return }
+        var order = document.segmentOrder ?? Array(document.segments.indices)
+        guard let cur = order.firstIndex(of: segIdx) else { return }
+        order.remove(at: cur)
+        let anchorSeg = cs[to].segIdx
+        guard let anchorPos = order.firstIndex(of: anchorSeg) else { return }
+        order.insert(segIdx, at: to > from ? anchorPos + 1 : anchorPos)
+        onReorder(order)
+        snapTick += 1
+    }
+
     /// Output-timeline positions of every clip boundary (cut points) — snap targets.
     private var boundarySeconds: [Double] {
         var acc = 0.0
@@ -568,10 +663,21 @@ struct EditorTimeline: View {
         return out
     }
 
+    /// Build 54: pinch-to-zoom the time scale, anchored to the pps at gesture start. The
+    /// fixed-center playhead means zoom naturally pivots on the playhead (offset = -t·pps).
+    private var zoomGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { v in
+                if pinchBasePPS == nil { pinchBasePPS = pointsPerSecond; dragBaseOffset = nil }
+                pointsPerSecond = max(6, min(110, (pinchBasePPS ?? pointsPerSecond) * v))
+            }
+            .onEnded { _ in pinchBasePPS = nil }
+    }
+
     private func scrubGesture(mid: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 6)
             .onChanged { g in
-                guard let player else { return }
+                guard pinchBasePPS == nil, let player else { return }   // a live pinch owns the touches
                 if dragBaseOffset == nil { dragBaseOffset = CGFloat(player.currentOutputTime) * pointsPerSecond; player.pause() }
                 let base = dragBaseOffset ?? 0
                 let newOffset = base - g.translation.width
@@ -683,14 +789,18 @@ struct FilmstripThumbs: View {
     let srcIn: Int
     let srcOut: Int
     let width: CGFloat
+    var zoomBucket: Int = 1
     @State private var images: [Int: UIImage] = [:]
 
     private var sampleSeconds: [Int] {
-        // Trim-lag fix: density derives from the clip's DURATION only (≤12 samples),
-        // never from the live width — the width changes on every trim-drag tick and
-        // used to re-key the generation task each tick (the dominant drag lag).
+        // Trim-lag fix: density derives from the clip's DURATION + the QUANTIZED zoom
+        // bucket, never from the live width — width changes on every trim-drag tick and
+        // used to re-key the generation task each tick (the dominant drag lag). The zoom
+        // bucket (build 54) only crosses on real pinch zooms, so zooming in reveals more
+        // real frames while trims still never re-key.
+        let cap = [8, 12, 20, 32][max(0, min(3, zoomBucket))]
         let start = Int(framesToSeconds(srcIn)), end = max(start + 1, Int(framesToSeconds(srcOut)))
-        let step = max(1, (end - start) / 12)
+        let step = max(1, (end - start) / cap)
         return Array(stride(from: start, to: end, by: step))
     }
 
@@ -704,7 +814,7 @@ struct FilmstripThumbs: View {
                 .frame(maxWidth: .infinity).frame(height: 64).clipped()
             }
         }
-        .task(id: "\(srcIn)-\(srcOut)") {
+        .task(id: "\(srcIn)-\(srcOut)-\(zoomBucket)") {
             guard let filmstrip else { return }
             for sec in sampleSeconds {
                 if let img = await filmstrip.thumbnail(atSourceSecond: Double(sec)) { images[sec] = img }

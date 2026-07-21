@@ -8,6 +8,7 @@ import { BrollLayer } from "../components/BrollLayer";
 import { Captions } from "../components/Captions";
 import { ProgressBar } from "../components/ProgressBar";
 import { EndCard } from "../components/EndCard";
+import { Watermark } from "../components/Watermark";
 import { CompositionProps } from "../types";
 
 // Faceless / voiceover: NO face on screen — full-frame b-roll under the creator's
@@ -41,6 +42,7 @@ export const Faceless: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade transitions={edl.transitions} />}
       {edl && <EndCard endCard={edl.end_card} />}
+      {edl?.watermark && <Watermark />}
       <AudioMix audio={edl?.audio} sourceUrl={sourceUrl} />
     </AbsoluteFill>
   );

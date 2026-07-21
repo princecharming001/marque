@@ -65,11 +65,11 @@ struct CaptionClipStrip: View {
         // a forced minimum here made short phrases overlap their neighbors.
         let w = max(12, CGFloat(span.end - span.start) * pointsPerSecond - 1.5)
         Text(w >= 26 ? phrase.text : "")
-            .font(.system(size: 9, weight: .medium))
+            .font(.system(size: 10, weight: .medium))
             .foregroundStyle(Palette.night)
             .lineLimit(1)
             .padding(.horizontal, 5)
-            .frame(width: w, height: 22, alignment: .leading)
+            .frame(width: w, height: 26, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.88)))
             // Accent (not white) selection ring — a white ring is invisible on the near-white fill.
             .overlay(RoundedRectangle(cornerRadius: 4)
@@ -110,7 +110,7 @@ struct VoiceStrip: View {
             }
             .padding(.horizontal, 2)
         }
-        .frame(width: width, height: 16)
+        .frame(width: width, height: 20)
         .overlay(alignment: .leading) {
             if volume <= 0.01 {
                 Image(systemName: "speaker.slash.fill")
@@ -169,7 +169,7 @@ struct MusicStrip: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 6)
         }
-        .frame(width: max(46, width), height: 26)
+        .frame(width: max(46, width), height: 30)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? Color.white : .clear, lineWidth: 2))

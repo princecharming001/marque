@@ -8,6 +8,7 @@ import { Grade } from "../components/Grade";
 import { Captions } from "../components/Captions";
 import { ProgressBar } from "../components/ProgressBar";
 import { EndCard } from "../components/EndCard";
+import { Watermark } from "../components/Watermark";
 import { CompositionProps, ReactWindow } from "../types";
 import { LAYOUT } from "../layout";
 
@@ -39,6 +40,7 @@ export const SourcePip: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
         {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
         {edl && <Grade transitions={edl.transitions} />}
         {edl && <EndCard endCard={edl.end_card} />}
+        {edl?.watermark && <Watermark />}
         <AudioMix audio={edl?.audio} sourceUrl={sourceUrl} />
       </AbsoluteFill>
     );
@@ -100,6 +102,7 @@ export const SourcePip: React.FC<CompositionProps> = ({ sourceUrl, edl }) => {
       {edl && <TextStickers overlays={edl.overlays} captions={edl.captions} captionStyle={edl.caption_style} captionOptions={edl.caption_options} />}
       {edl && <Grade transitions={edl.transitions} />}
       {edl && <EndCard endCard={edl.end_card} />}
+      {edl?.watermark && <Watermark />}
       <AudioMix audio={edl?.audio} sourceUrl={sourceUrl} />
     </AbsoluteFill>
   );

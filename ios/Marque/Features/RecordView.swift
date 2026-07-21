@@ -75,6 +75,18 @@ struct RecordView: View {
     // v4 gen-z dial: how meme-heavy the edit should be (0 off · 1 subtle · 2 memey ·
     // 3 brainrot). Drives config.meme_intensity → meme cue mandate + caps server-side.
     @State private var memeLevel: Double = 1
+    // Build 54: pre-submit caption treatment. nil = "Auto" (the AI plan keeps choosing) —
+    // config keys are sent ONLY on an explicit pick so the planner's taste isn't silently
+    // overridden on every job. The picked style also steers the hook TITLE block server-side.
+    @State private var captionStyleChoice: String? = nil     // clean | bold-word | karaoke
+    @State private var captionSizeChoice: String? = nil      // small | medium | large
+    // Build 54: outro/CTA builder — preset copy or custom text, optional @handle + logo.
+    @State private var outroPreset = "none"                  // none | follow | comment | link | custom
+    @State private var outroCustomText = ""
+    @State private var outroHandle = ""
+    @State private var outroLogoURL = ""
+    @State private var outroLogoUploading = false
+    @State private var outroLogoItem: PhotosPickerItem? = nil
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -403,6 +415,8 @@ struct RecordView: View {
                             }
                             briefToggleRow("Background music", isOn: $briefToggles.music)
                         }
+                        captionStyleSection        // build 54: caption look BEFORE the render is spent
+                        outroSection               // build 54: outro/CTA builder
                         // prompt: gives the placeholder a legible color — the plain title
                         // form renders it in system gray, unreadable on the dark overlay.
                         TextField("", text: $customInstructions,
@@ -706,17 +720,192 @@ struct RecordView: View {
         // v4: the meme dial rides along for EVERY b-roll-capable format (plain Talking
         // Head has glimpse b-roll server-side, so memes can fire there too).
         let meme = ["meme_intensity": String(Int(memeLevel))]
-        guard editFormat == .talkingHeadBroll else {
-            return editFormat == .talkingHead ? meme : nil
+        var cfg: [String: String]
+        if editFormat == .talkingHeadBroll {
+            switch selectedBrollStyle {
+            case "cutaway": cfg = meme.merging(["broll_mode": "full",  "broll_coverage": "full"]) { a, _ in a }
+            case "smart":   cfg = meme.merging(["broll_mode": "smart", "broll_coverage": "full"]) { a, _ in a }
+            case "panel":   cfg = meme.merging(["broll_mode": "panel", "broll_coverage": "full"]) { a, _ in a }
+            case "card":    cfg = meme.merging(["broll_mode": "card",  "broll_coverage": "full"]) { a, _ in a }
+            case "green_screen", "split_screen":
+                cfg = meme.merging(["composition_style": selectedBrollStyle]) { a, _ in a }
+            default: cfg = meme.merging(["broll_coverage": "full"]) { a, _ in a }   // TH+broll, no style yet
+            }
+        } else if editFormat == .talkingHead {
+            cfg = meme
+        } else {
+            cfg = [:]
         }
-        switch selectedBrollStyle {
-        case "cutaway": return meme.merging(["broll_mode": "full",  "broll_coverage": "full"]) { a, _ in a }
-        case "smart":   return meme.merging(["broll_mode": "smart", "broll_coverage": "full"]) { a, _ in a }
-        case "panel":   return meme.merging(["broll_mode": "panel", "broll_coverage": "full"]) { a, _ in a }
-        case "card":    return meme.merging(["broll_mode": "card",  "broll_coverage": "full"]) { a, _ in a }
-        case "green_screen", "split_screen":
-            return meme.merging(["composition_style": selectedBrollStyle]) { a, _ in a }
-        default: return meme.merging(["broll_coverage": "full"]) { a, _ in a }   // TH+broll, no style yet
+        // Build 54: caption treatment (only when explicitly picked — "Auto" leaves the
+        // planner's choice alone), outro/CTA, and the entitlement flag (server stamps the
+        // "powered by Yunicorn" watermark on free-tier renders).
+        if let s = captionStyleChoice { cfg["caption_style"] = s }
+        if let s = captionSizeChoice { cfg["caption_size"] = s }
+        cfg["is_pro"] = Entitlements.shared.isPro ? "1" : "0"
+        if outroPreset != "none" {
+            let text = (outroPreset == "custom" ? outroCustomText : Self.outroPresets[outroPreset] ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                cfg["outro_text"] = text
+                let h = outroHandle.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !h.isEmpty { cfg["outro_handle"] = h.hasPrefix("@") ? h : "@" + h }
+                if !outroLogoURL.isEmpty { cfg["outro_logo_url"] = outroLogoURL }
+            }
+        }
+        return cfg
+    }
+
+    // MARK: Build 54 — pre-submit caption treatment
+
+    /// The three server caption styles with live mini-previews, plus size words. Defaults to
+    /// "Auto" so the AI plan keeps choosing unless the creator explicitly takes the wheel.
+    /// The pick ALSO steers the hook title block server-side (shared font treatment).
+    private var captionStyleSection: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text("CAPTIONS").font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(.white.opacity(0.5))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) {
+                    captionStyleChip(nil, label: "Auto") { Text("Your words").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.85)) }
+                    captionStyleChip("clean", label: "Clean") {
+                        Text("Your words").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
+                    }
+                    captionStyleChip("bold-word", label: "Bold") {
+                        HStack(spacing: 3) {
+                            Text("Your").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                            Text("WORDS").font(.system(size: 11, weight: .black)).foregroundStyle(Palette.accent)
+                        }
+                    }
+                    captionStyleChip("karaoke", label: "Karaoke") {
+                        HStack(spacing: 3) {
+                            Text("Your").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.ink)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 3))
+                            Text("words").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                        }
+                    }
+                    Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1, height: 22)
+                    ForEach([("S", "small"), ("M", "medium"), ("L", "large")], id: \.1) { label, v in
+                        Button {
+                            captionSizeChoice = captionSizeChoice == v ? nil : v
+                        } label: {
+                            Text(label).font(.system(size: 11, weight: captionSizeChoice == v ? .bold : .medium))
+                                .foregroundStyle(captionSizeChoice == v ? Palette.ink : .white)
+                                .frame(width: 28, height: 28)
+                                .background(captionSizeChoice == v ? Palette.onInk : Color.white.opacity(0.12))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("record.capSize.\(v)")
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func captionStyleChip(_ id: String?, label: String,
+                                               @ViewBuilder preview: () -> some View) -> some View {
+        let active = captionStyleChoice == id
+        Button { captionStyleChoice = id } label: {
+            VStack(spacing: 3) {
+                preview()
+                    .frame(height: 18)
+                Text(label).font(.system(size: 9, weight: active ? .bold : .medium))
+                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Color.white.opacity(active ? 0.16 : 0.08))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                .strokeBorder(active ? Palette.accent : .clear, lineWidth: 1.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("record.capStyle.\(id ?? "auto")")
+    }
+
+    // MARK: Build 54 — outro/CTA builder
+
+    static let outroPresets: [String: String] = [
+        "follow": "Follow for more",
+        "comment": "Comment your take below",
+        "link": "Everything's linked in my bio",
+    ]
+
+    /// Pregenerated CTA presets + a custom lane, with an optional @handle and logo — the
+    /// backend folds these into the end card (music continues underneath it).
+    private var outroSection: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text("OUTRO").font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(.white.opacity(0.5))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) {
+                    ForEach([("none", "None"), ("follow", "Follow"), ("comment", "Comment"),
+                             ("link", "Link in bio"), ("custom", "Custom")], id: \.0) { id, label in
+                        let active = outroPreset == id
+                        Button { withAnimation(.easeOut(duration: 0.15)) { outroPreset = id } } label: {
+                            Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
+                                .foregroundStyle(active ? Palette.ink : .white)
+                                .padding(.horizontal, 12).frame(height: 30)
+                                .background(active ? Palette.onInk : Color.white.opacity(0.12))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("record.outro.\(id)")
+                    }
+                }
+            }
+            if outroPreset != "none" {
+                if outroPreset == "custom" {
+                    TextField("", text: $outroCustomText,
+                              prompt: Text("Your call to action").foregroundColor(.white.opacity(0.6)))
+                        .font(AppFont.callout).foregroundStyle(.white)
+                        .padding(Space.sm)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .accessibilityIdentifier("record.outroCustom")
+                }
+                HStack(spacing: Space.sm) {
+                    TextField("", text: $outroHandle,
+                              prompt: Text("@handle (optional)").foregroundColor(.white.opacity(0.6)))
+                        .font(AppFont.callout).foregroundStyle(.white)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .padding(Space.sm)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .accessibilityIdentifier("record.outroHandle")
+                    PhotosPicker(selection: $outroLogoItem, matching: .images) {
+                        HStack(spacing: 4) {
+                            if outroLogoUploading {
+                                ProgressView().controlSize(.mini).tint(.white)
+                            } else {
+                                Image(systemName: outroLogoURL.isEmpty ? "photo.badge.plus" : "checkmark.circle.fill")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            Text(outroLogoURL.isEmpty ? "Logo" : "Added")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(outroLogoURL.isEmpty ? .white : Palette.accent)
+                        .padding(.horizontal, 10).frame(height: 34)
+                        .background(Color.white.opacity(0.12))
+                        .clipShape(Capsule())
+                    }
+                    .accessibilityIdentifier("record.outroLogo")
+                }
+                .onChange(of: outroLogoItem) { _, item in
+                    if let item { Task { await uploadOutroLogo(item) } }
+                }
+            }
+        }
+    }
+
+    private func uploadOutroLogo(_ item: PhotosPickerItem) async {
+        outroLogoUploading = true
+        defer { outroLogoUploading = false; outroLogoItem = nil }
+        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+        let path = MediaStore.save(data, ext: "png")
+        if let url = await LiveClipEngine.uploadMedia(path: path, filename: "outro-logo.png") {
+            outroLogoURL = url
         }
     }
 

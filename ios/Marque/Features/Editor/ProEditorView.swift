@@ -60,6 +60,7 @@ struct ProEditorView: View {
     // UX-4: slider drafts — the op commits once, on gesture end.
     @State private var musicVolDraft: Double = 0.15
     @State private var clipVolDraft: Double = 1.0
+    @State private var capSizeDraft: Double? = nil   // build 54: caption size slider draft
     // UX-7: X on a dirty session confirms before discarding.
     @State private var confirmDiscard = false
     // FP1: transition boundary selection (source segIdx of the leading clip).
@@ -584,6 +585,23 @@ struct ProEditorView: View {
         let curY = o.posY ?? (o.position == "top" ? 0.20 : o.position == "middle" ? 0.46 : 0.74)
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
+                // SIZE (build 54, owner: "caption font size can't change") — research: TikTok is
+                // pinch-only, CapCut exposes an explicit slider. We offer BOTH surfaces over the
+                // same knob: S/M/L words, a continuous slider, and the canvas pinch (already
+                // wired) all commit caption_options size/scale.
+                ForEach([("S", "small"), ("M", "medium"), ("L", "large")], id: \.1) { label, v in
+                    optChip(label, active: o.scale == nil && o.size == v) { mutate([.captionOptions(size: v)]) }
+                        .accessibilityIdentifier("editorPro.capSize.\(v)")
+                }
+                Slider(value: Binding(get: { capSizeDraft ?? o.scale ?? 1.0 },
+                                      set: { capSizeDraft = $0 }),
+                       in: 0.5...2.0, onEditingChanged: { editing in
+                           // UX-4: one op per drag — commit on release only.
+                           if !editing, let v = capSizeDraft { mutate([.captionOptions(scale: v)]); capSizeDraft = nil }
+                       })
+                    .frame(width: 104).tint(Palette.accent)
+                    .accessibilityIdentifier("editorPro.capSizeSlider")
+                optDivider
                 // POSITION — shift ALL captions at once (one track-wide pos_y). Also draggable on canvas.
                 ForEach([("Top", 0.20), ("Mid", 0.46), ("Low", 0.74)], id: \.0) { label, y in
                     optChip(label, active: abs(curY - y) < 0.06) { setCaptionPosition(y) }
@@ -1658,20 +1676,22 @@ struct ProEditorView: View {
     }
 
     /// The lane stack is dynamic — the pane grows with the tracks it actually shows.
+    /// Build 54: lane heights bumped for legibility (owner: "larger tracks") — numbers
+    /// mirror EditorTimeline's lane frames + the VStack's 2pt spacing exactly.
     private var timelineHeight: CGFloat {
         var h: CGFloat = 12 + 2 + 64 + 8                                  // ruler + video + padding
-        if captionsOn, !phrases.isEmpty { h += 26 }
-        if !(session?.draft.overlays.isEmpty ?? true) { h += 24 }
+        if captionsOn, !phrases.isEmpty { h += 30 }
+        if !(session?.draft.overlays.isEmpty ?? true) { h += 28 }
         if let rolls = session?.draft.broll, !rolls.isEmpty {
-            // Matches rollsLane's stacking: 22pt per row, second row only on overlap.
+            // Matches rollsLane's stacking: 28pt per row, second row only on overlap.
             let sorted = rolls.sorted { $0.srcIn < $1.srcIn }
             let overlaps = zip(sorted, sorted.dropFirst()).contains { $0.srcOut > $1.srcIn }
-            h += overlaps ? 46 : 24
+            h += overlaps ? 58 : 30
         } else if rootPanel == .effects {
-            h += 24                                                        // "+ Add b-roll" strip
+            h += 28                                                        // "+ Add b-roll" strip
         }
-        if showVoiceLane { h += 18 }                                       // voice lane (collapses when idle)
-        if session?.draft.music != nil || rootPanel == .sound { h += 30 }
+        if showVoiceLane { h += 22 }                                       // voice lane (collapses when idle)
+        if session?.draft.music != nil || rootPanel == .sound { h += 34 }
         return h + 8
     }
 
@@ -1723,6 +1743,7 @@ struct ProEditorView: View {
             showRollsAdd: rootPanel == .effects,
             rollThumbs: localMediaPreviews,
             onTrimRoll: { idx, edge, delta in trimRoll(idx, edge: edge, deltaFrames: delta); bumpHaptic() },
+            onMoveRoll: { idx, delta in moveRoll(idx, deltaFrames: delta); bumpHaptic() },
             showVoice: showVoiceLane
         )
         .frame(height: timelineHeight)
