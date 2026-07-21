@@ -454,7 +454,13 @@ EXPLORATION_FLOOR = 0.15
 EDIT_BANDIT = os.environ.get("EDIT_BANDIT", "").lower() in ("1", "true", "on")
 EDIT_KNOBS: dict[str, list[str]] = {
     "meme_intensity": ["0", "1", "2", "3"],
+    # Build 57 (Craft Engine): interrupt cadence joins the learned knobs — the pacing
+    # doctrine (pace.varied_clustered) says density is audience-dependent, which is
+    # exactly what a bandit should own. Slots at LOWEST precedence in the retention
+    # scheduler (plan hint > theme > genre > knob > "standard").
+    "interrupt_density": ["calm", "standard", "dense"],
 }
+_KNOB_DEFAULTS = {"meme_intensity": "1", "interrupt_density": "standard"}
 _PROPENSITY_DRAWS = 64   # Monte-Carlo draws to estimate each arm's win probability
 
 
@@ -525,7 +531,7 @@ def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") ->
                                   "propensity": props.get(best_v, 0.0),
                                   "propensities": props}
         else:
-            default = "1" if knob == "meme_intensity" else values[0]
+            default = _KNOB_DEFAULTS.get(knob, values[0])
             out["knobs"][knob] = {"value": default, "chosen_by": "default",
                                   "propensity": props.get(default, 0.0),
                                   "propensities": props}
@@ -4988,6 +4994,12 @@ async def _run_edit(job_id: str, words: list[dict]):
         # aggressive (unless the creator explicitly turned trimming off) and marks the take
         # high-energy (tight b-roll spacing + entertainment meme cap); level 2 gets a
         # pacing hint to the planner below.
+        # Build 57: the bandit's interrupt_density knob (backfilled into config by
+        # _select_edit_knobs) reaches the retention scheduler as the LOWEST-precedence
+        # hint — an LLM-plan or theme choice still wins inside retention.py.
+        _knob_density = (job.get("config") or {}).get("interrupt_density")
+        if _knob_density in ("calm", "standard", "dense"):
+            prefs = {**prefs, "knob_interrupt_density": _knob_density}
         _meme_level = (job.get("config") or {}).get("meme_intensity")
         if _meme_level is not None:
             try:
@@ -5263,7 +5275,8 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
             dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
             sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"),
-            genre_density=genre_density, beat_grid=_beat_grid, beat_conf=_beat_conf)
+            genre_density=genre_density or prefs.get("knob_interrupt_density", ""),
+            beat_grid=_beat_grid, beat_conf=_beat_conf)
         # A1: deterministic pre-render lint — a live scoreboard of "amateur tells"
         # (dead stretches, glitch cuts, metronomic pacing, off-anchor effects, mixed
         # caption/transition grammars) on WHATEVER the two author paths + retention
@@ -5459,6 +5472,21 @@ async def _run_edit(job_id: str, words: list[dict]):
         # P5b: optional self-review — preview render → vision score vs rubric → one
         # revision if below threshold — BEFORE the final render. Flag-gated + fail-soft.
         await _self_review_edl(job_id)
+
+        # Build 57 (Craft Engine): the craft report — every judgment WITH its reason
+        # (Vizard-style explanations; a bare score is not a judgment). Aggregates the
+        # deterministic lint, the vision review, and the doctrine revisions so
+        # outcomes can segment by craft_version exactly like knowledge_version.
+        try:
+            from app import craft as craft_mod
+            job["craft_report"] = {
+                "craft_version": craft_mod.craft_version(),
+                "knowledge_version": job.get("knowledge_version"),
+                "lint": job.get("lint"),
+                "self_review": job.get("self_review"),
+            }
+        except Exception:
+            pass
 
         if not _owns_pipeline(job, my_pgen):   # self-review awaited too
             return

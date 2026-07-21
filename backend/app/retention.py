@@ -1263,7 +1263,12 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
     if not end_card_hint.get("wanted") or not text:
         return edl
     edl = copy.deepcopy(edl)
-    ec = {"text": text, "frames": 75, "show_handle": True}
+    # Build 57 (craft): the hold scales with the TEXT — a fixed 75f gave "Follow"
+    # and a two-line CTA identical read time. Two clean reads (GoE #36 band):
+    # BBC 0.3s/word + Netflix 20 chars/sec, x2, clamped to the model's 30-150.
+    _need_s = max(len(text.split()) * 0.3, len(text) / 20.0)
+    _frames = int(min(150, max(75, round(2 * _need_s * 30))))
+    ec = {"text": text, "frames": _frames, "show_handle": True}
     # Build 54 (outro builder): the creator's @handle + uploaded logo ride the hint.
     handle = str(end_card_hint.get("handle") or "").strip()
     if handle:
@@ -1271,7 +1276,7 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
     logo = str(end_card_hint.get("logo_url") or "").strip()
     if logo.startswith("http"):
         ec["logo_url"] = logo
-        ec["frames"] = 90        # a logo needs a beat more read time (still within the 30-150 clamp)
+        ec["frames"] = min(150, max(int(ec["frames"]), 90))   # logo adds a read beat
     edl["end_card"] = ec
     return edl
 

@@ -13,6 +13,7 @@ import re
 
 from app.edl import ms_to_frame, TWEAK_OP_TYPES, CHAT_TWEAK_OP_TYPES
 from app import knowledge as _kb
+from app import craft as _craft
 
 OPUS = "claude-opus-4-8"
 HAIKU = "claude-haiku-4-5-20251001"
@@ -537,6 +538,7 @@ Generate the EDL for this {style} edit. Output JSON only."""
 
     # P2.2: craft numbers come from the versioned KB, not hard-coded here.
     kb_block = _kb.digest(style, (brief or {}).get("video_type", ""), "edit_plan")
+    kb_block = (kb_block + "\n\n" + _craft.prompt_block("edit_plan")).strip()
     if kb_block:
         system = f"{system}\n\n{kb_block}"
     return system, user
@@ -658,6 +660,7 @@ def edit_brief_prompt(words: list[dict], custom_instructions: str = "",
     # P2.2: retention/hook craft numbers from the versioned KB (buried-hook recognition etc.).
     _style = EDIT_FORMATS.get(edit_format, {}).get("style", "") if edit_format else ""
     kb_block = _kb.digest(_style, "", "brief")
+    kb_block = (kb_block + "\n\n" + _craft.prompt_block("brief")).strip()
     if kb_block:
         system = f"{system}\n\n{kb_block}"
     return system, user
@@ -1201,6 +1204,7 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         if transcript_words else 30000
     resolved_video_type = video_type or (brief or {}).get("video_type", "")
     kb_block = _kb.digest(style, resolved_video_type, "edit_plan")
+    kb_block = (kb_block + "\n\n" + _craft.prompt_block("edit_plan")).strip()
     brief_line = f"\nEDIT BRIEF (your editorial guide):\n{json.dumps(brief)[:2500]}\n" if brief else ""
     dossier_block = _dossier_block(dossier)
     dossier_line = f"\n{dossier_block}\n" if dossier_block else ""
