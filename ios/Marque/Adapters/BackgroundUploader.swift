@@ -164,6 +164,12 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
 
     // MARK: URLSessionDataDelegate
 
+    // Audit (build 51): didSendBodyData fires many times/sec on fast links, and every
+    // journal update is an ATOMIC FILE REWRITE — throttle the durable write to ~2/sec.
+    // The in-memory progress callback stays per-event (the UI bar wants smoothness);
+    // the journal only needs coarse resume points.
+    private var lastJournalWrite: [Int: Date] = [:]
+
     func urlSession(_ s: URLSession, task: URLSessionTask,
                     didSendBodyData bytesSent: Int64, totalBytesSent: Int64,
                     totalBytesExpectedToSend total: Int64) {
@@ -173,9 +179,12 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
         let cb = progress[id]
         lastProgressAt[id] = Date()
         let uid = uploadIds[id] ?? task.taskDescription
+        let lastWrite = lastJournalWrite[id]
+        let shouldPersist = lastWrite.map { Date().timeIntervalSince($0) > 0.5 } ?? true
+        if shouldPersist { lastJournalWrite[id] = Date() }
         lock.unlock()
         cb?(Double(totalBytesSent) / Double(total))
-        if let uid {
+        if let uid, shouldPersist {
             UploadJournal.shared.update(uploadId: uid) {
                 $0.bytesTotal = total
                 $0.bytesConfirmed = totalBytesSent
@@ -191,6 +200,7 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
         let cont = conts.removeValue(forKey: id)
         progress.removeValue(forKey: id)
         lastProgressAt.removeValue(forKey: id)
+        lastJournalWrite.removeValue(forKey: id)
         let uid = uploadIds.removeValue(forKey: id) ?? task.taskDescription
         lock.unlock()
 

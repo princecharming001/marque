@@ -5353,28 +5353,35 @@ SELF_REVIEW_THRESHOLD = int(os.environ.get("SELF_REVIEW_THRESHOLD", "70"))
 
 async def _sample_render_frames(url: str, n: int = 6) -> list[bytes]:
     """ffmpeg-sample n evenly-spaced frames from a rendered (preview) video → jpeg bytes.
-    Fail-soft to [] (no ffmpeg / unreadable). Monkeypatched in tests."""
-    import shutil, tempfile, subprocess, glob
+    Fail-soft to [] (no ffmpeg / unreadable). Monkeypatched in tests. Audit (build 51):
+    the subprocess.run ran directly inside this async def — up to 120s of event-loop
+    stall per review; now a worker thread."""
+    import shutil
     if not shutil.which("ffmpeg") or not url:
         return []
-    out: list[bytes] = []
-    with tempfile.TemporaryDirectory() as td:
-        pat = os.path.join(td, "rev_%03d.jpg")
-        try:
-            subprocess.run(["ffmpeg", "-y", "-i", url, "-vf", "fps=1,scale=360:-1", "-q:v", "5", pat],
-                           capture_output=True, timeout=120)
-        except (subprocess.SubprocessError, OSError):
-            return []
-        paths = sorted(glob.glob(os.path.join(td, "rev_*.jpg")))
-        # even sample of at most n
-        step = max(1, len(paths) // max(1, n))
-        for p in paths[::step][:n]:
+
+    def _sync() -> list[bytes]:
+        import tempfile, subprocess, glob
+        out: list[bytes] = []
+        with tempfile.TemporaryDirectory() as td:
+            pat = os.path.join(td, "rev_%03d.jpg")
             try:
-                with open(p, "rb") as fh:
-                    out.append(fh.read())
-            except OSError:
-                continue
-    return out
+                subprocess.run(["ffmpeg", "-y", "-i", url, "-vf", "fps=1,scale=360:-1", "-q:v", "5", pat],
+                               capture_output=True, timeout=120)
+            except (subprocess.SubprocessError, OSError):
+                return []
+            paths = sorted(glob.glob(os.path.join(td, "rev_*.jpg")))
+            # even sample of at most n
+            step = max(1, len(paths) // max(1, n))
+            for p in paths[::step][:n]:
+                try:
+                    with open(p, "rb") as fh:
+                        out.append(fh.read())
+                except OSError:
+                    continue
+        return out
+
+    return await asyncio.to_thread(_sync)
 
 
 def _review_frame_times(plan: dict, fps: int = 30, cap: int = 10) -> list[float]:
@@ -5413,24 +5420,31 @@ def _review_frame_times(plan: dict, fps: int = 30, cap: int = 10) -> list[float]
 async def _sample_frames_at_times(url: str, times: list[float]) -> list[bytes]:
     """Extract one jpeg per timestamp (seconds) from `url` via ffmpeg -ss seeks. Fail-soft to
     [] (no ffmpeg / unreadable / no times). Monkeypatched in tests alongside
-    `_sample_render_frames`."""
-    import shutil, tempfile, subprocess
+    `_sample_render_frames`. Audit (build 51): the N sequential subprocess.run calls ran
+    directly inside this async def — up to N×60s of EVENT-LOOP stall for every self-review;
+    the whole extraction now runs in a worker thread."""
+    import shutil
     if not shutil.which("ffmpeg") or not url or not times:
         return []
-    out: list[bytes] = []
-    with tempfile.TemporaryDirectory() as td:
-        for i, t in enumerate(times):
-            p = os.path.join(td, f"rev_{i:03d}.jpg")
-            try:
-                subprocess.run(["ffmpeg", "-y", "-ss", str(max(0.0, t)), "-i", url,
-                                "-frames:v", "1", "-vf", "scale=360:-1", "-q:v", "5", p],
-                               capture_output=True, timeout=60)
-                if os.path.exists(p):
-                    with open(p, "rb") as fh:
-                        out.append(fh.read())
-            except (subprocess.SubprocessError, OSError):
-                continue
-    return out
+
+    def _sync() -> list[bytes]:
+        import tempfile, subprocess
+        out: list[bytes] = []
+        with tempfile.TemporaryDirectory() as td:
+            for i, t in enumerate(times):
+                p = os.path.join(td, f"rev_{i:03d}.jpg")
+                try:
+                    subprocess.run(["ffmpeg", "-y", "-ss", str(max(0.0, t)), "-i", url,
+                                    "-frames:v", "1", "-vf", "scale=360:-1", "-q:v", "5", p],
+                                   capture_output=True, timeout=60)
+                    if os.path.exists(p):
+                        with open(p, "rb") as fh:
+                            out.append(fh.read())
+                except (subprocess.SubprocessError, OSError):
+                    continue
+        return out
+
+    return await asyncio.to_thread(_sync)
 
 
 async def _score_edl_vision(frames: list[bytes], plan: dict,
