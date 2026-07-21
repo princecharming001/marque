@@ -414,22 +414,24 @@ struct ClipDetailSheet: View {
                     }
 
                     // Custom Share / Delete actions — first-class, on-brand pills instead of
-                    // a buried Apple-native ellipsis menu.
-                    if !isDraft {
-                        HStack(spacing: Space.sm) {
-                            if let shareURL {
-                                ShareLink(item: shareURL) {
-                                    clipActionLabel("Share", systemImage: "square.and.arrow.up",
-                                                    tint: Palette.textPrimary)
-                                }
-                                .accessibilityIdentifier("clip.share")
+                    // a buried Apple-native ellipsis menu. build 52: Delete now shows for
+                    // DRAFTS too (it was gated behind !isDraft, leaving drafts un-deletable
+                    // from the Library — the reported bug); Share stays non-draft only (a
+                    // half-finished take has nothing shareable yet).
+                    HStack(spacing: Space.sm) {
+                        if !isDraft, let shareURL {
+                            ShareLink(item: shareURL) {
+                                clipActionLabel("Share", systemImage: "square.and.arrow.up",
+                                                tint: Palette.textPrimary)
                             }
-                            Button { showDelete = true } label: {
-                                clipActionLabel("Delete", systemImage: "trash", tint: Palette.critical)
-                            }
-                            .buttonStyle(PressableStyle(dim: 0.7))
-                            .accessibilityIdentifier("clip.delete")
+                            .accessibilityIdentifier("clip.share")
                         }
+                        Button { showDelete = true } label: {
+                            clipActionLabel(isDraft ? "Delete draft" : "Delete",
+                                            systemImage: "trash", tint: Palette.critical)
+                        }
+                        .buttonStyle(PressableStyle(dim: 0.7))
+                        .accessibilityIdentifier("clip.delete")
                     }
 
                     if isDraft {
@@ -518,8 +520,8 @@ struct ClipDetailSheet: View {
                     .background(.ultraThinMaterial)
                 }
             }
-            .marqueConfirm($showDelete, title: "Delete this clip?",
-                           message: isDraft ? "This removes the draft take. This can't be undone."
+            .marqueConfirm($showDelete, title: isDraft ? "Delete this draft?" : "Delete this clip?",
+                           message: isDraft ? "The recording saved with this draft will be discarded. This can't be undone."
                                             : "This removes the clip and any times it's scheduled. This can't be undone.",
                            confirm: "Delete", destructive: true) {
                 store.deleteClip(clip); dismiss()
