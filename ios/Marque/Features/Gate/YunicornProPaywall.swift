@@ -71,7 +71,7 @@ struct YunicornProPaywall: View {
                         .foregroundStyle(.white)
                         .multilineTextAlignment(.center)
 
-                    Text("PRO")
+                    Text("PLUS")
                         .font(.system(size: 11, weight: .semibold)).tracking(1.4)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 14).padding(.vertical, 5)
@@ -82,14 +82,14 @@ struct YunicornProPaywall: View {
                     HStack(spacing: 10) {
                         planCard(idx: 0, title: "3-day trial", price: "Free",
                                  sub: "then \(Self.weeklyPrice)/wk")
-                        planCard(idx: 1, title: "Go Pro now", price: "\(Self.weeklyPrice)/wk",
+                        planCard(idx: 1, title: "Go Plus now", price: "\(Self.weeklyPrice)/wk",
                                  sub: "start today")
                     }
 
                     VStack(spacing: Space.sm) {
                         Button { Task { await purchase() } } label: {
                             Text(working ? "Processing…"
-                                 : selectedPlan == 0 ? "Start my 3-day free trial" : "Go Pro now")
+                                 : selectedPlan == 0 ? "Start my 3-day free trial" : "Go Plus now")
                                 .font(AppFont.headline).foregroundStyle(Palette.ink)
                                 .frame(maxWidth: .infinity).frame(height: 56)
                                 .background(Color.white).clipShape(Capsule())
@@ -220,14 +220,14 @@ struct YunicornProPaywall: View {
                 .font(.system(size: 26, weight: .bold)).foregroundStyle(Palette.positive)
                 .frame(width: 72, height: 72)
                 .background(Circle().fill(Palette.positive.opacity(0.15)))
-            Text("You're Pro")
+            Text("You’re on Plus")
                 .font(Typeface.display(30, .semibold)).foregroundStyle(.white)
-            Text("Clean exports, every look, priority renders.\nYunicorn Pro is active on this device.")
+            Text("Clean exports, every look, priority renders.\nYunicorn Plus is active on this device.")
                 .font(AppFont.bodyL).foregroundStyle(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
             Spacer()
             #if DEBUG
-            Button("Revoke Pro (dev)") { entitlements.revoke() }
+            Button("Revoke Plus (dev)") { entitlements.revoke() }
                 .font(AppFont.caption).foregroundStyle(.white.opacity(0.4))
                 .padding(.bottom, Space.xl)
                 .accessibilityIdentifier("proPaywall.devRevoke")

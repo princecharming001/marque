@@ -5,6 +5,7 @@ import SwiftUI
 // experience — watermark on free exports, the Pro surface in Settings, future gate
 // points — is testable end to end before IAP lands. When StoreKit arrives, `isPro`
 // becomes derived from the transaction listener and everything downstream stays as-is.
+@MainActor              // build 55: mutations drive SwiftUI observation — keep them on main
 @Observable final class Entitlements {
     static let shared = Entitlements()
     private static let key = "yunicorn.entitlement.pro"

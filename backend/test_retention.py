@@ -1309,11 +1309,14 @@ def test_plan_framing_uses_theme_scales():
     words = _steady_words(60000)
     total_frames = ms_to_frame(60000)
     edl = _bare_edl("talking_head", total_frames)
-    theme = _themes.get_theme("hormozi_punch")   # v2 scales {wide:1.0, mid:1.15, close:1.2} (≤120% cap)
+    theme = _themes.get_theme("hormozi_punch")   # v2 scales {wide:1.0, mid:1.15, close:1.2}
     out = retention.plan_framing(edl, words, style="talking_head", theme=theme, job_seed="job-a")
     scales = {round(s["tx_scale"], 2) for s in out["segments"]}
-    assert scales <= {1.0, 1.15, 1.2}
-    assert 1.2 in scales or 1.15 in scales   # a non-wide framing actually happened
+    # Build 55: theme scales are CAPPED element-wise at the global tone-down ladder
+    # (owner rejected the stronger zooms) — hormozi's 1.15/1.2 clamp to 1.09/1.14.
+    assert scales <= {1.0, 1.09, 1.14}
+    assert max(scales) <= max(retention._FRAMING_SCALES.values())
+    assert 1.09 in scales or 1.14 in scales   # a non-wide framing actually happened (capped values)
 
 
 def test_schedule_interrupts_density_falls_back_to_theme():

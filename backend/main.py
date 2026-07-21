@@ -2966,6 +2966,18 @@ def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None
         # so model_dump() emits the key with value None when unset.
         if not edl.get("caption_style"):
             edl["caption_style"] = style
+    # Build 55 audit: the record screen's EXPLICIT caption size + style→font mapping must
+    # also apply on the legacy/mock authoring paths (the plan path folds them in via
+    # assemble_edl). Explicit per-job picks win unconditionally — prefs only carry these
+    # keys when the creator actually tapped a choice.
+    if prefs.get("caption_size") in ("small", "medium", "large"):
+        _co = dict(edl.get("caption_options") or {})
+        _co["size"] = prefs["caption_size"]
+        edl["caption_options"] = _co
+    if prefs.get("caption_font") in ("inter", "archivo", "baloo", "montserrat", "anton"):
+        _co = dict(edl.get("caption_options") or {})
+        _co["font"] = prefs["caption_font"]
+        edl["caption_options"] = _co
     trim = prefs.get("filler_trim")
     if trim == "off":
         edl["drops"] = []
@@ -4978,13 +4990,15 @@ async def _run_edit(job_id: str, words: list[dict]):
             except (TypeError, ValueError):
                 pass
         # Build 54: pre-submit caption treatment from the record screen. iOS sends these
-        # ONLY on an explicit pick ("Auto" sends nothing), so the planner's own style choice
-        # survives untouched by default. Style slots into the existing edit_prefs surface;
-        # size + the style→font mapping fold into caption_options in assemble_edl. The
-        # mapped font ALSO restyles the hook TITLE sticker (place_hook_overlay) — the
-        # "caption preset influences the title blocks" contract.
+        # ONLY on an explicit pick ("Auto" sends nothing). PRECEDENCE (build 55 audit fix):
+        # the per-job explicit pick BEATS edit_prefs — iOS's EditPrefs.asDictionary always
+        # includes caption_style (Settings default "clean"), so the original `not
+        # prefs.get(...)` guard made this a guaranteed silent no-op. Per-job explicit >
+        # standing Settings pref > plan default. Size + the style→font mapping fold into
+        # caption_options in assemble_edl; the mapped font ALSO restyles the hook TITLE
+        # sticker (place_hook_overlay) — the "preset influences the title blocks" contract.
         _cap_style = (job.get("config") or {}).get("caption_style", "")
-        if _cap_style in ("clean", "bold-word", "karaoke") and not prefs.get("caption_style"):
+        if _cap_style in ("clean", "bold-word", "karaoke"):
             prefs = {**prefs, "caption_style": _cap_style}
             _cap_font = {"bold-word": "archivo", "karaoke": "montserrat"}.get(_cap_style)
             if _cap_font:
@@ -5165,11 +5179,18 @@ async def _run_edit(job_id: str, words: list[dict]):
         _outro_cfg = job.get("config") or {}
         _outro_text = str(_outro_cfg.get("outro_text") or "").strip()
         if _outro_text:
-            _ec_hint = {"wanted": True, "text": _outro_text[:120]}
+            # "creator": an EXPLICIT owner pick — place_end_card honors it even on the
+            # styles whose matrix normally skips end cards (build 55 audit: a deliberate
+            # outro built on the record screen must not silently vanish on fast_cuts).
+            _ec_hint = {"wanted": True, "creator": True, "text": _outro_text[:120]}
             if str(_outro_cfg.get("outro_handle") or "").strip():
                 _ec_hint["handle"] = str(_outro_cfg["outro_handle"]).strip()[:40]
-            if str(_outro_cfg.get("outro_logo_url") or "").strip().startswith("http"):
-                _ec_hint["logo_url"] = str(_outro_cfg["outro_logo_url"]).strip()
+            _logo_url = str(_outro_cfg.get("outro_logo_url") or "").strip()
+            if _logo_url.startswith("http") and re.search(
+                    r"\.(png|jpe?g|webp|gif)(\?|$)", _logo_url, re.IGNORECASE):
+                # Build 55 audit: mirror EndCard.tsx's extension gate — an extension-less
+                # URL used to get the 90-frame logo card with no logo drawn.
+                _ec_hint["logo_url"] = _logo_url
             retention_hints["end_card"] = _ec_hint
         # A7: a theme's own vibe is a FALLBACK under the plan's own vibe choice —
         # never forces music on/off (that's still purely prefs/plan-driven, so

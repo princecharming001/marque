@@ -593,7 +593,13 @@ struct ProEditorView: View {
                     optChip(label, active: o.scale == nil && o.size == v) { mutate([.captionOptions(size: v)]) }
                         .accessibilityIdentifier("editorPro.capSize.\(v)")
                 }
-                Slider(value: Binding(get: { capSizeDraft ?? o.scale ?? 1.0 },
+                Slider(value: Binding(get: {
+                            // Build 55 audit: baseline must reflect the DISCRETE size too —
+                            // showing 1.0 on "L" (eff. 1.24) meant a hairline touch visibly
+                            // shrank the captions. Mirrors captionSimOverlay's discreteMult.
+                            capSizeDraft ?? o.scale
+                                ?? (o.size == "small" ? 0.78 : o.size == "large" ? 1.24 : 1.0)
+                        },
                                       set: { capSizeDraft = $0 }),
                        in: 0.5...2.0, onEditingChanged: { editing in
                            // UX-4: one op per drag — commit on release only.
@@ -1682,16 +1688,20 @@ struct ProEditorView: View {
         var h: CGFloat = 12 + 2 + 64 + 8                                  // ruler + video + padding
         if captionsOn, !phrases.isEmpty { h += 30 }
         if !(session?.draft.overlays.isEmpty ?? true) { h += 28 }
-        if let rolls = session?.draft.broll, !rolls.isEmpty {
-            // Matches rollsLane's stacking: 28pt per row, second row only on overlap.
-            let sorted = rolls.sorted { $0.srcIn < $1.srcIn }
-            let overlaps = zip(sorted, sorted.dropFirst()).contains { $0.srcOut > $1.srcIn }
+        if let d = session?.draft, !d.broll.isEmpty {
+            // Matches rollsLane's stacking EXACTLY (build 55 audit): rows derive from
+            // OUTPUT spans, sorted by start — the old source-frame check disagreed with
+            // the lane (drops/speed shift output spans) and mis-sized the frame.
+            let spans = d.broll
+                .compactMap { d.outputSpan(srcIn: $0.srcIn, srcOut: $0.srcOut) }
+                .sorted { $0.start < $1.start }
+            let overlaps = zip(spans, spans.dropFirst()).contains { $0.end - 0.01 > $1.start }
             h += overlaps ? 58 : 30
         } else if rootPanel == .effects {
             h += 28                                                        // "+ Add b-roll" strip
         }
         if showVoiceLane { h += 22 }                                       // voice lane (collapses when idle)
-        if session?.draft.music != nil || rootPanel == .sound { h += 34 }
+        if session?.draft.music != nil || rootPanel == .sound { h += 32 }
         return h + 8
     }
 

@@ -26,7 +26,10 @@ const Mark: React.FC<{ size: number }> = ({ size }) => (
 export const Watermark: React.FC = () => (
   <AbsoluteFill style={{ pointerEvents: "none" }}>
     <div style={{
-      position: "absolute", left: 40, bottom: 96,
+      // Build 55 audit: bottom 96 sat deep inside the platform dead zone (layout.json
+      // SAFE_BOTTOM_PX = 320 — TikTok's caption/sound chrome) and would render mostly
+      // covered. 336 = just above the safe boundary + the 4px progress bar.
+      position: "absolute", left: 40, bottom: 336,
       display: "flex", alignItems: "center", gap: 12,
       padding: "10px 18px 10px 12px", borderRadius: 999,
       background: "rgba(8,8,12,0.38)",

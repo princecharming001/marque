@@ -813,12 +813,18 @@ enum FillerTrim: String, CaseIterable, Codable, Identifiable {
 
 struct EditPrefs: Codable, Hashable {
     var autoCaptions: Bool = true
-    var captionStyle: CaptionStyle = .clean
+    // Build 55 audit: nil = AUTO — the plan LLM picks the caption style per take. The old
+    // non-optional default meant edit_prefs ALWAYS carried "clean", so the planner's
+    // caption_plan.style was dead code on every job from this client and the record
+    // screen's "Auto" promise was false. Old snapshots with a stored style decode as that
+    // style (an explicit standing choice); fresh installs default to Auto.
+    var captionStyle: CaptionStyle? = nil
     var fillerTrim: FillerTrim = .standard
 
     var asDictionary: [String: Any] {
-        ["auto_captions": autoCaptions, "caption_style": captionStyle.rawValue,
-         "filler_trim": fillerTrim.rawValue]
+        var d: [String: Any] = ["auto_captions": autoCaptions, "filler_trim": fillerTrim.rawValue]
+        if let s = captionStyle { d["caption_style"] = s.rawValue }
+        return d
     }
 }
 

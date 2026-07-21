@@ -466,7 +466,7 @@ extension ProEditorView {
         // Replace flow: swap the source in the existing roll's window.
         if let ri = replacingRoll, let r = session?.draft.broll[safe: ri] {
             replacingRoll = nil
-            mutate([.removeBroll(r.srcIn, r.srcOut), .addBroll(r.srcIn, r.srcOut, query: q)])
+            mutate([.removeBroll(r.srcIn, r.srcOut, exact: true), .addBroll(r.srcIn, r.srcOut, query: q)])
             selectLastRoll(); return
         }
         guard let (aF, bF) = insertWindow(len: 90) else { return }
@@ -478,12 +478,19 @@ extension ProEditorView {
     func importRollMedia(_ item: PhotosPickerItem) async {
         uploadingMedia = true
         defer { uploadingMedia = false; mediaPickerItem = nil }
-        guard let data = try? await item.loadTransferable(type: Data.self) else {
+        guard var data = try? await item.loadTransferable(type: Data.self) else {
             flashPublic("Couldn't load that media — try another.")
             return
         }
         let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
         let ext = isVideo ? "mov" : "jpg"
+        // Build 55 (audit): photo picks arrive as their ORIGINAL bytes — HEIC by default on
+        // iPhone — and Chromium (the Lambda renderer) can't decode HEIC, so the roll showed
+        // locally (UIImage reads HEIC) but rendered BLANK in the delivered video. Re-encode
+        // stills to real JPEG before upload; videos pass through untouched.
+        if !isVideo, let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.9) {
+            data = jpg
+        }
         let path = MediaStore.save(data, ext: ext)
         guard let url = await LiveClipEngine.uploadMedia(path: path, filename: "roll.\(ext)") else {
             flashPublic("Couldn't upload that media — check your connection.")
@@ -492,7 +499,7 @@ extension ProEditorView {
         // Replace flow: swap the source in the existing roll's window.
         if let ri = replacingRoll, let r = session?.draft.broll[safe: ri] {
             replacingRoll = nil
-            mutate([.removeBroll(r.srcIn, r.srcOut), .addMediaRoll(r.srcIn, r.srcOut, url: url)])
+            mutate([.removeBroll(r.srcIn, r.srcOut, exact: true), .addMediaRoll(r.srcIn, r.srcOut, url: url)])
             localMediaPreviews[url] = path; selectLastRoll()
             withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
             return
@@ -512,7 +519,7 @@ extension ProEditorView {
 
     func deleteRoll(_ idx: Int) {
         guard let r = session?.draft.broll[safe: idx] else { return }
-        mutate([.removeBroll(r.srcIn, r.srcOut)])
+        mutate([.removeBroll(r.srcIn, r.srcOut, exact: true)])
         if selectedBroll != nil { select(nil) } else { selectedBroll = nil }
     }
 
@@ -525,7 +532,7 @@ extension ProEditorView {
         let readd: WireOp = (r.source == "own_media" && r.resolvedURL != nil)
             ? .addMediaRoll(r.srcIn, newOut, url: r.resolvedURL!)
             : .addBroll(r.srcIn, newOut, query: r.cueText)
-        mutate([.removeBroll(r.srcIn, r.srcOut), readd])
+        mutate([.removeBroll(r.srcIn, r.srcOut, exact: true), readd])
         selectLastRoll()
     }
 
@@ -550,6 +557,12 @@ extension ProEditorView {
         let a = max(0, min(extent - len, r.srcIn + deltaFrames))
         let b = a + len
         guard a != r.srcIn else { return }
+        // Build 55 audit: a window landing entirely inside DROPPED footage has no output
+        // span — the strip would vanish the moment the drag commits (looks like deletion).
+        guard session?.draft.outputSpan(srcIn: a, srcOut: b) != nil else {
+            flashPublic("That lands in cut footage — drop it on kept video.")
+            return
+        }
         readdRoll(r, a: a, b: b)
     }
 
@@ -577,7 +590,7 @@ extension ProEditorView {
     private func readdRoll(_ r: EditorBroll, a: Int, b: Int) {
         let readd: WireOp = (r.source == "own_media" && r.resolvedURL != nil)
             ? .addMediaRoll(a, b, url: r.resolvedURL!) : .addBroll(a, b, query: r.cueText)
-        mutate([.removeBroll(r.srcIn, r.srcOut), readd])
+        mutate([.removeBroll(r.srcIn, r.srcOut, exact: true), readd])
         selectLastRoll()
     }
 
