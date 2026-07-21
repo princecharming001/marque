@@ -695,3 +695,58 @@ def test_meme_resolution_bypasses_literal_scorer(monkeypatch):
     out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
     assert out["broll"] and out["broll"][0]["resolved_url"] == "https://klipy/chefs-kiss.mp4"
     assert out["broll"][0]["source"] == "klipy"
+
+
+# ---------------------------------------------------------------------------
+# Build 56 — adaptive placement (face-aware title + title-aware smart insets)
+
+def test_title_pos_y_no_face_is_legacy():
+    from app.retention import _title_pos_y
+    assert _title_pos_y(None, captions_top=False, hook_text="x", caption_opts={}) == 0.24
+    assert _title_pos_y(None, captions_top=True, hook_text="x", caption_opts={}) == 0.62
+
+
+def test_title_pos_y_keeps_legacy_when_face_clear():
+    from app.retention import _title_pos_y
+    # Face well below the top slot (chest-up framing): legacy 0.24 stays.
+    face = {"x": 0.3, "y": 0.40, "w": 0.4, "h": 0.30}
+    assert _title_pos_y(face, captions_top=False, hook_text="Short hook",
+                        caption_opts={}) == 0.24
+
+
+def test_title_pos_y_relocates_off_a_high_face():
+    from app.retention import _title_pos_y, _title_half_h
+    # Tight close-up: face band covers the 0.24 slot → title must move clear of it.
+    face = {"x": 0.2, "y": 0.10, "w": 0.6, "h": 0.42}
+    y = _title_pos_y(face, captions_top=False, hook_text="Short hook", caption_opts={})
+    assert y != 0.24
+    half_h = _title_half_h("Short hook")
+    pad = face["h"] * 0.10
+    f_top, f_bot = face["y"] - pad, face["y"] + face["h"] + pad
+    # The chosen block clears the padded face band entirely.
+    assert (y + half_h) <= f_top + 1e-6 or (y - half_h) >= f_bot - 1e-6
+    assert 0.15 <= y <= 0.78
+
+
+def test_smart_inset_avoids_title_rect_via_bottom_band():
+    from app.faces import smart_inset_rect
+    # Face on the right → OTS says LEFT; the hook title occupies the whole top band,
+    # so the inset must take a BOTTOM-band cell (clear of TikTok's 484px chrome).
+    face = {"x": 0.55, "y": 0.30, "w": 0.35, "h": 0.30}
+    title = (0.07, 0.165, 0.86, 0.15)
+    r = smart_inset_rect(face, caption_band=(0.53, 0.71), avoid_rects=(title,))
+    assert r is not None
+    # Lands BELOW the title block (the bottom band is caption-blocked with default
+    # captions), at full width — moving beats shrinking to a top sliver.
+    assert r["y"] >= title[1] + title[3] - 1e-6
+    assert r["w"] == 0.42
+    # And never intersects the title keep-out.
+    assert r["y"] >= title[1] + title[3] or r["y"] + r["h"] <= title[1]
+
+
+def test_smart_inset_top_unchanged_without_avoids():
+    from app.faces import smart_inset_rect
+    # No title conflict → the classic OTS top placement survives (regression guard).
+    face = {"x": 0.55, "y": 0.30, "w": 0.35, "h": 0.30}
+    r = smart_inset_rect(face, caption_band=(0.53, 0.71))
+    assert r is not None and abs(r["y"] - 140 / 1920) < 2e-3 and r["x"] < 0.5
