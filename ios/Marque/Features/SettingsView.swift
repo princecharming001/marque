@@ -36,9 +36,13 @@ struct SettingsView: View {
 
                         VStack(alignment: .leading, spacing: Space.sm) {
                             Text("Caption style").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            MarqueSegmented(options: CaptionStyle.allCases.map(\.label),
-                                            index: Binding(get: { CaptionStyle.allCases.firstIndex(of: store.editPrefs.captionStyle) ?? 0 },
-                                                           set: { store.editPrefs.captionStyle = CaptionStyle.allCases[$0] }))
+                            // Build 55: "Auto" (nil) = the AI picks per take — the honest default.
+                            MarqueSegmented(options: ["Auto"] + CaptionStyle.allCases.map(\.label),
+                                            index: Binding(get: {
+                                                store.editPrefs.captionStyle
+                                                    .flatMap { CaptionStyle.allCases.firstIndex(of: $0).map { $0 + 1 } } ?? 0
+                                            },
+                                                           set: { store.editPrefs.captionStyle = $0 == 0 ? nil : CaptionStyle.allCases[$0 - 1] }))
                                 .accessibilityIdentifier("settings.captionStyle")
                         }
                         .padding(.horizontal, Space.md).padding(.vertical, 10)
@@ -102,14 +106,15 @@ struct SettingsView: View {
 
                         Divider().padding(.leading, Space.md)
 
-                        // Build 54: the Pro tier (watermark-free exports etc.) — mock
-                        // entitlement until StoreKit lands; opens the Yunicorn Pro paywall.
+                        // Build 54 tier (renamed "Plus" in 55: the row above already sells
+                        // "Yunicorn Pro" at a different price — two products, one name).
+                        // Mock entitlement until StoreKit lands.
                         Button { showProPaywall = true } label: {
                             HStack(spacing: Space.md) {
                                 iconTile("sparkles", tint: Palette.accent)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(entitlements.isPro ? "Yunicorn Pro — active"
-                                                            : "Go Pro")
+                                    Text(entitlements.isPro ? "Yunicorn Plus — active"
+                                                            : "Go Plus")
                                         .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                     Text(entitlements.isPro ? "Clean exports, every look, priority renders."
                                                             : "Remove the watermark from your exports.")
@@ -117,7 +122,7 @@ struct SettingsView: View {
                                 }
                                 Spacer()
                                 if entitlements.isPro {
-                                    Chip(text: "Pro", tint: Palette.positive)
+                                    Chip(text: "Plus", tint: Palette.positive)
                                 } else {
                                     Image(systemName: "chevron.right")
                                         .font(.system(size: 12, weight: .semibold))

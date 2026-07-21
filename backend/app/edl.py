@@ -1000,7 +1000,13 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
             overlays.append({
                 "type": o.get("type", "punch_in"),
                 "frame_in": lo, "frame_out": hi,
-                "scale": o.get("scale", 1.08), "text": o.get("text", ""),
+                # Build 55 audit: FINAL gate on punch zoom — assemble's 1.08 clamp only
+                # covers plan-authored punch_ins; legacy overlays and add_punch_in tweaks
+                # (op range up to 1.35) reached the render unclamped, breaching the 120%
+                # framing spec ceiling. Explicit tweaks keep headroom up to the spec cap.
+                "scale": (max(1.0, min(1.20, float(o.get("scale") or 1.08)))
+                          if o.get("type") == "punch_in" else o.get("scale", 1.08)),
+                "text": o.get("text", ""),
                 # text_sticker placement/look — defaults for older overlay dicts.
                 "pos_x": o.get("pos_x", 0.5), "pos_y": o.get("pos_y", 0.5),
                 "rotation": o.get("rotation", 0.0), "color": o.get("color"),
@@ -1724,9 +1730,23 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                     reason = "invalid or out-of-bounds range"
                 else:
                     before = edl.get("broll") or []
-                    # No range → remove all; ranged → remove only overlapping cues.
-                    after = [] if r is None else \
-                        [b for b in before if b["src_out"] <= r[0] or b["src_in"] >= r[1]]
+                    if r is not None and op.get("exact"):
+                        # Build 55 audit: EXACT-match removal for the editor's own
+                        # retrim/move/replace/delete wire. The overlap predicate deleted
+                        # every NEIGHBOR sharing the window (overlapping rolls are a
+                        # first-class stacked-lane feature, and drag-move manufactures
+                        # overlap trivially) — one gesture silently destroyed another
+                        # object. Removes only the FIRST cue with identical bounds.
+                        after = list(before)
+                        for k, cue in enumerate(after):
+                            if cue.get("src_in") == r[0] and cue.get("src_out") == r[1]:
+                                del after[k]
+                                break
+                    else:
+                        # No range → remove all; ranged → remove only overlapping cues
+                        # (the chat-tweak LLM's semantics: "remove the b-roll around 10s").
+                        after = [] if r is None else \
+                            [b for b in before if b["src_out"] <= r[0] or b["src_in"] >= r[1]]
                     if len(after) < len(before):
                         edl["broll"] = after
                         applied = True

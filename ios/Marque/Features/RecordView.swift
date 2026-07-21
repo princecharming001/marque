@@ -86,6 +86,7 @@ struct RecordView: View {
     @State private var outroHandle = ""
     @State private var outroLogoURL = ""
     @State private var outroLogoUploading = false
+    @State private var outroLogoFailed = false
     @State private var outroLogoItem: PhotosPickerItem? = nil
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
@@ -892,21 +893,55 @@ struct RecordView: View {
                     }
                     .accessibilityIdentifier("record.outroLogo")
                 }
-                .onChange(of: outroLogoItem) { _, item in
-                    if let item { Task { await uploadOutroLogo(item) } }
+                if outroLogoFailed {
+                    Text("Couldn't add that logo — try another image.")
+                        .font(AppFont.caption).foregroundStyle(Palette.critical)
+                }
+                if outroPreset == "custom",
+                   outroCustomText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("Add your call to action above — the outro is skipped while it's empty.")
+                        .font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
                 }
             }
+        }
+        // Build 55 audit: attached at the section ROOT — inside the preset-conditional,
+        // flipping to "None" while the picker sheet was returning orphaned the item (and
+        // re-picking the SAME photo then never re-fired onChange).
+        .onChange(of: outroLogoItem) { _, item in
+            if let item { Task { await uploadOutroLogo(item) } }
         }
     }
 
     private func uploadOutroLogo(_ item: PhotosPickerItem) async {
         outroLogoUploading = true
+        outroLogoFailed = false
         defer { outroLogoUploading = false; outroLogoItem = nil }
-        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
-        let path = MediaStore.save(data, ext: "png")
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            outroLogoFailed = true; return
+        }
+        // Build 55 (audit): the picker hands back the ORIGINAL bytes — iPhone camera photos
+        // are HEIC by default, and Chromium (the Lambda renderer) cannot decode HEIC, so a
+        // raw pass-through uploaded fine and then rendered a BLANK logo. Re-encode through
+        // UIImage to real PNG, downscaled to 512px (it renders at 168px; a 4032px camera
+        // PNG would be a multi-MB fetch per render for nothing).
+        guard let img = UIImage(data: data) else { outroLogoFailed = true; return }
+        let scaled = img.preparingThumbnail(of: thumbnailFit(img.size, maxEdge: 512)) ?? img
+        guard let png = scaled.pngData() else { outroLogoFailed = true; return }
+        let path = MediaStore.save(png, ext: "png")
         if let url = await LiveClipEngine.uploadMedia(path: path, filename: "outro-logo.png") {
             outroLogoURL = url
+        } else {
+            outroLogoFailed = true
         }
+    }
+
+    /// Aspect-preserving fit within maxEdge (preparingThumbnail stretches to the exact
+    /// size it's given, so the target must already carry the aspect ratio).
+    private func thumbnailFit(_ size: CGSize, maxEdge: CGFloat) -> CGSize {
+        let m = max(size.width, size.height)
+        guard m > maxEdge, m > 0 else { return size }
+        let k = maxEdge / m
+        return CGSize(width: size.width * k, height: size.height * k)
     }
 
     /// v4 gen-z dial: Off · Subtle · Memey · Brainrot. A discrete 4-stop slider — how

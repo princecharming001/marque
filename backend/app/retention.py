@@ -858,6 +858,12 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
         return covered / span
 
     theme_scales = (theme.framing.get("scales") if theme is not None else None) or None
+    # Build 55 audit: theme scales bypassed the owner's zoom tone-down (gen_z shipped
+    # mid 1.15/close 1.2 — the exact look that was rejected). Themes keep their relative
+    # character but are capped element-wise at the global ladder's ceiling.
+    if theme_scales:
+        _cap = {"wide": 1.0, "mid": _FRAMING_SCALES["mid"], "close": _FRAMING_SCALES["close"]}
+        theme_scales = {k: min(float(v), _cap.get(k, float(v))) for k, v in theme_scales.items()}
     scales = theme_scales if theme_scales else _FRAMING_SCALES
     tx_x_sign = 1
     for step, seg_i in enumerate(_play_order(edl)):
@@ -1168,10 +1174,12 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
     since that decision needs to see both hints at once. Skipped for fast_cuts
     (WS5: loop-friendly by design, an end-card breaks the loop) and duet_split
     (the play/freeze payoff punch owns the close, per the same matrix)."""
-    if style in _END_CARD_SKIP_STYLES:
-        return edl
     hints = hints or {}
     end_card_hint = hints.get("end_card") or {}
+    # Build 55 audit: the skip matrix (fast_cuts loops, duet's payoff punch) applies to
+    # PLAN-authored cards; a creator's explicit outro from the record screen wins.
+    if style in _END_CARD_SKIP_STYLES and not end_card_hint.get("creator"):
+        return edl
     text = (end_card_hint.get("text") or "").strip()
     if not end_card_hint.get("wanted") or not text:
         return edl
@@ -1765,7 +1773,10 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         end_card_hint = hints.get("end_card") or {}
         wants_end_card = (bool(end_card_hint.get("wanted"))
                          and bool((end_card_hint.get("text") or "").strip())
-                         and style not in _END_CARD_SKIP_STYLES)
+                         # Build 55 audit: a creator's EXPLICIT outro (record screen) beats
+                         # the style skip matrix; plan-authored cards still respect it.
+                         and (style not in _END_CARD_SKIP_STYLES
+                              or bool(end_card_hint.get("creator"))))
         if wants_end_card:
             edl = _safe_pass("place_end_card", edl, place_end_card, words, style=style, hints=hints)
         else:

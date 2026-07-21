@@ -69,7 +69,14 @@ struct WireOp: Equatable {
     static func addBroll(_ a: Int, _ b: Int, query: String) -> WireOp { WireOp(type: "add_broll", i: ["start_frame": a, "end_frame": b], s: ["query": query]) }
     /// The creator's own photo/video as a roll — direct URL (already uploaded).
     static func addMediaRoll(_ a: Int, _ b: Int, url: String) -> WireOp { WireOp(type: "add_broll", i: ["start_frame": a, "end_frame": b], s: ["url": url]) }
-    static func removeBroll(_ a: Int, _ b: Int) -> WireOp { WireOp(type: "remove_broll", i: ["start_frame": a, "end_frame": b]) }
+    /// exact=true (build 55): remove ONLY the cue with these identical bounds — the
+    /// editor's retrim/move/replace/delete wire. The overlap predicate deleted every
+    /// NEIGHBOR sharing the window (stacked rolls are first-class; drag-move makes
+    /// overlap trivial). Chat/LLM removals keep overlap semantics (exact omitted).
+    static func removeBroll(_ a: Int, _ b: Int, exact: Bool = false) -> WireOp {
+        WireOp(type: "remove_broll", i: ["start_frame": a, "end_frame": b],
+               bool: exact ? ["exact": true] : [:])
+    }
     /// v6 direct manipulation: place a roll at an exact normalized canvas rect (drag/pinch).
     static func brollRect(index: Int, x: Double, y: Double, w: Double, h: Double) -> WireOp {
         WireOp(type: "set_broll_rect", i: ["index": index], d: ["x": x, "y": y, "w": w, "h": h])
@@ -357,7 +364,14 @@ enum LocalEDLEngine {
         case "remove_broll":
             let a = op.i["start_frame"]; let b = op.i["end_frame"]
             let before = d.broll.count
-            d.broll.removeAll { r in a == nil || b == nil || !(r.srcOut <= a! || r.srcIn >= b!) }
+            if op.bool["exact"] == true, let a, let b {
+                // Build 55: exact-bounds removal (backend parity) — never touches neighbors.
+                if let idx = d.broll.firstIndex(where: { $0.srcIn == a && $0.srcOut == b }) {
+                    d.broll.remove(at: idx)
+                }
+            } else {
+                d.broll.removeAll { r in a == nil || b == nil || !(r.srcOut <= a! || r.srcIn >= b!) }
+            }
             guard d.broll.count < before else { return nil }
         case "set_broll_rect":
             // v6 direct manipulation (backend parity): normalized inset rect + mode smart.

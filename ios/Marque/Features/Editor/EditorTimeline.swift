@@ -147,11 +147,14 @@ struct EditorTimeline: View {
             // the pinch "didn't work". Range widened 8...60 → 6...110 for word-level trims.
             .simultaneousGesture(zoomGesture)
             // Double-tap the timeline background → reset zoom to the default scale.
-            .onTapGesture(count: 2) { withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 } }
+            .onTapGesture(count: 2) {
+                pinchBasePPS = nil     // build 55: failsafe — a system-cancelled pinch never fires onEnded
+                withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 }
+            }
             // UX-8: tapping empty timeline space clears the selection (clip cells' own
             // tap gestures win when a clip is hit). The parent decides whether anything
             // actually needs clearing (it also owns music/phrase selections).
-            .onTapGesture { onTapBackground() }
+            .onTapGesture { pinchBasePPS = nil; onTapBackground() }
             .sensoryFeedback(.selection, trigger: snapTick)
         }
     }
@@ -189,7 +192,7 @@ struct EditorTimeline: View {
     private func ruler(width: CGFloat) -> some View {
         // Adaptive label interval (CapCut): densest interval that keeps labels >= 36pt apart —
         // 2s at the default 18 pt/s, 1s zoomed in, 5s at minimum zoom (pps clamps to 8...60).
-        let interval = [1, 2, 5].first { CGFloat($0) * pointsPerSecond >= 36 } ?? 5
+        let interval = [1, 2, 5, 10].first { CGFloat($0) * pointsPerSecond >= 36 } ?? 10
         return HStack(spacing: 0) {
             ForEach(0..<max(1, Int(totalSeconds / Double(interval)) + 1), id: \.self) { i in
                 Text("\(i * interval)s").font(.system(size: 8)).foregroundStyle(.white.opacity(0.4))
@@ -319,7 +322,7 @@ struct EditorTimeline: View {
             if !document.broll.isEmpty { gutterIcon("photo.on.rectangle").frame(height: CGFloat(rollsRows) * 28) }
             else if showRollsAdd { gutterIcon("photo.on.rectangle").frame(height: 26) }
             if showVoice { gutterIcon("waveform").frame(height: 20) }
-            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 32) }
+            if musicName != nil || showMusicAdd { gutterIcon("music.note").frame(height: 30) }
         }
         .padding(.leading, 3)
         .allowsHitTesting(false)
@@ -354,8 +357,13 @@ struct EditorTimeline: View {
     private var rollPlacements: [(idx: Int, roll: EditorBroll, span: (start: Double, end: Double), row: Int)] {
         var rowEnd: [Double] = []
         var placed: [(idx: Int, roll: EditorBroll, span: (start: Double, end: Double), row: Int)] = []
-        for (i, r) in document.broll.enumerated() {
-            guard let span = document.outputSpan(srcIn: r.srcIn, srcOut: r.srcOut) else { continue }
+        // Build 55 audit: greedy row assignment REQUIRES starts in ascending output order —
+        // broll is in creation order (add-at-playhead appends), so an earlier-in-time roll
+        // added later spuriously claimed row 1 and overflowed the fixed timeline frame.
+        let ordered = document.broll.enumerated()
+            .compactMap { (i, r) in document.outputSpan(srcIn: r.srcIn, srcOut: r.srcOut).map { (i, r, $0) } }
+            .sorted { $0.2.start < $1.2.start }
+        for (i, r, span) in ordered {
             var row = 0
             while row < rowEnd.count, span.start < rowEnd[row] - 0.01 { row += 1 }
             row = min(row, 1)

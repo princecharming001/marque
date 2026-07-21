@@ -5348,7 +5348,7 @@ def test_audio_duck_defaults_none_and_round_trips():
     assert plan2["audio"]["duck"] == {"factor": 0.2, "window_f": 10, "ramp_f": 3}
 
 
-def test_plan_schema_version_is_6():
+def test_plan_schema_version_is_current():
     from app.edl import PLAN_SCHEMA_VERSION
     assert PLAN_SCHEMA_VERSION == 7
 

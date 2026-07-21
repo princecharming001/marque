@@ -642,7 +642,13 @@ extension BackendClient {
         if let themeId, !themeId.isEmpty { body["theme_id"] = themeId }
         // Creator style config (Addendum Part 1) — e.g. the B-ROLL STYLE pick maps to
         // config.broll_coverage, which steers the plan prompt's coverage hints.
-        if let config, !config.isEmpty { body["config"] = config }
+        // Build 55 audit: the entitlement flag rides EVERY clip job here — the record
+        // screen stamped it, but drafts (submitDraft: config nil) and chat edits passed
+        // their own config without it, so free users' non-record submissions rendered
+        // without the watermark.
+        var cfg = config ?? [:]
+        cfg["is_pro"] = await MainActor.run { Entitlements.shared.isPro } ? "1" : "0"
+        body["config"] = cfg
         // The reel this cut should FEEL like (pacing/energy/caption vibe, never words).
         if let r = referenceReel {
             var ref: [String: Any] = [

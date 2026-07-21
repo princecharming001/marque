@@ -202,7 +202,7 @@ struct FilmView: View {
     /// line is one Button, this just makes the destination visually obvious.
     private var editPrefsCaption: AttributedString {
         let prefix = "Edits follow your style — captions \(store.editPrefs.autoCaptions ? "on" : "off"), " +
-            "\(store.editPrefs.captionStyle.label) captions, \(store.editPrefs.fillerTrim.label.lowercased()) filler trim. Change in "
+            "\(store.editPrefs.captionStyle?.label ?? "Auto") captions, \(store.editPrefs.fillerTrim.label.lowercased()) filler trim. Change in "
         var result = AttributedString(prefix)
         result.foregroundColor = Palette.textTertiary
         var link = AttributedString("Settings.")
