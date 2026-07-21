@@ -336,7 +336,10 @@ struct ClipDetailSheet: View {
                             // Build 46: the real pipeline timeline lives here too, not a bare
                             // spinner — a light chip pinned to the bottom of the player so it
                             // reads on the video and matches the Library cards.
-                            Rectangle().fill(.black.opacity(0.35))
+                            // build 52: rounded so the dim overlay follows the player's
+                            // founder corners instead of squaring them off during editing.
+                            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                                .fill(.black.opacity(0.35))
                             VStack {
                                 Spacer()
                                 PipelineTimeline(progress: pp, compact: true)
