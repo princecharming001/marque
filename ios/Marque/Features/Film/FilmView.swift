@@ -66,11 +66,11 @@ struct FilmView: View {
                                 }
                                 .accessibilityIdentifier("film.draft.delete")
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) { draftPendingDelete = d } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
+                            // Audit (build 53, B2): removed a dead `.swipeActions` here —
+                            // swipe-to-delete only works on rows inside a `List`, but this is a
+                            // ForEach in a ScrollView/VStack, so it never fired. Long-press
+                            // (contextMenu) is the working delete affordance; leaving the
+                            // swipe modifier in implied a gesture that did nothing.
                         }
                     }
                 }

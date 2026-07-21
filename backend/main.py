@@ -477,6 +477,24 @@ def _knob_propensities(creator_id: str, knob: str, values: list[str],
     return {v: round(w / _PROPENSITY_DRAWS, 3) for v, w in zip(values, wins)}
 
 
+async def _settle_edit_knob_arms(creator_id: str, entry: dict, y: float,
+                                 raw: float | None, niche: str) -> list[str]:
+    """Settle the edit-knob arms for a just-resolved post. Only knobs the BANDIT or DEFAULT
+    chose update arms — an explicit creator choice isn't an experiment (propensity 1.0;
+    updating would echo the creator's taste back). Extracted from ingest_metrics so the
+    production settle path is what tests exercise (build 53 audit — the old test
+    re-implemented this inline and couldn't catch a regression). Returns the arm keys it
+    updated (for tests/observability)."""
+    updated: list[str] = []
+    for knob, meta in ((entry.get("edit_knobs") or {}).get("knobs") or {}).items():
+        if isinstance(meta, dict) and meta.get("chosen_by") in ("bandit", "default") \
+                and meta.get("value") is not None:
+            arm = f"edit_{knob}:{meta['value']}"
+            await _update_arm(creator_id, arm, y, raw, niche)
+            updated.append(arm)
+    return updated
+
+
 def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") -> dict:
     """Decide the bandit-owned editing knobs for one job and ALWAYS return the propensity
     log. Explicit creator choices pass through untouched (propensity 1.0, chosen_by
@@ -2996,6 +3014,11 @@ async def create_clip_job(req: ClipJobRequest,
     resp = await _create_clip_job_impl(req)
     if idempotency_key and isinstance(resp, dict):
         _CLIP_IDEMPOTENCY[idempotency_key] = (time.time(), resp)
+        # Audit (build 53): hard size cap in case a burst of unique keys arrives inside one
+        # TTL window (the lazy TTL prune alone is unbounded). Evict oldest.
+        if len(_CLIP_IDEMPOTENCY) > 2000:
+            for k in sorted(_CLIP_IDEMPOTENCY, key=lambda k: _CLIP_IDEMPOTENCY[k][0])[:500]:
+                _CLIP_IDEMPOTENCY.pop(k, None)
     return resp
 
 
@@ -4768,8 +4791,11 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
 # lose ~10% CTR at the high bound, and 50.9% of tested headlines sat ABOVE the harm
 # threshold. So the scorer mostly PULLS BACK specificity (keep the curiosity gap), and
 # only rewrites when the score leaves the mid-band. HAIKU (one tiny call), fail-soft to
-# the original text on any miss. Kill-switch: HOOK_CALIBRATE=off.
-HOOK_CALIBRATE = os.environ.get("HOOK_CALIBRATE", "on").lower() not in ("0", "false", "off")
+# the original text on any miss.
+# Audit (build 53): DEFAULT OFF. It adds an LLM call to every job AND can rewrite the
+# on-screen title — too much to fire silently on every prod render unverified. Arm with
+# HOOK_CALIBRATE=1 after eyeballing rewrites (same discipline as FRAMING_FACE_AWARE).
+HOOK_CALIBRATE = os.environ.get("HOOK_CALIBRATE", "").lower() in ("1", "true", "on")
 _HOOK_CONC_LO, _HOOK_CONC_HI = 2.0, 4.0
 
 _HOOK_CONC_SCHEMA = {
@@ -4795,10 +4821,13 @@ async def _calibrate_hook_concreteness(hook_text: str, topic: str = "") -> str:
              "topic. If score > 4: generalize the payoff so curiosity survives, keep the "
              "subject concrete. Rewrite must be 5-8 words, sentence case, no terminal period. "
              "If the score is within [2,4], return the text UNCHANGED as the rewrite.")
-    user_p = f"HOOK TITLE: {text}\nTOPIC: {topic[:200]}"
+    user_p = f"HOOK TITLE: {text}\nTOPIC: {str(topic)[:200]}"
     try:
-        out = await anthropic_json(sys_p, user_p, _HOOK_CONC_SCHEMA,
-                                   model=prompts.HAIKU, max_tokens=200)
+        # Audit (build 53): dedicated deadline so a hung upstream can't stall the edit up to
+        # the anthropic() 90s×3 ceiling — this is a small, skippable quality touch.
+        out = await asyncio.wait_for(
+            anthropic_json(sys_p, user_p, _HOOK_CONC_SCHEMA, model=prompts.HAIKU, max_tokens=200),
+            timeout=10)
         if not isinstance(out, dict):
             return hook_text
         score = float(out.get("score") or 3.0)
@@ -5129,10 +5158,13 @@ async def _run_edit(job_id: str, words: list[dict]):
         # the sticker — over-concrete titles measurably lose CTR; rewrites happen only
         # outside the mid-band and fail-soft to the original.
         if retention_hints.get("hook_text"):
+            # Audit (build 53): extract topic DEFENSIVELY — script["hook"] is normally a str
+            # or {text:…} dict, but a malformed list/int would AttributeError here (outside
+            # _calibrate's try) and fail the whole edit. Coerce by type.
+            _hk = (script or {}).get("hook")
+            _topic = _hk if isinstance(_hk, str) else (_hk.get("text", "") if isinstance(_hk, dict) else "")
             retention_hints["hook_text"] = await _calibrate_hook_concreteness(
-                retention_hints["hook_text"],
-                topic=(script or {}).get("hook", "") if isinstance((script or {}).get("hook"), str)
-                      else str(((script or {}).get("hook") or {}).get("text", "")))
+                retention_hints["hook_text"], topic=_topic)
         # WS3: the selected music track's offline beat grid (None until the catalog
         # carries grids — beat_snap is then a guaranteed no-op even when its token is on).
         _beat_grid, _beat_conf = _music_beat_meta(edl_data)
@@ -5400,7 +5432,10 @@ def _review_frame_times(plan: dict, fps: int = 30, cap: int = 10) -> list[float]
             if isinstance(fi, int):
                 marks.add(fi)
                 marks.add(min(total - 1, fi + fps // 2))   # mid-insert, where the hold reads
-    caps = [c.get("frame_in") for c in (plan.get("captions") or []) if isinstance(c.get("frame_in"), int)]
+    # Audit (build 53): build_render_plan emits captions keyed "frame" (edl.py), NOT
+    # "frame_in" — the old key made caps ALWAYS empty, so the caption-boundary sampling
+    # WS2 was built for never fired. SELF_REVIEW is armed in prod, so this was a live no-op.
+    caps = [c.get("frame") for c in (plan.get("captions") or []) if isinstance(c.get("frame"), int)]
     if caps:  # a few evenly-spaced caption boundaries (not every word)
         step = max(1, len(caps) // 3)
         for f in caps[::step][:3]:
@@ -5878,10 +5913,12 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
         with tempfile.TemporaryDirectory() as td:
             out_path = os.path.join(td, "poster.jpg")
             if COVER_SELECT:
-                # Candidates across the first ~10s (the hook zone reads best as a cover);
-                # scored at 540px width — the same size we host.
+                # Candidates across the hook zone (first frames read best as a cover);
+                # scored at 540px width — the same size we host. Audit (build 53): 3
+                # candidates, not 5 — the scorer's signal is dominated by the first ~5s and
+                # this halves the per-poster ffmpeg cost of a default-on cosmetic pass.
                 best_score, best_path = None, None
-                for i, t in enumerate([0.6, 1.5, 3.0, 5.0, 8.0]):
+                for i, t in enumerate([0.6, 2.5, 5.0]):
                     cand = os.path.join(td, f"cand{i}.jpg")
                     p = await asyncio.create_subprocess_exec(
                         "ffmpeg", "-y", "-ss", str(t), "-i", render_url,
@@ -5891,7 +5928,10 @@ async def _generate_poster(render_url: str, job_id: str, clip_id: str) -> str | 
                     await asyncio.wait_for(p.communicate(), timeout=30)
                     if p.returncode != 0 or not os.path.exists(cand) or os.path.getsize(cand) == 0:
                         continue
-                    s = _score_cover_frame(cand)
+                    # Audit (build 53): cv2 Laplacian + YuNet scoring is CPU-blocking — off
+                    # the event loop (COVER_SELECT is default-on; same discipline build 51
+                    # applied to the frame samplers).
+                    s = await asyncio.to_thread(_score_cover_frame, cand)
                     if s is not None and (best_score is None or s > best_score):
                         best_score, best_path = s, cand
                 if best_path:
@@ -8335,13 +8375,8 @@ async def ingest_metrics(req: MetricsIngestRequest):
         if val:
             await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche)
 
-    # WS6 (build 49): edit-knob arms settle through the SAME machinery. Only knobs the
-    # BANDIT or DEFAULT chose update arms — an explicit creator choice isn't an experiment
-    # (its propensity is 1.0 and updating would just echo the creator's taste back).
-    for knob, meta in ((entry.get("edit_knobs") or {}).get("knobs") or {}).items():
-        if isinstance(meta, dict) and meta.get("chosen_by") in ("bandit", "default") \
-                and meta.get("value") is not None:
-            await _update_arm(creator_id, f"edit_{knob}:{meta['value']}", y, raw, niche)
+    # WS6 (build 49): edit-knob arms settle through the SAME machinery.
+    await _settle_edit_knob_arms(creator_id, entry, y, raw, niche)
 
     # Attribute the just-settled post to ITS OWN driving dimension (not the creator's
     # globally strongest arm). Honest by construction — only driver/error bands it can

@@ -69,19 +69,26 @@ struct UploadJournalEntry: Codable, Hashable {
     var payload: UploadPayload?
     var createdAtEpoch: Double = Date().timeIntervalSince1970
 
-    /// Server-relative expiry check — never trusts the device clock. A signed URL is
-    /// considered expired `margin` seconds early to avoid a race with the PUT.
+    /// Expiry check. A signed URL is treated as expired `margin` seconds early to avoid
+    /// racing the PUT against the real deadline.
+    ///
+    /// Build 53 (audit A4): the old two-branch form was a NO-OP. Projecting server time
+    /// forward by local elapsed — `serverAtMint + elapsed >= serverAtMint + expiresIn − margin`
+    /// — algebraically cancels `serverAtMint`, so it computed exactly the local-only result.
+    /// That's actually correct in spirit: an absolute clock OFFSET never affects a DURATION,
+    /// so "elapsed since mint" is the right quantity regardless of device↔server skew (and it
+    /// survives a reboot, unlike a monotonic uptime clock, which is why we keep wall-time
+    /// elapsed for a persisted journal). Two real fixes: (1) clamp margin to at most half the
+    /// TTL so a short-lived mint (e.g. a 60s test URL) isn't reported expired the instant it's
+    /// created — the old 600s margin exceeded any short TTL and forced an endless re-mint loop;
+    /// (2) floor elapsed at 0 so a backwards wall-clock correction can't yield a negative age.
+    /// `mintedAtServerEpoch` is retained on the entry for telemetry but isn't needed here.
     func signedURLExpired(margin: Double = 600) -> Bool {
-        guard let expiresIn else { return false }         // no TTL known → treat as valid
-        // Prefer server time projected forward by elapsed LOCAL time since mint.
-        if let serverAtMint = mintedAtServerEpoch, let localAtMint = mintedAtLocalEpoch {
-            let elapsed = Date().timeIntervalSince1970 - localAtMint
-            return (serverAtMint + elapsed) >= (serverAtMint + expiresIn - margin)
-        }
-        if let localAtMint = mintedAtLocalEpoch {
-            return Date().timeIntervalSince1970 - localAtMint >= expiresIn - margin
-        }
-        return false
+        guard let expiresIn, expiresIn > 0 else { return false }   // no TTL known → treat as valid
+        guard let localAtMint = mintedAtLocalEpoch else { return false }
+        let elapsed = max(0, Date().timeIntervalSince1970 - localAtMint)
+        let safeMargin = min(margin, expiresIn * 0.5)
+        return elapsed >= expiresIn - safeMargin
     }
 }
 
@@ -160,6 +167,17 @@ final class UploadJournal: @unchecked Sendable {
             if let cp = e.compressedPath { try? FileManager.default.removeItem(atPath: cp) }
             persistLocked()
         }
+    }
+
+    /// Build 53: wipe the whole journal (used by AppStore.resetAll / -reset) — clears every
+    /// entry, its compressed part file, and the on-disk journal.
+    func reset() {
+        lock.lock(); defer { lock.unlock() }
+        for e in entries.values {
+            if let cp = e.compressedPath { try? FileManager.default.removeItem(atPath: cp) }
+        }
+        entries.removeAll()
+        try? FileManager.default.removeItem(at: fileURL)
     }
 
     /// A stable per-upload scratch directory that survives relaunch (unlike tmp/), for the

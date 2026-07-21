@@ -295,11 +295,20 @@ async def _vision_json(system: str, user: str, images: list[bytes], schema: dict
 
 async def _extract_sparse_frames(source_url: str, duration_ms: int,
                                  cap: int = 20) -> list[tuple[int, bytes]]:
-    """WS4: decision-point frames — the full-res first frame + ffmpeg scene-change
-    frames (select='gt(scene,0.3)'), long edge ≤730px, capped. Falls back to a
-    coarse even sample when the scene filter finds nothing (a static talking head
-    has few scene changes — that's fine, the planner mostly needs the open + a few
-    mid anchors there). [] on any failure (caller fails the provider down)."""
+    """WS4: decision-point frames — see `_extract_sparse_frames_sync`. Audit (build 53):
+    this is three blocking ffmpeg subprocess.run calls (up to 60+120+120s) — running them
+    directly on the event loop stalled every other coroutine (health checks, other jobs)
+    for the duration. Offload to a worker thread."""
+    return await asyncio.to_thread(_extract_sparse_frames_sync, source_url, duration_ms, cap)
+
+
+def _extract_sparse_frames_sync(source_url: str, duration_ms: int,
+                                cap: int = 20) -> list[tuple[int, bytes]]:
+    """The full-res first frame + ffmpeg scene-change frames (select='gt(scene,0.3)'),
+    long edge ≤730px, capped. Falls back to a coarse even sample when the scene filter
+    finds nothing (a static talking head has few scene changes — that's fine, the planner
+    mostly needs the open + a few mid anchors there). [] on any failure (caller fails the
+    provider down). Blocking — call only via _extract_sparse_frames / asyncio.to_thread."""
     import shutil, tempfile, subprocess, glob
     if not shutil.which("ffmpeg"):
         return []

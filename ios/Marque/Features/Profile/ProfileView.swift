@@ -119,7 +119,13 @@ struct ProfileView: View {
     // The Marque Path rank card — seal + tier + a gold progress bar to the next rank.
     private var rankCard: some View {
         let rank = store.creatorRank
-        let xp = store.creatorXP
+        // Audit (build 53, B6): `creatorRank` is FLOORED (a streak dip can't demote you), but
+        // `creatorXP` is raw. When XP has dipped below the held tier's minXP, the old
+        // `nextXP - xp` produced a "XP to next" larger than the tier is wide — inconsistent with
+        // the (correctly clamped-to-0) progress bar. Clamp XP to the displayed tier's floor so
+        // both agree: bar at 0%, "full tier" to next. In the normal case (XP within the tier)
+        // this is a no-op.
+        let xp = max(store.creatorXP, rank.minXP)
         let progress = RankSystem.progress(xp: xp, in: rank)
         let toNext = rank.nextXP.map { max(0, $0 - xp) }
         return VStack(alignment: .leading, spacing: Space.sm) {

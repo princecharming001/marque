@@ -245,13 +245,25 @@ struct LiveClipEngine: ClipEngineProtocol {
         // mid-upload. Labeled break instead; parking is also bounded now (it deliberately
         // doesn't consume an attempt, so an endless offline park needs its own ceiling).
         var networkParks = 0
+        // Audit (build 53, A5): the journal's attemptCount is the LIFETIME count across launches
+        // (the reconcile sweep re-enters this on every cold start). Seed from the persisted value
+        // and accumulate, so maxLifetimeAttempts actually bounds a clip that burns its per-session
+        // budget each launch — previously attemptCount was overwritten with the session count and
+        // the lifetime ceiling was never checked.
+        let priorAttempts = max(0, UploadJournal.shared.entry(uploadId: uploadId)?.attemptCount ?? 0)
         retryLoop: while attempt < UploadRetryPolicy.maxAttemptsPerSession {
             if Task.isCancelled { break }
+            let lifetime = priorAttempts + attempt
+            if lifetime >= UploadRetryPolicy.maxLifetimeAttempts {
+                BackendClient.shared.reportClientEvent("upload_lifetime_exhausted",
+                                                       detail: "uid=\(uploadId.prefix(8)) | \(lifetime)")
+                break retryLoop
+            }
             // Re-mint if the token is (server-relative) expired before we even start.
             if attempt > 0, let e = UploadJournal.shared.entry(uploadId: uploadId), e.signedURLExpired(),
                let fresh = await remint?() { signedURL = fresh }
 
-            UploadJournal.shared.update(uploadId: uploadId) { $0.attemptCount = attempt + 1 }
+            UploadJournal.shared.update(uploadId: uploadId) { $0.attemptCount = lifetime + 1 }
             let result = await BackgroundUploader.shared.upload(
                 uploadId: uploadId, fileURL: fileURL, contentType: contentType,
                 to: signedURL, onProgress: onProgress)
@@ -263,7 +275,8 @@ struct LiveClipEngine: ClipEngineProtocol {
 
             let decision = UploadRetryPolicy.decide(
                 status: result.statusCode, attempt: attempt,
-                networkSatisfied: BackgroundUploader.shared.networkSatisfied, nsError: result.error)
+                networkSatisfied: BackgroundUploader.shared.networkSatisfied, nsError: result.error,
+                lifetimeAttempt: lifetime)
             switch decision {
             case .retry(let delay):
                 UploadJournal.shared.update(uploadId: uploadId) { $0.state = .retrying }

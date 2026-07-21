@@ -30,9 +30,14 @@ enum UploadRetryPolicy {
     }
 
     /// Classify an HTTP status. `status == 0` means a transport-level error (see `nsError`).
+    /// `lifetimeAttempt` is the journal-persisted count across launches — build 53 (A5) makes
+    /// `maxLifetimeAttempts` actually bite (it was declared-but-dead), so a clip that exhausts
+    /// its per-session budget every cold start can't retry forever via the reconcile sweep.
     static func decide(status: Int, attempt: Int, retryAfter: TimeInterval? = nil,
-                       networkSatisfied: Bool = true, nsError: Error? = nil) -> Decision {
+                       networkSatisfied: Bool = true, nsError: Error? = nil,
+                       lifetimeAttempt: Int = 0) -> Decision {
         if attempt + 1 >= maxAttemptsPerSession { return .fail }
+        if lifetimeAttempt + 1 >= maxLifetimeAttempts { return .fail }
 
         // Signed-URL death — the object store rejects the token; a fresh mint is required.
         // 403 = expired/invalid token; 409/400 "already exists" is handled by the caller's

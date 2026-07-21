@@ -51,13 +51,13 @@ struct CelebrationView: View {
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary).padding(.top, 2)
             }
             Spacer()
-            PrimaryButton(title: "Keep building") {
-                store.pendingRankUp = nil
-                dismiss()
-            }
-            .accessibilityIdentifier("rankUp.dismiss")
+            PrimaryButton(title: "Keep building") { dismiss() }
+                .accessibilityIdentifier("rankUp.dismiss")
         }
-        // Clearing on any dismissal path so a swipe-down doesn't strand the pending flag.
+        // Audit (build 53, B4): clear the flag ONLY in onDisappear. Nil-ing it inside the button
+        // flipped the parent `Group` from rankUp→wrap while the sheet was still animating out,
+        // flashing "That's a wrap" for a frame. onDisappear fires on every dismissal path
+        // (button or swipe-down), so the flag is still never stranded.
         .onDisappear { store.pendingRankUp = nil }
     }
 }
