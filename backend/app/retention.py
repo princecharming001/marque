@@ -26,7 +26,7 @@ import copy
 import os
 
 from app.edl import (
-    ALWAYS_FILLERS, TRIM_LEVELS, ms_to_frame, _frame_to_ms, snap_to_word,
+    ALWAYS_FILLERS, ms_to_frame, _frame_to_ms, snap_to_word,
     detect_disfluencies, split_segment_in_place, _PUNCH_STYLES,
     _kept_intervals, _kept_frames, _coalesce_drops, _norm_word,
     _MIN_DURATION_FRAMES, MIN_CLIP_OUTPUT_FRAMES, check_edl_invariants, SFX_GAIN_DEFAULT,
@@ -1069,19 +1069,19 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     # top dead zone (Reels top 14% is the binding one). Captions-on-top variant unchanged.
     pos_y = 0.62 if caption_opts.get("position") == "top" else 0.24
     hook_cfg = (theme.hook if theme is not None else {}) or {}
-    # Build 54: when the creator explicitly picked a caption treatment (record screen or
-    # editor font knob), the hook TITLE adopts the same font — one typographic voice
-    # across captions and title blocks. caption_options.font is only ever non-default
-    # when someone chose it (assemble folds the record-screen pick in; the editor's
-    # font chips write it directly), so the theme keeps control otherwise.
-    _cap_font = (caption_opts.get("font") or "").strip()
+    # Build 54/55: when the creator EXPLICITLY picked a caption treatment on the record
+    # screen, the hook TITLE adopts the same font — one typographic voice across captions
+    # and title blocks. Keyed on the explicit hint (main.py threads prefs.caption_font),
+    # NOT on caption_options.font — apply_theme fills that field from the theme first, so
+    # reading it here would let a theme's caption font silently override its own
+    # sticker_font whenever the two differ.
+    _cap_font = str((hints or {}).get("caption_font") or "").strip()
     edl["overlays"] = overlays + [{
         "type": "text_sticker", "src_in": first_kept, "src_out": end_src,
         "text": hook_text, "scale": 1.05, "pos_x": 0.5, "pos_y": pos_y,
         "rotation": 0.0, "color": None,
         "bg": hook_cfg.get("sticker_bg") or "box",
-        "font": (_cap_font if _cap_font not in ("", "inter") else "")
-                 or hook_cfg.get("sticker_font") or "inter",
+        "font": _cap_font or hook_cfg.get("sticker_font") or "inter",
     }]
     return edl
 

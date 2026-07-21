@@ -34,7 +34,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
                      style_capabilities, TWEAK_OP_TYPES, _BROLL_FLOOR_STOPWORDS,
                      assemble_edl, check_edl_invariants, clamp_edl_to_source,
-                     _ENTERTAINMENT_VIDEO_TYPES, _BROLL_MEME_CAP, _BROLL_MEME_CAP_EDU,
+                     _ENTERTAINMENT_VIDEO_TYPES,
                      _BROLL_MEME_CAPS)
 from app import audio as audio_mod
 from app import enhance as enhance_mod
@@ -1659,7 +1659,7 @@ def mock_trends(niche: str) -> list[dict]:
     n = niche or "your niche"
     return [
         {"title": f"Myth-busting is spiking in {n}", "why": "Contrarian hooks are over-indexing on shares this week.", "formatId": "myth-buster"},
-        {"title": f"“I did X for 30 days” experiments", "why": f"Receipt-driven {n} experiments are pulling huge saves — proof beats opinion right now.", "formatId": "before-after"},
+        {"title": "“I did X for 30 days” experiments", "why": f"Receipt-driven {n} experiments are pulling huge saves — proof beats opinion right now.", "formatId": "before-after"},
         {"title": "“Do this, not that” splits", "why": "Side-by-side comparisons are getting high rewatch.", "formatId": "do-this-not-that"},
         {"title": "Faceless explainers", "why": "AI-visual voiceovers are cheap to test and trending.", "formatId": "faceless"},
         {"title": f"Green-screen reacts to bad {n} advice", "why": "Reacting to viral misinformation is an easy authority play with built-in stakes.", "formatId": "green-screen"},
@@ -4672,6 +4672,17 @@ async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str,
     fire-and-forget (_spawn) so a slow/failing shadow run can never add latency
     or fail the real pipeline; every failure mode here is swallowed into a log
     line, never raised."""
+    def _kept_frames(edl: dict) -> int:
+        # Build 55 polish: this helper was referenced but never DEFINED — the whole body's
+        # fail-soft except swallowed the NameError, so every shadow diff since it landed
+        # logged shadow_diff_failed=... and the rollout instrument was silently dead.
+        from app.edl import _kept_intervals
+        try:
+            return sum(b - a for a, b in _kept_intervals(
+                list(edl.get("segments") or []), list(edl.get("drops") or [])))
+        except Exception:
+            return 0
+
     try:
         plan_edl, llm_contributed, _plan_data = await _author_edl_via_plan(
             job, style, script, words, prefs, emphasis_spans)
@@ -5173,6 +5184,13 @@ async def _run_edit(job_id: str, words: list[dict]):
         retention_hints = ({"pacing": {"lift": "medium" if brief_pacing.get("energy") == "low" else "subtle"}}
                            if brief_pacing.get("energy") else {})
         retention_hints.update(_extract_plan_retention_hints(plan_data))
+        # Build 55 polish: the record screen's EXPLICIT caption font rides the hints so
+        # place_hook_overlay keys on the explicit pick, not on caption_options.font —
+        # apply_theme fills that field from the theme FIRST, so reading it there would
+        # (for any future theme whose sticker_font differs from its caption font)
+        # silently override the theme's title treatment.
+        if prefs.get("caption_font"):
+            retention_hints["caption_font"] = prefs["caption_font"]
         # Build 54: the creator's OUTRO builder overrides any plan-authored end card — an
         # explicit pick on the record screen beats the LLM's judgment. Handle + logo ride
         # the same hint into place_end_card.

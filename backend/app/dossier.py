@@ -459,7 +459,6 @@ def reference_patterns(dossier: dict | None, duration_ms: int = 0) -> dict | Non
 
 def mock_dossier(duration_ms: int) -> dict:
     """A deterministic dossier for the keyless mock pipeline (no vendor calls)."""
-    dur_f = ms_to_frame(duration_ms or 30000)
     return _normalize({
         "first_frame": {"desc": "creator centered, mid-shot, speaking to camera",
                         "pattern_interrupt": True, "score": 0.7},

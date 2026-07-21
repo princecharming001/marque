@@ -1487,10 +1487,13 @@ struct ProEditorView: View {
             GeometryReader { geo in
                 let o = d.captionOptions
                 let discreteMult = o.size == "small" ? 0.78 : o.size == "large" ? 1.24 : 1.0
-                let effScale = capPinch ?? o.scale ?? discreteMult
+                // Build 55 polish: the size slider previews LIVE on the canvas mid-drag
+                // (capSizeDraft), same as the pinch — without this the "continuous" slider
+                // gave zero feedback until release and read broken.
+                let effScale = capPinch ?? capSizeDraft ?? o.scale ?? discreteMult
                 let base: CGFloat = d.captionStyle == "bold-word" ? 30 : 17
                 let effY = capDragY ?? o.posY ?? discreteCaptionY(o.position)
-                let interacting = capDragY != nil || capPinch != nil
+                let interacting = capDragY != nil || capPinch != nil || capSizeDraft != nil
                 HStack(spacing: 5) {
                     ForEach(Array(group.words.enumerated()), id: \.offset) { i, w in
                         let norm = w.lowercased().filter { $0.isLetter || $0.isNumber }
