@@ -310,9 +310,135 @@ def _check_caption_coverage(edl: dict, words: list[dict]) -> list[LintFinding]:
     return []
 
 
+# --- Craft Engine checks (build 57) — thresholds live in knowledge/craft YAML ------
+
+def _check_reading_rate(edl: dict) -> list[LintFinding]:
+    """typ.reading_rate — BBC 160-180wpm (0.3s/word) + Netflix 20 chars/sec: every
+    burned-in text element must be displayable in the time it holds. Captions are
+    word-timed by construction and exempt; this covers text cards, text stickers,
+    and the end card (which was a FIXED hold regardless of text length)."""
+    from app import craft
+    p = craft.rule_params("typ.reading_rate", {"sec_per_word": 0.3, "chars_per_sec": 20})
+    spw, cps = float(p["sec_per_word"]), float(p["chars_per_sec"])
+    out: list[LintFinding] = []
+
+    def need_frames(text: str) -> int:
+        words = max(1, len(text.split()))
+        return int(max(words * spw, len(text) / cps) * 30)
+
+    for o in (edl.get("overlays") or []):
+        text = (o.get("text") or "").strip()
+        if o.get("type") not in ("text_card", "text_sticker") or not text:
+            continue
+        hold = int(o.get("src_out", 0)) - int(o.get("src_in", 0))
+        need = need_frames(text)
+        if hold < need:
+            out.append(LintFinding(
+                code="reading_rate", severity="error",
+                at_out_frame=None,
+                detail=f"{o.get('type')} '{text[:40]}' holds {hold}f but needs {need}f "
+                       f"to read (BBC 0.3s/word, Netflix 20cps)",
+                fix_op={"type": "edit_overlay",
+                        "frame_in": int(o.get("src_in", 0)),
+                        "frame_out": int(o.get("src_in", 0)) + need}))
+    ec = edl.get("end_card") or {}
+    ec_text = (ec.get("text") or "").strip()
+    if ec_text:
+        # Full-screen title wants ~2x a single read (GoE #36 band), inside the 30-150 clamp.
+        need = min(150, max(30, 2 * need_frames(ec_text)))
+        if int(ec.get("frames") or 75) < need:
+            out.append(LintFinding(
+                code="reading_rate", severity="warn", at_out_frame=None,
+                detail=f"end card '{ec_text[:40]}' holds {ec.get('frames')}f; "
+                       f"~{need}f gives two clean reads (GoE #36)",
+                fix_op=None))
+    return out
+
+
+def _check_breathe_after_peak(points: list[int], total_out: int) -> list[LintFinding]:
+    """pace.breathe_after_peak — Pearlman's tension/release: an event-dense cluster
+    must be followed by a genuine hold before the next build. Sustained maximum
+    intensity is fatigue, not energy (the temporal form of GoE #23)."""
+    from app import craft
+    p = craft.rule_params("pace.breathe_after_peak",
+                          {"cluster_events": 3, "cluster_window_f": 90,
+                           "release_window_f": 240, "release_gap_mult": 1.5})
+    k = int(p["cluster_events"]); win = int(p["cluster_window_f"])
+    rel_win = int(p["release_window_f"]); mult = float(p["release_gap_mult"])
+    pts = sorted(points)
+    if len(pts) < k + 1:
+        return []
+    gaps = [b - a for a, b in zip(pts, pts[1:])]
+    if not gaps:
+        return []
+    med = sorted(gaps)[len(gaps) // 2] or 1
+    out: list[LintFinding] = []
+    for i in range(len(pts) - k + 1):
+        if pts[i + k - 1] - pts[i] <= win:                     # dense cluster
+            end = pts[i + k - 1]
+            later = [g for a, g in zip(pts[i + k - 1:], gaps[i + k - 1:])
+                     if a < end + rel_win]
+            if later and max(later) < med * mult and end + rel_win < total_out:
+                out.append(LintFinding(
+                    code="no_breath_after_peak", severity="warn",
+                    at_out_frame=end,
+                    detail=f"{k} events inside {win}f with no release hold >= "
+                           f"{mult}x median gap within {rel_win}f (Pearlman "
+                           f"tension/release)",
+                    fix_op=None))
+                break                                           # one finding is enough
+    return out
+
+
+def _check_ending_complete(edl: dict, words: list[dict]) -> list[LintFinding]:
+    """story.ending_complete — the industry's dedicated ending judgment (Vizard's
+    Clip Editor exists ONLY for this): the last kept sentence must complete.
+    A final kept word without sentence-final punctuation and no end card reads
+    as a mid-thought trail-off."""
+    if edl.get("end_card"):
+        return []
+    kept = _kept_ranges(edl)
+    if not kept or not words:
+        return []
+    last_keep = kept[-1][1]
+    last_word = ""
+    for w in words:
+        wf = int(w.get("start_ms", 0) * 30 / 1000)
+        if wf < last_keep and (w.get("word") or "").strip():
+            last_word = w["word"].strip()
+    if last_word and not last_word[-1] in ".?!":
+        return [LintFinding(
+            code="ending_incomplete", severity="warn", at_out_frame=None,
+            detail=f"last kept word '{last_word}' does not end a sentence and no "
+                   f"end card closes the video (ending-completeness doctrine)",
+            fix_op=None)]
+    return []
+
+
+def _kept_ranges(edl: dict) -> list[tuple[int, int]]:
+    """Kept (src_in, src_out) spans after drops, in source coords, sorted."""
+    segs = sorted((int(s.get("src_in", 0)), int(s.get("src_out", 0)))
+                  for s in (edl.get("segments") or []))
+    drops = sorted((int(d.get("src_in", 0)), int(d.get("src_out", 0)))
+                   for d in (edl.get("drops") or []))
+    out: list[tuple[int, int]] = []
+    for a, b in segs:
+        cur = a
+        for da, db in drops:
+            if db <= cur or da >= b:
+                continue
+            if da > cur:
+                out.append((cur, min(da, b)))
+            cur = max(cur, db)
+        if cur < b:
+            out.append((cur, b))
+    return out
+
+
+
 def lint_edl(edl: dict, words: list[dict], *, style: str = "",
              emphasis_spans: list | None = None, theme=None) -> list[LintFinding]:
-    """The 11-check deterministic "amateur tell" lint. Pure — never mutates `edl`.
+    """The deterministic "amateur tell" lint (12 core + 3 craft checks). Pure — never mutates `edl`.
     Reasons entirely in OUTPUT frames via the same source<->output bookkeeping the
     retention passes use, so results reflect what the viewer actually sees."""
     style = style or edl.get("style", "")
@@ -339,6 +465,10 @@ def lint_edl(edl: dict, words: list[dict], *, style: str = "",
     findings += _check_ungraded(edl, theme)
     findings += _check_bundle_coherence(edl)
     findings += _check_caption_coverage(edl, words)
+    # Craft Engine (build 57): research-sourced checks, thresholds from knowledge/craft.
+    findings += _check_reading_rate(edl)
+    findings += _check_breathe_after_peak(points, total_out)
+    findings += _check_ending_complete(edl, words)
     return findings
 
 
