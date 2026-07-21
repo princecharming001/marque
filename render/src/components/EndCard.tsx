@@ -1,5 +1,5 @@
 import React from "react";
-import { AbsoluteFill, Sequence, useCurrentFrame, interpolate } from "remotion";
+import { AbsoluteFill, Img, Sequence, useCurrentFrame, interpolate } from "remotion";
 import { FONTS } from "./Captions";
 import { EndCardPlan } from "../types";
 
@@ -27,17 +27,32 @@ const EndCardContent: React.FC<{ endCard: EndCardPlan }> = ({ endCard }) => {
   const frame = useCurrentFrame();   // local to the Sequence: 0 at start_frame
   const opacity = interpolate(frame, [0, FADE_IN_FRAMES], [0, 1],
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // Build 54 (outro builder): an uploaded logo renders above the CTA; a real @handle
+  // renders under it. The decorative accent bar remains the no-handle fallback.
+  const logo = (endCard.logo_url || "").match(/\.(png|jpe?g|webp|gif)(\?|$)/i) ? endCard.logo_url : null;
+  const handle = (endCard.handle || "").trim();
   return (
     <AbsoluteFill style={{
       background: "rgba(8,8,12,0.94)", opacity,
       alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 28,
     }}>
+      {logo && (
+        <Img src={logo!} style={{
+          width: 168, height: 168, objectFit: "contain", borderRadius: 32,
+          filter: "drop-shadow(0 6px 24px rgba(0,0,0,0.5))",
+        }} />
+      )}
       <div style={{
         fontFamily: FONTS.inter, fontSize: 56, fontWeight: 800, color: "white",
         textAlign: "center", padding: "0 80px", lineHeight: 1.2,
         textShadow: "0 4px 20px rgba(0,0,0,0.6)",
       }}>{endCard.text}</div>
-      {endCard.show_handle && (
+      {handle ? (
+        <div style={{
+          fontFamily: FONTS.inter, fontSize: 34, fontWeight: 600,
+          color: "rgba(255,255,255,0.75)", letterSpacing: 0.5,
+        }}>{handle}</div>
+      ) : endCard.show_handle && (
         <div style={{ width: 60, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.55)" }} />
       )}
     </AbsoluteFill>

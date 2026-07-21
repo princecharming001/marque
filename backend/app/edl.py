@@ -18,7 +18,7 @@ import re
 # sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
 # v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
 # the "finishing" filter preset.
-PLAN_SCHEMA_VERSION = 6   # v6: captions.bg (boxed-caption pill); v5: broll.mode (panel/card), layout.speaker_treatment/pip_position, montage
+PLAN_SCHEMA_VERSION = 7   # v7: watermark + end_card.handle/logo_url (outro builder); v6: captions.bg; v5: broll.mode, montage
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -185,6 +185,9 @@ class EndCard(BaseModel):
     text: str = ""
     frames: int = 75             # ~2.5s @ 30fps
     show_handle: bool = True
+    # Build 54 (outro builder): the creator's real @handle + an uploaded logo image.
+    handle: str = ""             # rendered under the CTA text when non-empty
+    logo_url: str = ""           # small logo above the text; "" = none
 
 
 class Transition(BaseModel):
@@ -406,6 +409,7 @@ class EDL(BaseModel):
     trim_aggressiveness: Optional[str] = None        # aggressive | None
     end_card: Optional[EndCard] = None                # P4: tail CTA card (see EndCard)
     progress_bar: bool = False                        # P4: thin watch-progress bar overlay
+    watermark: bool = False                           # build 54: free-tier "powered by Yunicorn" badge
     # Playback order of segments as a PERMUTATION of indices. Segments themselves
     # stay monotonic in source coords (the validator below is untouched) — physical
     # reordering would break every source-coord invariant; the render plan walks
@@ -1122,7 +1126,9 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     if end_card_src and (end_card_src.get("text") or "").strip():
         ec_frames = max(30, min(150, int(end_card_src.get("frames") or 75)))
         end_card_out = {"text": end_card_src["text"], "start_frame": total_frames,
-                        "frames": ec_frames, "show_handle": bool(end_card_src.get("show_handle", True))}
+                        "frames": ec_frames, "show_handle": bool(end_card_src.get("show_handle", True)),
+                        "handle": str(end_card_src.get("handle") or ""),
+                        "logo_url": end_card_src.get("logo_url") or None}
         tail_frames = ec_frames
 
     return {
@@ -1154,6 +1160,7 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
         "audio": audio_plan,
         "end_card": end_card_out,                       # P4: None when absent (G1: key always present)
         "progress_bar": bool(edl.get("progress_bar", False)),   # P4
+        "watermark": bool(edl.get("watermark", False)),         # build 54: free-tier badge
         # Mode H (schema v5): already in OUTPUT coords (stamped post-assembly) — verbatim.
         "montage": edl.get("montage"),
         # Remotion requires durationInFrames >= 1; an all-cut plan still needs a valid frame.
@@ -2185,7 +2192,9 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
                     "query": _context_query(wi, word), "need": "entity", "mode": mode,
                     "floor": True})
     return out
-_PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.12
+# Build 54 (owner: "the zoom ins ... don't look good — tone them down"): ceiling 1.12→1.08
+# and default 1.08→1.06 — a punch should read as emphasis, not a lurch.
+_PUNCH_SCALE_MIN, _PUNCH_SCALE_MAX = 1.03, 1.08
 _PUNCH_HOLD = 30
 _TEXTCARD_HOLD = 60
 
@@ -2607,7 +2616,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             f = int(p.get("frame", 0))
             cl = _clamp_range(f, f + _PUNCH_HOLD, 0, total)
             if cl:
-                scale = max(_PUNCH_SCALE_MIN, min(_PUNCH_SCALE_MAX, float(p.get("scale") or 1.08)))
+                scale = max(_PUNCH_SCALE_MIN, min(_PUNCH_SCALE_MAX, float(p.get("scale") or 1.06)))
                 overlays.append({"type": "punch_in", "src_in": cl[0], "src_out": cl[1],
                                  "scale": scale, "text": ""})
     if style in _TEXTCARD_STYLES:
@@ -2633,6 +2642,12 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     caption_options = {"grouping": grouping,
                        "highlight_words": [w for w in _hw if w][:12],
                        "pos_y": 0.62}
+    # Build 54: the record screen's explicit caption size + style→font mapping (main.py
+    # config block). The font ALSO restyles the hook title sticker (place_hook_overlay).
+    if prefs.get("caption_size") in ("small", "medium", "large"):
+        caption_options["size"] = prefs["caption_size"]
+    if prefs.get("caption_font") in ("inter", "archivo", "baloo", "montserrat", "anton"):
+        caption_options["font"] = prefs["caption_font"]
     if prefs.get("auto_captions") is False:
         captions = []
 
