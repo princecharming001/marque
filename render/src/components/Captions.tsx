@@ -153,10 +153,6 @@ const blockPosition = (opts: CaptionOptions, estBlockHeightPx: number): React.CS
   return { position: "absolute", left: 0, right: 0, top: `${centerFrac * 100}%`, transform: "translateY(-50%)" };
 };
 
-const wrapStyle: React.CSSProperties = {
-  display: "flex", flexWrap: "wrap", justifyContent: "center", padding: "0 40px", gap: 8,
-};
-
 const casing = (word: string, opts: CaptionOptions): string =>
   opts.uppercase ? word.toUpperCase() : word;
 

@@ -148,7 +148,6 @@ test("nudge is a no-op when there is no intersection", () => {
 test("nudge is idempotent — resolving twice does not move it further", () => {
   const band = captionBandRect("bottom", null, 200);
   const first = resolveStickerNudge(band.top + 0.01, 0.05, band);
-  const firstRect = { top: first.y - 0.05 * first.shrink, bottom: first.y + 0.05 * first.shrink };
   const second = resolveStickerNudge(first.y, 0.05 * first.shrink, band);
   assert.equal(second.y, first.y);
 });

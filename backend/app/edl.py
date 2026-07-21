@@ -2131,11 +2131,8 @@ def _synthesize_broll_floor(clean_words: list[dict], total: int, mode: str,
     # v5: the floor is GLIMPSE-heavy — it alternates sub-second entity flashes with
     # short concept holds (avg ~1s), so density costs little budget and packs tight
     # (the old concept-mid-hold costing at ~1.8s/insert silently capped the 3x mandate).
-    _lo, _mx = _hold_bounds("concept", mode)
-    _mid = (_lo + _mx) // 2
     _glo, _ghi = _hold_bounds("entity", mode)
     _avg_hold = min(_glo + 6, _ghi)                  # v7: floor is all-glimpse
-    step = spacing + _avg_hold + 3
     lo, hi = hook_protect + _BROLL_JCUT_LEAD, total - cta_protect
     # Budget cap divides by the per-insert HOLD (the actual budget cost), not `step`
     # (spacing+hold) — dividing by step silently over-throttled the density target

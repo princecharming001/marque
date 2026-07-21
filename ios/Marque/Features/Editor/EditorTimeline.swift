@@ -146,15 +146,17 @@ struct EditorTimeline: View {
             // (one finger already moving when the second lands) claimed the sequence and
             // the pinch "didn't work". Range widened 8...60 → 6...110 for word-level trims.
             .simultaneousGesture(zoomGesture)
-            // Double-tap the timeline background → reset zoom to the default scale.
-            .onTapGesture(count: 2) {
-                pinchBasePPS = nil     // build 55: failsafe — a system-cancelled pinch never fires onEnded
-                withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 }
-            }
-            // UX-8: tapping empty timeline space clears the selection (clip cells' own
-            // tap gestures win when a clip is hit). The parent decides whether anything
-            // actually needs clearing (it also owns music/phrase selections).
-            .onTapGesture { pinchBasePPS = nil; onTapBackground() }
+            // Build 55 polish: EXCLUSIVE double/single tap — two separate onTapGesture
+            // modifiers fired BOTH handlers on a double tap, so resetting zoom also
+            // cleared the selection. Exclusivity costs the single tap ~0.25s of
+            // double-tap-wait, acceptable for a deselect. Both paths clear a stranded
+            // pinch (a system-cancelled Magnification never fires onEnded).
+            .gesture(ExclusiveGesture(
+                TapGesture(count: 2).onEnded {
+                    pinchBasePPS = nil
+                    withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 }
+                },
+                TapGesture().onEnded { pinchBasePPS = nil; onTapBackground() }))
             .sensoryFeedback(.selection, trigger: snapTick)
         }
     }

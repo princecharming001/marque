@@ -347,7 +347,7 @@ EDIT_RUBRICS = {
         "'play' windows (audio_gain 1.0, 60–120 frames) that release the next source point. No play window > ~120 "
         "frames. Windows must tile the whole timeline with no gaps. (3) Add text_card overlays for the exact claim "
         "being rebutted (pull-quotes), timed to the freeze that follows the quoted line. (4) ONE punch_in on the "
-        "payoff line (scale ~1.12). (5) layout.panels=2, split_fraction=0.58. Output valid EDL JSON only."
+        "payoff line (scale ~1.06). (5) layout.panels=2, split_fraction=0.58. Output valid EDL JSON only."
     ),
 }
 
@@ -425,7 +425,7 @@ Output EDL:
 "drops":[],
 "captions":[{"word":"He","frame":60},{"word":"says","frame":66},{"word":"train","frame":72}],
 "overlays":[{"type":"text_card","src_in":72,"src_out":150,"scale":1.0,"text":"train to failure EVERY set"},
-{"type":"punch_in","src_in":240,"src_out":300,"scale":1.12,"text":""}],
+{"type":"punch_in","src_in":240,"src_out":300,"scale":1.06,"text":""}],
 "broll":[],"react_source":null,
 "react_schedule":[{"state":"play","src_in":0,"src_out":55,"clip_from":0,"audio_gain":1.0},
 {"state":"freeze","src_in":55,"src_out":150,"clip_from":55,"audio_gain":0.15},
@@ -1345,7 +1345,7 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
         "clearly improves — and after any reorder, every pronoun must still have an antecedent that now comes "
         "EARLIER. If a move breaks that, don't do it.\n\n"
 
-        "OTHER FIELDS: punch_ins (frame + scale 1.03–1.12 on load-bearing lines, never the hook/CTA), "
+        "OTHER FIELDS: punch_ins (frame + scale 1.03–1.08 on load-bearing lines, never the hook/CTA), "
         "caption_plan (style/grouping/highlight_words — emphasis words are numbers, negations, superlatives, "
         "the novel term), text_cards, music (wanted+vibe), pacing_intent (one free-text line: your read of the "
         "pace + any second-idea note).\n\n"
