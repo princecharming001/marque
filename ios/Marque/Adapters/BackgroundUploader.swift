@@ -135,8 +135,22 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
                 task.resume()
             }
         } onCancel: {
+            // Build 53 (audit): do NOT cancel the background URLSession task here. The whole
+            // point of a background session is that the transfer survives the AWAITING Task
+            // being cancelled — the 420s submit ceiling, navigating away, app suspend/kill.
+            // The old `task.cancel()` meant the ceiling aborted a legit slow upload from byte
+            // 0 (contradicting the "keeps running independently" design). Instead we just
+            // unblock the awaiter; the out-of-process transfer keeps going and the delegate
+            // finalizes the journal (→ putComplete) so reconcile picks it up. Resume the
+            // continuation exactly once (delegate no-ops after we take it under lock).
+            // The STALL watchdog still aborts genuinely-wedged transfers via task.cancel().
             watchdog.cancel()
-            task.cancel()   // → didCompleteWithError(.cancelled) resumes the continuation
+            self.lock.lock()
+            let cont = self.conts.removeValue(forKey: id)
+            self.progress.removeValue(forKey: id)
+            self.lastProgressAt.removeValue(forKey: id)
+            self.lock.unlock()
+            cont?.resume(returning: UploadResult(ok: false, statusCode: 0, error: CancellationError()))
         }
     }
 

@@ -66,26 +66,36 @@ struct ReelFeedPager: View {
     }
 
     var body: some View {
-        ScrollView(.vertical) {
-            LazyVStack(spacing: 0) {
-                ForEach(feed.reelItems) { reel in
-                    cell(reel)
-                        .containerRelativeFrame([.horizontal, .vertical])
-                        .id(reel.id)
-                        .onAppear { maybeLoadMore(around: reel) }
+        // Audit (build 53, B3): the pager .ignoresSafeArea() so the video is full-bleed (under
+        // the home indicator, TikTok-style). That means each cell's overlay must re-add the REAL
+        // bottom inset itself, or the Mimic button clips under the indicator ("mimic not visible
+        // properly"). The prior fix used `.safeAreaPadding(.bottom, Space.xs)` — a FIXED 4pt that
+        // doesn't read the ~34pt inset, so it never cleared it. Capture the true inset from a
+        // GeometryReader at the body root (still in safe-area space, before .ignoresSafeArea())
+        // and thread it into the overlay padding.
+        GeometryReader { proxy in
+            let bottomInset = proxy.safeAreaInsets.bottom
+            ScrollView(.vertical) {
+                LazyVStack(spacing: 0) {
+                    ForEach(feed.reelItems) { reel in
+                        cell(reel, bottomInset: bottomInset)
+                            .containerRelativeFrame([.horizontal, .vertical])
+                            .id(reel.id)
+                            .onAppear { maybeLoadMore(around: reel) }
+                    }
                 }
+                .scrollTargetLayout()
             }
-            .scrollTargetLayout()
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $currentId)
+            .scrollIndicators(.hidden)
+            .ignoresSafeArea()
+            .background(Color.black)
+            .overlay(alignment: .topTrailing) { closeButton }
+            .task { if currentId == nil { currentId = startReel.id } }
+            .sheet(item: $detailReel) { ReelDetailSheet(reel: $0) }
+            .preferredColorScheme(.dark)
         }
-        .scrollTargetBehavior(.paging)
-        .scrollPosition(id: $currentId)
-        .scrollIndicators(.hidden)
-        .ignoresSafeArea()
-        .background(Color.black)
-        .overlay(alignment: .topTrailing) { closeButton }
-        .task { if currentId == nil { currentId = startReel.id } }
-        .sheet(item: $detailReel) { ReelDetailSheet(reel: $0) }
-        .preferredColorScheme(.dark)
     }
 
     private var closeButton: some View {
@@ -101,7 +111,7 @@ struct ReelFeedPager: View {
         .accessibilityIdentifier("reelPager.close")
     }
 
-    @ViewBuilder private func cell(_ reel: ReelItem) -> some View {
+    @ViewBuilder private func cell(_ reel: ReelItem, bottomInset: CGFloat) -> some View {
         ZStack {
             Color.black
             ReelPagerMedia(reel: reel, active: reel.id == currentId)
@@ -133,11 +143,11 @@ struct ReelFeedPager: View {
             // button read "too wide". Filling first keeps every edge inside the screen.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .padding(.horizontal, Space.lg)
-            .padding(.bottom, Space.lg)
-            // The pager .ignoresSafeArea() (so the video fills), so the overlay must add the
-            // bottom safe-area inset itself — otherwise the 50pt Mimic button is clipped under
-            // the home indicator ("mimic not visible properly").
-            .safeAreaPadding(.bottom, Space.xs)
+            // Space.lg breathing room ABOVE the real home-indicator inset (build 53, B3) — so
+            // the Mimic button sits ~24pt clear of the indicator on every device instead of the
+            // old fixed 4pt guess that left it clipped. `bottomInset` is the true window inset,
+            // captured before the pager ignored the safe area.
+            .padding(.bottom, Space.lg + bottomInset)
         }
     }
 

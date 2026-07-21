@@ -1074,6 +1074,18 @@ final class AppStore {
             && Date().timeIntervalSince1970 - e.createdAtEpoch > 24 * 3600 {
             UploadJournal.shared.remove(uploadId: e.uploadId)
         }
+        // Audit (build 53, A3): GC entries whose placeholder clip no longer exists and that
+        // aren't live. Pre-build-53 deleteClip didn't retire the journal entry, so a deleted
+        // draft/take left a permanent orphan; any code path that drops a clip outside
+        // deleteClip leaks the same way. The 24h + not-live guards keep this from racing a
+        // just-created placeholder that this launch's snapshot hasn't loaded yet.
+        let liveClipIds = Set(clips.map { $0.id.uuidString })
+        for e in UploadJournal.shared.unfinished()
+        where !e.placeholderId.isEmpty && !liveClipIds.contains(e.placeholderId)
+            && !liveIds.contains(e.uploadId)
+            && Date().timeIntervalSince1970 - e.createdAtEpoch > 24 * 3600 {
+            UploadJournal.shared.remove(uploadId: e.uploadId)
+        }
         var changed = false
         for idx in clips.indices where clips[idx].uploading && clips[idx].jobId == nil
             && backgroundSubmits[clips[idx].id] == nil {
@@ -1546,6 +1558,17 @@ final class AppStore {
 
     /// Delete a clip and any schedule entries pointing at it.
     func deleteClip(_ clip: Clip) {
+        // Audit (build 53, A2): tear down any in-flight upload for this clip FIRST. Without
+        // this, two bugs: (1) a live `backgroundSubmits` task keeps running and its journal
+        // entry stays `unfinished`, so the next reconcileTransientState re-creates the clip
+        // from the journal — a deleted draft/take reappears ("zombie resurrection"); (2) the
+        // journal entry + its compressed part file leak forever. Cancel the task, drop the
+        // map slot, and retire the journal entry (which also unlinks the compressed file).
+        backgroundSubmits[clip.id]?.cancel()
+        backgroundSubmits[clip.id] = nil
+        if let entry = UploadJournal.shared.entry(placeholderId: clip.id.uuidString) {
+            UploadJournal.shared.remove(uploadId: entry.uploadId)
+        }
         clips.removeAll { $0.id == clip.id }
         schedule.removeAll { $0.clipId == clip.id }
         // Optimization (build 52): reclaim the clip's on-disk video/poster files — deleteClip
@@ -1562,14 +1585,24 @@ final class AppStore {
         let candidates = [clip.localVideoPath, clip.renderLocalPath, clip.thumbnailPath]
             .compactMap { $0 }.filter { !$0.hasPrefix("/") }   // only container-relative paths
         guard !candidates.isEmpty else { return }
-        var stillReferenced = Set<String>()
-        for c in clips {
-            [c.localVideoPath, c.renderLocalPath, c.thumbnailPath].forEach { if let p = $0 { stillReferenced.insert(p) } }
-        }
-        for f in footage { stillReferenced.insert(f.localPath); if let t = f.thumbnailPath { stillReferenced.insert(t) } }
-        for path in Set(candidates) where !stillReferenced.contains(path) {
+        for path in Set(candidates) where !referencedMediaPaths().contains(path) {
             try? FileManager.default.removeItem(at: MediaStore.url(for: path))
         }
+    }
+
+    /// Every container-relative media path any surviving model row references. Audit
+    /// (build 53): MUST include `media[]` — a recorded take is referenced by a Clip AND a
+    /// Footage row, and on next launch migrateFootageIntoMedia converts that Footage into a
+    /// MediaAsset (emptying footage). Scanning only clips+footage would then delete a file a
+    /// surviving MediaAsset still points at (silent, permanent data loss / dead b-roll source).
+    private func referencedMediaPaths() -> Set<String> {
+        var refs = Set<String>()
+        for c in clips {
+            [c.localVideoPath, c.renderLocalPath, c.thumbnailPath].forEach { if let p = $0 { refs.insert(p) } }
+        }
+        for f in footage { refs.insert(f.localPath); if let t = f.thumbnailPath { refs.insert(t) } }
+        for m in media { refs.insert(m.localPath); if let t = m.thumbnailPath { refs.insert(t) } }
+        return refs
     }
 
     /// Edit a clip's social caption in place.
@@ -1689,21 +1722,17 @@ final class AppStore {
     /// Remove a filmed/imported take from the Footage tab.
     func deleteFootage(_ f: Footage) {
         footage.removeAll { $0.id == f.id }
-        // Optimization (build 52): reclaim the take's file unless a clip/draft still points
-        // at it (a submitted take is referenced by its clip's localVideoPath).
-        let referenced = clipReferencesPath(f.localPath)
-        if !f.localPath.hasPrefix("/"), !referenced {
+        // Optimization (build 52; fixed build 53): reclaim the take's file unless ANY
+        // surviving clip / footage / MEDIA row still points at it (referencedMediaPaths
+        // includes media[] — a take can already have been migrated Footage→MediaAsset).
+        let referenced = referencedMediaPaths()
+        if !f.localPath.hasPrefix("/"), !referenced.contains(f.localPath) {
             try? FileManager.default.removeItem(at: MediaStore.url(for: f.localPath))
         }
-        if let t = f.thumbnailPath, !t.hasPrefix("/"), !clipReferencesPath(t),
-           !footage.contains(where: { $0.thumbnailPath == t }) {
+        if let t = f.thumbnailPath, !t.hasPrefix("/"), !referenced.contains(t) {
             try? FileManager.default.removeItem(at: MediaStore.url(for: t))
         }
         save()
-    }
-
-    private func clipReferencesPath(_ path: String) -> Bool {
-        clips.contains { $0.localVideoPath == path || $0.renderLocalPath == path || $0.thumbnailPath == path }
     }
 
     // MARK: Trend → script (Coach "Write a script for this")
@@ -2032,6 +2061,11 @@ final class AppStore {
         var likedPicks: [UUID]? = nil                  // I-2: Today's-picks feedback
         var dismissedPicks: [UUID]? = nil
         var reelsShot: Int? = nil                      // lifetime reels-shot count ("That's a wrap")
+        // Audit (build 53, B5): the Marque Path rank FLOOR lives in its own UserDefaults key,
+        // not the snapshot — so a reinstall+cloud-restore reconstructed the floor from the
+        // (possibly streak-dipped) restored XP and could silently drop a tier the creator had
+        // already earned. Persist the earned floor in the snapshot too.
+        var rankFloorLevel: Int? = nil
     }
 
     func save() {
@@ -2044,7 +2078,8 @@ final class AppStore {
                             chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes,
                             lastStreakDate: lastStreakDate,
                             likedPicks: likedPicks, dismissedPicks: dismissedPicks,
-                            reelsShot: reelsShot)
+                            reelsShot: reelsShot,
+                            rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey))
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -2095,6 +2130,12 @@ final class AppStore {
         // Back-compat: pre-counter installs seed the lifetime count from clips already in the
         // library so the wrap number isn't absurdly low on first upgrade.
         reelsShot = snap.reelsShot ?? clips.count
+        // Audit (build 53, B5): restore the earned rank floor, but only ever RAISE the local
+        // floor (max) — never lower a tier already earned on this device from a stale snapshot.
+        if let f = snap.rankFloorLevel, f > 0 {
+            let cur = UserDefaults.standard.integer(forKey: Self.rankFloorKey)
+            if f > cur { UserDefaults.standard.set(f, forKey: Self.rankFloorKey) }
+        }
         migrateFootageIntoMedia()
     }
 
@@ -2114,6 +2155,13 @@ final class AppStore {
     /// For Maestro/dev: wipe everything back to first-run.
     func resetAll() {
         UserDefaults.standard.removeObject(forKey: saveKey)
+        // Audit (build 53): these live OUTSIDE the Snapshot in their own stores, so a
+        // wipe-to-first-run must clear them too — otherwise reelsShot/XP reset to 0 while
+        // the rank floor pins the old (now-unearned) tier, and stale upload-journal entries
+        // survive the reset.
+        UserDefaults.standard.removeObject(forKey: Self.rankFloorKey)
+        pendingRankUp = nil
+        UploadJournal.shared.reset()
         brand = BrandGraph(); pillars = []; scripts = []; clips = []; footage = []; media = []
         schedule = []; trends = []; teardowns = []; hasOnboarded = false; streak = 0
         memory = CreatorMemory(); readiedScripts = []; conversations = []
