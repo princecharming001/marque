@@ -1511,7 +1511,28 @@ final class AppStore {
     func deleteClip(_ clip: Clip) {
         clips.removeAll { $0.id == clip.id }
         schedule.removeAll { $0.clipId == clip.id }
+        // Optimization (build 52): reclaim the clip's on-disk video/poster files — deleteClip
+        // used to leave them orphaned in the container forever (a draft or take is tens-to-
+        // hundreds of MB). Only files no SURVIVING clip or footage entry still references are
+        // removed, so a raw take shared with a Footage row (or a sibling clip) is kept.
+        reclaimOrphanedMedia(from: clip)
         save()
+    }
+
+    /// Delete every on-disk media path owned by `clip` that nothing else references. Safe to
+    /// call after the clip has already been removed from `clips`.
+    private func reclaimOrphanedMedia(from clip: Clip) {
+        let candidates = [clip.localVideoPath, clip.renderLocalPath, clip.thumbnailPath]
+            .compactMap { $0 }.filter { !$0.hasPrefix("/") }   // only container-relative paths
+        guard !candidates.isEmpty else { return }
+        var stillReferenced = Set<String>()
+        for c in clips {
+            [c.localVideoPath, c.renderLocalPath, c.thumbnailPath].forEach { if let p = $0 { stillReferenced.insert(p) } }
+        }
+        for f in footage { stillReferenced.insert(f.localPath); if let t = f.thumbnailPath { stillReferenced.insert(t) } }
+        for path in Set(candidates) where !stillReferenced.contains(path) {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: path))
+        }
     }
 
     /// Edit a clip's social caption in place.
@@ -1631,7 +1652,21 @@ final class AppStore {
     /// Remove a filmed/imported take from the Footage tab.
     func deleteFootage(_ f: Footage) {
         footage.removeAll { $0.id == f.id }
+        // Optimization (build 52): reclaim the take's file unless a clip/draft still points
+        // at it (a submitted take is referenced by its clip's localVideoPath).
+        let referenced = clipReferencesPath(f.localPath)
+        if !f.localPath.hasPrefix("/"), !referenced {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: f.localPath))
+        }
+        if let t = f.thumbnailPath, !t.hasPrefix("/"), !clipReferencesPath(t),
+           !footage.contains(where: { $0.thumbnailPath == t }) {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: t))
+        }
         save()
+    }
+
+    private func clipReferencesPath(_ path: String) -> Bool {
+        clips.contains { $0.localVideoPath == path || $0.renderLocalPath == path || $0.thumbnailPath == path }
     }
 
     // MARK: Trend → script (Coach "Write a script for this")

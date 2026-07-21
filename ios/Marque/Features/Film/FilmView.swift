@@ -13,6 +13,7 @@ struct FilmView: View {
     @State private var showReorder = false          // W4
     @State private var showArchived = false
     @State private var showFreestyle = false        // I-4
+    @State private var draftPendingDelete: Clip? = nil   // build 52: delete-draft confirm
 
     private var drafts: [Clip] { store.clips.filter { $0.status == .draft } }
 
@@ -59,6 +60,17 @@ struct FilmView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("film.draft")
+                            .contextMenu {
+                                Button(role: .destructive) { draftPendingDelete = d } label: {
+                                    Label("Delete draft", systemImage: "trash")
+                                }
+                                .accessibilityIdentifier("film.draft.delete")
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) { draftPendingDelete = d } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                 }
@@ -171,6 +183,19 @@ struct FilmView: View {
         .fullScreenCover(isPresented: $showFreestyle) { RecordView(script: nil) }   // I-4
         .onAppear { consumePendingFilmScript() }
         .onChange(of: router.pendingFilmScriptId) { _, _ in consumePendingFilmScript() }
+        // build 52: confirm before discarding a draft — it holds a real recording.
+        .confirmationDialog("Delete this draft?",
+                            isPresented: Binding(get: { draftPendingDelete != nil },
+                                                 set: { if !$0 { draftPendingDelete = nil } }),
+                            titleVisibility: .visible) {
+            Button("Delete draft", role: .destructive) {
+                if let d = draftPendingDelete { store.deleteClip(d) }
+                draftPendingDelete = nil
+            }
+            Button("Cancel", role: .cancel) { draftPendingDelete = nil }
+        } message: {
+            Text("The recording saved with this draft will be discarded.")
+        }
     }
 
     /// The edit-prefs summary with "Settings" styled as a tappable link — the whole
