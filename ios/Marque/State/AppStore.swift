@@ -1078,11 +1078,16 @@ final class AppStore {
                     self.backgroundSubmits[clip.id] = nil
                 }
                 backgroundSubmits[clip.id] = task
-            } else if !hasLocalFile {
+            } else {
+                // Audit (build 51): the build-50 sweep silently SKIPPED a clip whose
+                // auto-resume already ran this launch (hasLocalFile && already-resumed fell
+                // through both branches) — a resume task that died mid-flight left a spinner
+                // forever. Restore the pre-49 parity: anything that reaches here with no live
+                // task, no durable bytes, and no resume budget lands on a retryable card.
                 clips[idx].uploading = false
                 clips[idx].status = .failed
                 clips[idx].lastError = "upload_interrupted"
-                if let entry { UploadJournal.shared.remove(uploadId: entry.uploadId) }
+                if !hasLocalFile, let entry { UploadJournal.shared.remove(uploadId: entry.uploadId) }
                 changed = true
             }
         }

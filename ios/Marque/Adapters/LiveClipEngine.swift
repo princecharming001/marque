@@ -239,7 +239,13 @@ struct LiveClipEngine: ClipEngineProtocol {
         }
         var signedURL = initialURL
         var attempt = 0
-        while attempt < UploadRetryPolicy.maxAttemptsPerSession {
+        // Audit (build 51): the build-49 loop signaled "give up" with `attempt = .max`,
+        // which the trailing `attempt += 1` then OVERFLOWED — Swift traps on Int overflow,
+        // so any fail-fast status (400/404/409/413, or a failed re-mint) CRASHED the app
+        // mid-upload. Labeled break instead; parking is also bounded now (it deliberately
+        // doesn't consume an attempt, so an endless offline park needs its own ceiling).
+        var networkParks = 0
+        retryLoop: while attempt < UploadRetryPolicy.maxAttemptsPerSession {
             if Task.isCancelled { break }
             // Re-mint if the token is (server-relative) expired before we even start.
             if attempt > 0, let e = UploadJournal.shared.entry(uploadId: uploadId), e.signedURLExpired(),
@@ -264,15 +270,18 @@ struct LiveClipEngine: ClipEngineProtocol {
                 onProgress?(0)
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             case .remintThenRetry:
-                if let fresh = await remint?() { signedURL = fresh } else { attempt = .max }
+                guard let fresh = await remint?() else { break retryLoop }
+                signedURL = fresh
                 onProgress?(0)
             case .waitForNetwork:
+                networkParks += 1
+                if networkParks > 8 { break retryLoop }   // ~16min parked → retryable card
                 UploadJournal.shared.update(uploadId: uploadId) { $0.state = .waitingForNetwork }
                 await waitForNetwork()
                 onProgress?(0)
                 continue   // don't burn an attempt just parking for connectivity
             case .fail:
-                attempt = .max
+                break retryLoop
             }
             attempt += 1
         }
