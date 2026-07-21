@@ -122,3 +122,14 @@ test("viral-v2: every composition mounts Grade look BELOW captions and Grade tra
   }
   assert.deepEqual(offenders, [], offenders.join(" | "));
 });
+
+test("build 56: EndCard is an animated staggered build, not a static fade", () => {
+  // Owner contract: the CTA card must never regress to the "basic" single-property
+  // fade. Guard the three pillars of the v2 build: spring physics, per-word stagger,
+  // and the ambient (never-static) layer.
+  const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "EndCard.tsx"), "utf8");
+  assert.ok(/spring\(\{/.test(content), "EndCard must use spring() physics");
+  assert.ok(/words\.map/.test(content), "EndCard must stagger per word");
+  assert.ok(/damping:\s*200/.test(content), "word settle must use the smooth damping-200 spring");
+  assert.ok(/ambientScale|drift/.test(content), "EndCard must keep an ambient motion layer");
+});

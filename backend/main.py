@@ -5240,6 +5240,22 @@ async def _run_edit(job_id: str, words: list[dict]):
             _topic = _hk if isinstance(_hk, str) else (_hk.get("text", "") if isinstance(_hk, dict) else "")
             retention_hints["hook_text"] = await _calibrate_hook_concreteness(
                 retention_hints["hook_text"], topic=_topic)
+        # Build 56: detect the speaker face ONCE, before the retention passes, so the
+        # face-aware hook-title slot (place_hook_overlay) and the smart-inset placement
+        # further down share a single YuNet run. Gated to face styles with a consumer
+        # (a hook title to place, or planned smart inserts); fully fail-soft.
+        if style not in ("faceless", "fast_cuts") and (
+                retention_hints.get("hook_text")
+                or any(b.get("mode") == "smart" for b in (edl_data.get("broll") or []))):
+            try:
+                from app import faces as faces_mod
+                _early_fbox = await asyncio.to_thread(
+                    faces_mod.detect_face_box, job.get("source_url") or "")
+            except Exception:
+                _early_fbox = None
+            if _early_fbox:
+                retention_hints["face_box"] = _early_fbox
+                edl_data.setdefault("layout", {})["face_box"] = _early_fbox
         # WS3: the selected music track's offline beat grid (None until the catalog
         # carries grids — beat_snap is then a guaranteed no-op even when its token is on).
         _beat_grid, _beat_conf = _music_beat_meta(edl_data)
@@ -5298,15 +5314,36 @@ async def _run_edit(job_id: str, words: list[dict]):
                             if b.get("mode") == "smart" and b.get("resolved_url")]
             if _smart_items:
                 from app import faces as faces_mod
-                _fbox = await asyncio.to_thread(
-                    faces_mod.detect_face_box, job.get("source_url") or "")
-                if _fbox:
-                    edl_data.setdefault("layout", {})["face_box"] = _fbox
+                # Build 56: reuse the pre-retention detection when it ran (single YuNet
+                # pass per job); detect here only if that gate skipped it.
+                _fbox = (edl_data.get("layout") or {}).get("face_box")
+                if not _fbox:
+                    _fbox = await asyncio.to_thread(
+                        faces_mod.detect_face_box, job.get("source_url") or "")
+                    if _fbox:
+                        edl_data.setdefault("layout", {})["face_box"] = _fbox
                 _copts = edl_data.get("caption_options") or {}
                 _cpy = _copts.get("pos_y") or 0.62
                 _band = (max(0.0, _cpy - 0.09), min(1.0, _cpy + 0.09))
+                # Build 56: the hook TITLE is a keep-out for any smart insert whose
+                # source window overlaps the title's on-screen window — the old fixed
+                # top-band inset (y=140..~395px) sat exactly across the title block
+                # (center 0.24 ≈ 461px, top ~375px). Geometry mirrors the render:
+                # maxWidth 86% centered, ~2-line half-height + margin.
+                _title_rect, _title_win = None, (0, -1)
+                for _o in (edl_data.get("overlays") or []):
+                    if _o.get("type") == "text_sticker":
+                        _ty = float(_o.get("pos_y") or 0.24)
+                        _title_rect = (0.07, max(0.0, _ty - 0.075), 0.86, 0.15)
+                        _title_win = (int(_o.get("src_in", 0)), int(_o.get("src_out", 0)))
+                        break
                 for _b in _smart_items:
-                    _rect = faces_mod.smart_inset_rect(_fbox, caption_band=_band)
+                    _avoid = ()
+                    if _title_rect and not (int(_b.get("src_out", 0)) <= _title_win[0]
+                                            or int(_b.get("src_in", 0)) >= _title_win[1]):
+                        _avoid = (_title_rect,)
+                    _rect = faces_mod.smart_inset_rect(_fbox, caption_band=_band,
+                                                       avoid_rects=_avoid)
                     if _rect:
                         _b["inset_rect"] = _rect
                     else:

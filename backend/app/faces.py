@@ -39,9 +39,14 @@ _MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "assets",
 _SAFE_TOP = 140 / 1920        # clears TikTok ~130px top UI (IG top handled by band choice)
 _SAFE_LEFT = 48 / 1080
 _SAFE_RIGHT = 140 / 1080      # TikTok engagement rail
+_SAFE_BOTTOM = 484 / 1920     # TikTok ADS-spec bottom chrome (484px — the conservative
+                              # published number; organic measures ~324px) — bottom-region
+                              # inset candidates must clear it
 _CAPTION_BAND = (0.53, 0.71)  # default captions pos_y 0.62 ± band (Conbersa 35-70% convention)
-_FACE_PAD = 0.18              # pad the face box by ~18% of face height (research: 15-20%)
-_INSET_W = 0.42               # 40-55% width band (research) — start at 42%
+_FACE_PAD = 0.225             # pad each side by 22.5% of the face dim = 1.45x linear box —
+                              # the documented face-crop padding band is 1.25-1.5x (dlib
+                              # get_face_chip 0.25≈1.5x, imgix facepad, AutoCropFaces 1.5)
+_INSET_W = 0.42               # within the documented 0.20 (AWS corner PIP) – 0.50 (TikTok duet) band
 _INSET_AR = 16 / 9            # inner media aspect (w/h)
 _SHRINK_STEPS = 3             # VisAug: shrink progressively until a clear spot exists
 _SHRINK_FACTOR = 0.85
@@ -124,35 +129,60 @@ def _intersects(a: tuple[float, float, float, float],
 
 
 def smart_inset_rect(face_box: dict | None,
-                     caption_band: tuple[float, float] = _CAPTION_BAND) -> dict | None:
+                     caption_band: tuple[float, float] = _CAPTION_BAND,
+                     avoid_rects: tuple = ()) -> dict | None:
     """Choose the inset rect (normalized {x,y,w,h}) for a smart-placed b-roll item.
 
-    OTS rule: face center x < 0.45 → inset RIGHT; > 0.55 → inset LEFT; centered →
-    top-band OTS-wide centered above the head. Hard rejection tests per candidate
-    (US6778224 pattern): padded face box, caption band, platform safe zones. Shrinks
-    up to _SHRINK_STEPS before giving up (caller degrades to panel). None when no
-    face box (caller keeps standard panel geometry)."""
+    v2 (build 56, research-grounded): the standard candidate-region pattern — enumerate
+    anchor cells in preference order, hard-reject any that intersect a keep-out, shrink
+    and retry (Hu et al. 2015 8-ring candidates; US9456170B1 default-then-relocate;
+    AutoFlip required-region semantics — the face is a HARD keep-out, expanded 1.45x).
+
+    Candidate order: OTS side first (lead-room/negative-space doctrine: graphics go in
+    the space opposite the subject), TOP band before BOTTOM band (captions own the
+    lower-middle; the bottom cells clear TikTok's 484px ads-spec chrome and only win
+    when the top is blocked — e.g. by the hook title via `avoid_rects`). Keep-outs:
+    padded face, caption band, every `avoid_rects` entry (the caller passes the hook
+    title's block for cues that overlap its on-screen window). Placement is decided
+    once per cue with identical inputs → identical output (per-shot stability doctrine:
+    AutoFlip scene-stable, Akahori cue-clustered — never per-frame). None when no face
+    box or nothing clears (caller degrades to panel)."""
     if not face_box:
         return None
-    pad = face_box["h"] * _FACE_PAD
-    face = (face_box["x"] - pad, face_box["y"] - pad,
-            face_box["w"] + 2 * pad, face_box["h"] + 2 * pad)
+    pad_x = face_box["w"] * _FACE_PAD
+    pad_y = face_box["h"] * _FACE_PAD
+    face = (face_box["x"] - pad_x, face_box["y"] - pad_y,
+            face_box["w"] + 2 * pad_x, face_box["h"] + 2 * pad_y)
     cx = face_box["x"] + face_box["w"] / 2
+
+    cap = (0.0, caption_band[0], 1.0, caption_band[1] - caption_band[0])
+    keep_outs = [face, cap] + [tuple(r) for r in avoid_rects]
 
     w = _INSET_W
     for _ in range(_SHRINK_STEPS + 1):
         h = (w * 1080 / _INSET_AR) / 1920          # height in frame fraction, 16:9 inner
+        left = _SAFE_LEFT
+        right = 1.0 - _SAFE_RIGHT - w
+        center = (1.0 - w) / 2
+        # OTS x-priority: opposite the face first, then center, then the face's side.
         if cx > 0.55:
-            x = _SAFE_LEFT                          # face right → inset LEFT
+            xs = [left, center, right]
         elif cx < 0.45:
-            x = 1.0 - _SAFE_RIGHT - w               # face left → inset RIGHT
+            xs = [right, center, left]
         else:
-            x = (1.0 - w) / 2                       # centered → OTS-wide top-center
-        y = _SAFE_TOP
-        cand = (x, y, w, h)
-        cap = (0.0, caption_band[0], 1.0, caption_band[1] - caption_band[0])
-        if not _intersects(cand, face) and not _intersects(cand, cap):
-            return {"x": round(x, 4), "y": round(y, 4),
-                    "w": round(w, 4), "h": round(h, 4)}
+            xs = [center, left, right]
+        # y-candidates: top band, then just BELOW each avoid rect (with default
+        # captions the bottom band has ~73px of clear space — nothing fits — so the
+        # useful escape from a blocked top is the slot under the blocker), then the
+        # bottom band (viable when captions ride top / are off).
+        ys = [_SAFE_TOP]
+        ys += [r[1] + r[3] + 0.015 for r in avoid_rects]
+        ys.append(1.0 - _SAFE_BOTTOM - h)
+        for y in ys:
+            for x in xs:
+                cand = (x, y, w, h)
+                if not any(_intersects(cand, ko) for ko in keep_outs):
+                    return {"x": round(x, 4), "y": round(y, 4),
+                            "w": round(w, 4), "h": round(h, 4)}
         w *= _SHRINK_FACTOR
     return None

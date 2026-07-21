@@ -1004,6 +1004,78 @@ def align_emphasis(edl: dict, words: list[dict], *, style: str,
     return edl
 
 
+# Build 56 — face-aware title slot (research-grounded; see build-56 placement report).
+# Constants mirror the render side: sticker clamp y ∈ [0.15, 0.78] (layout.json
+# STICKER_POS_*), sticker font 64px * scale 1.05 * lineHeight 1.3 at maxWidth 86%.
+_TITLE_CLAMP = (0.15, 0.78)
+# Title-vs-face padding is a HAIRLINE margin (10% of face height), NOT the 1.25-1.5x
+# crop band: the caption-placement literature places text abutting the ROI box (Akahori
+# 2017 sets the text's top edge AT the ROI's bottom edge) — the crop band applies to
+# media rectangles (the smart inset), where covering the face reads far worse than text
+# sitting near it. A 1.45x title keep-out would evict the title on every typical framing.
+_TITLE_FACE_PAD = 0.10
+_TITLE_MARGIN = 0.015          # breathing room between title block edge and keep-outs
+
+
+def _title_half_h(hook_text: str) -> float:
+    """Estimated half-height of the rendered title block as a frame fraction. Render
+    math: 64px * 1.05 scale * 1.3 line-height per line, ~26 chars/line at 86% width
+    (Inter 800 ≈ 0.53em advance), + box padding."""
+    lines = max(1, -(-len(hook_text or "") // 26))
+    return min(0.14, (64 * 1.05 * 1.3 * lines + 40) / 2 / 1920)
+
+
+def _title_pos_y(face_box: dict | None, *, captions_top: bool,
+                 hook_text: str, caption_opts: dict) -> float:
+    """Pick the hook title's center-y. Legacy slot (0.24 top / 0.62 when captions ride
+    top) unless it intersects the EXPANDED face band — then relocate to the face side
+    with more room (below preferred on ties, per Akahori's user study), clear of the
+    caption band and inside the render's sticker clamp. Deterministic, one decision per
+    job (per-shot stability doctrine); no face → exact legacy value."""
+    legacy = 0.62 if captions_top else 0.24
+    if not face_box:
+        return legacy
+    half_h = _title_half_h(hook_text)
+    pad = face_box.get("h", 0) * _TITLE_FACE_PAD
+    f_top = float(face_box.get("y", 0.3)) - pad
+    f_bot = float(face_box.get("y", 0.3)) + float(face_box.get("h", 0.3)) + pad
+
+    # Caption keep-out band (same ±0.09 band the smart-inset caller uses).
+    cap_y = caption_opts.get("pos_y") or (0.20 if captions_top else 0.62)
+    cap_band = (float(cap_y) - 0.09, float(cap_y) + 0.09)
+
+    def clear(y: float) -> bool:
+        # The render clamps the sticker CENTER to [0.15, 0.78] (clampSticker) — mirror
+        # that on the center, then test the block's extents against the keep-outs.
+        if y < _TITLE_CLAMP[0] - 1e-6 or y > _TITLE_CLAMP[1] + 1e-6:
+            return False
+        t, b = y - half_h - _TITLE_MARGIN, y + half_h + _TITLE_MARGIN
+        if not (b <= f_top or t >= f_bot):          # intersects padded face
+            return False
+        if not (b <= cap_band[0] or t >= cap_band[1]):   # intersects caption band
+            return False
+        return True
+
+    lo, hi = _TITLE_CLAMP
+    if clear(legacy):
+        return legacy
+    above = max(lo + half_h, f_top - _TITLE_MARGIN - half_h)
+    below = min(hi, f_bot + _TITLE_MARGIN + half_h)
+    room_above = f_top - lo
+    room_below = hi + half_h - f_bot
+    # Below-face beats above-face on ties (Akahori 2017 user study: viewers found
+    # above-the-face text "strange"); pick the side with genuinely more room first.
+    # Last resort before giving up: the slot BELOW the caption band (0.71+ with the
+    # default band) — a low title beats one covering the face.
+    below_captions = min(hi, cap_band[1] + _TITLE_MARGIN + half_h)
+    order = ([below, above] if room_below >= room_above else [above, below]) + [below_captions]
+    for cand in order:
+        if clear(cand):
+            return round(cand, 4)
+    return legacy   # nothing clears → legacy slot; the render's caption nudge still runs
+
+
+
 def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
                        hints: dict | None = None, script: dict | None = None,
                        theme=None) -> dict:
@@ -1064,10 +1136,17 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
         end_src = first_kept + hold_out
     end_src = min(end_src, kept[-1][1])
 
-    # Face-aware-ish placement: eyes sit in the upper third (~y 0.33), so the old 0.30
-    # center put the box on the face — 0.24 clears both the eye line and every platform's
-    # top dead zone (Reels top 14% is the binding one). Captions-on-top variant unchanged.
-    pos_y = 0.62 if caption_opts.get("position") == "top" else 0.24
+    # Build 56: FACE-AWARE placement. The fixed 0.24/0.62 slots collide with the face on
+    # close-ups (a tight framing puts the padded face band up into the title slot). With
+    # a detected face (main.py threads hints["face_box"], YuNet median box) the title
+    # keeps its genre slot when clear, else relocates via the documented candidate
+    # pattern (US9456170B1 default-then-relocate; Hu et al. ring candidates; Akahori:
+    # below-face beats above-face on ties). No face → EXACT legacy behavior.
+    pos_y = _title_pos_y(
+        (hints or {}).get("face_box"),
+        captions_top=caption_opts.get("position") == "top",
+        hook_text=hook_text,
+        caption_opts=caption_opts)
     hook_cfg = (theme.hook if theme is not None else {}) or {}
     # Build 54/55: when the creator EXPLICITLY picked a caption treatment on the record
     # screen, the hook TITLE adopts the same font — one typographic voice across captions
