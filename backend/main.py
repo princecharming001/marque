@@ -4977,10 +4977,6 @@ def _extract_plan_retention_hints(plan: dict) -> dict:
     return hints
 
 
-# vibe -> MUSIC_TRACKS index: a fixed, deterministic map, not a search — the
-# catalog is small and was ALREADY ordered upbeat/chill/driving in anticipation
-# of exactly this lookup (see MUSIC_TRACKS above).
-_MUSIC_VIBE_TRACK_INDEX = {"upbeat": 0, "chill": 1, "driving": 2}
 
 
 def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None,

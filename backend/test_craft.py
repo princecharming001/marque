@@ -252,3 +252,71 @@ def test_fahh_replaces_pop_only_when_armed_and_only_last_meme():
     plain = couple_broll_sfx(_memes(), sfx_assets=unarmed_assets,
                              video_type="entertainment", energy="high")
     assert all(c["kind"] == "pop" for c in plain["audio"]["sfx"])
+
+
+# ------------------------------------------------- 57.3 placement audit fixes
+
+def test_text_cues_never_displace_old_accents():
+    from app.retention import synthesize_sfx
+    # 300 kept frames -> budget 1. A mid-video transition whoosh must win that
+    # slot over an early typing cue (pre-57.2 behavior preserved; text cues only
+    # consume leftover budget).
+    edl = {"style": "talking_head", "format_id": "x",
+           "segments": [{"src_in": 0, "src_out": 150}, {"src_in": 150, "src_out": 300}],
+           "drops": [],
+           "overlays": [{"type": "text_card", "src_in": 60, "src_out": 120, "text": "a"}],
+           "transitions": [{"after_segment": 0}], "broll": [], "captions": []}
+    out = synthesize_sfx(edl, [], sfx_assets=_sfx_all())
+    kinds = [c["kind"] for c in out["audio"]["sfx"]]
+    assert kinds == ["whoosh"]
+
+
+def test_reveal_midpoint_uses_kept_timeline_not_source_span():
+    from app.retention import synthesize_sfx
+    # 900 source frames but [300,840) dropped -> kept = [0,300)+[840,900) = 360f,
+    # kept-midpoint = source frame 180. An overlay at 250 IS past the kept
+    # midpoint (it sits at 250/360 of kept content) -> reveal sparkle. The old
+    # source-span math (mid = 0+180... wait both agree here) — use the inverse:
+    # overlay at 170 is BEFORE the kept midpoint (170/360) but the naive
+    # kept[0]+total//2 = 180 also says before. Assert the drop-heavy case:
+    # kept = [0,60)+[600,900) = 360f, kept-mid = source 600+120=720. Overlay at
+    # 650 is only 110/360 in -> NOT the back half, must stay typing (the naive
+    # source math mid=0+180 would have called 650 a reveal).
+    edl = {"style": "talking_head", "format_id": "x",
+           "segments": [{"src_in": 0, "src_out": 900}],
+           "drops": [{"src_in": 60, "src_out": 600}],
+           "overlays": [{"type": "text_card", "src_in": 650, "src_out": 720, "text": "x"}],
+           "broll": [], "captions": []}
+    out = synthesize_sfx(edl, [], sfx_assets=_sfx_all())
+    kinds = {c["kind"] for c in out["audio"]["sfx"]}
+    assert kinds == {"typing"}
+
+
+def test_riser_requires_uncut_run_into_hero():
+    from app.retention import couple_broll_sfx
+    # A drop sits inside the [hero-30, hero] run -> the output gap shrinks and
+    # the riser climax would land after the cut. No riser; whoosh stays.
+    edl = _edl_600()
+    edl["drops"] = [{"src_in": 280, "src_out": 290}]
+    edl["broll"] = [{"src_in": 300, "src_out": 380, "hero": True,
+                    "resolved_url": "https://x/v.mp4"}]
+    out = couple_broll_sfx(edl, sfx_assets=_sfx_all())
+    kinds = [c["kind"] for c in out["audio"]["sfx"]]
+    assert kinds == ["whoosh"]
+
+
+def test_meme_pop_outranks_second_shutter():
+    from app.retention import couple_broll_sfx, _SFX_BUDGET_PER_30S
+    assert _SFX_BUDGET_PER_30S == 3
+    # 600 kept frames -> budget 2. Two stills + one meme: the meme's punchline
+    # pop must take a slot ahead of the second shutter.
+    edl = _edl_600()
+    edl["broll"] = [
+        {"src_in": 100, "src_out": 160, "source": "commons", "resolved_url": "https://x/1.jpg"},
+        {"src_in": 250, "src_out": 310, "source": "commons", "resolved_url": "https://x/2.jpg"},
+        {"src_in": 450, "src_out": 490, "need": "meme", "resolved_url": "https://x/m.gif"},
+    ]
+    out = couple_broll_sfx(edl, sfx_assets={**_sfx_all(), "fahh": None},
+                           video_type="entertainment", energy="high")
+    kinds = sorted(c["kind"] for c in out["audio"]["sfx"])
+    assert kinds == ["pop", "shutter"]

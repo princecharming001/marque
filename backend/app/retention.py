@@ -1619,27 +1619,49 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
     # 57.2 (snd.sfx_lexicon): text entrances get their conventional one-shots —
     # typewriter under text cards, a UI click under pop-up stickers (CapCut SFX
     # convention: click = pop-up text, typing = text being written). The LAST text
-    # overlay in the back half is the reveal/summary card by convention → sparkle.
-    # All still compete inside the same budget/spacing (seasoning, not soup).
+    # overlay past the KEPT-timeline midpoint is the reveal/summary card by
+    # convention → sparkle. Text cues are a LOWER placement tier than the
+    # pre-existing accents (whoosh/pop/hit): they only consume leftover budget,
+    # so adding them can never displace a transition whoosh or meme pop that
+    # would have placed before this build (strictly additive, audit 57.3).
+    text_candidates: set[tuple[int, str]] = set()
+    # The kept-timeline midpoint in SOURCE coords: walk kept intervals to the
+    # frame where half the kept content has elapsed (a plain source-span midpoint
+    # drifts early whenever drops exist, misclassifying mid-video text as the
+    # back-half reveal).
+    half = sum(hi - lo for lo, hi in kept) // 2
+    mid = kept[-1][1]
+    acc = 0
+    for lo, hi in kept:
+        if acc + (hi - lo) >= half:
+            mid = lo + (half - acc)
+            break
+        acc += hi - lo
     text_overlays = [o for o in (edl.get("overlays") or [])
                      if o.get("type") in ("text_card", "text_sticker")]
     reveal_id = None
     if text_overlays:
         last = max(text_overlays, key=lambda o: int(o.get("src_in", 0)))
-        mid = kept[0][0] + sum(hi - lo for lo, hi in kept) // 2
         if int(last.get("src_in", 0)) > mid:
             reveal_id = id(last)
+    reveal_frame = None
     for o in edl.get("overlays") or []:
         if o.get("type") == "punch_in":
             candidates.add((o["src_in"], "pop"))
         elif o.get("type") == "text_card":
-            candidates.add((o["src_in"], "sparkle" if id(o) == reveal_id else "typing"))
+            if id(o) == reveal_id:
+                reveal_frame = o["src_in"]
+            else:
+                text_candidates.add((o["src_in"], "typing"))
         elif (o.get("type") == "text_sticker" and o.get("src_in") == kept[0][0]
               and theme is not None and (theme.hook or {}).get("impact_sfx")):
             # D5: hook-title entrance pop (earliest frame → placed first below).
             candidates.add((o["src_in"], "pop"))
         elif o.get("type") == "text_sticker" and o.get("src_in") != kept[0][0]:
-            candidates.add((o["src_in"], "sparkle" if id(o) == reveal_id else "click"))
+            if id(o) == reveal_id:
+                reveal_frame = o["src_in"]
+            else:
+                text_candidates.add((o["src_in"], "click"))
 
     # A7: a theme's gain_db (dB) overrides the module SFX_GAIN_DEFAULT (already
     # -14dB) when the bundle wants its one-shots hotter/quieter than the default.
@@ -1667,6 +1689,14 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
         _try_place(int(top[0]), "hit")
 
     for f, kind in sorted(candidates):
+        _try_place(f, kind)
+
+    # 57.2/57.3 placement tiers: the reveal sparkle outranks the other text cues
+    # (it's the single highest-value new accent and sits late, where frame-order
+    # placement would starve it) but never the pre-existing accents above.
+    if reveal_frame is not None:
+        _try_place(int(reveal_frame), "sparkle")
+    for f, kind in sorted(text_candidates):
         _try_place(f, kind)
 
     if sfx:
@@ -1788,27 +1818,18 @@ def couple_broll_sfx(edl: dict, *, sfx_assets: dict[str, str | None] | None = No
             continue
         if riser_url and b is heroes[0] and len(added) + 1 < budget:
             rf = f - 30
-            # Source-coord guard: at least the hook-protect span past the first KEPT
-            # frame (conservative stand-in for the output-coord hook window).
+            # Source-coord guards: at least the hook-protect span past the first KEPT
+            # frame (conservative stand-in for the output-coord hook window), AND the
+            # whole riser run [rf, f] inside ONE kept interval — a drop between them
+            # would shrink the output gap and land the climax AFTER the hero cut
+            # (the riser asset's build is timed to the 30f lead).
             if kept and rf >= kept[0][0] + HOOK_PROTECT_OUT_FRAMES \
-                    and any(lo <= rf < hi for lo, hi in kept) \
+                    and any(lo <= rf and f <= hi for lo, hi in kept) \
                     and not any(abs(rf - p) < _SFX_MIN_SPACING_FRAMES for p in placed):
                 added.append({"src_in": rf, "kind": "riser", "gain": gain, "url": riser_url})
                 placed.append(rf)
         added.append({"src_in": f, "kind": "whoosh", "gain": gain,
                       "url": sfx_assets["whoosh"]})
-        placed.append(f)
-    # 57.2: still-image insets (Commons stills) get the camera-shutter entrance —
-    # the documented convention for photo pops/freeze-frames. Restrained: max 2
-    # (the `stills` list is pre-capped and pre-gated on the shutter asset above).
-    for b in stills:
-        if len(added) >= budget:
-            break
-        f = int(b.get("src_in", 0))
-        if any(abs(f - p) < _SFX_MIN_SPACING_FRAMES for p in placed):
-            continue
-        added.append({"src_in": f, "kind": "shutter", "gain": gain,
-                      "url": sfx_assets["shutter"]})
         placed.append(f)
     # 57.2: when the owner arms a licensed "fahh" (comedic-shock vocal — meme-tier),
     # the LAST meme of the video trades its pop for it: one fahh max, and last-meme
@@ -1824,6 +1845,19 @@ def couple_broll_sfx(edl: dict, *, sfx_assets: dict[str, str | None] | None = No
             added.append({"src_in": f, "kind": "fahh", "gain": gain, "url": fahh_url})
         else:
             added.append({"src_in": f, "kind": "pop", "gain": gain, "url": pop_url})
+        placed.append(f)
+    # 57.2: still-image insets (Commons stills) get the camera-shutter entrance —
+    # the documented convention for photo pops/freeze-frames. Restrained: max 2,
+    # and placed AFTER meme pops (audit 57.3): a comedic punchline beat is worth
+    # more than a second photo pop when the budget is tight.
+    for b in stills:
+        if len(added) >= budget:
+            break
+        f = int(b.get("src_in", 0))
+        if any(abs(f - p) < _SFX_MIN_SPACING_FRAMES for p in placed):
+            continue
+        added.append({"src_in": f, "kind": "shutter", "gain": gain,
+                      "url": sfx_assets["shutter"]})
         placed.append(f)
     if added:
         audio["sfx"] = sorted(existing + added, key=lambda c: c["src_in"])
