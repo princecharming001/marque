@@ -43,3 +43,41 @@ rules:
     source: "GoE #29"
     enforce: critic
 ```
+
+## Vibe canon + trending native sounds
+
+Creators pick music by MOOD, not genre — the working taxonomy (from practitioner
+"sounds by vibe" guides, e.g. thecontent.strategist's viral-sounds-by-vibe
+breakdown, July 2026) is: motivational, cinematic, dramatic, powerful,
+nostalgic, mysterious, chaotic. The plan author speaks this vocabulary; the
+baked bed is selected from OUR licensed catalog by matching it.
+
+Trending commercial sounds are a RANKING asset, not a render asset: Instagram
+rewards reels that use trending audio added natively in-app, and baked-in
+commercial music is both unlicensed for our export and risks mute/demotion.
+So the pipeline SUGGESTS the vibe-matched trending sound for the creator to
+add natively at post time — it never bakes it.
+
+```yaml
+rules:
+  - id: snd.vibe_canon
+    principle: "Music mood vocabulary: motivational, cinematic, dramatic, powerful, nostalgic, mysterious, chaotic — plan + catalog + suggestion all speak it"
+    source: "Practitioner sounds-by-vibe taxonomy (thecontent.strategist reel Dahv2Oti3gr, 2026-07)"
+    enforce: prompt
+    params:
+      vibes: [motivational, cinematic, dramatic, powerful, nostalgic, mysterious, chaotic]
+  - id: snd.trending_native
+    principle: "Suggest the vibe-matched trending sound for NATIVE in-app add at post time; never bake commercial tracks into the export (license + mute/demote risk; native trending audio is ranking-positive)"
+    source: "thecontent.strategist reel Dahv2Oti3gr (2026-07-08); attributions web-verified 2026-07-22 (MusicBusinessWorldwide/Vavoza/Spotify/Wikipedia/IG audio pages)"
+    enforce: advise
+    params:
+      as_of: "2026-07"
+      map:
+        motivational: {title: "NOW OR NEVER", artist: "Tkandz"}
+        cinematic:    {title: "A Good Man with a Broken Heart", artist: "LoVibe."}
+        dramatic:     {title: "Runaway", artist: "Kanye West ft. Pusha T", alt: "AURORA — Runaway"}
+        powerful:     {title: "Timeless", artist: "The Weeknd & Playboi Carti"}
+        nostalgic:    {title: "snowfall", artist: "Øneheart x reidenshi"}
+        mysterious:   {title: "Lost in the Fire", artist: "Gesaffelstein & The Weeknd"}
+        chaotic:      {title: "Without Me", artist: "Eminem"}
+```

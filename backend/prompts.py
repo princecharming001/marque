@@ -1169,7 +1169,13 @@ EDIT_PLAN_JSON_SCHEMA = {
         "music": {"type": "object", "additionalProperties": False,
                   "required": ["wanted", "vibe"],
                   "properties": {"wanted": {"type": "boolean"},
-                                 "vibe": {"type": "string", "enum": ["upbeat", "chill", "driving", ""]}}},
+                                 # Legacy coarse tags + the snd.vibe_canon mood taxonomy
+                                 # (knowledge/craft/sound.md) — canon vibes also drive the
+                                 # trending-native sound suggestion on the clip payload.
+                                 "vibe": {"type": "string", "enum": [
+                                     "upbeat", "chill", "driving",
+                                     "motivational", "cinematic", "dramatic", "powerful",
+                                     "nostalgic", "mysterious", "chaotic", ""]}}},
         "pacing_intent": _STR,
         # P5: typed decisions the retention passes (app/retention.py) consume directly —
         # pacing_intent above stays free-text for self-review context, but these are what
@@ -1351,7 +1357,8 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
 
         "OTHER FIELDS: punch_ins (frame + scale 1.03–1.08 on load-bearing lines, never the hook/CTA), "
         "caption_plan (style/grouping/highlight_words — emphasis words are numbers, negations, superlatives, "
-        "the novel term), text_cards, music (wanted+vibe), pacing_intent (one free-text line: your read of the "
+        "the novel term), text_cards, music (wanted+vibe — pick the MOOD the edit should carry: motivational/"
+        "cinematic/dramatic/powerful/nostalgic/mysterious/chaotic), pacing_intent (one free-text line: your read of the "
         "pace + any second-idea note).\n\n"
 
         "═══ B-ROLL — RELEVANCE IS THE SWITCH (not quantity) ═══\n"
