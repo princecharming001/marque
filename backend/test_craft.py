@@ -166,3 +166,89 @@ def test_trending_suggestion_never_raises_without_doctrine(monkeypatch):
     from app import craft
     monkeypatch.setattr(craft, "rule_params", lambda *a, **k: {})
     assert main._suggest_trending_sound(vibe="motivational") is None
+
+
+# ------------------------------------------------- SFX lexicon (build 57.2)
+
+def _sfx_all():
+    import main
+    return {k: f"https://x/{k}.mp3" for k in main.SFX_ASSETS}
+
+
+def _edl_600():
+    return {"style": "talking_head", "format_id": "x",
+            "segments": [{"src_in": 0, "src_out": 600}], "drops": [],
+            "overlays": [], "broll": [], "captions": []}
+
+
+def test_sfx_assets_lexicon_registered():
+    import main
+    from app import craft
+    kinds = set(craft.rule_params("snd.sfx_lexicon")["kinds"])
+    assert kinds == set(main.SFX_ASSETS)
+    # Meme-tier sounds with proprietary provenance ship UNARMED (env-only).
+    assert main.SFX_ASSETS["fahh"] is None and main.SFX_ASSETS["sus"] is None
+
+
+def test_text_card_gets_typing_and_sticker_gets_click():
+    from app.retention import synthesize_sfx
+    edl = _edl_600()
+    edl["overlays"] = [
+        {"type": "text_card", "src_in": 60, "src_out": 150, "text": "a"},
+        {"type": "text_sticker", "src_in": 200, "src_out": 280, "text": "b"},
+    ]
+    out = synthesize_sfx(edl, [], sfx_assets=_sfx_all())
+    kinds = {c["kind"] for c in out["audio"]["sfx"]}
+    assert "typing" in kinds and "click" in kinds
+
+
+def test_back_half_reveal_overlay_gets_sparkle():
+    from app.retention import synthesize_sfx
+    edl = _edl_600()
+    edl["overlays"] = [
+        {"type": "text_card", "src_in": 60, "src_out": 150, "text": "setup"},
+        {"type": "text_card", "src_in": 450, "src_out": 560, "text": "reveal"},
+    ]
+    out = synthesize_sfx(edl, [], sfx_assets=_sfx_all())
+    by_frame = {c["src_in"]: c["kind"] for c in out["audio"]["sfx"]}
+    assert by_frame.get(60) == "typing"
+    assert by_frame.get(450) == "sparkle"      # last text overlay past midpoint
+
+
+def test_hero_earns_riser_lead_in():
+    from app.retention import couple_broll_sfx
+    edl = _edl_600()
+    edl["broll"] = [{"src_in": 300, "src_out": 380, "hero": True,
+                    "resolved_url": "https://x/v.mp4"}]
+    out = couple_broll_sfx(edl, sfx_assets=_sfx_all())
+    cues = {(c["src_in"], c["kind"]) for c in out["audio"]["sfx"]}
+    assert (300, "whoosh") in cues and (270, "riser") in cues
+
+
+def test_commons_still_gets_shutter():
+    from app.retention import couple_broll_sfx
+    edl = _edl_600()
+    edl["broll"] = [{"src_in": 240, "src_out": 300, "source": "commons",
+                    "resolved_url": "https://x/i.jpg"}]
+    out = couple_broll_sfx(edl, sfx_assets=_sfx_all())
+    assert any(c["kind"] == "shutter" and c["src_in"] == 240
+               for c in out["audio"]["sfx"])
+
+
+def test_fahh_replaces_pop_only_when_armed_and_only_last_meme():
+    from app.retention import couple_broll_sfx
+    def _memes():
+        e = _edl_600()
+        e["broll"] = [
+            {"src_in": 200, "src_out": 240, "need": "meme", "resolved_url": "https://x/1.gif"},
+            {"src_in": 400, "src_out": 440, "need": "meme", "resolved_url": "https://x/2.gif"},
+        ]
+        return e
+    armed = couple_broll_sfx(_memes(), sfx_assets=_sfx_all(),
+                             video_type="entertainment", energy="high")
+    kinds = {c["src_in"]: c["kind"] for c in armed["audio"]["sfx"]}
+    assert kinds.get(200) == "pop" and kinds.get(400) == "fahh"
+    unarmed_assets = {**_sfx_all(), "fahh": None}
+    plain = couple_broll_sfx(_memes(), sfx_assets=unarmed_assets,
+                             video_type="entertainment", energy="high")
+    assert all(c["kind"] == "pop" for c in plain["audio"]["sfx"])
