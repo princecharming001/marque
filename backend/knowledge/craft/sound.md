@@ -81,3 +81,34 @@ rules:
         mysterious:   {title: "Lost in the Fire", artist: "Gesaffelstein & The Weeknd"}
         chaotic:      {title: "Without Me", artist: "Eminem"}
 ```
+
+## SFX lexicon — one-shots and their conventions
+
+Trending-SFX shorthand (creator-saved lists, CapCut library conventions) maps
+onto a small kind vocabulary. Conventions per the CapCut SFX guides and meme-
+sound documentation: **typing** under text being written on screen; **click**
+under pop-up text/UI moments; **shutter** for photo pops, freeze-frames and
+snap transitions; **sparkle** (magic/glitter) for reveals and transformations;
+**riser** building suspense INTO a reveal (must land on the hit); **whoosh**
+(incl. the airy variant) on motion transitions/zooms; **fahh** = comedic-shock
+vocal on the punchline (straight-reaction format); **sus** (Among-Us-style
+sting) for suspicion/plot-twist gags. SFX are seasoning, not soup: the pass
+budget stays ~3 per 30s with 15f spacing — over-coupling is the
+"marketing-guru" tell (restraint doctrine, A5).
+
+fahh and sus ship UNARMED: the viral originals are a streamer's scream and
+Innersloth game audio — proprietary/unclear provenance, so baking them into
+creator exports needs an owner-supplied licensed asset (env-armed).
+
+```yaml
+rules:
+  - id: snd.sfx_lexicon
+    principle: "One-shots follow their documented conventions: typing=text written, click=pop-up text, shutter=photo/freeze, sparkle=reveal, riser=suspense-into-reveal, whoosh=motion, fahh=comedic punchline (armed only), sus=suspicion gag (armed only)"
+    source: "CapCut SFX guides (Lemon8/LinkedIn Learning); fahh + Among Us meme-usage documentation; creator-saved trending list 2026-07"
+    enforce: knob
+    params:
+      kinds: [whoosh, pop, hit, typing, click, shutter, sparkle, riser, fahh, sus]
+      unarmed_by_default: [fahh, sus]
+      budget_per_30s: 3
+      min_spacing_f: 15
+```

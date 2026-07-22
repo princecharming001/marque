@@ -2996,10 +2996,25 @@ def _music_beat_meta(edl: dict) -> tuple[list | None, float | None]:
 # (same "clean backdrop beats fake copy" fail-soft philosophy as unresolved
 # b-roll/GreenScreen's text_card), so a missing/blank override stays a safe no-op.
 _SFX_DEFAULT_BASE = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/sfx"
+# Build 57.2: the SFX lexicon grew from 3 to 9 kinds (snd.sfx_lexicon in
+# knowledge/craft/sound.md — creator-saved trending SFX mapped to their
+# documented editing conventions). Same fail-soft contract as always: a kind
+# whose URL is falsy is silently skipped by synthesize_sfx/couple_broll_sfx
+# AND build_render_plan, so un-uploaded/unarmed kinds are safe no-ops.
+# "fahh" and "sus" (Among-Us-style sting) ship UNARMED: both are meme-tier
+# sounds with proprietary/unclear provenance (streamer scream; Innersloth game
+# audio) — the owner supplies a licensed asset via env to arm them.
 SFX_ASSETS: dict[str, str | None] = {
     "whoosh": os.environ.get("SFX_URL_WHOOSH", f"{_SFX_DEFAULT_BASE}/whoosh.mp3"),
     "pop": os.environ.get("SFX_URL_POP", f"{_SFX_DEFAULT_BASE}/pop.mp3"),
     "hit": os.environ.get("SFX_URL_HIT", f"{_SFX_DEFAULT_BASE}/hit.mp3"),
+    "typing": os.environ.get("SFX_URL_TYPING", f"{_SFX_DEFAULT_BASE}/typing.mp3"),
+    "click": os.environ.get("SFX_URL_CLICK", f"{_SFX_DEFAULT_BASE}/click.mp3"),
+    "shutter": os.environ.get("SFX_URL_SHUTTER", f"{_SFX_DEFAULT_BASE}/shutter.mp3"),
+    "sparkle": os.environ.get("SFX_URL_SPARKLE", f"{_SFX_DEFAULT_BASE}/sparkle.mp3"),
+    "riser": os.environ.get("SFX_URL_RISER", f"{_SFX_DEFAULT_BASE}/riser.mp3"),
+    "fahh": os.environ.get("SFX_URL_FAHH") or None,
+    "sus": os.environ.get("SFX_URL_SUS") or None,
 }
 
 
