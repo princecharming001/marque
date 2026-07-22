@@ -120,5 +120,16 @@ _REVIEW_BLOCK = """CRAFT REVIEW AXES (score with reasons, not bare numbers):
 
 
 def prompt_block(call: str) -> str:
+    """Build 57.4 (owner regression report): the edit_plan/brief doctrine blocks are
+    FLAG-ARMED, default OFF. Appending them (build 57) was the ONLY cut-decision
+    change since build 51 — "cut LONG, not short" + "every cut needs a motivation"
+    measurably softened trim aggressiveness, and the owner judged build 51's
+    keep/drop choices better. Off restores the build-51 planner prompt byte-for-
+    byte; CRAFT_PROMPTS=1 re-arms for a controlled A/B (craft_version + the
+    bandit's knowledge_version dimension make the comparison measurable). The
+    registry/lints/knobs/report are NOT gated — they were never cut-deciding."""
+    if call in ("edit_plan", "brief") and \
+            os.environ.get("CRAFT_PROMPTS", "") in ("", "0", "false"):
+        return ""
     return {"edit_plan": _EDIT_BLOCK, "brief": _BRIEF_BLOCK,
             "review": _REVIEW_BLOCK}.get(call, "")

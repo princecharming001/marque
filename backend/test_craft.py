@@ -37,13 +37,29 @@ def test_rule_params_and_version():
     assert craft.rule_params("nope", {"a": 1}) == {"a": 1}
 
 
-def test_prompt_blocks_are_compact_and_targeted():
+def test_prompt_blocks_are_compact_and_targeted(monkeypatch):
+    # 57.4: cut-deciding blocks are flag-armed (default OFF — restores the
+    # build-51 planner prompt exactly; owner judged its keep/drop choices better).
+    assert craft.prompt_block("edit_plan") == ""
+    assert craft.prompt_block("brief") == ""
+    monkeypatch.setenv("CRAFT_PROMPTS", "1")
     for call in ("edit_plan", "brief", "review"):
         block = craft.prompt_block(call)
         assert block and len(block) < 1600      # never crowds the KB digest budget
     assert "Murch" in craft.prompt_block("edit_plan")
     assert "CONTRACT" in craft.prompt_block("brief").upper()
     assert craft.prompt_block("unknown") == ""
+
+
+def test_edit_plan_prompt_matches_build51_cut_guidance():
+    # The regression restore's actual contract: with the flag off, the planner's
+    # system prompt must carry NO craft cut doctrine (byte-parity with build 51).
+    import prompts
+    words = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": (i + 1) * 400}
+             for i in range(40)]
+    sys_p, _ = prompts.edit_plan_prompt("talking_head", words, {"title": "t", "hook": "h"},
+                                        {"niche": "x"})
+    assert "cut LONG" not in sys_p and "Murch" not in sys_p
 
 
 # ---------------------------------------------------------------- lints
