@@ -2886,18 +2886,35 @@ def _bpm_band_sorted(tracks: list[dict]) -> list[dict]:
     return sorted(tracks, key=lambda t: 0 if 80 <= (t.get("bpm") or 0) <= 120 else 1)
 
 
+# Vibe canon (snd.vibe_canon, knowledge/craft/sound.md): the plan author speaks the
+# 7-mood taxonomy creators actually pick music by; the catalog carries coarser tags.
+# Each canon vibe expands to its nearest catalog tags, in preference order, so a
+# "motivational" plan lands on a driving/upbeat bed instead of the seed fallback.
+_VIBE_TO_CATALOG = {
+    "motivational": ["driving", "upbeat"],
+    "cinematic": ["steady", "chill"],
+    "dramatic": ["steady", "driving"],
+    "powerful": ["driving", "steady"],
+    "nostalgic": ["chill"],
+    "mysterious": ["chill", "steady"],
+    "chaotic": ["upbeat", "driving"],
+}
+
+
 def _select_music_track(vibe: str = "", tone: str = "", montage: bool = False,
                         seed: int = 0) -> dict:
-    """Pick the best-matching track: brand tone first, then the plan's vibe, then a
-    montage gets the highest-energy track, else a deterministic seed pick. Never raises."""
+    """Pick the best-matching track: brand tone first, then the plan's vibe (exact
+    catalog tag, then canon-vibe expansion), then a montage gets the highest-energy
+    track, else a deterministic seed pick. Never raises."""
     cat = MUSIC_TRACKS or _BUILTIN_MUSIC_TRACKS
     want_tone = _TONE_TO_TRACK_TONE.get((tone or "").strip().lower())
     if want_tone:
         matches = _bpm_band_sorted([t for t in cat if (t.get("tone") or "").lower() == want_tone])
         if matches:
             return matches[seed % len(matches)]
-    if vibe:
-        matches = _bpm_band_sorted([t for t in cat if (t.get("vibe") or "").lower() == vibe.strip().lower()])
+    vibe = (vibe or "").strip().lower()
+    for want in ([vibe] + _VIBE_TO_CATALOG.get(vibe, []) if vibe else []):
+        matches = _bpm_band_sorted([t for t in cat if (t.get("vibe") or "").lower() == want])
         if matches:
             return matches[seed % len(matches)]
     if montage:
@@ -2905,6 +2922,49 @@ def _select_music_track(vibe: str = "", tone: str = "", montage: bool = False,
         if hi:
             return hi[seed % len(hi)]
     return cat[seed % len(cat)]
+
+
+def _suggest_trending_sound(vibe: str = "", tone: str = "", energy: str = "",
+                            meme_level: str = "") -> dict | None:
+    """snd.trending_native (Craft Engine): the vibe-matched TRENDING sound the creator
+    should add natively in the Instagram app at post time. Never baked into the
+    render — commercial tracks are unlicensed for our export and baked music risks
+    mute/demotion, while natively-added trending audio is ranking-positive. The map
+    lives in knowledge/craft/sound.md (refreshable doctrine, stamped as_of) so a
+    stale list is a doctrine edit, not a code change. None on any failure —
+    callers simply omit the suggestion."""
+    try:
+        from app import craft as _craft_mod
+        params = _craft_mod.rule_params("snd.trending_native")
+        smap = params.get("map") or {}
+        if not smap:
+            return None
+        v = (vibe or "").strip().lower()
+        if v not in smap:
+            # No canon vibe from the plan — fold coarse signals to the nearest mood.
+            if v in ("upbeat", "driving"):
+                v = "motivational"
+            elif v == "chill":
+                v = "nostalgic"
+            elif str(meme_level) in ("2", "3"):
+                v = "chaotic"
+            elif (energy or "").lower() == "high":
+                v = "motivational"
+            elif _TONE_TO_TRACK_TONE.get((tone or "").strip().lower()) == "calm":
+                v = "cinematic"
+            else:
+                v = "motivational"
+        pick = dict(smap.get(v) or {})
+        if not pick.get("title"):
+            return None
+        pick["vibe"] = v
+        pick["as_of"] = str(params.get("as_of", ""))
+        pick["how"] = ("Add this sound in the Instagram app when you post — search the "
+                       "title and keep it low under your voice. Native trending audio "
+                       "helps reach; it is never baked into the export.")
+        return pick
+    except Exception:
+        return None
 
 
 def _music_beat_meta(edl: dict) -> tuple[list | None, float | None]:
@@ -3231,6 +3291,10 @@ async def get_clip_job(job_id: str, include_words: int = 0):
         out["lint"] = job["lint"]
     if job.get("broll_log"):
         out["broll_log"] = job["broll_log"]        # per-cue decisions (tier/action/why) — observability
+    if job.get("suggested_sound"):
+        # snd.trending_native: the vibe-matched trending sound to add natively in
+        # the IG app at post time (title/artist/vibe/as_of/how). Advisory only.
+        out["suggested_sound"] = job["suggested_sound"]
     if include_words:
         # Opt-in only — real transcripts are thousands of words and this endpoint
         # is polled every 5s; the manual editor is the only caller that needs them.
@@ -5234,6 +5298,15 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data, prefs, music_hint,
             theme_volume=(_theme_for_music.music.get("volume")
                           if _theme_for_music is not None else None))
+        # snd.trending_native: suggest the vibe-matched trending sound for NATIVE
+        # add at post time. Computed even when no bed was baked (music off means
+        # the native sound carries the whole audio mood) and surfaced on the clip
+        # payload — never on the EDL (it must not leak into the render plan).
+        job["suggested_sound"] = _suggest_trending_sound(
+            vibe=music_hint.get("vibe") or "",
+            tone=(prefs.get("brand_tone") or ""),
+            energy=(prefs.get("energy") or ""),
+            meme_level=str((job.get("config") or {}).get("meme_intensity") or ""))
         trim_level = prefs.get("filler_trim") if prefs.get("filler_trim") in ("conservative", "aggressive") else "default"
         # A9: genre profile's interrupt_density is a pre-resolved plain string —
         # the LOWEST-precedence fallback (llm hint > theme > genre > style

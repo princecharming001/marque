@@ -122,3 +122,47 @@ def test_interrupt_density_knob_registered():
     k = out["knobs"]["interrupt_density"]
     assert k["chosen_by"] == "default" and k["value"] == "standard"
     assert abs(sum(k["propensities"].values()) - 1.0) < 0.05
+
+
+# ------------------------------------------------- trending native sounds
+
+def test_vibe_canon_expands_to_catalog_tags():
+    import main
+    # A "motivational" plan must land on a driving/upbeat bed, not the seed pick.
+    t = main._select_music_track(vibe="motivational", seed=0)
+    assert t.get("vibe") in ("driving", "upbeat")
+    n = main._select_music_track(vibe="nostalgic", seed=0)
+    assert n.get("vibe") == "chill"
+    # Legacy exact tags keep working untouched.
+    assert main._select_music_track(vibe="chill", seed=0).get("vibe") == "chill"
+
+
+def test_trending_suggestion_covers_all_canon_vibes():
+    import main
+    from app import craft
+    for v in craft.rule_params("snd.vibe_canon")["vibes"]:
+        s = main._suggest_trending_sound(vibe=v)
+        assert s and s["title"] and s["artist"] and s["vibe"] == v, v
+        assert s["as_of"], "map must be dated — staleness is a doctrine edit"
+        assert "native" in s["how"].lower() or "Instagram app" in s["how"]
+
+
+def test_trending_suggestion_infers_from_coarse_signals():
+    import main
+    # Legacy plan vibes fold to the nearest mood.
+    assert main._suggest_trending_sound(vibe="driving")["vibe"] == "motivational"
+    assert main._suggest_trending_sound(vibe="chill")["vibe"] == "nostalgic"
+    # No vibe at all: meme dial beats energy beats tone.
+    assert main._suggest_trending_sound(meme_level="3")["vibe"] == "chaotic"
+    assert main._suggest_trending_sound(energy="high")["vibe"] == "motivational"
+    assert main._suggest_trending_sound(tone="calm")["vibe"] == "cinematic"
+    # Verified attributions (the reel's list, web-checked).
+    assert main._suggest_trending_sound(vibe="powerful")["artist"] == "The Weeknd & Playboi Carti"
+    assert main._suggest_trending_sound(vibe="nostalgic")["title"] == "snowfall"
+
+
+def test_trending_suggestion_never_raises_without_doctrine(monkeypatch):
+    import main
+    from app import craft
+    monkeypatch.setattr(craft, "rule_params", lambda *a, **k: {})
+    assert main._suggest_trending_sound(vibe="motivational") is None
