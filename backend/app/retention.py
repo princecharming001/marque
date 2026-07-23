@@ -1197,7 +1197,10 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
         if (_b.get("mode") in ("panel", "card", "smart")
                 and int(_b.get("src_in", 0)) < end_src
                 and int(_b.get("src_out", 0)) > first_kept):
-            pos_y = max(pos_y, 0.58)
+            # 0.70 sits BELOW the caption band (~0.578-0.662 at the default
+            # 0.62 anchor) — 0.58 sat exactly on the band top and the render's
+            # sticker nudge pushed it back UP into the panel (round-3 18% sliver).
+            pos_y = max(pos_y, 0.70)
             break
     hook_cfg = (theme.hook if theme is not None else {}) or {}
     # Build 54/55: when the creator EXPLICITLY picked a caption treatment on the record
@@ -1344,9 +1347,11 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
 
 # Build 54 tone-down: fewer synthesized zooms (cadence 120→150 core styles) — the owner
 # read the old density as "doesn't look good"; b-roll + real cuts carry the interrupts.
+# Ralph round-3: cadence must sit UNDER edit_lint's STATIC_WINDOW_FRAMES=150 —
+# a 150/180 cadence generates gaps the lint then flags P0 by construction.
 _INTERRUPT_CADENCE = {
-    "talking_head": 150, "green_screen": 150, "split_three": 150,
-    "broll_cutaway": 180, "faceless": 110,
+    "talking_head": 130, "green_screen": 130, "split_three": 130,
+    "broll_cutaway": 130, "faceless": 110,
     # fast_cuts / duet_split: native cadence already high enough — skip entirely.
 }
 _DENSITY_MULT = {"calm": 1.5, "standard": 1.0, "dense": 0.75}
@@ -1570,7 +1575,11 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
                     inserted += 1
                     last_type = "framing_pop"
                     return out_hi
-                it_type = "punch" if can_punch else "text_sticker"   # split failed — fall back
+                # Split failed: prefer the type that BREAKS a punch run (ralph
+                # round-3 repeated_interrupt_type: every failure degraded to
+                # punch, minting 3+ punch runs).
+                it_type = "text_sticker" if last_type == "punch" else \
+                          ("punch" if can_punch else "text_sticker")
 
         if it_type == "punch" and can_punch:
             new_overlays.append({"type": "punch_in", "src_in": src_lo, "src_out": src_hi,
@@ -1578,17 +1587,26 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
             scale_i += 1
         else:
             word_text = next((w["word"] for out, w in words_by_out if out == anchor), "")
-            if not word_text:
+            if not word_text and not can_punch:
                 return None
-            # B3: keyword-pop stickers take the theme's hook font/bg too — hardcoded
-            # "inter" fired edit_lint's mixed-fonts ERROR under any non-inter theme.
-            _hcfg = (theme.hook if theme is not None else {}) or {}
-            new_overlays.append({"type": "text_sticker", "src_in": src_lo, "src_out": src_hi,
-                                 "scale": 1.0, "text": word_text[:24],
-                                 "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0,
-                                 "color": None, "bg": _hcfg.get("sticker_bg") or "box",
-                                 "font": _hcfg.get("sticker_font") or "inter"})
-            it_type = "text_sticker"
+            if not word_text:
+                # No word for a sticker — punch instead of abandoning the gap
+                # (ralph round-3: the bare `return None` here stranded stretches
+                # and every degraded path minted 3+ punch runs).
+                new_overlays.append({"type": "punch_in", "src_in": src_lo, "src_out": src_hi,
+                                     "scale": _INTERRUPT_SCALES[scale_i % 2], "text": ""})
+                scale_i += 1
+                it_type = "punch"
+            else:
+                # B3: keyword-pop stickers take the theme's hook font/bg too — hardcoded
+                # "inter" fired edit_lint's mixed-fonts ERROR under any non-inter theme.
+                _hcfg = (theme.hook if theme is not None else {}) or {}
+                new_overlays.append({"type": "text_sticker", "src_in": src_lo, "src_out": src_hi,
+                                     "scale": 1.0, "text": word_text[:24],
+                                     "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0,
+                                     "color": None, "bg": _hcfg.get("sticker_bg") or "box",
+                                     "font": _hcfg.get("sticker_font") or "inter"})
+                it_type = "text_sticker"
         inserted += 1
         last_type = it_type
         return out_hi
@@ -1616,6 +1634,7 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
             gap_cadence = max(_INTERRUPT_CADENCE_FLOOR, round(rng.uniform(*_INTERRUPT_JITTER_S) * 30))
         else:
             gap_cadence = cadence
+        gap_cadence = min(gap_cadence, 130)      # never above the 150f lint bar (w/ margin)
         next_cut = next((p for p in cut_points if p > last_event_out), total_out)
         next_occ = next(((a, b) for a, b in occupied if b > last_event_out), None)
         if next_occ is not None and next_occ[0] <= last_event_out + gap_cadence:

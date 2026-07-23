@@ -7885,7 +7885,10 @@ async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> d
             f"false AND fails subject_match — we add our own text. DIRECTION/STATE "
             f"matters: turning heat UP does not match a cue about turning it DOWN; "
             f"an empty pan does not match adding an ingredient.\n"
-            f"Step 5 — score 0-100. Wrong subject caps the score at 20 regardless of "
+            f"Step 5 — direction_ok: when the cue implies a direction or state "
+            f"change (up/down, on/off, adding/removing, opening/closing), does the "
+            f"frame show THAT direction? true when the cue implies none.\n"
+            f"Step 6 — score 0-100. Wrong subject caps the score at 20 regardless of "
             f"beauty. Correct subject but generic stock caps at 60. Correct AND "
             f"engaging scores 70-100."},
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
@@ -7895,11 +7898,13 @@ async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> d
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False,
-                "required": ["shows", "subject_match", "closeup", "engaging", "score"],
+                "required": ["shows", "subject_match", "closeup", "engaging",
+                             "direction_ok", "score"],
                 "properties": {"shows": {"type": "string"},
                                "subject_match": {"type": "boolean"},
                                "closeup": {"type": "boolean"},
                                "engaging": {"type": "boolean"},
+                               "direction_ok": {"type": "boolean"},
                                "score": {"type": "integer"}}}}}}
     try:
         client = _get_anthropic_client()
@@ -7935,6 +7940,10 @@ async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None
             continue
         any_answered = True
         if not s.get("subject_match"):
+            continue
+        if s.get("direction_ok") is False:
+            # Round-3: a dog going UP passed for a 'descending' cue — the
+            # direction verdict is its own hard gate.
             continue
         # Ralph round-1: correct-but-generic stock scored AT the 60 cap and cleared
         # the floor via the closeup/engaging bonuses ('typing on laptop' for
@@ -8481,7 +8490,11 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
                                 "why": "card cap reached — visual beat instead"})
                 continue
-            s_out = max(s_out, s_in + 45)              # card read-time floor
+            # Read-time floor (BBC 0.3s/word, Netflix 20cps) — the retention
+            # pass's reading-hold clamp ran BEFORE resolve, so cards created
+            # here must enforce it themselves (ralph round-3 reading_rate P0s).
+            _need_f = max(45, round(len(txt.split()) * 0.3 * 30), round(len(txt) / 20 * 30))
+            s_out = max(s_out, s_in + _need_f)
             fallback_cards.append({"src_in": s_in, "src_out": s_out, "text": txt})
             log.append({"need": need, "cue": cue, "tier": "card",
                         "action": "text_card", "why": "concept beats take designed cards"})

@@ -76,7 +76,8 @@ def _overlay_out_span(overlay: dict, index) -> tuple[int, int] | None:
     return (a, (b if b is not None else a) + 1)
 
 
-def _event_points(edl: dict, seg_events: list[dict], index) -> list[int]:
+def _event_points(edl: dict, seg_events: list[dict], index,
+                  include_ends: bool = False) -> list[int]:
     """Every OUTPUT frame where something visually changes: a cut boundary (a new kept
     sub-range begins, skipping the very first — that's the video's own start, not a
     cut), every overlay/broll window's start, and every transition's midpoint."""
@@ -85,6 +86,13 @@ def _event_points(edl: dict, seg_events: list[dict], index) -> list[int]:
         span = _overlay_out_span(o, index)
         if span:
             points.append(span[0])
+            if include_ends:
+                # Ralph round-3: an overlay/b-roll LEAVING the screen is a
+                # visual change too — counting only starts made a 90f title +
+                # a punch at 238 read as a 238f static window even though the
+                # frame visibly changed at 90. Ends are for the static-coverage
+                # checks ONLY — the metronome check keeps onset rhythm.
+                points.append(span[1])
     segments = edl.get("segments") or []
     for t in (edl.get("transitions") or []):
         seg_idx = t.get("after_segment")
@@ -197,9 +205,15 @@ def _check_anchor_drift(edl: dict, words: list[dict]) -> list[LintFinding]:
         return min((abs(frame - c) for c in cands), default=10**9)
 
     findings: list[LintFinding] = []
+    # The hook package fires at the video's OPEN (frame-1 motion, title, open
+    # sfx) BEFORE the first word by design — drift vs the first word start is
+    # the feature, not a tell (ralph round-3: title/punch/sfx at f0 flagged).
+    first_word = word_starts[0]
     for o in (edl.get("overlays") or []):
         if o.get("type") == "text_card":
             continue   # text cards aren't word-anchored (a standalone slab, GreenScreen/duet)
+        if o.get("src_in", 0) <= first_word:
+            continue
         d = _nearest_dist(o.get("src_in", 0))
         # >45f from ANY word = a wordless span: there is nothing to anchor to,
         # and the event exists precisely to break the static_window there
@@ -210,6 +224,8 @@ def _check_anchor_drift(edl: dict, words: list[dict]) -> list[LintFinding]:
                              "detail": f"{o.get('type','overlay')} at source f{o.get('src_in')} is "
                                        f"{d}f from the nearest word start", "fix_op": None})
     for s in ((edl.get("audio") or {}).get("sfx") or []):
+        if s.get("src_in", 0) <= first_word:
+            continue
         d = _nearest_dist(s.get("src_in", 0))
         if ANCHOR_DRIFT_FRAMES < d <= 45:
             findings.append({"code": "anchor_drift", "severity": "warn", "at_out_frame": None,
@@ -454,9 +470,10 @@ def lint_edl(edl: dict, words: list[dict], *, style: str = "",
     play_order = _play_order(edl)
     index, _ = _build_output_index(segments, edl.get("drops") or [], play_order)
     points = _event_points(edl, seg_events, index)
+    change_points = _event_points(edl, seg_events, index, include_ends=True)
 
     findings: list[LintFinding] = []
-    findings += _check_static_windows(total_out, points, index)
+    findings += _check_static_windows(total_out, change_points, index)
     findings += _check_static_open(points)
     findings += _check_same_framing_adjacent(seg_events)
     findings += _check_metronomic(points)

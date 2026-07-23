@@ -99,8 +99,27 @@ def lint_findings(edl: dict, words: list[dict], style: str,
 
 # ---------------------------------------------------------------- per video
 
+_TRANSIENT_RENDER_SIGNS = ("failed to fetch", "enotfound", "disk space",
+                           "econnreset", "timed out", "socket hang up")
+
+
 async def run_one_video(client: httpx.AsyncClient, base: str, video: dict,
                         vdir: Path, sem: asyncio.Semaphore) -> dict:
+    """One retry ONLY when the failure signature is render-infra transient
+    (Lambda Chrome asset-fetch/disk/DNS — round-3 lost 3 videos to a Pexels
+    fetch blip). Deterministic pipeline failures stay unretried: they ARE the
+    finding."""
+    res = await _run_one_video_once(client, base, video, vdir, sem)
+    if res.get("status") == "failed" and any(
+            s in str(res.get("error", "")).lower() for s in _TRANSIENT_RENDER_SIGNS):
+        res2 = await _run_one_video_once(client, base, video, vdir, sem)
+        res2["retried_transient"] = True
+        return res2
+    return res
+
+
+async def _run_one_video_once(client: httpx.AsyncClient, base: str, video: dict,
+                              vdir: Path, sem: asyncio.Semaphore) -> dict:
     async with sem:
         vdir.mkdir(parents=True, exist_ok=True)
         body = {"source_url": video["source_url"], "style": video.get("style", "talking_head"),
@@ -139,7 +158,9 @@ async def run_one_video(client: httpx.AsyncClient, base: str, video: dict,
         clip = (job.get("clips") or [{}])[0]
         if clip.get("status") != "ready":
             return {"id": video["id"], "job_id": job_id, "status": "failed",
-                    "error": clip.get("error") or job.get("error") or "unknown"}
+                    "error": " ".join(str(x) for x in (
+                        clip.get("error") or job.get("error") or "unknown",
+                        job.get("error_detail") or ""))}
 
         # Artifacts — download the render IMMEDIATELY (external S3 URL).
         render_url = clip.get("render_url", "")
