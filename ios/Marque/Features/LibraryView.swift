@@ -6,6 +6,19 @@ struct LibraryView: View {
     @Environment(AppStore.self) private var store
     @State private var tabIndex = 0
     private let tabs = ["Clips", "Media"]
+    // Build 60: selection state lives HERE (not in ClipsSection) so the bulk action
+    // bar can overlay the SCREEN. Attached inside the ScrollView it scrolled with the
+    // content and sat below the fold — "I can select but there's no option to post."
+    @State private var selecting = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var showBulkDelete = false
+    @State private var showBulkSchedule = false
+    @State private var showAssignNewGroup = false
+    @State private var assignNewGroupName = ""
+
+    private var selectedReadyCount: Int {
+        store.clips.filter { selectedIDs.contains($0.id) && $0.status == .ready }.count
+    }
 
     var body: some View {
         ScrollView {
@@ -18,16 +31,97 @@ struct LibraryView: View {
                 UnderlineTabBar(tabs: tabs, index: $tabIndex)
                 switch tabIndex {
                 case 1: MediaSection()
-                default: ClipsSection()
+                default: ClipsSection(selecting: $selecting, selectedIDs: $selectedIDs)
                 }
             }
             .screenPadding().padding(.vertical, Space.lg)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
+        // Screen-anchored floating bulk bar — never scrolls, never below the fold.
+        .overlay(alignment: .bottom) {
+            if selecting && tabIndex == 0 {
+                bulkBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.quick, value: selecting)
+        .onChange(of: tabIndex) { _, _ in exitSelection() }
+        .sheet(isPresented: $showBulkSchedule) {
+            BulkScheduleSheet(clipIDs: selectedIDs) { exitSelection() }
+        }
+        .alert("New group", isPresented: $showAssignNewGroup) {
+            TextField("Group name", text: $assignNewGroupName)
+            Button("Cancel", role: .cancel) { assignNewGroupName = "" }
+            Button("Create & add") {
+                let g = store.createClipGroup(assignNewGroupName)
+                assignNewGroupName = ""
+                store.assignClips(selectedIDs, toGroup: g.id)
+                exitSelection()
+            }
+        } message: { Text("The selected clips will be filed under this group.") }
+        .confirmationDialog("Delete \(selectedIDs.count) clip\(selectedIDs.count == 1 ? "" : "s")?",
+                            isPresented: $showBulkDelete, titleVisibility: .visible) {
+            Button("Delete \(selectedIDs.count)", role: .destructive) {
+                store.deleteClips(selectedIDs); exitSelection()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("This removes them and any scheduled times. It can't be undone.") }
         // H-07: a tweak that outlived its poll window (or an app relaunch mid-render)
         // resolves here instead of spinning forever locally.
         .task { store.repollRenderingClips() }
+    }
+
+    private func exitSelection() { selecting = false; selectedIDs = [] }
+
+    private var bulkBar: some View {
+        HStack(spacing: Space.lg) {
+            Text("\(selectedIDs.count) selected")
+                .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+            Spacer()
+            Menu {
+                ForEach(store.clipGroups) { g in
+                    Button { store.assignClips(selectedIDs, toGroup: g.id); exitSelection() } label: {
+                        Label(g.name, systemImage: "folder")
+                    }
+                }
+                if store.clips.contains(where: { selectedIDs.contains($0.id) && $0.groupId != nil }) {
+                    Button { store.assignClips(selectedIDs, toGroup: nil); exitSelection() } label: {
+                        Label("Remove from group", systemImage: "folder.badge.minus")
+                    }
+                }
+                Divider()
+                Button { showAssignNewGroup = true } label: { Label("New group…", systemImage: "plus") }
+            } label: { bulkIcon("folder.badge.plus", "Group", enabled: !selectedIDs.isEmpty) }
+                .disabled(selectedIDs.isEmpty)
+                .accessibilityIdentifier("library.bulk.group")
+            Button { showBulkSchedule = true } label: {
+                bulkIcon("paperplane.fill", "Post", enabled: selectedReadyCount > 0)
+            }
+            .buttonStyle(.plain).disabled(selectedReadyCount == 0)
+            .accessibilityIdentifier("library.bulk.post")
+            Button { showBulkDelete = true } label: {
+                bulkIcon("trash", "Delete", tint: Palette.critical, enabled: !selectedIDs.isEmpty)
+            }
+            .buttonStyle(.plain).disabled(selectedIDs.isEmpty)
+            .accessibilityIdentifier("library.bulk.delete")
+        }
+        .padding(.horizontal, Space.lg).padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+        .shadow(color: Palette.shadowCool.opacity(0.18), radius: 16, y: 6)
+        .padding(.horizontal, Space.md).padding(.bottom, Space.sm)
+    }
+
+    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.accent,
+                          enabled: Bool = true) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
+            Text(label).font(.system(size: 10, weight: .medium))
+        }
+        .foregroundStyle(tint)
+        .opacity(enabled ? 1 : 0.35)
+        .frame(minWidth: 44)
     }
 }
 
@@ -40,15 +134,13 @@ struct ClipsSection: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @State private var detail: Clip?
-    // build 59: group filter + multi-select bulk actions.
+    // build 59/60: group filter here; selection state lives in LibraryView so the
+    // bulk bar can anchor to the screen (see LibraryView.bulkBar).
     @State private var groupFilter: ClipGroupFilter = .all
-    @State private var selecting = false
-    @State private var selectedIDs: Set<UUID> = []
+    @Binding var selecting: Bool
+    @Binding var selectedIDs: Set<UUID>
     @State private var showNewGroup = false
     @State private var newGroupName = ""
-    @State private var showBulkDelete = false
-    @State private var showBulkSchedule = false
-    @State private var pendingAssignAfterCreate = false   // "New group…" from the assign menu
 
     private var hasFinishedClips: Bool {
         store.clips.contains { [.ready, .scheduled, .posted].contains($0.status) }
@@ -62,10 +154,6 @@ struct ClipsSection: View {
         case .group(let id):  return store.clips.filter { $0.groupId == id }
         }
     }
-    private var selectedReadyCount: Int {
-        store.clips.filter { selectedIDs.contains($0.id) && $0.status == .ready }.count
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if store.clips.isEmpty {
@@ -132,33 +220,16 @@ struct ClipsSection: View {
                 if selecting { Color.clear.frame(height: 76) }
             }
         }
-        .overlay(alignment: .bottom) { if selecting { bulkBar } }
-        .animation(Motion.quick, value: selecting)
         .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
-        .sheet(isPresented: $showBulkSchedule) {
-            BulkScheduleSheet(clipIDs: selectedIDs) { exitSelection() }
-        }
         .alert("New group", isPresented: $showNewGroup) {
             TextField("Group name", text: $newGroupName)
-            Button("Cancel", role: .cancel) { newGroupName = ""; pendingAssignAfterCreate = false }
+            Button("Cancel", role: .cancel) { newGroupName = "" }
             Button("Create") {
                 let g = store.createClipGroup(newGroupName)
                 newGroupName = ""
-                if pendingAssignAfterCreate {
-                    store.assignClips(selectedIDs, toGroup: g.id); pendingAssignAfterCreate = false
-                    exitSelection()
-                } else {
-                    groupFilter = .group(g.id)
-                }
+                groupFilter = .group(g.id)
             }
         } message: { Text("Organize clips into a collection you can filter by later.") }
-        .confirmationDialog("Delete \(selectedIDs.count) clip\(selectedIDs.count == 1 ? "" : "s")?",
-                            isPresented: $showBulkDelete, titleVisibility: .visible) {
-            Button("Delete \(selectedIDs.count)", role: .destructive) {
-                store.deleteClips(selectedIDs); exitSelection()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("This removes them and any scheduled times. It can't be undone.") }
         .onChange(of: router.pendingOpenClipId) { _, id in openPending(id) }
         .onAppear { openPending(router.pendingOpenClipId) }
     }
@@ -230,55 +301,6 @@ struct ClipsSection: View {
                 .background(Circle().fill(on ? .white : Color.black.opacity(0.28)).frame(width: 20, height: 20))
                 .padding(6)
         }
-    }
-
-    // MARK: bulk action bar
-
-    private var bulkBar: some View {
-        HStack(spacing: Space.md) {
-            Text("\(selectedIDs.count) selected")
-                .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-            Spacer()
-            Menu {
-                ForEach(store.clipGroups) { g in
-                    Button { store.assignClips(selectedIDs, toGroup: g.id); exitSelection() } label: {
-                        Label(g.name, systemImage: "folder")
-                    }
-                }
-                Button { store.assignClips(selectedIDs, toGroup: nil); exitSelection() } label: {
-                    Label("Remove from group", systemImage: "folder.badge.minus")
-                }
-                Divider()
-                Button { pendingAssignAfterCreate = true; showNewGroup = true } label: {
-                    Label("New group…", systemImage: "plus")
-                }
-            } label: { bulkIcon("folder.badge.plus", "Group") }
-                .disabled(selectedIDs.isEmpty)
-            bulkButton("calendar", "Post", enabled: selectedReadyCount > 0) { showBulkSchedule = true }
-            bulkButton("trash", "Delete", tint: Palette.critical, enabled: !selectedIDs.isEmpty) {
-                showBulkDelete = true
-            }
-        }
-        .padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
-        .frame(maxWidth: .infinity)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowCool.opacity(0.18), radius: 16, y: 6)
-        .padding(.horizontal, Space.md).padding(.bottom, Space.sm)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-
-    private func bulkButton(_ icon: String, _ label: String, tint: Color = Palette.accent,
-                            enabled: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) { bulkIcon(icon, label, tint: tint) }
-            .buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.35)
-            .accessibilityIdentifier("library.bulk.\(label.lowercased())")
-    }
-    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.accent) -> some View {
-        VStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
-            Text(label).font(.system(size: 10, weight: .medium))
-        }.foregroundStyle(tint)
     }
 
     private func onCellTap(_ c: Clip) {
@@ -1004,6 +1026,26 @@ struct BulkScheduleSheet: View {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     Text("^[\(readyCount) clip](inflect: true) will be scheduled to the same time and platforms.")
                         .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+
+                    // Build 60: preview strip — see exactly what's about to go out.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: Space.sm) {
+                            ForEach(store.clips.filter { clipIDs.contains($0.id) && $0.status == .ready }) { c in
+                                VStack(spacing: 4) {
+                                    LocalThumbnail(path: c.thumbnailPath ?? c.playbackLocalPath,
+                                                   isVideo: true, remoteImageURL: c.thumbnailURL)
+                                        .aspectRatio(9/16, contentMode: .fill)
+                                        .frame(width: 72, height: 128)
+                                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                            .strokeBorder(Palette.hairline, lineWidth: 0.5))
+                                    Text(c.title.isEmpty ? c.formatName : c.title)
+                                        .font(.system(size: 9, weight: .medium)).lineLimit(1)
+                                        .foregroundStyle(Palette.textTertiary).frame(width: 72)
+                                }
+                            }
+                        }
+                    }
 
                     SectionLabel(text: "When")
                     MarqueTimePicker(time: $date)
