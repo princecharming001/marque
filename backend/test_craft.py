@@ -336,3 +336,29 @@ def test_meme_pop_outranks_second_shutter():
                            video_type="entertainment", energy="high")
     kinds = sorted(c["kind"] for c in out["audio"]["sfx"])
     assert kinds == ["pop", "shutter"]
+
+
+# ------------------------------------------------- 57.5 one-title contract
+
+def test_plan_text_cards_dropped_for_talking_head_kept_for_react():
+    from app.edl import assemble_edl
+    plan = {"cuts": [], "text_cards": [{"frame": 120, "text": "Big claim"}],
+            "captions": True, "punch_ins": [], "music": {"wanted": False, "vibe": ""}}
+    words = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": (i + 1) * 400}
+             for i in range(30)]
+    th = assemble_edl(plan, words, "talking_head", "x", prefs={}).model_dump()
+    assert not [o for o in th["overlays"] if o["type"] == "text_card"]
+    gs = assemble_edl(plan, words, "green_screen", "x", prefs={}).model_dump()
+    assert [o for o in gs["overlays"] if o["type"] == "text_card"]
+
+
+def test_manual_text_card_op_still_works_in_talking_head():
+    from app.edl import assemble_edl, apply_edl_ops
+    words = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": (i + 1) * 400}
+             for i in range(30)]
+    edl = assemble_edl({"cuts": []}, words, "talking_head", "x", prefs={}).model_dump()
+    out, results = apply_edl_ops(
+        edl, [{"type": "add_text_card", "start_frame": 60, "end_frame": 150,
+               "text": "My card"}], words)
+    assert results[0]["applied"]
+    assert [o for o in out["overlays"] if o["type"] == "text_card"]
