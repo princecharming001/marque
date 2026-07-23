@@ -1622,6 +1622,67 @@ final class AppStore {
         }
     }
 
+    // Build 57 (owner): submitting a re-render must NOT hold the editor hostage on a
+    // spinner — the editor dismisses at submit, the Library card shows "rendering",
+    // and this STORE-owned watcher (it survives the editor view's deallocation)
+    // flips the clip when the backend finishes and posts a local notification
+    // either way. Single-flight per clip; a re-submit while one is in flight just
+    // lets the existing watcher carry on.
+    private var tweakWatchInFlight: Set<UUID> = []
+
+    func watchTweakRender(jobId: String, clipId: UUID) {
+        guard !tweakWatchInFlight.contains(clipId) else { return }
+        tweakWatchInFlight.insert(clipId)
+        Task {
+            defer { tweakWatchInFlight.remove(clipId) }
+            for _ in 0..<120 {                                   // ~10 min at 5s
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                let (maybe, http) = await backend.pollClipJobWithStatus(jobId: jobId)
+                if http == 404 || http == 410 { break }          // session gone — leave card as-is
+                guard let result = maybe, let jobClips = result["clips"] as? [[String: Any]],
+                      let mine = jobClips.first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clipId })
+                else { continue }
+                switch mine["status"] as? String ?? "" {
+                case "ready":
+                    applyTweakResult(clipId, remoteURL: mine["render_url"] as? String)
+                    if mine["last_render_failed"] as? Bool == true {
+                        notifyTweakRender("That edit couldn't render",
+                                          "Your previous cut is untouched in the Library.",
+                                          clipId: clipId, jobId: jobId)
+                    } else {
+                        notifyTweakRender("Your new cut is ready",
+                                          "The re-edit finished — it's waiting in your Library.",
+                                          clipId: clipId, jobId: jobId)
+                    }
+                    return
+                case "failed":
+                    // The backend keeps the previous render on a failed tweak — restore
+                    // the card so the Library plays the last good cut again.
+                    applyTweakResult(clipId, remoteURL: nil)
+                    notifyTweakRender("That edit couldn't render",
+                                      "Your previous cut is untouched in the Library.",
+                                      clipId: clipId, jobId: jobId)
+                    return
+                default: continue
+                }
+            }
+        }
+    }
+
+    private func notifyTweakRender(_ title: String, _ body: String, clipId: UUID, jobId: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        // Same category as record-flow readiness: PushManager.willPresent suppresses the
+        // banner in-foreground (the Library card updates live instead).
+        content.categoryIdentifier = "clips_ready"
+        content.userInfo = ["job_id": jobId]
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "marque.tweakRender.\(clipId.uuidString)",
+                                  content: content, trigger: nil))
+    }
+
     func applyTweakResult(_ clipId: UUID, remoteURL: String?) {
         if let idx = clips.firstIndex(where: { $0.id == clipId }) {
             clips[idx].status = .ready
