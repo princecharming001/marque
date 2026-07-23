@@ -6129,18 +6129,26 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
             new_dur = await _ffprobe_duration_s(out_path)
             if orig_dur is None or new_dur is None or abs(orig_dur - new_dur) > 0.1:
                 return None
-            with open(out_path, "rb") as f:
-                data = f.read()
-        base = SUPABASE_URL.rstrip("/")
-        key = f"finalized/{job_id}.mp4"
-        async with httpx.AsyncClient(timeout=60) as c:
-            up = await c.post(
-                f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
-                headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
-                         "Content-Type": "video/mp4", "x-upsert": "true"},
-                content=data)
-        if 200 <= up.status_code < 300:
-            return f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
+            # Host on the SAME S3 bucket that serves the Lambda renders — the
+            # Supabase project caps uploads at 50MB and a stream-copied 40s
+            # render is ~56MB (round-12: every finalize upload 413'd SILENTLY;
+            # the bucket's own 256MB limit was fine, the PROJECT cap wasn't).
+            _s3_key = f"finalized/{job_id}.mp4"
+            _s3_bucket = os.environ.get("REMOTION_BUCKET", "remotionlambda-useast1-f1312k4kb3")
+
+            def _s3_up() -> str | None:
+                import boto3
+                s3 = boto3.client(
+                    "s3", region_name="us-east-1",
+                    aws_access_key_id=os.environ.get("REMOTION_AWS_ACCESS_KEY_ID", ""),
+                    aws_secret_access_key=os.environ.get("REMOTION_AWS_SECRET_ACCESS_KEY", ""))
+                s3.upload_file(out_path, _s3_bucket, _s3_key,
+                               ExtraArgs={"ContentType": "video/mp4"})
+                return f"https://{_s3_bucket}.s3.us-east-1.amazonaws.com/{_s3_key}"
+            url = await asyncio.to_thread(_s3_up)
+            if url:
+                logging.warning("[audio-finalize] landed for job=%s", job_id)
+                return url
     except Exception as e:
         logging.warning("[audio-finalize] failed for job=%s: %s", job_id, e)
     return None
