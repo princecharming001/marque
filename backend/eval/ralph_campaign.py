@@ -100,7 +100,8 @@ def lint_findings(edl: dict, words: list[dict], style: str,
 # ---------------------------------------------------------------- per video
 
 _TRANSIENT_RENDER_SIGNS = ("failed to fetch", "enotfound", "disk space",
-                           "econnreset", "timed out", "socket hang up")
+                           "econnreset", "timed out", "socket hang up",
+                           "render download")
 
 
 async def run_one_video(client: httpx.AsyncClient, base: str, video: dict,

@@ -6071,7 +6071,11 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     # Runs when globally armed (AUDIO_FINALIZE) OR when this job's pre-render
     # static gain saturated the ±12dB clamp — the only path to target loudness
     # for a very quiet raw take (ralph round-1 lufs_drift).
-    _clamped = bool((_clip_jobs.get(job_id) or {}).get("_gain_clamped"))
+    _job = _clip_jobs.get(job_id) or {}
+    _gain = abs(float((((_job.get("edl") or {}).get("audio") or {}).get("gain")) or 0.0))
+    # Belt+braces: derive clamped-ness from the shipped gain too — round-5
+    # showed the flag path can be bypassed while the plan still carries ±12.
+    _clamped = bool(_job.get("_gain_clamped")) or _gain >= audio_mod.DEFAULT_CLAMP_DB
     if (not AUDIO_FINALIZE and not _clamped) or not render_url or shutil.which("ffmpeg") is None:
         return None
     if not (SUPABASE_URL and SUPABASE_KEY):
@@ -7893,7 +7897,7 @@ async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> d
             f"engaging scores 70-100."},
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                      "data": base64.b64encode(thumb).decode("ascii")}}]
-    body = {"model": HAIKU, "max_tokens": 170,
+    body = {"model": SONNET, "max_tokens": 170,   # round-5: HAIKU passed weak assets — the accept/reject gate gets the stronger judge
             "system": "You are a ruthless b-roll fact-checker with a scroll-stopper's eye. Wrong subject is worse than no clip; generic stock is barely better.",
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": {
