@@ -358,6 +358,14 @@ struct Script: Codable, Hashable, Identifiable {
 
 enum ClipStatus: String, Codable { case draft, rendering, ready, scheduled, posted, failed }
 
+/// A user-created collection clips can be filed under (e.g. "Client A", "September batch").
+/// Purely organizational — filtering only, never affects rendering or posting.
+struct ClipGroup: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var name: String
+    var createdAt: Date = Date()
+}
+
 struct Clip: Codable, Hashable, Identifiable {
     var id = UUID()
     var scriptId: UUID
@@ -419,6 +427,9 @@ struct Clip: Codable, Hashable, Identifiable {
     // Stamped when the clip FIRST becomes .ready (edit finished). Optional-with-default so old
     // persisted clips decode as nil (no timestamp shown). Drives the subtle "finished at" label.
     var finishedAt: Date? = nil
+    // The ClipGroup this clip is filed under (nil = ungrouped). Optional-with-default →
+    // Snapshot-safe on existing installs. Library-organization only.
+    var groupId: UUID? = nil
 }
 
 // UX-C1: playback gating. The library bug: LocalVideoPlayer prefers `path` over
