@@ -821,6 +821,49 @@ def strip_fillers_v2(words: list[dict], level: str = "default") -> tuple[list[di
 # compositions keeps them dumb renderers and the editorial EDL untouched for the API.
 # ---------------------------------------------------------------------------
 
+def cover_segments(segments: list[dict], s: int, e: int) -> tuple[list[dict], bool]:
+    """Ensure the source range [s, e) is inside the segment coverage — the missing half
+    of restore_range. A content cut (the AI's big flub/tangent removals) is encoded BOTH
+    as a `false_start` drop AND as a GAP between segments (segments = whole take minus the
+    content cuts). Deleting the drop alone never brings that footage back, because
+    _kept_intervals is bounded by the segments — the gap still excludes it. This grows the
+    segments so the restored range becomes kept footage.
+
+    Per missing sub-piece: extend the abutting segment (left edge grows right, or right
+    edge grows left) so no metadata/order is lost; only a truly isolated gap gets a fresh
+    1.0x segment. Never creates an overlap (contiguous src_out==next.src_in is fine and
+    _kept_intervals coalesces it). Returns (segments, changed)."""
+    if e <= s or not segments:
+        return segments, False
+    segs = sorted((dict(x) for x in segments), key=lambda s_: s_["src_in"])
+    # Missing = [s,e) minus the union of segment ranges.
+    missing: list[tuple[int, int]] = []
+    cur = s
+    for seg in segs:
+        if seg["src_out"] <= cur or seg["src_in"] >= e:
+            continue
+        if seg["src_in"] > cur:
+            missing.append((cur, min(seg["src_in"], e)))
+        cur = max(cur, seg["src_out"])
+        if cur >= e:
+            break
+    if cur < e:
+        missing.append((cur, e))
+    if not missing:
+        return segments, False
+    for ms, me in missing:
+        left = max((x for x in segs if x["src_out"] == ms), key=lambda x: x["src_out"], default=None)
+        right = min((x for x in segs if x["src_in"] == me), key=lambda x: x["src_in"], default=None)
+        if left is not None:
+            left["src_out"] = me
+        elif right is not None:
+            right["src_in"] = ms
+        else:
+            segs.append({"src_in": ms, "src_out": me, "speed": 1.0})
+        segs.sort(key=lambda x: x["src_in"])
+    return segs, True
+
+
 def _kept_intervals(segments: list[dict], drops: list[dict]) -> list[tuple[int, int]]:
     """Effective footage to keep = segments with drop ranges subtracted (source frames)."""
     drop_ranges = sorted((d["src_in"], d["src_out"]) for d in drops if d["src_out"] > d["src_in"])
@@ -1504,6 +1547,12 @@ def apply_edl_ops(edl: dict, ops: list[dict], words: list[dict] | None = None
                                 new_drops.append({**d, "src_in": e})
                     if touched:
                         edl["drops"] = sorted(new_drops, key=lambda d: d["src_in"])
+                    # A content cut is ALSO a gap between segments — restoring the drop
+                    # without re-covering the gap leaves the footage still cut (the bug
+                    # behind "I can't restore all my original footage"). Grow segments to
+                    # span [s,e]; this is what actually brings AI content cuts back.
+                    edl["segments"], grew = cover_segments(edl.get("segments") or [], s, e)
+                    if touched or grew:
                         applied = True
                     else:
                         reason = "no cuts found in that range"

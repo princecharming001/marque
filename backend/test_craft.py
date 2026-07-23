@@ -362,3 +362,59 @@ def test_manual_text_card_op_still_works_in_talking_head():
                "text": "My card"}], words)
     assert results[0]["applied"]
     assert [o for o in out["overlays"] if o["type"] == "text_card"]
+
+
+# ------------------------------------------------- 57.6 restore AI content cuts
+
+def test_restore_content_cut_regrows_segment_gap():
+    from app.edl import apply_edl_ops, _kept_intervals
+    # AI edit: a content cut [300,500) → survivors [0,300)+[500,900) with a
+    # false_start drop over the gap (exactly how assemble_edl encodes it).
+    edl = {"segments": [{"src_in": 0, "src_out": 300}, {"src_in": 500, "src_out": 900}],
+           "drops": [{"src_in": 300, "src_out": 500, "reason": "false_start"}]}
+    kept_before = _kept_intervals(edl["segments"], edl["drops"])
+    assert (300, 500) not in kept_before and sum(b - a for a, b in kept_before) == 700
+    out, res = apply_edl_ops(edl, [{"type": "restore_range",
+                                    "start_frame": 300, "end_frame": 500}])
+    assert res[0]["applied"]
+    kept = _kept_intervals(out["segments"], out["drops"])
+    # The whole take is back: 0..900 kept, no drop left over the restored range.
+    assert sum(b - a for a, b in kept) == 900
+    assert not any(d["src_in"] < 500 and d["src_out"] > 300 for d in out["drops"])
+
+
+def test_restore_filler_inside_segment_still_works():
+    from app.edl import apply_edl_ops, _kept_intervals
+    # A filler drop sits INSIDE one whole-take segment (no gap).
+    edl = {"segments": [{"src_in": 0, "src_out": 900}],
+           "drops": [{"src_in": 120, "src_out": 150, "reason": "filler"}]}
+    out, res = apply_edl_ops(edl, [{"type": "restore_range",
+                                    "start_frame": 120, "end_frame": 150}])
+    assert res[0]["applied"]
+    assert sum(b - a for a, b in _kept_intervals(out["segments"], out["drops"])) == 900
+
+
+def test_cover_segments_partial_and_isolated():
+    from app.edl import cover_segments
+    # Partial restore of a gap: only [300,400) of the [300,500) cut.
+    segs, changed = cover_segments(
+        [{"src_in": 0, "src_out": 300}, {"src_in": 500, "src_out": 900}], 300, 400)
+    assert changed
+    # Left neighbor grew to 400; the [400,500) gap remains.
+    assert {"src_in": 0, "src_out": 400} in segs
+    # Already-covered range → no change.
+    segs2, changed2 = cover_segments([{"src_in": 0, "src_out": 900}], 100, 200)
+    assert not changed2 and segs2 == [{"src_in": 0, "src_out": 900}]
+
+
+def test_restore_never_overlaps_segments():
+    from app.edl import apply_edl_ops, check_edl_invariants
+    edl = {"style": "talking_head", "format_id": "x",
+           "segments": [{"src_in": 0, "src_out": 300}, {"src_in": 500, "src_out": 900}],
+           "drops": [{"src_in": 300, "src_out": 500, "reason": "false_start"}],
+           "captions": [], "overlays": [], "broll": []}
+    out, _ = apply_edl_ops(edl, [{"type": "restore_range",
+                                  "start_frame": 300, "end_frame": 500}])
+    words = [{"word": "w", "start_ms": 0, "end_ms": 30000}]   # ~900f source extent
+    issues = check_edl_invariants(out, words)
+    assert not any("overlap" in i for i in issues), issues
