@@ -424,10 +424,10 @@ def test_restore_never_overlaps_segments():
 
 def test_broll_holds_tightened_to_research_band():
     from app.edl import _BROLL_HOLD_POLICY, _BROLL_MAX_HOLD, _BROLL_PARTIAL_MAX_HOLD
-    # Full-frame ceiling 2.0s; panel ceiling 2.5s (retention dips past ~2.5s).
-    assert _BROLL_MAX_HOLD == 60 and _BROLL_PARTIAL_MAX_HOLD == 75
+    # 57.8 middle ground: ~2.3s full / ~2.8s panel (57.7's 2.0s over-tightened).
+    assert _BROLL_MAX_HOLD == 69 and _BROLL_PARTIAL_MAX_HOLD == 84
     for need, (lo, full, partial) in _BROLL_HOLD_POLICY.items():
-        assert full <= 60 and partial <= 75, need
+        assert full <= 69 and partial <= 84, need
         assert lo >= 15                      # never below the 0.5s legibility floor
 
 
