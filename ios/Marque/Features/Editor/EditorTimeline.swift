@@ -39,6 +39,10 @@ struct EditorTimeline: View {
     // one selects that boundary; the context strip offers the dip styles.
     var selectedBoundary: Int? = nil          // source segIdx of the LEADING clip
     var onTapBoundary: (Int) -> Void = { _ in }
+    // Build 56: tap on a seam's cut marker (amber scissors — AI-trimmed footage hides
+    // there) → the Restore panel. CapCut convention: trimmed frames are hidden, not
+    // deleted; this marker makes the hidden footage discoverable.
+    var onTapCutSeam: () -> Void = {}
     // Media rolls (B-roll/C-roll…) + the "+" add-media tile at the track end.
     var selectedBroll: Int? = nil
     var onTapBroll: (Int) -> Void = { _ in }
@@ -56,7 +60,14 @@ struct EditorTimeline: View {
     @State private var pinchBasePPS: CGFloat? = nil
     // Build 54: long-press-lift clip reorder (CapCut). The lifted cell follows the finger;
     // the drop slot is derived from the cell's center against the visible strip widths.
-    @State private var reorderDrag: (segIdx: Int, translation: CGFloat)? = nil
+    // Build 56 (owner screenshot: a clip stuck floating OVER its neighbors): the reorder
+    // lift is now @GestureState, which the system resets on gesture CANCELLATION too —
+    // a plain @State only cleared in onEnded stayed lifted forever when the sequence was
+    // cancelled (scroll steal, incoming call, system gesture) — the same stranded-state
+    // class as the build-55 stranded pinch. Side effects (haptic/pause) live in
+    // .onChange(of:) at the body level, never inside .updating.
+    struct ReorderDragState: Equatable { var segIdx: Int; var translation: CGFloat }
+    @GestureState private var reorderDrag: ReorderDragState? = nil
     // Build 54: a SELECTED roll drags horizontally to move its whole window in time.
     @State private var rollDrag: (idx: Int, dx: CGFloat)? = nil
     // Live trim rubber-band: the in-flight drag's effect, applied to the selected cell's
@@ -158,6 +169,10 @@ struct EditorTimeline: View {
                 },
                 TapGesture().onEnded { pinchBasePPS = nil; onTapBackground() }))
             .sensoryFeedback(.selection, trigger: snapTick)
+            // Reorder-lift side effects, keyed off the auto-resetting gesture state.
+            .onChange(of: reorderDrag?.segIdx) { _, seg in
+                if seg != nil { snapTick += 1; player?.pause() }
+            }
         }
     }
 
@@ -187,8 +202,28 @@ struct EditorTimeline: View {
                 .buttonStyle(.plain)
                 .offset(x: x - 9, y: 23)   // re-centered for the 64pt filmstrip
                 .accessibilityIdentifier("editorPro.boundary.\(i)")
+                // Build 56: amber scissors under the diamond when AI-trimmed footage
+                // hides at this seam (a drop abuts either side). Tap → Restore panel.
+                if dropAbutsSeam(leftSrcOut: cs[i].srcOut, rightSrcIn: cs[i + 1].srcIn) {
+                    Button(action: onTapCutSeam) {
+                        Image(systemName: "scissors")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.black)
+                            .frame(width: 14, height: 14)
+                            .background(Circle().fill(Color(hex: 0xFFB020)))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: x - 7, y: 52)
+                    .accessibilityIdentifier("editorPro.cutSeam.\(i)")
+                }
             }
         }
+    }
+
+    /// True when a dropped range abuts this seam — i.e. footage the AI (or a trim)
+    /// removed sits exactly between these two clips' kept edges.
+    private func dropAbutsSeam(leftSrcOut: Int, rightSrcIn: Int) -> Bool {
+        document.drops.contains { $0.srcIn == leftSrcOut || $0.srcOut == rightSrcIn }
     }
 
     private func ruler(width: CGFloat) -> some View {
@@ -620,17 +655,17 @@ struct EditorTimeline: View {
     private func reorderGesture(segIdx: Int) -> some Gesture {
         LongPressGesture(minimumDuration: 0.35)
             .sequenced(before: DragGesture())
-            .onChanged { value in
+            .updating($reorderDrag) { value, state, _ in
                 switch value {
                 case .first(true):
-                    if reorderDrag == nil { reorderDrag = (segIdx, 0); snapTick += 1; player?.pause() }
+                    state = ReorderDragState(segIdx: segIdx, translation: 0)
                 case .second(true, let drag):
-                    reorderDrag = (segIdx, drag?.translation.width ?? 0)
+                    state = ReorderDragState(segIdx: segIdx,
+                                             translation: drag?.translation.width ?? 0)
                 default: break
                 }
             }
             .onEnded { value in
-                defer { reorderDrag = nil }
                 if case .second(true, let drag?) = value {
                     commitReorder(segIdx: segIdx, dx: drag.translation.width)
                 }

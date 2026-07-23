@@ -100,6 +100,10 @@ struct ProEditorView: View {
     // R10: filler/pause cleanup — the transcript-driven bulk-cut panel.
     @State var showCleanup = false
     @State var cleanupSkip: Set<Int> = []         // target indices the user unchecked
+    // Build 56: Restore panel — the inverse of Clean up. Lists every dropped range
+    // (AI cuts + manual trims) so over-aggressive AI cuts are auditable + reversible.
+    @State var showRestore = false
+    @State var restoreSelected: Set<Int> = []     // srcIn keys of drops picked to bring back
     // url → local file path, so the player sim can show freshly-imported media
     // before the server round-trip.
     @State var localMediaPreviews: [String: String] = [:]
@@ -284,6 +288,8 @@ struct ProEditorView: View {
                 mediaPanel
             } else if showCleanup {
                 cleanupPanel
+            } else if showRestore {
+                restorePanel
             } else {
                 transportRow                       // R10: CapCut transport strip
                 timelinePane
@@ -1750,6 +1756,7 @@ struct ProEditorView: View {
             },
             selectedBoundary: selectedBoundary,
             onTapBoundary: { leading in select(selectedBoundary == leading ? nil : .boundary(leading)) },
+            onTapCutSeam: { openRestorePanel() },
             selectedBroll: selectedBroll,
             onTapBroll: { idx in select(selectedBroll == idx ? nil : .broll(idx)) },
             onTapAddMedia: { player?.pause(); withAnimation(.easeOut(duration: 0.18)) { showMediaPanel = true } },
@@ -1914,6 +1921,8 @@ struct ProEditorView: View {
                 player?.pause(); cleanupSkip = []
                 withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
             }
+            barTile("Restore", "arrow.uturn.backward.circle", id: "editorPro.restore",
+                    dot: !(session?.draft.drops.isEmpty ?? true)) { openRestorePanel() }
             if punchInsSupported || brollSupported {
                 barTile("Effects", "sparkles", id: "editorPro.root.effects", active: rootPanel == .effects) { openRootPanel(.effects) }
             }
