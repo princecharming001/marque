@@ -101,8 +101,10 @@ async def _judge_one(client: httpx.AsyncClient, key: str, spoken: str, cue: str,
                  "reaction that lands on the wrong emotion or is pure noise is false.\n")
     else:
         step2 = (f"Step 2 — the viewer HEARS this while it is on screen: \"{spoken[:300]}\". "
-                 f"The editor's cue was: \"{cue[:120]}\". matches_speech: does the visual "
-                 "depict/support what is being SAID in this window (not merely the cue)?\n")
+                 "support the TOPIC of what is being SAID? The same subject in a "
+                 "sensible related action PASSES (seasoning the named meat during a "
+                 "line about that meat is good b-roll); only unrelated or "
+                 "contradictory subjects are false.\n")
     body = {
         "model": _JUDGE, "max_tokens": 200,
         "system": "You are a ruthless edit reviewer. A cutaway must support what is "

@@ -85,7 +85,16 @@ def lint_findings(edl: dict, words: list[dict], style: str,
     out = []
     try:
         for f in lint_edl(edl, words):
-            sev_cls = "lint_error" if f.get("severity") == "error" else "lint_warn"
+            # Taste-tier warns (a 4f anchor drift, a missing breath-hold) are
+            # not "noticeably off" — P2, not P1 (round-6: they dominated the
+            # P1 count and drowned the actionable classes).
+            _taste = {"anchor_drift", "no_breath_after_peak", "metronomic_intervals"}
+            if f.get("severity") == "error":
+                sev_cls = "lint_error"
+            elif f.get("code") in _taste:
+                sev_cls = "lint_taste"
+            else:
+                sev_cls = "lint_warn"
             fnd = finding(video, job_id, sev_cls,
                           t=(f.get("at_out_frame") or 0) / FPS,
                           evidence=f"[{f.get('code')}] {f.get('detail', '')}",

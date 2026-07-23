@@ -1352,8 +1352,8 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
 # Ralph round-3: cadence must sit UNDER edit_lint's STATIC_WINDOW_FRAMES=150 —
 # a 150/180 cadence generates gaps the lint then flags P0 by construction.
 _INTERRUPT_CADENCE = {
-    "talking_head": 130, "green_screen": 130, "split_three": 130,
-    "broll_cutaway": 130, "faceless": 110,
+    "talking_head": 115, "green_screen": 115, "split_three": 115,
+    "broll_cutaway": 115, "faceless": 110,
     # fast_cuts / duet_split: native cadence already high enough — skip entirely.
 }
 _DENSITY_MULT = {"calm": 1.5, "standard": 1.0, "dense": 0.75}
@@ -1636,7 +1636,9 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
             gap_cadence = max(_INTERRUPT_CADENCE_FLOOR, round(rng.uniform(*_INTERRUPT_JITTER_S) * 30))
         else:
             gap_cadence = cadence
-        gap_cadence = min(gap_cadence, 130)      # never above the 150f lint bar (w/ margin)
+        # Margin under the 150f lint bar (round-6: 152f gaps) — the ceiling
+        # itself is jittered so clamped draws don't pile up metronomically.
+        gap_cadence = min(gap_cadence, 85 + (rng.randint(0, 30) if rng is not None else 30))
         next_cut = next((p for p in cut_points if p > last_event_out), total_out)
         next_occ = next(((a, b) for a, b in occupied if b > last_event_out), None)
         if next_occ is not None and next_occ[0] <= last_event_out + gap_cadence:
@@ -2107,6 +2109,31 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     # the BBC 0.3s/word / Netflix 20cps read-time the lint enforces). Plain
     # deterministic clamp — only ever EXTENDS a hold, never shrinks.
     edl = _enforce_reading_holds(edl)
+    # FINAL framing-delta enforcement: interrupts' framing pops run AFTER
+    # plan_framing and can mint fresh <8% adjacent pairs (round-6: 1% at a cut
+    # the earlier in-pass enforcement had already cleared).
+    edl = _enforce_framing_deltas(edl)
+    return edl
+
+
+def _enforce_framing_deltas(edl: dict) -> dict:
+    segments = edl.get("segments") or []
+    ladder = [1.0, _FRAMING_SCALES["mid"], _FRAMING_SCALES["close"]]
+    prev = None
+    for seg_i in _play_order(edl):
+        if seg_i >= len(segments):
+            continue
+        seg = segments[seg_i]
+        cur = float(seg.get("tx_scale") or 1.0)
+        if prev is not None and abs(cur - prev) < 0.08:
+            far = [s for s in ladder if abs(s - prev) >= 0.08]
+            if far:
+                cur = min(far, key=lambda s: abs(s - cur))
+                seg["tx_scale"] = cur
+                if cur == 1.0:
+                    seg["tx_x"] = 0.0
+                    seg["tx_y"] = 0.0
+        prev = cur
     return edl
 
 

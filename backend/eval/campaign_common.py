@@ -45,6 +45,7 @@ CLASS_SEVERITY: dict[str, str] = {
     # lint carry-through (edit_lint severities mapped by the runner)
     "lint_error": "P0",
     "lint_warn": "P1",
+    "lint_taste": "P2",
     # invariants
     "hook_late": "P1",
     "caption_coverage": "P0",
