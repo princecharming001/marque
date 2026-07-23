@@ -1224,6 +1224,12 @@ _PUNCH_STYLES = {"talking_head", "duet_split", "green_screen", "broll_cutaway", 
 # BrollCutaway) — the literal-need fallback ("a text card beats a wrong clip") was previously
 # invisible on exactly the styles that use b-roll, so those cues silently vanished.
 _TEXTCARD_STYLES = {"green_screen", "duet_split", "talking_head", "broll_cutaway"}
+# Build 57.5 (owner): mid-video PLAN-authored title cards read as bolted-on in the
+# talking-head family — the only automatic text block there is now the opening
+# hook title (place_hook_overlay). React formats keep plan cards (the pull-quote
+# IS the format). Manual add_text_card ops keep the wider _TEXTCARD_STYLES gate:
+# an explicit creator card is intent, not clutter.
+_PLAN_TEXTCARD_STYLES = {"green_screen", "duet_split"}
 _MIN_DURATION_FRAMES = 60   # never let trims/cuts leave less than ~2s of footage
 
 
@@ -2636,7 +2642,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 scale = max(_PUNCH_SCALE_MIN, min(_PUNCH_SCALE_MAX, float(p.get("scale") or 1.06)))
                 overlays.append({"type": "punch_in", "src_in": cl[0], "src_out": cl[1],
                                  "scale": scale, "text": ""})
-    if style in _TEXTCARD_STYLES:
+    if style in _PLAN_TEXTCARD_STYLES:
         for tc in (plan.get("text_cards") or []):
             f = int(tc.get("frame", 0))
             cl = _clamp_range(f, f + _TEXTCARD_HOLD, 0, total)
