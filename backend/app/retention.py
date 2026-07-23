@@ -2131,14 +2131,20 @@ def _enforce_framing_deltas(edl: dict) -> dict:
         # A segment re-appearing later in play order (reorder/split) must NOT
         # be re-bumped: mutating it rewrites its earlier occurrence too and
         # can mint the very 0% pair this pass exists to kill (round-8).
-        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.085                 and seg_i not in visited:
+        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.085:
             far = [s for s in ladder if abs(s - prev) / max(prev, 0.01) >= 0.085]
-            if far:
+            if far and seg_i not in visited:
                 cur = min(far, key=lambda s: abs(s - cur))
                 seg["tx_scale"] = cur
                 if cur == 1.0:
                     seg["tx_x"] = 0.0
                     seg["tx_y"] = 0.0
+            elif far:
+                # Round-10: a re-appearing segment can't be re-bumped (its
+                # earlier occurrence shares the object) — leave the scale but
+                # flip tx_x so the cut reads as a deliberate reframe (the
+                # matched-scale opposite-nudge pair, the classic jump-cut mask).
+                seg["tx_x"] = round(-(float(seg.get("tx_x") or 0.0) or 0.03), 3)
         visited.add(seg_i)
         prev = cur
     return edl
