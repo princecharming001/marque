@@ -169,7 +169,13 @@ enum LocalEDLEngine {
                 if dr.srcIn < a { newDrops.append(EditorDrop(srcIn: dr.srcIn, srcOut: a, reason: dr.reason)) }
                 if dr.srcOut > b { newDrops.append(EditorDrop(srcIn: b, srcOut: dr.srcOut, reason: dr.reason)) }
             }
-            guard touched else { return nil }
+            // A content cut (the AI's big removals) is a GAP between segments as well as a
+            // drop — deleting the drop alone leaves the footage cut because kept =
+            // segment ∩ (not drops). Grow segments over [a,b] so the restore is real
+            // (backend cover_segments parity). Fillers already sit inside a segment, so
+            // this is a no-op for them.
+            let grew = coverSegments(&d.segments, a, b)
+            guard touched || grew else { return nil }
             d.drops = newDrops.sorted { $0.srcIn < $1.srcIn }
         case "split_segment":
             guard let idx = op.i["index"], let at = op.i["at_frame"], d.segments.indices.contains(idx),
@@ -393,6 +399,38 @@ enum LocalEDLEngine {
     }
 
     // Sort + union-merge overlapping/adjacent drops (edl.py _coalesce_drops).
+    /// Ensure [a,b) is inside the segment coverage — the missing half of restore.
+    /// Grows the abutting segment (or inserts a fresh 1.0x one for a truly isolated
+    /// gap) so a restored content cut becomes kept footage. Never creates an overlap.
+    /// Returns true if it changed anything. Swift twin of backend cover_segments.
+    static func coverSegments(_ segments: inout [EditorSegment], _ a: Int, _ b: Int) -> Bool {
+        guard b > a, !segments.isEmpty else { return false }
+        var segs = segments.sorted { $0.srcIn < $1.srcIn }
+        // Missing = [a,b) minus the union of segment ranges.
+        var missing: [(Int, Int)] = []
+        var cur = a
+        for seg in segs {
+            if seg.srcOut <= cur || seg.srcIn >= b { continue }
+            if seg.srcIn > cur { missing.append((cur, min(seg.srcIn, b))) }
+            cur = max(cur, seg.srcOut)
+            if cur >= b { break }
+        }
+        if cur < b { missing.append((cur, b)) }
+        guard !missing.isEmpty else { return false }
+        for (ms, me) in missing {
+            if let li = segs.firstIndex(where: { $0.srcOut == ms }) {
+                segs[li].srcOut = me
+            } else if let ri = segs.firstIndex(where: { $0.srcIn == me }) {
+                segs[ri].srcIn = ms
+            } else {
+                segs.append(EditorSegment(srcIn: ms, srcOut: me, speed: 1.0))
+            }
+            segs.sort { $0.srcIn < $1.srcIn }
+        }
+        segments = segs
+        return true
+    }
+
     static func coalesce(_ drops: [EditorDrop]) -> [EditorDrop] {
         let ordered = drops.sorted { $0.srcIn < $1.srcIn }
         var out: [EditorDrop] = []
