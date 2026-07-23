@@ -1032,3 +1032,110 @@ enum TrimEdge { case leading, trailing }
 extension Array {
     subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
 }
+
+// MARK: - Build 56: Restore panel — bring back what the AI cut.
+// The inverse of cleanupPanel: Clean up proposes NEW cuts; Restore lists every
+// dropped range already on the timeline (AI filler/retake/pause cuts + manual
+// trims) so an over-aggressive cut is auditable and reversible in two taps.
+// CapCut's model (trimmed footage is hidden, not deleted; the trim handle drags
+// it back) stays available on each clip's edges — this panel is the overview.
+extension ProEditorView {
+
+    func openRestorePanel() {
+        player?.pause(); restoreSelected = []
+        withAnimation(.easeOut(duration: 0.18)) { showRestore = true }
+    }
+
+    private func restoreReasonLabel(_ reason: String) -> String {
+        switch reason.lowercased() {
+        case let r where r.contains("filler"): return "Filler words"
+        case let r where r.contains("retake") || r.contains("dupe"): return "Repeated take"
+        case let r where r.contains("pause") || r.contains("silence"): return "Long pause"
+        case let r where r.contains("trim"): return "Trimmed"
+        case "": return "AI cut"
+        default: return reason.prefix(1).capitalized + reason.dropFirst()
+        }
+    }
+
+    var restorePanel: some View {
+        let drops = (session?.draft.drops ?? []).sorted { $0.srcIn < $1.srcIn }
+        let picked = drops.filter { restoreSelected.contains($0.srcIn) }
+        let secs = Double(picked.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
+        return VStack(spacing: 0) {
+            HStack {
+                Text("Restore").font(AppFont.headline).foregroundStyle(.white)
+                Spacer()
+                Button { withAnimation(.easeOut(duration: 0.15)) { showRestore = false } } label: {
+                    Text("Done").font(AppFont.headline).foregroundStyle(Palette.accent)
+                        .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityIdentifier("editorPro.restore.done")
+            }
+            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+
+            if drops.isEmpty {
+                Spacer()
+                Text("Nothing was cut — the whole take is on the timeline.")
+                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
+                    .multilineTextAlignment(.center).padding(Space.xl)
+                Spacer()
+            } else {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(drops, id: \.srcIn) { d in
+                            let on = restoreSelected.contains(d.srcIn)
+                            let dur = Double(d.srcOut - d.srcIn) / 30.0
+                            Button {
+                                if on { restoreSelected.remove(d.srcIn) }
+                                else { restoreSelected.insert(d.srcIn) }
+                            } label: {
+                                HStack(spacing: Space.md) {
+                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(String(format: "%.1fs — %@", dur, restoreReasonLabel(d.reason)))
+                                            .font(AppFont.callout).foregroundStyle(.white)
+                                        Text(String(format: "at %d:%02d in your take",
+                                                    d.srcIn / 1800, (d.srcIn / 30) % 60))
+                                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                                    }
+                                    Spacer()
+                                    Image(systemName: "scissors")
+                                        .foregroundStyle(.white.opacity(0.3))
+                                }
+                                .padding(.horizontal, Space.lg).padding(.vertical, 10).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5).padding(.leading, Space.lg)
+                        }
+                    }.padding(.vertical, Space.sm)
+                }
+                Button { applyRestore(picked) } label: {
+                    Text(picked.isEmpty ? "Select a cut to bring back"
+                                        : String(format: "Restore %d · %.1fs", picked.count, secs))
+                        .font(AppFont.headline).foregroundStyle(Palette.night)
+                        .frame(maxWidth: .infinity).frame(height: 48)
+                        .background(picked.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
+                }.buttonStyle(.plain).disabled(picked.isEmpty).padding(Space.md)
+                    .accessibilityIdentifier("editorPro.restore.apply")
+            }
+        }
+        .frame(height: 340, alignment: .top)
+        .frame(maxWidth: .infinity)
+        .background(Palette.ink.opacity(0.6))
+        // Same accessibility-flattening contract as cleanupPanel — without an explicit
+        // container element, this id would clobber every descendant's identifier.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("editorPro.restorePanel")
+    }
+
+    func applyRestore(_ picked: [EditorDrop]) {
+        guard !picked.isEmpty else { return }
+        mutate(picked.map { WireOp.restore($0.srcIn, $0.srcOut) },
+               rejectMsg: "Couldn't bring that back.")
+        restoreSelected = []
+        bumpHaptic()
+        // Auto-dismiss once everything is back; otherwise stay for further picks.
+        if session?.draft.drops.isEmpty ?? true {
+            withAnimation(.easeOut(duration: 0.15)) { showRestore = false }
+        }
+    }
+}
