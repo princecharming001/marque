@@ -2120,6 +2120,7 @@ def _enforce_framing_deltas(edl: dict) -> dict:
     segments = edl.get("segments") or []
     ladder = [1.0, _FRAMING_SCALES["mid"], _FRAMING_SCALES["close"]]
     prev = None
+    visited: set[int] = set()
     for seg_i in _play_order(edl):
         if seg_i >= len(segments):
             continue
@@ -2127,7 +2128,10 @@ def _enforce_framing_deltas(edl: dict) -> dict:
         cur = float(seg.get("tx_scale") or 1.0)
         # RELATIVE delta — the lint divides by the previous scale (round-7:
         # an absolute-0.08 step off a 1.14 base is only 7% and still flagged).
-        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.085:
+        # A segment re-appearing later in play order (reorder/split) must NOT
+        # be re-bumped: mutating it rewrites its earlier occurrence too and
+        # can mint the very 0% pair this pass exists to kill (round-8).
+        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.085                 and seg_i not in visited:
             far = [s for s in ladder if abs(s - prev) / max(prev, 0.01) >= 0.085]
             if far:
                 cur = min(far, key=lambda s: abs(s - cur))
@@ -2135,6 +2139,7 @@ def _enforce_framing_deltas(edl: dict) -> dict:
                 if cur == 1.0:
                     seg["tx_x"] = 0.0
                     seg["tx_y"] = 0.0
+        visited.add(seg_i)
         prev = cur
     return edl
 
