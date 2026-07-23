@@ -37,7 +37,7 @@ def test_rerank_vision_pick_chooses_index(monkeypatch):
         async def get(self, url): return _Resp()
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
 
-    async def fake_pick(cue, thumbs, dossier):
+    async def fake_pick(cue, thumbs, dossier, **kw):
         return 1   # pick the second candidate
     monkeypatch.setattr(main, "_broll_vision_pick", fake_pick)
 
@@ -62,7 +62,7 @@ def test_rerank_vision_none_rejects_when_keyed(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
     monkeypatch.setattr(main.httpx, "AsyncClient", _thumb_client())
 
-    async def fake_pick(cue, thumbs, dossier):
+    async def fake_pick(cue, thumbs, dossier, **kw):
         return None
     monkeypatch.setattr(main, "_broll_vision_pick", fake_pick)
     cands = [{"link": "a.mp4", "thumb": "t1"}, {"link": "b.mp4", "thumb": "t2"}]
@@ -73,7 +73,7 @@ def test_rerank_vision_reject_returns_none(monkeypatch):
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
     monkeypatch.setattr(main.httpx, "AsyncClient", _thumb_client())
 
-    async def fake_pick(cue, thumbs, dossier):
+    async def fake_pick(cue, thumbs, dossier, **kw):
         return -1                                    # judge rejected all as unrelated
     monkeypatch.setattr(main, "_broll_vision_pick", fake_pick)
     cands = [{"link": "a.mp4", "thumb": "t1"}, {"link": "b.mp4", "thumb": "t2"}]
@@ -91,7 +91,7 @@ def test_resolve_broll_uses_rerank(monkeypatch):
 
     async def fake_cands(query, n):
         return [{"link": "one.mp4", "thumb": "t1"}, {"link": "two.mp4", "thumb": "t2"}]
-    async def fake_rerank(cue, cands, dossier):
+    async def fake_rerank(cue, cands, dossier, **kw):
         return "two.mp4"
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_cands)
     monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
@@ -141,7 +141,7 @@ def test_resolve_broll_routes_meme_to_giphy(monkeypatch):
     async def fake_pexels(query, n):
         called["pexels"] += 1
         return [{"link": "stock.mp4", "thumb": "t"}]
-    async def fake_rerank(cue, cands, dossier):
+    async def fake_rerank(cue, cands, dossier, **kw):
         return cands[0]["link"] if cands else None
     monkeypatch.setattr(main, "_fetch_giphy_candidates", fake_giphy)
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
@@ -164,7 +164,7 @@ def test_meme_unresolved_drops_not_stock_or_card(monkeypatch):
         return []                                          # …but the GIF ladder finds nothing
     async def fake_pexels(query, n):
         return [{"link": "stock.mp4", "thumb": "t"}]
-    async def fake_rerank(cue, cands, dossier):
+    async def fake_rerank(cue, cands, dossier, **kw):
         return cands[0]["link"] if cands else None
     async def empty_klipy(query, n, kind="clips"):
         return []
@@ -291,7 +291,7 @@ def test_meme_resolution_tags_klipy_source_and_caches_it(monkeypatch):
 
     async def fake_memes(query, n):
         return [{"link": "https://k/clip.mp4", "thumb": "t", "provider": "klipy"}]
-    async def fake_rerank(cue, cands, dossier):
+    async def fake_rerank(cue, cands, dossier, **kw):
         return cands[0]["link"] if cands else None
     monkeypatch.setattr(main, "_fetch_meme_candidates", fake_memes)
     monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
@@ -326,7 +326,7 @@ def test_resolve_broll_retries_simplified_query(monkeypatch):
         fetches.append(q)
         return [{"link": "clip.mp4", "thumb": "t"}]
     calls = {"n": 0}
-    async def fake_rerank(cue, cands, dossier):
+    async def fake_rerank(cue, cands, dossier, **kw):
         calls["n"] += 1
         return None if calls["n"] == 1 else "clip.mp4"   # reject first, accept the simplified retry
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_fetch)
@@ -348,7 +348,7 @@ def test_unresolved_action_degrades_to_punch_in(monkeypatch):
     main._broll_url_cache.clear(); main._broll_rejected.clear()
     async def fake_fetch(q, n):
         return [{"link": "wrong.mp4", "thumb": "t"}]
-    async def always_reject(cue, cands, dossier):
+    async def always_reject(cue, cands, dossier, **kw):
         return None
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_fetch)
     monkeypatch.setattr(main, "_rerank_broll", always_reject)

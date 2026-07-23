@@ -1017,6 +1017,18 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     captions = []
     for c in edl.get("captions") or []:
         of = map_point(c["frame"])
+        if of is None:
+            # Ralph round-1 (caption_coverage P0): a caption whose START sits a few
+            # frames inside a dead-air drop (caption timing drifts from the true
+            # word start) was dropped WHOLE, leaving the spoken word uncaptioned.
+            # Snap to the first kept frame AFTER the drop instead — the word is
+            # audibly there; the caption must be too. Only genuinely-cut words
+            # (end also inside the cut) stay dropped.
+            end_f = c.get("end_frame")
+            if end_f is not None and map_point(end_f) is not None:
+                nxt = min((s_in for s_in, _, _, _ in index if s_in > c["frame"]),
+                          default=None)
+                of = map_point(nxt) if nxt is not None else None
         if of is not None:
             cap = {"word": c["word"], "frame": of}
             # P0.7: remap the word END through the same source→output mapping. If the end
@@ -2565,6 +2577,13 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
         _rng = _seeded_rng("broll", job_seed)
         meme_count = 0
 
+        def _cc_src_to_out(f: int) -> int:
+            """Source→output estimate over the (final) content cuts. Dead-air
+            drops land downstream and only shift frames further toward 0."""
+            return max(0, f - sum(min(f, b) - a for a, b in content_cuts if a < f))
+
+        _cc_out_total = total - sum(b - a for a, b in content_cuts)
+
         def _admit_cue(b: dict, placed: list[tuple[int, int]]) -> dict | None:
             """Full per-cue b-roll grammar: mode force, meme gate, J-cut lead, per-need hold clamp
             (biased SHORT when the marked phrase far outruns a sane cutaway), hook/CTA protection,
@@ -2597,6 +2616,16 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             # word it illustrates (J-cut lead ahead of the snapped word START), exit on
             # a word END near the phrase's end — never mid-word, never past the ceiling.
             cue_f = snap_to_word(_frame_to_ms(int(rng[0])), words, "start")
+            # Ralph round-1: a cue pointing at a WORDLESS span (hallucinated range,
+            # outro exclamation) snaps to the globally nearest word — sometimes
+            # seconds away — and the window then covers speech it has nothing to
+            # do with. A snap that moves the cue >1.5s is a bad cue, not a fix.
+            # (A cue INSIDE a long word's span is fine — speech is happening there.)
+            if abs(cue_f - int(rng[0])) > 45 and not any(
+                    ms_to_frame(w.get("start_ms", 0)) <= int(rng[0])
+                    <= ms_to_frame(w.get("end_ms") or w.get("start_ms", 0))
+                    for w in words or []):
+                return None
             s_in = max(0, cue_f - _BROLL_JCUT_LEAD)                 # J-cut lead
             lo_hold, max_hold = _hold_bounds(need, mode)
             lo_out, hi_out = s_in + lo_hold, s_in + max_hold
@@ -2629,11 +2658,19 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 s_out = min(total, s_in + hold_f)
             # Full-frame hides the face — never over the hook/CTA. Panel/card keep the face (allowed
             # there) EXCEPT memes, which never sit on the hook (face-first, Part 5.2).
-            if face_style and mode == "full" and s_in < _BROLL_HOOK_PROTECT:
+            # Ralph round-1 P0: the gate MUST run in OUTPUT time. An open_on intro
+            # cut shifts every later source frame toward 0 — src_in 264 passed a
+            # source-coord check and rendered at output frame 0, full-frame over
+            # the hook. content_cuts are final here; dead-air drops (applied
+            # downstream) only shift windows EARLIER, so guard the CTA edge with
+            # the source coord too (the stricter of the two estimates).
+            o_in = _cc_src_to_out(s_in)
+            o_out = _cc_src_to_out(s_out)
+            if face_style and mode == "full" and o_in < _BROLL_HOOK_PROTECT:
                 return None
-            if face_style and mode == "full" and s_out > total - _BROLL_CTA_PROTECT:
+            if face_style and mode == "full" and o_out > _cc_out_total - _BROLL_CTA_PROTECT:
                 return None
-            if face_style and is_meme and s_in < _BROLL_HOOK_PROTECT:
+            if face_style and is_meme and o_in < _BROLL_HOOK_PROTECT:
                 return None
             # Bidirectional spacing: reject if this window comes within `eff_spacing` of ANY placed
             # one (correct for both the chronological plan pass and the gap-filling top-up).

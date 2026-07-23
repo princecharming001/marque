@@ -440,15 +440,21 @@ def test_vision_pick_prefers_engaging_over_generic(monkeypatch):
         {"shows": "hands kneading dough", "subject_match": True, "closeup": True,
          "engaging": True, "score": 60},
     ]
-    async def fake_score(cue, thumb):
+    async def fake_score(cue, thumb, spoken=""):
         return scores[int(thumb.decode())]
     monkeypatch.setattr(main, "_broll_vision_score_one", fake_score)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
     idx = asyncio.run(main._broll_vision_pick("dough", [b"0", b"1"], None))
     assert idx == 1
-    # Generic-only pool: still accepted (fail-soft last resort, floor 60 + closeup 8).
+    # Ralph round-1: generic stock AT the 60 cap shipped wrong-subject P0s
+    # ('typing on laptop' for 'copywriting'). A generic-only pool now REJECTS
+    # (-1) — the tier pass degrades to a punch-in, never a generic clip.
     idx2 = asyncio.run(main._broll_vision_pick("dough", [b"0"], None))
-    assert idx2 == 0
+    assert idx2 == -1
+    # A non-engaging clip the judge rated genuinely above the generic cap passes.
+    scores[0]["score"] = 70
+    idx3 = asyncio.run(main._broll_vision_pick("dough", [b"0"], None))
+    assert idx3 == 0
 
 
 # ------------------------------------------------- 57.9 phrase-aligned b-roll

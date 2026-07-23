@@ -101,7 +101,7 @@ def test_forced_broll_own_media_cue_falls_back_to_stock(monkeypatch):
     import asyncio, main
     monkeypatch.setattr(main, "PEXELS_KEY", "fake")
     async def _cands(q, n): return [{"url": "http://stock/clip.mp4"}]
-    async def _rerank(cue, cands, dossier): return "http://stock/clip.mp4"
+    async def _rerank(cue, cands, dossier, **kw): return "http://stock/clip.mp4"
     monkeypatch.setattr(main, "_fetch_pexels_candidates", _cands)
     monkeypatch.setattr(main, "_rerank_broll", _rerank)
     # An own_media cue with NO corpus: without force it stays unresolved (invisible); WITH

@@ -490,7 +490,7 @@ def test_density_mandate_3x_educational_floor():
 
 def test_pointwise_scorer_rejects_wrong_subject(monkeypatch):
     # The corn-puffs case: a beautiful wrong-subject candidate must NOT win.
-    async def fake_score(cue, thumb):
+    async def fake_score(cue, thumb, spoken=""):
         return ({"shows": "corn puff snacks", "subject_match": False, "closeup": True, "score": 85}
                 if thumb == b"corn" else
                 {"shows": "red chili paste jar", "subject_match": True, "closeup": True, "score": 72})
@@ -501,7 +501,7 @@ def test_pointwise_scorer_rejects_wrong_subject(monkeypatch):
 
 
 def test_pointwise_scorer_rejects_all_below_floor(monkeypatch):
-    async def fake_score(cue, thumb):
+    async def fake_score(cue, thumb, spoken=""):
         return {"shows": "office people", "subject_match": True, "closeup": False, "score": 35}
     monkeypatch.setattr(main, "_broll_vision_score_one", fake_score)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")

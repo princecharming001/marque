@@ -524,6 +524,19 @@ def _subtract_zone(rng: tuple[int, int], zone: tuple[int, int]) -> list[tuple[in
     return out
 
 
+def _snap_out_of_word(f: int, words: list[dict]) -> int:
+    """Move a segment/speed boundary out of the middle of a spoken word to the
+    word's nearest edge. No-op when `f` already sits in an inter-word gap."""
+    for w in words or []:
+        s, e = w.get("start_ms"), w.get("end_ms")
+        if s is None or e is None:
+            continue
+        sf, ef = ms_to_frame(s), ms_to_frame(e)
+        if sf < f < ef:
+            return sf if f - sf <= ef - f else ef
+    return f
+
+
 def _normalize_sentence_rates(edl: dict, words: list[dict], *,
                               emphasis_spans: list[tuple[int, int]],
                               lift_mult: float, splits_used: int, frames_saved: int,
@@ -584,6 +597,12 @@ def _normalize_sentence_rates(edl: dict, words: list[dict], *,
         if abs(sg.get("speed", 1.0) - lift_mult) > 1e-6:
             continue                        # already carries a silence-FF speed — don't stack
         a, b = max(lo, sg["src_in"]), min(hi, sg["src_out"])
+        # Ralph round-1 P0 (midword_cut): a speed boundary strictly INSIDE a
+        # spoken word is an audible tempo lurch mid-word — same defect as a
+        # mid-word splice. Snap each boundary to the nearest word edge before
+        # splitting (sentence ranges land mid-word after ms→frame rounding).
+        a = max(_snap_out_of_word(a, words), sg["src_in"])
+        b = min(_snap_out_of_word(b, words), sg["src_out"])
         if b - a < RATE_MIN_ACTION_FRAMES:
             continue
         projected_out = round((b - a) / spd)
@@ -1481,8 +1500,18 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
         `anchor_target`, provided it stays clear of `ceiling` (the next real
         event) and the guards. Returns the new `last_event_out` on success."""
         nonlocal inserted, scale_i, last_type
+        unanchored = False
         anchor = next((out for out, _ in words_by_out if out >= anchor_target), None)
-        if anchor is None or anchor >= ceiling - 6 or anchor - last_event_out < _INTERRUPT_MIN_SPACING:
+        if anchor is None or anchor >= ceiling - 6:
+            # No caption word left in this gap. Without a fallback the caller
+            # jumps last_event_out to the ceiling and the WHOLE remaining
+            # stretch goes uncovered (ralph round-1: 150-300f static_window
+            # dead zones in long single-shot kept ranges with clustered words).
+            # Punches don't need word text — drop one at the cadence point.
+            if not can_punch or ceiling - 6 - anchor_target < 18:
+                return None
+            anchor, unanchored = anchor_target, True
+        if anchor - last_event_out < _INTERRUPT_MIN_SPACING:
             return None
         hold = rng.randint(*_INTERRUPT_JITTER_HOLD_FRAMES) if jitter else _INTERRUPT_HOLD_FRAMES
         out_hi = min(anchor + hold, ceiling - 6)
@@ -1491,7 +1520,7 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
             return None
 
         it_type = "punch" if can_punch else "text_sticker"
-        if jitter:
+        if jitter and not unanchored:      # fallback anchors have no word for a sticker
             pool = [t for t in allowed_types if t != last_type] or list(allowed_types)
             it_type = rng.choice(pool)
             if it_type == "framing_pop":

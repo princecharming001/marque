@@ -34,6 +34,20 @@ def _word_frames(words: list[dict]) -> list[tuple[int, int, str]]:
     return out
 
 
+def _clamp_to_kept(plan: dict, f: int) -> int:
+    """Largest KEPT source frame <= f. The render truncates a b-roll window at
+    the first drop it crosses — grading the raw src_out charges the pipeline
+    for frames that never rendered (ralph round-1: a 46f 'overrun' whose extra
+    frames all sat inside a dead-air drop)."""
+    best = None
+    for c in plan.get("clips") or []:
+        if c["src_in"] <= f < c["src_out"]:
+            return f
+        if c["src_out"] <= f:
+            best = c["src_out"] - 1 if best is None else max(best, c["src_out"] - 1)
+    return best if best is not None else f
+
+
 def verify(edl: dict, words: list[dict], plan: dict, *,
            video: str = "", job_id: str = "") -> list[dict]:
     findings: list[dict] = []
@@ -42,7 +56,10 @@ def verify(edl: dict, words: list[dict], plan: dict, *,
 
     prev_out_end: int | None = None
     for b in broll:
-        si, so = int(b.get("src_in", 0)), int(b.get("src_out", 0))
+        si = int(b.get("src_in", 0))
+        so = _clamp_to_kept(plan, int(b.get("src_out", 0)))
+        if so <= si:
+            continue                       # window entirely inside a cut — never rendered
         need = b.get("need") or "action"
         mode = b.get("mode") or "full"
         cue = (b.get("cue_text") or b.get("cue") or "")[:40]
@@ -98,11 +115,19 @@ def verify(edl: dict, words: list[dict], plan: dict, *,
         os_, oe = src_to_out(plan, s), src_to_out(plan, max(s, e - 1))
         if os_ is not None and oe is not None and oe > os_:
             word_out.append((os_, oe, wtext))
+    # A seam where the source is CONTIGUOUS (clip k ends exactly where k+1
+    # starts) is a speed-ramp boundary, not a butt-splice — still audible
+    # mid-word (tempo lurch) but a P1, not the P0 splice class.
+    clips = plan.get("clips") or []
+    contiguous = {seam: (clips[i]["src_out"] == clips[i + 1]["src_in"])
+                  for i, seam in enumerate(seam_out_frames(plan))}
     for seam in seam_out_frames(plan):
         for os_, oe, wtext in word_out:
             if os_ + 1 <= seam <= oe - 1:
-                findings.append(finding(video, job_id, "midword_cut", t=seam / FPS,
-                    evidence=f"seam at out {seam} splits the word '{wtext}' [{os_},{oe}]",
+                cls = "midword_ramp" if contiguous.get(seam) else "midword_cut"
+                findings.append(finding(video, job_id, cls, t=seam / FPS,
+                    evidence=f"seam at out {seam} splits the word '{wtext}' [{os_},{oe}]"
+                             + (" (speed boundary, source contiguous)" if contiguous.get(seam) else ""),
                     source="broll_timing", extra={"seam": seam, "word": wtext}))
                 break
     return findings

@@ -87,14 +87,37 @@ def test_broll_timing_crowded():
     assert "broll_crowded" in _classes(bt.verify(edl, WORDS, ONE_CLIP))
 
 
-def test_broll_timing_midword_seam():
-    # Seam at out 100 lands inside a word spanning src frames 95-105.
+def test_broll_timing_midword_ramp_is_p1():
+    # Source-CONTIGUOUS seam (speed boundary) inside a word: tempo lurch → P1.
     plan = {"clips": [{"src_in": 0, "src_out": 100, "speed": 1.0},
                       {"src_in": 100, "src_out": 300, "speed": 1.0}]}
     words = [{"word": "unbelievable", "start_ms": 3167, "end_ms": 3500}]
     f = bt.verify({"broll": []}, words, plan)
+    assert _classes(f) == ["midword_ramp"]
+    assert f[0]["severity"] == "P1"
+
+
+def test_broll_timing_midword_splice_is_p0():
+    # A REAL butt-splice: the seam removes source [100,150) inside the word.
+    plan = {"clips": [{"src_in": 0, "src_out": 100, "speed": 1.0},
+                      {"src_in": 150, "src_out": 300, "speed": 1.0}]}
+    words = [{"word": "unbelievable", "start_ms": 3167, "end_ms": 5333}]
+    f = bt.verify({"broll": []}, words, plan)
     assert _classes(f) == ["midword_cut"]
     assert f[0]["severity"] == "P0"
+
+
+def test_broll_timing_exit_in_drop_not_flagged():
+    # Exit frames swallowed by a drop never render — no overrun for them.
+    plan = {"clips": [{"src_in": 0, "src_out": 120, "speed": 1.0},
+                      {"src_in": 200, "src_out": 300, "speed": 1.0}]}
+    si = 60 - bt._BROLL_JCUT_LEAD
+    edl = _broll_edl([{"src_in": si, "src_out": 180,   # 60f "past" — all in the drop
+                       "need": "evidence", "mode": "full"}])
+    words = [{"word": "gochujang", "start_ms": 2000, "end_ms": 2400},
+             {"word": "pan", "start_ms": 3667, "end_ms": 3933}]  # ends 110, 118
+    f = bt.verify(edl, words, plan)
+    assert "broll_overrun_phrase" not in _classes(f)
 
 
 # -------------------------------------------------------------- layout_qc ----

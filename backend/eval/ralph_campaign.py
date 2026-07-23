@@ -349,7 +349,8 @@ async def main_run(round_n: int, corpus_path: str, work_dir: str,
                     return 2
             except Exception:
                 print("server not reachable — start it first:\n  cd backend && SELF_REVIEW=1 "
-                      "EDIT_LINT=observe RETENTION_PASSES=all EDIT_BANDIT=0 TRANSCRIPT_CACHE=1 "
+                      "EDIT_LINT=observe RETENTION_PASSES=all,framing,hook_pack,jitter,cold_open,dropout,beat_snap "
+                      "EDIT_BANDIT=0 TRANSCRIPT_CACHE=1 "
                       ".venv/bin/uvicorn main:app --port 8000", file=sys.stderr)
                 return 2
             sem = asyncio.Semaphore(concurrency)

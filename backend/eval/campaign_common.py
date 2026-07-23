@@ -35,6 +35,8 @@ CLASS_SEVERITY: dict[str, str] = {
     "broll_generic": "P2",
     # broll_timing
     "midword_cut": "P0",
+    "midword_ramp": "P1",   # speed-only boundary inside a word (source contiguous):
+                            # a tempo lurch, audible but not a butt-splice
     "broll_timing_off": "P1",
     "broll_linger": "P1",
     "broll_clipped": "P1",

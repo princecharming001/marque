@@ -1466,3 +1466,28 @@ def test_face_aware_reframe_clamps_and_noop_without_box():
     assert abs(out["segments"][0]["tx_y"]) <= 0.08
     assert retention.face_aware_reframe(dict(edl), None) == edl          # no box → no-op
     assert retention.face_aware_reframe(dict(edl), {"x": 0.1}) == edl    # malformed → no-op
+
+
+def test_interrupts_cover_wordless_stretch_with_unanchored_punch():
+    """Ralph round-1 regression: a long kept range whose words all cluster in
+    the first seconds used to strand the whole tail (no caption-word anchor →
+    the state machine jumped last_event_out to the next cut, leaving 150-300f
+    static_window dead zones). Punches need no word text, so the scheduler now
+    falls back to an unanchored punch at the cadence point."""
+    # Words only in the first 6s of a 30s single-segment video.
+    words = _steady_words(6000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    windows = sorted((o["src_in"], o["src_out"]) for o in out["overlays"])
+    assert windows, "no interrupts placed at all"
+    # The wordless tail (6s → 30s-CTA guard) must still be covered on cadence.
+    cadence = retention._INTERRUPT_CADENCE["talking_head"]
+    tail_lo, tail_hi = ms_to_frame(6000), total_frames - retention._INTERRUPT_CTA_GUARD
+    cursor = tail_lo
+    for a, b in windows:
+        if b <= tail_lo:
+            continue
+        assert a - cursor <= cadence + retention._INTERRUPT_HOLD_FRAMES
+        cursor = b
+    assert tail_hi - cursor <= cadence + retention._INTERRUPT_HOLD_FRAMES

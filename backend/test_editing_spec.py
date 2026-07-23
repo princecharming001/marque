@@ -158,7 +158,7 @@ def test_entity_need_no_ownmedia_becomes_text_card(monkeypatch):
 def test_action_need_keeps_stock(monkeypatch):
     monkeypatch.setattr(main, "PEXELS_KEY", "k")
     async def fake_pexels(*a, **k): return [{"url": "https://x/v.mp4", "description": "driving"}]
-    async def fake_rerank(cue, cands, dossier): return "https://x/v.mp4"
+    async def fake_rerank(cue, cands, dossier, **kw): return "https://x/v.mp4"
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
     monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
     e = {"broll": [{"src_in": 200, "src_out": 260, "cue_text": "driving west",
@@ -172,7 +172,7 @@ def test_broll_no_repeat_within_15s(monkeypatch):
     monkeypatch.setattr(main, "PEXELS_KEY", "k")
     monkeypatch.setattr(main, "_broll_url_cache", {})
     async def fake_pexels(*a, **k): return [{"url": "https://x/same.mp4", "description": "d"}]
-    async def fake_rerank(cue, cands, dossier): return "https://x/same.mp4"
+    async def fake_rerank(cue, cands, dossier, **kw): return "https://x/same.mp4"
     monkeypatch.setattr(main, "_fetch_pexels_candidates", fake_pexels)
     monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
     e = {"broll": [{"src_in": 100, "src_out": 160, "cue_text": "a", "broll_query": "q1",

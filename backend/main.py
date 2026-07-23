@@ -5577,6 +5577,15 @@ async def _run_edit(job_id: str, words: list[dict]):
         _audio_block = edl_data.setdefault("audio", {"lufs_target": -14.0})
         _audio_block["gain"] = audio_mod.gain_db(
             job.get("loudness_lufs"), target_lufs=float(_audio_block.get("lufs_target") or -14.0))
+        # Ralph round-1 (lufs_drift): a very quiet raw take needs MORE than the ±12dB
+        # static-gain clamp (take-47s: −29.6 LUFS wanted +15.6, got +12 → shipped
+        # −17.6). The clamp is a safety bound on the single-band pre-render gain,
+        # not the loudness contract — flag it so the post-render 2-pass loudnorm
+        # runs for THIS job even when AUDIO_FINALIZE isn't globally armed.
+        _raw_lufs = job.get("loudness_lufs")
+        if _raw_lufs is not None and abs(
+                float(_audio_block.get("lufs_target") or -14.0) - _raw_lufs) > audio_mod.DEFAULT_CLAMP_DB:
+            job["_gain_clamped"] = True
         # Second ownership check: the b-roll resolve above also awaited.
         if not _owns_pipeline(job, my_pgen):
             return
@@ -6059,7 +6068,11 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     take, subprocess failure, or duration mismatch (the stream-copy guard)
     returns None and the caller keeps the un-normalized Lambda URL. Never
     raises; never fails the job over this."""
-    if not AUDIO_FINALIZE or not render_url or shutil.which("ffmpeg") is None:
+    # Runs when globally armed (AUDIO_FINALIZE) OR when this job's pre-render
+    # static gain saturated the ±12dB clamp — the only path to target loudness
+    # for a very quiet raw take (ralph round-1 lufs_drift).
+    _clamped = bool((_clip_jobs.get(job_id) or {}).get("_gain_clamped"))
+    if (not AUDIO_FINALIZE and not _clamped) or not render_url or shutil.which("ffmpeg") is None:
         return None
     if not (SUPABASE_URL and SUPABASE_KEY):
         return None
@@ -7830,23 +7843,33 @@ async def _generate_broll_still(query: str) -> str | None:
     return None
 
 
-async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
+async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> dict | None:
     """Score ONE candidate thumbnail against the cue, independently. Describe-then-judge:
     the model must first commit to what the image ACTUALLY shows (3-6 words) before
     scoring — the documented antidote to VLM yes-bias (POPE), which is how corn puffs
     got accepted for 'gochujang jar / bold red paste closeup' under the old listwise
-    pick. Returns {"shows", "score", "subject_match", "closeup", "engaging"} or None on failure."""
+    pick. `spoken` = the words the viewer HEARS while the insert is on screen (ralph
+    round-1: a cue-only judge passed 'sugar into a GLASS' while the speech was about
+    sugar in a PAN — the asset must support the sentence, not just contain the noun).
+    Returns {"shows", "score", "subject_match", "closeup", "engaging"} or None on failure."""
     if not ANTHROPIC_KEY or not thumb:
         return None
     import base64
+    _spoken_line = (f"Step 2b — while this is on screen the viewer HEARS: \"{spoken[:240]}\". "
+                    f"If the frame contradicts or doesn't support that sentence (wrong "
+                    f"setting, wrong activity, wrong vessel/state), subject_match is "
+                    f"false even when the cue's noun is present.\n") if spoken else ""
     content = [
         {"type": "text", "text":
             f"B-roll candidate audit for the cue: \"{cue}\".\n"
             f"Step 1 — state what this frame LITERALLY shows in 3-6 words (be concrete: "
             f"name the actual objects, not what the cue hopes for).\n"
             f"Step 2 — subject_match: does the frame depict the SPECIFIC thing the cue "
-            f"names (right object class, right state — a paste is not a snack, a montage "
-            f"is not an ingredient)? Plausible-but-wrong lookalikes are false.\n"
+            f"names in the state/action the cue describes (right object class, right "
+            f"state — a paste is not a snack, a montage is not an ingredient, sugar "
+            f"poured into a drinking glass is not sugar added to a pan)? "
+            f"Plausible-but-wrong lookalikes are false.\n"
+            + _spoken_line +
             f"Step 3 — closeup: does the main subject fill at least a third of the frame "
             f"(legible when displayed small)?\n"
             f"Step 4 — engaging: would this frame interrupt a scroll — action visibly in "
@@ -7884,16 +7907,19 @@ async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
         return None
 
 
-async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None) -> int | None:
+async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None,
+                             spoken: str = "", meta_out: dict | None = None) -> int | None:
     """v7 P0 (research: forced-choice listwise picking is a REFUTED pattern — aligned
     VLMs pick from garbage even when told they may reject, arXiv 2409.00113): score each
     candidate INDEPENDENTLY (describe-then-judge, concurrent), then take the best index
     whose score clears the floor AND whose subject genuinely matches. -1 = all rejected.
-    None on transport failure. Same signature as v1 — monkeypatched in tests."""
+    None on transport failure. Same positional signature as v1 — monkeypatched in tests.
+    When `meta_out` is a dict, the winner's {shows, score} land there (broll_log
+    observability — ralph round-1 shipped wrong-subject P0s with no scores logged)."""
     if not ANTHROPIC_KEY or len(thumbs) < 1:
         return None
     scored = await asyncio.gather(
-        *(_broll_vision_score_one(cue, t) for t in thumbs[:8]))
+        *(_broll_vision_score_one(cue, t, spoken) for t in thumbs[:8]))
     best_idx, best_score = -1, -1
     any_answered = False
     for i, s in enumerate(scored):
@@ -7902,19 +7928,28 @@ async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None
         any_answered = True
         if not s.get("subject_match"):
             continue
+        # Ralph round-1: correct-but-generic stock scored AT the 60 cap and cleared
+        # the floor via the closeup/engaging bonuses ('typing on laptop' for
+        # 'copywriting'). Generic (not engaging) survives only when its RAW score
+        # beats the generic cap — i.e. the judge genuinely rated it above generic.
+        if not s.get("engaging") and s["score"] <= 60:
+            continue
         # 57.7: engagement bias joins legibility — motion/faces/specific closeups beat
         # correct-but-generic stock at equal accuracy (viral-broll research: movement,
-        # human reaction, and specificity are the scroll-stoppers; generic stock caps
-        # at the floor via the scorer prompt, so it survives only as a last resort).
+        # human reaction, and specificity are the scroll-stoppers).
         score = s["score"] + (8 if s.get("closeup") else 0) + (6 if s.get("engaging") else 0)
         if score >= _BROLL_SCORE_FLOOR and score > best_score:
             best_idx, best_score = i, score
+            if meta_out is not None:
+                meta_out["shows"] = s.get("shows", "")
+                meta_out["score"] = s["score"]
     if not any_answered:
         return None                                # transport-dead → caller retries
     return best_idx                                # -1 when nothing clears the bar
 
 
-async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None = None) -> str | None:
+async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None = None,
+                        spoken: str = "", meta_out: dict | None = None) -> str | None:
     """Choose the best candidate link via vision re-rank. **Keyed = affirmative-pick-ONLY**: a link
     comes back only when the vision judge affirmatively picks a genuinely-relevant clip; a reject
     (-1), a transport/parse failure, or no usable thumbnails all return None so the caller can retry
@@ -7937,7 +7972,7 @@ async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None =
         return None                             # can't judge relevance → reject (caller retries/degrades)
     if not any(thumbs):
         return None
-    idx = await _broll_vision_pick(cue, thumbs, dossier)
+    idx = await _broll_vision_pick(cue, thumbs, dossier, spoken=spoken, meta_out=meta_out)
     if isinstance(idx, int) and 0 <= idx < len(candidates):
         return candidates[idx]["link"]
     return None                                 # -1 reject / None failure / out-of-range → reject
@@ -8144,6 +8179,23 @@ def _simplify_broll_query(cue_text: str) -> str:
     return " ".join(words)
 
 
+def _edl_src_to_out_est(edl: dict, f: int) -> int:
+    """Estimated OUTPUT frame for source frame `f`: subtract everything removed
+    before it (gaps between kept segments + dead-air/content drops). Hook/CTA
+    protection must operate in output time (ralph round-1 P0: an intro cut let
+    a source-coord gate pass a full-frame insert that rendered at frame 0)."""
+    spans: list[tuple[int, int]] = []
+    prev = 0
+    for a, b in sorted((s.get("src_in", 0), s.get("src_out", 0))
+                       for s in edl.get("segments") or []):
+        if a > prev:
+            spans.append((prev, a))
+        prev = max(prev, b)
+    spans += [(d.get("src_in", 0), d.get("src_out", 0)) for d in edl.get("drops") or []]
+    removed = sum(min(f, b) - a for a, b in spans if min(f, b) > a)
+    return max(0, f - removed)
+
+
 def _promote_hero_inserts(edl: dict, max_heroes: int = 2) -> None:
     """v7 hero treatment: promote the earliest 1-2 RESOLVED entity/data inserts
     (outside the hook/CTA protect zones) to full-frame takeovers with a ≥1s hold,
@@ -8152,15 +8204,16 @@ def _promote_hero_inserts(edl: dict, max_heroes: int = 2) -> None:
     from app.edl import _BROLL_HOOK_PROTECT, _BROLL_CTA_PROTECT
     items = sorted((b for b in (edl.get("broll") or [])), key=lambda b: b.get("src_in", 0))
     total = max((s.get("src_out", 0) for s in (edl.get("segments") or [])), default=0)
+    out_total = _edl_src_to_out_est(edl, total)
     heroes = 0
     for i, b in enumerate(items):
         if heroes >= max_heroes:
             break
         if b.get("need") not in ("entity", "data") or not b.get("resolved_url"):
             continue
-        if b.get("src_in", 0) < _BROLL_HOOK_PROTECT + 12:
+        if _edl_src_to_out_est(edl, b.get("src_in", 0)) < _BROLL_HOOK_PROTECT + 12:
             continue
-        if total and b.get("src_out", 0) > total - _BROLL_CTA_PROTECT:
+        if total and _edl_src_to_out_est(edl, b.get("src_out", 0)) > out_total - _BROLL_CTA_PROTECT:
             continue
         nxt = items[i + 1].get("src_in", total or 10**9) if i + 1 < len(items) else (total or 10**9)
         hold_cap = min(b.get("src_in", 0) + 30, nxt - 20,
@@ -8255,14 +8308,23 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             b["resolved_url"] = _broll_url_cache[query]
             continue
         candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
-        url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
+        # Ralph round-1: judge against the words the viewer HEARS during the window,
+        # not just the cue ('sugar into a glass' passed a cue-only judge while the
+        # speech was about sugar in a pan). Captions carry source-frame word timing.
+        _spoken = " ".join(c.get("word", "") for c in (edl.get("captions") or [])
+                           if int(b.get("src_in", 0)) - 8 <= int(c.get("frame", 0))
+                           <= int(b.get("src_out", 0)) + 8)[:240]
+        _vmeta: dict = {}
+        url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
+                                  spoken=_spoken, meta_out=_vmeta)
         # Vision REJECTED all stock (or found none). Retry ONCE with a short literal query — a
         # rewritten/cinematic phrase often matches worse than the concrete nouns of the cue.
         if not url and query not in _broll_rejected:
             simple = _simplify_broll_query(b.get("cue_text") or query)
             if simple and simple.lower() != query.lower():
                 candidates = await _fetch_pexels_candidates(simple, BROLL_CANDIDATES)
-                url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier)
+                url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
+                                          spoken=_spoken, meta_out=_vmeta)
             if not url:
                 _broll_rejected.add(query)
                 if len(_broll_rejected) > 5000:
@@ -8273,7 +8335,8 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         if not url and b.get("need") in ("entity", "data", "evidence"):
             ccands = await _fetch_commons_candidates(b.get("cue_text") or query)
             if ccands:
-                url = await _rerank_broll(b.get("cue_text") or query, ccands, dossier)
+                url = await _rerank_broll(b.get("cue_text") or query, ccands, dossier,
+                                          spoken=_spoken, meta_out=_vmeta)
                 if url:
                     b["source"] = "commons"
         # v7 P2 tier: generated still (Higgsfield Soul, or fal.ai Flux) — gated
@@ -8315,6 +8378,8 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
             _broll_url_cache[query] = url
             _cap_evict(_broll_url_cache, 10_000)
             b["resolved_url"] = url
+            if _vmeta:
+                b["_vision"] = dict(_vmeta)     # judge verdict → broll_log observability
             # A forced own_media cue that fell back to stock is now honestly a stock clip
             # (so the tier pass keeps it as a real cutaway rather than a "no real asset" card).
             if b.get("source") == "own_media":
@@ -8437,8 +8502,10 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         if u:
             seen_urls.append((u, s_in))
         kept.append(b)
+        _v = b.get("_vision") or {}
         log.append({"need": need, "cue": cue, "tier": "own_media" if is_own else "stock",
-                    "action": "broll"})
+                    "action": "broll", "shows": _v.get("shows", ""),
+                    "score": _v.get("score")})
 
     edl["broll"] = kept
     if fallback_cards or punch_fallbacks:
