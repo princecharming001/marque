@@ -846,10 +846,14 @@ extension ProEditorView {
             }
             let needsRender = resp["needs_render"] as? Bool ?? false
             if needsRender {
-                phase = .rendering; renderStartedAt = Date(); store.setClipRendering(clip.id)
-                let (ready, message) = await pollClipUntilDone(jobId: jobId)
-                guard !Task.isCancelled else { return }
-                if ready { dismiss() } else { phase = .failed(message ?? "Couldn't finish that render.") }
+                // Build 57 (owner): never hold the editor hostage on a render spinner.
+                // The Library card flips to "rendering" NOW, a store-owned watcher
+                // (survives this view) applies the result + notifies when the backend
+                // finishes, and the creator gets the app back immediately.
+                store.setClipRendering(clip.id)
+                store.watchTweakRender(jobId: jobId, clipId: clip.id)
+                bumpHaptic()
+                dismiss()
             } else {
                 dismiss()   // keyless/mock: applied in place
             }
