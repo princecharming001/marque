@@ -1755,9 +1755,21 @@ def synthesize_sfx(edl: dict, words: list[dict], *,
         if int(last.get("src_in", 0)) > mid:
             reveal_id = id(last)
     reveal_frame = None
+    # snd.sfx_lexicon diversity (owner audit): punch pops were consuming the
+    # WHOLE budget (rounds 1-15: pop 29 / hit 7 / everything else ~0) — cap
+    # them at 2 per video so typing/click/whoosh/riser/shutter can breathe.
+    _pop_candidates = sorted(o["src_in"] for o in (edl.get("overlays") or [])
+                             if o.get("type") == "punch_in")
+    for f in _pop_candidates[:2]:
+        candidates.add((f, "pop"))
+    # Full-frame cutaway ENTRANCES get the conventional whoosh (CapCut idiom) —
+    # transitions alone almost never fire in the plan path.
+    for b in (edl.get("broll") or []):
+        if (b.get("mode") or "full") == "full":
+            candidates.add((int(b.get("src_in", 0)), "whoosh"))
     for o in edl.get("overlays") or []:
         if o.get("type") == "punch_in":
-            candidates.add((o["src_in"], "pop"))
+            pass   # handled above (capped)
         elif o.get("type") == "text_card":
             if id(o) == reveal_id:
                 reveal_frame = o["src_in"]

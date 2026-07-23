@@ -10,6 +10,11 @@
       "edit_format": "talking_head_broll",
       "config": {
         "meme_intensity": 1
+      },
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
       }
     },
     {
@@ -18,7 +23,12 @@
       "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/77b36bc2-c62e-457d-98ae-4087d87c371e/procut-raw.mp4",
       "style": "talking_head",
       "edit_format": "talking_head",
-      "config": {}
+      "config": {},
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": false
+      }
     },
     {
       "id": "reel-62s",
@@ -28,6 +38,11 @@
       "edit_format": "talking_head_broll",
       "config": {
         "meme_intensity": 2
+      },
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
       }
     },
     {
@@ -38,6 +53,11 @@
       "edit_format": "talking_head_broll",
       "config": {
         "caption_style": "bold-word"
+      },
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
       }
     },
     {
@@ -46,7 +66,12 @@
       "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6bc475983bae8d6f.mp4",
       "style": "talking_head",
       "edit_format": "talking_head",
-      "config": {}
+      "config": {},
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": false
+      }
     },
     {
       "id": "reel-10s",
@@ -54,7 +79,12 @@
       "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/d74c285ee24d83a2.mp4",
       "style": "broll_cutaway",
       "edit_format": "talking_head_broll",
-      "config": {}
+      "config": {},
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
+      }
     },
     {
       "id": "take-41s-46mb",
@@ -64,6 +94,11 @@
       "edit_format": "talking_head_broll",
       "config": {
         "meme_intensity": 0
+      },
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
       }
     },
     {
@@ -74,6 +109,11 @@
       "edit_format": "talking_head_broll",
       "config": {
         "broll_mode": "panel"
+      },
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
       }
     },
     {
@@ -82,7 +122,12 @@
       "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/281ed0ab-53e0-40df-a86b-46e245e6d031/footage.mov",
       "style": "talking_head",
       "edit_format": "talking_head",
-      "config": {}
+      "config": {},
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": false
+      }
     },
     {
       "id": "take-42s",
@@ -92,6 +137,11 @@
       "edit_format": "talking_head_broll",
       "config": {
         "meme_intensity": 3
+      },
+      "toggles": {
+        "music": true,
+        "punch_ins": true,
+        "broll": true
       }
     }
   ]

@@ -856,7 +856,19 @@ def test_sfx_respects_budget_per_30s():
                for f in range(50, total_frames - 50, 40)]   # far more than 3, well-spaced
     edl = _bare_edl("talking_head", total_frames, overlays=overlays)
     out = retention.synthesize_sfx(edl, words, sfx_assets={"pop": "https://cdn/p.mp3"})
-    assert len(out["audio"]["sfx"]) == 3
+    # Owner audit (R15): punch pops are CAPPED at 2 so the wider lexicon
+    # (typing/click/whoosh/riser/shutter) can breathe — a pop-only pool
+    # now yields 2, not the full budget.
+    assert len(out["audio"]["sfx"]) == 2
+    # A mixed pool (pop + whoosh via a full-frame cutaway) fills budget 3
+    # with DIVERSE kinds.
+    edl2 = _bare_edl("talking_head", total_frames, overlays=overlays,
+                     broll=[{"src_in": 400, "src_out": 460, "cue_text": "x",
+                             "mode": "full", "resolved_url": "https://x/v.mp4"}])
+    out2 = retention.synthesize_sfx(edl2, words, sfx_assets={
+        "pop": "https://cdn/p.mp3", "whoosh": "https://cdn/w.mp3"})
+    kinds2 = [s["kind"] for s in out2["audio"]["sfx"]]
+    assert len(kinds2) == 3 and "whoosh" in kinds2
 
 
 def test_sfx_skips_last_15_frames():
