@@ -74,3 +74,7 @@ Entertainment takes only; **panel** (face stays), **short** (~1.5–2s), **≤2/
 Sources + reliability tiers: `docs/BROLL-PLACEMENT-SOURCES.md` (incl. the Part 4D audit: relevance
 > cadence, seductive-details, dual coding). Mechanics are Tier-1; cadence is a correlational prior;
 retention percentages are Tier-3 marketing, deliberately not encoded.
+
+## 57.7: cutaway ceilings 2.0s full / 2.5s panel — retention dips past 2.5s
+(Aibrify 2026; Captions.ai). Prefer motion-in-progress, faces/hands doing the
+thing, specific closeups; generic stock caps at the score floor.

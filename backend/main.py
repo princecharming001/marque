@@ -7804,7 +7804,7 @@ async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
     the model must first commit to what the image ACTUALLY shows (3-6 words) before
     scoring — the documented antidote to VLM yes-bias (POPE), which is how corn puffs
     got accepted for 'gochujang jar / bold red paste closeup' under the old listwise
-    pick. Returns {"shows", "score", "subject_match", "closeup"} or None on failure."""
+    pick. Returns {"shows", "score", "subject_match", "closeup", "engaging"} or None on failure."""
     if not ANTHROPIC_KEY or not thumb:
         return None
     import base64
@@ -7818,19 +7818,26 @@ async def _broll_vision_score_one(cue: str, thumb: bytes) -> dict | None:
             f"is not an ingredient)? Plausible-but-wrong lookalikes are false.\n"
             f"Step 3 — closeup: does the main subject fill at least a third of the frame "
             f"(legible when displayed small)?\n"
-            f"Step 4 — score 0-100 for literal depiction + legibility. Wrong subject "
-            f"caps the score at 20 regardless of beauty."},
+            f"Step 4 — engaging: would this frame interrupt a scroll — action visibly in "
+            f"progress, an expressive human face or hands DOING the thing, or a bold "
+            f"specific closeup (texture, product, screen with real content)? GENERIC "
+            f"STOCK is false: person-typing-on-laptop, city skyline, handshake, "
+            f"smiling-at-camera office scenes, abstract gradients.\n"
+            f"Step 5 — score 0-100. Wrong subject caps the score at 20 regardless of "
+            f"beauty. Correct subject but generic stock caps at 60. Correct AND "
+            f"engaging scores 70-100."},
         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
                                      "data": base64.b64encode(thumb).decode("ascii")}}]
-    body = {"model": HAIKU, "max_tokens": 150,
-            "system": "You are a ruthless b-roll fact-checker. Wrong subject is worse than no clip.",
+    body = {"model": HAIKU, "max_tokens": 170,
+            "system": "You are a ruthless b-roll fact-checker with a scroll-stopper's eye. Wrong subject is worse than no clip; generic stock is barely better.",
             "messages": [{"role": "user", "content": content}],
             "output_config": {"format": {"type": "json_schema", "schema": {
                 "type": "object", "additionalProperties": False,
-                "required": ["shows", "subject_match", "closeup", "score"],
+                "required": ["shows", "subject_match", "closeup", "engaging", "score"],
                 "properties": {"shows": {"type": "string"},
                                "subject_match": {"type": "boolean"},
                                "closeup": {"type": "boolean"},
+                               "engaging": {"type": "boolean"},
                                "score": {"type": "integer"}}}}}}
     try:
         client = _get_anthropic_client()
@@ -7864,7 +7871,11 @@ async def _broll_vision_pick(cue: str, thumbs: list[bytes], dossier: dict | None
         any_answered = True
         if not s.get("subject_match"):
             continue
-        score = s["score"] + (8 if s.get("closeup") else 0)   # legibility bias
+        # 57.7: engagement bias joins legibility — motion/faces/specific closeups beat
+        # correct-but-generic stock at equal accuracy (viral-broll research: movement,
+        # human reaction, and specificity are the scroll-stoppers; generic stock caps
+        # at the floor via the scorer prompt, so it survives only as a last resort).
+        score = s["score"] + (8 if s.get("closeup") else 0) + (6 if s.get("engaging") else 0)
         if score >= _BROLL_SCORE_FLOOR and score > best_score:
             best_idx, best_score = i, score
     if not any_answered:
