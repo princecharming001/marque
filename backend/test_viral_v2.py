@@ -255,9 +255,19 @@ def test_broll_jitter_deterministic_per_seed():
     plan = _dense_plan(10)
     a = assemble_edl(plan, w, "talking_head", "myth-buster", job_seed="job-1").model_dump()
     b = assemble_edl(plan, w, "talking_head", "myth-buster", job_seed="job-1").model_dump()
-    c = assemble_edl(plan, w, "talking_head", "myth-buster", job_seed="job-2").model_dump()
     assert a["broll"] == b["broll"], "same seed ⇒ identical EDL"
-    assert a["broll"] != c["broll"], "different seed ⇒ different jitter pattern"
+    # 57.9: phrase-covered needs are word-end aligned — their exits derive from the
+    # LANGUAGE, not a seeded jitter, so cross-seed variance is no longer promised
+    # there. GLIMPSE holds keep the seeded ±6f anti-metronome jitter; assert the
+    # seed contract on that path instead.
+    gplan = {"broll": [{"range": [200 + i * 200, 200 + i * 200 + 40], "cue": f"c{i}",
+                        "query": f"q{i}", "source": "stock", "mode": "panel",
+                        "need": "entity"} for i in range(10)]}
+    g1 = assemble_edl(gplan, w, "talking_head", "myth-buster", job_seed="job-1").model_dump()
+    g1b = assemble_edl(gplan, w, "talking_head", "myth-buster", job_seed="job-1").model_dump()
+    g2 = assemble_edl(gplan, w, "talking_head", "myth-buster", job_seed="job-2").model_dump()
+    assert g1["broll"] == g1b["broll"], "same seed ⇒ identical glimpse holds"
+    assert g1["broll"] != g2["broll"], "different seed ⇒ different glimpse jitter"
 
 
 def test_entertainment_density_beats_educational():

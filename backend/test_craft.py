@@ -449,3 +449,36 @@ def test_vision_pick_prefers_engaging_over_generic(monkeypatch):
     # Generic-only pool: still accepted (fail-soft last resort, floor 60 + closeup 8).
     idx2 = asyncio.run(main._broll_vision_pick("dough", [b"0"], None))
     assert idx2 == 0
+
+
+# ------------------------------------------------- 57.9 phrase-aligned b-roll
+
+def test_broll_exits_on_word_ends_never_mid_word():
+    from app.edl import assemble_edl, ms_to_frame
+    words = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 340}
+             for i in range(150)]
+    plan = {"broll": [{"range": [300, 360], "cue": "x", "query": "x",
+                       "source": "stock", "mode": "full", "need": "action"}]}
+    d = assemble_edl(plan, words, "talking_head", "myth-buster").model_dump()
+    assert d["broll"]
+    b = d["broll"][0]
+    # Entry: word-start-snapped minus the J-cut lead (never the LLM's raw frame).
+    starts = {ms_to_frame(w["start_ms"]) for w in words}
+    assert (b["src_in"] + 16) in starts, "entry not aligned to a word start + lead"
+    # Exit: a word end + up-to-3f breath (never mid-word), inside the legal band.
+    ends = {ms_to_frame(w["end_ms"]) for w in words}
+    assert any(b["src_out"] - k in ends for k in (0, 1, 2, 3)), "exit lands mid-word"
+
+
+def test_glimpse_stays_flash_not_phrase_stretched():
+    from app.edl import assemble_edl
+    words = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 340}
+             for i in range(150)]
+    # Entity glimpse with a short marked span must stay a sub-second flash even
+    # though word ends exist all over the panel band (no ceiling-stretching).
+    plan = {"broll": [{"range": [300, 320], "cue": "x", "query": "x",
+                       "source": "stock", "mode": "panel", "need": "entity"}]}
+    d = assemble_edl(plan, words, "talking_head", "myth-buster").model_dump()
+    assert d["broll"]
+    hold = d["broll"][0]["src_out"] - d["broll"][0]["src_in"]
+    assert hold <= 30, f"glimpse stretched to {hold}f"

@@ -2589,17 +2589,44 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                     return None
                 if mode == "full":
                     mode = "panel"
-            cue_f = int(rng[0])
+            # 57.9 (owner: "b-roll timings look weird — rethink when to appear AND when
+            # to disappear"): PHRASE-ALIGNED windows. The old math took the LLM's raw
+            # frame for entry (mid-word whenever the plan was sloppy) and exited at
+            # s_in + policy_hold — a duration disconnected from speech that routinely
+            # cut away mid-word. Real editors cut b-roll ON language: enter with the
+            # word it illustrates (J-cut lead ahead of the snapped word START), exit on
+            # a word END near the phrase's end — never mid-word, never past the ceiling.
+            cue_f = snap_to_word(_frame_to_ms(int(rng[0])), words, "start")
             s_in = max(0, cue_f - _BROLL_JCUT_LEAD)                 # J-cut lead
             lo_hold, max_hold = _hold_bounds(need, mode)
+            lo_out, hi_out = s_in + lo_hold, s_in + max_hold
             span = (int(rng[1]) - int(rng[0])) or lo_hold
-            # Realism: when the marked phrase runs more than ~2× the legal cutaway, "cover the
-            # phrase" is impossible and real editors cut back to the face mid-phrase → bias SHORT
-            # instead of pinning at max (which produced the "stays too long" monotony).
-            hold = min(max_hold, lo_hold + 15) if span > 2 * max_hold else max(lo_hold, min(max_hold, span))
-            # Jitter the hold ±6f within the legal band (deterministic; see _rng above).
-            hold = max(lo_hold, min(max_hold, hold + _rng.randint(-_BROLL_HOLD_JITTER, _BROLL_HOLD_JITTER)))
-            s_out = min(total, s_in + hold)
+            # Word ENDS inside the legal band are the honest exit points — but ONLY for
+            # the phrase-covering needs (evidence/action/concept). Glimpse grammar
+            # (entity/data/meme) is a FLASH in and out — stretching a glimpse to the
+            # nearest word end pushed it toward its ceiling and starved density.
+            ends = [] if need in ("entity", "data", "meme") else \
+                   [ms_to_frame(w["end_ms"]) for w in words
+                    if w.get("end_ms") and lo_out <= ms_to_frame(w["end_ms"]) <= hi_out]
+            if ends:
+                # Exit target: the phrase's own end — EXCEPT an impossible-to-cover
+                # phrase (> 2x the legal window), where real editors cut back to the
+                # face early, not at the ceiling (anti-monotony, pre-existing rule).
+                # The seeded ±6f wiggle picks BETWEEN neighboring legal word-end
+                # exits so two takes never share a metronomic exit pattern. +3f of
+                # breath lands the cut after the word, never on its tail.
+                bias = (lo_out + 15) if span > 2 * max_hold else max(int(rng[1]), lo_out)
+                bias += _rng.randint(-_BROLL_HOLD_JITTER, _BROLL_HOLD_JITTER)
+                s_out = min(total, min(ends, key=lambda e: abs(e - bias)) + 3, hi_out)
+            else:
+                # Glimpse flash / sparse stretch: span-clamped hold with the seeded
+                # ±6f jitter — back-to-back flashes at identical lengths read
+                # metronomic. The long-phrase short-bias applies here too.
+                hold_f = min(max_hold, lo_hold + 15) if span > 2 * max_hold \
+                    else max(lo_hold, min(max_hold, span))
+                hold_f = max(lo_hold, min(max_hold,
+                                          hold_f + _rng.randint(-_BROLL_HOLD_JITTER, _BROLL_HOLD_JITTER)))
+                s_out = min(total, s_in + hold_f)
             # Full-frame hides the face — never over the hook/CTA. Panel/card keep the face (allowed
             # there) EXCEPT memes, which never sit on the hook (face-first, Part 5.2).
             if face_style and mode == "full" and s_in < _BROLL_HOOK_PROTECT:
@@ -2613,6 +2640,7 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             # Per-cue jitter (−15..+30f, floor 30f) so the gap pattern never reads metronomic.
             # v4: sub-second glimpses get HALF spacing (floor 20f) — a flash doesn't fatigue,
             # and "name three things, see three things" needs back-to-back windows.
+            hold = s_out - s_in            # realized window (57.9: word-end-aligned)
             eff_spacing = max(30, spacing + _rng.randint(*_BROLL_SPACING_JITTER))
             if hold <= _BROLL_GLIMPSE_HOLD_MAX:
                 eff_spacing = max(20, eff_spacing // 2)
