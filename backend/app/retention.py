@@ -2125,8 +2125,10 @@ def _enforce_framing_deltas(edl: dict) -> dict:
             continue
         seg = segments[seg_i]
         cur = float(seg.get("tx_scale") or 1.0)
-        if prev is not None and abs(cur - prev) < 0.08:
-            far = [s for s in ladder if abs(s - prev) >= 0.08]
+        # RELATIVE delta — the lint divides by the previous scale (round-7:
+        # an absolute-0.08 step off a 1.14 base is only 7% and still flagged).
+        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.085:
+            far = [s for s in ladder if abs(s - prev) / max(prev, 0.01) >= 0.085]
             if far:
                 cur = min(far, key=lambda s: abs(s - cur))
                 seg["tx_scale"] = cur

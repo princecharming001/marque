@@ -6076,6 +6076,8 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
     # Belt+braces: derive clamped-ness from the shipped gain too — round-5
     # showed the flag path can be bypassed while the plan still carries ±12.
     _clamped = bool(_job.get("_gain_clamped")) or _gain >= audio_mod.DEFAULT_CLAMP_DB
+    logging.warning("[audio-finalize] gate job=%s clamped=%s gain=%.1f armed=%s",
+                    job_id, _clamped, _gain, AUDIO_FINALIZE)
     if (not AUDIO_FINALIZE and not _clamped) or not render_url or shutil.which("ffmpeg") is None:
         return None
     if not (SUPABASE_URL and SUPABASE_KEY):
@@ -6089,7 +6091,7 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
             enhanced = await _enhance_render_audio(render_url, job_id)
             if enhanced:
                 source_url = enhanced
-        logging.info("audio finalize: starting for %s (clamped=%s)", job_id, _clamped)
+        logging.warning("[audio-finalize] starting for %s (clamped=%s)", job_id, _clamped)
         p1 = await asyncio.create_subprocess_exec(
             *audio_mod.loudnorm_pass1_args(source_url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -7774,7 +7776,7 @@ async def _fetch_pexels(query: str) -> str | None:
 
 
 # v7 P0: POINTWISE scorer floor — a candidate must clear this to be usable at all.
-_BROLL_SCORE_FLOOR = 60
+_BROLL_SCORE_FLOOR = 68   # round-7: marginal stock kept passing at 60-65 — degrade to punch-ins instead
 
 # v7 P2: fal.ai Flux 1.1 Pro still generation (~$0.04/image) — the tier every
 # production tool (OpusClip/Captions/VEED) uses for niche subjects stock can't cover.
