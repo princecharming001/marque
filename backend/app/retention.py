@@ -23,6 +23,7 @@ Pass order (all implemented as of P4):
 """
 from __future__ import annotations
 import copy
+import logging
 import os
 
 from app.edl import (
@@ -72,7 +73,12 @@ def _safe_pass(name: str, edl: dict, fn, *args, **kwargs) -> dict:
     before_issues = set(check_edl_invariants(edl))
     try:
         out = fn(copy.deepcopy(edl), *args, **kwargs)
-    except Exception:
+    except Exception as e:
+        # LOG the revert — a silently-swallowed crash reads as a coverage-logic
+        # gap downstream (ralph: a TypeError in schedule_interrupts hid for 3
+        # rounds of static_window P0 triage behind this bare return).
+        logging.warning("retention pass %s crashed (%s: %s) — reverted", name,
+                        type(e).__name__, e)
         return edl
     try:
         after_issues = set(check_edl_invariants(out))
@@ -1513,9 +1519,15 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
     cut_points = sorted({out_start for _, _, out_start, _ in index} | {total_out})
     occupied = _merge_ranges(_overlay_out_windows(edl, index))
 
+    # key= is LOAD-BEARING: two words mapping to the same output frame (a short
+    # function word abutting the next inside one 30fps frame) made sorted()
+    # tie-break by comparing the word DICTS -> TypeError -> _safe_pass silently
+    # reverted the ENTIRE pass (ralph rounds 9-11: every 150-230f static_window
+    # was this crash, not a scheduling gap).
     words_by_out = sorted(
-        (_src_to_out(index, ms_to_frame(w["start_ms"])), w) for w in words
-        if _src_to_out(index, ms_to_frame(w["start_ms"])) is not None)
+        ((o, w) for w in words
+         if (o := _src_to_out(index, ms_to_frame(w["start_ms"]))) is not None),
+        key=lambda t: t[0])
 
     can_punch = style in _PUNCH_STYLES
     rng = _seeded_rng("interrupts", job_seed) if jitter else None
@@ -2131,8 +2143,12 @@ def _enforce_framing_deltas(edl: dict) -> dict:
         # A segment re-appearing later in play order (reorder/split) must NOT
         # be re-bumped: mutating it rewrites its earlier occurrence too and
         # can mint the very 0% pair this pass exists to kill (round-8).
-        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.085:
-            far = [s for s in ladder if abs(s - prev) / max(prev, 0.01) >= 0.085]
+        # EXACT lint parity (edit_lint FRAMING_DELTA_FLOOR=0.08): the earlier
+        # 0.085 margin made `far` EMPTY for prev=1.09 (1.0 is 8.26% away, 1.14
+        # only 4.6%) — the pass silently left every 1.09-adjacent violation in
+        # place (rounds 8-11's recurring 0%/5% pairs).
+        if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.08:
+            far = [s for s in ladder if abs(s - prev) / max(prev, 0.01) >= 0.0801]
             if far and seg_i not in visited:
                 cur = min(far, key=lambda s: abs(s - cur))
                 seg["tx_scale"] = cur

@@ -150,9 +150,26 @@ def parse_loudnorm_json(stderr_text: str) -> dict | None:
         return None
 
 
+def seam_declick_filter(seam_times_s: list[float]) -> str:
+    """Per-sample summed-Gaussian volume notches at splice times. A butt-splice
+    against silence is a sub-millisecond step the render's per-FRAME seam fade
+    cannot touch (33ms resolution); a ~6ms-sigma dip to 0.1x at 48kHz sits in
+    the 5-20ms pro splice band and is itself inaudible. min(1,..) guards
+    overlapping seams. Empty list -> empty string (no filter)."""
+    if not seam_times_s:
+        return ""
+    dips = "+".join(f"exp(-((t-{t:.3f})/0.006)^2)" for t in seam_times_s[:200])
+    # ffmpeg 8's volume filter evaluates once|frame only (no per-sample mode) —
+    # asetnsamples=64 shrinks audio frames to ~1.3ms @48k so the per-FRAME eval
+    # tracks the 6ms-sigma notch smoothly, and it stays channel-agnostic.
+    return (f"asetnsamples=n=64,"
+            f"volume=volume='1-0.9*min(1\\,{dips})':eval=frame")
+
+
 def loudnorm_pass2_args(url: str, measured: dict, out_path: str,
                         target_lufs: float = DEFAULT_TARGET_LUFS,
-                        polish: bool = False) -> list[str] | None:
+                        polish: bool = False,
+                        seam_times_s: list[float] | None = None) -> list[str] | None:
     """ffmpeg argv for loudnorm APPLY pass 2 — video stream-copied (duration
     stays byte-identical, so a caller can ffprobe-verify before adopting the
     output), audio re-encoded through loudnorm seeded with pass 1's measured
@@ -178,6 +195,10 @@ def loudnorm_pass2_args(url: str, measured: dict, out_path: str,
             f"offset={offset}:linear=true")
     if polish:
         filt = f"{_VOICE_POLISH_FILTER},{filt}"
+    _declick = seam_declick_filter(seam_times_s or [])
+    if _declick:
+        # Declick FIRST so loudnorm re-normalizes the cleaned audio.
+        filt = f"{_declick},{filt}"
     return ["ffmpeg", "-hide_banner", "-nostats", "-y", "-i", url,
             "-c:v", "copy", "-af", filt, out_path]
 

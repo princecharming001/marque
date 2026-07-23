@@ -5947,7 +5947,7 @@ async def _ffprobe_duration_s(src: str, timeout_s: float = 30.0) -> float | None
     if not src or shutil.which("ffprobe") is None:
         return None
     cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-          "-of", "default=noprint_wrapper=1:nokey=1", src]
+          "-of", "csv=p=0", src]   # ffmpeg 8: singular 'noprint_wrapper' is REJECTED -> empty stdout -> None (silently killed finalize/enhance/matte-qc durations)
     proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -6105,8 +6105,19 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
         with tempfile.TemporaryDirectory() as td:
             out_path = os.path.join(td, "finalized.mp4")
             # WS1: VOICE_POLISH rides the same re-encode (polish chain → loudnorm last).
+            _seams_s: list[float] = []
+            try:
+                from app.edl import build_render_plan
+                _p = build_render_plan(_job.get("edl") or {}) if _job.get("edl") else {}
+                _acc = 0
+                for _c in (_p.get("clips") or [])[:-1]:
+                    _acc += max(1, round((_c["src_out"] - _c["src_in"]) / (_c.get("speed") or 1.0)))
+                    _seams_s.append(_acc / 30.0)
+            except Exception:
+                _seams_s = []
             args2 = audio_mod.loudnorm_pass2_args(source_url, measured, out_path,
-                                                  polish=VOICE_POLISH)
+                                                  polish=VOICE_POLISH,
+                                                  seam_times_s=_seams_s)
             if not args2:
                 return None
             p2 = await asyncio.create_subprocess_exec(

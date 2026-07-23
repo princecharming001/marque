@@ -1506,3 +1506,33 @@ def test_interrupts_cover_wordless_stretch_with_unanchored_punch():
         assert a - cursor <= cadence + retention._INTERRUPT_HOLD_FRAMES
         cursor = b
     assert tail_hi - cursor <= cadence + retention._INTERRUPT_HOLD_FRAMES
+
+
+def test_enforce_framing_deltas_fixes_109_neighbors():
+    """Rounds 8-11 regression: from prev=1.09 the only legal ladder escape is
+    1.0 (8.26% relative — above the lint's 8% floor but below the old 8.5%
+    filter, which returned an empty `far` and silently left 1.09/1.09 and
+    1.09/1.14 pairs in place)."""
+    edl = {"segments": [
+        {"src_in": 0, "src_out": 100, "tx_scale": 1.0},
+        {"src_in": 100, "src_out": 200, "tx_scale": 1.09},
+        {"src_in": 200, "src_out": 300, "tx_scale": 1.09},   # 0% pair
+        {"src_in": 300, "src_out": 400, "tx_scale": 1.14},   # 4.6% pair
+    ], "drops": [], "overlays": [], "broll": []}
+    out = retention._enforce_framing_deltas(edl)
+    scales = [float(s.get("tx_scale") or 1.0) for s in out["segments"]]
+    for a, b in zip(scales, scales[1:]):
+        assert abs(a - b) / a >= 0.08, scales
+
+
+def test_interrupts_survive_same_frame_word_collision():
+    """Ralph rounds 9-11 regression: two words mapping to the same output frame
+    made sorted() compare the word dicts (TypeError) and _safe_pass silently
+    reverted the whole interrupts pass — every long static_window P0 was this."""
+    words = _steady_words(30000)
+    words.append({"word": "a", "start_ms": words[5]["start_ms"],       # same frame
+                  "end_ms": words[5]["start_ms"] + 50})
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
+    assert out["overlays"], "pass crashed/reverted — no interrupts placed"

@@ -2672,6 +2672,19 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                 return None
             if face_style and is_meme and o_in < _BROLL_HOOK_PROTECT:
                 return None
+            # Window ↔ phrase fidelity (ralph deep-build): the PLACED window must
+            # still cover ≥1 word of the phrase the cue was authored for. Snap +
+            # lead + exit math can drift a window onto later speech (recurring:
+            # a 'finished dish' visual over the 'Rate that version' outro) —
+            # a right-cue/wrong-moment insert grades as wrong-subject P0.
+            _flo = max(s_in, int(rng[0]) - 15)
+            _fhi = min(s_out, int(rng[1]) + 15)
+            if words and not any(
+                    (_flo <= ms_to_frame(w.get("start_ms", 0)) <= _fhi)
+                    or (ms_to_frame(w.get("start_ms", 0)) <= _flo
+                        <= ms_to_frame(w.get("end_ms") or w.get("start_ms", 0)))
+                    for w in words):
+                return None
             # Bidirectional spacing: reject if this window comes within `eff_spacing` of ANY placed
             # one (correct for both the chronological plan pass and the gap-filling top-up).
             # Per-cue jitter (−15..+30f, floor 30f) so the gap pattern never reads metronomic.
