@@ -23,7 +23,10 @@ from app.edl import ms_to_frame
 from eval.campaign_common import FPS, clip_out_len, finding
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-_HAIKU = "claude-haiku-4-5-20251001"
+# Round-4: HAIKU-as-judge produced harshness noise (score 15 for a hand
+# stirring gochujang under a literal gochujang line). The GRADER is the
+# arbiter of P0s — it gets the stronger model; resolve-time keeps HAIKU.
+_JUDGE = "claude-sonnet-5"
 _SEM = asyncio.Semaphore(4)
 
 
@@ -101,7 +104,7 @@ async def _judge_one(client: httpx.AsyncClient, key: str, spoken: str, cue: str,
                  f"The editor's cue was: \"{cue[:120]}\". matches_speech: does the visual "
                  "depict/support what is being SAID in this window (not merely the cue)?\n")
     body = {
-        "model": _HAIKU, "max_tokens": 200,
+        "model": _JUDGE, "max_tokens": 200,
         "system": "You are a ruthless edit reviewer. A cutaway must support what is "
                   "being SAID while it is on screen — a related-but-different subject is a miss.",
         "messages": [{"role": "user", "content": [

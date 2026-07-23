@@ -912,8 +912,10 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
     for seg_i in _play_order(edl):
         seg = segments[seg_i]
         cur = float(seg.get("tx_scale") or 1.0)
-        if _prev is not None and abs(cur - _prev) < 0.08 and \
-                _overlay_overlap_frac(seg["src_in"], seg["src_out"]) <= _FRAMING_OVERLAY_OVERLAP_GUARD:
+        # Round-4: bump punch-covered pieces too — the lint judges the CUT's
+        # delta regardless of overlays, and _clamp_combined_scale already caps
+        # the punch x tx_scale product at 1.20 (no double-zoom risk).
+        if _prev is not None and abs(cur - _prev) < 0.08:
             far = [s for s in _ladder if abs(s - _prev) >= 0.08]
             if far:
                 cur = min(far, key=lambda s: abs(s - cur))

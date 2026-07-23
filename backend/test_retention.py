@@ -1052,14 +1052,22 @@ def test_framing_respects_split_budget():
     assert len(out["segments"]) <= 1 + retention._FRAMING_SPLIT_BUDGET
 
 
-def test_framing_respects_punch_overlay_guard():
+def test_framing_under_global_punch_still_enforces_cut_deltas():
+    # Round-4 contract change: a punch overlay no longer suppresses framing
+    # deltas — a cut with identical framing reads as a glitch whether or not a
+    # punch is active (edit_lint flags it), and _clamp_combined_scale (applied
+    # at the end of apply_retention_passes) bounds punch x tx at 1.20. The
+    # STAMPING loop still skips covered pieces; only the adjacency enforcement
+    # bumps them, so adjacent pieces must now differ >= the 8% lint floor.
     words = _steady_words(60000)
     total_frames = ms_to_frame(60000)
-    # A punch_in overlay covering the ENTIRE take must protect every piece.
     edl = _bare_edl("talking_head", total_frames,
                     overlays=[{"type": "punch_in", "src_in": 0, "src_out": total_frames, "scale": 1.1, "text": ""}])
     out = retention.plan_framing(edl, words, style="talking_head", job_seed="job-a")
-    assert all(s.get("tx_scale", 1.0) == 1.0 for s in out["segments"])
+    order = retention._play_order(out)
+    scales = [float(out["segments"][i].get("tx_scale") or 1.0) for i in order]
+    for a, b in zip(scales, scales[1:]):
+        assert abs(a - b) >= 0.08
 
 
 def test_framing_output_passes_invariants():
