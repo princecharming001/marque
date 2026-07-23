@@ -1054,10 +1054,12 @@ extension ProEditorView {
         switch reason.lowercased() {
         case let r where r.contains("filler"): return "Filler words"
         case let r where r.contains("retake") || r.contains("dupe"): return "Repeated take"
-        case let r where r.contains("pause") || r.contains("silence"): return "Long pause"
+        case let r where r.contains("pause") || r.contains("silence") || r.contains("dead"): return "Long pause"
+        case let r where r.contains("false") || r.contains("flub") || r.contains("ramble")
+                      || r.contains("tangent") || r.contains("off"): return "Removed section"
         case let r where r.contains("trim"): return "Trimmed"
         case "": return "AI cut"
-        default: return reason.prefix(1).capitalized + reason.dropFirst()
+        default: return "Removed section"
         }
     }
 
