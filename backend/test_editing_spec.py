@@ -204,9 +204,9 @@ def test_broll_mode_and_need_survive_edl_roundtrip():
 def test_broll_panel_allows_longer_hold_and_hook_overlap():
     words = _sentence(["hello"] * 60, 0)
     # panel over the hook (frame 30) — allowed because the face stays visible; and it may breathe
-    # PAST the full-frame cap (60f) up to the panel ceiling (75f). 57.7: ceilings tightened
-    # (owner "linger too long" + hold research: retention dips past ~2.5s) — a 100f phrase
-    # clamps into the [30,75] action-panel band (±6f jitter stays inside it).
+    # PAST the full-frame cap (69f) up to the panel ceiling (84f). 57.8: middle-ground
+    # ceilings (57.7's 2.0s over-tightened) — a 100f phrase clamps into the [33,84]
+    # action-panel band (±6f jitter stays inside it).
     plan = {"cuts": [], "keeps": [],
             "broll": [{"range": [30, 130], "cue": "c", "query": "q", "source": "stock",
                        "need": "action", "text": "", "mode": "panel"}]}
@@ -214,7 +214,7 @@ def test_broll_panel_allows_longer_hold_and_hook_overlap():
     assert d["broll"], "panel insert rejected"
     b = d["broll"][0]
     hold = b["src_out"] - b["src_in"]
-    assert 60 < hold <= 75         # breathes past full's 60f cap, but ≤ the 2.5s panel ceiling
+    assert 69 < hold <= 84         # breathes past full's 69f cap, but ≤ the 2.8s panel ceiling
     # same range as mode "full" is rejected (hook protection)
     plan2 = {"cuts": [], "keeps": [],
              "broll": [{"range": [30, 130], "cue": "c", "query": "q", "source": "stock",
