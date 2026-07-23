@@ -2139,6 +2139,21 @@ def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) 
     order = sorted((i for i, o in enumerate(ovl)
                     if o.get("type") in ("punch_in", "text_sticker")),
                    key=lambda i: ovl[i].get("src_in", 0))
+    # Conversion guards (ralph round-14: the naive convert minted its own P0s):
+    # a sticker needs READ TIME (punch holds run 15-30f; 'All' at 5f flagged),
+    # must not sit over a panel/card/smart b-roll window (pos_y 0.3 lands inside
+    # the panel rect), and must not itself mint a 3-sticker run.
+    _broll_wins = [(b.get("src_in", 0), b.get("src_out", 0))
+                   for b in (edl.get("broll") or [])
+                   if (b.get("mode") or "full") != "full"]
+
+    def _convertible(o: dict, wtext: str) -> bool:
+        hold = o.get("src_out", 0) - o.get("src_in", 0)
+        if hold < max(15, round(len(wtext) / 20 * 30)):
+            return False
+        return not any(min(o.get("src_out", 0), b1) > max(o.get("src_in", 0), b0)
+                       for b0, b1 in _broll_wins)
+
     run: list[int] = []
     for i in order:
         if ovl[i].get("type") == "punch_in":
@@ -2149,7 +2164,7 @@ def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) 
                 wtext = next((w.get("word", "") for w in (words or [])
                               if o.get("src_in", 0) <= ms_to_frame(w.get("start_ms", 0))
                               <= o.get("src_out", o.get("src_in", 0))), "")
-                if wtext:
+                if wtext and _convertible(o, wtext):
                     ovl[mid] = {"type": "text_sticker", "src_in": o.get("src_in", 0),
                                 "src_out": o.get("src_out", 0), "scale": 1.0,
                                 "text": wtext[:24], "pos_x": 0.5, "pos_y": 0.3,
