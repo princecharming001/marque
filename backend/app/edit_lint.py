@@ -201,14 +201,17 @@ def _check_anchor_drift(edl: dict, words: list[dict]) -> list[LintFinding]:
         if o.get("type") == "text_card":
             continue   # text cards aren't word-anchored (a standalone slab, GreenScreen/duet)
         d = _nearest_dist(o.get("src_in", 0))
-        if d > ANCHOR_DRIFT_FRAMES:
+        # >45f from ANY word = a wordless span: there is nothing to anchor to,
+        # and the event exists precisely to break the static_window there
+        # (ralph round-2: coverage punches in a music-only reel flagged 20x).
+        if ANCHOR_DRIFT_FRAMES < d <= 45:
             findings.append({"code": "anchor_drift", "severity": "warn",
                              "at_out_frame": None,
                              "detail": f"{o.get('type','overlay')} at source f{o.get('src_in')} is "
                                        f"{d}f from the nearest word start", "fix_op": None})
     for s in ((edl.get("audio") or {}).get("sfx") or []):
         d = _nearest_dist(s.get("src_in", 0))
-        if d > ANCHOR_DRIFT_FRAMES:
+        if ANCHOR_DRIFT_FRAMES < d <= 45:
             findings.append({"code": "anchor_drift", "severity": "warn", "at_out_frame": None,
                              "detail": f"sfx '{s.get('kind')}' at source f{s.get('src_in')} is "
                                        f"{d}f from the nearest word start", "fix_op": None})

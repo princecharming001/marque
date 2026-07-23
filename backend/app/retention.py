@@ -900,6 +900,29 @@ def plan_framing(edl: dict, words: list[dict], *, style: str, theme=None,
             tx_x_sign *= -1
             seg["tx_y"] = -0.02 if scale >= 1.18 else 0.0
 
+    # Ralph round-2 (same_framing_adjacent P0): adjacent play-order pieces within
+    # the lint's 8% floor read as a glitch cut (a 1.08 framing-pop beside a 1.09
+    # stamped mid; guard-skipped 1.0/1.0 pairs across a real seam). Enforce a
+    # minimum step: bump the LATER piece to the nearest ladder scale >=8% away
+    # from its predecessor. Guard-skipped pieces stay untouched — their punch
+    # overlay IS the visual delta at that seam.
+    _ladder = sorted({1.0, float(scales.get("mid", _FRAMING_SCALES["mid"])),
+                      float(scales.get("close", _FRAMING_SCALES["close"]))})
+    _prev = None
+    for seg_i in _play_order(edl):
+        seg = segments[seg_i]
+        cur = float(seg.get("tx_scale") or 1.0)
+        if _prev is not None and abs(cur - _prev) < 0.08 and \
+                _overlay_overlap_frac(seg["src_in"], seg["src_out"]) <= _FRAMING_OVERLAY_OVERLAP_GUARD:
+            far = [s for s in _ladder if abs(s - _prev) >= 0.08]
+            if far:
+                cur = min(far, key=lambda s: abs(s - cur))
+                seg["tx_scale"] = cur
+                if cur == 1.0:
+                    seg["tx_x"] = 0.0
+                    seg["tx_y"] = 0.0
+        _prev = cur
+
     edl["segments"] = segments
     return edl
 
@@ -1166,6 +1189,16 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
         captions_top=caption_opts.get("position") == "top",
         hook_text=hook_text,
         caption_opts=caption_opts)
+    # Ralph round-2 (layout_collision P0): a panel/card b-roll window co-active
+    # with the title puts the text INSIDE the panel rect (panels span the top
+    # half). Relocate to the lower clear slot (same relocate doctrine as the
+    # face-aware ladder; below panel bottom 0.53, above the caption band).
+    for _b in edl.get("broll") or []:
+        if (_b.get("mode") in ("panel", "card", "smart")
+                and int(_b.get("src_in", 0)) < end_src
+                and int(_b.get("src_out", 0)) > first_kept):
+            pos_y = max(pos_y, 0.58)
+            break
     hook_cfg = (theme.hook if theme is not None else {}) or {}
     # Build 54/55: when the creator EXPLICITLY picked a caption treatment on the record
     # screen, the hook TITLE adopts the same font — one typographic voice across captions
@@ -1520,6 +1553,15 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
             return None
 
         it_type = "punch" if can_punch else "text_sticker"
+        if jitter and unanchored and last_type == "punch" \
+                and "framing_pop" in allowed_types:
+            # Consecutive coverage punches in a wordless span trip the
+            # repeated_interrupt_type lint — alternate with a framing pop
+            # (needs no word either).
+            if _insert_framing_pop(edl, src_lo, src_hi, framing_splits_left):
+                inserted += 1
+                last_type = "framing_pop"
+                return out_hi
         if jitter and not unanchored:      # fallback anchors have no word for a sticker
             pool = [t for t in allowed_types if t != last_type] or list(allowed_types)
             it_type = rng.choice(pool)
@@ -1560,9 +1602,13 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
     # A7: theme.interrupts.jitter_frames is already in FRAMES (unlike the
     # module default _INTERRUPT_JITTER_S, in seconds) — used as-is when present.
     theme_jitter_frames = (theme.interrupts.get("jitter_frames") if theme is not None else None)
-    _ITER_CAP = 4 * _INTERRUPT_MAX_PER_CLIP + len(cut_points) + len(occupied) + 4
+    _ITER_CAP = 4 * max(_INTERRUPT_MAX_PER_CLIP, total_out // 160) + len(cut_points) + len(occupied) + 4
+    # Ralph round-2 (static_window P0): a fixed per-clip cap starved long takes —
+    # a 60s reel hit the cap with a 380f dead tail. Scale with output length
+    # (~one event per 5.3s) so coverage, not the counter, is the binding limit.
+    _max_inserts = max(_INTERRUPT_MAX_PER_CLIP, total_out // 160)
     for _ in range(_ITER_CAP):
-        if last_event_out >= total_out - _INTERRUPT_CTA_GUARD or inserted >= _INTERRUPT_MAX_PER_CLIP:
+        if last_event_out >= total_out - _INTERRUPT_CTA_GUARD or inserted >= _max_inserts:
             break
         if jitter and theme_jitter_frames:
             gap_cadence = max(_INTERRUPT_CADENCE_FLOOR, rng.randint(*theme_jitter_frames))
@@ -2035,6 +2081,25 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     # pass so it catches punches added by interrupts/emphasis/hook_pack too. Deterministic,
     # never raises — a plain clamp, not a _safe_pass (it can only lower a scale).
     edl = _clamp_combined_scale(edl)
+    # FINAL: reading-rate hold floor for every text overlay (ralph round-2
+    # reading_rate P0s: title/keyword stickers and text cards holding less than
+    # the BBC 0.3s/word / Netflix 20cps read-time the lint enforces). Plain
+    # deterministic clamp — only ever EXTENDS a hold, never shrinks.
+    edl = _enforce_reading_holds(edl)
+    return edl
+
+
+def _enforce_reading_holds(edl: dict) -> dict:
+    total = max((s.get("src_out", 0) for s in edl.get("segments") or []), default=0)
+    for o in edl.get("overlays") or []:
+        if o.get("type") not in ("text_sticker", "text_card"):
+            continue
+        text = str(o.get("text") or "")
+        if not text:
+            continue
+        need = max(round(len(text.split()) * 0.3 * 30), round(len(text) / 20 * 30))
+        if 0 < o.get("src_out", 0) - o.get("src_in", 0) < need:
+            o["src_out"] = min(total, int(o.get("src_in", 0)) + need)
     return edl
 
 

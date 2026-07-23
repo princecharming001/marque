@@ -73,13 +73,20 @@ def test_repeated_interrupt_type_clean_when_alternating():
     assert "repeated_interrupt_type" not in _codes(findings, "warn")
 
 
-def test_anchor_drift_flags_overlay_far_from_any_word():
+def test_anchor_drift_flags_missable_anchor_only():
+    # Ralph round-2: drift flags only when a word WAS nearby to anchor to
+    # (4-45f band). An overlay deep in a wordless span (coverage punch) has
+    # nothing to anchor to and must NOT warn.
     words = _lint_words(n=50, step_ms=100)   # words only span source frames 0-~150
     edl = _lint_base_edl(words)
-    edl["overlays"] = [{"type": "punch_in", "src_in": 900, "src_out": 930, "scale": 1.08,
-                        "text": "", "font": "inter"}]
+    edl["overlays"] = [{"type": "punch_in", "src_in": 165, "src_out": 195, "scale": 1.08,
+                        "text": "", "font": "inter"}]   # ~15f past the last word start
     findings = lint_edl(edl, words, style="talking_head")
     assert "anchor_drift" in _codes(findings, "warn")
+    edl["overlays"] = [{"type": "punch_in", "src_in": 900, "src_out": 930, "scale": 1.08,
+                        "text": "", "font": "inter"}]   # wordless span — exempt
+    findings = lint_edl(edl, words, style="talking_head")
+    assert "anchor_drift" not in _codes(findings, "warn")
 
 
 def test_anchor_drift_clean_when_word_anchored():

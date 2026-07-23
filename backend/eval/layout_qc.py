@@ -96,7 +96,9 @@ def _sticker_rect_after_nudge(o: dict, band: tuple | None) -> tuple:
     y = min(STICKER_POS_Y_MAX, max(STICKER_POS_Y_MIN, float(o.get("pos_y") or 0.3)))
     scale = float(o.get("scale") or 1.0)
     text = str(o.get("text") or "")
-    w = min(0.9, max(0.12, len(text) * _CHAR_W_DEFAULT * 64 * scale / FRAME_W))
+    # Width cap mirrors the render's 86% maxWidth (a 0.9 estimate put x0 at
+    # 0.05 — under the 60px platform side tier — on every long title: false P1).
+    w = min(0.86, max(0.12, len(text) * _CHAR_W_DEFAULT * 64 * scale / FRAME_W))
     half_h = (64 * scale * 1.2) / 2 / FRAME_H
     if band is not None:
         bt, bb = band[1], band[3]

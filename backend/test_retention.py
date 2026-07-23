@@ -479,12 +479,19 @@ def test_interrupts_faceless_uses_text_stickers_not_punch_in():
     assert all(o["type"] == "text_sticker" for o in out["overlays"])
 
 
-def test_interrupts_cap_at_max_per_clip():
+def test_interrupts_cap_scales_with_duration():
+    # Ralph round-2: the fixed cap starved 60s takes (380f dead tails). The cap
+    # now scales ~one event per 5.3s; a 120s take may exceed the legacy 8 but
+    # stays bounded by the scaled ceiling.
     words = _steady_words(120000, step_ms=250)   # a very long, very dense take
     total_frames = ms_to_frame(120000)
     edl = _bare_edl("talking_head", total_frames)
     out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
-    assert len(out["overlays"]) <= retention._INTERRUPT_MAX_PER_CLIP
+    assert len(out["overlays"]) <= max(retention._INTERRUPT_MAX_PER_CLIP, total_frames // 160)
+    # Short take: legacy cap still binds.
+    short = _bare_edl("talking_head", ms_to_frame(30000))
+    out2 = retention.schedule_interrupts(short, _steady_words(30000), style="talking_head", hints={})
+    assert len(out2["overlays"]) <= retention._INTERRUPT_MAX_PER_CLIP
 
 
 def test_interrupts_skips_fast_cuts_and_duet_split():

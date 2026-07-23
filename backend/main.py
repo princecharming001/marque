@@ -6085,12 +6085,16 @@ async def _finalize_audio_loudness(render_url: str, job_id: str) -> str | None:
             enhanced = await _enhance_render_audio(render_url, job_id)
             if enhanced:
                 source_url = enhanced
+        logging.info("audio finalize: starting for %s (clamped=%s)", job_id, _clamped)
         p1 = await asyncio.create_subprocess_exec(
             *audio_mod.loudnorm_pass1_args(source_url),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        _, stderr1 = await asyncio.wait_for(p1.communicate(), timeout=60)
+        # 60s was too tight for pass-1 over a network mp4 (ralph round-2: the
+        # clamped-gain job silently kept its -17.8 LUFS render).
+        _, stderr1 = await asyncio.wait_for(p1.communicate(), timeout=180)
         measured = audio_mod.parse_loudnorm_json(stderr1.decode("utf-8", "ignore"))
         if not measured:
+            logging.warning("audio finalize: pass-1 unmeasurable for %s", job_id)
             return None
         with tempfile.TemporaryDirectory() as td:
             out_path = os.path.join(td, "finalized.mp4")
@@ -7876,7 +7880,11 @@ async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> d
             f"progress, an expressive human face or hands DOING the thing, or a bold "
             f"specific closeup (texture, product, screen with real content)? GENERIC "
             f"STOCK is false: person-typing-on-laptop, city skyline, handshake, "
-            f"smiling-at-camera office scenes, abstract gradients.\n"
+            f"smiling-at-camera office scenes, abstract gradients. A frame DOMINATED "
+            f"by baked-in text (title cards, caption overlays, watermark slates) is "
+            f"false AND fails subject_match — we add our own text. DIRECTION/STATE "
+            f"matters: turning heat UP does not match a cue about turning it DOWN; "
+            f"an empty pan does not match adding an ingredient.\n"
             f"Step 5 — score 0-100. Wrong subject caps the score at 20 regardless of "
             f"beauty. Correct subject but generic stock caps at 60. Correct AND "
             f"engaging scores 70-100."},
