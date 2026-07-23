@@ -4568,6 +4568,18 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
             pass
 
 
+# Opt-in (default OFF — prod behavior unchanged): cache transcripts by source_url
+# on disk so repeated edits of the SAME source (the Ralph campaign re-edits the
+# corpus every round) don't re-pay AssemblyAI ~$0.3-0.5 + ~90s per video per round.
+TRANSCRIPT_CACHE = os.environ.get("TRANSCRIPT_CACHE", "0") == "1"
+_TRANSCRIPT_CACHE_DIR = os.path.join(os.path.dirname(__file__), ".transcript_cache")
+
+
+def _transcript_cache_path(source_url: str) -> str:
+    return os.path.join(_TRANSCRIPT_CACHE_DIR,
+                        hashlib.sha1(source_url.encode()).hexdigest() + ".json")
+
+
 async def _transcribe_job(job_id: str) -> list[dict]:
     """Transcribe the job's source into word-frames (shared by the full pipeline and the
     analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights."""
@@ -4576,12 +4588,31 @@ async def _transcribe_job(job_id: str) -> list[dict]:
     for c in job["clips"]:
         c["status"] = "transcribing"
     await _validate_source_url(job["source_url"])
+    if TRANSCRIPT_CACHE:
+        cp = _transcript_cache_path(job["source_url"])
+        try:
+            with open(cp) as fh:
+                cached = json.load(fh)
+            job["words"] = cached["words"]
+            job["_auto_highlights"] = cached.get("auto_highlights")
+            logging.info("transcript cache HIT for %s", job_id)
+            return cached["words"]
+        except (OSError, ValueError, KeyError):
+            pass
     transcript_id = await _submit_transcription(job["source_url"])
     if not transcript_id:
         raise PipelineError("transcribe_submit_failed", "AssemblyAI rejected the submission", "transcribe")
     transcript = await _poll_transcription(transcript_id)
     job["words"] = transcript["words"]     # kept for conversational tweaks + the edit brief
     job["_auto_highlights"] = transcript.get("auto_highlights")
+    if TRANSCRIPT_CACHE and transcript["words"]:
+        try:
+            os.makedirs(_TRANSCRIPT_CACHE_DIR, exist_ok=True)
+            with open(_transcript_cache_path(job["source_url"]), "w") as fh:
+                json.dump({"words": transcript["words"],
+                           "auto_highlights": transcript.get("auto_highlights")}, fh)
+        except OSError:
+            pass
     return transcript["words"]
 
 

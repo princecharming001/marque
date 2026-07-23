@@ -1,0 +1,98 @@
+{
+  "api_base": "http://127.0.0.1:8000",
+  "notes": "Ralph campaign corpus \u2014 10 distinct sources from marque-clips (by duration/size signature). Diversity axes: length (10s-62s), bitrate, style (broll_cutaway vs talking_head), meme dial 0-3, caption_style, one forced broll_mode override.",
+  "videos": [
+    {
+      "id": "cook-broll-a",
+      "label": "canonical cooking take \u2014 the owner's main verification footage",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/4af8c948-1d9a-47f4-a2f3-154b1e6408d0/footage.mov",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {
+        "meme_intensity": 1
+      }
+    },
+    {
+      "id": "procut-raw",
+      "label": "pro-cut reference raw (ground-truth comparison source)",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/77b36bc2-c62e-457d-98ae-4087d87c371e/procut-raw.mp4",
+      "style": "talking_head",
+      "edit_format": "talking_head",
+      "config": {}
+    },
+    {
+      "id": "reel-62s",
+      "label": "62s downloaded reel \u2014 longest source, high meme dial",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/8f11d0a40af6720d.mp4",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {
+        "meme_intensity": 2
+      }
+    },
+    {
+      "id": "reel-61s",
+      "label": "61s reel, bold-word captions",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/a67f61adafa532cf.mp4",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {
+        "caption_style": "bold-word"
+      }
+    },
+    {
+      "id": "reel-53s",
+      "label": "53s reel, plain talking-head style (no b-roll path)",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6bc475983bae8d6f.mp4",
+      "style": "talking_head",
+      "edit_format": "talking_head",
+      "config": {}
+    },
+    {
+      "id": "reel-10s",
+      "label": "10s SHORT source \u2014 edge case for hook/CTA protect + density floors",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/d74c285ee24d83a2.mp4",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {}
+    },
+    {
+      "id": "take-41s-46mb",
+      "label": "41s high-bitrate take, memes OFF",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/eb2ea688-4a24-45a5-accb-867798570c7c/footage.mov",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {
+        "meme_intensity": 0
+      }
+    },
+    {
+      "id": "take-47s",
+      "label": "47s take with a FORCED broll_mode override (passthrough coverage)",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/a85170f6-affd-491c-aa6d-d03baf2a0de8/footage.mov",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {
+        "broll_mode": "panel"
+      }
+    },
+    {
+      "id": "take-40s-th",
+      "label": "40s plain talking head",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/281ed0ab-53e0-40df-a86b-46e245e6d031/footage.mov",
+      "style": "talking_head",
+      "edit_format": "talking_head",
+      "config": {}
+    },
+    {
+      "id": "take-42s",
+      "label": "42s take at the meme-dial ceiling",
+      "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/ccc86d4d-89c7-4127-bb67-a608d287abba/footage.mov",
+      "style": "broll_cutaway",
+      "edit_format": "talking_head_broll",
+      "config": {
+        "meme_intensity": 3
+      }
+    }
+  ]
+}
