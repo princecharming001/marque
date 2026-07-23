@@ -2668,6 +2668,11 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
             o_out = _cc_src_to_out(s_out)
             if face_style and mode == "full" and o_in < _BROLL_HOOK_PROTECT:
                 return None
+            # CTA protect covers ALL modes (ralph R15: panel/card cues authored
+            # for the outro line itself — 'works rate that' — grade wrong-subject
+            # every round; no stock matches a self-referential CTA).
+            if o_out > _cc_out_total - _BROLL_CTA_PROTECT and o_in > _cc_out_total - _BROLL_CTA_PROTECT - 60:
+                return None
             if face_style and mode == "full" and o_out > _cc_out_total - _BROLL_CTA_PROTECT:
                 return None
             if face_style and is_meme and o_in < _BROLL_HOOK_PROTECT:

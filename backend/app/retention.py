@@ -2147,14 +2147,23 @@ def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) 
                    for b in (edl.get("broll") or [])
                    if (b.get("mode") or "full") != "full"]
 
+    _sticker_wins = [(o2.get("src_in", 0), o2.get("src_out", 0))
+                     for o2 in ovl if o2.get("type") == "text_sticker"]
+
     def _convertible(o: dict, wtext: str) -> bool:
         hold = o.get("src_out", 0) - o.get("src_in", 0)
         if hold < max(15, round(len(wtext) / 20 * 30)):
             return False
-        return not any(min(o.get("src_out", 0), b1) > max(o.get("src_in", 0), b0)
-                       for b0, b1 in _broll_wins)
+        if any(min(o.get("src_out", 0), b1) > max(o.get("src_in", 0), b0)
+               for b0, b1 in _broll_wins):
+            return False
+        # R15: two co-active stickers at the shared 0.3 anchor collide — never
+        # convert into another sticker's time window.
+        return not any(min(o.get("src_out", 0), s1) > max(o.get("src_in", 0), s0)
+                       for s0, s1 in _sticker_wins)
 
     run: list[int] = []
+    srun: list[int] = []
     for i in order:
         if ovl[i].get("type") == "punch_in":
             run.append(i)
@@ -2174,6 +2183,19 @@ def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) 
                     run = [j for j in run if j != mid]
         else:
             run = []
+            srun.append(i)
+            if len(srun) >= 3:
+                mid = srun[len(srun) // 2]
+                o = ovl[mid]
+                # Only retype DECORATIVE keyword pops (short text, default
+                # anchor) — never the hook title (long text / custom pos).
+                if len(str(o.get("text") or "")) <= 24 and float(o.get("pos_y") or 0.3) == 0.3:
+                    ovl[mid] = {"type": "punch_in", "src_in": o.get("src_in", 0),
+                                "src_out": o.get("src_out", 0),
+                                "scale": 1.08, "text": ""}
+                    srun = [j for j in srun if j != mid]
+        if ovl[i].get("type") == "punch_in":
+            srun = []
     return edl
 
 
