@@ -2125,6 +2125,40 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     # plan_framing and can mint fresh <8% adjacent pairs (round-6: 1% at a cut
     # the earlier in-pass enforcement had already cleared).
     edl = _enforce_framing_deltas(edl)
+    edl = _enforce_interrupt_variety(edl, words, theme)
+    return edl
+
+
+def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) -> dict:
+    """FINAL variety pass: hook_pack, emphasis, and interrupts each emit
+    punch_ins independently, so 3+ same-type runs survive every per-pass
+    alternation (ralph: repeated_interrupt_type was the dominant P1 for 13
+    rounds). Walk ALL overlays in time order; the middle of every punch run of
+    3 becomes a keyword sticker when a word starts inside its window."""
+    ovl = edl.get("overlays") or []
+    order = sorted((i for i, o in enumerate(ovl)
+                    if o.get("type") in ("punch_in", "text_sticker")),
+                   key=lambda i: ovl[i].get("src_in", 0))
+    run: list[int] = []
+    for i in order:
+        if ovl[i].get("type") == "punch_in":
+            run.append(i)
+            if len(run) >= 3:
+                mid = run[len(run) // 2]
+                o = ovl[mid]
+                wtext = next((w.get("word", "") for w in (words or [])
+                              if o.get("src_in", 0) <= ms_to_frame(w.get("start_ms", 0))
+                              <= o.get("src_out", o.get("src_in", 0))), "")
+                if wtext:
+                    ovl[mid] = {"type": "text_sticker", "src_in": o.get("src_in", 0),
+                                "src_out": o.get("src_out", 0), "scale": 1.0,
+                                "text": wtext[:24], "pos_x": 0.5, "pos_y": 0.3,
+                                "rotation": 0.0, "color": None,
+                                "bg": ((theme.hook if theme is not None else {}) or {}).get("sticker_bg") or "box",
+                                "font": ((theme.hook if theme is not None else {}) or {}).get("sticker_font") or "inter"}
+                    run = [j for j in run if j != mid]
+        else:
+            run = []
     return edl
 
 
