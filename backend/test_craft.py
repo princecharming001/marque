@@ -418,3 +418,34 @@ def test_restore_never_overlaps_segments():
     words = [{"word": "w", "start_ms": 0, "end_ms": 30000}]   # ~900f source extent
     issues = check_edl_invariants(out, words)
     assert not any("overlap" in i for i in issues), issues
+
+
+# ------------------------------------------------- 57.7 broll holds + engagement
+
+def test_broll_holds_tightened_to_research_band():
+    from app.edl import _BROLL_HOLD_POLICY, _BROLL_MAX_HOLD, _BROLL_PARTIAL_MAX_HOLD
+    # Full-frame ceiling 2.0s; panel ceiling 2.5s (retention dips past ~2.5s).
+    assert _BROLL_MAX_HOLD == 60 and _BROLL_PARTIAL_MAX_HOLD == 75
+    for need, (lo, full, partial) in _BROLL_HOLD_POLICY.items():
+        assert full <= 60 and partial <= 75, need
+        assert lo >= 15                      # never below the 0.5s legibility floor
+
+
+def test_vision_pick_prefers_engaging_over_generic(monkeypatch):
+    import main, asyncio
+    # Two correct candidates, same base score: generic (idx 0) vs engaging (idx 1).
+    scores = [
+        {"shows": "person typing", "subject_match": True, "closeup": True,
+         "engaging": False, "score": 60},
+        {"shows": "hands kneading dough", "subject_match": True, "closeup": True,
+         "engaging": True, "score": 60},
+    ]
+    async def fake_score(cue, thumb):
+        return scores[int(thumb.decode())]
+    monkeypatch.setattr(main, "_broll_vision_score_one", fake_score)
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    idx = asyncio.run(main._broll_vision_pick("dough", [b"0", b"1"], None))
+    assert idx == 1
+    # Generic-only pool: still accepted (fail-soft last resort, floor 60 + closeup 8).
+    idx2 = asyncio.run(main._broll_vision_pick("dough", [b"0"], None))
+    assert idx2 == 0

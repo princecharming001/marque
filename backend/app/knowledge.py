@@ -76,7 +76,7 @@ def _playbook_section(style: str) -> str:
 # directly for every (call, style) combo instead of relying on an incidental
 # content-presence check to notice. 1200 extra tokens is negligible added
 # cost/latency for every call type having comfortable, verified headroom.
-_MAX_TOKENS = 3000   # kb-2026.10: fits +viral_editing.md in the brief digest with >200-char headroom (cache-prefixed, ~free after first call)
+_MAX_TOKENS = 3100   # kb-2026.11/57.7: +100 tok for the broll holds+engagement note — restores >200-char headroom on every edit_plan style (cache-prefixed, ~free after first call)
 _CHARS_PER_TOKEN = 4
 
 

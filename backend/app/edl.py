@@ -2087,19 +2087,25 @@ _BROLL_HOLD_POLICY: dict[str, tuple[int, int, int]] = {
     # v3 GLIMPSE grammar (Potter et al. 2014: concept recognition at 13ms; CapCut flash
     # practice 0.3-0.5s stills; Captions.ai "tight and brief" detail shots): a NAMED
     # thing flashes in and out — 0.5-0.8s full-frame, gone before it stalls the pacing.
+    # 57.7 (owner: "cuts are good but they linger a little too long" + hold research:
+    # short-form cutaways live in the 0.8–2.0s band, a visual change every 1.5–2s is
+    # the target, and retention measurably dips past ~2.5s — the old 2.5s full /
+    # 3.0s panel ceilings sat exactly on/over the dip): evidence/action/concept
+    # tightened to a 2.0s full-frame ceiling and 2.4–2.5s panel ceiling. Glimpse
+    # needs (entity/data/meme) were already inside the band — untouched.
     "entity":   (15, 24, 60),     # named food/product/place — sub-second glimpse
     "data":     (15, 24, 60),     # a number/stat — reads instantly
-    "evidence": (45, 75, 90),     # proof/demo — needs reading time (unchanged)
-    "action":   (36, 75, 90),     # a process/motion — 1.2–2.5s full-frame
-    "concept":  (36, 75, 90),     # metaphor/abstract
+    "evidence": (36, 60, 75),     # proof/demo — 1.2–2.0s full, ≤2.5s panel
+    "action":   (30, 60, 75),     # a process/motion — 1.0–2.0s full
+    "concept":  (30, 54, 72),     # metaphor/abstract — reads fast, 1.8s full ceiling
     "meme":     (15, 30, 45),     # reaction pop-in: 0.5–1s full flash, ≤1.5s panel
 }
 _BROLL_NEEDS = tuple(_BROLL_HOLD_POLICY)         # valid `need` values (plan-schema clamp)
 # Global aliases derived from the policy so doctrine ↔ code never drift: min = shortest any need may
 # hold (the legibility floor + floor-synth base); max = longest face-hiding hold; partial = panel/card ceiling.
 _BROLL_MIN_HOLD = min(p[0] for p in _BROLL_HOLD_POLICY.values())          # 15f / 0.5s (meme flash)
-_BROLL_MAX_HOLD = max(p[1] for p in _BROLL_HOLD_POLICY.values())          # 75f / 2.5s
-_BROLL_PARTIAL_MAX_HOLD = max(p[2] for p in _BROLL_HOLD_POLICY.values())  # 90f / 3s ceiling (panel/card)
+_BROLL_MAX_HOLD = max(p[1] for p in _BROLL_HOLD_POLICY.values())          # 60f / 2.0s
+_BROLL_PARTIAL_MAX_HOLD = max(p[2] for p in _BROLL_HOLD_POLICY.values())  # 75f / 2.5s ceiling (panel/card)
 
 
 def _hold_bounds(need: str, mode: str) -> tuple[int, int]:
