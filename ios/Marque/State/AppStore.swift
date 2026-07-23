@@ -11,6 +11,7 @@ final class AppStore {
     var pillars: [Pillar] = []
     var scripts: [Script] = []
     var clips: [Clip] = []
+    var clipGroups: [ClipGroup] = []     // build 59: user-created Library collections (filter-only)
     var footage: [Footage] = []          // filmed-but-undecided takes (Library "Footage")
     var media: [MediaAsset] = []         // personal media corpus the AI references
     var schedule: [ScheduledPost] = []
@@ -1581,6 +1582,70 @@ final class AppStore {
 
     /// Delete every on-disk media path owned by `clip` that nothing else references. Safe to
     /// call after the clip has already been removed from `clips`.
+    // MARK: build 59 — Library bulk actions + groups
+
+    /// Bulk-delete: same teardown as deleteClip per id, but persists ONCE at the end.
+    func deleteClips(_ ids: Set<UUID>) {
+        let targets = clips.filter { ids.contains($0.id) }
+        guard !targets.isEmpty else { return }
+        for clip in targets {
+            backgroundSubmits[clip.id]?.cancel()
+            backgroundSubmits[clip.id] = nil
+            if let entry = UploadJournal.shared.entry(placeholderId: clip.id.uuidString) {
+                UploadJournal.shared.remove(uploadId: entry.uploadId)
+            }
+        }
+        clips.removeAll { ids.contains($0.id) }
+        schedule.removeAll { ids.contains($0.clipId) }
+        for clip in targets { reclaimOrphanedMedia(from: clip) }
+        save()
+    }
+
+    /// Bulk-schedule the given clips to one time + platform set (mass auto-post). Reuses the
+    /// single-clip path per clip so captions/outcome/registration are identical; persists as
+    /// each resolves. Only .ready clips are eligible (drafts/failed are skipped).
+    func scheduleClips(_ ids: Set<UUID>, on date: Date, platforms: [SocialPlatform],
+                       autoCaptions: Bool = true) async {
+        let targets = clips.filter { ids.contains($0.id) && $0.status == .ready }
+        for clip in targets {
+            await scheduleClip(clip, on: date, platforms: platforms, autoCaptions: autoCaptions)
+        }
+    }
+
+    @discardableResult
+    func createClipGroup(_ name: String) -> ClipGroup {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Reuse an existing same-named group rather than minting a duplicate.
+        if let existing = clipGroups.first(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+            return existing
+        }
+        let g = ClipGroup(name: trimmed.isEmpty ? "Untitled group" : trimmed)
+        clipGroups.append(g)
+        save()
+        return g
+    }
+
+    func renameClipGroup(_ id: UUID, to name: String) {
+        guard let idx = clipGroups.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        clipGroups[idx].name = trimmed
+        save()
+    }
+
+    /// Delete a group WITHOUT deleting its clips — they fall back to ungrouped.
+    func deleteClipGroup(_ id: UUID) {
+        clipGroups.removeAll { $0.id == id }
+        for i in clips.indices where clips[i].groupId == id { clips[i].groupId = nil }
+        save()
+    }
+
+    /// File the given clips under a group (nil = remove from any group).
+    func assignClips(_ ids: Set<UUID>, toGroup groupId: UUID?) {
+        for i in clips.indices where ids.contains(clips[i].id) { clips[i].groupId = groupId }
+        save()
+    }
+
     private func reclaimOrphanedMedia(from clip: Clip) {
         let candidates = [clip.localVideoPath, clip.renderLocalPath, clip.thumbnailPath]
             .compactMap { $0 }.filter { !$0.hasPrefix("/") }   // only container-relative paths
@@ -2127,6 +2192,7 @@ final class AppStore {
         // (possibly streak-dipped) restored XP and could silently drop a tier the creator had
         // already earned. Persist the earned floor in the snapshot too.
         var rankFloorLevel: Int? = nil
+        var clipGroups: [ClipGroup]? = nil             // build 59: Library collections (decode-safe)
     }
 
     func save() {
@@ -2140,7 +2206,8 @@ final class AppStore {
                             lastStreakDate: lastStreakDate,
                             likedPicks: likedPicks, dismissedPicks: dismissedPicks,
                             reelsShot: reelsShot,
-                            rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey))
+                            rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey),
+                            clipGroups: clipGroups)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -2175,6 +2242,7 @@ final class AppStore {
     private func applySnapshot(_ snap: Snapshot) {
         brand = snap.brand; pillars = snap.pillars; scripts = snap.scripts
         clips = snap.clips; footage = snap.footage; media = snap.media
+        clipGroups = snap.clipGroups ?? []
         schedule = snap.schedule; teardowns = snap.teardowns
         hasOnboarded = snap.hasOnboarded; streak = snap.streak
         memory = snap.memory ?? CreatorMemory()

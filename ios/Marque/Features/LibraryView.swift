@@ -33,13 +33,39 @@ struct LibraryView: View {
 
 // MARK: - Clips (rendered, grouped by status, real posters, tap → player)
 
+/// Which group the Library clip grid is filtered to (build 59).
+enum ClipGroupFilter: Hashable { case all, ungrouped, group(UUID) }
+
 struct ClipsSection: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
     @State private var detail: Clip?
+    // build 59: group filter + multi-select bulk actions.
+    @State private var groupFilter: ClipGroupFilter = .all
+    @State private var selecting = false
+    @State private var selectedIDs: Set<UUID> = []
+    @State private var showNewGroup = false
+    @State private var newGroupName = ""
+    @State private var showBulkDelete = false
+    @State private var showBulkSchedule = false
+    @State private var pendingAssignAfterCreate = false   // "New group…" from the assign menu
+
     private var hasFinishedClips: Bool {
         store.clips.contains { [.ready, .scheduled, .posted].contains($0.status) }
     }
+
+    /// Clips passing the active group filter.
+    private var filteredClips: [Clip] {
+        switch groupFilter {
+        case .all:            return store.clips
+        case .ungrouped:      return store.clips.filter { $0.groupId == nil }
+        case .group(let id):  return store.clips.filter { $0.groupId == id }
+        }
+    }
+    private var selectedReadyCount: Int {
+        store.clips.filter { selectedIDs.contains($0.id) && $0.status == .ready }.count
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if store.clips.isEmpty {
@@ -55,8 +81,16 @@ struct ClipsSection: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("library.createFirst")
             } else {
+                controlRow
+                let visible = filteredClips
+                if visible.isEmpty {
+                    Text(groupFilter == .ungrouped ? "No ungrouped clips."
+                                                    : "This group is empty. Select clips and add them here.")
+                        .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
+                        .padding(.vertical, Space.lg)
+                }
                 ForEach(ClipStatus.allOrder, id: \.self) { status in
-                    let group = store.clips.filter { $0.status == status }
+                    let group = visible.filter { $0.status == status }
                     if !group.isEmpty {
                         VStack(alignment: .leading, spacing: Space.md) {
                             VStack(alignment: .leading, spacing: Space.xs) {
@@ -69,17 +103,18 @@ struct ClipsSection: View {
                             let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
                             LazyVGrid(columns: cols, spacing: 8) {
                                 ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
-                                    Button { detail = c } label: { ClipGridCell(clip: c) }
-                                        .buttonStyle(.plain)
-                                        .accessibilityIdentifier("library.clip")
-                                        .staggerReveal(i)
+                                    Button { onCellTap(c) } label: {
+                                        ClipGridCell(clip: c)
+                                            .overlay { if selecting { selectionOverlay(c) } }
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityIdentifier("library.clip")
+                                    .staggerReveal(i)
                                 }
                             }
                         }
                     }
                 }
-                // Only drafts/editing so far, nothing finished — the rest of the screen
-                // would otherwise be an unexplained void. Say what's coming + offer the way in.
                 if !hasFinishedClips {
                     VStack(alignment: .leading, spacing: Space.sm) {
                         Text("Finished clips land here, ready to schedule.")
@@ -93,14 +128,167 @@ struct ClipsSection: View {
                     }
                     .padding(.top, Space.sm)
                 }
+                // Room so the floating action bar never covers the last row.
+                if selecting { Color.clear.frame(height: 76) }
             }
         }
+        .overlay(alignment: .bottom) { if selecting { bulkBar } }
+        .animation(Motion.quick, value: selecting)
         .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
-        // UX-B2b: a clips_ready push tap deep-links marque://library/clip/{id} —
-        // open that clip's detail the moment this section is on screen.
+        .sheet(isPresented: $showBulkSchedule) {
+            BulkScheduleSheet(clipIDs: selectedIDs) { exitSelection() }
+        }
+        .alert("New group", isPresented: $showNewGroup) {
+            TextField("Group name", text: $newGroupName)
+            Button("Cancel", role: .cancel) { newGroupName = ""; pendingAssignAfterCreate = false }
+            Button("Create") {
+                let g = store.createClipGroup(newGroupName)
+                newGroupName = ""
+                if pendingAssignAfterCreate {
+                    store.assignClips(selectedIDs, toGroup: g.id); pendingAssignAfterCreate = false
+                    exitSelection()
+                } else {
+                    groupFilter = .group(g.id)
+                }
+            }
+        } message: { Text("Organize clips into a collection you can filter by later.") }
+        .confirmationDialog("Delete \(selectedIDs.count) clip\(selectedIDs.count == 1 ? "" : "s")?",
+                            isPresented: $showBulkDelete, titleVisibility: .visible) {
+            Button("Delete \(selectedIDs.count)", role: .destructive) {
+                store.deleteClips(selectedIDs); exitSelection()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("This removes them and any scheduled times. It can't be undone.") }
         .onChange(of: router.pendingOpenClipId) { _, id in openPending(id) }
         .onAppear { openPending(router.pendingOpenClipId) }
     }
+
+    // MARK: filter + select controls
+
+    private var controlRow: some View {
+        HStack(spacing: Space.sm) {
+            Menu {
+                Picker("Group", selection: $groupFilter) {
+                    Label("All clips", systemImage: "rectangle.stack").tag(ClipGroupFilter.all)
+                    if !store.clipGroups.isEmpty || store.clips.contains(where: { $0.groupId != nil }) {
+                        Label("Ungrouped", systemImage: "tray").tag(ClipGroupFilter.ungrouped)
+                    }
+                    ForEach(store.clipGroups) { g in
+                        Text(g.name).tag(ClipGroupFilter.group(g.id))
+                    }
+                }
+                if case .group(let id) = groupFilter {
+                    Divider()
+                    Button(role: .destructive) { store.deleteClipGroup(id); groupFilter = .all } label: {
+                        Label("Delete this group", systemImage: "trash")
+                    }
+                }
+                Divider()
+                Button { showNewGroup = true } label: { Label("New group…", systemImage: "plus") }
+            } label: {
+                HStack(spacing: 5) {
+                    Text(groupFilterLabel).font(AppFont.callout).foregroundStyle(Palette.textPrimary)
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.textTertiary)
+                }
+                .padding(.horizontal, Space.md).padding(.vertical, 8)
+                .background(Palette.surfaceSunken, in: Capsule())
+            }
+            .accessibilityIdentifier("library.groupFilter")
+            Spacer()
+            Button {
+                if selecting { exitSelection() } else { selecting = true }
+            } label: {
+                Text(selecting ? "Done" : "Select")
+                    .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("library.selectToggle")
+        }
+    }
+
+    private var groupFilterLabel: String {
+        switch groupFilter {
+        case .all: return "All clips"
+        case .ungrouped: return "Ungrouped"
+        case .group(let id): return store.clipGroups.first(where: { $0.id == id })?.name ?? "Group"
+        }
+    }
+
+    private func selectionOverlay(_ c: Clip) -> some View {
+        let on = selectedIDs.contains(c.id)
+        return ZStack(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                .fill(on ? Palette.accent.opacity(0.18) : Color.black.opacity(0.001))
+                .overlay { if on {
+                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                        .strokeBorder(Palette.accent, lineWidth: 2)
+                } }
+            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(on ? Palette.accent : .white)
+                .background(Circle().fill(on ? .white : Color.black.opacity(0.28)).frame(width: 20, height: 20))
+                .padding(6)
+        }
+    }
+
+    // MARK: bulk action bar
+
+    private var bulkBar: some View {
+        HStack(spacing: Space.md) {
+            Text("\(selectedIDs.count) selected")
+                .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.textSecondary)
+            Spacer()
+            Menu {
+                ForEach(store.clipGroups) { g in
+                    Button { store.assignClips(selectedIDs, toGroup: g.id); exitSelection() } label: {
+                        Label(g.name, systemImage: "folder")
+                    }
+                }
+                Button { store.assignClips(selectedIDs, toGroup: nil); exitSelection() } label: {
+                    Label("Remove from group", systemImage: "folder.badge.minus")
+                }
+                Divider()
+                Button { pendingAssignAfterCreate = true; showNewGroup = true } label: {
+                    Label("New group…", systemImage: "plus")
+                }
+            } label: { bulkIcon("folder.badge.plus", "Group") }
+                .disabled(selectedIDs.isEmpty)
+            bulkButton("calendar", "Post", enabled: selectedReadyCount > 0) { showBulkSchedule = true }
+            bulkButton("trash", "Delete", tint: Palette.critical, enabled: !selectedIDs.isEmpty) {
+                showBulkDelete = true
+            }
+        }
+        .padding(.horizontal, Space.lg).padding(.vertical, Space.sm)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+        .shadow(color: Palette.shadowCool.opacity(0.18), radius: 16, y: 6)
+        .padding(.horizontal, Space.md).padding(.bottom, Space.sm)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func bulkButton(_ icon: String, _ label: String, tint: Color = Palette.accent,
+                            enabled: Bool, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { bulkIcon(icon, label, tint: tint) }
+            .buttonStyle(.plain).disabled(!enabled).opacity(enabled ? 1 : 0.35)
+            .accessibilityIdentifier("library.bulk.\(label.lowercased())")
+    }
+    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.accent) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
+            Text(label).font(.system(size: 10, weight: .medium))
+        }.foregroundStyle(tint)
+    }
+
+    private func onCellTap(_ c: Clip) {
+        if selecting {
+            if selectedIDs.contains(c.id) { selectedIDs.remove(c.id) } else { selectedIDs.insert(c.id) }
+        } else {
+            detail = c
+        }
+    }
+    private func exitSelection() { selecting = false; selectedIDs = [] }
 
     /// "Ready in about N min" — the server's estimate minus elapsed, floored at 1 min;
     /// falls back to the generic line when no estimate exists (old backend).
@@ -785,6 +973,86 @@ extension ClipStatus {
         case .scheduled: return "Scheduled to post"
         case .posted:    return "Posted"
         case .failed:    return "Needs attention"
+        }
+    }
+}
+
+// MARK: - Bulk schedule (build 59): one time + platforms applied to all selected clips.
+
+struct BulkScheduleSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let clipIDs: Set<UUID>
+    var onDone: () -> Void = {}
+
+    @State private var platforms: Set<SocialPlatform> = [.instagram, .tiktok]
+    @State private var date = Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: Date()) ?? Date()
+    @State private var autoCaptions = true
+    @State private var posting = false
+    @State private var showConnect = false
+
+    private var readyCount: Int {
+        store.clips.filter { clipIDs.contains($0.id) && $0.status == .ready }.count
+    }
+    private var hasPostableAccount: Bool {
+        store.brand.connectedAccounts.contains { $0.canPublish }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    Text("^[\(readyCount) clip](inflect: true) will be scheduled to the same time and platforms.")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+
+                    SectionLabel(text: "When")
+                    MarqueTimePicker(time: $date)
+
+                    SectionLabel(text: "Platforms")
+                    HStack(spacing: Space.sm) {
+                        ForEach(SocialPlatform.allCases) { p in
+                            Button {
+                                if platforms.contains(p) { platforms.remove(p) } else { platforms.insert(p) }
+                            } label: { Chip(text: p.label, selected: platforms.contains(p)) }
+                                .buttonStyle(.plain)
+                        }
+                    }
+
+                    Toggle(isOn: $autoCaptions) {
+                        Text("Auto-caption").font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                    }.tint(Palette.accent)
+
+                    if !hasPostableAccount {
+                        Button { showConnect = true } label: {
+                            HStack(spacing: Space.sm) {
+                                Image(systemName: "link").font(.system(size: 13, weight: .semibold))
+                                Text("Connect an account to actually post — otherwise this just saves reminders.")
+                                    .font(AppFont.caption)
+                            }.foregroundStyle(Palette.warning)
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .padding(Space.lg)
+            }
+            .navigationTitle("Schedule \(readyCount)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(posting ? "Scheduling…" : "Schedule") {
+                        guard !platforms.isEmpty, readyCount > 0 else { return }
+                        posting = true
+                        Task {
+                            await store.scheduleClips(clipIDs, on: date, platforms: Array(platforms),
+                                                      autoCaptions: autoCaptions)
+                            posting = false; onDone(); dismiss()
+                        }
+                    }.disabled(posting || platforms.isEmpty || readyCount == 0)
+                }
+            }
+            .sheet(isPresented: $showConnect) { ConnectAccountsView() }
         }
     }
 }
