@@ -163,6 +163,21 @@ async def grade(render_path: str, plan: dict, words: list[dict], *,
             return
         t = fi / FPS
         if not v.get("matches_speech") or v.get("score", 0) < 40:
+            # Adversarial verify (round-18): single-judge noise on borderline
+            # windows ('blurry meat in pan' rejected under a literal fat/salt
+            # line) will block a 0-P0 gate forever. A P0 stands only when a
+            # SECOND independent judge also rejects; a split verdict downgrades
+            # to the P2 generic tier.
+            async with httpx.AsyncClient() as client2:
+                v2 = await _judge_one(client2, key, spoken, cue, thumb,
+                                      is_meme=(b.get('need') == 'meme'
+                                               or b.get('source') in ('giphy', 'klipy')))
+            if v2 is not None and v2.get("matches_speech") and v2.get("score", 100) >= 40:
+                findings.append(finding(video, job_id, "broll_generic", t=t,
+                    evidence=f"split verdict: judge1 rejected ('{v.get('shows','')}' "
+                             f"score {v.get('score')}), judge2 passed (score {v2.get('score')})",
+                    source="broll_semantics", extra={"j1": v, "j2": v2}))
+                return
             findings.append(finding(video, job_id, "broll_wrong_subject", t=t,
                 evidence=f"shows '{v.get('shows','')}' while speech is '{spoken[:80]}' "
                          f"(score {v.get('score')}) — cue '{cue[:50]}'",
