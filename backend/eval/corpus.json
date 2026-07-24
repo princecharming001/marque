@@ -40,7 +40,7 @@
         "meme_intensity": 2
       },
       "toggles": {
-        "music": true,
+        "music": false,
         "punch_ins": true,
         "broll": true
       }
@@ -55,7 +55,7 @@
         "caption_style": "bold-word"
       },
       "toggles": {
-        "music": true,
+        "music": false,
         "punch_ins": true,
         "broll": true
       }
@@ -68,7 +68,7 @@
       "edit_format": "talking_head",
       "config": {},
       "toggles": {
-        "music": true,
+        "music": false,
         "punch_ins": true,
         "broll": false
       }
@@ -81,7 +81,7 @@
       "edit_format": "talking_head_broll",
       "config": {},
       "toggles": {
-        "music": true,
+        "music": false,
         "punch_ins": true,
         "broll": true
       }

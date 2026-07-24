@@ -973,6 +973,7 @@ def broll_query_rewrite_system() -> str:
         "suit, lightbulb-idea).\n"
         "- For need=meme: output the CANONICAL NAME of a WIDELY-RECOGNIZED meme/reaction template the clip/GIF library will "
         "recognize (the memes CONSTANTLY reused in this genre of short-form video — iconic reactions, not invented descriptive scenes; if you cannot name a famous template for the beat, keep it literal instead). "
+        "- EMOTIONAL-STATE beats (numb, afraid, joyful, overwhelmed, stuck) are NEVER literal stock searches — stock returns dark abstract noise. Make them need=concept (a designed text card) or need=meme (a recognizable reaction); a human FEELING is a reaction beat, not a photograph. "
         "have ('mind blown', 'side eye', 'this is fine', 'confused math lady', 'chefs kiss') — 1–3 "
         "words. You may also be given trending_clips (titles of currently-circulating movie/TV/"
         "viral moments) as extra signal for what cultural references are alive right now.\n"

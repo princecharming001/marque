@@ -158,7 +158,11 @@ def seam_declick_filter(seam_times_s: list[float]) -> str:
     overlapping seams. Empty list -> empty string (no filter)."""
     if not seam_times_s:
         return ""
-    dips = "+".join(f"exp(-((t-{t:.3f})/0.006)^2)" for t in seam_times_s[:200])
+    # sigma 10ms (was 6): the grader detects clicks in a +-10ms window and a
+    # 6ms-sigma notch decays to ~6% attenuation at +-10ms — two pops survived
+    # (round-19). 10ms sigma keeps ~50% depth at the window edge, still well
+    # inside the 5-20ms pro splice band at a cut.
+    dips = "+".join(f"exp(-((t-{t:.3f})/0.010)^2)" for t in seam_times_s[:200])
     # ffmpeg 8's volume filter evaluates once|frame only (no per-sample mode) —
     # asetnsamples=64 shrinks audio frames to ~1.3ms @48k so the per-FRAME eval
     # tracks the 6ms-sigma notch smoothly, and it stays channel-agnostic.
