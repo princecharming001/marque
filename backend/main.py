@@ -8214,6 +8214,10 @@ async def _culturalize_broll_queries(edl: dict, job: dict) -> dict:
     return edl
 
 
+_EMOTIONAL_CUE_RE = re.compile(
+    r"^\s*(numb|fear|afraid|joy|sad|sadness|overwhelm\w*|anxious|anxiety|stuck|"
+    r"lonely|loneliness|empt\w*|frozen|hopeless|burn\w*out)\b", re.IGNORECASE)
+
 _broll_rejected: set[str] = set()               # queries the vision judge rejected (negative cache)
 
 
@@ -8305,6 +8309,13 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # force_broll, keep v1: own_media cues are the creator's own footage, left as-is.
         if b.get("source") == "own_media" and not force_broll:
             continue
+        # Round-20 deterministic backstop: an emotional-STATE cue ('Numb — ice
+        # or frost imagery') can never resolve to honest stock — the library
+        # answers with dark abstract noise (8 double-confirmed wrong-subject
+        # P0s on one video). Coerce to concept BEFORE any search; prompt-side
+        # doctrine alone is hope, not enforcement.
+        if b.get("need") not in ("concept", "meme") and _EMOTIONAL_CUE_RE.match(b.get("cue_text") or ""):
+            b["need"] = "concept"
         # v7 P0 (research: ~70/30 norm is designed motion-graphics for abstractions,
         # and footage-library searches for concepts return exactly the abstract-3D-render
         # garbage observed in prod): CONCEPT cues never search stock — they become

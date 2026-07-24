@@ -1638,7 +1638,7 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
     # Ralph round-2 (static_window P0): a fixed per-clip cap starved long takes —
     # a 60s reel hit the cap with a 380f dead tail. Scale with output length
     # (~one event per 5.3s) so coverage, not the counter, is the binding limit.
-    _max_inserts = max(_INTERRUPT_MAX_PER_CLIP, total_out // 160)
+    _max_inserts = max(_INTERRUPT_MAX_PER_CLIP, total_out // 130)  # cadence-aligned (round-20: //160 capped a 61s video at 8 inserts -> 453f dead tail)
     for _ in range(_ITER_CAP):
         if last_event_out >= total_out - _INTERRUPT_CTA_GUARD or inserted >= _max_inserts:
             break
