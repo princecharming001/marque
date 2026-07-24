@@ -7882,6 +7882,50 @@ async def _generate_broll_still(query: str) -> str | None:
     return None
 
 
+async def _judge_meme_candidate(cue: str, thumb: bytes) -> dict | None:
+    """Round-21 meme rubric: KLIPY's top hit for a canonical query is often
+    random keyword-matched footage ('this is fine' -> abstract macro clip).
+    Judge TEMPLATE RECOGNIZABILITY + reaction fit — never literal depiction,
+    so the old chefs-kiss kill can't recur. Same fail-soft contract as the
+    stock scorer."""
+    if not ANTHROPIC_KEY or not thumb:
+        return None
+    import base64
+    content = [
+        {"type": "text", "text":
+            f"MEME candidate audit for the reaction query: \"{cue}\".\n"
+            f"Step 1 — what does this clip LITERALLY show, 3-6 words?\n"
+            f"Step 2 — subject_match: is this THE widely-recognized template that "
+            f"query names (or an equally ICONIC reaction landing the same beat)? "
+            f"Random footage that merely matches keywords is false.\n"
+            f"Step 3 — score 0-100: iconic template 80-100; recognizable-adjacent "
+            f"reaction 60-79; keyword-matched random footage caps at 20."},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                     "data": base64.b64encode(thumb).decode("ascii")}}]
+    body = {"model": SONNET, "max_tokens": 140,
+            "system": "You are a meme librarian with encyclopedic template knowledge. "
+                      "Only the real template (or an equally iconic reaction) passes.",
+            "messages": [{"role": "user", "content": content}],
+            "output_config": {"format": {"type": "json_schema", "schema": {
+                "type": "object", "additionalProperties": False,
+                "required": ["shows", "subject_match", "score"],
+                "properties": {"shows": {"type": "string"},
+                               "subject_match": {"type": "boolean"},
+                               "score": {"type": "integer"}}}}}}
+    try:
+        client = _get_anthropic_client()
+        r = await client.post(ANTHROPIC_URL,
+                              headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                                       "content-type": "application/json"}, json=body)
+        if r.status_code != 200:
+            return None
+        text = "".join(bk.get("text", "") for bk in r.json().get("content", []))
+        out = json.loads(text) or {}
+        return out if isinstance(out.get("score"), int) else None
+    except (httpx.HTTPError, ValueError, KeyError):
+        return None
+
+
 async def _broll_vision_score_one(cue: str, thumb: bytes, spoken: str = "") -> dict | None:
     """Score ONE candidate thumbnail against the cue, independently. Describe-then-judge:
     the model must first commit to what the image ACTUALLY shows (3-6 words) before
@@ -8330,6 +8374,7 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # joke is worse than staying on the face. If nothing resolves, leave it unresolved (the
         # tier pass drops it). Cache keyed distinctly so a meme query never collides with a
         # stock query of the same words.
+        _vmeta: dict = {}          # judge verdict -> broll_log (all tiers)
         if b.get("need") == "meme":
             if not has_meme:
                 continue
@@ -8341,11 +8386,36 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                 b["source"] = _meme_source_cache.get(mkey, "giphy")
                 continue
             mcands = await _fetch_meme_candidates(query, BROLL_CANDIDATES)
-            # v7 Ralph: memes DON'T go through the literal-depiction scorer — a reaction
-            # GIF is deliberately non-literal (the scorer correctly noted "chefs kiss"
-            # doesn't depict vinegar, and killed every meme). A canonical reaction query
-            # against a GIF library is high-precision; the top candidate wins.
-            murl = mcands[0]["link"] if mcands else None
+            # Round-21: the blind top-1 shipped random keyword-matched KLIPY
+            # footage straight past every gate. Memes get their own judged pick
+            # via _judge_meme_candidate (template recognizability, not literal
+            # depiction). Keyless keeps the old top-1.
+            murl = None
+            if mcands and ANTHROPIC_KEY:
+                _mthumbs: list[bytes] = []
+                try:
+                    async with httpx.AsyncClient(timeout=10) as _mc:
+                        for _cand in mcands[:4]:
+                            if not _cand.get("thumb"):
+                                _mthumbs.append(b"")
+                                continue
+                            _tr = await _mc.get(_cand["thumb"])
+                            _mthumbs.append(_tr.content if _tr.status_code == 200 else b"")
+                except httpx.HTTPError:
+                    _mthumbs = []
+                _pairs = [(c, th) for c, th in zip(mcands[:4], _mthumbs) if th]
+                _mscores = await asyncio.gather(
+                    *(_judge_meme_candidate(b.get("cue_text") or query, th)
+                      for _, th in _pairs)) if _pairs else []
+                _best, _best_s = None, -1
+                for (_cand, _), _s in zip(_pairs, _mscores):
+                    if _s and _s.get("subject_match") and _s.get("score", 0) >= 60 \
+                            and _s["score"] > _best_s:
+                        _best, _best_s = _cand, _s["score"]
+                        _vmeta["shows"], _vmeta["score"] = _s.get("shows", ""), _s["score"]
+                murl = _best["link"] if _best else None
+            elif mcands:
+                murl = mcands[0]["link"]
             if murl:
                 prov = next((c.get("provider", "giphy") for c in mcands
                              if c.get("link") == murl), "giphy")
@@ -8377,7 +8447,6 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         _spoken = " ".join(c.get("word", "") for c in (edl.get("captions") or [])
                            if int(b.get("src_in", 0)) - 8 <= int(c.get("frame", 0))
                            <= int(b.get("src_out", 0)) + 8)[:240]
-        _vmeta: dict = {}
         url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
                                   spoken=_spoken, meta_out=_vmeta)
         # Vision REJECTED all stock (or found none). Retry ONCE with a short literal query — a
