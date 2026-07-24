@@ -50,15 +50,20 @@ _KEY_RE = re.compile(r"lavfi\.astats\.Overall\.(RMS_level|Peak_level|Max_differe
 
 
 def parse_astats(stderr: str) -> list[dict]:
-    """[{t, rms, peak, maxdiff}] per 10ms frame from ametadata stderr output."""
-    frames: list[dict] = []
+    """[{t, rms, peak, maxdiff}] per 10ms frame from ametadata stderr output.
+
+    MERGE BY TIMESTAMP: the af chain runs THREE chained ametadata filters, and
+    each prints its OWN pts_time header before its key — a per-header dict left
+    every frame holding exactly one metric, so every consumer read -120/0
+    defaults for the other two (round-16: nine impossible music_over_speech
+    findings at speech=-120/gaps=-120; every audio_pop floor was a fake -120).
+    """
+    by_t: dict[float, dict] = {}
     cur: dict | None = None
     for line in stderr.splitlines():
         m = _PTS_RE.search(line)
         if m:
-            if cur is not None and len(cur) > 1:
-                frames.append(cur)
-            cur = {"t": float(m.group(1))}
+            cur = by_t.setdefault(float(m.group(1)), {"t": float(m.group(1))})
             continue
         if cur is None:
             continue
@@ -68,11 +73,11 @@ def parse_astats(stderr: str) -> list[dict]:
                 val = float(k.group(2))
             except ValueError:
                 val = -120.0
+            if val == float("-inf"):
+                val = -120.0
             key = {"RMS_level": "rms", "Peak_level": "peak", "Max_difference": "maxdiff"}[k.group(1)]
             cur[key] = val
-    if cur is not None and len(cur) > 1:
-        frames.append(cur)
-    return frames
+    return sorted((f for f in by_t.values() if len(f) > 1), key=lambda f: f["t"])
 
 
 async def _run_astats(path: str, highpass: bool) -> list[dict]:
