@@ -2232,8 +2232,16 @@ def _enforce_framing_deltas(edl: dict) -> dict:
         # place (rounds 8-11's recurring 0%/5% pairs).
         if prev is not None and abs(cur - prev) / max(prev, 0.01) < 0.08:
             far = [s for s in ladder if abs(s - prev) / max(prev, 0.01) >= 0.0801]
-            if far and seg_i not in visited:
-                cur = min(far, key=lambda s: abs(s - cur))
+            if seg_i not in visited:
+                if far:
+                    cur = min(far, key=lambda s: abs(s - cur))
+                else:
+                    # Off-ladder prev (framing-pop 1.08, hook 1.12): NO ladder
+                    # value clears 8% from it (round-17: 1.08->1.09 = 0.9%,
+                    # far empty, violation silently kept — the same empty-
+                    # escape shape as the 1.09 bug, one rung over). Take a
+                    # guaranteed multiplicative 10% step instead.
+                    cur = round(prev * 1.10, 3) if prev * 1.10 <= 1.19 else round(prev / 1.10, 3)
                 seg["tx_scale"] = cur
                 if cur == 1.0:
                     seg["tx_x"] = 0.0

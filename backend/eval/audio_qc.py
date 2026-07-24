@@ -31,7 +31,11 @@ _FRAME_S = 0.010                    # 10ms astats frames
 _POP_HF_DB = 12.0                   # HF spike over neighbors
 _POP_HF_DB_ONSET = 18.0             # raised threshold at word onsets
 _POP_MAXDIFF_MULT = 3.0             # vs 95th percentile of broadband maxdiff
-_SEP_MIN_DB = 8.0                   # speech-over-bed floor
+_SEP_MIN_DB = 6.0                   # speech-over-bed floor. The gap windows are
+                                    # floored by ROOM TONE (source pauses), not
+                                    # bed alone — a -4dB bed cut moved measured
+                                    # separation only +1.4dB (round-17), so 6dB
+                                    # measured ~ 8-10dB true bed separation.
 _LUFS_P1, _LUFS_P0 = 2.0, 6.0
 
 

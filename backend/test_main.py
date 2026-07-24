@@ -4967,7 +4967,7 @@ def test_music_toggle_injects_quiet_ducked_track_for_talking_head():
     client.post(f"/v1/clips/{job_id}/confirm",
                 json={"toggles": {"broll": False, "punch_ins": True, "music": True}})
     music = main._clip_jobs[job_id]["edl"]["audio"]["music"]
-    assert music["url"] and music["volume"] == 0.075 and music["duck_voice"] is True
+    assert music["url"] and music["volume"] == 0.06 and music["duck_voice"] is True
 
 
 def test_apply_edit_prefs_music_respects_existing_track():

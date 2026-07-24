@@ -205,7 +205,7 @@ def test_couple_broll_sfx_memes_only_entertainment_only_idempotent():
 def _music_edl(total: int) -> dict:
     edl = _bare_edl("talking_head", total)
     edl["audio"] = {"lufs_target": -14.0,
-                    "music": {"url": "https://m/track.mp3", "volume": 0.075,
+                    "music": {"url": "https://m/track.mp3", "volume": 0.06,
                               "duck_voice": True, "dropouts": []}}
     return edl
 
@@ -338,7 +338,7 @@ def test_theme_music_volume_overrides_default():
     edl2 = {"style": "talking_head", "segments": [{"src_in": 0, "src_out": 900}],
             "audio": None}
     out2 = main._apply_plan_music_vibe(edl2, {"music": True}, {"wanted": True})
-    assert out2["audio"]["music"]["volume"] == 0.075       # default unchanged
+    assert out2["audio"]["music"]["volume"] == 0.06       # default unchanged
 
 
 # --- v3: glimpse bands + smart placement -------------------------------------

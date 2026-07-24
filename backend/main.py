@@ -3078,7 +3078,7 @@ def _apply_edit_prefs(edl: dict, prefs: dict, emphasis_spans: list | None = None
             # A montage recap is music-forward (louder, no duck); a talking cut sits
             # the track quietly under the voice.
             # v2 (D4): theme music.volume (previously dead config) overrides the default.
-            _vol = 0.3 if montage else max(0.0, min(1.0, theme_volume if theme_volume is not None else 0.075))
+            _vol = 0.3 if montage else max(0.0, min(1.0, theme_volume if theme_volume is not None else 0.06))
             audio["music"] = {"url": track["url"], "query": None, "bpm": track.get("bpm"),
                               "volume": _vol,
                               "duck_voice": not montage}
@@ -5042,7 +5042,7 @@ def _apply_plan_music_vibe(edl_data: dict, prefs: dict, music_hint: dict | None,
     # 0.12 -> 0.075 (~-4dB): ralph round-16's honest bed-separation numbers
     # measured only 4.2dB speech-over-bed at 0.12 — under the 8dB clarity bar
     # on 8/9 bed videos. Montage keeps its hotter 0.3 (music IS the content).
-    vol = 0.3 if montage else max(0.0, min(1.0, theme_volume if theme_volume is not None else 0.075))
+    vol = 0.3 if montage else max(0.0, min(1.0, theme_volume if theme_volume is not None else 0.06))
     audio["music"] = {"url": track["url"], "query": None, "bpm": track.get("bpm"),
                       "volume": vol, "duck_voice": not montage}
     return edl_data
