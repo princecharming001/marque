@@ -2509,3 +2509,54 @@ def test_finalize_audio_loudness_falls_back_on_duration_mismatch(monkeypatch, tm
 
     out = asyncio.run(main._finalize_audio_loudness("https://cdn/render.mp4", "job1"))
     assert out is None   # the stream-copy duration guard rejected it
+
+
+def test_opening_overcut_restores_swallowed_final_take():
+    """Prod incident ef4823cd: the author cut 0-614 as ONE false_start,
+    swallowing the creator's clean final take of the hook together with the
+    stumbles before it. The guard walks dropped sentences backward, restores
+    content that neither duplicates the kept opening nor matches an earlier
+    stumble, and shrinks the drop (+ grows segments) accordingly."""
+    from app.edl import clamp_opening_overcut
+    mk = lambda i, w: {"word": w, "start_ms": i * 500, "end_ms": i * 500 + 350}
+    script = ("Most fusion— most fusion— "                                # stumbles
+              "most fusion fails. You're not— "                           # stumble
+              "Everyone tries to pair fusion by taste. "                  # final take (unique)
+              "Gochujang tastes bold, carbonara tastes rich done. "       # final take (unique)
+              "That's why it collapses. Flavor isn't the structure. "     # kept
+              "Fat acid and heat are the structure of it.").split()       # kept
+    words = [mk(i, w) for i, w in enumerate(script)]
+    # "That's" is word 18 -> start_ms 9000 -> frame 270 (>240f guard floor).
+    edl = {"segments": [{"src_in": 270, "src_out": 500}],
+           "drops": [{"src_in": 0, "src_out": 270, "reason": "false_start"}],
+           "overlays": [], "broll": []}
+    out = clamp_opening_overcut(edl, words)
+    d = out["drops"][0]
+    assert d["src_out"] < 270, "drop did not shrink"
+    # The final take ("Everyone tries...") is restored; stumbles stay dropped.
+    from app.edl import ms_to_frame
+    restored = " ".join(w["word"] for w in words
+                        if d["src_out"] <= ms_to_frame(w["start_ms"]) < 270)
+    assert "Everyone tries to pair fusion" in restored
+    assert "Most fusion—" not in restored
+    assert out["segments"][0]["src_in"] == d["src_out"]
+
+
+def test_opening_overcut_leaves_true_retakes_alone():
+    """When the dropped tail DUPLICATES the kept opening (a real retake the
+    dedupe correctly removed), the guard must not restore anything."""
+    from app.edl import clamp_opening_overcut
+    mk = lambda i, w: {"word": w, "start_ms": i * 400, "end_ms": i * 400 + 300}
+    script = ("Everyone tries to pair fusion by taste badly. "     # dropped take 1
+              "Everyone tries to pair fusion by taste. "           # kept take 2 (same content)
+              "Gochujang tastes bold and rich.").split()
+    words = [mk(i, w) for i, w in enumerate(script)]
+    # take 2 starts at word 8 -> frame 96
+    edl = {"segments": [{"src_in": 96, "src_out": 300}],
+           "drops": [{"src_in": 0, "src_out": 96, "reason": "false_start"}],
+           "overlays": [], "broll": []}
+    import copy
+    before = copy.deepcopy(edl)
+    out = clamp_opening_overcut(edl, words)
+    assert out["drops"] == before["drops"]
+    assert out["segments"] == before["segments"]

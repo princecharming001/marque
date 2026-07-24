@@ -2878,3 +2878,80 @@ def check_edl_invariants(edl: dict, words: list[dict] | None = None) -> list[str
         issues.append("segment_order is not a valid permutation")
 
     return issues
+
+
+def clamp_opening_overcut(edl: dict, words: list[dict]) -> dict:
+    """An opening false_start drop may trim stumbles — never the hook.
+
+    Prod incident (job ef4823cd): the author cut source 0-614 as ONE false_start,
+    swallowing the creator's clean final take of the hook ("most fusion fails
+    for the same reason... Throw them together, done") together with the real
+    stumbles before it. The video opened mid-argument ("That's why it
+    collapses") with the premise gone.
+
+    Deterministic repair, applied to WHATEVER either author produced: for an
+    opening false_start drop longer than ~8s, walk the dropped SENTENCES
+    backward from the drop's end. A sentence is restored when its content
+    neither repeats in the kept opening (a true duplicate — dedupe was right)
+    nor fuzzy-matches an already-restored sentence (that boundary is the
+    earlier stumble/retake of the restored take). The drop shrinks to end where
+    the earliest restored sentence begins. Mutates and returns `edl`.
+    """
+    drops = edl.get("drops") or []
+    opening = next((d for d in drops
+                    if d.get("reason") == "false_start" and d.get("src_in", 0) <= 15
+                    and d.get("src_out", 0) - d.get("src_in", 0) > 240), None)
+    if opening is None or not words:
+        return edl
+    lo, hi = opening["src_in"], opening["src_out"]
+
+    def _toks(text: str) -> set:
+        return {w.strip(".,!?—-\"'").lower() for w in text.split() if len(w.strip(".,!?—-\"'")) > 2}
+
+    # Sentences inside the drop, with their start frames.
+    sents: list[tuple[int, str]] = []
+    cur_words: list[str] = []
+    cur_start: int | None = None
+    for w in words:
+        f = ms_to_frame(w.get("start_ms", 0))
+        if not (lo <= f < hi):
+            continue
+        if cur_start is None:
+            cur_start = f
+        cur_words.append(str(w.get("word", "")))
+        if str(w.get("word", "")).rstrip("\"'").endswith((".", "!", "?")):
+            sents.append((cur_start, " ".join(cur_words)))
+            cur_words, cur_start = [], None
+    if cur_words and cur_start is not None:
+        sents.append((cur_start, " ".join(cur_words)))
+    if not sents:
+        return edl
+
+    # Kept-opening content (first ~30s past the drop) — the duplicate check.
+    kept_toks = _toks(" ".join(str(w.get("word", "")) for w in words
+                               if hi <= ms_to_frame(w.get("start_ms", 0)) < hi + 900))
+
+    def _overlap(a: set, b: set) -> float:
+        return len(a & b) / max(1, min(len(a), len(b)))
+
+    restored: list[tuple[int, str]] = []
+    for start_f, text in reversed(sents):
+        t = _toks(text)
+        if not t:
+            continue
+        if _overlap(t, kept_toks) >= 0.6:
+            break                      # duplicated in kept content — dedupe was right
+        if any(_overlap(t, _toks(rt)) >= 0.6 for _, rt in restored):
+            break                      # the stumble/earlier take of a restored sentence
+        restored.append((start_f, text))
+    # Only intervene when a substantive take was swallowed (>=1 real sentence).
+    if not restored or all(len(t.split()) < 5 for _, t in restored):
+        return edl
+    new_end = max(lo + 1, min(f for f, _ in restored) - 3)
+    if new_end >= hi:
+        return edl
+    opening["src_out"] = new_end
+    # The kept timeline must include the restored span: grow/extend segments
+    # (content cuts are encoded BOTH as the drop and as a segment gap).
+    edl["segments"], _ = cover_segments(edl.get("segments") or [], new_end, hi)
+    return edl
