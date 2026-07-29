@@ -3094,7 +3094,12 @@ def _take_restore(edl: dict, lo: int, hi: int) -> None:
     edl["segments"], _ = cover_segments(edl.get("segments") or [], lo, hi)
 
 
-def snap_cut_ends_to_takes(edl: dict, words: list[dict]) -> dict:
+def _take_protected(lo: int, hi: int, protected) -> bool:
+    return any(a < hi and lo < b for a, b in protected or [])
+
+
+def snap_cut_ends_to_takes(edl: dict, words: list[dict],
+                           protected: list[tuple[int, int]] | None = None) -> dict:
     """A cut may end ONLY where a take begins — never mid-sentence.
 
     Keep-last-take (the industry convention): for every cut whose END splits a
@@ -3141,13 +3146,16 @@ def snap_cut_ends_to_takes(edl: dict, words: list[dict]) -> dict:
 
     for kind, lo, hi in actions:
         if kind == "restore":
+            if _take_protected(lo, hi, protected):
+                continue        # explicit brief cut (vision evidence) — honor it
             _take_restore(edl, lo, hi)
         else:
             _take_cut(edl, lo, hi, "dedupe_take")
     return edl
 
 
-def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
+def enforce_sentence_integrity(edl: dict, words: list[dict],
+                               protected: list[tuple[int, int]] | None = None) -> dict:
     """Deterministic take-grammar guards (cut-loop round 2), run after
     snap_cut_ends_to_takes:
 
@@ -3212,7 +3220,7 @@ def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
             for nx in sents[idx + 1: idx + 7])
         if dupe_later:
             _take_cut(edl, sw[0][1], sw[-1][2], "dedupe_take")
-        else:
+        elif not _take_protected(sw[first_cut][1], sw[-1][2], protected):
             _take_restore(edl, sw[first_cut][1], sw[-1][2])
 
     # --- B: interior drops --------------------------------------------------
@@ -3241,7 +3249,8 @@ def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
                         stutters.append((sw[k][1], sw[k][2]))
             i = j
     for lo, hi in restores:
-        _take_restore(edl, lo, hi)
+        if not _take_protected(lo, hi, protected):
+            _take_restore(edl, lo, hi)
     for lo, hi in stutters:
         _take_cut(edl, lo, hi, "stutter")
 
@@ -3271,7 +3280,8 @@ def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
         if not dupe:
             restores.append((sw[0][1], sw[-1][2]))
     for lo, hi in restores:
-        _take_restore(edl, lo, hi)
+        if not _take_protected(lo, hi, protected):
+            _take_restore(edl, lo, hi)
 
     # --- D: fully-kept duplicate takes ---------------------------------------
     # The author kept BOTH takes of the same line — cut the earlier one

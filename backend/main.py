@@ -5298,12 +5298,17 @@ async def _run_edit(job_id: str, words: list[dict]):
             logging.warning("clamp_opening_overcut failed (%s) — keeping author drops", e)
         # Cut-loop round-1: cut ends must land on take starts, never mid-sentence
         # (keep-last-take). Both author paths; fail-soft.
+        # Brief cut_regions are editorial directives with evidence — the take
+        # guards must not resurrect them.
+        _protected = [(cr.get("start_frame", 0), cr.get("end_frame", 0))
+                      for cr in (job.get("edit_brief") or {}).get("cut_regions", [])
+                      if cr.get("reason") in ("flub", "ramble", "tangent")]
         try:
-            edl_data = snap_cut_ends_to_takes(edl_data, words)
+            edl_data = snap_cut_ends_to_takes(edl_data, words, protected=_protected)
         except Exception as e:
             logging.warning("snap_cut_ends_to_takes failed (%s) — keeping author cuts", e)
         try:
-            edl_data = enforce_sentence_integrity(edl_data, words)
+            edl_data = enforce_sentence_integrity(edl_data, words, protected=_protected)
         except Exception as e:
             logging.warning("enforce_sentence_integrity failed (%s) — keeping author cuts", e)
         # Retention-editor upgrade: deterministic post-passes applied to WHATEVER EDL
