@@ -3178,6 +3178,31 @@ def enforce_sentence_integrity(edl: dict, words: list[dict],
     if not sents:
         return edl
 
+    # --- E: intra-sentence restart stumble ----------------------------------
+    # 'So, so every recipe, so every recipe behind me says...' — the restart
+    # lives INSIDE one kept sentence, so sentence-level dedup can't see it.
+    # If a repeated non-filler bigram restarts within the first 12 words and
+    # nothing unique precedes the restart, cut [sentence start, restart).
+    kept = _take_kept_fn(edl)
+    for sw in sents:
+        flags = [kept(s) for _, s, _ in sw]
+        if len(sw) < 5 or not all(flags):
+            continue
+        toks = [_take_norm(t) for t, _, _ in sw]
+        snap_i = 0
+        for i in range(1, min(12, len(sw) - 2)):
+            if not toks[i] or toks[i] in _TAKE_FILL:
+                continue
+            big = (toks[i], toks[i + 1] if i + 1 < len(toks) else "")
+            if any((toks[j], toks[j + 1] if j + 1 < len(toks) else "") == big
+                   for j in range(0, i)):
+                snap_i = i                 # LAST restart wins (keep-last-take)
+        if snap_i:
+            pre = _take_content(sw[k][0] for k in range(snap_i))
+            post = _take_content(sw[k][0] for k in range(snap_i, len(sw)))
+            if pre and pre <= post:        # stumble region adds nothing unique
+                _take_cut(edl, sw[0][1], sw[snap_i][1], "restart_stumble")
+
     # --- A: aborted takes ---------------------------------------------------
     kept = _take_kept_fn(edl)
     cuts: list[tuple[int, int]] = []

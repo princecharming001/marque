@@ -276,3 +276,28 @@ def test_fully_kept_duplicate_takes_first_cut():
     assert not kept(0) and kept(84)  # take 1 cut, take 2 kept
     f = grade_cuts(out, words)
     assert "undercut_dupe" not in classes(f)
+
+
+def test_intra_sentence_restart_stumble_trimmed():
+    """Round-4 real case (take-47s): 'So, so every recipe, so every recipe
+    behind me says heat the pan' — the restart lives inside ONE sentence; the
+    stumble region before the last restart is cut."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    words = mk_words("So, so every recipe, so every recipe behind me says heat the pan first.")
+    edl = {"segments": [{"src_in": 0, "src_out": 600}], "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    kept = _take_kept_fn(out)
+    assert not kept(0)                # "So," cut
+    assert not kept(36)               # first "recipe," cut
+    assert kept(60) and kept(84)      # final take "every recipe behind..." kept
+
+
+def test_rhetorical_repeat_with_unique_content_survives():
+    """Pass E must not cut when the pre-restart region carries unique content."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    import copy
+    words = mk_words("Great sauce needs great heat and great heat needs a steel pan always.")
+    edl = {"segments": [{"src_in": 0, "src_out": 600}], "drops": []}
+    before = copy.deepcopy(edl)
+    out = enforce_sentence_integrity(edl, words)
+    assert out["drops"] == before["drops"]

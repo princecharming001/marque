@@ -5298,11 +5298,12 @@ async def _run_edit(job_id: str, words: list[dict]):
             logging.warning("clamp_opening_overcut failed (%s) — keeping author drops", e)
         # Cut-loop round-1: cut ends must land on take starts, never mid-sentence
         # (keep-last-take). Both author paths; fail-soft.
-        # Brief cut_regions are editorial directives with evidence — the take
-        # guards must not resurrect them.
-        _protected = [(cr.get("start_frame", 0), cr.get("end_frame", 0))
-                      for cr in (job.get("edit_brief") or {}).get("cut_regions", [])
-                      if cr.get("reason") in ("flub", "ramble", "tangent")]
+        # NOTE: the edit brief's cut_regions are NOT passed as protected spans —
+        # the brief is another LLM author and its flub cuts overshoot exactly like
+        # the plan author's (round-4 regression: protecting them re-broke
+        # owner-fusion/take-41s). `protected` stays reserved for USER-directed
+        # cuts, which must never be resurrected.
+        _protected: list[tuple[int, int]] = []
         try:
             edl_data = snap_cut_ends_to_takes(edl_data, words, protected=_protected)
         except Exception as e:

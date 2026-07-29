@@ -2833,19 +2833,21 @@ def test_confirm_without_brief_409():
 def test_run_edit_folds_brief_flub_cut_into_drops(monkeypatch):
     # A brief flub cut_region must become a drop in the confirmed EDL.
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "")     # safe-default edl path
+    # Whole-sentence flub: the take guards may reshape cuts that break sentence
+    # grammar, so the folding contract is asserted on a grammar-clean region.
     words = [{"word": w, "start_ms": i * 300, "end_ms": i * 300 + 250}
-             for i, w in enumerate("one two three four five six".split())]
+             for i, w in enumerate("Bad take entirely here. Good take entirely here now.".split())]
     job = {"job_id": "edit1", "status": "editing", "style": "talking_head",
            "script": {"hook": "h", "body": "b", "cta": "c", "formatId": "myth-buster"},
            "brand": {}, "media_context": "", "source_url": "mock://x", "edit_prefs": {},
            "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "queued"}],
            "words": words, "edl_history": [], "tweaks": [], "created_at": 0.0,
-           "edit_brief": {"cut_regions": [{"start_frame": 15, "end_frame": 22, "reason": "flub",
-                                           "severity": "high", "quote": "oops"}]}}
+           "edit_brief": {"cut_regions": [{"start_frame": 0, "end_frame": 36, "reason": "flub",
+                                           "severity": "high", "quote": "Bad take entirely here."}]}}
     main._clip_jobs["edit1"] = job
     asyncio.run(main._run_edit("edit1", words))
     drops = main._clip_jobs["edit1"]["edl"]["drops"]
-    assert any(d["src_in"] == 15 and d["src_out"] == 22 for d in drops)   # flub cut applied
+    assert any(d["src_in"] == 0 and d["src_out"] == 36 for d in drops)   # flub cut applied
 
 
 # ---------------------------------------------------------------------------
