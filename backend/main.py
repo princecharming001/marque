@@ -5432,6 +5432,19 @@ async def _run_edit(job_id: str, words: list[dict]):
                                         job_id, f["code"], f["at_out_frame"], f["detail"])
             except Exception as e:
                 logging.warning("[edit-lint] failed for job=%s: %s", job_id, e)
+        # Cut-eval fast path (config.edl_only): the cutting decision is COMPLETE
+        # here — authoring + guards + retention all ran. Skip b-roll resolution,
+        # placement, self-review and the Lambda render entirely and mark the job
+        # ready with just the EDL, so a cuts-only eval round takes ~30s/video
+        # instead of ~4min. Never set by the iOS client — eval harness only.
+        if (job.get("config") or {}).get("edl_only"):
+            job["edl"] = edl_data
+            for c in job["clips"]:
+                c["status"] = "ready"
+            job["status"] = "ready"
+            _mark_stage(job, "ready")
+            _spawn(_persist_clip_job(job_id))
+            return
         # Resolve b-roll cues to real video URLs (Pexels) and attach the duet react
         # source — both must happen before the render plan is built. B-roll resolution
         # is a NICETY: a failure here must degrade to a warning, never fail the whole

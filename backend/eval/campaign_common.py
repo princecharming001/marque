@@ -51,6 +51,16 @@ CLASS_SEVERITY: dict[str, str] = {
     "caption_coverage": "P0",
     "broll_over_hook": "P0",
     "broll_over_cta": "P1",
+    # cut_qc (cuts-only loop)
+    "overcut_content": "P0",
+    "overcut_partial": "P0",
+    "undercut_stumble": "P1",
+    "undercut_dupe": "P1",
+    "orphan_fragment": "P1",
+    "inconsistent_cuts": "P1",
+    "cut_judge_overcut": "P0",
+    "cut_judge_undercut": "P1",
+    "cut_judge_seam": "P1",
     # meta
     "grader_crashed": "P1",
 }
