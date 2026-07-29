@@ -35,7 +35,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      style_capabilities, TWEAK_OP_TYPES, _BROLL_FLOOR_STOPWORDS,
                      assemble_edl, check_edl_invariants, clamp_edl_to_source,
                      _ENTERTAINMENT_VIDEO_TYPES,
-                     _BROLL_MEME_CAPS, clamp_opening_overcut)
+                     _BROLL_MEME_CAPS, clamp_opening_overcut, snap_cut_ends_to_takes)
 from app import audio as audio_mod
 from app import enhance as enhance_mod
 from app import multipart as multipart_mod
@@ -5295,6 +5295,12 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data = clamp_opening_overcut(edl_data, words)
         except Exception as e:
             logging.warning("clamp_opening_overcut failed (%s) — keeping author drops", e)
+        # Cut-loop round-1: cut ends must land on take starts, never mid-sentence
+        # (keep-last-take). Both author paths; fail-soft.
+        try:
+            edl_data = snap_cut_ends_to_takes(edl_data, words)
+        except Exception as e:
+            logging.warning("snap_cut_ends_to_takes failed (%s) — keeping author cuts", e)
         # Retention-editor upgrade: deterministic post-passes applied to WHATEVER EDL
         # either author path produced — so both the plan path and the legacy
         # direct-EDL author benefit identically. Flag-gated (RETENTION_PASSES env,

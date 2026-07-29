@@ -38,7 +38,6 @@ VIDEOS = [
     {"id": "take-40s",  "src": "uploads/281ed0ab-53e0-40df-a86b-46e245e6d031/footage.mov"},
     {"id": "take-42s",  "src": "uploads/ccc86d4d-89c7-4127-bb67-a608d287abba/footage.mov"},
     {"id": "owner-fusion", "src": "uploads/ba078de9-990a-41b5-a878-08ac5699c82b/footage.mov"},
-    {"id": "owner-prev",   "src": "uploads/914614a2-d0fa-4e3f-92b4-3854236c6d3c/footage.mov"},
 ]
 _SUPA = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/"
 

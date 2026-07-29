@@ -67,3 +67,49 @@ def test_consistency_metric():
     a, b = kept_word_set(e1, words), kept_word_set(e2, words)
     assert consistency(a, a) == 1.0
     assert consistency(a, b) < 1.0
+
+
+def test_snap_cut_end_restores_clean_sentence_head():
+    """Round-1 real case (owner-fusion): the cut removed 'most fusion fails for
+    the same' keeping the orphan 'reason.' — no restart inside the sentence, so
+    the cut end snaps to the SENTENCE start (whole clean take restored)."""
+    from app.edl import snap_cut_ends_to_takes, ms_to_frame
+    words = mk_words("Bad stumble words here now— most fusion fails for the same reason. More talk.")
+    # "reason." is word 11 -> frame 132 with 400ms words. Cut 0..132.
+    edl = {"segments": [{"src_in": 132, "src_out": 500}],
+           "drops": [{"src_in": 0, "src_out": 132, "reason": "false_start"}]}
+    out = snap_cut_ends_to_takes(edl, words)
+    # 'most' is word 5 -> frame 60: the cut must now end there.
+    assert out["drops"][0]["src_out"] == 60
+    assert out["segments"][0]["src_in"] == 60
+    f = grade_cuts(out, words)
+    assert "overcut_partial" not in classes(f)
+    assert "orphan_fragment" not in classes(f)
+
+
+def test_snap_cut_end_lands_on_restart_point():
+    """Round-1 real case (take-47s): stumble + restart INSIDE one sentence —
+    the cut end snaps to the final restart ('every recipe behind...'), keeping
+    the clean take and still cutting the stumbles."""
+    from app.edl import snap_cut_ends_to_takes
+    words = mk_words("So so every recipe so every recipe behind me says heat the pan then.")
+    # Cut through word 10 ("says") -> the clean take's head is lost.
+    # words: 0 So 1 so 2 every 3 recipe 4 so 5 every 6 recipe 7 behind 8 me 9 says
+    edl = {"segments": [{"src_in": 120, "src_out": 500}],   # kept from word 10 "heat"
+           "drops": [{"src_in": 0, "src_out": 120, "reason": "false_start"}]}
+    out = snap_cut_ends_to_takes(edl, words)
+    # last restart = word 5 "every" (bigram 'every recipe' repeats) -> frame 60
+    assert out["drops"][0]["src_out"] == 60
+    f = grade_cuts(out, words)
+    assert "overcut_partial" not in classes(f)
+
+
+def test_snap_leaves_clean_boundaries_alone():
+    from app.edl import snap_cut_ends_to_takes
+    import copy
+    words = mk_words("First full sentence here now. Second different sentence entirely done.")
+    edl = {"segments": [{"src_in": 60, "src_out": 300}],
+           "drops": [{"src_in": 0, "src_out": 60, "reason": "false_start"}]}  # ends AT sentence 2 start
+    before = copy.deepcopy(edl)
+    out = snap_cut_ends_to_takes(edl, words)
+    assert out["drops"] == before["drops"]

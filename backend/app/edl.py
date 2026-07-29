@@ -3010,3 +3010,91 @@ def clamp_opening_overcut(edl: dict, words: list[dict]) -> dict:
     # (content cuts are encoded BOTH as the drop and as a segment gap).
     edl["segments"], _ = cover_segments(edl.get("segments") or [], new_end, hi)
     return edl
+
+
+def snap_cut_ends_to_takes(edl: dict, words: list[dict]) -> dict:
+    """A cut may end ONLY where a take begins — never mid-sentence.
+
+    Cut-loop round 1 (real cases): dedupe/flub cuts around stumbles overshot
+    into the CLEAN take — removing "most fusion fails for the same" and
+    keeping the orphan "reason.", or removing the restart AND the final
+    take's head ("...so every recipe behind me says heat" lost; only "the
+    pan, then" kept).
+
+    Rule (keep-last-take, the industry convention): for every cut whose END
+    splits a sentence, walk the sentence's words inside the cut. If a RESTART
+    point exists (a bigram repeating an earlier bigram of the same sentence —
+    the final take beginning after stumbles), snap the cut end there;
+    otherwise the whole sentence is clean — snap to the sentence start.
+    Applies only when >=3 non-filler words of the sentence were being removed
+    (mid-sentence filler/dead-air micro-trims stay untouched). Mutates and
+    returns `edl`.
+    """
+    if not words:
+        return edl
+    _fill = {"um", "uh", "uhm", "so", "like", "and", "the", "a", "i"}
+
+    def _n(w: str) -> str:
+        return w.strip(".,!?;:—–-\"'").lower()
+
+    segs = [(s.get("src_in", 0), s.get("src_out", 0)) for s in edl.get("segments") or []]
+    drops = list(edl.get("drops") or [])
+
+    def kept(f: int) -> bool:
+        return any(a <= f < b for a, b in segs) and \
+            not any(d.get("src_in", 0) <= f < d.get("src_out", 0) for d in drops)
+
+    # Sentences (terminal punctuation OR trailing em-dash — AssemblyAI marks
+    # aborted stumbles as "word—") with each word's source frame.
+    sents: list[list[tuple[str, int]]] = []
+    cur: list[tuple[str, int]] = []
+    for w in words:
+        t = str(w.get("word", ""))
+        if not t:
+            continue
+        cur.append((t, ms_to_frame(w.get("start_ms", 0))))
+        if t.rstrip("\"'").endswith((".", "!", "?")) or t.endswith(("—", "–")):
+            sents.append(cur)
+            cur = []
+    if cur:
+        sents.append(cur)
+
+    restored: list[tuple[int, int]] = []
+    for sw in sents:
+        flags = [kept(f) for _, f in sw]
+        if all(flags) or not any(flags) or flags[0]:
+            continue                       # untouched, fully cut, or head-kept
+        first_kept = flags.index(True)
+        cut_head = sw[:first_kept]
+        if sum(1 for w, _ in cut_head if _n(w) not in _fill) < 3:
+            continue
+        toks = [_n(w) for w, _ in sw]
+        snap_i = 0
+        for i in range(1, first_kept):
+            if not toks[i] or toks[i] in _fill:
+                continue
+            big = (toks[i], toks[i + 1] if i + 1 < len(toks) else "")
+            if any((toks[j], toks[j + 1] if j + 1 < len(toks) else "") == big
+                   for j in range(0, i)):
+                snap_i = i                 # keep scanning — LAST restart wins
+        lo, hi = sw[snap_i][1], sw[first_kept][1]
+        if lo < hi:
+            restored.append((lo, hi))
+
+    if not restored:
+        return edl
+    for lo, hi in restored:
+        new_drops = []
+        for d in drops:
+            a, b = d.get("src_in", 0), d.get("src_out", 0)
+            if b <= lo or a >= hi:
+                new_drops.append(d)
+                continue
+            if a < lo:
+                new_drops.append({**d, "src_out": lo})
+            if b > hi:
+                new_drops.append({**d, "src_in": hi})
+        drops = new_drops
+        edl["segments"], _ = cover_segments(edl.get("segments") or [], lo, hi)
+    edl["drops"] = drops
+    return edl
