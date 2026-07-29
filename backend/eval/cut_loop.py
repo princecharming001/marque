@@ -44,6 +44,17 @@ _SUPA = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marqu
 
 async def author_once(client: httpx.AsyncClient, src: str, vid: str, tag: str,
                       sem: asyncio.Semaphore) -> dict | None:
+    # One retry after a pause for network-blip failures (this Mac's Wi-Fi
+    # drops mid-round; twice on 2026-07-29) — real failures return unchanged.
+    j = await _author_attempt(client, src, vid, tag, sem)
+    if j and str(j.get("failed", "")).startswith(("source_unreachable", "author_fallback")):
+        await asyncio.sleep(30)
+        j = await _author_attempt(client, src, vid, tag, sem)
+    return j
+
+
+async def _author_attempt(client: httpx.AsyncClient, src: str, vid: str, tag: str,
+                          sem: asyncio.Semaphore) -> dict | None:
     async with sem:
         body = {"source_url": _SUPA + src, "style": "talking_head",
                 "edit_format": "talking_head", "analyze_first": True,
