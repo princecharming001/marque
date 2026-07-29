@@ -218,3 +218,61 @@ def test_parallel_structure_not_flagged_as_dupe():
     edl = {"segments": [{"src_in": 0, "src_out": 500}], "drops": []}
     f = grade_cuts(edl, words)
     assert "undercut_dupe" not in classes(f)
+
+
+def test_guards_are_importable_from_main():
+    """Round-3 regression: the enforce call was wired into main.py without its
+    import — the fail-soft except swallowed the NameError for a whole round."""
+    import importlib, os
+    os.environ.setdefault("TESTING", "1")
+    m = importlib.import_module("main")
+    from app import edl as _edl
+    assert getattr(m, "snap_cut_ends_to_takes") is _edl.snap_cut_ends_to_takes
+    assert getattr(m, "enforce_sentence_integrity") is _edl.enforce_sentence_integrity
+
+
+def test_tail_cut_of_normal_sentence_restored():
+    """Round-3 real case (take-41s): lost 'the fancy one over.' from 'Flip the
+    fancy one over.' — a tail-cut of a non-aborted, non-duplicate sentence
+    must be restored."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    words = mk_words("Flip the fancy one over. Now flip the drugstore one over.")
+    # cut words 1..4 ("the fancy one over."): frames 12..59
+    edl = {"segments": [{"src_in": 0, "src_out": 12}, {"src_in": 60, "src_out": 400}],
+           "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    kept = _take_kept_fn(out)
+    assert kept(24) and kept(48)     # "fancy" ... "over." back
+    f = grade_cuts(out, words)
+    assert "overcut_partial" not in classes(f)
+
+
+def test_tail_cut_of_duplicate_take_cut_whole():
+    """Tail-cut sentence that duplicates a later kept take: the fragment is
+    the discarded take — cut all of it, don't resurrect it."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    words = mk_words("Most fusion fails for the same reason. "
+                     "Most fusion fails for the same reason. And here is why now.")
+    # take 1 words 0..6; cut words 2..6 keeping "Most fusion"
+    edl = {"segments": [{"src_in": 0, "src_out": 24}, {"src_in": 84, "src_out": 500}],
+           "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    kept = _take_kept_fn(out)
+    assert not kept(0)               # "Most" (take 1) now cut
+    f = grade_cuts(out, words)
+    assert "undercut_dupe" not in classes(f)
+    assert "orphan_fragment" not in classes(f)
+
+
+def test_fully_kept_duplicate_takes_first_cut():
+    """Round-3 real case (owner-fusion): the author kept BOTH takes verbatim —
+    the earlier one must be cut (keep-last-take)."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    words = mk_words("Most fusion fails for the same reason. "
+                     "Most fusion fails for the same reason. And here is why now.")
+    edl = {"segments": [{"src_in": 0, "src_out": 500}], "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    kept = _take_kept_fn(out)
+    assert not kept(0) and kept(84)  # take 1 cut, take 2 kept
+    f = grade_cuts(out, words)
+    assert "undercut_dupe" not in classes(f)

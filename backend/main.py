@@ -35,7 +35,8 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      style_capabilities, TWEAK_OP_TYPES, _BROLL_FLOOR_STOPWORDS,
                      assemble_edl, check_edl_invariants, clamp_edl_to_source,
                      _ENTERTAINMENT_VIDEO_TYPES,
-                     _BROLL_MEME_CAPS, clamp_opening_overcut, snap_cut_ends_to_takes)
+                     _BROLL_MEME_CAPS, clamp_opening_overcut, snap_cut_ends_to_takes,
+                     enforce_sentence_integrity)
 from app import audio as audio_mod
 from app import enhance as enhance_mod
 from app import multipart as multipart_mod

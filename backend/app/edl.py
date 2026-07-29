@@ -3189,6 +3189,32 @@ def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
     for lo, hi in cuts:
         _take_cut(edl, lo, hi, "aborted_take")
 
+    # --- A2: tail-cut of a normal sentence ----------------------------------
+    # ('Flip [the fancy one over.]' — head kept, rest cut). If the sentence
+    # duplicates a later kept take, cut ALL of it (keep-last-take); otherwise
+    # the tail is content and comes back. Trailing filler trims stay.
+    kept = _take_kept_fn(edl)
+    for idx, sw in enumerate(sents):
+        if sw[-1][0].endswith(("—", "–")):
+            continue                       # aborted sentences handled above
+        flags = [kept(s) for _, s, _ in sw]
+        if not flags[0] or flags[-1] or all(flags):
+            continue
+        first_cut = flags.index(False)
+        if any(flags[first_cut:]):
+            continue                       # interior pattern — pass B owns it
+        if not _take_content(t for t, _, _ in sw[first_cut:]):
+            continue
+        toks_all = [t for t, _, _ in sw]
+        dupe_later = any(
+            sum(1 for _, s, _ in nx if kept(s)) / max(1, len(nx)) >= 0.5
+            and _take_is_dupe(toks_all, [t for t, _, _ in nx])
+            for nx in sents[idx + 1: idx + 7])
+        if dupe_later:
+            _take_cut(edl, sw[0][1], sw[-1][2], "dedupe_take")
+        else:
+            _take_restore(edl, sw[first_cut][1], sw[-1][2])
+
     # --- B: interior drops --------------------------------------------------
     kept = _take_kept_fn(edl)
     restores: list[tuple[int, int]] = []
@@ -3246,4 +3272,22 @@ def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
             restores.append((sw[0][1], sw[-1][2]))
     for lo, hi in restores:
         _take_restore(edl, lo, hi)
+
+    # --- D: fully-kept duplicate takes ---------------------------------------
+    # The author kept BOTH takes of the same line — cut the earlier one
+    # (keep-last-take). >=3 content words so short rhetorical repeats
+    # ("It's fine. It's fine.") survive; _take_is_dupe keeps parallel
+    # structure ("the FANCY one" / "the DRUGSTORE one") safe.
+    kept = _take_kept_fn(edl)
+    kflags = [[kept(s) for _, s, _ in sw] for sw in sents]
+    for i, sw in enumerate(sents):
+        if not all(kflags[i]) or len(_take_content(t for t, _, _ in sw)) < 3:
+            continue
+        for j in range(i + 1, min(len(sents), i + 7)):
+            if sum(kflags[j]) / max(1, len(kflags[j])) < 0.5:
+                continue
+            if _take_is_dupe([t for t, _, _ in sw], [t for t, _, _ in sents[j]]):
+                hi = sents[i + 1][0][1] if j == i + 1 else sw[-1][2]
+                _take_cut(edl, sw[0][1], hi, "dedupe_take")
+                break
     return edl
