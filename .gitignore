@@ -31,3 +31,8 @@ render/out/
 # LOOP U — machine-generated vision-tier cache, not meaningful to commit
 # (unlike .shots/*.png itself, which is an intentionally-committed reference set)
 .shots/.ui_eval_cache.json
+
+# eval loop artifacts (renders/jobs) — never commit; disk+git-bloat incident 2026-07-29
+backend/eval/campaign/round_*/
+backend/eval/cutloop/round_*/
+backend/eval/cutloop/state.json
