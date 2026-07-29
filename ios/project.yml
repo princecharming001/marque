@@ -74,6 +74,11 @@ targets:
         CFBundleDisplayName: Yunicorn
         CFBundleIconName: AppIcon
         CFBundleVersion: "61"
+        # Answers ASC's "does your app use encryption?" prompt at the binary
+        # level so it never asks per-build. Accurate: the only crypto usage
+        # in the app is SHA256 content hashing (Media.swift) plus standard
+        # HTTPS/TLS — both export-exempt. Re-audit if that ever changes.
+        ITSAppUsesNonExemptEncryption: false
         MARQUE_BACKEND_URL: https://marque-api.onrender.com
         # Supabase auth (anon key is client-shippable by design). Without these,
         # TestFlight builds silently run demo-mode auth.

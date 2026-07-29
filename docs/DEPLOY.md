@@ -58,6 +58,27 @@ curl -s https://marque-api.onrender.com/readyz    # expect ai/scrape/publish: li
 Docs-only changes don't need a deploy. `RENDER_API_KEY` lives with the account
 owner (never commit it).
 
+### TestFlight per-build compliance/internal-tester steps are automated
+
+Two things ASC used to require a manual website click for on *every* build:
+
+1. **Export compliance question** — permanently eliminated. `ITSAppUsesNonExemptEncryption: false`
+   is baked into `ios/project.yml` -> `Info.plist` (accurate: the app's only crypto
+   use is SHA256 content hashing plus standard HTTPS/TLS, both export-exempt).
+   ASC reads this from the binary at upload time and never asks again. Re-audit
+   this flag if the app ever adds real encryption (E2E, at-rest crypto, etc.).
+2. **Adding the build to Internal Testers** — not eliminable (Apple's API has no
+   "auto-add every new build" setting), but scripted: after `altool --upload-app`
+   succeeds, run:
+   ```bash
+   python3 scripts/testflight_add_to_internal.py <build_number>
+   ```
+   It answers export compliance via the API as a backstop and POSTs the build
+   into the "Internal Testers" beta group (id `c811be00-cd4c-4db6-ace5-38ac0d77377a`,
+   app id `6787590830`). ASC has a propagation lag between `processingState:
+   VALID` and the build becoming visible to beta-group endpoints — the script
+   retries for up to 5 minutes.
+
 ### Gotchas
 
 - `_clip_jobs` (clip/tweak sessions) are **in-memory** — every deploy wipes them;
