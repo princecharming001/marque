@@ -113,3 +113,108 @@ def test_snap_leaves_clean_boundaries_alone():
     before = copy.deepcopy(edl)
     out = snap_cut_ends_to_takes(edl, words)
     assert out["drops"] == before["drops"]
+
+
+def test_snap_dupe_extends_cut_over_first_take():
+    """Round-2 real case (owner-fusion): restoring the split first take kept
+    BOTH takes. When the sentence duplicates a later kept sentence, the whole
+    earlier take is cut instead (keep-last-take)."""
+    from app.edl import snap_cut_ends_to_takes
+    words = mk_words("Most fusion fails for the same reason. "
+                     "Most fusion fails for the same reason. And here is why now.")
+    # take 1 = words 0..6, take 2 = words 7..13; cut 0..words[6] mid-take-1
+    edl = {"segments": [{"src_in": 72, "src_out": 500}],
+           "drops": [{"src_in": 0, "src_out": 72, "reason": "false_start"}]}
+    out = snap_cut_ends_to_takes(edl, words)
+    f = grade_cuts(out, words)
+    assert "undercut_dupe" not in classes(f)
+    assert "orphan_fragment" not in classes(f)
+
+
+def test_aborted_partial_keep_cut_whole():
+    """Round-2 real case (take-40s): '1, do the 2 cuisines—' left as '1,' —
+    a partially-kept aborted sentence must be cut entirely."""
+    from app.edl import enforce_sentence_integrity
+    words = mk_words("1, do the 2 cuisines share a base? "
+                     "1, do the 2 cuisines— 2, check the acid balance today ok.")
+    # sentence 2 = words 8..12 ("1, do the 2 cuisines—"); cut words 9..12 keep "1,"
+    edl = {"segments": [{"src_in": 0, "src_out": 108}, {"src_in": 156, "src_out": 600}],
+           "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    from app.edl import _take_kept_fn
+    kept = _take_kept_fn(out)
+    assert not kept(96)     # "1," (word 8, frame 96) now cut too
+
+
+def test_kept_aborted_restart_gets_cut():
+    """Round-2 real case (take-41s): kept stumble '...the ones that—' restarts
+    as '...the ones there' — the aborted take must be dropped."""
+    from app.edl import enforce_sentence_integrity
+    words = mk_words("The first 3 ingredients on the label are the ones that— "
+                     "The first 3 ingredients on the label are the ones there.")
+    edl = {"segments": [{"src_in": 0, "src_out": 600}], "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    f = grade_cuts(out, words)
+    assert "undercut_stumble" not in classes(f)
+    from app.edl import _take_kept_fn
+    kept = _take_kept_fn(out)
+    assert not kept(0) and kept(ms_to_frame_local(11))  # restart sentence starts at word 11
+
+
+def ms_to_frame_local(word_idx, ms_per_word=400):
+    return round(word_idx * ms_per_word * 30 / 1000)
+
+
+def test_interior_drop_restores_unique_word():
+    """Round-2 real case (take-42s): 'I launched before I was [ready] and...'
+    — an interior drop removed a unique word; it must come back."""
+    from app.edl import enforce_sentence_integrity
+    words = mk_words("I launched before I was ready and that's the only reason anyone showed up.")
+    # drop word 5 "ready": frames 60..71
+    edl = {"segments": [{"src_in": 0, "src_out": 500}],
+           "drops": [{"src_in": 60, "src_out": 72, "reason": "dead_air"}]}
+    out = enforce_sentence_integrity(edl, words)
+    f = grade_cuts(out, words)
+    from app.edl import _take_kept_fn
+    assert _take_kept_fn(out)(60)
+
+
+def test_interior_drop_keeps_stutter_cut():
+    """Round-2 real case (take-41s): 'paying $74 extra for for the packaging'
+    — the overshooting interior drop is restored but the 'for for' stutter
+    stays cut (one 'for' removed)."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    words = mk_words("You're paying $74 extra for for the packaging and the vibe, not the food.")
+    # drop words 3..9 ("extra for for the packaging and the"): frames 36..119
+    edl = {"segments": [{"src_in": 0, "src_out": 500}],
+           "drops": [{"src_in": 36, "src_out": 120, "reason": "flub"}]}
+    out = enforce_sentence_integrity(edl, words)
+    kept = _take_kept_fn(out)
+    assert kept(36)          # "extra" restored
+    assert kept(84)          # "packaging" restored
+    assert not kept(60)      # second "for" (word 5) stays cut as a stutter
+
+
+def test_unique_sentence_restored_mid_video():
+    """Round-1/2 real case (take-47s): 'Here's the one that doesn't.' — a
+    unique content sentence fully dropped mid-video must be restored."""
+    from app.edl import enforce_sentence_integrity, _take_kept_fn
+    words = mk_words("Every recipe behind me says heat the pan first. "
+                     "Here's the one that doesn't. Cold pan, cold oil, then heat slowly.")
+    # sentence 2 = words 9..13, frames 108..165 fully dropped
+    edl = {"segments": [{"src_in": 0, "src_out": 108}, {"src_in": 168, "src_out": 600}],
+           "drops": []}
+    out = enforce_sentence_integrity(edl, words)
+    kept = _take_kept_fn(out)
+    assert kept(108) and kept(156)
+    f = grade_cuts(out, words)
+    assert "overcut_content" not in classes(f)
+
+
+def test_parallel_structure_not_flagged_as_dupe():
+    """Round-2 grader false positive: 'Flip the fancy one over.' vs 'Now flip
+    the drugstore one over.' are parallel beats, not retakes."""
+    words = mk_words("Flip the fancy one over. Now flip the drugstore one over.")
+    edl = {"segments": [{"src_in": 0, "src_out": 500}], "drops": []}
+    f = grade_cuts(edl, words)
+    assert "undercut_dupe" not in classes(f)

@@ -129,7 +129,14 @@ def grade_cuts(edl: dict, words: list[dict], *, video: str = "", job_id: str = "
         for b in kept_sents[i + 1:i + 6]:
             if len(b["words"]) < 5:
                 continue
-            if _overlap(a_toks, _content_tokens(b["text"])) >= 0.75 \
+            b_toks = _content_tokens(b["text"])
+            # Parallel structure ("flip the FANCY one" / "flip the DRUGSTORE
+            # one") is two distinct beats, not a retake: if both sides own
+            # content words the other lacks, skip. Demonstratives don't count.
+            _demo = {"that", "there", "this", "then", "now", "here", "the"}
+            if (a_toks - b_toks) - _demo and (b_toks - a_toks) - _demo:
+                continue
+            if _overlap(a_toks, b_toks) >= 0.75 \
                     and abs(len(a["words"]) - len(b["words"])) <= max(3, len(a["words"]) // 2):
                 findings.append(finding(video, job_id, "undercut_dupe", t=b["start_f"] / FPS,
                     evidence=f"near-duplicate takes both kept: \"{a['text'][:55]}\" ~ \"{b['text'][:55]}\"",

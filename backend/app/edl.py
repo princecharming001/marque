@@ -3012,89 +3012,238 @@ def clamp_opening_overcut(edl: dict, words: list[dict]) -> dict:
     return edl
 
 
-def snap_cut_ends_to_takes(edl: dict, words: list[dict]) -> dict:
-    """A cut may end ONLY where a take begins — never mid-sentence.
+# --- take-grammar guards (cut-flawless loop) --------------------------------
+# Shared vocabulary for the deterministic sentence/take guards below. AssemblyAI
+# marks aborted stumbles as "word—" tokens, so a trailing em-dash ends a sentence
+# just like terminal punctuation.
 
-    Cut-loop round 1 (real cases): dedupe/flub cuts around stumbles overshot
-    into the CLEAN take — removing "most fusion fails for the same" and
-    keeping the orphan "reason.", or removing the restart AND the final
-    take's head ("...so every recipe behind me says heat" lost; only "the
-    pan, then" kept).
+_TAKE_FILL = {"um", "uh", "uhm", "erm", "hmm", "so", "like", "and", "the", "a",
+              "an", "i", "you", "it", "to", "of", "that", "there", "this",
+              "then", "now", "here", "yeah", "okay", "ok"}
 
-    Rule (keep-last-take, the industry convention): for every cut whose END
-    splits a sentence, walk the sentence's words inside the cut. If a RESTART
-    point exists (a bigram repeating an earlier bigram of the same sentence —
-    the final take beginning after stumbles), snap the cut end there;
-    otherwise the whole sentence is clean — snap to the sentence start.
-    Applies only when >=3 non-filler words of the sentence were being removed
-    (mid-sentence filler/dead-air micro-trims stay untouched). Mutates and
-    returns `edl`.
-    """
-    if not words:
-        return edl
-    _fill = {"um", "uh", "uhm", "so", "like", "and", "the", "a", "i"}
 
-    def _n(w: str) -> str:
-        return w.strip(".,!?;:—–-\"'").lower()
+def _take_norm(t: str) -> str:
+    return t.strip(".,!?;:—–-\"'()").lower()
 
-    segs = [(s.get("src_in", 0), s.get("src_out", 0)) for s in edl.get("segments") or []]
-    drops = list(edl.get("drops") or [])
 
-    def kept(f: int) -> bool:
-        return any(a <= f < b for a, b in segs) and \
-            not any(d.get("src_in", 0) <= f < d.get("src_out", 0) for d in drops)
+def _take_content(toks) -> set:
+    return {_take_norm(t) for t in toks} - _TAKE_FILL - {""}
 
-    # Sentences (terminal punctuation OR trailing em-dash — AssemblyAI marks
-    # aborted stumbles as "word—") with each word's source frame.
-    sents: list[list[tuple[str, int]]] = []
-    cur: list[tuple[str, int]] = []
-    for w in words:
+
+def _take_overlap(a: set, b: set) -> float:
+    return len(a & b) / max(1, min(len(a), len(b)))
+
+
+def _take_is_dupe(a_toks, b_toks) -> bool:
+    """Near-duplicate takes — but parallel structure ('flip the FANCY one' /
+    'flip the DRUGSTORE one') is two distinct beats, not a retake: if BOTH
+    sides own content words the other lacks, they are different sentences."""
+    A, B = _take_content(a_toks), _take_content(b_toks)
+    if not A or not B or _take_overlap(A, B) < 0.7:
+        return False
+    return not (A - B and B - A)
+
+
+def _take_sentences(words: list[dict]) -> list[list[tuple[str, int, int]]]:
+    """Per sentence: [(token, start_frame, end_frame)]."""
+    sents, cur = [], []
+    for w in words or []:
         t = str(w.get("word", ""))
         if not t:
             continue
-        cur.append((t, ms_to_frame(w.get("start_ms", 0))))
+        s = ms_to_frame(w.get("start_ms", 0))
+        e = ms_to_frame(w.get("end_ms", (w.get("start_ms", 0) or 0) + 300))
+        cur.append((t, s, max(e, s + 1)))
         if t.rstrip("\"'").endswith((".", "!", "?")) or t.endswith(("—", "–")):
             sents.append(cur)
             cur = []
     if cur:
         sents.append(cur)
+    return sents
 
-    restored: list[tuple[int, int]] = []
-    for sw in sents:
-        flags = [kept(f) for _, f in sw]
+
+def _take_kept_fn(edl: dict):
+    segs = [(s.get("src_in", 0), s.get("src_out", 0)) for s in edl.get("segments") or []]
+    drops = [(d.get("src_in", 0), d.get("src_out", 0)) for d in edl.get("drops") or []]
+
+    def kept(f: int) -> bool:
+        return any(a <= f < b for a, b in segs) and not any(a <= f < b for a, b in drops)
+    return kept
+
+
+def _take_cut(edl: dict, lo: int, hi: int, reason: str) -> None:
+    if lo < hi:
+        edl["drops"] = list(edl.get("drops") or []) + [
+            {"src_in": lo, "src_out": hi, "reason": reason}]
+
+
+def _take_restore(edl: dict, lo: int, hi: int) -> None:
+    if lo >= hi:
+        return
+    drops = []
+    for d in edl.get("drops") or []:
+        a, b = d.get("src_in", 0), d.get("src_out", 0)
+        if b <= lo or a >= hi:
+            drops.append(d)
+            continue
+        if a < lo:
+            drops.append({**d, "src_out": lo})
+        if b > hi:
+            drops.append({**d, "src_in": hi})
+    edl["drops"] = drops
+    edl["segments"], _ = cover_segments(edl.get("segments") or [], lo, hi)
+
+
+def snap_cut_ends_to_takes(edl: dict, words: list[dict]) -> dict:
+    """A cut may end ONLY where a take begins — never mid-sentence.
+
+    Keep-last-take (the industry convention): for every cut whose END splits a
+    sentence, either (a) the sentence duplicates a LATER kept sentence — the
+    partially-cut one IS the discarded earlier take, so cut ALL of it — or
+    (b) snap the cut end to the last RESTART point inside the sentence (a
+    bigram repeating an earlier bigram of the same sentence = the final take
+    beginning after stumbles), or to the sentence start when the sentence has
+    no restarts. Pure-filler head trims are left alone. Mutates + returns edl.
+    """
+    if not words:
+        return edl
+    sents = _take_sentences(words)
+    kept = _take_kept_fn(edl)
+
+    actions: list[tuple[str, int, int]] = []
+    for idx, sw in enumerate(sents):
+        flags = [kept(s) for _, s, _ in sw]
         if all(flags) or not any(flags) or flags[0]:
             continue                       # untouched, fully cut, or head-kept
         first_kept = flags.index(True)
-        cut_head = sw[:first_kept]
-        if sum(1 for w, _ in cut_head if _n(w) not in _fill) < 3:
+        if not _take_content(t for t, _, _ in sw[:first_kept]):
+            continue                       # only filler trimmed off the head
+        toks_all = [t for t, _, _ in sw]
+        dupe_later = False
+        for nx in sents[idx + 1: idx + 7]:
+            nx_kept = sum(1 for _, s, _ in nx if kept(s)) / max(1, len(nx))
+            if nx_kept >= 0.5 and _take_is_dupe(toks_all, [t for t, _, _ in nx]):
+                dupe_later = True
+                break
+        if dupe_later:
+            actions.append(("cut", sw[0][1], sw[-1][2]))
             continue
-        toks = [_n(w) for w, _ in sw]
+        toks = [_take_norm(t) for t, _, _ in sw]
         snap_i = 0
         for i in range(1, first_kept):
-            if not toks[i] or toks[i] in _fill:
+            if not toks[i] or toks[i] in _TAKE_FILL:
                 continue
             big = (toks[i], toks[i + 1] if i + 1 < len(toks) else "")
             if any((toks[j], toks[j + 1] if j + 1 < len(toks) else "") == big
                    for j in range(0, i)):
                 snap_i = i                 # keep scanning — LAST restart wins
-        lo, hi = sw[snap_i][1], sw[first_kept][1]
-        if lo < hi:
-            restored.append((lo, hi))
+        actions.append(("restore", sw[snap_i][1], sw[first_kept][1]))
 
-    if not restored:
+    for kind, lo, hi in actions:
+        if kind == "restore":
+            _take_restore(edl, lo, hi)
+        else:
+            _take_cut(edl, lo, hi, "dedupe_take")
+    return edl
+
+
+def enforce_sentence_integrity(edl: dict, words: list[dict]) -> dict:
+    """Deterministic take-grammar guards (cut-loop round 2), run after
+    snap_cut_ends_to_takes:
+
+    A. An ABORTED sentence (trailing em-dash) that is PARTIALLY kept is always
+       broken on screen — cut the whole sentence ('1, do the 2 cuisines—'
+       left as '1,'). A fully-kept aborted sentence whose content restarts as
+       the next kept sentence is a stumble the author missed — cut it too.
+    B. A drop strictly INSIDE a kept sentence may remove only stutters
+       (adjacent duplicate words) and silence, never unique words ('before I
+       was [ready] and...'). Restore them; re-cut the duplicates themselves
+       ('for for' → one 'for').
+    C. A fully-dropped sentence with terminal punctuation, ≥3 content words,
+       kept speech on BOTH sides, and no near-duplicate among kept neighbours
+       is unique content ('Here's the one that doesn't.') — restore it: the
+       editor cuts disfluencies, not content.
+    """
+    if not words:
         return edl
-    for lo, hi in restored:
-        new_drops = []
-        for d in drops:
-            a, b = d.get("src_in", 0), d.get("src_out", 0)
-            if b <= lo or a >= hi:
-                new_drops.append(d)
+    sents = _take_sentences(words)
+    if not sents:
+        return edl
+
+    # --- A: aborted takes ---------------------------------------------------
+    kept = _take_kept_fn(edl)
+    cuts: list[tuple[int, int]] = []
+    for i, sw in enumerate(sents):
+        if not sw[-1][0].endswith(("—", "–")):
+            continue
+        flags = [kept(s) for _, s, _ in sw]
+        if not any(flags):
+            continue
+        nxt = sents[i + 1] if i + 1 < len(sents) else None
+        nxt_kept = bool(nxt) and             sum(1 for _, s, _ in nxt if kept(s)) / max(1, len(nxt)) >= 0.5
+        A = _take_content(t for t, _, _ in sw)
+        restart = bool(nxt_kept and A and
+                       _take_overlap(A, _take_content(t for t, _, _ in nxt)) >= 0.6)
+        if (not all(flags)) or restart:
+            cuts.append((sw[0][1], nxt[0][1] if nxt else sw[-1][2]))
+    for lo, hi in cuts:
+        _take_cut(edl, lo, hi, "aborted_take")
+
+    # --- B: interior drops --------------------------------------------------
+    kept = _take_kept_fn(edl)
+    restores: list[tuple[int, int]] = []
+    stutters: list[tuple[int, int]] = []
+    for sw in sents:
+        flags = [kept(s) for _, s, _ in sw]
+        if len(sw) < 3 or not (flags[0] and flags[-1]) or all(flags):
+            continue
+        i = 1
+        while i < len(sw) - 1:
+            if flags[i]:
+                i += 1
                 continue
-            if a < lo:
-                new_drops.append({**d, "src_out": lo})
-            if b > hi:
-                new_drops.append({**d, "src_in": hi})
-        drops = new_drops
-        edl["segments"], _ = cover_segments(edl.get("segments") or [], lo, hi)
-    edl["drops"] = drops
+            j = i
+            while j < len(sw) - 1 and not flags[j]:
+                j += 1
+            uniq = any(_take_norm(sw[k][0]) not in _TAKE_FILL
+                       and _take_norm(sw[k][0]) != _take_norm(sw[k - 1][0])
+                       for k in range(i, j))
+            if uniq:
+                restores.append((sw[i][1], sw[j - 1][2]))
+                for k in range(i, j):
+                    if _take_norm(sw[k][0]) == _take_norm(sw[k - 1][0]):
+                        stutters.append((sw[k][1], sw[k][2]))
+            i = j
+    for lo, hi in restores:
+        _take_restore(edl, lo, hi)
+    for lo, hi in stutters:
+        _take_cut(edl, lo, hi, "stutter")
+
+    # --- C: unique-content restore ------------------------------------------
+    kept = _take_kept_fn(edl)
+    kflags = [[kept(s) for _, s, _ in sw] for sw in sents]
+    restores = []
+    for i, sw in enumerate(sents):
+        if sw[-1][0].endswith(("—", "–")) or \
+                not sw[-1][0].rstrip("\"'").endswith((".", "!", "?")):
+            continue
+        if any(kflags[i]):
+            continue
+        A = _take_content(t for t, _, _ in sw)
+        if len(A) < 3:
+            continue
+        if not any(any(fl) for fl in kflags[:i]) or \
+                not any(any(fl) for fl in kflags[i + 1:]):
+            continue                # pre-roll/tail regions have their own guards
+        dupe = False
+        for j in range(max(0, i - 5), min(len(sents), i + 6)):
+            if j == i or sum(kflags[j]) / max(1, len(kflags[j])) < 0.5:
+                continue
+            if _take_overlap(A, _take_content(t for t, _, _ in sents[j])) >= 0.5:
+                dupe = True
+                break
+        if not dupe:
+            restores.append((sw[0][1], sw[-1][2]))
+    for lo, hi in restores:
+        _take_restore(edl, lo, hi)
     return edl

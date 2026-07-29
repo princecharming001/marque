@@ -5301,6 +5301,10 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data = snap_cut_ends_to_takes(edl_data, words)
         except Exception as e:
             logging.warning("snap_cut_ends_to_takes failed (%s) — keeping author cuts", e)
+        try:
+            edl_data = enforce_sentence_integrity(edl_data, words)
+        except Exception as e:
+            logging.warning("enforce_sentence_integrity failed (%s) — keeping author cuts", e)
         # Retention-editor upgrade: deterministic post-passes applied to WHATEVER EDL
         # either author path produced — so both the plan path and the legacy
         # direct-EDL author benefit identically. Flag-gated (RETENTION_PASSES env,
