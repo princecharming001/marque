@@ -63,6 +63,12 @@ async def author_once(client: httpx.AsyncClient, src: str, vid: str, tag: str,
             j = pr.json()
             st = (j.get("clips") or [{}])[0].get("status") or j.get("status")
             if st == "ready" and j.get("edl"):
+                # Network-degraded authoring is surfaced, never graded as real:
+                # the fallback stamps ai_edit_unavailable on every clip (F13).
+                warns = " ".join(w for c in j.get("clips") or []
+                                 for w in c.get("warnings") or [])
+                if "ai_edit_unavailable" in warns:
+                    return {"failed": "author_fallback (network)", "job_id": jid}
                 return j
             if st == "failed":
                 return {"failed": j.get("error") or "unknown", "job_id": jid}
