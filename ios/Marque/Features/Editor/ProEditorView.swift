@@ -555,23 +555,27 @@ struct ProEditorView: View {
         AdjustKnob(label: label, initial: value, range: range, commit: commit)
     }
 
-    // The 10 popular caption styles (Feature 2). Each chip carries a color swatch + name and
-    // applies the full preset (base style + font/caps/color/outline/box) on tap.
+    // The 10 popular caption styles (Feature 2), WYSIWYG: each chip RENDERS the preset's
+    // actual look (weight, caps, accent, outline, background pill) instead of an abstract
+    // color dot — you pick the caption you'll see, not a name you have to decode.
     private var captionStyleRow: some View {
         let activeId = activeCaptionPresetId()
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
                 ForEach(CaptionPreset.all) { p in
                     Button { applyCaptionPreset(p) } label: {
-                        HStack(spacing: 6) {
-                            Circle().fill(p.swatch).frame(width: 12, height: 12)
-                                .overlay(Circle().strokeBorder(.white.opacity(0.4), lineWidth: 0.5))
-                            Text(p.label).font(.system(size: 11, weight: activeId == p.id ? .bold : .medium))
+                        VStack(spacing: 3) {
+                            captionPresetSample(p)
+                                .frame(height: 16)
+                            Text(p.label)
+                                .font(.system(size: 9, weight: activeId == p.id ? .bold : .medium))
+                                .foregroundStyle(activeId == p.id ? Palette.accent : .white.opacity(0.55))
                         }
-                        .foregroundStyle(activeId == p.id ? Palette.ink : .white)
-                        .padding(.horizontal, 10).frame(height: 30)
-                        .background(activeId == p.id ? Palette.onInk : Color.white.opacity(0.12))
-                        .clipShape(Capsule())
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Color.white.opacity(activeId == p.id ? 0.16 : 0.07))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                            .strokeBorder(activeId == p.id ? Palette.accent : .clear, lineWidth: 1.5))
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.capPreset.\(p.id)")
@@ -579,9 +583,29 @@ struct ProEditorView: View {
             }
             .padding(.horizontal, Space.md)
         }
-        .frame(height: 42)
+        .frame(height: 52)
         .background(Palette.ink.opacity(0.25))
         .accessibilityIdentifier("editorPro.captionStyleRow")
+    }
+
+    /// A one-word live sample in the preset's real treatment: caps, accent color, outline
+    /// shadow, background pill — the picker speaks the render's language.
+    @ViewBuilder private func captionPresetSample(_ p: CaptionPreset) -> some View {
+        let word = p.uppercase ? "WORDS" : "words"
+        let fg: Color = p.accent.flatMap { hex -> Color? in
+            let s = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+            return UInt(s.prefix(6), radix: 16).map { Color(hex: $0) }
+        } ?? .white
+        let boxed = !p.bg.isEmpty
+        Text(word)
+            .font(.system(size: 11, weight: p.strokePx > 4 ? .black : (p.style == "clean" ? .semibold : .heavy)))
+            .foregroundStyle(boxed ? Color.white : fg)
+            .shadow(color: .black.opacity(p.strokePx > 0 ? 0.9 : 0.5),
+                    radius: p.strokePx > 0 ? 0.5 : 1, x: 0, y: p.strokePx > 0 ? 0 : 1)
+            .padding(.horizontal, boxed ? 5 : 0)
+            .padding(.vertical, boxed ? 1 : 0)
+            .background(boxed ? p.swatch : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
     }
 
     private var captionOptionsRow: some View {

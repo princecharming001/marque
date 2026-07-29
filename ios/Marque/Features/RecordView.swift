@@ -758,8 +758,10 @@ struct RecordView: View {
 
     // MARK: Build 54 — pre-submit caption treatment
 
-    /// The three server caption styles with live mini-previews, plus size words. Defaults to
-    /// "Auto" so the AI plan keeps choosing unless the creator explicitly takes the wheel.
+    /// WYSIWYG caption picker: each style is a mini 9:16 video frame with the caption
+    /// rendered at its REAL position (lower third), so the choice reads as "this is what
+    /// my video will look like" instead of an abstract text chip. Defaults to "Auto" so
+    /// the AI plan keeps choosing unless the creator explicitly takes the wheel.
     /// The pick ALSO steers the hook title block server-side (shared font treatment).
     private var captionStyleSection: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
@@ -767,59 +769,92 @@ struct RecordView: View {
                 .foregroundStyle(.white.opacity(0.5))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.sm) {
-                    captionStyleChip(nil, label: "Auto") { Text("Your words").font(.system(size: 11, weight: .medium)).foregroundStyle(.white.opacity(0.85)) }
-                    captionStyleChip("clean", label: "Clean") {
-                        Text("Your words").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                    captionFrameCard(nil, label: "Auto") {
+                        VStack(spacing: 2) {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text("AI picks").font(.system(size: 8, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    captionFrameCard("clean", label: "Clean") {
+                        Text("your words").font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
                             .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
                     }
-                    captionStyleChip("bold-word", label: "Bold") {
-                        HStack(spacing: 3) {
-                            Text("Your").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
-                            Text("WORDS").font(.system(size: 11, weight: .black)).foregroundStyle(Palette.accent)
+                    captionFrameCard("bold-word", label: "Bold") {
+                        VStack(spacing: 1) {
+                            Text("YOUR").font(.system(size: 10, weight: .black)).foregroundStyle(.white)
+                            Text("WORDS").font(.system(size: 10, weight: .black)).foregroundStyle(Palette.accent)
                         }
                     }
-                    captionStyleChip("karaoke", label: "Karaoke") {
-                        HStack(spacing: 3) {
-                            Text("Your").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.ink)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 3))
-                            Text("words").font(.system(size: 11, weight: .semibold)).foregroundStyle(.white)
+                    captionFrameCard("karaoke", label: "Karaoke") {
+                        HStack(spacing: 2) {
+                            Text("your").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.ink)
+                                .padding(.horizontal, 3).padding(.vertical, 1)
+                                .background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 2))
+                            Text("words").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
                         }
                     }
-                    Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1, height: 22)
-                    ForEach([("S", "small"), ("M", "medium"), ("L", "large")], id: \.1) { label, v in
-                        Button {
-                            captionSizeChoice = captionSizeChoice == v ? nil : v
-                        } label: {
-                            Text(label).font(.system(size: 11, weight: captionSizeChoice == v ? .bold : .medium))
-                                .foregroundStyle(captionSizeChoice == v ? Palette.ink : .white)
-                                .frame(width: 28, height: 28)
-                                .background(captionSizeChoice == v ? Palette.onInk : Color.white.opacity(0.12))
-                                .clipShape(Circle())
+                }
+            }
+            // Size = literal type scale: three "Aa" at their relative sizes, not S/M/L
+            // circles disconnected from what they resize.
+            HStack(spacing: Space.sm) {
+                Text("Size").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                ForEach([(11.0, "small"), (14.0, "medium"), (17.0, "large")], id: \.1) { pt, v in
+                    let active = captionSizeChoice == v
+                    Button {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            captionSizeChoice = active ? nil : v
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("record.capSize.\(v)")
+                    } label: {
+                        Text("Aa").font(.system(size: pt, weight: active ? .bold : .medium))
+                            .foregroundStyle(active ? Palette.ink : .white)
+                            .frame(width: 40, height: 32)
+                            .background(active ? Palette.onInk : Color.white.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.capSize.\(v)")
+                }
+                if captionSizeChoice == nil {
+                    Text("Auto").font(AppFont.caption).foregroundStyle(.white.opacity(0.35))
                 }
             }
         }
     }
 
-    @ViewBuilder private func captionStyleChip(_ id: String?, label: String,
+    /// A mini 9:16 "video frame" chip: faint head silhouette up top implies the footage,
+    /// the caption preview sits at the real lower-third position.
+    @ViewBuilder private func captionFrameCard(_ id: String?, label: String,
                                                @ViewBuilder preview: () -> some View) -> some View {
         let active = captionStyleChoice == id
-        Button { captionStyleChoice = id } label: {
-            VStack(spacing: 3) {
-                preview()
-                    .frame(height: 18)
-                Text(label).font(.system(size: 9, weight: active ? .bold : .medium))
+        Button {
+            withAnimation(.easeOut(duration: 0.12)) { captionStyleChoice = id }
+        } label: {
+            VStack(spacing: 4) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.black.opacity(0.55)],
+                                             startPoint: .top, endPoint: .bottom))
+                    // faint speaker silhouette — reads as "your video", never as content
+                    Circle().fill(Color.white.opacity(0.10))
+                        .frame(width: 20, height: 20)
+                        .offset(y: -16)
+                    preview()
+                        .frame(maxWidth: 56)
+                        .minimumScaleFactor(0.6)
+                        .offset(y: 18)
+                }
+                .frame(width: 62, height: 96)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
+                                  lineWidth: active ? 2 : 1))
+                Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
                     .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(Color.white.opacity(active ? 0.16 : 0.08))
-            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                .strokeBorder(active ? Palette.accent : .clear, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("record.capStyle.\(id ?? "auto")")
@@ -833,73 +868,44 @@ struct RecordView: View {
         "link": "Everything's linked in my bio",
     ]
 
-    /// Pregenerated CTA presets + a custom lane, with an optional @handle and logo — the
-    /// backend folds these into the end card (music continues underneath it).
+    /// WYSIWYG outro builder: presets are mini end-card tiles (you pick the card you'll
+    /// ship), and the chosen card becomes a LIVE editable preview — CTA text, @handle and
+    /// logo are edited in place on the card itself, exactly where they render. The backend
+    /// folds these into the end card (music continues underneath it).
     private var outroSection: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            Text("OUTRO").font(AppFont.micro).tracking(Track.label)
+            Text("ENDING").font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(.white.opacity(0.5))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.sm) {
-                    ForEach([("none", "None"), ("follow", "Follow"), ("comment", "Comment"),
-                             ("link", "Link in bio"), ("custom", "Custom")], id: \.0) { id, label in
-                        let active = outroPreset == id
-                        Button { withAnimation(.easeOut(duration: 0.15)) { outroPreset = id } } label: {
-                            Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
-                                .foregroundStyle(active ? Palette.ink : .white)
-                                .padding(.horizontal, 12).frame(height: 30)
-                                .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                                .clipShape(Capsule())
+                    outroTile("none", label: "None") {
+                        Image(systemName: "slash.circle")
+                            .font(.system(size: 14, weight: .light))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                    outroTile("follow", label: "Follow") { outroTileCard("Follow for more") }
+                    outroTile("comment", label: "Comment") { outroTileCard("Comment your take") }
+                    outroTile("link", label: "Link") { outroTileCard("Link in bio") }
+                    outroTile("custom", label: "Custom") {
+                        VStack(spacing: 2) {
+                            Image(systemName: "character.cursor.ibeam")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text("your words").font(.system(size: 7, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.55))
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("record.outro.\(id)")
                     }
                 }
             }
             if outroPreset != "none" {
-                if outroPreset == "custom" {
-                    TextField("", text: $outroCustomText,
-                              prompt: Text("Your call to action").foregroundColor(.white.opacity(0.6)))
-                        .font(AppFont.callout).foregroundStyle(.white)
-                        .padding(Space.sm)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                        .accessibilityIdentifier("record.outroCustom")
-                }
-                HStack(spacing: Space.sm) {
-                    TextField("", text: $outroHandle,
-                              prompt: Text("@handle (optional)").foregroundColor(.white.opacity(0.6)))
-                        .font(AppFont.callout).foregroundStyle(.white)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        .padding(Space.sm)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                        .accessibilityIdentifier("record.outroHandle")
-                    PhotosPicker(selection: $outroLogoItem, matching: .images) {
-                        HStack(spacing: 4) {
-                            if outroLogoUploading {
-                                ProgressView().controlSize(.mini).tint(.white)
-                            } else {
-                                Image(systemName: outroLogoURL.isEmpty ? "photo.badge.plus" : "checkmark.circle.fill")
-                                    .font(.system(size: 12, weight: .semibold))
-                            }
-                            Text(outroLogoURL.isEmpty ? "Logo" : "Added")
-                                .font(.system(size: 11, weight: .medium))
-                        }
-                        .foregroundStyle(outroLogoURL.isEmpty ? .white : Palette.accent)
-                        .padding(.horizontal, 10).frame(height: 34)
-                        .background(Color.white.opacity(0.12))
-                        .clipShape(Capsule())
-                    }
-                    .accessibilityIdentifier("record.outroLogo")
-                }
+                outroLiveCard
                 if outroLogoFailed {
                     Text("Couldn't add that logo — try another image.")
                         .font(AppFont.caption).foregroundStyle(Palette.critical)
                 }
                 if outroPreset == "custom",
                    outroCustomText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Add your call to action above — the outro is skipped while it's empty.")
+                    Text("Type your call to action on the card — the ending is skipped while it's empty.")
                         .font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
                 }
             }
@@ -909,6 +915,117 @@ struct RecordView: View {
         // re-picking the SAME photo then never re-fired onChange).
         .onChange(of: outroLogoItem) { _, item in
             if let item { Task { await uploadOutroLogo(item) } }
+        }
+    }
+
+    /// Mini end-card tile — same 9:16 frame language as the caption cards, so the row
+    /// reads as "pick the card your video ends on".
+    @ViewBuilder private func outroTile(_ id: String, label: String,
+                                        @ViewBuilder face: () -> some View) -> some View {
+        let active = outroPreset == id
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { outroPreset = id }
+        } label: {
+            VStack(spacing: 4) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Palette.ink.opacity(id == "none" ? 0.35 : 0.9))
+                    face()
+                }
+                .frame(width: 62, height: 96)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
+                                  lineWidth: active ? 2 : 1))
+                Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
+                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("record.outro.\(id)")
+    }
+
+    /// The tiny end-card face inside a tile: logo dot, serif CTA line, handle line —
+    /// the real card's layout at postage-stamp scale.
+    @ViewBuilder private func outroTileCard(_ copy: String) -> some View {
+        VStack(spacing: 3) {
+            Circle().fill(Color.white.opacity(0.18)).frame(width: 10, height: 10)
+            Text(copy)
+                .font(Typeface.display(8, .semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .minimumScaleFactor(0.7)
+                .frame(maxWidth: 52)
+            RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.30))
+                .frame(width: 24, height: 2)
+        }
+    }
+
+    /// The LIVE end card: what you see is the card that renders. CTA text, @handle and
+    /// logo are edited directly in place — no detached form fields.
+    private var outroLiveCard: some View {
+        VStack(spacing: Space.xs) {
+            VStack(spacing: Space.sm) {
+                // Logo slot — tap the circle to add/replace.
+                PhotosPicker(selection: $outroLogoItem, matching: .images) {
+                    ZStack {
+                        Circle().fill(Color.white.opacity(0.10))
+                        if outroLogoUploading {
+                            ProgressView().controlSize(.small).tint(.white)
+                        } else if let url = URL(string: outroLogoURL), !outroLogoURL.isEmpty {
+                            AsyncImage(url: url) { img in
+                                img.resizable().scaledToFill()
+                            } placeholder: {
+                                ProgressView().controlSize(.mini).tint(.white)
+                            }
+                            .frame(width: 44, height: 44)
+                            .clipShape(Circle())
+                        } else {
+                            Image(systemName: "plus")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.55))
+                        }
+                    }
+                    .frame(width: 44, height: 44)
+                    .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                }
+                .accessibilityIdentifier("record.outroLogo")
+
+                if outroPreset == "custom" {
+                    TextField("", text: $outroCustomText,
+                              prompt: Text("Your call to action")
+                                .font(Typeface.display(19, .semibold))
+                                .foregroundColor(.white.opacity(0.4)),
+                              axis: .vertical)
+                        .font(Typeface.display(19, .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .accessibilityIdentifier("record.outroCustom")
+                } else {
+                    Text(Self.outroPresets[outroPreset] ?? "")
+                        .font(Typeface.display(19, .semibold))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                }
+
+                TextField("", text: $outroHandle,
+                          prompt: Text("@handle (optional)").foregroundColor(.white.opacity(0.35)))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("record.outroHandle")
+            }
+            .padding(.vertical, Space.lg)
+            .padding(.horizontal, Space.md)
+            .frame(maxWidth: .infinity)
+            .background(Palette.ink.opacity(0.9))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
+
+            Text("This card ends your video — the music keeps playing under it.")
+                .font(AppFont.caption).foregroundStyle(.white.opacity(0.4))
         }
     }
 
