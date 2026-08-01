@@ -16,30 +16,30 @@ import { LAYOUT } from "../layout";
 // scalloped mane cut into the back of the neck.
 const Mark: React.FC<{ size: number }> = ({ size }) => (
   <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-    {/* horn: slender taper from the forehead, tip up-right */}
-    <path d="M18.2 8.6 L24.6 1.4 L20.9 10.2 Z" fill="white" opacity={0.95} />
-    {/* horn spiral notches */}
-    <path d="M20.6 5.9 L22.6 6.8 M19.6 7.6 L21.4 8.5" stroke="rgba(8,8,12,0.35)"
-      strokeWidth={0.9} strokeLinecap="round" />
-    {/* head + neck: poll, upright ear, forehead stop, squared muzzle, jaw, throat,
-        then a mane of three scallops cut into the back edge of the neck */}
+    {/* Chunky right-facing unicorn head — bold solid silhouette so the three
+        tells (horn, upright ear, stepped muzzle) survive at 30px. */}
     <path
-      d="M13.2 9.8
-         L15.2 5.6 L16.9 9.2
-         C18.6 9.6 20.6 10.8 21.9 12.6
-         C23.2 14.3 23.9 16.2 24.1 18.0
-         L21.4 18.4 C21.0 19.4 20.2 20.1 19.1 20.4
-         C17.9 20.7 16.7 20.5 15.8 19.8
-         C15.9 21.6 15.4 23.4 14.3 24.9
-         C13.1 26.5 11.3 27.7 9.2 28.3
-         L8.0 24.9 L10.2 23.9 L8.6 21.3 L11.0 20.5 L9.8 17.8
-         C10.2 14.6 11.3 11.7 13.2 9.8 Z"
-      fill="white" opacity={0.95}
+      d="M6 30
+         L8 18
+         C8.4 14.6 10.2 11.2 13 9.2
+         L15.1 3.6 L17.2 8.2
+         L18.4 8.2
+         L25.6 1.2 L21.2 9.6
+         C22.4 10.4 23.4 11.4 24.2 12.8
+         L28.6 15.2 L29.4 17.6 L28.4 19.8
+         L24.6 20.6
+         C22.8 21.8 20.4 22.4 18 22
+         C17.4 24.8 15.6 27.4 12.8 29
+         L12 30 Z"
+      fill="white" opacity={0.96}
     />
-    {/* eye: above the jaw, forward on the head */}
-    <circle cx="17.9" cy="13.6" r="1.15" fill="rgba(8,8,12,0.9)" />
-    {/* nostril on the squared muzzle */}
-    <circle cx="22.6" cy="16.6" r="0.6" fill="rgba(8,8,12,0.55)" />
+    {/* eye */}
+    <circle cx="21.6" cy="14.2" r="1.35" fill="rgba(8,8,12,0.92)" />
+    {/* nostril on the muzzle */}
+    <circle cx="27.2" cy="17.6" r="0.75" fill="rgba(8,8,12,0.6)" />
+    {/* mane: dark notches cut into the neck so they read as texture, not blob */}
+    <path d="M9.3 17.5 C10.6 16.2 11.2 14.6 11.3 13.0 M10.6 21.5 C12.2 20.4 13.1 18.9 13.4 17.2"
+      stroke="rgba(8,8,12,0.35)" strokeWidth={1.1} strokeLinecap="round" />
   </svg>
 );
 
