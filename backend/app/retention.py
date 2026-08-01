@@ -1128,7 +1128,7 @@ def _title_pos_y(face_box: dict | None, *, captions_top: bool,
 
 def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
                        hints: dict | None = None, script: dict | None = None,
-                       theme=None) -> dict:
+                       theme=None, job_seed: str | None = None) -> dict:
     """WS4a → Title v2: synthesize the hook-title text_sticker over the video's open.
     Duration = end of the first spoken sentence, computed in OUTPUT frames and clamped
     [2s, 5s] (fallback 3s) — the sticker window is stored in source coords but sized so
@@ -1141,6 +1141,28 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     if style in _HOOK_SKIP_STYLES:
         return edl
     hints = hints or {}
+    # Build 62 (Wave 2): the title-card policy gate — fire only per the convention
+    # rate for this content type + named suppress predicates. Identity defaults
+    # (rate 1.0, no suppress) reproduce the always-on behavior byte-for-byte.
+    # The rate gate is DETERMINISTIC on job_seed: a re-render of the same job
+    # makes the same call (never random()).
+    policy = hints.get("title_card_policy") or {}
+    if policy:
+        from app.conventions import seed_fraction
+        rates = policy.get("rate") or {}
+        rate = float(rates.get(hints.get("content_type") or "default",
+                               rates.get("default", 1.0)))
+        if seed_fraction(job_seed, "title_card") >= rate:
+            return edl
+        suppress = set(policy.get("suppress") or [])
+        cap_opts = edl.get("caption_options") or {}
+        if "captions_top" in suppress and cap_opts.get("position") == "top":
+            return edl
+        if "under_8s" in suppress:
+            _segs = edl.get("segments") or []
+            _total = sum(max(0, s.get("src_out", 0) - s.get("src_in", 0)) for s in _segs)
+            if _total < 8 * 30:
+                return edl
     hook_text = (hints.get("hook_text") or "").strip()
     if not hook_text:
         _hk = (script or {}).get("hook")   # string OR {text, ...} dict
@@ -1218,12 +1240,17 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     # reading it here would let a theme's caption font silently override its own
     # sticker_font whenever the two differ.
     _cap_font = str((hints or {}).get("caption_font") or "").strip()
+    # Build 62 (Wave 2): caption-family style tokens — precedence: theme.hook
+    # explicit > family token > legacy default. Identity: STICKER_STYLE_TOKENS is
+    # empty, so this resolves exactly as before until the findings fill it.
+    from app.conventions import STICKER_STYLE_TOKENS as _SST
+    _fam = _SST.get(str((hints or {}).get("caption_style") or "")) or {}
     edl["overlays"] = overlays + [{
         "type": "text_sticker", "src_in": first_kept, "src_out": end_src,
         "text": hook_text, "scale": 1.05, "pos_x": 0.5, "pos_y": pos_y,
-        "rotation": 0.0, "color": None,
-        "bg": hook_cfg.get("sticker_bg") or "box",
-        "font": _cap_font or hook_cfg.get("sticker_font") or "inter",
+        "rotation": 0.0, "color": hook_cfg.get("sticker_color") or _fam.get("color"),
+        "bg": hook_cfg.get("sticker_bg") or _fam.get("bg") or "box",
+        "font": _cap_font or hook_cfg.get("sticker_font") or _fam.get("font") or "inter",
     }]
     return edl
 
@@ -1307,6 +1334,51 @@ def apply_hook_package(edl: dict, words: list[dict], *, style: str,
 _END_CARD_SKIP_STYLES = {"fast_cuts", "duet_split"}   # WS5 matrix: loop-friendly / play-freeze own the close
 
 
+def _cta_read_frames(text: str) -> int:
+    """Build 57 (craft): the hold scales with the TEXT — a fixed 75f gave 'Follow'
+    and a two-line CTA identical read time. Two clean reads (GoE #36 band):
+    BBC 0.3s/word + Netflix 20 chars/sec, x2, clamped to the model's 30-150.
+    Shared by place_end_card and place_cta_overlay (Wave 2)."""
+    need_s = max(len(text.split()) * 0.3, len(text) / 20.0)
+    return int(min(150, max(75, round(2 * need_s * 30))))
+
+
+def place_cta_overlay(edl: dict, words: list[dict], *, style: str,
+                      hints: dict | None = None) -> dict:
+    """Build 62 (Wave 2): the winners' text-overlay CTA pattern — the CTA rides a
+    text_sticker over the final beats of the SPEAKER (no hard-card takeover).
+    Uses the same read-time math as place_end_card; sits in the lower third above
+    the caption band (TextStickers' caption-band nudge resolves any residual
+    collision). Chosen by the CTA pattern weights; same skip matrix as the card."""
+    hints = hints or {}
+    end_card_hint = hints.get("end_card") or {}
+    if style in _END_CARD_SKIP_STYLES and not end_card_hint.get("creator"):
+        return edl
+    text = (end_card_hint.get("text") or "").strip()
+    if not text:
+        return edl
+    edl = copy.deepcopy(edl)
+    segments = edl.get("segments") or []
+    drops = edl.get("drops") or []
+    kept = _kept_intervals(segments, drops)
+    if not kept:
+        return edl
+    hold_src = _cta_read_frames(text)
+    last_end = kept[-1][1]
+    src_in = max(kept[-1][0], last_end - hold_src)
+    overlays = edl.get("overlays") or []
+    # never stack on an existing overlay in the close window
+    if any(o.get("src_out", 0) > src_in for o in overlays):
+        return edl
+    overlays.append({
+        "type": "text_sticker", "src_in": src_in, "src_out": last_end,
+        "text": text[:120], "scale": 1.0, "pos_x": 0.5, "pos_y": 0.74,
+        "rotation": 0.0, "color": None, "bg": "box", "font": "inter",
+    })
+    edl["overlays"] = overlays
+    return edl
+
+
 def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | None = None) -> dict:
     """WS4c: stamp the plan author's end_card{wanted,text} hint onto the EDL's
     end_card field. build_render_plan does the actual tail-frame-extension
@@ -1326,11 +1398,7 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
     if not end_card_hint.get("wanted") or not text:
         return edl
     edl = copy.deepcopy(edl)
-    # Build 57 (craft): the hold scales with the TEXT — a fixed 75f gave "Follow"
-    # and a two-line CTA identical read time. Two clean reads (GoE #36 band):
-    # BBC 0.3s/word + Netflix 20 chars/sec, x2, clamped to the model's 30-150.
-    _need_s = max(len(text.split()) * 0.3, len(text) / 20.0)
-    _frames = int(min(150, max(75, round(2 * _need_s * 30))))
+    _frames = _cta_read_frames(text)
     ec = {"text": text, "frames": _frames, "show_handle": True}
     # Build 54 (outro builder): the creator's @handle + uploaded logo ride the hint.
     handle = str(end_card_hint.get("handle") or "").strip()
@@ -2067,18 +2135,29 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
         # trim — checking the style here too, not just the hint, so those
         # styles never fall through to NEITHER pass firing.
         end_card_hint = hints.get("end_card") or {}
-        wants_end_card = (bool(end_card_hint.get("wanted"))
-                         and bool((end_card_hint.get("text") or "").strip())
-                         # Build 55 audit: a creator's EXPLICIT outro (record screen) beats
-                         # the style skip matrix; plan-authored cards still respect it.
-                         and (style not in _END_CARD_SKIP_STYLES
-                              or bool(end_card_hint.get("creator"))))
-        if wants_end_card:
+        wants_visual_cta = (bool(end_card_hint.get("wanted"))
+                            and bool((end_card_hint.get("text") or "").strip())
+                            # Build 55 audit: a creator's EXPLICIT outro (record screen) beats
+                            # the style skip matrix; plan-authored cards still respect it.
+                            and (style not in _END_CARD_SKIP_STYLES
+                                 or bool(end_card_hint.get("creator"))))
+        # Build 62 (Wave 2): three-way close treatment on the same XOR spine —
+        # exactly ONE of {hard card, text overlay, loop-tail trim} runs. Pattern
+        # comes from the convention weights (main.py, deterministic on job_seed);
+        # identity weights = hard card always, today's behavior. spoken_only means
+        # the plan wanted a CTA but the winners' pattern says no visual — the
+        # spoken close stands and the tail stays loop-friendly.
+        _pattern = end_card_hint.get("pattern") or "hard_end_card"
+        if wants_visual_cta and _pattern == "hard_end_card":
             edl = _safe_pass("place_end_card", edl, place_end_card, words, style=style, hints=hints)
+        elif wants_visual_cta and _pattern == "text_overlay":
+            edl = _safe_pass("place_cta_overlay", edl, place_cta_overlay, words,
+                             style=style, hints=hints)
         else:
             edl = _safe_pass("trim_loop_tail", edl, trim_loop_tail, words)
         edl = _safe_pass("place_hook_overlay", edl, place_hook_overlay, words,
-                         style=style, hints=hints, script=script, theme=theme)
+                         style=style, hints=hints, script=script, theme=theme,
+                         job_seed=job_seed)
 
     # A6: hook PACKAGE (frame-1 motion + first-cut-by-3s) — opt-in via
     # "hook_pack", layered on top of place_hook_overlay's sticker above, so it

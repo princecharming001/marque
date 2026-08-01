@@ -2789,20 +2789,33 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
                                  "scale": 1.0, "text": str(tc["text"])[:200]})
 
     # --- caption plan → options/style (prefs override) ---
+    # Build 62: literals extracted to app/conventions.py (identity values) so the
+    # study findings can retune them without hunting call sites. Precedence is
+    # unchanged: per-job explicit > standing pref > plan > convention default.
+    from app.conventions import CAPTION_CONVENTIONS as _CC
     cp = plan.get("caption_plan") or {}
-    caption_style = prefs.get("caption_style") or cp.get("style") or "clean"
-    grouping = cp.get("grouping") if cp.get("grouping") in ("word", "phrase", "line") else "phrase"
+    caption_style = prefs.get("caption_style") or cp.get("style") or _CC["default_style"]
+    grouping = (cp.get("grouping") if cp.get("grouping") in ("word", "phrase", "line")
+                else _CC["default_grouping"])
     # Same normalization the renderer applies (Captions.tsx normWord strips
     # non-alphanumerics): plain .lower() left "A.I." as "a.i.", which the
     # renderer's "ai" could never match — the highlight silently never fired.
     _hw = [re.sub(r"[^a-z0-9]", "", str(w).lower()) for w in (cp.get("highlight_words") or [])]
-    # pos_y 0.62 (spec §6.3: caption band at 55-65% of frame height). The render's own
-    # default is "bottom" = 0.833 → ~1594px, which sits BELOW the 1500px safe-zone floor
-    # and collides with TikTok's caption/sound UI. 0.62 keeps captions legible and clear of
-    # the platform chrome. A theme/creator can still move it via a set_caption_options op.
+    # pos_y default (spec §6.3: caption band at 55-65% of frame height). The render's
+    # own default is "bottom" = 0.833 → ~1594px, which sits BELOW the 1500px safe-zone
+    # floor and collides with TikTok's caption/sound UI. A theme/creator can still move
+    # it via a set_caption_options op.
     caption_options = {"grouping": grouping,
-                       "highlight_words": [w for w in _hw if w][:12],
-                       "pos_y": 0.62}
+                       "highlight_words": [w for w in _hw if w][:_CC["highlight_cap"]],
+                       "pos_y": _CC["pos_y_default"]}
+    if _CC["sync_lead_frames"]:
+        caption_options["sync_lead_frames"] = _CC["sync_lead_frames"]
+    _fam_stroke = _CC["stroke_px_default"].get(caption_style)
+    if _fam_stroke is not None:
+        caption_options["stroke_px"] = float(_fam_stroke)
+    _fam_upper = _CC["uppercase_default"].get(caption_style)
+    if _fam_upper is not None:
+        caption_options["uppercase"] = bool(_fam_upper)
     # Build 54: the record screen's explicit caption size + style→font mapping (main.py
     # config block). The font ALSO restyles the hook title sticker (place_hook_overlay).
     if prefs.get("caption_size") in ("small", "medium", "large"):

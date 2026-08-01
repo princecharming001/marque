@@ -42,7 +42,7 @@ async def _transcribe_local(path: str, rid: str) -> list[dict]:
     cache = TRANSCRIPTS_DIR / f"{rid}.json"
     if cache.exists():
         return json.loads(cache.read_text())
-    key = main.ASSEMBLYAI_KEY
+    key = main.ASSEMBLY_KEY          # main.py:2580 — env var is ASSEMBLYAI_KEY
     if not key:
         raise RuntimeError("ASSEMBLYAI_KEY missing")
     async with httpx.AsyncClient(timeout=300) as cl:
@@ -112,12 +112,34 @@ async def _haiku_json(prompt: str, image_paths: list[str]) -> dict | None:
         return None
 
 
+_yunet_det = None
+
+
+def _face_in_jpg(jpg_path: str) -> bool:
+    """Direct per-image YuNet check. detect_face_box() can't be used here — it
+    ffmpeg-time-samples a VIDEO and requires >=2 frame hits, so a single still
+    can never pass (smoke-test finding, face_ratio=0.00)."""
+    global _yunet_det
+    try:
+        import cv2
+    except ImportError:
+        return False
+    img = cv2.imread(jpg_path)
+    if img is None:
+        return False
+    if _yunet_det is None:
+        _yunet_det = cv2.FaceDetectorYN.create(faces_mod._MODEL_PATH, "", (480, 854), 0.6)
+    h, w = img.shape[:2]
+    _yunet_det.setInputSize((w, h))
+    _, found = _yunet_det.detect(img)
+    return found is not None and len(found) > 0
+
+
 async def _classify_shots(path: str, cuts: list[float], duration: float,
                           workdir: str) -> list[dict]:
     marks = [0.0] + [c for c in cuts if 0 < c < duration] + [duration]
     shots = [{"t0": marks[i], "t1": marks[i + 1]} for i in range(len(marks) - 1)
              if marks[i + 1] - marks[i] > 0.08]
-    # YuNet face presence: sample start/mid/end of each shot via a per-shot clip probe
     for s in shots:
         mid = (s["t0"] + s["t1"]) / 2
         frame = _grab_frame(path, mid, workdir, f"shot{int(mid * 100)}", width=480)
@@ -125,8 +147,7 @@ async def _classify_shots(path: str, cuts: list[float], duration: float,
         s["face_present"] = False
         if frame:
             try:
-                box = faces_mod.detect_face_box(frame, samples=1)
-                s["face_present"] = bool(box)
+                s["face_present"] = _face_in_jpg(frame)
             except Exception:
                 pass
     # ONE Haiku call for ALL midframes (batched, indexed)

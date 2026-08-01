@@ -43,6 +43,7 @@ from app import multipart as multipart_mod
 from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
 from app import push as push_mod
+from app import conventions as conventions_mod
 from app import higgsfield as higgsfield_mod
 from app import retention as retention_mod
 from app import edit_lint as edit_lint_mod
@@ -5133,7 +5134,7 @@ async def _run_edit(job_id: str, words: list[dict]):
         _cap_style = (job.get("config") or {}).get("caption_style", "")
         if _cap_style in ("clean", "bold-word", "karaoke"):
             prefs = {**prefs, "caption_style": _cap_style}
-            _cap_font = {"bold-word": "archivo", "karaoke": "montserrat"}.get(_cap_style)
+            _cap_font = conventions_mod.CAPTION_STYLE_FONT.get(_cap_style)
             if _cap_font:
                 prefs = {**prefs, "caption_font": _cap_font}
         _cap_size = (job.get("config") or {}).get("caption_size", "")
@@ -5336,6 +5337,16 @@ async def _run_edit(job_id: str, words: list[dict]):
         # silently override the theme's title treatment.
         if prefs.get("caption_font"):
             retention_hints["caption_font"] = prefs["caption_font"]
+        # Build 62 (Wave 2 mechanism): thread the caption STYLE + the convention
+        # policies into retention. Identity defaults (rate 1.0, no suppress, hard
+        # card 1.0) reproduce today's behavior byte-for-byte; the study findings
+        # fill real values after owner review. job_seed makes any rate-gate
+        # deterministic across re-renders.
+        if prefs.get("caption_style"):
+            retention_hints["caption_style"] = prefs["caption_style"]
+        retention_hints["title_card_policy"] = conventions_mod.TITLE_CARD_POLICY
+        retention_hints["content_type"] = str(
+            (job.get("edit_brief") or {}).get("video_type") or "")
         # Build 54: the creator's OUTRO builder overrides any plan-authored end card — an
         # explicit pick on the record screen beats the LLM's judgment. Handle + logo ride
         # the same hint into place_end_card.
@@ -5355,6 +5366,18 @@ async def _run_edit(job_id: str, words: list[dict]):
                 # URL used to get the 90-frame logo card with no logo drawn.
                 _ec_hint["logo_url"] = _logo_url
             retention_hints["end_card"] = _ec_hint
+        # Build 62 (Wave 2): CTA pattern selection. A creator outro ALWAYS forces the
+        # hard card; a plan-authored card gets a deterministic weighted pick across
+        # the convention patterns (identity weights: hard card 1.0 — today's behavior).
+        _ec = retention_hints.get("end_card") or {}
+        if _ec.get("wanted") and not _ec.get("creator"):
+            _weights = conventions_mod.CTA_PATTERN_WEIGHTS.get(
+                retention_hints.get("content_type") or "default",
+                conventions_mod.CTA_PATTERN_WEIGHTS["default"])
+            _ec["pattern"] = conventions_mod.pick_weighted(
+                _weights, conventions_mod.seed_fraction(job_id, "cta_pattern"))
+        elif _ec.get("wanted"):
+            _ec["pattern"] = "hard_end_card"
         # A7: a theme's own vibe is a FALLBACK under the plan's own vibe choice —
         # never forces music on/off (that's still purely prefs/plan-driven, so
         # clean_creator stays a golden-diff no-op); it only flavors track

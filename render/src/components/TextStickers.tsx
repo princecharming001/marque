@@ -92,11 +92,17 @@ export const TextStickers: React.FC<{
               color: o.color ?? "white",
               textAlign: "center",
               display: "inline-block",
-              padding: o.bg === "box" ? "10px 26px" : 0,
-              background: o.bg === "box" ? "rgba(0,0,0,0.65)" : "transparent",
-              borderRadius: o.bg === "box" ? 18 : 0,
-              textShadow: o.bg === "box" ? "none" : "0 3px 14px rgba(0,0,0,0.85)",
-              WebkitTextStroke: o.bg === "box" ? undefined : "2px rgba(0,0,0,0.35)",
+              // Build 62 (Wave 2): bg accepts "#RRGGBB(AA)" solid pills alongside
+              // the legacy "box" — the caption-family sticker tokens and the
+              // text-overlay CTA pattern both style through this one contract.
+              padding: o.bg === "box" || o.bg?.startsWith("#") ? "10px 26px" : 0,
+              background: o.bg?.startsWith("#") ? o.bg
+                : o.bg === "box" ? "rgba(0,0,0,0.65)" : "transparent",
+              borderRadius: o.bg === "box" || o.bg?.startsWith("#") ? 18 : 0,
+              textShadow: o.bg === "box" || o.bg?.startsWith("#")
+                ? "none" : "0 3px 14px rgba(0,0,0,0.85)",
+              WebkitTextStroke: o.bg === "box" || o.bg?.startsWith("#")
+                ? undefined : "2px rgba(0,0,0,0.35)",
             }}>{o.text}</span>
           </div>
         );
