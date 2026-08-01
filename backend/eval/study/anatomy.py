@@ -372,6 +372,13 @@ async def run(only: set[str] | None, resume: bool, concurrency: int) -> int:
 
     async def _one(entry: dict) -> None:
         async with sem:
+            # File-level resume: an existing anatomy JSON is the durable ground
+            # truth (the manifest only saves at END, so a killed run leaves
+            # statuses stale while the per-reel work is already banked).
+            done = ANATOMY_DIR / f"{entry['reel_id']}.json"
+            if resume and done.exists():
+                entry["status"] = "analyzed"
+                return
             try:
                 res = await analyze_reel(entry, cfg)
             except Exception as e:
