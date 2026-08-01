@@ -115,17 +115,27 @@ def read_caption_track(video_path: str, fps: float, engine) -> list[FrameRec]:
 
 
 def caption_band(frames: list[FrameRec]) -> tuple[float, float] | None:
-    """The modal y-band where caption text lives: histogram of line y-centers
-    (0.05 bins); the dominant bin ± one bin. Lines far outside it are candidate
-    title-card/CTA text and are routed to cards.py, not the caption track."""
-    centers = [((l["bbox"][1] + l["bbox"][3]) / 2)
-               for f in frames for l in f.lines]
-    if len(centers) < 5:
+    """The y-band where caption text lives. Captions ROTATE text over time while
+    headlines/watermarks persist — so the band is the 0.05-bin with the most
+    DISTINCT normalized texts (tie-break: raw line count). Lines outside it are
+    candidate title-card/CTA text and are routed to cards.py, not the caption
+    track."""
+    counts: dict[int, int] = {}
+    distinct: dict[int, set] = {}
+    n = 0
+    for f in frames:
+        for l in f.lines:
+            c = (l["bbox"][1] + l["bbox"][3]) / 2
+            b = int(c / 0.05)
+            counts[b] = counts.get(b, 0) + 1
+            distinct.setdefault(b, set()).add(_norm_text(l["text"]))
+            n += 1
+    if n < 5:
         return None
-    bins: dict[int, int] = {}
-    for c in centers:
-        bins[int(c / 0.05)] = bins.get(int(c / 0.05), 0) + 1
-    top = max(bins, key=lambda k: bins[k])
+    # Final tie-break only: lower-on-screen wins (captions live in the lower
+    # half; titles/headlines live high) — engaged solely on exact ties of
+    # distinct-text count AND line count, so it can't override the variety signal.
+    top = max(counts, key=lambda k: (len(distinct[k]), counts[k], k))
     return (max(0.0, (top - 1) * 0.05), min(1.0, (top + 2) * 0.05))
 
 
