@@ -6027,3 +6027,91 @@ def test_resolve_broll_uses_own_media_before_stock(monkeypatch):
     b = out["broll"][0]
     assert b["source"] == "own_media" and b["resolved_url"] == "https://x/a1.mp4"
     assert pexels_calls["n"] == 0                   # own media satisfied it — no stock call
+
+
+# --- Build 62: /v1/reels never-empty ladder ---------------------------------
+
+def _ladder_reel(rid, niche_word="fitness", video_url="http://cdn/v.mp4", ef="talking_head"):
+    return {"id": rid, "creator_handle": "@c", "hook_text": f"{niche_word} hook",
+            "transcript": "spoken", "why_trending": "", "format_id": "pov-story",
+            "video_url": video_url, "thumbnail_url": "http://cdn/t.jpg",
+            "edit_format": ef, "views": 10_000, "likes": 5, "title": "t",
+            "style": "talking_head", "platform": "instagram"}
+
+
+def test_reels_blank_niche_falls_back_to_creator_niche(monkeypatch):
+    key = main._niche_cache_key("skincare")
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {key: {"reels": [_ladder_reel("r1", "skincare")], "ts": main.time.time()}})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    monkeypatch.setattr(main, "_reels_refreshing", {key, main._niche_cache_key(main.REELS_DEFAULT_NICHE)})
+    monkeypatch.setattr(main, "_creator_niche", {"c-9": "skincare"})
+    r = client.get("/v1/reels", params={"niche": "", "creator_id": "c-9"}).json()
+    assert r["reels"] and r["reels"][0]["id"] == "r1"
+
+
+def test_reels_blank_everything_serves_cross_niche_aggregate(monkeypatch):
+    # No niche anywhere, but SOME other niche is cached → aggregate serves it.
+    key = main._niche_cache_key("woodworking")
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {key: {"reels": [_ladder_reel("r2", "woodworking")], "ts": main.time.time()}})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    monkeypatch.setattr(main, "_reels_refreshing",
+                        {key, main._niche_cache_key(main.REELS_DEFAULT_NICHE)})
+    monkeypatch.setattr(main, "_creator_niche", {})
+    r = client.get("/v1/reels", params={"niche": "", "creator_id": "nobody"}).json()
+    assert r["reels"] and r["reels"][0]["id"] == "r2", \
+        "any cached rows anywhere must beat an empty feed"
+
+
+def test_reels_filter_relaxes_instead_of_emptying(monkeypatch):
+    # Corpus exists but nothing passes the TH filter → serve non-TH playable rows.
+    key = main._niche_cache_key("fitness")
+    montage = _ladder_reel("r3", ef="recap_music")
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {key: {"reels": [montage], "ts": main.time.time()}})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    monkeypatch.setattr(main, "_reels_refreshing", {key})
+    r = client.get("/v1/reels", params={"niche": "fitness"}).json()
+    assert r["reels"] and r["reels"][0]["id"] == "r3", "degraded row beats empty feed"
+
+
+def test_reels_truly_empty_is_honest_and_kicks_default_refresh(monkeypatch):
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    monkeypatch.setattr(main, "_reels_refreshing", set())
+    monkeypatch.setattr(main, "_creator_niche", {})
+    kicked = []
+
+    async def _rec(niche):
+        kicked.append(niche)
+    monkeypatch.setattr(main, "_refresh_niche_reels", _rec)
+    r = client.get("/v1/reels", params={"niche": "", "creator_id": "nobody"}).json()
+    assert r["reels"] == []                                   # honest empty
+    assert main.REELS_DEFAULT_NICHE in kicked, \
+        "the default feed scrape must be kicked so the emptiness is temporary"
+
+
+def test_reels_durable_page_preferred_over_cdn(monkeypatch):
+    sb = "https://nxibeiykcgxpbmkeadth.supabase.co"
+    monkeypatch.setattr(main, "SUPABASE_URL", sb)
+    durable = [_ladder_reel(f"d{i}", video_url=f"{sb}/storage/v1/o/r{i}.mp4") for i in range(6)]
+    cdn = [_ladder_reel(f"c{i}") for i in range(3)]
+    key = main._niche_cache_key("fitness")
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {key: {"reels": durable + cdn, "ts": main.time.time()}})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    monkeypatch.setattr(main, "_reels_refreshing", {key})
+    r = client.get("/v1/reels", params={"niche": "fitness"}).json()
+    assert all(x["video_url"].startswith(sb) for x in r["reels"]), \
+        "with a full durable page, expiring CDN links must not ship"

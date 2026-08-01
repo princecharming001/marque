@@ -8357,6 +8357,13 @@ def _promote_hero_inserts(edl: dict, max_heroes: int = 2) -> None:
         heroes += 1
 
 
+# Build 62 (owner directive): mid-clip b-roll is IMAGES ONLY — auto text-card
+# fallbacks are disabled; unresolved literal/concept cues degrade to punch-ins
+# (or drop on faceless) exactly like floor cues. Plan-authored and manual
+# add_text_card cards are unaffected. Flip to True to restore the old fallback.
+_BROLL_FALLBACK_CARDS = False
+
+
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
                          allow_generation: bool = True,
                          corpus: list[dict] | None = None,
@@ -8596,16 +8603,19 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                                        or (resolved and not is_own and not force_broll)):
             # v7 Ralph: cap designed text cards at 2 per video — beyond that a card
             # stops being a deliberate graphic moment and starts being wallpaper.
-            # Overflow degrades to a punch-in instead.
-            if txt and s_out > s_in and len(fallback_cards) >= 2:
+            # Overflow degrades to a punch-in instead. Build 62: with fallback cards
+            # disabled entirely, EVERY such cue takes the punch-in/drop degrade.
+            if txt and s_out > s_in and (not _BROLL_FALLBACK_CARDS or len(fallback_cards) >= 2):
+                _why = ("text cards disabled — visual beat instead"
+                        if not _BROLL_FALLBACK_CARDS else "card cap reached — visual beat instead")
                 if not faceless:
                     punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
                                             "scale": 1.08})
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
-                                "why": "card cap reached — visual beat instead"})
+                                "why": _why})
                 else:
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
-                                "why": "card cap reached"})
+                                "why": _why})
                 continue
             if txt and s_out > s_in:
                 # v2 read-time guard: entity/data insert windows shrank to ~1.2-1.8s, but a
@@ -8628,12 +8638,17 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # never a punch-in — the research's ~70/30 motion-graphics norm for abstractions).
         # v7 Ralph: subject to the same 2-card cap; overflow → punch-in.
         if need == "concept" and not resolved and txt and s_out > s_in:
-            if len(fallback_cards) >= 2:
+            if not _BROLL_FALLBACK_CARDS or len(fallback_cards) >= 2:
+                _why = ("text cards disabled — visual beat instead"
+                        if not _BROLL_FALLBACK_CARDS else "card cap reached — visual beat instead")
                 if not faceless:
                     punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
                                             "scale": 1.08})
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
-                                "why": "card cap reached — visual beat instead"})
+                                "why": _why})
+                else:
+                    log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
+                                "why": _why})
                 continue
             # Read-time floor (BBC 0.3s/word, Netflix 20cps) — the retention
             # pass's reading-hold clamp ran BEFORE resolve, so cards created
@@ -10079,6 +10094,30 @@ def _niche_real_reels(niche: str) -> list[dict]:
     return out
 
 
+# Build 62 never-empty ladder: the feed key used when a creator has no niche anywhere
+# (fresh install, empty brand). Gets the full SWR treatment + boot warm, so the global
+# feed is hot instead of the hard `return []` the blank-niche path used to hit.
+REELS_DEFAULT_NICHE = os.environ.get("REELS_DEFAULT_NICHE", "content creators")
+
+
+def _any_cached_reels(limit: int = 24) -> list[dict]:
+    """Cross-niche aggregate fallback: union every cached niche + watched entry,
+    dedupe by id, best-first. Guarantee: if ANY cache rows exist in the process,
+    the feed has something real to serve — a foreign-niche talking-head reel
+    beats an empty screen."""
+    seen: set = set()
+    out: list[dict] = []
+    for cache in (_niche_reels_cache, _watched_reels_cache):
+        for entry in cache.values():
+            for r in entry.get("reels") or []:
+                rid = r.get("id")
+                if rid and rid not in seen:
+                    seen.add(rid)
+                    out.append(r)
+    out.sort(key=_emulatable_rank)
+    return out[:limit]
+
+
 # ---------------------------------------------------------------------------
 # W1: live niche trends — derived from the SAME scraped corpus the reels use (zero extra
 # Apify spend). Heuristic format-clustering with computed view stats (honest numbers), plus
@@ -10227,6 +10266,10 @@ async def _warm_reels_on_boot() -> None:
         return
     try:
         niches = [n for n in {v.strip() for v in _creator_niche.values() if v and v.strip()}][:8]
+        # Build 62: keep the global default feed warm too — it's what a fresh install
+        # with no niche sees, so it must never be the one cold cache in the fleet.
+        if REELS_DEFAULT_NICHE not in niches:
+            niches.append(REELS_DEFAULT_NICHE)
         for niche in niches:
             await _hydrate_reels_caches(niche, [])       # pull durable copy if present
             key = _niche_cache_key(niche)
@@ -10243,6 +10286,12 @@ async def _warm_reels_on_boot() -> None:
 async def reels(niche: str = "", creator_id: str = "default", watched: str = "", cursor: int = 0):
     cursor = max(0, min(cursor, 50))
     parsed = _parse_watched(watched)
+    # Build 62 never-empty ladder, tier 1: the app sends brand.niche which can be
+    # legitimately blank (fresh install / empty brand graph) — fall back to the
+    # durable per-creator niche, then to the global default feed key. The blank
+    # niche used to hard-return [] and the owner saw an empty previews screen.
+    if not niche.strip():
+        niche = _creator_niche.get(creator_id, "").strip() or REELS_DEFAULT_NICHE
     if APIFY_KEY:
         await _hydrate_reels_caches(niche, parsed)
         # Production: ONLY real reels. Watched creators' top posts first, then
@@ -10253,6 +10302,10 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
             if r["id"] not in seen:
                 seen.add(r["id"])
                 corpus.append(r)
+        # Tier 2: this niche has nothing cached (cold scrape in flight) — serve the
+        # cross-niche aggregate rather than a blank feed while the scrape fills.
+        if not corpus:
+            corpus = _any_cached_reels()
         # HARD talking-head filter: this app mimics talking-head content, so a montage or
         # faceless-voiceover reel can't be turned into a cut the creator could make —
         # exclude them entirely (not just rank them down). Then order the survivors
@@ -10260,9 +10313,25 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
         # (the creator explicitly follows them) so the "watched" row never empties.
         # PLAYABILITY: never serve a card that can only ever be a static thumbnail — a reel
         # with no video_url isn't "steal-able," it's just a picture. Require a video_url.
-        corpus = [r for r in corpus
-                  if r.get("video_url") and (_is_talking_head_reel(r) or r.get("from_watched"))]
+        filtered = [r for r in corpus
+                    if r.get("video_url") and (_is_talking_head_reel(r) or r.get("from_watched"))]
+        # Tier 3: the filter emptied a NON-empty corpus — relax it stepwise (drop the
+        # talking-head requirement, then allow thumbnail-only rows) instead of serving
+        # nothing: a degraded real reel beats an empty screen; ranking still floats the
+        # best rows up.
+        if not filtered and corpus:
+            filtered = [r for r in corpus if r.get("video_url")] \
+                or [r for r in corpus if r.get("thumbnail_url")]
+        corpus = filtered
         corpus.sort(key=_emulatable_rank)
+        # Tier 4 (durability): when a full page of durable (Supabase-rehosted) rows
+        # exists, serve durable-only — expiring IG/TikTok CDN links 403 on-device and
+        # read as "no preview" even though the API returned rows. CDN links only ship
+        # when they're all we have.
+        _sb = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
+        durable = [r for r in corpus if (r.get("video_url") or "").startswith(_sb)]
+        if len(durable) >= REELS_PAGE:
+            corpus = durable
         mode = "live"
     else:
         corpus = _mock_reels(niche, [h for _, h in parsed])

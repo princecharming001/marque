@@ -23,6 +23,8 @@ def _load_backend_constants() -> dict:
     return {
         "FRAME_W": lc.FRAME_W, "FRAME_H": lc.FRAME_H, "FPS": lc.FPS,
         "SAFE_TOP_PX": lc.SAFE_TOP_PX, "SAFE_BOTTOM_PX": lc.SAFE_BOTTOM_PX,
+        "WATERMARK_LEFT_PX": lc.WATERMARK_LEFT_PX, "WATERMARK_BOTTOM_PX": lc.WATERMARK_BOTTOM_PX,
+        "WATERMARK_W_PX": lc.WATERMARK_W_PX, "WATERMARK_H_PX": lc.WATERMARK_H_PX,
         "CAPTION_ANCHOR_Y": lc.CAPTION_ANCHOR_Y,
         "CAPTION_POS_Y_MIN": lc.CAPTION_POS_Y_MIN, "CAPTION_POS_Y_MAX": lc.CAPTION_POS_Y_MAX,
         "CAPTION_MAX_LINES": lc.CAPTION_MAX_LINES, "CAPTION_MIN_SHRINK": lc.CAPTION_MIN_SHRINK,
@@ -57,6 +59,8 @@ _SWIFT_TO_CANONICAL = {
     "cardMaxLines": "CARD_MAX_LINES", "cardMinFont": "CARD_MIN_FONT",
     "quoteMaxLines": "QUOTE_MAX_LINES", "quoteMinFont": "QUOTE_MIN_FONT",
     "creditChipTopPx": "CREDIT_CHIP_TOP_PX",
+    "watermarkLeftPx": "WATERMARK_LEFT_PX", "watermarkBottomPx": "WATERMARK_BOTTOM_PX",
+    "watermarkWPx": "WATERMARK_W_PX", "watermarkHPx": "WATERMARK_H_PX",
     "minClipOutputFrames": "MIN_CLIP_OUTPUT_FRAMES",
 }
 

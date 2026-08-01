@@ -139,7 +139,7 @@ import asyncio
 import main
 
 
-def test_entity_need_no_ownmedia_becomes_text_card(monkeypatch):
+def test_entity_need_no_ownmedia_degrades_to_punch_in(monkeypatch):
     # An ENTITY need with only stock available must NOT show generic stock — it becomes a
     # text card. (No PEXELS/own-media configured → nothing resolves.)
     monkeypatch.setattr(main, "PEXELS_KEY", "")
@@ -150,9 +150,9 @@ def test_entity_need_no_ownmedia_becomes_text_card(monkeypatch):
          "overlays": []}
     out = asyncio.run(main._resolve_broll(e))
     assert out["broll"] == []                                  # no wrong stock clip
-    cards = [o for o in out["overlays"] if o["type"] == "text_card"]
-    assert cards and cards[0]["text"] == "NOTION"              # text card instead
-    assert any(x["action"] == "text_card" and x["need"] == "entity" for x in out["_broll_log"])
+    assert not [o for o in out["overlays"] if o["type"] == "text_card"]  # build 62: no auto cards
+    assert [o for o in out["overlays"] if o["type"] == "punch_in"]       # visual beat instead
+    assert any(x["action"] == "punch_in" and x["need"] == "entity" for x in out["_broll_log"])
 
 
 def test_action_need_keeps_stock(monkeypatch):

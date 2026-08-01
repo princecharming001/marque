@@ -1,48 +1,80 @@
 import React from "react";
 import { AbsoluteFill } from "remotion";
 import { FONTS } from "./Captions";
+import { LAYOUT } from "../layout";
 
-// Build 54: the free-tier "powered by Yunicorn" badge. Mounted as the LAST visual
-// sibling in every composition (after EndCard) so it rides above the whole video,
-// including the outro takeover. Deliberately self-contained: the mark is inline SVG
-// (a minimal unicorn head — crescent skull + horn), no remote asset to fetch or
-// break on Lambda. Bottom-left, above the progress bar's band, subtle but legible.
+// Build 54 (v2 in build 62): the free-tier "powered by the yunicorn app" badge.
+// Mounted as the LAST visual sibling in every composition (after EndCard) so it
+// rides above the whole video, including the outro takeover. Deliberately
+// self-contained: the mark is inline SVG, no remote asset to fetch or break on
+// Lambda. Geometry lives in layout.json (WATERMARK_*) so eval/layout_qc.py's
+// collision rect derives from the same numbers instead of drifting.
+//
+// The mark: a side-profile unicorn head. What makes it READ as a unicorn rather
+// than a blob (build-62 owner feedback): an upright triangular EAR distinct from
+// the horn, a slender notched horn, a squared muzzle with a jaw underside, and a
+// scalloped mane cut into the back of the neck.
 const Mark: React.FC<{ size: number }> = ({ size }) => (
   <svg width={size} height={size} viewBox="0 0 32 32" fill="none">
-    {/* horn */}
-    <path d="M19.5 3 L23.5 12.5 L16.8 10.8 Z" fill="white" opacity={0.95} />
-    {/* head: crescent skull + muzzle */}
+    {/* horn: slender taper from the forehead, tip up-right */}
+    <path d="M18.2 8.6 L24.6 1.4 L20.9 10.2 Z" fill="white" opacity={0.95} />
+    {/* horn spiral notches */}
+    <path d="M20.6 5.9 L22.6 6.8 M19.6 7.6 L21.4 8.5" stroke="rgba(8,8,12,0.35)"
+      strokeWidth={0.9} strokeLinecap="round" />
+    {/* head + neck: poll, upright ear, forehead stop, squared muzzle, jaw, throat,
+        then a mane of three scallops cut into the back edge of the neck */}
     <path
-      d="M9 27 C7.5 22 8 16.5 11.5 13 C14.5 10 19 9.5 22.5 11.5 C20 12.5 18 14 17 16.5
-         C19.5 15.5 22.5 15.8 24.5 17.5 C23 18.2 21.8 19.2 21 20.8 C19.8 23.4 17.5 25.5 14.5 26.4
-         C12.7 27 10.8 27.2 9 27 Z"
+      d="M13.2 9.8
+         L15.2 5.6 L16.9 9.2
+         C18.6 9.6 20.6 10.8 21.9 12.6
+         C23.2 14.3 23.9 16.2 24.1 18.0
+         L21.4 18.4 C21.0 19.4 20.2 20.1 19.1 20.4
+         C17.9 20.7 16.7 20.5 15.8 19.8
+         C15.9 21.6 15.4 23.4 14.3 24.9
+         C13.1 26.5 11.3 27.7 9.2 28.3
+         L8.0 24.9 L10.2 23.9 L8.6 21.3 L11.0 20.5 L9.8 17.8
+         C10.2 14.6 11.3 11.7 13.2 9.8 Z"
       fill="white" opacity={0.95}
     />
-    {/* eye */}
-    <circle cx="14.2" cy="17.6" r="1.1" fill="rgba(8,8,12,0.9)" />
+    {/* eye: above the jaw, forward on the head */}
+    <circle cx="17.9" cy="13.6" r="1.15" fill="rgba(8,8,12,0.9)" />
+    {/* nostril on the squared muzzle */}
+    <circle cx="22.6" cy="16.6" r="0.6" fill="rgba(8,8,12,0.55)" />
   </svg>
 );
 
-export const Watermark: React.FC = () => (
-  <AbsoluteFill style={{ pointerEvents: "none" }}>
-    <div style={{
-      // Build 55 audit: bottom 96 sat deep inside the platform dead zone (layout.json
-      // SAFE_BOTTOM_PX = 320 — TikTok's caption/sound chrome) and would render mostly
-      // covered. 336 = just above the safe boundary + the 4px progress bar.
-      position: "absolute", left: 40, bottom: 336,
-      display: "flex", alignItems: "center", gap: 12,
-      padding: "10px 18px 10px 12px", borderRadius: 999,
-      background: "rgba(8,8,12,0.38)",
-      backdropFilter: "blur(6px)",
-    }}>
-      <Mark size={30} />
-      <span style={{
-        fontFamily: FONTS.inter, fontSize: 24, fontWeight: 600,
-        color: "rgba(255,255,255,0.92)", letterSpacing: 0.3,
-        textShadow: "0 1px 6px rgba(0,0,0,0.5)",
+export type WatermarkPos = "bottom_left" | "bottom_right" | "top_right";
+
+export const Watermark: React.FC<{ pos?: WatermarkPos }> = ({ pos = "bottom_left" }) => {
+  // Default bottom-left sits at the platform legal floor: layout.json
+  // SAFE_BOTTOM_PX = 320 is TikTok's caption/sound chrome; WATERMARK_BOTTOM_PX
+  // (336) = just above that boundary + the 4px progress bar. The two alternates
+  // exist for the owner's placement pick; whichever ships is the one layout_qc
+  // collision-checks.
+  const place: React.CSSProperties =
+    pos === "bottom_right"
+      ? { right: LAYOUT.WATERMARK_LEFT_PX, bottom: LAYOUT.WATERMARK_BOTTOM_PX }
+      : pos === "top_right"
+        ? { right: LAYOUT.WATERMARK_LEFT_PX, top: LAYOUT.SAFE_TOP_PX + 12 }
+        : { left: LAYOUT.WATERMARK_LEFT_PX, bottom: LAYOUT.WATERMARK_BOTTOM_PX };
+  return (
+    <AbsoluteFill style={{ pointerEvents: "none" }}>
+      <div style={{
+        position: "absolute", ...place,
+        display: "flex", alignItems: "center", gap: 12,
+        padding: "10px 18px 10px 12px", borderRadius: 999,
+        background: "rgba(8,8,12,0.38)",
+        backdropFilter: "blur(6px)",
       }}>
-        powered by Yunicorn
-      </span>
-    </div>
-  </AbsoluteFill>
-);
+        <Mark size={30} />
+        <span style={{
+          fontFamily: FONTS.inter, fontSize: 24, fontWeight: 600,
+          color: "rgba(255,255,255,0.92)", letterSpacing: 0.3,
+          textShadow: "0 1px 6px rgba(0,0,0,0.5)",
+        }}>
+          powered by the yunicorn app
+        </span>
+      </div>
+    </AbsoluteFill>
+  );
+};

@@ -13,6 +13,12 @@ enum LayoutConstants {
     static let safeTopPx: Double = 280
     static let safeBottomPx: Double = 320
 
+    // Build 62: watermark geometry (render Watermark.tsx + backend layout_qc mirror)
+    static let watermarkLeftPx: Double = 40
+    static let watermarkBottomPx: Double = 336
+    static let watermarkWPx: Double = 452
+    static let watermarkHPx: Double = 64
+
     static let captionAnchorY: [String: Double] = ["top": 0.1458, "middle": 0.46, "bottom": 0.8333]
     static let captionPosYMin: Double = 0.15
     static let captionPosYMax: Double = 0.85

@@ -35,8 +35,14 @@ _PANEL = (40 / FRAME_W, 130 / FRAME_H, (FRAME_W - 40) / FRAME_W, (130 + 0.46 * F
 _CARD_W, _CARD_H = 0.44 * FRAME_W, 0.35 * FRAME_H * 0.72
 _CARD = ((FRAME_W - 48 - _CARD_W) / FRAME_W, 220 / FRAME_H,
          (FRAME_W - 48) / FRAME_W, (220 + _CARD_H) / FRAME_H)
-_WATERMARK = (40 / FRAME_W, (FRAME_H - 336 - 72) / FRAME_H,
-              (40 + 260) / FRAME_W, (FRAME_H - 336) / FRAME_H)
+# Build 62: derived from layout_constants (the render reads the same layout.json
+# values) — the rect can no longer silently drift from the shipped geometry.
+from app.layout_constants import (WATERMARK_LEFT_PX, WATERMARK_BOTTOM_PX,
+                                  WATERMARK_W_PX, WATERMARK_H_PX)
+_WATERMARK = (WATERMARK_LEFT_PX / FRAME_W,
+              (FRAME_H - WATERMARK_BOTTOM_PX - WATERMARK_H_PX) / FRAME_H,
+              (WATERMARK_LEFT_PX + WATERMARK_W_PX) / FRAME_W,
+              (FRAME_H - WATERMARK_BOTTOM_PX) / FRAME_H)
 _PROGRESS = (0.0, (FRAME_H - SAFE_BOTTOM_PX - 4) / FRAME_H,
              1.0, (FRAME_H - SAFE_BOTTOM_PX) / FRAME_H)
 _CREDIT = (0.0, CREDIT_CHIP_TOP_PX / FRAME_H, 1.0, (CREDIT_CHIP_TOP_PX + 60) / FRAME_H)

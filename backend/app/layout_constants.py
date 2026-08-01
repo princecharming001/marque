@@ -16,6 +16,12 @@ FPS = 30
 SAFE_TOP_PX = 280
 SAFE_BOTTOM_PX = 320
 
+# Build 62: watermark geometry (Watermark.tsx + eval/layout_qc.py collision rect)
+WATERMARK_LEFT_PX = 40
+WATERMARK_BOTTOM_PX = 336
+WATERMARK_W_PX = 452
+WATERMARK_H_PX = 64
+
 CAPTION_ANCHOR_Y = {"top": 0.1458, "middle": 0.46, "bottom": 0.8333}
 CAPTION_POS_Y_MIN = 0.15
 CAPTION_POS_Y_MAX = 0.85

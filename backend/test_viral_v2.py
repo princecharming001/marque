@@ -459,19 +459,45 @@ def test_floor_emits_entity_glimpses_for_emphasized_words():
         "emphasized (inflected) words must synthesize entity glimpses"
 
 
-def test_unresolved_own_media_literal_degrades_to_text_card():
+def test_unresolved_own_media_literal_degrades_to_punch_in():
     # Prod job 90813e10: an own_media entity cue with no URL shipped as a blank b-roll item.
-    # The tier pass must now degrade it exactly like any unresolved literal.
+    # Build 62 (owner directive): mid-clip b-roll is images only — the unresolved literal
+    # degrades to a face-keeping punch-in, never a text card.
     edl = {"style": "broll_cutaway", "broll": [
         {"src_in": 300, "src_out": 322, "cue_text": "gochujang jar", "broll_query": "",
          "source": "own_media", "mode": "full", "need": "entity",
          "fallback_text": "gochujang", "resolved_url": None}]}
     out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
     assert not out["broll"], "URL-less own_media literal must not survive as b-roll"
+    overlays = out.get("overlays") or []
+    assert not [o for o in overlays if o["type"] == "text_card"], "no auto text cards"
+    assert [o for o in overlays if o["type"] == "punch_in"], "must degrade to a punch-in"
+    assert any(e["action"] == "punch_in" and "disabled" in e["why"]
+               for e in out["_broll_log"]), out["_broll_log"]
+
+
+def test_faceless_literal_miss_drops_without_card():
+    # Faceless has no face to punch — the miss drops, logged, still no card.
+    edl = {"style": "faceless", "broll": [
+        {"src_in": 300, "src_out": 322, "cue_text": "gochujang jar", "broll_query": "",
+         "source": "own_media", "mode": "full", "need": "entity",
+         "fallback_text": "gochujang", "resolved_url": None}]}
+    out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
+    assert not out["broll"] and not (out.get("overlays") or [])
+    assert any(e["action"] == "dropped" for e in out["_broll_log"])
+
+
+def test_fallback_cards_flag_restores_old_behavior(monkeypatch):
+    # The one-line revert affordance: flipping _BROLL_FALLBACK_CARDS back on restores
+    # the pre-build-62 text-card fallback exactly.
+    monkeypatch.setattr(main, "_BROLL_FALLBACK_CARDS", True)
+    edl = {"style": "broll_cutaway", "broll": [
+        {"src_in": 300, "src_out": 322, "cue_text": "gochujang jar", "broll_query": "",
+         "source": "own_media", "mode": "full", "need": "entity",
+         "fallback_text": "gochujang", "resolved_url": None}]}
+    out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
     cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
-    assert cards, "must degrade to a text card"
-    acts = [e["action"] for e in out["_broll_log"]]
-    assert "text_card" in acts, out["_broll_log"]
+    assert cards and any(e["action"] == "text_card" for e in out["_broll_log"])
 
 
 def test_density_mandate_3x_educational_floor():
@@ -524,16 +550,17 @@ def test_floor_cues_carry_context_not_bare_words():
         f"queries must carry neighboring context, got {[c['query'] for c in cues][:5]}"
 
 
-def test_concept_cue_becomes_text_card_not_stock():
+def test_concept_cue_degrades_to_punch_in_not_stock():
     edl = {"style": "broll_cutaway", "broll": [
         {"src_in": 300, "src_out": 350, "cue_text": "graphic of three axes", "broll_query": "axes",
          "source": "stock", "mode": "smart", "need": "concept",
          "fallback_text": "FAT · ACID · HEAT", "resolved_url": None}]}
     out = asyncio.run(main._resolve_broll(dict(edl), force_broll=True))
     assert not out["broll"], "concept cues must never ship as footage"
-    cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
-    assert cards and cards[0]["text"] == "FAT · ACID · HEAT"
-    assert any(e["action"] == "text_card" and e["tier"] == "card" for e in out["_broll_log"])
+    overlays = out.get("overlays") or []
+    assert not [o for o in overlays if o["type"] == "text_card"], "no auto text cards (build 62)"
+    assert [o for o in overlays if o["type"] == "punch_in"], "concept miss degrades to punch-in"
+    assert any(e["action"] == "punch_in" for e in out["_broll_log"])
 
 
 # ---------- v7 P1/P2: Commons stills, Flux tier, hero promotion, hero whoosh ----------
@@ -674,7 +701,9 @@ def test_unresolved_floor_cue_degrades_to_punch_in_not_card():
     assert [o for o in (out.get("overlays") or []) if o["type"] == "punch_in"]
 
 
-def test_text_cards_capped_at_two():
+def test_concept_misses_all_become_punch_ins():
+    # Build 62: with auto cards disabled, every concept miss is a punch-in, zero cards.
+    # (With the revert flag on, the legacy 2-card cap still governs — see the flag test.)
     items = [{"src_in": 200 + i * 200, "src_out": 250 + i * 200, "cue_text": f"c{i}",
               "broll_query": "", "source": "stock", "mode": "panel", "need": "concept",
               "fallback_text": f"CARD {i}", "resolved_url": None} for i in range(5)]
@@ -682,8 +711,8 @@ def test_text_cards_capped_at_two():
                                           force_broll=True))
     cards = [o for o in (out.get("overlays") or []) if o["type"] == "text_card"]
     punches = [o for o in (out.get("overlays") or []) if o["type"] == "punch_in"]
-    assert len(cards) == 2, f"card cap: got {len(cards)}"
-    assert len(punches) == 3, "overflow concepts must degrade to punch-ins"
+    assert len(cards) == 0, f"no auto cards: got {len(cards)}"
+    assert len(punches) == 5, "every concept miss must degrade to a punch-in"
 
 
 def test_meme_resolution_bypasses_literal_scorer(monkeypatch):
