@@ -6115,3 +6115,14 @@ def test_reels_durable_page_preferred_over_cdn(monkeypatch):
     r = client.get("/v1/reels", params={"niche": "fitness"}).json()
     assert all(x["video_url"].startswith(sb) for x in r["reels"]), \
         "with a full durable page, expiring CDN links must not ship"
+
+
+def test_aggregate_strips_foreign_watched_flag(monkeypatch):
+    # Adversarial-review fix: tier-2 aggregate rows lose from_watched — the badge
+    # and TH-filter bypass are per-creator trust, not transferable.
+    watched = {**_ladder_reel("w1", ef="recap_music"), "from_watched": True}
+    monkeypatch.setattr(main, "_niche_reels_cache", {})
+    monkeypatch.setattr(main, "_watched_reels_cache",
+                        {"instagram:@x": {"reels": [watched], "ts": main.time.time()}})
+    rows = main._any_cached_reels()
+    assert rows and rows[0]["from_watched"] is False

@@ -43,20 +43,21 @@ const Mark: React.FC<{ size: number }> = ({ size }) => (
   </svg>
 );
 
-export type WatermarkPos = "bottom_left" | "bottom_right" | "top_right";
+export type WatermarkPos = "bottom_left" | "bottom_right";
 
 export const Watermark: React.FC<{ pos?: WatermarkPos }> = ({ pos = "bottom_left" }) => {
-  // Default bottom-left sits at the platform legal floor: layout.json
-  // SAFE_BOTTOM_PX = 320 is TikTok's caption/sound chrome; WATERMARK_BOTTOM_PX
-  // (336) = just above that boundary + the 4px progress bar. The two alternates
-  // exist for the owner's placement pick; whichever ships is the one layout_qc
-  // collision-checks.
+  // Both placements sit at the platform legal floor: layout.json SAFE_BOTTOM_PX
+  // = 320 is TikTok's caption/sound chrome; WATERMARK_BOTTOM_PX (336) = just
+  // above that boundary + the 4px progress bar. A top placement was rejected —
+  // it lands inside the hook-title clamp band. NOTE: compositions mount
+  // <Watermark /> with the default; bottom_right exists for the owner's
+  // screenshot comparison, and adopting it means updating WATERMARK_LEFT_PX
+  // semantics + eval/layout_qc.py's rect together (the collision tripwire
+  // models the DEFAULT placement only).
   const place: React.CSSProperties =
     pos === "bottom_right"
       ? { right: LAYOUT.WATERMARK_LEFT_PX, bottom: LAYOUT.WATERMARK_BOTTOM_PX }
-      : pos === "top_right"
-        ? { right: LAYOUT.WATERMARK_LEFT_PX, top: LAYOUT.SAFE_TOP_PX + 12 }
-        : { left: LAYOUT.WATERMARK_LEFT_PX, bottom: LAYOUT.WATERMARK_BOTTOM_PX };
+      : { left: LAYOUT.WATERMARK_LEFT_PX, bottom: LAYOUT.WATERMARK_BOTTOM_PX };
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
       <div style={{

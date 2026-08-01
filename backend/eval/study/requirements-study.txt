@@ -1,0 +1,7 @@
+# Study-harness-only deps — install into eval/study/.venv-study, NEVER into the
+# deployed requirements.txt (the harness runs locally on the owner's Mac only).
+#   python3 -m venv eval/study/.venv-study
+#   eval/study/.venv-study/bin/pip install -r eval/study/requirements-study.txt
+# The ocrmac engine (Apple Vision, arm64-native) is invoked as a subprocess by
+# ocr_track.py so the backend process itself needs none of these.
+ocrmac

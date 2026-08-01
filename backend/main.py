@@ -8600,22 +8600,28 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # blank), so it degrades like any other miss. WITHOUT force_broll the v1 passthrough
         # stands: a manual-editor own_media roll racing its upload must never be deleted.
         if need in _LITERAL_NEEDS and ((not resolved and (force_broll or not is_own))
-                                       or (resolved and not is_own and not force_broll)):
+                                       or (resolved and not is_own and not force_broll
+                                           and _BROLL_FALLBACK_CARDS)):
+            # Build 62 note: the resolved-but-not-own discard only applies when the
+            # card fallback exists to carry the information. With cards disabled, a
+            # vision-approved stock/commons image IS the image-only directive's
+            # preferred outcome — it falls through to the keep path below.
             # v7 Ralph: cap designed text cards at 2 per video — beyond that a card
             # stops being a deliberate graphic moment and starts being wallpaper.
             # Overflow degrades to a punch-in instead. Build 62: with fallback cards
             # disabled entirely, EVERY such cue takes the punch-in/drop degrade.
             if txt and s_out > s_in and (not _BROLL_FALLBACK_CARDS or len(fallback_cards) >= 2):
-                _why = ("text cards disabled — visual beat instead"
-                        if not _BROLL_FALLBACK_CARDS else "card cap reached — visual beat instead")
+                _cards_off = not _BROLL_FALLBACK_CARDS
                 if not faceless:
                     punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
                                             "scale": 1.08})
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
-                                "why": _why})
+                                "why": ("text cards disabled — visual beat instead" if _cards_off
+                                        else "card cap reached — visual beat instead")})
                 else:
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
-                                "why": _why})
+                                "why": ("text cards disabled — no face to punch, cue dropped"
+                                        if _cards_off else "card cap reached")})
                 continue
             if txt and s_out > s_in:
                 # v2 read-time guard: entity/data insert windows shrank to ~1.2-1.8s, but a
@@ -8639,16 +8645,17 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # v7 Ralph: subject to the same 2-card cap; overflow → punch-in.
         if need == "concept" and not resolved and txt and s_out > s_in:
             if not _BROLL_FALLBACK_CARDS or len(fallback_cards) >= 2:
-                _why = ("text cards disabled — visual beat instead"
-                        if not _BROLL_FALLBACK_CARDS else "card cap reached — visual beat instead")
+                _cards_off = not _BROLL_FALLBACK_CARDS
                 if not faceless:
                     punch_fallbacks.append({"src_in": s_in, "src_out": min(s_in + 30, s_out),
                                             "scale": 1.08})
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "punch_in",
-                                "why": _why})
+                                "why": ("text cards disabled — visual beat instead" if _cards_off
+                                        else "card cap reached — visual beat instead")})
                 else:
                     log.append({"need": need, "cue": cue, "tier": "none", "action": "dropped",
-                                "why": _why})
+                                "why": ("text cards disabled — no face to punch, cue dropped"
+                                        if _cards_off else "card cap reached")})
                 continue
             # Read-time floor (BBC 0.3s/word, Netflix 20cps) — the retention
             # pass's reading-hold clamp ran BEFORE resolve, so cards created
@@ -10113,6 +10120,11 @@ def _any_cached_reels(limit: int = 24) -> list[dict]:
                 rid = r.get("id")
                 if rid and rid not in seen:
                     seen.add(rid)
+                    if r.get("from_watched"):
+                        # Foreign creators' watched rows serve as ORDINARY reels here:
+                        # the WATCHING badge and the TH-filter bypass are per-creator
+                        # trust, not transferable across the aggregate.
+                        r = {**r, "from_watched": False}
                     out.append(r)
     out.sort(key=_emulatable_rank)
     return out[:limit]
@@ -10323,15 +10335,12 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
             filtered = [r for r in corpus if r.get("video_url")] \
                 or [r for r in corpus if r.get("thumbnail_url")]
         corpus = filtered
+        # Durability is a RANKING preference, not a filter: _emulatable_rank floats
+        # Supabase-rehosted rows above raw CDN links (which can 403 on-device), but
+        # hard-filtering to durable-only would starve everything past the rehost
+        # top-N and delete watched-creator rows entirely (the watched path never
+        # rehosts) — both confirmed by the wave-1 adversarial review.
         corpus.sort(key=_emulatable_rank)
-        # Tier 4 (durability): when a full page of durable (Supabase-rehosted) rows
-        # exists, serve durable-only — expiring IG/TikTok CDN links 403 on-device and
-        # read as "no preview" even though the API returned rows. CDN links only ship
-        # when they're all we have.
-        _sb = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
-        durable = [r for r in corpus if (r.get("video_url") or "").startswith(_sb)]
-        if len(durable) >= REELS_PAGE:
-            corpus = durable
         mode = "live"
     else:
         corpus = _mock_reels(niche, [h for _, h in parsed])

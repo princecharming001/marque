@@ -789,3 +789,17 @@ def test_smart_inset_top_unchanged_without_avoids():
     face = {"x": 0.55, "y": 0.30, "w": 0.35, "h": 0.30}
     r = smart_inset_rect(face, caption_band=(0.53, 0.71))
     assert r is not None and abs(r["y"] - 140 / 1920) < 2e-3 and r["x"] < 0.5
+
+
+def test_resolved_literal_stock_kept_when_cards_disabled():
+    # Adversarial-review fix: with the card fallback gone, a vision-approved stock
+    # image on a literal need is KEPT (the old discard assumed a card would carry
+    # the information instead).
+    edl = {"style": "talking_head", "broll": [
+        {"src_in": 300, "src_out": 340, "cue_text": "the notion app", "broll_query": "notion",
+         "source": "stock", "mode": "panel", "need": "entity",
+         "fallback_text": "NOTION", "resolved_url": "https://stock/notion.jpg"}]}
+    out = asyncio.run(main._resolve_broll(dict(edl)))
+    assert out["broll"] and out["broll"][0]["resolved_url"] == "https://stock/notion.jpg", \
+        "vision-approved image must survive under the image-only directive"
+    assert not [o for o in (out.get("overlays") or []) if o["type"] in ("text_card", "punch_in")]
