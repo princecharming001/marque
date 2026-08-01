@@ -224,14 +224,29 @@ async def analyze_reel(entry: dict, cfg: StudyConfig,
                 failures.append(f"shots: {e}")
                 mark_stage(rid, "shots", False, str(e))
 
-            # TH hard gate (only for scraped corpus reels, not our own renders)
+            # Tiered gate (CP-3 finding: a per-SHOT face ratio excluded 64% of the
+            # corpus — talking-head reels WITH dense b-roll legitimately show the
+            # face in a minority of shots). Duration-weighted face time instead:
+            #   th           face_time >= 30%  -> all metrics
+            #   spoken_broll words >= 12       -> caption/CTA/title metrics only
+            #                                     (their b-roll norms are a
+            #                                      different format — excluded
+            #                                      from b-roll aggregates)
+            #   else         excluded (true montage / no speech)
+            tier = "th"
             if not local_path and shots:
-                face_ratio = sum(1 for s in shots if s["face_present"]) / len(shots)
-                if face_ratio < TH_FACE_RATIO or len(words) < TH_MIN_WORDS:
+                face_t = sum(s["t1"] - s["t0"] for s in shots if s["face_present"])
+                face_time_ratio = face_t / duration if duration else 0.0
+                if face_time_ratio >= 0.30 and len(words) >= TH_MIN_WORDS:
+                    tier = "th"
+                elif len(words) >= TH_MIN_WORDS:
+                    tier = "spoken_broll"
+                else:
                     mark_stage(rid, "th_gate", False,
-                               f"face_ratio={face_ratio:.2f} words={len(words)}")
+                               f"face_time={face_time_ratio:.2f} words={len(words)}")
                     return {"excluded": "not_th", "reel_id": rid,
-                            "face_ratio": round(face_ratio, 2), "n_words": len(words)}
+                            "face_time_ratio": round(face_time_ratio, 2),
+                            "n_words": len(words)}
                 mark_stage(rid, "th_gate", True)
 
             # 6-7. OCR caption track + chunks + speech alignment
@@ -328,6 +343,7 @@ async def analyze_reel(entry: dict, cfg: StudyConfig,
                 wpm = round(len(words) / spoken_min) if spoken_min > 0 else None
             anatomy = {
                 "schema_version": SCHEMA_VERSION,
+                "tier": tier,
                 "reel_id": rid, "platform": entry.get("platform"),
                 "niche": entry.get("niche"), "permalink": entry.get("permalink"),
                 "views": entry.get("views"), "likes": entry.get("likes"),

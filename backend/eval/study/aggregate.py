@@ -69,11 +69,15 @@ def load_reels(include_local: bool = False) -> list[dict]:
 
 def compute(reels: list[dict]) -> dict:
     ig = [r for r in reels if r.get("platform") == "instagram"] or reels
+    # Two-tier corpus: caption/CTA/title conventions hold across all spoken
+    # reels; b-roll density/duration norms only over TRUE talking-head reels
+    # (tier "th") — voiceover-over-b-roll is a different format.
+    th_only = [r for r in ig if (r.get("tier") or "th") == "th"]
     caps = lambda r: r.get("captions") or {}
     br = lambda r: r.get("broll") or {}
     agg = {
         "computed_at": time.time(),
-        "n_total": len(reels), "n_ig": len([r for r in reels if r.get("platform") == "instagram"]),
+        "n_total": len(reels), "n_th": len([r for r in reels if (r.get("tier") or "th") == "th"]), "n_ig": len([r for r in reels if r.get("platform") == "instagram"]),
         "metrics": {},
         "title_card": {}, "cta_patterns": {}, "caption_style": {},
     }
@@ -88,11 +92,11 @@ def compute(reels: list[dict]) -> dict:
     M["caption_coverage"] = _metric(ig, "caption_coverage",
                                     lambda r: caps(r).get("coverage_pct"))
     M["broll_dur_s"] = _metric(
-        [r for r in ig if br(r).get("dur_median_s") is not None],
+        [r for r in th_only if br(r).get("dur_median_s") is not None],
         "broll_dur_s", lambda r: br(r).get("dur_median_s"))
     # fullscreen-only durations (headline per the stated overlay limitation)
     fs = []
-    for r in ig:
+    for r in th_only:
         ds = [s["dur_s"] for s in br(r).get("segments", []) if s["mode"] == "fullscreen"]
         if ds:
             fs.append({"reel_id": r["reel_id"], "views": r.get("views"),
@@ -100,13 +104,13 @@ def compute(reels: list[dict]) -> dict:
     M["broll_fullscreen_dur_s"] = _metric(
         [{"reel_id": x["reel_id"], "views": x["views"], "_v": x["v"]} for x in fs],
         "broll_fullscreen_dur_s", lambda r: r["_v"])
-    M["broll_per_30s"] = _metric(ig, "broll_per_30s", lambda r: br(r).get("per_30s"))
+    M["broll_per_30s"] = _metric(th_only, "broll_per_30s", lambda r: br(r).get("per_30s"))
     M["broll_first_onset_s"] = _metric(
-        [r for r in ig if br(r).get("first_onset_s") is not None],
+        [r for r in th_only if br(r).get("first_onset_s") is not None],
         "broll_first_onset_s", lambda r: br(r).get("first_onset_s"))
-    M["broll_share_runtime"] = _metric(ig, "broll_share_runtime",
+    M["broll_share_runtime"] = _metric(th_only, "broll_share_runtime",
                                        lambda r: br(r).get("share_of_runtime"))
-    M["cuts_per_30s"] = _metric(ig, "cuts_per_30s",
+    M["cuts_per_30s"] = _metric(th_only, "cuts_per_30s",
                                 lambda r: (r.get("cut_stats") or {}).get("cuts_per_30s"))
     M["wpm"] = _metric(ig, "wpm", lambda r: (r.get("transcript") or {}).get("wpm"))
     agg["metrics"] = {k: v for k, v in M.items() if v is not None}
