@@ -218,7 +218,10 @@ def test_run_edit_calls_retention_passes_with_the_authored_edl(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["style"] == "talking_head"
     assert calls[0]["level"] == "default"
-    assert calls[0]["hints"] == {}
+    # Wave 2: the identity convention policies always ride the hints now.
+    assert calls[0]["hints"] == {"title_card_policy": {"rate": {"default": 1.0},
+                                                       "suppress": []},
+                                 "content_type": ""}
 
 
 def test_run_edit_derives_pacing_lift_hint_from_the_brief(monkeypatch):
@@ -255,7 +258,10 @@ def test_run_edit_derives_pacing_lift_hint_from_the_brief(monkeypatch):
 
     asyncio.run(main._run_edit(job_id, words))
     assert len(calls) == 1
-    assert calls[0]["hints"] == {"pacing": {"lift": "medium"}}
+    # Wave 2: hints also carry the identity convention policies — pin the pacing
+    # entry and the identity values, not exact dict equality.
+    assert calls[0]["hints"]["pacing"] == {"lift": "medium"}
+    assert calls[0]["hints"]["title_card_policy"] == {"rate": {"default": 1.0}, "suppress": []}
 
 
 def test_shadow_mode_fires_a_background_diff_without_shipping_it(monkeypatch):

@@ -140,16 +140,21 @@ async def _classify_shots(path: str, cuts: list[float], duration: float,
     marks = [0.0] + [c for c in cuts if 0 < c < duration] + [duration]
     shots = [{"t0": marks[i], "t1": marks[i + 1]} for i in range(len(marks) - 1)
              if marks[i + 1] - marks[i] > 0.08]
-    for s in shots:
+    def _grab_and_face(s):
         mid = (s["t0"] + s["t1"]) / 2
         frame = _grab_frame(path, mid, workdir, f"shot{int(mid * 100)}", width=480)
-        s["_mid_frame"] = frame
-        s["face_present"] = False
+        face = False
         if frame:
             try:
-                s["face_present"] = _face_in_jpg(frame)
+                face = _face_in_jpg(frame)
             except Exception:
                 pass
+        return frame, face
+
+    results = await asyncio.gather(*(asyncio.to_thread(_grab_and_face, s) for s in shots))
+    for s, (frame, face) in zip(shots, results):
+        s["_mid_frame"] = frame
+        s["face_present"] = face
     # ONE Haiku call for ALL midframes (batched, indexed)
     frames = [s["_mid_frame"] for s in shots if s.get("_mid_frame")]
     labels = None
@@ -186,15 +191,16 @@ async def analyze_reel(entry: dict, cfg: StudyConfig,
             # 1. download (skipped when a local path is supplied — gap analysis)
             path = local_path
             if not path:
-                path = _download(entry.get("video_url_cdn") or "", td) or \
-                    _download(entry["permalink"], td)
+                path = await asyncio.to_thread(
+                    lambda: _download(entry.get("video_url_cdn") or "", td)
+                    or _download(entry["permalink"], td))
             if not path:
                 mark_stage(rid, "download", False, "no source reachable")
                 return None
             mark_stage(rid, "download", True)
 
             # 2+4. scene cuts first (cheap) then the TH hard gate needs faces+words
-            duration, cuts = scene_cuts(path, cfg.scene_threshold)
+            duration, cuts = await asyncio.to_thread(scene_cuts, path, cfg.scene_threshold)
             if duration <= 0:
                 mark_stage(rid, "scenes", False, "ffprobe duration 0")
                 return None
@@ -234,7 +240,8 @@ async def analyze_reel(entry: dict, cfg: StudyConfig,
             frames: list = []
             try:
                 engine = ocr_track.get_engine(cfg.ocr_engine)
-                frames = ocr_track.read_caption_track(path, cfg.ocr_fps, engine)
+                frames = await asyncio.to_thread(
+                    ocr_track.read_caption_track, path, cfg.ocr_fps, engine)
                 (OCR_DIR / f"{rid}.json").write_text(json.dumps(
                     [{"t": f.t, "lines": f.lines} for f in frames]))
                 band = ocr_track.caption_band(frames)
@@ -265,11 +272,13 @@ async def analyze_reel(entry: dict, cfg: StudyConfig,
             style = None
             try:
                 mids = [duration * f for f in (0.25, 0.5, 0.75)]
-                imgs = [p for p in (
-                    _grab_frame(path, t, td, f"style{i}") for i, t in enumerate(mids))
-                    if p]
-                first = _grab_frame(path, 0.3, td, "first")
-                last = _grab_frame(path, max(0.0, duration - 0.8), td, "last")
+                _grabs = await asyncio.gather(*(
+                    asyncio.to_thread(_grab_frame, path, tt, td, f"style{i}")
+                    for i, tt in enumerate(mids)))
+                imgs = [p for p in _grabs if p]
+                first = await asyncio.to_thread(_grab_frame, path, 0.3, td, "first")
+                last = await asyncio.to_thread(
+                    _grab_frame, path, max(0.0, duration - 0.8), td, "last")
                 imgs += [p for p in (first, last) if p]
                 style = await _haiku_json(
                     "Frames from ONE short-form talking-head video (3 mid-video, then the "
