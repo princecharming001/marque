@@ -53,13 +53,19 @@ def run() -> int:
         if not a.get("excluded") and a.get("platform") != "local":
             reels[a["reel_id"]] = a
     ig = [a for a in reels.values() if a.get("platform") == "instagram"] or list(reels.values())
+    # Gate v2 population spec: b-roll/cut norms are computed over TRUE talking-head
+    # reels only (tier "th"); caption/CTA/title metrics over all spoken reels.
+    th_only = [a for a in ig if (a.get("tier") or "th") == "th"]
+    TH_METRICS = {"broll_dur_s", "broll_per_30s", "broll_first_onset_s",
+                  "broll_share_runtime", "cuts_per_30s"}
 
     findings: list[str] = []
     for name, m in (agg.get("metrics") or {}).items():
         fn = EXTRACTORS.get(name)
         if fn is None:
             continue
-        vals = [fn(a) for a in ig]
+        pool = th_only if name in TH_METRICS else ig
+        vals = [fn(a) for a in pool]
         med = _median(vals)
         # 1. recompute
         if med is None or abs(float(med) - float(m["median"])) > max(0.011, abs(float(m["median"])) * 0.02):
@@ -72,7 +78,7 @@ def run() -> int:
             if v is None or not (float(lo) <= float(v) <= float(hi)):
                 findings.append(f"P0 verify_exemplar {name}: {rid} value {v} outside IQR [{lo},{hi}]")
         # 3. jackknife
-        present = [(a["reel_id"], fn(a)) for a in ig if fn(a) is not None]
+        present = [(a["reel_id"], fn(a)) for a in pool if fn(a) is not None]
         if len(present) >= 3 and not m.get("directional"):
             worst = None
             for rid, _ in present:
