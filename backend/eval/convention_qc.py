@@ -52,8 +52,13 @@ def grade_conventions(job: dict, *, video: str) -> list[dict]:
 
     # 6. title-card gate: deterministic recompute. PRESENCE against a closed
     # gate is a P0; absence with an open gate is legitimate (other skips).
+    # The hook TITLE is place_hook_overlay's sticker: scale 1.05, centered,
+    # multi-word. Single-word keyword pops from the interrupts/emphasis passes
+    # are a different feature (round-1 grader false positive).
     hook_stickers = [o for o in (edl.get("overlays") or [])
-                     if o.get("type") == "text_sticker" and o.get("src_in", 1) <= 90]
+                     if o.get("type") == "text_sticker" and o.get("src_in", 1) <= 90
+                     and float(o.get("scale") or 1.0) == 1.05
+                     and len(str(o.get("text") or "").split()) >= 2]
     rates = TITLE_CARD_POLICY["rate"]
     rate = float(rates.get("default", 0.2))   # content_type unknown here: default row
     gate_open = seed_fraction(jid, "title_card") < max(
