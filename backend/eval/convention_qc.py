@@ -7,6 +7,8 @@ P1 = drift that needs judgment / may be legitimate for the specific take.
 """
 from __future__ import annotations
 
+import json
+
 from app.conventions import (CAPTION_CONVENTIONS, TITLE_CARD_POLICY,
                              seed_fraction)
 from eval.campaign_common import finding
@@ -106,7 +108,48 @@ def grade_conventions(job: dict, *, video: str) -> list[dict]:
                                evidence=f"{per30:.1f} full cutaways/30s (winners IQR ceiling 1.2)",
                                source="convention_qc"))
 
-    # 8. zero auto text cards (Wave 1 directive)
+    # 8. CTA template contract (v8). An explicit pick must be honored exactly —
+    # including "none", which must leave NO visual CTA at all.
+    from app import cta_styles
+    want_cta = str(cfg.get("cta_style_id") or "").strip()
+    ec = edl.get("end_card") or {}
+    if want_cta == cta_styles.NONE_STYLE and ec:
+        out.append(finding(video, jid, "cta_style_honored",
+                           evidence="creator chose No CTA but an end_card was stamped",
+                           source="convention_qc"))
+    elif want_cta and cta_styles.is_known(want_cta):
+        if not ec:
+            out.append(finding(video, jid, "cta_style_honored",
+                               evidence=f"creator chose {want_cta} but no CTA was placed",
+                               source="convention_qc"))
+        elif ec.get("style_id") != want_cta:
+            out.append(finding(video, jid, "cta_style_honored",
+                               evidence=f"creator chose {want_cta}, got {ec.get('style_id')}",
+                               source="convention_qc"))
+    if ec and not cta_styles.is_known(ec.get("style_id")):
+        out.append(finding(video, jid, "cta_style_unknown",
+                           evidence=f"end_card carries an unrenderable style {ec.get('style_id')!r}",
+                           source="convention_qc"))
+
+    # 9. profile-mapped knobs must actually reach the job (the profile is only
+    # worth learning if it moves the pipeline).
+    prof = cfg.get("style_profile")
+    if prof:
+        from app import style_profile as sp
+        try:
+            mapped = sp.map_profile_to_config(sp.normalize(
+                json.loads(prof) if isinstance(prof, str) else prof))
+        except Exception:
+            mapped = {}
+        for k, v in mapped.items():
+            if k in ("theme_id",):
+                continue      # resolved top-level at job creation, not in config
+            if str(cfg.get(k) or "") != v and k not in cfg:
+                out.append(finding(video, jid, "profile_knob_dropped",
+                                   evidence=f"profile mapped {k}={v} but the job config has none",
+                                   source="convention_qc"))
+
+    # 10. zero auto text cards (Wave 1 directive)
     autos = [o for o in (edl.get("overlays") or []) if o.get("type") == "text_card"]
     if autos and not any(e.get("action") == "text_card"
                          for e in (job.get("broll_log") or [])):

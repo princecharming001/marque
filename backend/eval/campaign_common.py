@@ -21,6 +21,8 @@ CLASS_SEVERITY: dict[str, str] = {
     "title_card_gate": "P0", "title_card_hold": "P1",
     "broll_hold_band": "P1", "broll_glimpse_linger": "P1",
     "broll_share": "P0", "broll_density": "P1", "auto_text_card": "P0",
+    # v8 CTA + style-profile graders
+    "cta_style_honored": "P0", "cta_style_unknown": "P0", "profile_knob_dropped": "P1",
     # pipeline
     "render_failed": "P0",
     "job_failed": "P0",

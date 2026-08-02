@@ -25,10 +25,27 @@ async def judge(edl: dict, words: list[dict], *, video: str = "", job_id: str = 
     sents = sentences_with_keep(edl, words)
     if not sents:
         return []
-    table = "\n".join(
-        f"[{s['idx']:>3}] {'KEEP' if s['kept_ratio'] >= 0.5 else 'CUT '}"
-        f"{' part' if 0 < s['kept_ratio'] < 1 else '     '} | {s['text'][:160]}"
-        for s in sents)
+    # Show the judge what the VIEWER gets, not the raw transcript. A partially-kept
+    # sentence used to be printed in full next to a "KEEP part" marker, so a stumble
+    # the edit had ALREADY cut still read as present — the judge dutifully flagged it
+    # every round (verified: identical EDLs scored clean and dirty across rounds).
+    # Now a partial keep prints its KEPT words, with the dropped ones listed after so
+    # the judge can still catch a bad boundary.
+    def _row(s: dict) -> str:
+        kept_ratio = s["kept_ratio"]
+        mark = "KEEP" if kept_ratio >= 0.5 else "CUT "
+        part = " part" if 0 < kept_ratio < 1 else "     "
+        if 0 < kept_ratio < 1:
+            kept_txt = " ".join(w for w, _f, k in s["words"] if k)
+            cut_txt = " ".join(w for w, _f, k in s["words"] if not k)
+            body = f"{kept_txt[:160]}"
+            if cut_txt:
+                body += f"   (cut: {cut_txt[:80]})"
+        else:
+            body = s["text"][:160]
+        return f"[{s['idx']:>3}] {mark}{part} | {body}"
+
+    table = "\n".join(_row(s) for s in sents)
     body = {
         "model": _MODEL, "max_tokens": 900,
         "system": "You are a ruthless assistant editor reviewing a rough cut of a "
