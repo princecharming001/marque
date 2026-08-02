@@ -470,13 +470,18 @@ def test_interrupts_alternate_scale():
         assert a != b   # strictly alternating
 
 
-def test_interrupts_faceless_uses_text_stickers_not_punch_in():
+def test_interrupts_never_print_words_on_the_video():
+    """Build 65 (owner, twice): after the title card the ONLY text on screen is the
+    caption track. Interrupts used to drop a bare transcript word mid-frame on any style
+    that can't punch (faceless) — that is the "random words" report. An interrupt is now
+    a camera move or it doesn't happen."""
     words = _steady_words(20000)
     total_frames = ms_to_frame(20000)
-    edl = _bare_edl("faceless", total_frames)
-    out = retention.schedule_interrupts(edl, words, style="faceless", hints={})
-    assert len(out["overlays"]) > 0
-    assert all(o["type"] == "text_sticker" for o in out["overlays"])
+    for style in ("faceless", "talking_head"):
+        edl = _bare_edl(style, total_frames)
+        out = retention.schedule_interrupts(edl, words, style=style, hints={})
+        assert not [o for o in out["overlays"] if o["type"] in ("text_sticker", "text_card")], \
+            f"{style}: an interrupt printed a word on the video"
 
 
 def test_interrupts_cap_scales_with_duration():
@@ -1157,23 +1162,26 @@ def test_interrupts_jitter_gaps_are_not_metronomic():
     assert variance ** 0.5 > 8   # anti-metronome: stddev of gaps exceeds the lint floor
 
 
-def test_interrupts_jitter_never_same_type_twice_in_a_row():
+def test_interrupts_never_run_three_identical_beats():
+    """What alternation was FOR: not "types differ" per se, but "the edit never feels
+    metronomic". Build 65 removed keyword stickers (they printed words on the video), so
+    the remaining vocabulary is punch + framing pop — and consecutive punches are fine as
+    long as they are not three identical beats in a row, which is what the final variety
+    pass now enforces by varying the scale instead of printing a word."""
     words = _steady_words(120000, step_ms=250)
     total_frames = ms_to_frame(120000)
     edl = _bare_edl("talking_head", total_frames)
-    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={}, jitter=True, job_seed="job-b")
-    # Reconstruct the ordered type sequence: punch_in overlays are "punch", text_sticker
-    # overlays are "text_sticker", and a segment split with a bumped tx_scale is "framing_pop".
-    events = [(o["src_in"], "punch" if o["type"] == "punch_in" else "text_sticker") for o in out["overlays"]]
-    base_edl = _bare_edl("talking_head", total_frames)
-    base_ins = {s["src_in"] for s in base_edl["segments"]}
-    for s in out["segments"]:
-        if s.get("tx_scale", 1.0) != 1.0 and s["src_in"] not in base_ins:
-            events.append((s["src_in"], "framing_pop"))
-    events.sort()
-    types = [t for _, t in events]
-    for a, b in zip(types, types[1:]):
-        assert a != b
+    out = retention.schedule_interrupts(edl, words, style="talking_head", hints={},
+                                        jitter=True, job_seed="job-b")
+    out = retention._enforce_interrupt_variety(out, words)
+    assert not [o for o in out["overlays"] if o["type"] in ("text_sticker", "text_card")], \
+        "the variety pass must not reintroduce mid-clip words"
+    beats = [(o["src_in"], round(float(o.get("scale") or 1.0), 3))
+             for o in out["overlays"] if o["type"] == "punch_in"]
+    beats.sort()
+    scales = [sc for _, sc in beats]
+    for a, b, c in zip(scales, scales[1:], scales[2:]):
+        assert not (a == b == c), f"three identical punch beats in a row: {a}"
 
 
 def test_interrupts_jitter_uses_short_hold_window():
@@ -1550,3 +1558,25 @@ def test_interrupts_survive_same_frame_word_collision():
     edl = _bare_edl("talking_head", total_frames)
     out = retention.schedule_interrupts(edl, words, style="talking_head", hints={})
     assert out["overlays"], "pass crashed/reverted — no interrupts placed"
+
+
+def test_no_midclip_text_survives_the_full_pass_chain():
+    """THE invariant, checked end-to-end rather than emitter-by-emitter: mid-clip text has
+    come back twice from different passes (b-roll cards, then interrupt stickers), so the
+    guarantee is enforced by a final sweep. Seed the EDL with text from every source and
+    assert only the hook title survives."""
+    words = _steady_words(30000)
+    total_frames = ms_to_frame(30000)
+    edl = _bare_edl("talking_head", total_frames)
+    kept = retention._kept_intervals(edl["segments"], edl.get("drops") or [])
+    first = kept[0][0]
+    edl["overlays"] = [
+        {"type": "text_sticker", "src_in": first, "src_out": first + 60, "text": "The hook"},
+        {"type": "text_sticker", "src_in": first + 200, "src_out": first + 230, "text": "random"},
+        {"type": "text_card", "src_in": first + 400, "src_out": first + 460, "text": "concept"},
+        {"type": "punch_in", "src_in": first + 600, "src_out": first + 640, "scale": 1.08},
+    ]
+    out = retention._strip_midclip_text(edl)
+    texts = [o for o in out["overlays"] if o["type"] in ("text_sticker", "text_card")]
+    assert len(texts) == 1 and texts[0]["text"] == "The hook", "only the title card may remain"
+    assert any(o["type"] == "punch_in" for o in out["overlays"]), "camera moves must survive"

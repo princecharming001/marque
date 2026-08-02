@@ -1473,7 +1473,10 @@ _INTERRUPT_SCALES = (1.04, 1.07)   # alternates; build 54 tone-down (was 1.06/1.
 # jitter draws each gap's target independently instead of using one constant.
 _INTERRUPT_JITTER_S = (3.0, 5.0)                   # per-gap cadence target range, seconds
 _INTERRUPT_JITTER_HOLD_FRAMES = (9, 15)            # short snap-zoom window vs. the fixed 75f hold
-_INTERRUPT_JITTER_TYPES = ("punch", "framing_pop", "text_sticker")
+_INTERRUPT_JITTER_TYPES = ("punch", "framing_pop")
+# A third punch scale, distinct from both _INTERRUPT_SCALES cadence values, used
+# only to break a 3-run (see _enforce_interrupt_variety).
+_VARIETY_SCALE = 1.11
 _INTERRUPT_FRAMING_POP_BUMP = 0.10
 _INTERRUPT_FRAMING_POP_SPLIT_BUDGET = 2 * _INTERRUPT_MAX_PER_CLIP
 
@@ -1666,7 +1669,12 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
         if src_lo is None or src_hi is None or src_hi <= src_lo:
             return None
 
-        it_type = "punch" if can_punch else "text_sticker"
+        # NO MID-CLIP WORDS (owner, build 65). Interrupts keep their pacing job, but a
+        # keyword-pop sticker drops a bare transcript word on top of the video, which the
+        # owner has now called out twice ("random words"). The rule is: after the title
+        # card the only text on screen is the caption track. So an interrupt is a CAMERA
+        # move (punch / framing pop) or it does not happen.
+        it_type = "punch" if can_punch else "framing_pop"
         if jitter and unanchored and last_type == "punch" \
                 and "framing_pop" in allowed_types:
             # Consecutive coverage punches in a wordless span trip the
@@ -1676,8 +1684,10 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
                 inserted += 1
                 last_type = "framing_pop"
                 return out_hi
-        if jitter and not unanchored:      # fallback anchors have no word for a sticker
-            pool = [t for t in allowed_types if t != last_type] or list(allowed_types)
+        if jitter and not unanchored:
+            pool = [t for t in allowed_types
+                    if t != last_type and t != "text_sticker"] or \
+                   [t for t in allowed_types if t != "text_sticker"]
             it_type = rng.choice(pool)
             if it_type == "framing_pop":
                 if _insert_framing_pop(edl, src_lo, src_hi, framing_splits_left):
@@ -1687,35 +1697,19 @@ def schedule_interrupts(edl: dict, words: list[dict], *, style: str,
                 # Split failed: prefer the type that BREAKS a punch run (ralph
                 # round-3 repeated_interrupt_type: every failure degraded to
                 # punch, minting 3+ punch runs).
-                it_type = "text_sticker" if last_type == "punch" else \
-                          ("punch" if can_punch else "text_sticker")
+                it_type = "punch" if can_punch else "framing_pop"
 
         if it_type == "punch" and can_punch:
             new_overlays.append({"type": "punch_in", "src_in": src_lo, "src_out": src_hi,
                                  "scale": _INTERRUPT_SCALES[scale_i % 2], "text": ""})
             scale_i += 1
         else:
-            word_text = next((w["word"] for out, w in words_by_out if out == anchor), "")
-            if not word_text and not can_punch:
+            # Where a keyword sticker used to go: a framing pop if the shot can take one,
+            # otherwise nothing at all. Skipping is fine — the cadence machine just walks
+            # to the next opportunity; a word on screen is not an acceptable substitute.
+            if not _insert_framing_pop(edl, src_lo, src_hi, framing_splits_left):
                 return None
-            if not word_text:
-                # No word for a sticker — punch instead of abandoning the gap
-                # (ralph round-3: the bare `return None` here stranded stretches
-                # and every degraded path minted 3+ punch runs).
-                new_overlays.append({"type": "punch_in", "src_in": src_lo, "src_out": src_hi,
-                                     "scale": _INTERRUPT_SCALES[scale_i % 2], "text": ""})
-                scale_i += 1
-                it_type = "punch"
-            else:
-                # B3: keyword-pop stickers take the theme's hook font/bg too — hardcoded
-                # "inter" fired edit_lint's mixed-fonts ERROR under any non-inter theme.
-                _hcfg = (theme.hook if theme is not None else {}) or {}
-                new_overlays.append({"type": "text_sticker", "src_in": src_lo, "src_out": src_hi,
-                                     "scale": 1.0, "text": word_text[:24],
-                                     "pos_x": 0.5, "pos_y": 0.3, "rotation": 0.0,
-                                     "color": None, "bg": _hcfg.get("sticker_bg") or "box",
-                                     "font": _hcfg.get("sticker_font") or "inter"})
-                it_type = "text_sticker"
+            it_type = "framing_pop"
         inserted += 1
         last_type = it_type
         return out_hi
@@ -2243,6 +2237,7 @@ def apply_retention_passes(edl: dict, words: list[dict], *, style: str,
     # plan_framing and can mint fresh <8% adjacent pairs (round-6: 1% at a cut
     # the earlier in-pass enforcement had already cleared).
     edl = _enforce_framing_deltas(edl)
+    edl = _strip_midclip_text(edl)
     edl = _enforce_interrupt_variety(edl, words, theme)
     return edl
 
@@ -2291,14 +2286,17 @@ def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) 
                 wtext = next((w.get("word", "") for w in (words or [])
                               if o.get("src_in", 0) <= ms_to_frame(w.get("start_ms", 0))
                               <= o.get("src_out", o.get("src_in", 0))), "")
-                if wtext and _convertible(o, wtext):
-                    ovl[mid] = {"type": "text_sticker", "src_in": o.get("src_in", 0),
-                                "src_out": o.get("src_out", 0), "scale": 1.0,
-                                "text": wtext[:24], "pos_x": 0.5, "pos_y": 0.3,
-                                "rotation": 0.0, "color": None,
-                                "bg": ((theme.hook if theme is not None else {}) or {}).get("sticker_bg") or "box",
-                                "font": ((theme.hook if theme is not None else {}) or {}).get("sticker_font") or "inter"}
-                    run = [j for j in run if j != mid]
+                # Was: convert the middle punch of a 3-run into a keyword sticker. That
+                # is the same banned mid-clip word — vary the SCALE instead, which breaks
+                # the run without printing anything. `_VARIETY_SCALE` is deliberately a
+                # THIRD value, distinct from both cadence scales, and the run RESETS after
+                # an intervention: the sticker conversion used to reset it implicitly by
+                # changing the type, and without that the counter kept sliding and stamped
+                # the same scale onto neighbour after neighbour — a fresh run of identical
+                # beats, which is the exact thing this pass exists to prevent.
+                if o.get("scale"):
+                    ovl[mid] = {**o, "scale": _VARIETY_SCALE}
+                    run = []
         else:
             run = []
             srun.append(i)
@@ -2314,6 +2312,40 @@ def _enforce_interrupt_variety(edl: dict, words: list[dict] | None, theme=None) 
                     srun = [j for j in srun if j != mid]
         if ovl[i].get("type") == "punch_in":
             srun = []
+    return edl
+
+
+def _strip_midclip_text(edl: dict) -> dict:
+    """THE TEXT INVARIANT (owner, build 65): after the title card, the only text on screen
+    is the caption track.
+
+    Enforced as a final sweep rather than only at the emitters, because mid-clip text has
+    now come back twice from different passes — the b-roll text cards (killed in Wave 1)
+    and then the interrupt keyword stickers. A sweep makes the rule true no matter which
+    pass, prompt or future edit op tries to add words to the picture.
+
+    KEPT: the hook TITLE — the one text overlay the creator asked for, identified by
+    starting at the first kept frame (place_hook_overlay's contract), plus title_card.
+    DROPPED: every other text_sticker / text_card, wherever it came from.
+    """
+    ovl = edl.get("overlays") or []
+    if not ovl:
+        return edl
+    kept = _kept_intervals(edl.get("segments") or [], edl.get("drops") or [])
+    first_kept = kept[0][0] if kept else None
+    survivors, dropped = [], 0
+    for o in ovl:
+        t = o.get("type")
+        if t not in ("text_sticker", "text_card"):
+            survivors.append(o)                       # punches/framing/etc. untouched
+            continue
+        if t == "text_sticker" and first_kept is not None and o.get("src_in") == first_kept:
+            survivors.append(o)                       # the hook title
+            continue
+        dropped += 1
+    if dropped:
+        edl["overlays"] = survivors
+        edl.setdefault("_text_guard", {})["dropped"] = dropped
     return edl
 
 
