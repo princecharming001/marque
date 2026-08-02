@@ -106,9 +106,11 @@ def test_cold_start_maps_to_todays_defaults():
     """A creator who skips the taste quiz must get EXACTLY the current pipeline: no
     caption size claim, meme 1, standard density/trim."""
     cfg = sp.map_profile_to_config(sp.COLD_START)
-    assert cfg == {"caption_style": "clean", "meme_intensity": "1",
-                   "interrupt_density": "standard", "filler_trim": "standard",
-                   "broll_mode": "cutaway"}
+    assert cfg == {"theme_id": "clean_creator", "caption_style": "clean",
+                   "meme_intensity": "1", "interrupt_density": "standard",
+                   "filler_trim": "standard", "broll_mode": "cutaway"}
+    # clean_creator IS the shipped default theme (themes.py) and these knob values ARE
+    # _KNOB_DEFAULTS, so an un-quizzed creator still gets exactly today's pipeline.
 
 
 def test_golden_mapping_cases_hold():

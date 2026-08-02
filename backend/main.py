@@ -3213,7 +3213,21 @@ async def _create_clip_job_impl(req: ClipJobRequest):
     # golden-diff no-op). Resolution happens regardless of EDIT_THEMES so
     # job["theme_id"] is always an honest record; only `_theme` (what
     # apply_retention_passes actually reads) is flag-gated to None.
-    theme_id = req.theme_id or prompts.EDIT_FORMATS.get(edit_format, {}).get("default_theme", "")
+    # v8: the creator's learned style profile sits BETWEEN the two — an explicit
+    # per-video pick still wins, but a standing taste beats a generic per-format
+    # default (that's the whole point of learning it). Without this the profile's
+    # theme landed in `config`, which nothing reads — a silent no-op.
+    _profile_theme = ""
+    _sp_cfg = (req.config or {}).get("style_profile")
+    if _sp_cfg:
+        try:
+            _v = style_profile_mod.normalize(
+                json.loads(_sp_cfg) if isinstance(_sp_cfg, str) else _sp_cfg)
+            _profile_theme = style_profile_mod.map_profile_to_config(_v).get("theme_id", "")
+        except Exception:
+            _profile_theme = ""
+    theme_id = (req.theme_id or _profile_theme
+                or prompts.EDIT_FORMATS.get(edit_format, {}).get("default_theme", ""))
     job = {
         "job_id": job_id, "source_id": req.source_id, "status": "transcribing",
         "clips": clips, "script": req.script, "style": style,

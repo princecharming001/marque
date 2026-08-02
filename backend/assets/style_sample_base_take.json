@@ -1,0 +1,1121 @@
+{
+  "take_id": "procut",
+  "captured_from": "eval/cutloop/round_6/procut.json",
+  "source_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/uploads/77b36bc2-c62e-457d-98ae-4087d87c371e/procut-raw.mp4",
+  "edl": {
+    "style": "talking_head",
+    "format_id": "myth-buster",
+    "segments": [
+      {
+        "speed": 1.05,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0,
+        "src_in": 265,
+        "src_out": 318
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.08,
+        "tx_x": 0.0,
+        "tx_y": 0.0,
+        "src_in": 318,
+        "src_out": 424
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.188,
+        "tx_x": 0.03,
+        "tx_y": 0.0,
+        "src_in": 424,
+        "src_out": 652
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0,
+        "src_in": 652,
+        "src_out": 861
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.14,
+        "tx_x": -0.03,
+        "tx_y": 0.0,
+        "src_in": 861,
+        "src_out": 982
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0,
+        "src_in": 982,
+        "src_out": 997
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.14,
+        "tx_x": -0.03,
+        "tx_y": 0.0,
+        "src_in": 997,
+        "src_out": 1050
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0,
+        "src_in": 1050,
+        "src_out": 1065
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.09,
+        "tx_x": 0.03,
+        "tx_y": 0.0,
+        "src_in": 1074,
+        "src_out": 1298
+      },
+      {
+        "speed": 1.05,
+        "tx_scale": 1.0,
+        "tx_x": 0.0,
+        "tx_y": 0.0,
+        "src_in": 1298,
+        "src_out": 1500
+      }
+    ],
+    "drops": [
+      {
+        "src_in": 0,
+        "src_out": 265,
+        "reason": "false_start"
+      },
+      {
+        "src_in": 1065,
+        "src_out": 1074,
+        "reason": "false_start"
+      },
+      {
+        "src_in": 1400,
+        "src_out": 1411,
+        "reason": "dead_air"
+      }
+    ],
+    "captions": [
+      {
+        "word": "Most",
+        "frame": 30,
+        "end_frame": 38
+      },
+      {
+        "word": "fusion\u2014",
+        "frame": 41,
+        "end_frame": 97
+      },
+      {
+        "word": "most",
+        "frame": 104,
+        "end_frame": 110
+      },
+      {
+        "word": "fusion\u2014",
+        "frame": 112,
+        "end_frame": 120
+      },
+      {
+        "word": "most",
+        "frame": 154,
+        "end_frame": 158
+      },
+      {
+        "word": "fusion",
+        "frame": 158,
+        "end_frame": 167
+      },
+      {
+        "word": "fails",
+        "frame": 169,
+        "end_frame": 178
+      },
+      {
+        "word": "for",
+        "frame": 181,
+        "end_frame": 184
+      },
+      {
+        "word": "the",
+        "frame": 184,
+        "end_frame": 186
+      },
+      {
+        "word": "same",
+        "frame": 186,
+        "end_frame": 193
+      },
+      {
+        "word": "reason.",
+        "frame": 193,
+        "end_frame": 201
+      },
+      {
+        "word": "You're",
+        "frame": 212,
+        "end_frame": 215
+      },
+      {
+        "word": "not",
+        "frame": 215,
+        "end_frame": 221
+      },
+      {
+        "word": "matching\u2014",
+        "frame": 222,
+        "end_frame": 231
+      },
+      {
+        "word": "you're\u2014",
+        "frame": 246,
+        "end_frame": 264
+      },
+      {
+        "word": "most",
+        "frame": 265,
+        "end_frame": 270
+      },
+      {
+        "word": "fusion",
+        "frame": 270,
+        "end_frame": 280
+      },
+      {
+        "word": "fails",
+        "frame": 280,
+        "end_frame": 289
+      },
+      {
+        "word": "for",
+        "frame": 290,
+        "end_frame": 292
+      },
+      {
+        "word": "the",
+        "frame": 292,
+        "end_frame": 294
+      },
+      {
+        "word": "same",
+        "frame": 294,
+        "end_frame": 302
+      },
+      {
+        "word": "reason.",
+        "frame": 302,
+        "end_frame": 308
+      },
+      {
+        "word": "You're",
+        "frame": 318,
+        "end_frame": 320
+      },
+      {
+        "word": "matching",
+        "frame": 320,
+        "end_frame": 329
+      },
+      {
+        "word": "flavors",
+        "frame": 330,
+        "end_frame": 340
+      },
+      {
+        "word": "instead",
+        "frame": 340,
+        "end_frame": 347
+      },
+      {
+        "word": "of",
+        "frame": 347,
+        "end_frame": 351
+      },
+      {
+        "word": "fat,",
+        "frame": 354,
+        "end_frame": 363
+      },
+      {
+        "word": "acid,",
+        "frame": 368,
+        "end_frame": 378
+      },
+      {
+        "word": "and",
+        "frame": 379,
+        "end_frame": 382
+      },
+      {
+        "word": "heat.",
+        "frame": 383,
+        "end_frame": 386
+      },
+      {
+        "word": "Everyone",
+        "frame": 398,
+        "end_frame": 405
+      },
+      {
+        "word": "tries",
+        "frame": 405,
+        "end_frame": 413
+      },
+      {
+        "word": "to",
+        "frame": 413,
+        "end_frame": 416
+      },
+      {
+        "word": "pair",
+        "frame": 416,
+        "end_frame": 424
+      },
+      {
+        "word": "fusion",
+        "frame": 424,
+        "end_frame": 431
+      },
+      {
+        "word": "by",
+        "frame": 445,
+        "end_frame": 448
+      },
+      {
+        "word": "taste.",
+        "frame": 448,
+        "end_frame": 458
+      },
+      {
+        "word": "Gochujang",
+        "frame": 469,
+        "end_frame": 491
+      },
+      {
+        "word": "tastes",
+        "frame": 501,
+        "end_frame": 507
+      },
+      {
+        "word": "bold,",
+        "frame": 510,
+        "end_frame": 520
+      },
+      {
+        "word": "carbonara",
+        "frame": 527,
+        "end_frame": 542
+      },
+      {
+        "word": "tastes",
+        "frame": 542,
+        "end_frame": 551
+      },
+      {
+        "word": "rich.",
+        "frame": 551,
+        "end_frame": 558
+      },
+      {
+        "word": "Throw",
+        "frame": 568,
+        "end_frame": 573
+      },
+      {
+        "word": "them",
+        "frame": 573,
+        "end_frame": 576
+      },
+      {
+        "word": "together,",
+        "frame": 576,
+        "end_frame": 587
+      },
+      {
+        "word": "done.",
+        "frame": 595,
+        "end_frame": 599
+      },
+      {
+        "word": "That's",
+        "frame": 616,
+        "end_frame": 621
+      },
+      {
+        "word": "why",
+        "frame": 621,
+        "end_frame": 624
+      },
+      {
+        "word": "it",
+        "frame": 624,
+        "end_frame": 626
+      },
+      {
+        "word": "collapses.",
+        "frame": 626,
+        "end_frame": 641
+      },
+      {
+        "word": "Flavor",
+        "frame": 652,
+        "end_frame": 662
+      },
+      {
+        "word": "isn't",
+        "frame": 664,
+        "end_frame": 671
+      },
+      {
+        "word": "the",
+        "frame": 672,
+        "end_frame": 674
+      },
+      {
+        "word": "structure.",
+        "frame": 674,
+        "end_frame": 687
+      },
+      {
+        "word": "Fat,",
+        "frame": 695,
+        "end_frame": 702
+      },
+      {
+        "word": "acid,",
+        "frame": 715,
+        "end_frame": 724
+      },
+      {
+        "word": "and",
+        "frame": 725,
+        "end_frame": 727
+      },
+      {
+        "word": "heat",
+        "frame": 727,
+        "end_frame": 734
+      },
+      {
+        "word": "are.",
+        "frame": 734,
+        "end_frame": 739
+      },
+      {
+        "word": "Carbonara",
+        "frame": 746,
+        "end_frame": 763
+      },
+      {
+        "word": "is",
+        "frame": 763,
+        "end_frame": 766
+      },
+      {
+        "word": "fat.",
+        "frame": 770,
+        "end_frame": 776
+      },
+      {
+        "word": "And",
+        "frame": 785,
+        "end_frame": 787
+      },
+      {
+        "word": "salt",
+        "frame": 787,
+        "end_frame": 800
+      },
+      {
+        "word": "with",
+        "frame": 804,
+        "end_frame": 808
+      },
+      {
+        "word": "almost",
+        "frame": 811,
+        "end_frame": 818
+      },
+      {
+        "word": "no",
+        "frame": 818,
+        "end_frame": 821
+      },
+      {
+        "word": "acid.",
+        "frame": 821,
+        "end_frame": 830
+      },
+      {
+        "word": "Gochujang",
+        "frame": 842,
+        "end_frame": 856
+      },
+      {
+        "word": "brings",
+        "frame": 861,
+        "end_frame": 871
+      },
+      {
+        "word": "heat",
+        "frame": 882,
+        "end_frame": 891
+      },
+      {
+        "word": "and",
+        "frame": 891,
+        "end_frame": 896
+      },
+      {
+        "word": "funk,",
+        "frame": 896,
+        "end_frame": 905
+      },
+      {
+        "word": "but",
+        "frame": 905,
+        "end_frame": 910
+      },
+      {
+        "word": "also",
+        "frame": 910,
+        "end_frame": 916
+      },
+      {
+        "word": "sugar.",
+        "frame": 917,
+        "end_frame": 924
+      },
+      {
+        "word": "Smash",
+        "frame": 935,
+        "end_frame": 945
+      },
+      {
+        "word": "them",
+        "frame": 946,
+        "end_frame": 950
+      },
+      {
+        "word": "raw",
+        "frame": 961,
+        "end_frame": 964
+      },
+      {
+        "word": "and",
+        "frame": 975,
+        "end_frame": 979
+      },
+      {
+        "word": "the",
+        "frame": 982,
+        "end_frame": 984
+      },
+      {
+        "word": "sugar",
+        "frame": 984,
+        "end_frame": 996
+      },
+      {
+        "word": "fights",
+        "frame": 996,
+        "end_frame": 1006
+      },
+      {
+        "word": "the",
+        "frame": 1006,
+        "end_frame": 1008
+      },
+      {
+        "word": "egg.",
+        "frame": 1008,
+        "end_frame": 1012
+      },
+      {
+        "word": "The",
+        "frame": 1023,
+        "end_frame": 1024
+      },
+      {
+        "word": "heat",
+        "frame": 1024,
+        "end_frame": 1034
+      },
+      {
+        "word": "flattens",
+        "frame": 1035,
+        "end_frame": 1045
+      },
+      {
+        "word": "the",
+        "frame": 1045,
+        "end_frame": 1050
+      },
+      {
+        "word": "pork.",
+        "frame": 1050,
+        "end_frame": 1056
+      },
+      {
+        "word": "I",
+        "frame": 1076,
+        "end_frame": 1077
+      },
+      {
+        "word": "match",
+        "frame": 1083,
+        "end_frame": 1090
+      },
+      {
+        "word": "the",
+        "frame": 1093,
+        "end_frame": 1097
+      },
+      {
+        "word": "axes",
+        "frame": 1100,
+        "end_frame": 1108
+      },
+      {
+        "word": "first.",
+        "frame": 1112,
+        "end_frame": 1122
+      },
+      {
+        "word": "Cut",
+        "frame": 1133,
+        "end_frame": 1141
+      },
+      {
+        "word": "the",
+        "frame": 1141,
+        "end_frame": 1144
+      },
+      {
+        "word": "gochujang",
+        "frame": 1146,
+        "end_frame": 1162
+      },
+      {
+        "word": "with",
+        "frame": 1163,
+        "end_frame": 1168
+      },
+      {
+        "word": "a",
+        "frame": 1168,
+        "end_frame": 1168
+      },
+      {
+        "word": "splash",
+        "frame": 1168,
+        "end_frame": 1182
+      },
+      {
+        "word": "of",
+        "frame": 1185,
+        "end_frame": 1187
+      },
+      {
+        "word": "vinegar",
+        "frame": 1187,
+        "end_frame": 1197
+      },
+      {
+        "word": "to",
+        "frame": 1207,
+        "end_frame": 1211
+      },
+      {
+        "word": "give",
+        "frame": 1216,
+        "end_frame": 1221
+      },
+      {
+        "word": "the",
+        "frame": 1221,
+        "end_frame": 1225
+      },
+      {
+        "word": "fat",
+        "frame": 1225,
+        "end_frame": 1229
+      },
+      {
+        "word": "something",
+        "frame": 1230,
+        "end_frame": 1240
+      },
+      {
+        "word": "to",
+        "frame": 1240,
+        "end_frame": 1242
+      },
+      {
+        "word": "lean",
+        "frame": 1242,
+        "end_frame": 1249
+      },
+      {
+        "word": "on.",
+        "frame": 1249,
+        "end_frame": 1254
+      },
+      {
+        "word": "Pull",
+        "frame": 1264,
+        "end_frame": 1267
+      },
+      {
+        "word": "the",
+        "frame": 1268,
+        "end_frame": 1273
+      },
+      {
+        "word": "heat",
+        "frame": 1273,
+        "end_frame": 1278
+      },
+      {
+        "word": "back",
+        "frame": 1278,
+        "end_frame": 1288
+      },
+      {
+        "word": "so",
+        "frame": 1288,
+        "end_frame": 1295
+      },
+      {
+        "word": "it",
+        "frame": 1295,
+        "end_frame": 1298
+      },
+      {
+        "word": "seasons",
+        "frame": 1298,
+        "end_frame": 1310
+      },
+      {
+        "word": "instead",
+        "frame": 1310,
+        "end_frame": 1317
+      },
+      {
+        "word": "of",
+        "frame": 1317,
+        "end_frame": 1318
+      },
+      {
+        "word": "screams.",
+        "frame": 1318,
+        "end_frame": 1330
+      },
+      {
+        "word": "Then",
+        "frame": 1341,
+        "end_frame": 1344
+      },
+      {
+        "word": "it",
+        "frame": 1344,
+        "end_frame": 1353
+      },
+      {
+        "word": "works.",
+        "frame": 1353,
+        "end_frame": 1363
+      },
+      {
+        "word": "Rate",
+        "frame": 1374,
+        "end_frame": 1379
+      },
+      {
+        "word": "that",
+        "frame": 1379,
+        "end_frame": 1383
+      },
+      {
+        "word": "version",
+        "frame": 1384,
+        "end_frame": 1393
+      },
+      {
+        "word": "7",
+        "frame": 1414,
+        "end_frame": 1432
+      },
+      {
+        "word": "out",
+        "frame": 1432,
+        "end_frame": 1439
+      },
+      {
+        "word": "of",
+        "frame": 1440,
+        "end_frame": 1441
+      },
+      {
+        "word": "10.",
+        "frame": 1441,
+        "end_frame": 1443
+      },
+      {
+        "word": "Follow",
+        "frame": 1457,
+        "end_frame": 1466
+      },
+      {
+        "word": "for",
+        "frame": 1466,
+        "end_frame": 1470
+      },
+      {
+        "word": "the",
+        "frame": 1470,
+        "end_frame": 1471
+      },
+      {
+        "word": "next",
+        "frame": 1473,
+        "end_frame": 1480
+      },
+      {
+        "word": "collision",
+        "frame": 1483,
+        "end_frame": 1490
+      },
+      {
+        "word": "test.",
+        "frame": 1490,
+        "end_frame": 1500
+      }
+    ],
+    "speech_frames": [
+      30,
+      41,
+      104,
+      112,
+      154,
+      158,
+      169,
+      181,
+      184,
+      186,
+      193,
+      212,
+      215,
+      222,
+      246,
+      265,
+      270,
+      280,
+      290,
+      292,
+      294,
+      302,
+      318,
+      320,
+      330,
+      340,
+      347,
+      354,
+      368,
+      379,
+      383,
+      398,
+      405,
+      413,
+      416,
+      424,
+      445,
+      448,
+      469,
+      501,
+      510,
+      527,
+      542,
+      551,
+      568,
+      573,
+      576,
+      595,
+      616,
+      621,
+      624,
+      626,
+      652,
+      664,
+      672,
+      674,
+      695,
+      715,
+      725,
+      727,
+      734,
+      746,
+      763,
+      770,
+      785,
+      787,
+      804,
+      811,
+      818,
+      821,
+      842,
+      861,
+      882,
+      891,
+      896,
+      905,
+      910,
+      917,
+      935,
+      946,
+      961,
+      975,
+      982,
+      984,
+      996,
+      1006,
+      1008,
+      1023,
+      1024,
+      1035,
+      1045,
+      1050,
+      1076,
+      1083,
+      1093,
+      1100,
+      1112,
+      1133,
+      1141,
+      1146,
+      1163,
+      1168,
+      1168,
+      1185,
+      1187,
+      1207,
+      1216,
+      1221,
+      1225,
+      1230,
+      1240,
+      1242,
+      1249,
+      1264,
+      1268,
+      1273,
+      1278,
+      1288,
+      1295,
+      1298,
+      1310,
+      1317,
+      1318,
+      1341,
+      1344,
+      1353,
+      1374,
+      1379,
+      1384,
+      1414,
+      1432,
+      1440,
+      1441,
+      1457,
+      1466,
+      1470,
+      1473,
+      1483,
+      1490
+    ],
+    "overlays": [
+      {
+        "type": "punch_in",
+        "src_in": 674,
+        "src_out": 704,
+        "scale": 1.06,
+        "text": "",
+        "pos_x": 0.5,
+        "pos_y": 0.5,
+        "rotation": 0.0,
+        "color": null,
+        "bg": "none",
+        "font": "inter"
+      },
+      {
+        "type": "punch_in",
+        "src_in": 1473,
+        "src_out": 1500,
+        "scale": 1.08,
+        "text": ""
+      },
+      {
+        "type": "punch_in",
+        "src_in": 469,
+        "src_out": 491,
+        "scale": 1.08,
+        "text": ""
+      },
+      {
+        "type": "punch_in",
+        "src_in": 746,
+        "src_out": 763,
+        "scale": 1.08,
+        "text": ""
+      },
+      {
+        "type": "text_sticker",
+        "src_in": 265,
+        "src_out": 328,
+        "text": "You're matching flavors, not structure",
+        "scale": 1.05,
+        "pos_x": 0.5,
+        "pos_y": 0.24,
+        "rotation": 0.0,
+        "color": null,
+        "bg": "box",
+        "font": "inter"
+      },
+      {
+        "type": "punch_in",
+        "src_in": 265,
+        "src_out": 281,
+        "scale": 1.06,
+        "text": ""
+      },
+      {
+        "type": "text_sticker",
+        "src_in": 595,
+        "src_out": 607,
+        "scale": 1.0,
+        "text": "done.",
+        "pos_x": 0.5,
+        "pos_y": 0.3,
+        "rotation": 0.0,
+        "color": null,
+        "bg": "box",
+        "font": "inter"
+      },
+      {
+        "type": "text_sticker",
+        "src_in": 1185,
+        "src_out": 1199,
+        "scale": 1.0,
+        "text": "of",
+        "pos_x": 0.5,
+        "pos_y": 0.3,
+        "rotation": 0.0,
+        "color": null,
+        "bg": "box",
+        "font": "inter"
+      }
+    ],
+    "broll": [],
+    "react_source": null,
+    "react_schedule": [],
+    "layout": {
+      "style": "talking_head",
+      "panels": 1,
+      "face_box": {
+        "x": 0.3091,
+        "y": 0.4207,
+        "w": 0.5132,
+        "h": 0.3851
+      },
+      "panel_boundaries": [],
+      "split_fraction": 0.58,
+      "speaker_treatment": "",
+      "pip_position": "bottom_left"
+    },
+    "audio": {
+      "lufs_target": -14.0,
+      "gain": 0.0,
+      "music": null,
+      "volume_ranges": [],
+      "sfx": [
+        {
+          "src_in": 265,
+          "kind": "pop",
+          "gain": 0.19952623149688797,
+          "url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/sfx/pop.mp3"
+        },
+        {
+          "src_in": 469,
+          "kind": "pop",
+          "gain": 0.19952623149688797,
+          "url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/sfx/pop.mp3"
+        },
+        {
+          "src_in": 1185,
+          "kind": "sparkle",
+          "gain": 0.19952623149688797,
+          "url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/sfx/sparkle.mp3"
+        },
+        {
+          "src_in": 1473,
+          "kind": "hit",
+          "gain": 0.19952623149688797,
+          "url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/sfx/hit.mp3"
+        }
+      ],
+      "duck": null,
+      "room_tone": null
+    },
+    "caption_style": "bold-word",
+    "caption_options": {
+      "position": "bottom",
+      "size": "medium",
+      "pos_y": 0.62,
+      "scale": null,
+      "accent": null,
+      "uppercase": false,
+      "font": "inter",
+      "grouping": "phrase",
+      "highlight_words": [
+        "fat",
+        "acid",
+        "heat",
+        "structure",
+        "axes",
+        "vinegar",
+        "sugar",
+        "egg",
+        "screams",
+        "collapses",
+        "collision",
+        "gochujang"
+      ],
+      "stroke_px": 0.0,
+      "sync_lead_frames": 0,
+      "highlight_persist_frames": 0,
+      "bg": ""
+    },
+    "transitions": [],
+    "look": null,
+    "trim_aggressiveness": null,
+    "end_card": {
+      "text": "Follow for the next collision test",
+      "frames": 108,
+      "show_handle": true
+    },
+    "progress_bar": false,
+    "watermark": false,
+    "segment_order": null,
+    "theme_id": "",
+    "montage": null
+  }
+}

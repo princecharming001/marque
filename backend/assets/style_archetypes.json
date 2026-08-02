@@ -1,0 +1,333 @@
+{
+  "schema_version": 1,
+  "bank_version": 1,
+  "generated_at": "2026-08-02T02:49:41+00:00",
+  "dims": [
+    "pace",
+    "energy",
+    "broll_density",
+    "broll_share",
+    "broll_overlay_bias",
+    "caption_boldness",
+    "caption_chunking",
+    "title_cta_flair"
+  ],
+  "archetypes": [
+    {
+      "id": "clean_creator_lite",
+      "label": "Clean Creator \u2014 Lite",
+      "blurb": "The reliable default: quiet captions, natural pacing, no gimmicks.",
+      "theme_id": "clean_creator",
+      "pole": "lite",
+      "vector": {
+        "pace": 0.35,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "resolved_config": {
+        "theme_id": "clean_creator",
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "id": "clean_creator_max",
+      "label": "Clean Creator \u2014 Max",
+      "blurb": "The reliable default: quiet captions, natural pacing, no gimmicks.",
+      "theme_id": "clean_creator",
+      "pole": "max",
+      "vector": {
+        "pace": 0.55,
+        "energy": 0.65,
+        "broll_density": 0.4,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.35
+      },
+      "resolved_config": {
+        "theme_id": "clean_creator",
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "id": "hormozi_punch_lite",
+      "label": "Hormozi Punch \u2014 Lite",
+      "blurb": "Anton caps, thick gold outline, dense interrupts \u2014 maximum retention pressure.",
+      "theme_id": "hormozi_punch",
+      "pole": "lite",
+      "vector": {
+        "pace": 0.85,
+        "energy": 0.8,
+        "broll_density": 0.35,
+        "broll_share": 0.3,
+        "broll_overlay_bias": 0.35,
+        "caption_boldness": 0.95,
+        "caption_chunking": 1.0,
+        "title_cta_flair": 0.75
+      },
+      "resolved_config": {
+        "theme_id": "hormozi_punch",
+        "caption_style": "bold-word",
+        "caption_size": "large",
+        "meme_intensity": "3",
+        "interrupt_density": "dense",
+        "filler_trim": "aggressive",
+        "broll_mode": "cutaway",
+        "energy": "high"
+      }
+    },
+    {
+      "id": "hormozi_punch_max",
+      "label": "Hormozi Punch \u2014 Max",
+      "blurb": "Anton caps, thick gold outline, dense interrupts \u2014 maximum retention pressure.",
+      "theme_id": "hormozi_punch",
+      "pole": "max",
+      "vector": {
+        "pace": 1.0,
+        "energy": 1.0,
+        "broll_density": 0.55,
+        "broll_share": 0.3,
+        "broll_overlay_bias": 0.35,
+        "caption_boldness": 0.95,
+        "caption_chunking": 1.0,
+        "title_cta_flair": 0.95
+      },
+      "resolved_config": {
+        "theme_id": "hormozi_punch",
+        "caption_style": "bold-word",
+        "caption_size": "large",
+        "meme_intensity": "3",
+        "interrupt_density": "dense",
+        "filler_trim": "aggressive",
+        "broll_mode": "cutaway",
+        "energy": "high"
+      }
+    },
+    {
+      "id": "docu_calm_lite",
+      "label": "Docu Calm \u2014 Lite",
+      "blurb": "Clean captions, minimal interrupts, a warm grade \u2014 lets the story breathe.",
+      "theme_id": "docu_calm",
+      "pole": "lite",
+      "vector": {
+        "pace": 0.12,
+        "energy": 0.25,
+        "broll_density": 0.2,
+        "broll_share": 0.18,
+        "broll_overlay_bias": 0.25,
+        "caption_boldness": 0.1,
+        "caption_chunking": 0.2,
+        "title_cta_flair": 0.05
+      },
+      "resolved_config": {
+        "theme_id": "docu_calm",
+        "caption_style": "clean",
+        "caption_size": "small",
+        "meme_intensity": "0",
+        "interrupt_density": "calm",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway",
+        "energy": "low"
+      }
+    },
+    {
+      "id": "docu_calm_max",
+      "label": "Docu Calm \u2014 Max",
+      "blurb": "Clean captions, minimal interrupts, a warm grade \u2014 lets the story breathe.",
+      "theme_id": "docu_calm",
+      "pole": "max",
+      "vector": {
+        "pace": 0.32,
+        "energy": 0.45,
+        "broll_density": 0.4,
+        "broll_share": 0.18,
+        "broll_overlay_bias": 0.25,
+        "caption_boldness": 0.1,
+        "caption_chunking": 0.2,
+        "title_cta_flair": 0.25
+      },
+      "resolved_config": {
+        "theme_id": "docu_calm",
+        "caption_style": "clean",
+        "caption_size": "small",
+        "meme_intensity": "1",
+        "interrupt_density": "calm",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "id": "energetic_pop_lite",
+      "label": "Energetic Pop \u2014 Lite",
+      "blurb": "Karaoke captions, dense jitter, flash transitions, upbeat bed \u2014 recap energy.",
+      "theme_id": "energetic_pop",
+      "pole": "lite",
+      "vector": {
+        "pace": 0.78,
+        "energy": 0.9,
+        "broll_density": 0.45,
+        "broll_share": 0.35,
+        "broll_overlay_bias": 0.45,
+        "caption_boldness": 0.5,
+        "caption_chunking": 0.4,
+        "title_cta_flair": 0.85
+      },
+      "resolved_config": {
+        "theme_id": "energetic_pop",
+        "caption_style": "karaoke",
+        "meme_intensity": "2",
+        "interrupt_density": "dense",
+        "filler_trim": "aggressive",
+        "broll_mode": "smart",
+        "energy": "high"
+      }
+    },
+    {
+      "id": "energetic_pop_max",
+      "label": "Energetic Pop \u2014 Max",
+      "blurb": "Karaoke captions, dense jitter, flash transitions, upbeat bed \u2014 recap energy.",
+      "theme_id": "energetic_pop",
+      "pole": "max",
+      "vector": {
+        "pace": 0.98,
+        "energy": 1.0,
+        "broll_density": 0.65,
+        "broll_share": 0.35,
+        "broll_overlay_bias": 0.45,
+        "caption_boldness": 0.5,
+        "caption_chunking": 0.4,
+        "title_cta_flair": 1.0
+      },
+      "resolved_config": {
+        "theme_id": "energetic_pop",
+        "caption_style": "karaoke",
+        "meme_intensity": "3",
+        "interrupt_density": "dense",
+        "filler_trim": "aggressive",
+        "broll_mode": "smart",
+        "energy": "high"
+      }
+    },
+    {
+      "id": "faceless_explainer_lite",
+      "label": "Faceless Explainer \u2014 Lite",
+      "blurb": "B-roll-forward, bold-word captions, a ducked bed \u2014 built for voiceover recaps.",
+      "theme_id": "faceless_explainer",
+      "pole": "lite",
+      "vector": {
+        "pace": 0.45,
+        "energy": 0.5,
+        "broll_density": 0.85,
+        "broll_share": 0.8,
+        "broll_overlay_bias": 0.2,
+        "caption_boldness": 0.7,
+        "caption_chunking": 0.9,
+        "title_cta_flair": 0.45
+      },
+      "resolved_config": {
+        "theme_id": "faceless_explainer",
+        "caption_style": "bold-word",
+        "caption_size": "large",
+        "meme_intensity": "2",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway",
+        "broll_coverage": "full"
+      }
+    },
+    {
+      "id": "faceless_explainer_max",
+      "label": "Faceless Explainer \u2014 Max",
+      "blurb": "B-roll-forward, bold-word captions, a ducked bed \u2014 built for voiceover recaps.",
+      "theme_id": "faceless_explainer",
+      "pole": "max",
+      "vector": {
+        "pace": 0.65,
+        "energy": 0.7,
+        "broll_density": 1.0,
+        "broll_share": 0.8,
+        "broll_overlay_bias": 0.2,
+        "caption_boldness": 0.7,
+        "caption_chunking": 0.9,
+        "title_cta_flair": 0.65
+      },
+      "resolved_config": {
+        "theme_id": "faceless_explainer",
+        "caption_style": "bold-word",
+        "caption_size": "large",
+        "meme_intensity": "2",
+        "interrupt_density": "standard",
+        "filler_trim": "aggressive",
+        "broll_mode": "cutaway",
+        "broll_coverage": "full",
+        "energy": "high"
+      }
+    },
+    {
+      "id": "premium_brand_lite",
+      "label": "Premium Brand \u2014 Lite",
+      "blurb": "Minimal captions, a film grade, sparse whip transitions \u2014 no emoji, no clutter.",
+      "theme_id": "premium_brand",
+      "pole": "lite",
+      "vector": {
+        "pace": 0.25,
+        "energy": 0.35,
+        "broll_density": 0.3,
+        "broll_share": 0.28,
+        "broll_overlay_bias": 0.55,
+        "caption_boldness": 0.08,
+        "caption_chunking": 0.05,
+        "title_cta_flair": 0.1
+      },
+      "resolved_config": {
+        "theme_id": "premium_brand",
+        "caption_style": "clean",
+        "caption_size": "small",
+        "meme_intensity": "0",
+        "interrupt_density": "calm",
+        "filler_trim": "standard",
+        "broll_mode": "smart"
+      }
+    },
+    {
+      "id": "premium_brand_max",
+      "label": "Premium Brand \u2014 Max",
+      "blurb": "Minimal captions, a film grade, sparse whip transitions \u2014 no emoji, no clutter.",
+      "theme_id": "premium_brand",
+      "pole": "max",
+      "vector": {
+        "pace": 0.45,
+        "energy": 0.55,
+        "broll_density": 0.5,
+        "broll_share": 0.28,
+        "broll_overlay_bias": 0.55,
+        "caption_boldness": 0.08,
+        "caption_chunking": 0.05,
+        "title_cta_flair": 0.3
+      },
+      "resolved_config": {
+        "theme_id": "premium_brand",
+        "caption_style": "clean",
+        "caption_size": "small",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "smart"
+      }
+    }
+  ]
+}

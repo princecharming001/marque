@@ -1619,7 +1619,10 @@ final class AppStore {
         if let existing = clipGroups.first(where: { $0.name.caseInsensitiveCompare(trimmed) == .orderedSame }) {
             return existing
         }
-        let g = ClipGroup(name: trimmed.isEmpty ? "Untitled group" : trimmed)
+        // Build 61: hand out the next palette hue round-robin (same scheme as pillars) so
+        // the group reads as a colored dot on every card it owns.
+        let g = ClipGroup(name: trimmed.isEmpty ? "Untitled group" : trimmed,
+                          colorHex: ClipGroup.assignedColorHex(index: clipGroups.count))
         clipGroups.append(g)
         save()
         return g
@@ -1633,16 +1636,50 @@ final class AppStore {
         save()
     }
 
-    /// Delete a group WITHOUT deleting its clips — they fall back to ungrouped.
+    /// Delete a group WITHOUT deleting its clips — they keep every OTHER group they're in
+    /// and fall back to ungrouped only if this was their last one.
     func deleteClipGroup(_ id: UUID) {
         clipGroups.removeAll { $0.id == id }
-        for i in clips.indices where clips[i].groupId == id { clips[i].groupId = nil }
+        for i in clips.indices where clips[i].memberGroupIds.contains(id) {
+            clips[i].setMemberGroupIds(clips[i].memberGroupIds.filter { $0 != id })
+        }
         save()
     }
 
-    /// File the given clips under a group (nil = remove from any group).
+    /// File the given clips under EXACTLY one group (nil = remove from all groups).
+    /// Kept for callers that mean "replace, don't merge"; the Library's group sheet uses
+    /// `setGroupMembership` so it can toggle one group without disturbing the others.
     func assignClips(_ ids: Set<UUID>, toGroup groupId: UUID?) {
-        for i in clips.indices where ids.contains(clips[i].id) { clips[i].groupId = groupId }
+        for i in clips.indices where ids.contains(clips[i].id) {
+            clips[i].setMemberGroupIds(groupId.map { [$0] } ?? [])
+        }
+        save()
+    }
+
+    /// Build 61: add/remove one group across a selection, leaving other memberships alone.
+    /// This is what makes the tri-state group sheet honest — toggling "Client A" off must
+    /// not silently strip "September batch".
+    func setGroupMembership(_ ids: Set<UUID>, group: UUID, isMember: Bool) {
+        guard clipGroups.contains(where: { $0.id == group }) else { return }
+        for i in clips.indices where ids.contains(clips[i].id) {
+            var member = clips[i].memberGroupIds
+            if isMember {
+                guard !member.contains(group) else { continue }
+                member.append(group)
+            } else {
+                guard member.contains(group) else { continue }
+                member.removeAll { $0 == group }
+            }
+            clips[i].setMemberGroupIds(member)
+        }
+        save()
+    }
+
+    /// Remove the given clips from every group they're in.
+    func clearGroups(_ ids: Set<UUID>) {
+        for i in clips.indices where ids.contains(clips[i].id) && !clips[i].memberGroupIds.isEmpty {
+            clips[i].setMemberGroupIds([])
+        }
         save()
     }
 
@@ -2243,6 +2280,11 @@ final class AppStore {
         brand = snap.brand; pillars = snap.pillars; scripts = snap.scripts
         clips = snap.clips; footage = snap.footage; media = snap.media
         clipGroups = snap.clipGroups ?? []
+        // Build 61: bring the decoded blob up to the multi-group schema — backfill group
+        // colors, lift the legacy single `groupId` into `groupIds`, drop memberships whose
+        // group no longer exists. Runs on BOTH local load and cloud restore, because a
+        // snapshot can arrive from an older build on another device at any time.
+        ClipGroupMigration.apply(groups: &clipGroups, clips: &clips)
         schedule = snap.schedule; teardowns = snap.teardowns
         hasOnboarded = snap.hasOnboarded; streak = snap.streak
         memory = snap.memory ?? CreatorMemory()

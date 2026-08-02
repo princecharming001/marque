@@ -13,8 +13,7 @@ struct LibraryView: View {
     @State private var selectedIDs: Set<UUID> = []
     @State private var showBulkDelete = false
     @State private var showBulkSchedule = false
-    @State private var showAssignNewGroup = false
-    @State private var assignNewGroupName = ""
+    @State private var showGroupAssign = false
 
     private var selectedReadyCount: Int {
         store.clips.filter { selectedIDs.contains($0.id) && $0.status == .ready }.count
@@ -50,16 +49,11 @@ struct LibraryView: View {
         .sheet(isPresented: $showBulkSchedule) {
             BulkScheduleSheet(clipIDs: selectedIDs) { exitSelection() }
         }
-        .alert("New group", isPresented: $showAssignNewGroup) {
-            TextField("Group name", text: $assignNewGroupName)
-            Button("Cancel", role: .cancel) { assignNewGroupName = "" }
-            Button("Create & add") {
-                let g = store.createClipGroup(assignNewGroupName)
-                assignNewGroupName = ""
-                store.assignClips(selectedIDs, toGroup: g.id)
-                exitSelection()
-            }
-        } message: { Text("The selected clips will be filed under this group.") }
+        // Build 61: groups get a real sheet (see GroupAssignSheet's note on why the old
+        // Menu made the whole feature look missing).
+        .sheet(isPresented: $showGroupAssign) {
+            GroupAssignSheet(clipIDs: selectedIDs)
+        }
         .confirmationDialog("Delete \(selectedIDs.count) clip\(selectedIDs.count == 1 ? "" : "s")?",
                             isPresented: $showBulkDelete, titleVisibility: .visible) {
             Button("Delete \(selectedIDs.count)", role: .destructive) {
@@ -79,22 +73,15 @@ struct LibraryView: View {
             Text("\(selectedIDs.count) selected")
                 .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.textSecondary)
             Spacer()
-            Menu {
-                ForEach(store.clipGroups) { g in
-                    Button { store.assignClips(selectedIDs, toGroup: g.id); exitSelection() } label: {
-                        Label(g.name, systemImage: "folder")
-                    }
-                }
-                if store.clips.contains(where: { selectedIDs.contains($0.id) && $0.groupId != nil }) {
-                    Button { store.assignClips(selectedIDs, toGroup: nil); exitSelection() } label: {
-                        Label("Remove from group", systemImage: "folder.badge.minus")
-                    }
-                }
-                Divider()
-                Button { showAssignNewGroup = true } label: { Label("New group…", systemImage: "plus") }
-            } label: { bulkIcon("folder.badge.plus", "Group", enabled: !selectedIDs.isEmpty) }
-                .disabled(selectedIDs.isEmpty)
-                .accessibilityIdentifier("library.bulk.group")
+            // Build 61: a plain Button into a sheet, NOT a Menu. The Menu only ever listed
+            // groups that already existed, so on a fresh install it opened to a single
+            // "New group…" row — the owner read that as "grouping isn't built yet". The
+            // sheet always shows the full picture (groups, membership, create row).
+            Button { showGroupAssign = true } label: {
+                bulkIcon("folder.badge.plus", "Group", enabled: !selectedIDs.isEmpty)
+            }
+            .buttonStyle(.plain).disabled(selectedIDs.isEmpty)
+            .accessibilityIdentifier("library.bulk.group")
             Button { showBulkSchedule = true } label: {
                 bulkIcon("paperplane.fill", "Post", enabled: selectedReadyCount > 0)
             }
@@ -146,12 +133,13 @@ struct ClipsSection: View {
         store.clips.contains { [.ready, .scheduled, .posted].contains($0.status) }
     }
 
-    /// Clips passing the active group filter.
+    /// Clips passing the active group filter. Build 61: membership is a SET, so
+    /// "ungrouped" means no groups at all and a group filter means "contains".
     private var filteredClips: [Clip] {
         switch groupFilter {
         case .all:            return store.clips
-        case .ungrouped:      return store.clips.filter { $0.groupId == nil }
-        case .group(let id):  return store.clips.filter { $0.groupId == id }
+        case .ungrouped:      return store.clips.filter { $0.memberGroupIds.isEmpty }
+        case .group(let id):  return store.clips.filter { $0.memberGroupIds.contains(id) }
         }
     }
     var body: some View {
@@ -192,7 +180,7 @@ struct ClipsSection: View {
                             LazyVGrid(columns: cols, spacing: 8) {
                                 ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
                                     Button { onCellTap(c) } label: {
-                                        ClipGridCell(clip: c)
+                                        ClipGridCell(clip: c, groupColors: groupColors(for: c))
                                             .overlay { if selecting { selectionOverlay(c) } }
                                     }
                                     .buttonStyle(.plain)
@@ -241,7 +229,7 @@ struct ClipsSection: View {
             Menu {
                 Picker("Group", selection: $groupFilter) {
                     Label("All clips", systemImage: "rectangle.stack").tag(ClipGroupFilter.all)
-                    if !store.clipGroups.isEmpty || store.clips.contains(where: { $0.groupId != nil }) {
+                    if !store.clipGroups.isEmpty || store.clips.contains(where: { !$0.memberGroupIds.isEmpty }) {
                         Label("Ungrouped", systemImage: "tray").tag(ClipGroupFilter.ungrouped)
                     }
                     ForEach(store.clipGroups) { g in
@@ -276,6 +264,13 @@ struct ClipsSection: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("library.selectToggle")
         }
+    }
+
+    /// Accents for the groups this clip belongs to, in the order the groups were created
+    /// (so a clip's dots don't reshuffle between renders).
+    private func groupColors(for c: Clip) -> [Color] {
+        let member = Set(c.memberGroupIds)
+        return store.clipGroups.filter { member.contains($0.id) }.map { $0.displayColor }
     }
 
     private var groupFilterLabel: String {
@@ -391,6 +386,9 @@ struct ClipCell: View {
 
 struct ClipGridCell: View {
     let clip: Clip
+    /// Build 61: one dot per group this clip is filed under. Default empty so the cell
+    /// stays usable from any call site that doesn't care about groups.
+    var groupColors: [Color] = []
     var body: some View {
         ZStack(alignment: .bottom) {
             // Thumbnail
@@ -428,7 +426,35 @@ struct ClipGridCell: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 0.5))
+        // topLEADING on purpose: topTrailing is the selection checkmark and the bottom
+        // strip is the status/duration line, so the dots are the only thing in this corner.
+        .overlay(alignment: .topLeading) { groupDots }
     }
+
+    /// Overlapping group dots, capped at 3 + a "+N" so a clip in six groups doesn't
+    /// wallpaper its own poster. The canvas-colored stroke keeps them legible on any frame.
+    @ViewBuilder private var groupDots: some View {
+        if !groupColors.isEmpty {
+            HStack(spacing: -4) {
+                ForEach(Array(groupColors.prefix(3).enumerated()), id: \.offset) { _, c in
+                    Circle().fill(c)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().strokeBorder(Palette.canvas, lineWidth: 1.5))
+                }
+                if groupColors.count > 3 {
+                    Text("+\(groupColors.count - 3)")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(Palette.textSecondary)
+                        .padding(.horizontal, 4).frame(height: 12)
+                        .background(Palette.canvas, in: Capsule())
+                        .padding(.leading, 5)
+                }
+            }
+            .padding(6)
+            .accessibilityLabel("In \(groupColors.count) group\(groupColors.count == 1 ? "" : "s")")
+        }
+    }
+
     private var statusLabel: String {
         switch clip.status {
         case .draft:     return "DRAFT"
@@ -956,7 +982,11 @@ struct MediaEditSheet: View {
 }
 
 extension ClipStatus {
-    static var allOrder: [ClipStatus] { [.draft, .ready, .rendering, .scheduled, .posted, .failed] }
+    /// Section order in the Library, owner-directed: what the AI is working on RIGHT NOW
+    /// comes first (that's what the creator opened the app to check), then what's ready to
+    /// post. Drafts are unsubmitted takes, so they sit after Ready, and "Needs attention"
+    /// stays last — a failure shouldn't be the first thing greeting you every launch.
+    static var allOrder: [ClipStatus] { [.rendering, .ready, .draft, .scheduled, .posted, .failed] }
     var title: String {
         switch self {
         case .draft: return "Drafts"

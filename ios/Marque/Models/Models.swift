@@ -364,6 +364,26 @@ struct ClipGroup: Codable, Hashable, Identifiable {
     var id = UUID()
     var name: String
     var createdAt: Date = Date()
+    // Build 61: a per-group accent so a card can show WHICH groups it belongs to at a
+    // glance (a name doesn't fit on a 3-across grid tile; a dot does). Drawn from the
+    // existing `Catalog.pillarColors` — the app has exactly one palette. Optional-with-
+    // default so groups written before this decode, then get backfilled on load.
+    var colorHex: UInt? = nil
+}
+
+extension ClipGroup {
+    /// The hue for the Nth group created — the same round-robin the pillars use.
+    static func assignedColorHex(index: Int) -> UInt {
+        let palette = Catalog.pillarColors
+        return palette[((index % palette.count) + palette.count) % palette.count]
+    }
+
+    /// Resolved accent. A group that somehow still has no stored color falls back to a
+    /// hue derived from its id — stable across launches (unlike `hashValue`, which is
+    /// per-process seeded and would make the dot flicker between colors).
+    var displayColorHex: UInt {
+        colorHex ?? ClipGroup.assignedColorHex(index: Int(id.uuid.0))
+    }
 }
 
 struct Clip: Codable, Hashable, Identifiable {
@@ -427,9 +447,55 @@ struct Clip: Codable, Hashable, Identifiable {
     // Stamped when the clip FIRST becomes .ready (edit finished). Optional-with-default so old
     // persisted clips decode as nil (no timestamp shown). Drives the subtle "finished at" label.
     var finishedAt: Date? = nil
-    // The ClipGroup this clip is filed under (nil = ungrouped). Optional-with-default →
-    // Snapshot-safe on existing installs. Library-organization only.
+    // LEGACY single-group field, kept as a MIRROR of `groupIds.first` and written on every
+    // membership mutation. It is not the source of truth any more, but it must never go
+    // stale: the whole Snapshot is mirrored to Supabase, so an older build (which only
+    // knows `groupId`) can pull the same blob. Keeping the mirror in sync makes that build
+    // degrade to "filed under the first group" instead of showing the clip as ungrouped.
     var groupId: UUID? = nil
+    // Build 61: canonical membership — a clip can live in several groups (a take is
+    // both "Client A" and "September batch"). nil = never migrated; see
+    // `memberGroupIds` / `ClipGroupMigration`. Optional-with-default → Snapshot-safe.
+    var groupIds: [UUID]? = nil
+}
+
+// MARK: - Clip group membership (build 61: multi-group)
+
+extension Clip {
+    /// The groups this clip belongs to. Reads through the legacy field for any clip that
+    /// hasn't been migrated yet, so every call site can ignore the two-field history.
+    var memberGroupIds: [UUID] {
+        groupIds ?? groupId.map { [$0] } ?? []
+    }
+
+    /// THE single write path for membership: dedupes, preserves order, and re-points the
+    /// legacy `groupId` mirror at the first group (see the field's note).
+    mutating func setMemberGroupIds(_ ids: [UUID]) {
+        var seen = Set<UUID>()
+        let unique = ids.filter { seen.insert($0).inserted }
+        groupIds = unique
+        groupId = unique.first
+    }
+}
+
+/// One-shot, pure schema catch-up for a decoded Snapshot. Kept out of AppStore so it can
+/// be exercised without standing up the whole store.
+enum ClipGroupMigration {
+    /// - backfills `colorHex` on groups created before per-group colors existed;
+    /// - lifts every clip's legacy `groupId` into `groupIds`;
+    /// - drops memberships pointing at groups that no longer exist (a delete that
+    ///   happened on another device, or an older build that couldn't strip them).
+    static func apply(groups: inout [ClipGroup], clips: inout [Clip]) {
+        for i in groups.indices where groups[i].colorHex == nil {
+            groups[i].colorHex = ClipGroup.assignedColorHex(index: i)
+        }
+        let known = Set(groups.map(\.id))
+        for i in clips.indices {
+            let pruned = clips[i].memberGroupIds.filter { known.contains($0) }
+            // Always re-run setMemberGroupIds: it's what re-establishes the legacy mirror.
+            clips[i].setMemberGroupIds(pruned)
+        }
+    }
 }
 
 // UX-C1: playback gating. The library bug: LocalVideoPlayer prefers `path` over
@@ -822,6 +888,88 @@ enum FillerTrim: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+/// Burned-in caption scale. rawValues are FROZEN — they're the exact `caption_size`
+/// strings the pipeline (and `StyleProfileMapper.mapProfileToConfig`) already speak.
+/// nil on EditPrefs means AUTO (the plan/style profile decides), never "medium".
+enum CaptionSize: String, CaseIterable, Codable, Identifiable {
+    case small, medium, large
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .small: return "Small"
+        case .medium: return "Medium"
+        case .large: return "Large"
+        }
+    }
+}
+
+/// The creator's learned editing taste — an exact mirror of the backend's
+/// `app/style_profile.py` vector (same 8 dims, same cold start, same schema version).
+/// It is NOT a pile of preferences: it's one normalized vector that
+/// `StyleProfileMapper` maps deterministically onto pipeline knobs, so the client and
+/// the server can never disagree about what a profile means.
+///
+/// Every field is defaulted so an EditPrefs written before this existed — or by a
+/// future build carrying extra keys — still decodes.
+struct StyleProfile: Codable, Hashable {
+    var schemaVersion: Int = 1
+    /// Keyed by `StyleProfileMapper.dims`; missing dims fall back to cold start on read.
+    var dims: [String: Double] = StyleProfileMapper.coldStart
+    /// "low" | "medium" | "high" — how much swipe evidence stands behind `dims`.
+    var confidence: String = "low"
+    /// Where it came from: "cold_start" | "swipe" | "hand_tuned" | "archetype".
+    var source: String = "cold_start"
+    /// True once the creator moved a dial by hand — the swiper must never silently
+    /// overwrite a hand-tuned profile without saying so.
+    var handTuned: Bool = false
+    var swipedAt: Date? = nil
+
+    /// The measured-winner default: a creator who skips the swiper maps to exactly
+    /// today's pipeline behavior. Dims match `style_profile.COLD_START` byte for byte.
+    static let coldStart = StyleProfile()
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case dims, confidence, source
+        case handTuned = "hand_tuned"
+        case swipedAt = "swiped_at"
+    }
+
+    init(dims: [String: Double] = StyleProfileMapper.coldStart, confidence: String = "low",
+         source: String = "cold_start", handTuned: Bool = false, swipedAt: Date? = nil,
+         schemaVersion: Int = 1) {
+        self.schemaVersion = schemaVersion
+        self.dims = dims
+        self.confidence = confidence
+        self.source = source
+        self.handTuned = handTuned
+        self.swipedAt = swipedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        // `try?` per field (not decodeIfPresent) so a key that's present but the WRONG
+        // type — a shape a future backend could hand us — degrades to the default
+        // instead of throwing away the entire Snapshot.
+        schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? 1
+        dims = StyleProfileMapper.normalize(try? c.decode([String: Double].self, forKey: .dims))
+        confidence = (try? c.decode(String.self, forKey: .confidence)) ?? "low"
+        source = (try? c.decode(String.self, forKey: .source)) ?? "cold_start"
+        handTuned = (try? c.decode(Bool.self, forKey: .handTuned)) ?? false
+        swipedAt = try? c.decode(Date.self, forKey: .swipedAt)
+    }
+
+    /// The pipeline knobs this profile has an opinion about (merged UNDER explicit
+    /// per-job picks by the caller — see `map_profile_to_config`'s contract).
+    var configOverrides: [String: String] { StyleProfileMapper.mapProfileToConfig(dims) }
+
+    /// Wire shape for the backend's `normalize()` / job `config` payloads.
+    var asDictionary: [String: Any] {
+        ["schema_version": schemaVersion, "dims": dims, "confidence": confidence,
+         "source": source, "hand_tuned": handTuned]
+    }
+}
+
 struct EditPrefs: Codable, Hashable {
     var autoCaptions: Bool = true
     // Build 55 audit: nil = AUTO — the plan LLM picks the caption style per take. The old
@@ -832,6 +980,32 @@ struct EditPrefs: Codable, Hashable {
     var captionStyle: CaptionStyle? = nil
     var fillerTrim: FillerTrim = .standard
 
+    // Build 61 — standing craft dials. All Optional-with-default so a Snapshot written by
+    // any older build still decodes (Codable does NOT default-fill missing keys, so a
+    // non-optional addition here would silently wipe the whole blob). nil ALWAYS means
+    // "no standing opinion — let the plan/style profile decide", which is why none of
+    // these carry a non-nil default.
+    /// nil = Auto sizing.
+    var captionSize: CaptionSize? = nil
+    /// 0…3 meme/energy dial. nil = the pipeline default (1).
+    var memeIntensity: Int? = nil
+    /// cutaway | smart | panel | card | green_screen | split_screen. Kept a String (not an
+    /// enum) because the backend adds b-roll modes faster than the client ships — an
+    /// unknown value round-trips instead of failing decode. nil = the default (cutaway).
+    var brollStyle: String? = nil
+    /// The learned editing-taste vector (see StyleProfile). nil = never swiped → cold start.
+    var styleProfile: StyleProfile? = nil
+
+    /// The b-roll modes this build offers a picker for, with display copy. The wire value
+    /// is the id; anything the server invents beyond this list still round-trips.
+    static let brollStyleOptions: [(id: String, label: String)] = [
+        ("cutaway", "Cutaway"), ("smart", "Smart"), ("panel", "Panel"),
+        ("card", "Card"), ("green_screen", "Green screen"), ("split_screen", "Split screen"),
+    ]
+
+    /// UNCHANGED wire shape. The build-61 dials deliberately do NOT ship here: the backend
+    /// reads caption_size / meme_intensity / broll_mode off the per-job `config`, not off
+    /// `edit_prefs`, and adding keys the server ignores would just be a lie in the payload.
     var asDictionary: [String: Any] {
         var d: [String: Any] = ["auto_captions": autoCaptions, "filler_trim": fillerTrim.rawValue]
         if let s = captionStyle { d["caption_style"] = s.rawValue }

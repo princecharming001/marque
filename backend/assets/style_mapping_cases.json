@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "note": "Golden profile->config cases. Asserted by test_style_profile.py AND the Swift StyleProfileMapper test; regenerate only with an intentional mapping change.",
+  "note": "Golden profile->config cases. Asserted by test_style_profile.py AND the Swift StyleProfileMapper test. NOTE: theme_id is only emitted when assets/style_archetypes.json is present (it is) \u2014 regenerate ONLY with an intentional mapping change.",
   "cases": [
     {
       "name": "cold_start",
@@ -15,6 +15,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -35,6 +36,7 @@
         "title_cta_flair": 0.0
       },
       "expect": {
+        "theme_id": "docu_calm",
         "caption_style": "clean",
         "caption_size": "small",
         "meme_intensity": "0",
@@ -57,6 +59,7 @@
         "title_cta_flair": 1.0
       },
       "expect": {
+        "theme_id": "faceless_explainer",
         "caption_style": "bold-word",
         "caption_size": "large",
         "meme_intensity": "3",
@@ -80,6 +83,7 @@
         "title_cta_flair": 0.5
       },
       "expect": {
+        "theme_id": "hormozi_punch",
         "caption_style": "bold-word",
         "caption_size": "large",
         "meme_intensity": "3",
@@ -102,6 +106,7 @@
         "title_cta_flair": 0.1
       },
       "expect": {
+        "theme_id": "premium_brand",
         "caption_style": "clean",
         "caption_size": "small",
         "meme_intensity": "0",
@@ -125,6 +130,7 @@
         "title_cta_flair": 0.4
       },
       "expect": {
+        "theme_id": "premium_brand",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -146,6 +152,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "bold-word",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -166,6 +173,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -186,6 +194,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -206,6 +215,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -226,6 +236,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",
@@ -246,6 +257,7 @@
         "title_cta_flair": 0.15
       },
       "expect": {
+        "theme_id": "clean_creator",
         "caption_style": "clean",
         "meme_intensity": "1",
         "interrupt_density": "standard",

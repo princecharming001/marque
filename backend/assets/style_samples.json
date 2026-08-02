@@ -1,0 +1,79 @@
+{
+  "bank_version": 1,
+  "generated_at": "2026-08-02T02:55:27+00:00",
+  "base_take": "procut",
+  "samples": [
+    {
+      "archetype_id": "clean_creator_lite",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/clean_creator_lite.mp4",
+      "duration_s": 10.027,
+      "bytes": 891729
+    },
+    {
+      "archetype_id": "clean_creator_max",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/clean_creator_max.mp4",
+      "duration_s": 10.027,
+      "bytes": 895212
+    },
+    {
+      "archetype_id": "hormozi_punch_lite",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/hormozi_punch_lite.mp4",
+      "duration_s": 9.984,
+      "bytes": 952219
+    },
+    {
+      "archetype_id": "hormozi_punch_max",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/hormozi_punch_max.mp4",
+      "duration_s": 9.984,
+      "bytes": 952219
+    },
+    {
+      "archetype_id": "docu_calm_lite",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/docu_calm_lite.mp4",
+      "duration_s": 10.027,
+      "bytes": 916788
+    },
+    {
+      "archetype_id": "docu_calm_max",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/docu_calm_max.mp4",
+      "duration_s": 10.027,
+      "bytes": 881712
+    },
+    {
+      "archetype_id": "energetic_pop_lite",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/energetic_pop_lite.mp4",
+      "duration_s": 10.027,
+      "bytes": 946451
+    },
+    {
+      "archetype_id": "energetic_pop_max",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/energetic_pop_max.mp4",
+      "duration_s": 9.984,
+      "bytes": 929466
+    },
+    {
+      "archetype_id": "faceless_explainer_lite",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/faceless_explainer_lite.mp4",
+      "duration_s": 10.027,
+      "bytes": 989125
+    },
+    {
+      "archetype_id": "faceless_explainer_max",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/faceless_explainer_max.mp4",
+      "duration_s": 10.027,
+      "bytes": 985971
+    },
+    {
+      "archetype_id": "premium_brand_lite",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/premium_brand_lite.mp4",
+      "duration_s": 10.027,
+      "bytes": 904111
+    },
+    {
+      "archetype_id": "premium_brand_max",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/style-samples/premium_brand_max.mp4",
+      "duration_s": 10.027,
+      "bytes": 904111
+    }
+  ]
+}
