@@ -56,12 +56,6 @@ struct RecordView: View {
     @State private var editFormat: EditFormat
     // "Match a vibe": per-format example reels + the one the creator picked to mimic.
     @State private var exampleReels: [ReelItem] = []
-    // Build 61: the ending picked for THIS video. nil = the "None" tile (ends clean).
-    // Seeded once from the creator's DEFAULT saved CTA — `ctaSeeded` distinguishes
-    // "not chosen yet" from "deliberately set to None", which nil alone can't.
-    @State private var selectedCTAId: UUID? = nil
-    @State private var ctaSeeded = false
-    @State private var showCTALibrary = false
     // Honest submit-failure surface (never fake-ready mock clips against a real backend).
     @State private var submitFailedMessage: String? = nil
     // Which treatment the toggles were last seeded from (view re-creation must not reseed).
@@ -77,7 +71,7 @@ struct RecordView: View {
     // BACK on this screen as per-video pickers (the build-61 move to Profile → Editing
     // style made them standing-only; the owner reversed that). The standing dials survive
     // as the DEFAULTS: each picker is seeded from store.editPrefs once (styleSeeded, same
-    // guard pattern as ctaSeeded), and a pick here wins for THIS video only — nothing on
+    // guard pattern as lastSeededFormat), and a pick here wins for THIS video only — nothing on
     // this screen writes back to the profile.
     @State private var styleSeeded = false
     // B-ROLL STYLE picker: how much cutaway coverage the creator wants (full/balanced/
@@ -414,7 +408,6 @@ struct RecordView: View {
                             memeSliderRow
                         }
                         captionStyleSection        // caption look BEFORE the render is spent
-                        ctaChooserSection
                         // prompt: gives the placeholder a legible color — the plain title
                         // form renders it in system gray, unreadable on the dark overlay.
                         TextField("", text: $customInstructions,
@@ -808,126 +801,10 @@ struct RecordView: View {
         .accessibilityIdentifier("record.capStyle.\(id ?? "auto")")
     }
 
-    // MARK: Build 61 — the CTA chooser (per-video ending)
-
-    /// One-tap endings: the "None" tile, the creator's saved CTA library (built by the
-    /// onboarding endings swiper), and a way into the library editor. Each tile is a
-    /// postage-stamp of the end card it renders — the same 9:16 frame language the caption
-    /// picker used, so the row reads as "pick the card your video ends on".
-    private var ctaChooserSection: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text("ENDING").font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(.white.opacity(0.5))
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.sm) {
-                    ctaTile(id: nil, label: "None", tag: nil) {
-                        Image(systemName: "slash.circle")
-                            .font(.system(size: 14, weight: .light))
-                            .foregroundStyle(.white.opacity(0.45))
-                    }
-                    ForEach(Array(savedCTAs.enumerated()), id: \.element.id) { i, cta in
-                        ctaTile(id: cta.id, label: cta.name, tag: i == 0 ? "DEFAULT" : nil) {
-                            ctaTileFace(cta)
-                        }
-                    }
-                    Button { showCTALibrary = true } label: {
-                        VStack(spacing: 4) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color.white.opacity(0.06))
-                                Image(systemName: "slider.horizontal.3")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.7))
-                            }
-                            .frame(width: 62, height: 96)
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.12),
-                                              style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-                            Text("Manage").font(.system(size: 10, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.6))
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("record.cta.manage")
-                }
-            }
-        }
-        .onAppear {
-            // Seed the DEFAULT (first saved) CTA once. Guarded so returning to this screen
-            // after deliberately choosing None doesn't quietly re-arm an ending.
-            guard !ctaSeeded else { return }
-            ctaSeeded = true
-            selectedCTAId = savedCTAs.first?.id
-        }
-        .sheet(isPresented: $showCTALibrary) {
-            CTALibrarySheet(store: store) { surviving in
-                // The chosen CTA may have been deleted in the sheet — fall back to the
-                // (possibly new) default rather than submitting a dangling id.
-                if let id = selectedCTAId, !surviving.contains(where: { $0.id == id }) {
-                    selectedCTAId = surviving.first?.id
-                }
-            }
-        }
-    }
-
-    private var savedCTAs: [SavedCTA] { store.brand.savedCTAs ?? [] }
-
-    /// The ending that will be submitted for this take. nil = the None tile → `cta_style_id`
-    /// "none" (a first-class pick server-side, not an absent one).
-    private var chosenCTA: SavedCTA? {
-        guard let id = selectedCTAId else { return nil }
-        return savedCTAs.first { $0.id == id }
-    }
-
-    @ViewBuilder private func ctaTile(id: UUID?, label: String, tag: String?,
-                                      @ViewBuilder face: () -> some View) -> some View {
-        let active = selectedCTAId == id
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) { selectedCTAId = id }
-        } label: {
-            VStack(spacing: 4) {
-                ZStack(alignment: .top) {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Palette.ink.opacity(id == nil ? 0.35 : 0.9))
-                    face()
-                        .frame(maxHeight: .infinity)
-                    if let tag {
-                        Text(tag).font(.system(size: 7, weight: .bold)).tracking(0.6)
-                            .foregroundStyle(Palette.ink)
-                            .padding(.horizontal, 4).padding(.vertical, 2)
-                            .background(Palette.onInk).clipShape(Capsule())
-                            .padding(.top, 5)
-                    }
-                }
-                .frame(width: 62, height: 96)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
-                                  lineWidth: active ? 2 : 1))
-                Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
-                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
-                    .lineLimit(1).frame(width: 62)
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("record.cta.\(id?.uuidString ?? "none")")
-    }
-
-    /// The real end card's layout at postage-stamp scale: logo dot, serif CTA line, handle rule.
-    @ViewBuilder private func ctaTileFace(_ cta: SavedCTA) -> some View {
-        VStack(spacing: 3) {
-            Circle().fill(Color.white.opacity(cta.logoURL.isEmpty ? 0.10 : 0.30))
-                .frame(width: 10, height: 10)
-            Text(cta.text.isEmpty ? cta.name : cta.text)
-                .font(Typeface.display(8, .semibold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .minimumScaleFactor(0.7)
-                .frame(maxWidth: 52)
-            RoundedRectangle(cornerRadius: 1).fill(Color.white.opacity(0.30))
-                .frame(width: 24, height: 2)
-        }
-    }
-
+    // CTA chooser REMOVED (owner, build 63): the per-video ending picker, saved-CTA
+    // tiles and Manage sheet are out of the flow for now — endings fall back to the
+    // pipeline's measured-winner conventions. The template engine, SavedCTA model and
+    // CTALibrarySheet remain in the codebase, dormant, for an easy re-add.
 
     /// B-roll is available only for the "Talking Head + B-roll" format — plain Talking Head
     /// keeps it off (and hides the picker). The picked style steers the LOOK.
@@ -937,7 +814,7 @@ struct RecordView: View {
 
     /// Seed the per-video pickers from the standing dials (Profile → Editing style)
     /// exactly once — re-entering the .recorded screen (add-a-take, honest submit-failure
-    /// return) must not wipe this video's picks. Same guard pattern as ctaSeeded.
+    /// return) must not wipe this video's picks.
     private func seedPerVideoStyle() {
         guard !styleSeeded else { return }
         styleSeeded = true
@@ -967,7 +844,7 @@ struct RecordView: View {
     /// build 54; see SubmitConfig for why the mapping lives outside the view.
     private func brollConfig() -> [String: String]? {
         SubmitConfig.build(editFormat: editFormat, prefs: effectiveEditPrefs(),
-                           cta: chosenCTA, isPro: Entitlements.shared.isPro)
+                           isPro: Entitlements.shared.isPro)
     }
 
     /// v4 gen-z dial: Off · Subtle · Memey · Brainrot. A discrete 4-stop slider — how

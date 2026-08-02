@@ -1,7 +1,7 @@
 import Foundation
 
-// The submit-time `config` dict, as a PURE function of an EditPrefs value plus the CTA
-// picked for the take. The caller decides what those prefs ARE: RecordView overlays the
+// The submit-time `config` dict, as a PURE function of an EditPrefs value. The caller
+// decides what those prefs ARE: RecordView overlays the
 // per-video picks from the .recorded screen onto the standing dials (Profile → Editing
 // style), so a pick made for one video wins over the profile default without touching it.
 //
@@ -23,10 +23,9 @@ enum SubmitConfig {
     ///   - editFormat: the cut treatment the creator picked on the record screen.
     ///   - prefs: the standing craft dials (Profile → Editing style). nil dials mean
     ///            "no standing opinion", and the pipeline/plan default stands.
-    ///   - cta: the ending picked for THIS video; nil = the "None" tile (ends clean).
     ///   - isPro: entitlement flag — the server stamps a watermark on free-tier renders.
     static func build(editFormat: EditFormat, prefs: EditPrefs,
-                      cta: SavedCTA?, isPro: Bool) -> [String: String]? {
+                      isPro: Bool) -> [String: String]? {
         // The meme dial rides along for EVERY b-roll-capable format (plain Talking Head has
         // glimpse b-roll server-side, so memes can fire there too).
         let meme = ["meme_intensity": String(prefs.memeIntensity ?? defaultMemeIntensity)]
@@ -55,19 +54,11 @@ enum SubmitConfig {
         if let s = prefs.captionSize { cfg["caption_size"] = s.rawValue }
         cfg["is_pro"] = isPro ? "1" : "0"
 
-        // The ending. An empty CTA line is the same thing as no CTA — a template with no
-        // words renders an empty card — so it collapses to the first-class "none" id
-        // rather than shipping a blank end card.
-        let text = (cta?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if let cta, !text.isEmpty {
-            cfg["outro_text"] = text
-            let h = cta.handle.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !h.isEmpty { cfg["outro_handle"] = h.hasPrefix("@") ? h : "@" + h }
-            if !cta.logoURL.isEmpty { cfg["outro_logo_url"] = cta.logoURL }
-            cfg["cta_style_id"] = cta.styleId
-        } else {
-            cfg["cta_style_id"] = "none"
-        }
+        // CTA infra removed from the app (owner, build 63; may return): no cta_style_id /
+        // outro_* keys are sent at all. ABSENT (not "none") on purpose — absent lets the
+        // pipeline's measured-winner conventions decide the close (86% end clean, the
+        // rest spoken/overlay per the study weights); "none" would hard-forbid an ending
+        // on every video, which is a stronger claim than "the creator wasn't asked".
 
         // The learned taste vector. The backend merges its mapping UNDER everything above,
         // so a dial the creator actually set always wins; this only fills the gaps. Sent as

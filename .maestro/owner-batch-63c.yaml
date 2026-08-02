@@ -123,7 +123,7 @@ name: "B63 — swiper steps"
     id: "onboard.pace.5"
 
 
-# --- NEW (build 62/63): the two taste swipers sit between pace and the mirror ---
+# --- build 63: CTA deck REMOVED — styleTaste goes straight to the brand mirror ---
 - extendedWaitUntil:
     visible: "onboard.styleTaste.skip"
     timeout: 20000
@@ -131,27 +131,9 @@ name: "B63 — swiper steps"
 - waitForAnimationToEnd:
     timeout: 4000
 - takeScreenshot: /Users/home/Marque/.shots/b63-swiper-style
-# swipe the top card right (like) to show the gesture works, then screenshot again
-- swipe:
-    start: 50%, 45%
-    end: 90%, 45%
-- waitForAnimationToEnd:
-    timeout: 3000
-- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-style-2
 - tapOn:
     id: "onboard.styleTaste.skip"
-- waitForAnimationToEnd:
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-cta-1
-- swipe:
-    start: 50%, 45%
-    end: 90%, 45%
-- waitForAnimationToEnd:
-    timeout: 3000
-- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-cta-2
-- swipe:
-    start: 50%, 45%
-    end: 90%, 45%
-- waitForAnimationToEnd:
-    timeout: 3000
-- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-cta-3
+- extendedWaitUntil:
+    visible: "Your brand, in a sentence"
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/b63-no-cta-step
