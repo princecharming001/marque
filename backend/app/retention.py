@@ -1372,9 +1372,19 @@ def place_cta_overlay(edl: dict, words: list[dict], *, style: str,
     last_end = kept[-1][1]
     src_in = max(kept[-1][0], last_end - hold_src)
     overlays = edl.get("overlays") or []
-    # never stack on an existing overlay in the close window
-    if any(o.get("src_out", 0) > src_in for o in overlays):
-        return edl
+    # Never stack the CTA on other TEXT in the close window. Scoped to text-bearing
+    # overlays on purpose: this used to test every overlay, so the punch-ins that
+    # routinely land on the final beat (a camera scale — nothing is drawn) silently
+    # swallowed the creator's explicitly chosen CTA. A creator pick must never
+    # disappear without a trace, so a real text collision defers to the CREATOR's
+    # card and drops the competing sticker instead.
+    _TEXTY = ("text_sticker", "text_card", "title_card")
+    clashes = [o for o in overlays
+               if o.get("type") in _TEXTY and o.get("src_out", 0) > src_in]
+    if clashes:
+        if not end_card_hint.get("creator"):
+            return edl
+        edl["overlays"] = [o for o in overlays if o not in clashes]
     # v8: the overlay CTA rides the SAME end_card carrier as the tail card, with an
     # overlay-class template — one contract, one renderer (build_render_plan does the
     # start_frame math). The default `pill` template is a pixel-clone of the old

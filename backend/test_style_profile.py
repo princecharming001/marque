@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+import main
 from app import style_profile as sp
 
 _CASES = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -135,6 +136,58 @@ def test_normalize_fills_missing_dims_from_cold_start():
 def test_normalize_clamps_hostile_input():
     v = sp.normalize({"pace": 9.0, "energy": -3.0})
     assert v["pace"] == 1.0 and v["energy"] == 0.0
+
+
+# --- the merge into the config the edit actually reads -----------------------
+
+def test_profile_fills_the_knobs_the_edit_reads_not_just_the_theme():
+    """CP-6 regression. The merge used to run late in _run_edit, AFTER `prefs` had
+    already been resolved from job["config"] — so theme_id (resolved at job creation)
+    was the only mapped field that landed anywhere and every other knob was a silent
+    no-op. The merge belongs where the config is built."""
+    loud = {**sp.COLD_START, "pace": 1.0, "energy": 1.0, "caption_boldness": 1.0,
+            "caption_chunking": 1.0}
+    cfg, applied = main.apply_style_profile({"style_profile": json.dumps(loud)})
+    mapped = sp.map_profile_to_config(sp.normalize(loud))
+    for k, v in mapped.items():
+        assert cfg[k] == v, f"{k} never reached the config the edit reads"
+    assert set(applied["filled"]) == set(mapped)
+
+
+def test_an_explicit_per_video_pick_always_beats_the_profile():
+    loud = {**sp.COLD_START, "caption_boldness": 1.0, "caption_chunking": 1.0}
+    cfg, applied = main.apply_style_profile(
+        {"style_profile": json.dumps(loud), "caption_style": "karaoke"})
+    assert cfg["caption_style"] == "karaoke"
+    assert "caption_style" not in applied["filled"]
+
+
+def test_merge_is_idempotent_so_the_run_edit_safety_net_cannot_double_apply():
+    loud = {**sp.COLD_START, "pace": 1.0}
+    once, _ = main.apply_style_profile({"style_profile": json.dumps(loud)})
+    twice, applied2 = main.apply_style_profile(once)
+    assert twice == once and applied2["filled"] == []
+
+
+def test_only_profile_filled_knobs_are_labelled_profile():
+    """A blanket flag stamped 'profile' on a knob the creator hand-picked whenever the
+    profile happened to fill a DIFFERENT one, corrupting the propensity log."""
+    loud = {**sp.COLD_START, "pace": 1.0, "energy": 1.0}
+    cfg, _ = main.apply_style_profile(
+        {"style_profile": json.dumps(loud), "meme_intensity": "3"})
+    knobs = main._select_edit_knobs("creator-1", cfg)["knobs"]
+    assert knobs["meme_intensity"]["chosen_by"] == "creator"
+    assert knobs["interrupt_density"]["chosen_by"] == "profile"
+
+
+def test_no_profile_is_a_total_no_op():
+    cfg, applied = main.apply_style_profile({"caption_style": "clean"})
+    assert cfg == {"caption_style": "clean"} and applied is None
+
+
+def test_a_corrupt_profile_never_fails_the_job():
+    cfg, applied = main.apply_style_profile({"style_profile": "{not json"})
+    assert cfg == {"style_profile": "{not json"} and applied is None
 
 
 def test_intensity_is_monotonic_in_its_inputs():

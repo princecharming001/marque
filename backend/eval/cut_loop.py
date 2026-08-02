@@ -63,7 +63,11 @@ async def _author_attempt(client: httpx.AsyncClient, src: str, vid: str, tag: st
                 "auto_confirm": True, "creator_id": f"ralphcut-{vid}-{tag}",
                 "toggles": {"broll": False, "music": False, "punch_ins": True},
                 "config": {"edl_only": True}}
-        body.update(body_overrides or {})
+        # `config` MERGES; a plain body.update would drop edl_only and turn every
+        # override case into a full 4-minute render.
+        _over = dict(body_overrides or {})
+        body["config"] = {**body["config"], **(_over.pop("config", None) or {})}
+        body.update(_over)
         r = await client.post(f"{BASE}/v1/clips", json=body, timeout=180)
         if r.status_code != 200:
             return None

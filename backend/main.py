@@ -511,6 +511,41 @@ async def _settle_edit_knob_arms(creator_id: str, entry: dict, y: float,
     return updated
 
 
+def apply_style_profile(config: dict | None) -> tuple[dict, dict | None]:
+    """Fill the knobs the creator did NOT pick for this video from their learned editing
+    taste, and return (merged_config, applied_record).
+
+    Applied at JOB CREATION, not mid-edit: every consumer of these knobs (broll_mode,
+    caption_style, meme_intensity, interrupt_density, filler_trim) reads job["config"]
+    while resolving `prefs` at the TOP of _run_edit, so a merge further down was a silent
+    no-op — the theme was the only mapped field that landed anywhere, because theme_id is
+    resolved here too. Only empty/missing keys are filled, so an explicit per-video tap
+    always wins, and the call is idempotent (safe to re-run on any other entry path).
+    """
+    cfg = dict(config or {})
+    raw = cfg.get("style_profile")
+    if not raw:
+        return cfg, None
+    try:
+        vec = style_profile_mod.normalize(
+            json.loads(raw) if isinstance(raw, str) else raw)
+        mapped = style_profile_mod.map_profile_to_config(vec)
+    except Exception as e:
+        logging.warning("style_profile ignored (%s) — using per-job config", e)
+        return cfg, None
+    filled = [k for k in mapped if cfg.get(k) in (None, "")]
+    for k in filled:
+        cfg[k] = mapped[k]
+    _bandit_filled = [k for k in filled if k in EDIT_KNOBS]
+    if _bandit_filled:
+        # Names, not a boolean: _select_edit_knobs labels each knob's source, and a
+        # blanket flag would stamp "profile" on a knob the creator DID hand-pick for this
+        # video whenever the profile happened to fill a different one.
+        cfg["_knobs_from_profile"] = ",".join(_bandit_filled)
+    logging.info("style_profile applied: filled=%s", filled)
+    return cfg, {"filled": filled, "vector": vec, "mapped": mapped}
+
+
 def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") -> dict:
     """Decide the bandit-owned editing knobs for one job and ALWAYS return the propensity
     log. Explicit creator choices pass through untouched (propensity 1.0, chosen_by
@@ -527,7 +562,8 @@ def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") ->
             # explicit pin (never settled as a bandit arm — settling it would credit
             # the arm for a choice the bandit didn't make), but it is NOT a per-video
             # hand pick, and the logs must be able to tell them apart.
-            _src = "profile" if config.get("_knobs_from_profile") else "creator"
+            _from_profile = str(config.get("_knobs_from_profile") or "").split(",")
+            _src = "profile" if knob in _from_profile else "creator"
             out["knobs"][knob] = {"value": explicit, "chosen_by": _src,
                                   "propensity": 1.0}
             continue
@@ -3217,15 +3253,10 @@ async def _create_clip_job_impl(req: ClipJobRequest):
     # per-video pick still wins, but a standing taste beats a generic per-format
     # default (that's the whole point of learning it). Without this the profile's
     # theme landed in `config`, which nothing reads — a silent no-op.
-    _profile_theme = ""
-    _sp_cfg = (req.config or {}).get("style_profile")
-    if _sp_cfg:
-        try:
-            _v = style_profile_mod.normalize(
-                json.loads(_sp_cfg) if isinstance(_sp_cfg, str) else _sp_cfg)
-            _profile_theme = style_profile_mod.map_profile_to_config(_v).get("theme_id", "")
-        except Exception:
-            _profile_theme = ""
+    # The same merge fills every OTHER mapped knob (captions, meme, density, trim,
+    # b-roll mode) into the config the edit actually reads.
+    _merged_config, _profile_applied = apply_style_profile(req.config)
+    _profile_theme = (_profile_applied or {}).get("mapped", {}).get("theme_id", "")
     theme_id = (req.theme_id or _profile_theme
                 or prompts.EDIT_FORMATS.get(edit_format, {}).get("default_theme", ""))
     job = {
@@ -3239,7 +3270,8 @@ async def _create_clip_job_impl(req: ClipJobRequest):
         "react_credit_label": req.react_credit_label,
         "edit_format": edit_format,
         "theme_id": theme_id,
-        "config": req.config or {},
+        "config": _merged_config,
+        "style_profile_applied": _profile_applied,
         "_theme": themes_mod.get_theme(theme_id) if EDIT_THEMES else None,
         "reference_reel": _clean_reference_reel(req.reference_reel),
         # Conversational-tweak state: transcript kept for re-editing, prior EDLs
@@ -5142,6 +5174,12 @@ async def _run_edit(job_id: str, words: list[dict]):
         if not _cfg.get("broll_coverage") and (style == "broll_cutaway"
                                                or job.get("edit_format") == "talking_head_broll"):
             job["config"] = {**_cfg, "broll_coverage": "full"}
+        # Safety net for entry paths that don't build the job through
+        # _create_clip_job_impl (re-edit / retry). Idempotent — it only fills keys that
+        # are still empty, so a job already merged at creation passes through unchanged.
+        if job.get("style_profile_applied") is None:
+            job["config"], _applied = apply_style_profile(job.get("config"))
+            job["style_profile_applied"] = _applied
         script = job["script"]
         # Deterministic grounding: fillers from AssemblyAI disfluency tags (source of
         # truth for cuts) and emphasis regions for punch-in placement.
@@ -5473,26 +5511,6 @@ async def _run_edit(job_id: str, words: list[dict]):
                     _style_weights, conventions_mod.seed_fraction(job_id, "cta_style"))
         elif _ec.get("wanted"):
             _ec["pattern"] = "hard_end_card"
-        # The creator's learned editing-style profile fills any knob they did NOT pick
-        # for this video. Merged UNDER the explicit config, so a per-video tap always
-        # wins; the raw vector rides along for logging + the conventions hooks.
-        _sp_raw = (job.get("config") or {}).get("style_profile")
-        if _sp_raw:
-            try:
-                _vec = style_profile_mod.normalize(
-                    json.loads(_sp_raw) if isinstance(_sp_raw, str) else _sp_raw)
-                _mapped = style_profile_mod.map_profile_to_config(_vec)
-                _cfg = job.get("config") or {}
-                _filled = [k for k in _mapped if k not in _cfg or _cfg.get(k) in (None, "")]
-                for k in _filled:
-                    _cfg[k] = _mapped[k]
-                if any(k in ("meme_intensity", "interrupt_density") for k in _filled):
-                    _cfg["_knobs_from_profile"] = "1"
-                job["config"] = _cfg
-                job["style_profile_applied"] = {"filled": _filled, "vector": _vec}
-                logging.info("style_profile applied: filled=%s", _filled)
-            except Exception as e:
-                logging.warning("style_profile ignored (%s) — using per-job config", e)
         # A7: a theme's own vibe is a FALLBACK under the plan's own vibe choice —
         # never forces music on/off (that's still purely prefs/plan-driven, so
         # clean_creator stays a golden-diff no-op); it only flavors track
