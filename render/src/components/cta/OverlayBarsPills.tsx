@@ -14,9 +14,13 @@ import { INK, CREAM, CREAM_DIM, PLATE, NEON, FONTS,
 //    platform chrome) via clampOverlayY(OVERLAY_Y, height). corner_tag is the
 //    documented exception: it rides the TOP-RIGHT corner, which is also the
 //    corner that cannot collide with the watermark (bottom-LEFT).
-//  • Because the video keeps playing underneath, each template needs a VISIBLE
-//    EXIT (~EXIT_FRAMES) instead of just ending. progress_follow is the one
-//    exception — it is a countdown, so it lands on 100% with the video.
+//  • When live video follows the CTA, each template plays a VISIBLE EXIT
+//    (~EXIT_FRAMES) instead of just ending. progress_follow is the one exception —
+//    it is a countdown, so it lands on 100% with the video. But build_render_plan
+//    mounts overlay CTAs FLUSH to the end of the reel, so in the shipping path
+//    nothing follows them: `runsToEnd` suppresses the exit and the CTA holds. An
+//    exit there would spend the last frames sliding a half-faded plate across the
+//    speaker — including the frame the platform freezes on when the reel loops.
 //  • Entrances land in 9-15 frames. Deterministic sinusoids only.
 // ---------------------------------------------------------------------------
 
@@ -37,7 +41,9 @@ const fade = (frame: number, from: number, to: number): number =>
     { easing: OUT_CUBIC, extrapolateLeft: "clamp", extrapolateRight: "clamp" });
 
 /** 1 → 0 over the last EXIT_FRAMES of the window (visible exit over live video). */
-const exitRamp = (frame: number, total: number, frames: number = EXIT_FRAMES): number => {
+const exitRamp = (frame: number, total: number, runsToEnd?: boolean,
+                  frames: number = EXIT_FRAMES): number => {
+  if (runsToEnd) return 1;          // hold — nothing follows this CTA
   const at = Math.max(1, total - frames);
   return interpolate(frame, [at, total], [1, 0],
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
@@ -62,7 +68,7 @@ const stripStyle = (height: number): React.CSSProperties => ({
 // bottom-centre in the clean strip.
 // scale-pop 0.6→1 (9f) · 1.5% idle breathe · exit fade + scale 0.92 (8f).
 // ---------------------------------------------------------------------------
-export const Pill: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const Pill: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const total = Math.max(24, durationInFrames);
@@ -72,7 +78,7 @@ export const Pill: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => 
   const pop = spring({ frame, fps, config: SPRING_POP, durationInFrames: 9 });
   const popScale = interpolate(pop, [0, 1], [0.6, 1]);
   const breathe = 1 + Math.sin(frame * 0.09) * 0.0075;      // ±0.75% ⇒ 1.5% range
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
   const scale = popScale * breathe * interpolate(out, [0, 1], [0.92, 1]);
 
   if (!label) return null;
@@ -99,7 +105,7 @@ export const Pill: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => 
 // accent underline. Exit sweeps out to the RIGHT over 10f.
 // ---------------------------------------------------------------------------
 export const BarSweep: React.FC<CtaTemplateProps> = ({
-  text, handle: rawHandle, durationInFrames,
+  text, handle: rawHandle, durationInFrames, runsToEnd,
 }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
@@ -110,7 +116,7 @@ export const BarSweep: React.FC<CtaTemplateProps> = ({
 
   const sweepIn = track(frame, 0, 12);
   const outAt = Math.max(1, total - 10);
-  const sweepOut = interpolate(frame, [outAt, total], [0, 1],
+  const sweepOut = runsToEnd ? 0 : interpolate(frame, [outAt, total], [0, 1],
     { easing: M3, extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const x = interpolate(sweepIn, [0, 1], [-110, 0]) + sweepOut * 120;
   const textOpacity = fade(frame, 4, 14) * (1 - sweepOut);
@@ -159,7 +165,7 @@ export const BarSweep: React.FC<CtaTemplateProps> = ({
 // NOTE: no serif family is loaded (FONTS = inter/archivo/baloo/montserrat/
 // anton), so this uses Inter in italic — the loaded-fonts rule wins.
 // ---------------------------------------------------------------------------
-export const SerifLine: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const SerifLine: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
 
@@ -167,7 +173,7 @@ export const SerifLine: React.FC<CtaTemplateProps> = ({ text, durationInFrames }
 
   const ruleT = track(frame, 0, 12);
   const textT = fade(frame, 3, 13);
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
 
   if (!label) return null;
 
@@ -207,7 +213,7 @@ export const SerifLine: React.FC<CtaTemplateProps> = ({ text, durationInFrames }
 // out at the end.
 // ---------------------------------------------------------------------------
 export const CornerTag: React.FC<CtaTemplateProps> = ({
-  handle: rawHandle, text, logoUrl, durationInFrames,
+  handle: rawHandle, text, logoUrl, durationInFrames, runsToEnd,
 }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
@@ -217,7 +223,7 @@ export const CornerTag: React.FC<CtaTemplateProps> = ({
 
   const inT = track(frame, 0, 10);
   const outAt = Math.max(1, total - EXIT_FRAMES);
-  const outT = interpolate(frame, [outAt, total], [0, 1],
+  const outT = runsToEnd ? 0 : interpolate(frame, [outAt, total], [0, 1],
     { easing: M3, extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const x = interpolate(inT, [0, 1], [340, 0]) + outT * 340;
 
@@ -254,7 +260,7 @@ export const CornerTag: React.FC<CtaTemplateProps> = ({
 // across the whole window, with a short label above it. The label fades in
 // over 8f. No exit by design: the bar hitting 100% IS the ending.
 // ---------------------------------------------------------------------------
-export const ProgressFollow: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const ProgressFollow: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
 
@@ -299,7 +305,7 @@ export const ProgressFollow: React.FC<CtaTemplateProps> = ({ text, durationInFra
 // 20-frame loop so the eye keeps returning to it. Pops in over 9f, fades out.
 // ---------------------------------------------------------------------------
 export const PartTwo: React.FC<CtaTemplateProps> = ({
-  text, handle: rawHandle, durationInFrames,
+  text, handle: rawHandle, durationInFrames, runsToEnd,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -311,7 +317,7 @@ export const PartTwo: React.FC<CtaTemplateProps> = ({
   const pop = spring({ frame, fps, config: SPRING_POP, durationInFrames: 9 });
   const popScale = interpolate(pop, [0, 1], [0.68, 1]);
   const nudge = Math.sin((frame / 20) * TAU) * 7;
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
 
   if (!label) return null;
 
@@ -352,7 +358,7 @@ export const PartTwo: React.FC<CtaTemplateProps> = ({
 // a neon outline whose glow breathes on a 24-frame cycle (box-shadow blur
 // 8↔16px). Pops in over 9f, fades out.
 // ---------------------------------------------------------------------------
-export const NeonPulse: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const NeonPulse: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const total = Math.max(24, durationInFrames);
@@ -364,7 +370,7 @@ export const NeonPulse: React.FC<CtaTemplateProps> = ({ text, durationInFrames }
   // 0→1→0 on a 24f cycle ⇒ blur 8↔16px, inner and outer in step.
   const pulse = 0.5 + 0.5 * Math.sin((frame / 24) * TAU);
   const blur = 8 + pulse * 8;
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
 
   if (!label) return null;
 

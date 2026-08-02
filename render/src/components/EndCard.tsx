@@ -1,5 +1,5 @@
 import React from "react";
-import { Sequence } from "remotion";
+import { Sequence, useVideoConfig } from "remotion";
 import { EndCardPlan } from "../types";
 import { resolveCta } from "./cta/registry";
 
@@ -15,6 +15,7 @@ import { resolveCta } from "./cta/registry";
 // The component signature and every composition's `<EndCard endCard={edl.end_card} />`
 // mount are unchanged, so no composition needed editing for any of this.
 export const EndCard: React.FC<{ endCard: EndCardPlan | null | undefined }> = ({ endCard }) => {
+  const { durationInFrames } = useVideoConfig();
   if (!endCard) return null;
   const text = (endCard.text || "").trim();
   const handle = (endCard.handle || "").trim();
@@ -22,6 +23,10 @@ export const EndCard: React.FC<{ endCard: EndCardPlan | null | undefined }> = ({
   if (!text && !handle) return null;
 
   const { Comp } = resolveCta(endCard.style_id, endCard.mount);
+  // Does anything play after this CTA? Overlay CTAs are mounted flush to the end
+  // (start = total - frames), so normally nothing does and the template must HOLD
+  // rather than animate itself off over the final frames.
+  const runsToEnd = endCard.start_frame + endCard.frames >= durationInFrames - 1;
   return (
     <Sequence from={endCard.start_frame} durationInFrames={endCard.frames} layout="none">
       <Comp
@@ -30,6 +35,7 @@ export const EndCard: React.FC<{ endCard: EndCardPlan | null | undefined }> = ({
         logoUrl={endCard.logo_url ?? null}
         showHandle={endCard.show_handle}
         durationInFrames={endCard.frames}
+        runsToEnd={runsToEnd}
       />
     </Sequence>
   );

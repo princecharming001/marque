@@ -31,7 +31,9 @@ const fade = (frame: number, from: number, to: number): number =>
   interpolate(frame, [from, Math.max(from + 1, to)], [0, 1],
     { easing: OUT_CUBIC, extrapolateLeft: "clamp", extrapolateRight: "clamp" });
 
-const exitRamp = (frame: number, total: number, frames: number = EXIT_FRAMES): number => {
+const exitRamp = (frame: number, total: number, runsToEnd?: boolean,
+                  frames: number = EXIT_FRAMES): number => {
+  if (runsToEnd) return 1;          // hold — nothing follows this CTA
   const at = Math.max(1, total - frames);
   return interpolate(frame, [at, total], [1, 0],
     { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
@@ -52,7 +54,7 @@ const stripStyle = (height: number): React.CSSProperties => ({
 // rises 10px over 9f; 6f fade exit.
 // ---------------------------------------------------------------------------
 export const HandleReveal: React.FC<CtaTemplateProps> = ({
-  handle: rawHandle, text, durationInFrames,
+  handle: rawHandle, text, durationInFrames, runsToEnd,
 }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
@@ -62,7 +64,7 @@ export const HandleReveal: React.FC<CtaTemplateProps> = ({
 
   const enter = track(frame, 0, 9);
   const rule = track(frame, 3, 15);
-  const out = exitRamp(frame, total, 6);
+  const out = exitRamp(frame, total, runsToEnd, 6);
 
   if (!label) return null;
 
@@ -98,7 +100,7 @@ export const HandleReveal: React.FC<CtaTemplateProps> = ({
 // long line would otherwise still be typing at the end of the window — typing
 // always completes by ~60% of the window.
 // ---------------------------------------------------------------------------
-export const Typewriter: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const Typewriter: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
 
@@ -112,7 +114,7 @@ export const Typewriter: React.FC<CtaTemplateProps> = ({ text, durationInFrames 
   // 15f cycle: caret lit for the first 8 frames of each cycle, and always lit
   // while characters are still landing.
   const caretOn = typing || frame % 15 < 8;
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
 
   if (!label) return null;
 
@@ -139,7 +141,7 @@ export const Typewriter: React.FC<CtaTemplateProps> = ({ text, durationInFrames 
 // closes from 0.12em to 0 over 12f on the smooth spring. Exits by blurring
 // back out over 8f.
 // ---------------------------------------------------------------------------
-export const BlurIn: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const BlurIn: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const total = Math.max(24, durationInFrames);
@@ -149,7 +151,7 @@ export const BlurIn: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) =
   const s = spring({ frame, fps, config: SPRING_SMOOTH, durationInFrames: 12 });
   const inBlur = interpolate(s, [0, 1], [12, 0]);
   const ls = interpolate(s, [0, 1], [0.12, 0]);
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
   // NB: `out` runs 1→0, so the input range still has to be written ascending —
   // Remotion's interpolate() throws on a non-increasing inputRange.
   const outBlur = interpolate(out, [0, 1], [10, 0]);
@@ -177,7 +179,7 @@ export const BlurIn: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) =
 // scale_pop — one big line on the pop spring (0.7→1, ~3% overshoot).
 // Exits by scaling back down and fading over 8f.
 // ---------------------------------------------------------------------------
-export const ScalePop: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const ScalePop: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const total = Math.max(24, durationInFrames);
@@ -185,7 +187,7 @@ export const ScalePop: React.FC<CtaTemplateProps> = ({ text, durationInFrames })
   const label = (text || "").trim();
 
   const pop = spring({ frame, fps, config: SPRING_POP, durationInFrames: 12 });
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
   const scale = interpolate(pop, [0, 1], [0.7, 1]) * interpolate(out, [0, 1], [0.86, 1]);
 
   if (!label) return null;
@@ -209,7 +211,7 @@ export const ScalePop: React.FC<CtaTemplateProps> = ({ text, durationInFrames })
 // underline_sweep — the headline rises 16px over 10f on the smooth spring, and
 // an underline sweeps in beneath it (12f, M3) starting at +6f. Fade exit.
 // ---------------------------------------------------------------------------
-export const UnderlineSweep: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const UnderlineSweep: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const total = Math.max(24, durationInFrames);
@@ -219,7 +221,7 @@ export const UnderlineSweep: React.FC<CtaTemplateProps> = ({ text, durationInFra
   const s = spring({ frame, fps, config: SPRING_SMOOTH, durationInFrames: 10 });
   const rise = interpolate(s, [0, 1], [16, 0]);
   const sweep = track(frame, 6, 18);
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
 
   if (!label) return null;
 
@@ -255,7 +257,7 @@ export const UnderlineSweep: React.FC<CtaTemplateProps> = ({ text, durationInFra
 // 18-frame cycle, pointing at where the follow button lives. Text pops in over
 // 9f; fade exit. (SVG, never an emoji glyph.)
 // ---------------------------------------------------------------------------
-export const ArrowNudge: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const ArrowNudge: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const total = Math.max(24, durationInFrames);
@@ -265,7 +267,7 @@ export const ArrowNudge: React.FC<CtaTemplateProps> = ({ text, durationInFrames 
   const pop = spring({ frame, fps, config: SPRING_POP, durationInFrames: 9 });
   const scale = interpolate(pop, [0, 1], [0.78, 1]);
   const bounce = Math.sin((frame / 18) * TAU) * 10;
-  const out = exitRamp(frame, total);
+  const out = exitRamp(frame, total, runsToEnd);
 
   if (!label) return null;
 
@@ -304,7 +306,7 @@ export const ArrowNudge: React.FC<CtaTemplateProps> = ({ text, durationInFrames 
 // ---------------------------------------------------------------------------
 const GLITCH_JITTER = [0, 4, -3, 2, -5, 1];
 
-export const Glitch: React.FC<CtaTemplateProps> = ({ text, durationInFrames }) => {
+export const Glitch: React.FC<CtaTemplateProps> = ({ text, durationInFrames, runsToEnd }) => {
   const frame = useCurrentFrame();
   const total = Math.max(24, durationInFrames);
 

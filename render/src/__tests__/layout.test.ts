@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   LAYOUT, estTextWidth, fitTextBlock, boldWordFontSize, captionCenterY,
   clampSticker, captionBandRect, resolveStickerNudge, cardFit, karaokePop,
@@ -19,15 +21,17 @@ import {
 test("a realistic long word shrinks to fit the usable width across all fonts and sizes", () => {
   const word = "uncharacteristically"; // 20 chars — long but not pathological
   const usable = LAYOUT.FRAME_W - 120;
-  // NOTE: montserrat/anton are deliberately excluded here — see the dedicated
-  // CHAR_W sanity tests below. Their conservative 0.65 placeholder (real
-  // calibration pending) is wide enough that THIS specific 20-char/1.24x
-  // combination can't reach the usable width even at the shrink floor; the
-  // CSS `overflowWrap: anywhere` belt (Captions.tsx) is what actually
-  // protects a genuinely pathological single "word" in that case, same as
-  // it does for every font today (fitTextBlock's own docs are explicit that
-  // its contract is "shrink as far as the floor allows", not "never overflow").
-  for (const font of ["inter", "archivo", "baloo"] as const) {
+  // NOTE: the WIDE fonts (montserrat/anton/archivo, all ~0.65) are deliberately
+  // excluded here — see the dedicated CHAR_W sanity tests below. At 0.65 this
+  // specific 20-char/1.24x combination cannot reach the usable width even at the
+  // shrink floor (it would need ~0.44 shrink, well past the legibility floor), so
+  // the CSS `overflowWrap: anywhere` belt (Captions.tsx) is what protects it —
+  // fitTextBlock's contract is "shrink as far as the floor allows", not "never
+  // overflow". archivo joined this group when it got its real :700/:800 entries;
+  // it was only in the passing set because it silently measured at the 0.55
+  // unknown-font fallback, which is the bug those entries fix. Words of realistic
+  // caption length still fit — that is the assertion below.
+  for (const font of ["inter", "baloo"] as const) {
     for (const mult of [0.78, 1.0, 1.24]) {
       const fs = boldWordFontSize(word, mult, font);
       const w = estTextWidth(word, font, 800, fs, true);
@@ -209,4 +213,30 @@ test("progress fraction never goes negative for a negative frame", () => {
 
 test("progress fraction is 0 for a degenerate zero-length plan (no div-by-zero)", () => {
   assert.equal(progressFraction(0, 0), 0);
+});
+
+// Every font the caption layer can paint must be measurable at the weights the
+// fitters actually pass (700/800). A missing entry silently falls back to 0.55 and
+// under-measures, so shrink-to-fit picks a size that overflows and the mid-word
+// overflowWrap belt fires — "EXPERIMENT." rendered as "EXPERIME / NT." in a real
+// hormozi_punch render before archivo:700/800 existed.
+test("every caption font is calibrated at the weights the fitters measure with", () => {
+  const fonts = ["inter", "archivo", "baloo", "montserrat", "anton"];
+  // tests run compiled from dist-test/, so reach back to the real source tree
+  const src = readFileSync(join(__dirname, "..", "..", "src", "layout.ts"), "utf8");
+  for (const f of fonts) {
+    assert.ok(new RegExp(`"${f}:(700|800)"`).test(src),
+      `${f} has no :700/:800 CHAR_W entry — it will fall back to the 0.55 default`);
+  }
+});
+
+test("a long word in the heaviest font fits its box instead of wrapping mid-word", () => {
+  // archivo/large is the combination hormozi_punch ships.
+  const usable = 1080 - 120;
+  for (const font of ["archivo", "anton", "montserrat", "inter"] as const) {
+    const fs = boldWordFontSize("EXPERIMENT.", 1.18, font);
+    const painted = estTextWidth("EXPERIMENT.", font, 800, fs, true);
+    assert.ok(painted <= usable + 1,
+      `${font}: "EXPERIMENT." paints ${painted.toFixed(0)}px into ${usable}px`);
+  }
 });

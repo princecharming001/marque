@@ -48,4 +48,9 @@ export interface CtaTemplateProps {
   showHandle: boolean;
   /** Frames in THIS template's window (Sequence-local: frame 0 = template start). */
   durationInFrames: number;
+  /** True when this CTA's window ends WITH the video. build_render_plan mounts every
+   *  overlay CTA flush to the end (start = total - frames), so there is no live video
+   *  left to exit into — the exit would burn the final frames of the reel (and the
+   *  frame the platform shows when it loops). Templates hold instead. */
+  runsToEnd?: boolean;
 }

@@ -96,3 +96,36 @@ test("templates are deterministic", () => {
       `${f} must not use Math.random/Date — frames must be reproducible`);
   }
 });
+
+// The CTA is the LAST thing in the reel: build_render_plan mounts overlay CTAs flush
+// to the end (start_frame = total_frames - frames). A template that animates itself
+// off over its final frames therefore spends the end of the video — and the frame the
+// platform freezes on when the reel loops — sliding a half-faded plate across the
+// speaker. Caught in a real 34s Lambda render, not by the still gate.
+test("every overlay exit is suppressed when the CTA runs to the end of the video", () => {
+  for (const f of ["OverlayBarsPills.tsx", "OverlayText.tsx"]) {
+    const s = src(f);
+    // The shared helper must short-circuit on the flag...
+    assert.match(s, /if \(runsToEnd\) return 1;/,
+      `${f}: exitRamp must hold (return 1) when nothing follows the CTA`);
+    // ...and every exit that is keyed off FRAME (rather than derived from an
+    // already-guarded ramp, e.g. `interpolate(out, ...)`) must be guarded too.
+    const rawExits = [...s.matchAll(/const \w*[Oo]ut\w*\s*=\s*interpolate\(\s*frame\s*,/g)];
+    for (const m of rawExits) {
+      const line = s.slice(m.index, s.indexOf("\n", m.index!));
+      assert.fail(`${f}: unguarded frame-keyed exit — ${line.trim()}`);
+    }
+    // Each template must actually forward the flag it was given.
+    const uses = [...s.matchAll(/exitRamp\(frame, total(?!, runsToEnd)/g)];
+    assert.equal(uses.length, 0, `${f}: an exitRamp call does not pass runsToEnd`);
+  }
+});
+
+test("EndCard derives runsToEnd from the real composition duration", () => {
+  const s = src("../EndCard.tsx");
+  assert.match(s, /useVideoConfig\(\)/,
+    "EndCard must read the composition duration, not assume it");
+  assert.match(s, /runsToEnd\s*=\s*endCard\.start_frame \+ endCard\.frames >= durationInFrames/,
+    "runsToEnd must compare the CTA window against the video's end");
+  assert.match(s, /runsToEnd=\{runsToEnd\}/, "EndCard must pass runsToEnd to the template");
+});

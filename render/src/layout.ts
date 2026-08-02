@@ -41,6 +41,14 @@ export interface Rect {
 const CHAR_W: Record<string, number> = {
   "inter:600": 0.50, "inter:700": 0.53, "inter:800": 0.56,
   "archivo:400": 0.62,
+  // fitTextBlock/boldWordFontSize always MEASURE at weight 700/800 (see the note
+  // below), so an archivo-only :400 entry was never hit — archivo fell through to
+  // the 0.55 default and under-measured by ~18%. Real cost: hormozi_punch (archivo,
+  // size large) painted "EXPERIMENT." 1122px wide into a 960px box, and the
+  // overflowWrap belt in Captions.tsx broke it mid-word as "EXPERIME / NT.".
+  // Values follow this file's own fallback procedure (archivo :400 x 1.05, heavier
+  // weights run wider), pending a rendered-probe calibration.
+  "archivo:700": 0.65, "archivo:800": 0.65,
   "baloo:600": 0.52, "baloo:700": 0.54, "baloo:800": 0.57,
   // A2 (schema v3): NOT yet calibrated against a rendered probe frame per this
   // file's own procedure (docs above) — conservative placeholder per that
