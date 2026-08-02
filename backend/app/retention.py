@@ -1195,12 +1195,17 @@ def place_hook_overlay(edl: dict, words: list[dict], *, style: str,
     index, total_out = _build_output_index(segments, drops, _play_order(edl))
     start_out = _src_to_out(index, first_kept) or 0
     sent_end_src = _first_sentence_end_frame(words, first_kept)
+    # Wave 3 (study): when the policy carries a hold ceiling (winners' title
+    # cards run 2.2s median, IQR 2.2-2.4 -> 72f), it caps the sentence-length
+    # hold below the legacy 150f clamp.
+    _policy_max = int(policy.get("hold_max_frames") or 0) if policy else 0
     hold_out = _HOOK_HOLD_FALLBACK_OUT
     if sent_end_src is not None:
         sent_end_out = _src_to_out(index, sent_end_src)
         if sent_end_out is not None and sent_end_out > start_out:
             hold_out = sent_end_out - start_out
-    hold_out = max(_HOOK_HOLD_MIN_OUT, min(_HOOK_HOLD_MAX_OUT, hold_out))
+    _hold_cap = min(_HOOK_HOLD_MAX_OUT, _policy_max) if _policy_max else _HOOK_HOLD_MAX_OUT
+    hold_out = max(min(_HOOK_HOLD_MIN_OUT, _hold_cap), min(_hold_cap, hold_out))
     # Map the output end back to a source frame (clamped to kept footage) so the sticker
     # window survives build_render_plan's source→output remap at the right size.
     end_src = _out_to_src(index, min(start_out + hold_out, max(0, total_out - 1)))

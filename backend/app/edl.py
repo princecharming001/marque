@@ -2105,11 +2105,16 @@ _BROLL_HOLD_POLICY: dict[str, tuple[int, int, int]] = {
     # Middle ground: ~2.3s full / ~2.8s panel — still trims the pre-57.7 lingering
     # (2.5s/3.0s the owner called "a little too long") but restores the coverage.
     # Glimpse needs (entity/data/meme) were always inside the band — untouched.
+    # Wave 3 (2026-07-29 study, n=37 true-TH winners): fullscreen cutaway holds
+    # measure MUCH longer than our glimpse-era ceilings — median 5.6s, IQR
+    # 2.3-26.6s. Substantive needs (evidence/action/concept) move to a 2-5s
+    # band; sub-second glimpse needs (entity/data/meme) stay — segments that
+    # short are below the study's scene-detect resolution and remain doctrine.
     "entity":   (15, 24, 60),     # named food/product/place — sub-second glimpse
     "data":     (15, 24, 60),     # a number/stat — reads instantly
-    "evidence": (42, 69, 84),     # proof/demo — ~1.4–2.3s full, ≤2.8s panel
-    "action":   (33, 69, 84),     # a process/motion — ~1.1–2.3s full
-    "concept":  (33, 63, 78),     # metaphor/abstract — reads fast, ~2.1s full ceiling
+    "evidence": (60, 105, 150),   # proof/demo — 2-5s (winners' fullscreen band)
+    "action":   (60, 100, 150),   # a process/motion — 2-5s
+    "concept":  (60, 90, 135),    # metaphor/abstract — 2-4.5s
     "meme":     (15, 30, 45),     # reaction pop-in: 0.5–1s full flash, ≤1.5s panel
 }
 _BROLL_NEEDS = tuple(_BROLL_HOLD_POLICY)         # valid `need` values (plan-schema clamp)
@@ -2139,18 +2144,27 @@ _BROLL_CTA_PROTECT = 60                         # …or the CTA (last 2s)
 # Sourced doctrine: "b-roll should support, not replace, the face" — cap total full-frame
 # cutaway time so the creator's face (parasocial connection) still owns the majority of the
 # runtime. Panel/card modes keep the face on screen, so they DON'T count against this budget.
-_BROLL_RUNTIME_BUDGET = 0.40                    # ≤40% of output covered by FACE-HIDING (full) b-roll
+# Wave 3 (study): winners' face-hiding b-roll share of runtime is median 5%,
+# IQR up to ~15% among reels that use it — budget drops 40% -> 15%.
+_BROLL_RUNTIME_BUDGET = 0.15                    # ≤15% of output covered by FACE-HIDING (full) b-roll
 # Combined ceiling across ALL modes (full+panel+card): panel/card keep the face visible so they may
 # exceed the 40% face-hiding bound, but they still colonize visual attention. GENRE DIAL (v2,
 # OpusClip A/B: 40% coverage beat both 0% and 70%; commentary/founder content wants the LOWER
 # 30–40% band, entertainment tolerates 35–50%): entertainment 50%, everything else 40%.
-_BROLL_VISUAL_BUDGET = 0.50                     # entertainment / high-energy
-_BROLL_VISUAL_BUDGET_EDU = 0.40                 # educational / founder (lo-fi credibility evidence)
+# Wave 3 (study): total-visuals budgets follow the runtime-share finding down
+# (winners' b-roll share median 5%; panels keep the face so they get headroom
+# above the face-hiding 15% budget, but nothing like the old 50/40).
+_BROLL_VISUAL_BUDGET = 0.25                     # entertainment / high-energy
+_BROLL_VISUAL_BUDGET_EDU = 0.20                 # educational / founder (lo-fi credibility evidence)
 # coverage="full" floor density is ALSO a genre dial (v5 mandate, owner: "at least 3x
 # as frequent" vs the observed ~1 per 12s): entertainment ~1 per 2s, educational
 # ~1 per 3s, default ~1 per 5s. Bigger divisor = sparser. test_viral_v2's density
 # test pins the educational floor — tune THERE first if these move again.
-_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 60, "full": 90, "default": 150}
+# Wave 3 (study): winners' cutaway density is FAR sparser than the glimpse-era
+# floor — median 0.24 per 30s, IQR 0-1.2, runtime share median 5% (n=37 true
+# TH). Floor target moves from one-per-2-3s to ~1-1.5 per 30s (the max(2,...)
+# minimum keeps short takes at the IQR ceiling, never above it).
+_BROLL_FLOOR_STEP_DIVISOR = {"full_ent": 600, "full": 900, "default": 1200}
 # Meme caps per (meme_intensity level, content class). Level 1 = the v2 owner decision
 # (5 ent / 2 edu); 0 kills memes entirely; 2-3 are the gen-z dial the post-record
 # slider drives. Placement doctrine still governs WHERE they land.
@@ -2795,6 +2809,12 @@ def assemble_edl(plan: dict, words: list[dict], style: str, format_id: str,
     from app.conventions import CAPTION_CONVENTIONS as _CC
     cp = plan.get("caption_plan") or {}
     caption_style = prefs.get("caption_style") or cp.get("style") or _CC["default_style"]
+    # Wave 3 (study: winners 2% all-caps, 3-word chunks): the giant single-word
+    # caps style is EXPLICIT-pick-only — a plan-authored style outside the auto
+    # allow-list maps to the default when the creator didn't pick it themselves.
+    if not prefs.get("caption_style") and \
+            caption_style not in _CC.get("auto_style_allowed", ()):
+        caption_style = _CC["default_style"]
     grouping = (cp.get("grouping") if cp.get("grouping") in ("word", "phrase", "line")
                 else _CC["default_grouping"])
     # Same normalization the renderer applies (Captions.tsx normWord strips

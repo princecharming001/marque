@@ -60,12 +60,13 @@ EDIT_FORMATS = {
         "toggles": {"broll": True, "punch_ins": True, "music": False},
         "default_theme": "clean_creator",   # A7
         "brief_hint": (
-            "Talking head with b-roll cutaways: emit a broll cue for EVERY concretely named "
-            "thing (food, product, place, tool), EVERY number/stat, and every emphasized or "
-            "emotionally inflected beat — named things render as sub-second glimpses that flash "
-            "in and out, so density is welcome (one cue every 2-4s of speech is the target, "
-            "more when the take names things in a list); the hook and CTA stay on the "
-            "creator's face."),
+            "Talking head with b-roll cutaways: b-roll is SELECTIVE, not blanket — "
+            "measured winners average well under one cutaway per 30s and keep ~85%+ "
+            "of runtime on the face (2026-07 study, n=37). Emit a broll cue only "
+            "for the few moments a visual genuinely beats the face: the strongest "
+            "named thing, a key number, a real demo/proof. Substantive cutaways "
+            "hold 2-5s; named-thing glimpses stay sub-second. The hook and CTA "
+            "stay on the creator's face."),
     },
     "recap_music": {
         "label": "Recap with music",

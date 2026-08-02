@@ -22,15 +22,19 @@ def _edl(frames=900):
             "drops": [], "overlays": [], "captions": []}
 
 
-def test_identity_values_are_identity():
+def test_wave3_values_pin_the_study():
+    # Wave 3: values pin the 2026-07-29 study medians (verify-gate CLEAN).
     assert CAPTION_CONVENTIONS["default_style"] == "clean"
     assert CAPTION_CONVENTIONS["default_grouping"] == "phrase"
-    assert CAPTION_CONVENTIONS["pos_y_default"] == 0.62
-    assert CAPTION_CONVENTIONS["highlight_cap"] == 12
-    assert CAPTION_CONVENTIONS["sync_lead_frames"] == 0
-    assert not CAPTION_CONVENTIONS["stroke_px_default"]
-    assert TITLE_CARD_POLICY == {"rate": {"default": 1.0}, "suppress": []}
-    assert CTA_PATTERN_WEIGHTS["default"]["hard_end_card"] == 1.0
+    assert CAPTION_CONVENTIONS["pos_y_default"] == 0.62      # winners 0.627
+    assert CAPTION_CONVENTIONS["stroke_px_default"] == {"clean": 3.0}  # 95% stroked
+    assert CAPTION_CONVENTIONS["auto_style_allowed"] == ("clean", "karaoke")
+    assert TITLE_CARD_POLICY["rate"]["default"] == 0.2       # winners 17% overall
+    assert TITLE_CARD_POLICY["rate"]["story"] == 0.0         # winners 0% (n=6)
+    assert TITLE_CARD_POLICY["hold_max_frames"] == 72        # winners 2.2s median
+    w = CTA_PATTERN_WEIGHTS["default"]
+    assert w["spoken_only"] > w["text_overlay"] > w["hard_end_card"]
+    assert abs(sum(w.values()) - 1.0) < 1e-9
 
 
 def test_seed_fraction_deterministic_and_spread():

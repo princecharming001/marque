@@ -271,7 +271,11 @@ def test_broll_jitter_deterministic_per_seed():
 
 
 def test_entertainment_density_beats_educational():
+    # Wave 3 2026-07-29 study: floor density is sparse now (~1-1.5 per 30s), but the
+    # genre dial holds — entertainment (divisor 600) still out-denses educational (900).
+    from app.edl import _BROLL_FLOOR_STEP_DIVISOR as _div
     w = _alpha_words(200)                                  # ~80s of speech
+    total = ms_to_frame(w[-1]["end_ms"])
     plan: dict = {"broll": []}                             # floor does all the work
     ent = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
                        brief={"video_type": "freestyle_rant"},
@@ -281,7 +285,8 @@ def test_entertainment_density_beats_educational():
                        prefs={"broll": True, "broll_coverage": "full"}).model_dump()
     assert len(ent["broll"]) > len(edu["broll"]), \
         f"entertainment ({len(ent['broll'])}) must out-dense educational ({len(edu['broll'])})"
-    assert len(ent["broll"]) >= 4
+    assert len(ent["broll"]) >= max(2, total // _div["full_ent"]), \
+        f"entertainment floor under target: {len(ent['broll'])} on {total}f"
 
 
 # --- Reaction reclassify guards (culturalize) ---------------------------------
@@ -500,16 +505,24 @@ def test_fallback_cards_flag_restores_old_behavior(monkeypatch):
     assert cards and any(e["action"] == "text_card" for e in out["_broll_log"])
 
 
-def test_density_mandate_3x_educational_floor():
-    # v5 owner mandate ("at least 3x as frequent — very important"): a plain educational
-    # coverage=full take with an EMPTY plan must land ≥1 b-roll insert per 4s of runtime
-    # (3x the observed ~1/12s baseline), driven entirely by the deterministic floor.
+def test_density_floor_follows_wave3_study():
+    # Wave 3 2026-07-29 study supersedes the v5 3x mandate: measured winners' cutaway
+    # density is ~1-1.5 per 30s (median 0.24/30s, IQR 0-1.2, n=37 true-TH), so the
+    # coverage=full floor is SPARSE now. What survives of the mandate is the genre
+    # ordering: entertainment (divisor 600) is still denser than educational (900),
+    # and both are denser than the default (1200).
+    from app.edl import _BROLL_FLOOR_STEP_DIVISOR as _div
+    assert _div["full_ent"] < _div["full"] < _div["default"], "genre density ordering drifted"
+    assert _div["full_ent"] == 600 and _div["full"] == 900  # Wave 3 2026-07-29 study pin
+    # Behavioral half: an educational coverage=full take with an EMPTY plan still lands
+    # the floor's genre target, max(2, total // 900), driven by the deterministic floor.
     w = _alpha_words(150)                      # 150 words × 400ms = 60s take
     total = ms_to_frame(w[-1]["end_ms"])
     out = assemble_edl({}, w, "broll_cutaway", "myth-buster",
                        prefs={"broll": True, "broll_coverage": "full"}).model_dump()
     n = len(out["broll"])
-    assert n >= total // 120, f"density mandate missed: {n} inserts on a {total}f take (need ≥{total // 120})"
+    floor = max(2, total // _div["full"])
+    assert n >= floor, f"floor missed: {n} inserts on a {total}f take (need ≥{floor})"
 
 
 # ---------- v7 P0: pointwise scorer, context floor cues, concept→cards ----------
@@ -673,19 +686,22 @@ def test_room_tone_flows_into_render_plan():
 # ---------- v7 Ralph loop: floor density, floor degrade, card cap, meme gate ----------
 
 def test_floor_not_starved_by_planned_cues():
-    # 5 planned panel cues on a 50s take must still leave room for the floor to hit
-    # the density minimum (the old occupied-margin blocked ~160f per insert).
-    w = _alpha_words(125)                       # 50s
+    # 5 planned panel cues must still leave room for the floor top-up to contribute
+    # toward the density target (the old occupied-margin blocked ~160f per insert and
+    # starved the floor entirely — 5 planned + 0 floor). Wave 3 2026-07-29 study: the
+    # floor target is ~1 per 30s now (divisor 900), so the take is long (~6min, target
+    # 11) to make the planned-vs-floor interplay observable.
+    w = _alpha_words(900)                       # ~360s
     total = ms_to_frame(w[-1]["end_ms"])
     plan = {"broll": [
-        {"range": [300 + i * 200, 350 + i * 200], "cue": f"p{i}", "query": f"planned {i}",
+        {"range": [300 + i * 500, 350 + i * 500], "cue": f"p{i}", "query": f"planned {i}",
          "source": "stock", "mode": "panel", "need": "entity"} for i in range(5)]}
     out = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
                        prefs={"broll": True, "broll_coverage": "full",
                               "broll_mode": "panel"}).model_dump()
-    # 5 planned windows + legal spacing bound this geometry near ~12 events; the
-    # starved behavior this guards against was 8 total with only 3 floor cues.
-    assert len(out["broll"]) >= 10, f"floor starved: {len(out['broll'])}"
+    # 5 planned windows + admission grammar bound this geometry at 9 events (4 floor);
+    # the starved behavior this guards against is 5 planned + 0 floor.
+    assert len(out["broll"]) >= 9, f"floor starved: {len(out['broll'])}"
     assert sum(1 for b in out["broll"] if b.get("floor")) >= 4, "floor must contribute"
 
 

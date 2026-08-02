@@ -422,13 +422,19 @@ def test_restore_never_overlaps_segments():
 
 # ------------------------------------------------- 57.7 broll holds + engagement
 
-def test_broll_holds_tightened_to_research_band():
+def test_broll_holds_follow_the_measured_band():
     from app.edl import _BROLL_HOLD_POLICY, _BROLL_MAX_HOLD, _BROLL_PARTIAL_MAX_HOLD
-    # 57.8 middle ground: ~2.3s full / ~2.8s panel (57.7's 2.0s over-tightened).
-    assert _BROLL_MAX_HOLD == 69 and _BROLL_PARTIAL_MAX_HOLD == 84
+    # Wave 3 (2026-07-29 study, n=37): substantive fullscreen cutaways COMMIT
+    # 2-5s (winners median 5.6s); glimpse needs stay sub-second.
+    assert _BROLL_MAX_HOLD == 105 and _BROLL_PARTIAL_MAX_HOLD == 150  # Wave 3 2026-07-29 study
+    _glimpse = {"entity", "data", "meme"}
     for need, (lo, full, partial) in _BROLL_HOLD_POLICY.items():
-        assert full <= 69 and partial <= 84, need
-        assert lo >= 15                      # never below the 0.5s legibility floor
+        assert lo >= 15, need                # never below the 0.5s legibility floor
+        assert lo <= full <= partial, need   # panel may breathe past the full-frame cap
+        if need in _glimpse:
+            assert full <= 30, need          # flash idiom: sub-second, gone before it stalls
+        else:
+            assert 60 <= full and partial <= _BROLL_PARTIAL_MAX_HOLD, need  # 2-5s winners' band
 
 
 def test_vision_pick_prefers_engaging_over_generic(monkeypatch):

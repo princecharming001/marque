@@ -177,7 +177,9 @@ def test_split_screen_without_react_source_warns(monkeypatch):
 
 def test_broll_mode_forces_every_broll_items_mode():
     from app import edl as edl_mod
-    words = [{"word": "hi", "start_ms": 0, "end_ms": 10000}]
+    # Wave 3 2026-07-29 study: action holds are ≥60f and the visual budget is 20%, so
+    # the take must be ≥30s for the panel to survive the budget pass.
+    words = [{"word": "hi", "start_ms": 0, "end_ms": 30000}]
     plan = {"broll": [{"range": [50, 100], "cue": "x", "mode": "full"},
                       {"range": [200, 250], "cue": "y"}]}
     out = edl_mod.assemble_edl(plan, words, "broll_cutaway", "myth-buster",

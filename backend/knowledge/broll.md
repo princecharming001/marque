@@ -11,9 +11,9 @@ A **relevant, concrete** visual matching the words AIDS memory (dual coding); a 
 tangential** one HARMS it — the *seductive-details* effect. Quantity was never the lever; relevance
 is. Fire a visual only when a relevant concrete asset exists. A beat wanting a visual change but no
 relevant asset → a **punch-in** (cheaper, face-keeping) or nothing, **never a decorative clip**.
-Cadence (~1 change / 4–5s) is a loose PRIOR, not a target — prefer the **cheapest sufficient
-change** over b-roll for a generic slot. On OPT-IN (coverage=full) the assembler GUARANTEES density
-(floor top-up + punch-in for unresolvable cues) — over-emit plausible cues, it prunes.
+Measured winners (2026-07, n=37 talking-head) run 0.24 cutaways/30s median (~5% of
+runtime) and COMMIT 2–5s per fullscreen cutaway — b-roll is a scalpel, not a cadence.
+Prefer the **cheapest sufficient change** (punch-in) over b-roll for a generic slot.
 
 **Format-conditioned:** educational / explainer / how-to → protect comprehension: HIGH relevance
 bar, SPARSE b-roll, literal illustrations only, no mood/decorative clips. entertainment / story /
@@ -27,10 +27,10 @@ evidence) → candidate · **Face-protected** → never full-frame · **Neither*
 
 - **Audio leads the picture (J/L-cut):** voice continuous, b-roll *video* cuts in under it (~0.4s
   lead) — never cut audio+video together. **Align to the word it depicts.**
-- Hold **1.5–2.5s** full-frame (Part-5: shorter — a face-hiding cutaway past ~4s is the biggest
-  retention penalty; panel/card breathe only to ~2.5–3.5s). **Vary by beat**: a named thing/number → short
-  (1.5–2s), a process/metaphor → longer (2–3s). **Never outlast the phrase.** Spacing **≥3s** (**≥2s**
-  high-energy). The assembler enforces these per-need (`_BROLL_HOLD_POLICY`); keep ranges tight.
+- Hold: substantive cutaways (proof/demo/process) **COMMIT 2–5s** (measured winners
+  median 5.6s — a flickering cutaway reads amateur); named-thing/number glimpses stay
+  **sub-second**. **Never outlast the phrase.** Spacing **≥3s** (**≥2s** high-energy).
+  The assembler enforces these per-need (`_BROLL_HOLD_POLICY`); keep ranges tight.
 
 ## Protect the face (never full-frame b-roll here)
 
@@ -40,11 +40,11 @@ evidence) → candidate · **Face-protected** → never full-frame · **Neither*
   trustworthy and converts the CTA — generic b-roll there wastes the moment.
 - `faceless` is the exception: b-roll IS the visual channel, so the hook can be b-roll.
 
-## Budget the face (≤40% b-roll)
+## Budget the face (≤15% b-roll)
 
 - **B-roll supports, does not replace, the face.** Cap total *face-hiding* (full-frame) cutaway
-  time at **~40% of runtime** (assembler drops overflow) — burying the face past that strips the
-  parasocial trust. Panel/card keep the face on screen, so they don't count — prefer them when the
+  time at **~15% of runtime** (assembler drops overflow; measured winners run ~5% median) —
+  burying the face strips the parasocial trust. Panel/card keep the face on screen, so they don't count — prefer them when the
   face should stay up. Alternate moving b-roll with static; a wall of pans/zooms disorients.
 
 ## Full-frame vs partial (panel / card / split)
@@ -75,6 +75,6 @@ Sources + reliability tiers: `docs/BROLL-PLACEMENT-SOURCES.md` (incl. the Part 4
 > cadence, seductive-details, dual coding). Mechanics are Tier-1; cadence is a correlational prior;
 retention percentages are Tier-3 marketing, deliberately not encoded.
 
-## 57.7: cutaway ceilings 2.0s full / 2.5s panel — retention dips past 2.5s
-(Aibrify 2026; Captions.ai). Prefer motion-in-progress, faces/hands doing the
-thing, specific closeups; generic stock caps at the score floor.
+## Asset quality
+Prefer motion-in-progress, faces/hands doing the thing, specific closeups;
+generic stock caps at the score floor.

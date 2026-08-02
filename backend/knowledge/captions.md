@@ -26,3 +26,7 @@
 - Highlight the load-bearing word per phrase (keyword highlight) — a color/scale accent on the
   single most important word draws the eye and lifts comprehension.
 - Emphasis words come from the brief's emphasis spans, not random.
+
+## Measured conventions (2026-07 study, n=64)
+Sentence case (2% caps among winners); 3 words/chunk; regular weight + stroke;
+y 0.62 validated. Giant single-word caps = explicit-pick styles only.

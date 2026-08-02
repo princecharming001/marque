@@ -43,24 +43,27 @@ _SUPA = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marqu
 
 
 async def author_once(client: httpx.AsyncClient, src: str, vid: str, tag: str,
-                      sem: asyncio.Semaphore) -> dict | None:
+                      sem: asyncio.Semaphore,
+                      body_overrides: dict | None = None) -> dict | None:
     # One retry after a pause for network-blip failures (this Mac's Wi-Fi
     # drops mid-round; twice on 2026-07-29) — real failures return unchanged.
-    j = await _author_attempt(client, src, vid, tag, sem)
+    j = await _author_attempt(client, src, vid, tag, sem, body_overrides)
     if j and str(j.get("failed", "")).startswith(("source_unreachable", "author_fallback")):
         await asyncio.sleep(30)
-        j = await _author_attempt(client, src, vid, tag, sem)
+        j = await _author_attempt(client, src, vid, tag, sem, body_overrides)
     return j
 
 
 async def _author_attempt(client: httpx.AsyncClient, src: str, vid: str, tag: str,
-                          sem: asyncio.Semaphore) -> dict | None:
+                          sem: asyncio.Semaphore,
+                          body_overrides: dict | None = None) -> dict | None:
     async with sem:
         body = {"source_url": _SUPA + src, "style": "talking_head",
                 "edit_format": "talking_head", "analyze_first": True,
                 "auto_confirm": True, "creator_id": f"ralphcut-{vid}-{tag}",
                 "toggles": {"broll": False, "music": False, "punch_ins": True},
                 "config": {"edl_only": True}}
+        body.update(body_overrides or {})
         r = await client.post(f"{BASE}/v1/clips", json=body, timeout=180)
         if r.status_code != 200:
             return None

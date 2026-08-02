@@ -15,6 +15,12 @@ FPS = 30
 # class -> severity. Anything unlisted defaults to P2 (taste) so a new grader
 # can't accidentally mint silent P0s without touching this table.
 CLASS_SEVERITY: dict[str, str] = {
+    # Wave 3 convention graders (2026-07-29 study)
+    "caption_auto_style": "P0", "caption_case": "P0", "caption_chunking": "P0",
+    "caption_stroke_default": "P1", "caption_position": "P1",
+    "title_card_gate": "P0", "title_card_hold": "P1",
+    "broll_hold_band": "P1", "broll_glimpse_linger": "P1",
+    "broll_share": "P0", "broll_density": "P1", "auto_text_card": "P0",
     # pipeline
     "render_failed": "P0",
     "job_failed": "P0",

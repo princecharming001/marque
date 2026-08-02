@@ -58,9 +58,11 @@ def test_broll_grammar_enforced():
     ]}
     edl = assemble_edl(plan, w, "faceless", "listicle")
     d = edl.model_dump()
+    from app.edl import _hold_bounds
+    lo, hi = _hold_bounds("action", "full")  # Wave 3 2026-07-29 study: 2-3.3s action band
     for b in d["broll"]:
         hold = b["src_out"] - b["src_in"]
-        assert 36 <= hold <= 75, f"hold {hold} out of grammar (v2 action band, jitter-clamped)"
+        assert lo <= hold <= hi, f"hold {hold} out of grammar (action band {lo}-{hi})"
 
 
 def test_broll_runtime_budget_caps_face_hiding_coverage():
@@ -83,19 +85,24 @@ def test_broll_runtime_budget_caps_face_hiding_coverage():
 
 
 def test_combined_visual_budget_caps_all_modes():
-    # Realism pass: panel/card keep the face visible (exempt from the 40% FACE-HIDING budget) but
-    # still count toward the 50% TOTAL-visual budget — a wall of panels can't own the whole video.
+    # Realism pass: panel/card keep the face visible (exempt from the FACE-HIDING budget) but
+    # still count toward the TOTAL-visual budget — a wall of panels can't own the whole video.
+    # Wave 3 2026-07-29 study: visual budget is now 25% ent / 20% edu (was 50/40).
     from app import edl as edl_mod
+    from app.edl import _hold_bounds
     w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]  # ~48s
     total = ms_to_frame(w[-1]["end_ms"])
-    # 8 panels, each clamps to action's 105f ceiling — 8×105 = 840f ≈ 58% of ~1450f, over the 50% cap.
-    plan = {"broll": [{"range": [g, g + 150], "cue": "t", "query": "q", "source": "stock",
+    # 8 panels, each clamps to action's panel ceiling (150f) — 8×150 = 1200f ≈ 83% of
+    # ~1440f, far over the 20% educational visual budget → the assembler must trim.
+    plan = {"broll": [{"range": [g, g + 200], "cue": "t", "query": "q", "source": "stock",
                        "mode": "panel", "need": "action"}
                       for g in range(150, total - 120, 150)]}
     kept = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()["broll"]
     panel_frames = sum(b["src_out"] - b["src_in"] for b in kept)
-    assert all(b["src_out"] - b["src_in"] <= 105 for b in kept)      # panel ceiling now 3.5s
-    assert panel_frames <= edl_mod._BROLL_VISUAL_BUDGET * total + 1   # total insert time ≤ 50%
+    _, panel_cap = _hold_bounds("action", "panel")
+    assert all(b["src_out"] - b["src_in"] <= panel_cap for b in kept)      # panel ceiling (5s)
+    # No brief → educational genre budget applies (the tighter of the two dials).
+    assert panel_frames <= edl_mod._BROLL_VISUAL_BUDGET_EDU * total + 1
     assert kept                                                       # but not all dropped
 
 
@@ -114,34 +121,36 @@ def test_broll_hold_policy_per_need():
 
 
 def test_spacing_tightens_on_high_energy_or_entertainment():
-    # Part 5: entertainment video_type allows cutaways ≥2s apart (vs ≥3s default). Two cutaways
-    # spaced ~2.2s survive on a freestyle_rant but the SECOND is dropped on a neutral tutorial.
-    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(60)]
+    # Part 5: entertainment video_type allows tighter cutaway spacing (30f vs 45f, jitter
+    # −15..+30). Wave 3 2026-07-29 study: action holds now run 2-3.3s, so the fixture is
+    # longer (budget headroom) and the pair sits at a ~2.2s gap — inside entertainment's
+    # guaranteed-admit zone (eff spacing ≤60f) but not educational's (up to 75f).
+    w = [{"word": f"w{i}", "start_ms": i * 400, "end_ms": i * 400 + 350} for i in range(120)]
     plan = {"broll": [
         {"range": [150, 210], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
-        {"range": [280, 340], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [288, 348], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
     ]}
     ent = assemble_edl(plan, w, "talking_head", "myth-buster",
                        brief={"video_type": "freestyle_rant"}).model_dump()
     neu = assemble_edl(plan, w, "talking_head", "myth-buster",
                        brief={"video_type": "tutorial"}).model_dump()
     assert len(ent["broll"]) == 2, "entertainment tolerates the tighter pair"
-    # v5 density mandate: neutral spacing dropped to 45f (jitter 30..75), so this ~2.2s
-    # pair now survives informational takes too — by design, not by accident.
-    assert len(neu["broll"]) == 2, "v5: informational spacing (45f) admits the ~2.2s pair"
+    # Informational still admits ≥1 — tightening spacing must never mean losing coverage.
+    assert len(neu["broll"]) >= 1, "informational must keep at least the first insert"
 
 
 def test_floor_denser_and_alternates_hold_lengths():
-    # Part 5: coverage=full floor is denser (~1 per 9s) AND varies hold length (not metronomic).
+    # Wave 3 2026-07-29 study: coverage=full floor targets ~1 per 30s (divisor 900) AND
+    # varies hold length (not metronomic). ~2min of speech → target 4 floor inserts.
     # Words must be ALPHA content words (the floor rejects digits/stopwords) — cycle real nouns.
     _nouns = ["interface", "product", "founder", "growth", "metric", "startup",
               "revenue", "customer", "platform", "strategy"]
     w = [{"word": _nouns[i % len(_nouns)], "start_ms": i * 400, "end_ms": i * 400 + 350}
-         for i in range(120)]  # ~48s
+         for i in range(300)]  # ~120s
     d = assemble_edl({"broll": []}, w, "broll_cutaway", "myth-buster",
                      prefs={"broll": True, "broll_coverage": "full", "broll_mode": "full"}).model_dump()
     holds = [b["src_out"] - b["src_in"] for b in d["broll"]]
-    assert len(holds) >= 3, f"denser floor should yield ≥3 over ~48s, got {len(holds)}"
+    assert len(holds) >= 3, f"floor should yield ≥3 over ~120s (1 per 30s), got {len(holds)}"
     assert len(set(holds)) >= 2, f"floor holds must vary, got {holds}"
 
 
@@ -350,9 +359,12 @@ def _alpha_words(n, ms_step=400):
 
 
 def test_partial_holds_capped_per_need():
-    # Realism pass: panel/card caps are now entity 75 / evidence 90 / action 105 (was 90/120/150).
+    # Wave 3 2026-07-29 study: panel/card caps come straight from the measured policy
+    # (entity stays a glimpse; evidence/action panels may breathe to the 5s ceiling).
+    from app.edl import _BROLL_HOLD_POLICY
     w = _alpha_words(120)
-    for need, cap in (("entity", 75), ("evidence", 90), ("action", 105)):
+    for need in ("entity", "evidence", "action"):
+        cap = _BROLL_HOLD_POLICY[need][2]
         plan = {"broll": [{"range": [300, 540], "cue": "x", "query": "x", "source": "stock",
                            "mode": "panel", "need": need}]}
         d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
@@ -361,22 +373,25 @@ def test_partial_holds_capped_per_need():
 
 
 def test_long_phrase_biases_short_not_max():
-    # A 300f phrase (>> 2× action's 75f full cap) biases to lo+15 = 51 (±6f jitter), never
-    # pinned at the 75f max.
+    # Wave 3 2026-07-29 study: action full band is 60-100f. A 300f phrase (>> 2× the
+    # 100f cap) biases to lo+15 = 75 (±6f jitter, word-end snap +3), never pinned at max.
+    from app.edl import _BROLL_HOLD_POLICY
+    lo, full_max, _ = _BROLL_HOLD_POLICY["action"]
     w = _alpha_words(120)
     plan = {"broll": [{"range": [300, 600], "cue": "x", "query": "x", "source": "stock",
                        "mode": "full", "need": "action"}]}
     d = assemble_edl(plan, w, "talking_head", "myth-buster").model_dump()
     assert d["broll"]
     hold = d["broll"][0]["src_out"] - d["broll"][0]["src_in"]
-    assert 45 <= hold <= 57, f"long phrase must bias short (51±6), got {hold}"
+    assert lo <= hold <= lo + 30 < full_max, \
+        f"long phrase must bias short (lo+15 ± jitter/word-snap), got {hold}"
 
 
 def test_topup_fires_with_one_weak_plan_cue():
     # Realism pass: the floor is no longer only-on-empty — ONE weak plan cue no longer suppresses
-    # density (old behavior: exactly 1 insert). coverage=full tops up the gaps toward ~1 per 9s
-    # (best-effort, bounded by the 40% floor budget + spacing + available content words).
-    w = _alpha_words(120)                       # ~48s
+    # density (old behavior: exactly 1 insert). Wave 3 2026-07-29 study: coverage=full tops up
+    # toward ~1 per 30s (best-effort, bounded by budget + spacing + available content words).
+    w = _alpha_words(400)                       # ~160s → floor target 5
     plan = {"broll": [{"range": [150, 210], "cue": "one", "query": "one", "source": "stock",
                        "mode": "full", "need": "action"}]}
     d = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
@@ -404,10 +419,13 @@ def test_entertainment_tightens_spacing_not_coverage():
     # floor is asserted as SPEC; the deterministic behavioral check is entertainment-side.
     from app.edl import _BROLL_MIN_SPACING as _sp_edu, _BROLL_SPACING_TIGHT as _sp_ent
     assert _sp_ent == 30 and _sp_edu == 45, "v5 spacing dial drifted"
-    w = _alpha_words(60)
+    # Wave 3 2026-07-29 study: action holds run 2-3.3s now, so the take is longer (the
+    # 15% face-hiding budget must seat two holds) and the pair's gap (~2.2s) sits inside
+    # entertainment's guaranteed-admit zone (eff spacing ≤60f).
+    w = _alpha_words(120)
     plan = {"broll": [
         {"range": [150, 200], "cue": "a", "query": "a", "source": "stock", "mode": "full", "need": "action"},
-        {"range": [300, 350], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
+        {"range": [288, 338], "cue": "b", "query": "b", "source": "stock", "mode": "full", "need": "action"},
     ]}
     ent = assemble_edl(plan, w, "broll_cutaway", "myth-buster",
                        brief={"video_type": "freestyle_rant"},
