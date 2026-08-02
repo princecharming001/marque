@@ -36,7 +36,10 @@ def _req(path, method="GET", body=None, headers=None):
     req = urllib.request.Request(f"https://api.appstoreconnect.apple.com{path}",
                                   data=data, headers=h, method=method)
     with urllib.request.urlopen(req) as r:
-        return json.load(r) if r.status != 204 and r.length else None
+        if r.status == 204:
+            return None
+        raw = r.read()
+        return json.loads(raw) if raw else None
 
 
 def find_build(version: str) -> str:
@@ -53,12 +56,18 @@ def main():
     build_id = find_build(version)
     print(f"build {version} -> {build_id}")
 
-    _req(f"/v1/builds/{build_id}", method="PATCH",
-         body={"data": {"type": "builds", "id": build_id,
-                        "attributes": {"usesNonExemptEncryption": False}}})
-    print("export compliance answered (usesNonExemptEncryption=false)")
+    try:
+        _req(f"/v1/builds/{build_id}", method="PATCH",
+             body={"data": {"type": "builds", "id": build_id,
+                            "attributes": {"usesNonExemptEncryption": False}}})
+        print("export compliance answered (usesNonExemptEncryption=false)")
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            print("export compliance already answered — skipping")
+        else:
+            raise
 
-    deadline = time.time() + 300
+    deadline = time.time() + 900
     while True:
         try:
             _req(f"/v1/builds/{build_id}/relationships/betaGroups", method="POST",

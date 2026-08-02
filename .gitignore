@@ -26,6 +26,9 @@ render/node_modules/
 render/dist/
 render/dist-test/
 render/fixtures/source.mp4
+# CP-2 style-sample base take — 9 MB of real footage, re-downloaded on demand
+# from the source_url in backend/assets/style_sample_base_take.json
+render/fixtures/style_sample_source.mp4
 render/out/
 
 # LOOP U — machine-generated vision-tier cache, not meaningful to commit
@@ -36,3 +39,5 @@ render/out/
 backend/eval/campaign/round_*/
 backend/eval/cutloop/round_*/
 backend/eval/cutloop/state.json
+backend/eval/convloop/round_*/
+backend/eval/convloop/state.json

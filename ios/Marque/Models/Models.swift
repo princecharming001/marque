@@ -134,6 +134,10 @@ struct BrandGraph: Codable, Hashable {
     var creatorName: String? = nil                 // collected in the mascot-intro onboarding step
     var emulationTargets: [EmulationTarget]? = nil // whose style the creator wants scripts to borrow
     var whyNow: WhyNow? = nil                      // the emotional trigger for starting (quiz)
+    // Build 61: the creator's CTA library — endings they liked in the onboarding swiper,
+    // offered as one-tap tiles on the record screen. The FIRST entry is the default.
+    // Optional-with-default so a Snapshot written by any older build still decodes.
+    var savedCTAs: [SavedCTA]? = nil
 }
 
 /// A creator whose style the AI should study (preset or a custom linked page).
@@ -835,6 +839,94 @@ struct BrollStyleOption: Codable, Hashable, Identifiable {
     var thumbnailURL: String = ""
     var handle: String = ""
     var sample: Bool = false
+}
+
+/// One entry from GET /v1/cta-styles — a pre-rendered ENDING template, illustrated by a
+/// real 5s render of itself (what you swipe is what you get). The catalog's first entry is
+/// always `none` ("No CTA"), which is a first-class pick, not an absent one: the backend
+/// reads `config.cta_style_id == "none"` as "the creator explicitly wants no visual".
+/// `params` names the slots the template actually renders (text/handle/logo), so the CTA
+/// editor can hide fields a template would silently drop.
+struct CTAStyleOption: Codable, Hashable, Identifiable {
+    var id: String
+    var label: String
+    var blurb: String = ""
+    var cluster: String = "minimal"
+    var uiClass: String = ""
+    var params: [String] = []
+    var videoURL: String = ""
+    var thumbnailURL: String = ""
+
+    /// The "ends clean" card — no template, no video, just type (see the swiper).
+    var isNone: Bool { id == "none" }
+}
+
+/// A CTA the creator kept: a template id plus the copy that fills it. Built by liking
+/// endings in the onboarding swiper, then editable in the CTA library. This is what the
+/// record screen offers as one-tap tiles, and what expands to
+/// `outro_text`/`outro_handle`/`outro_logo_url` + `cta_style_id` on submit.
+struct SavedCTA: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var name: String                    // display name on the tile (the template's label)
+    var text: String = ""               // the CTA line itself
+    var handle: String = ""             // "@you" — optional second line
+    var logoURL: String = ""            // uploaded mark; empty = no logo slot rendered
+    var styleId: String = "classic"     // a /v1/cta-styles id (never "none" — that's the None tile)
+
+    /// Seed copy for a template the creator just liked. A liked ending with no words is a
+    /// card the backend skips, so the library never starts empty-handed — the creator
+    /// edits from a working line instead of a blank field.
+    static func defaultCopy(for style: CTAStyleOption) -> String {
+        let l = style.label.lowercased()
+        if l.contains("follow") { return "Follow for more" }
+        if l.contains("comment") { return "Comment your take" }
+        if l.contains("link") || l.contains("bio") { return "Link in bio" }
+        if l.contains("save") { return "Save this for later" }
+        return "Follow for more"
+    }
+}
+
+/// One reel in the editing-taste deck (GET /v1/style-deck). `vector` is the MEASURED
+/// edit of that reel in `StyleProfileMapper.dims` space — swiping it is a labelled
+/// observation, which is why a handful of swipes can move the profile at all.
+struct StyleDeckReel: Codable, Hashable, Identifiable {
+    var id: String                      // reel_id
+    var videoURL: String = ""
+    var thumbnailURL: String = ""
+    var niche: String = ""
+    var author: String = ""
+    var views: Int = 0
+    var durationS: Double = 0
+    var vector: [String: Double] = [:]
+    var displayAttrs: [String] = []     // "steady pace", "clean captions" — the swipe's WHY
+}
+
+/// A pre-rendered sample edit for one archetype (the settings "closest match" player).
+struct StyleSampleClip: Codable, Hashable, Identifiable {
+    var id: String { archetypeId }
+    var archetypeId: String
+    var videoURL: String = ""
+}
+
+/// The whole GET /v1/style-deck payload. `coldStart`/`minSwipes` come down with it so the
+/// client never hard-codes a threshold the server has moved.
+struct StyleDeckPayload: Hashable {
+    var deckVersion: Int = 0
+    var dims: [String] = StyleProfileMapper.dims
+    var coldStart: [String: Double] = StyleProfileMapper.coldStart
+    var minSwipes: Int = StyleProfileMapper.minSwipes
+    var reels: [StyleDeckReel] = []
+    var archetypes: [StyleArchetype] = []
+    var samples: [StyleSampleClip] = []
+
+    /// The sample clip that matches this profile — the honest "this is what your edits
+    /// look like" preview. nil when the bank shipped no render for the nearest archetype.
+    func sample(for profile: [String: Double]) -> (archetype: StyleArchetype, clip: StyleSampleClip)? {
+        guard let arc = StyleProfileMapper.nearestArchetype(profile: profile, archetypes: archetypes),
+              let clip = samples.first(where: { $0.archetypeId == arc.id }),
+              !clip.videoURL.isEmpty else { return nil }
+        return (arc, clip)
+    }
 }
 
 enum SavedScriptSource: String, Codable {

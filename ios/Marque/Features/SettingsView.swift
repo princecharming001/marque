@@ -17,52 +17,18 @@ struct SettingsView: View {
     @State private var demoTier: String = UserDefaults.standard.string(forKey: "demo.tier") ?? "growth"
     @State private var demoTierInfo: String = ""
 
+    // Build 61: no `@Bindable var store` any more — the only two-way binding on this screen
+    // was the Editing group, which now lives in Profile → Editing style.
     var body: some View {
-        @Bindable var store = store
-        return NavigationStack {
+        NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
 
-                    // MARK: Editing — bound to store.editPrefs; didSet threads them into
-                    // every clip job via BackendClient.editPrefs.
-                    settingsGroup("Editing") {
-                        MarqueToggleRow(title: "Auto-captions",
-                                        subtitle: "Burn word-timed captions into every clip.",
-                                        isOn: $store.editPrefs.autoCaptions)
-                            .accessibilityIdentifier("settings.autoCaptions")
-                            .padding(.horizontal, Space.md).padding(.vertical, 10)
-
-                        Divider().padding(.leading, Space.md)
-
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            Text("Caption style").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            // Build 55: "Auto" (nil) = the AI picks per take — the honest default.
-                            MarqueSegmented(options: ["Auto"] + CaptionStyle.allCases.map(\.label),
-                                            index: Binding(get: {
-                                                store.editPrefs.captionStyle
-                                                    .flatMap { CaptionStyle.allCases.firstIndex(of: $0).map { $0 + 1 } } ?? 0
-                                            },
-                                                           set: { store.editPrefs.captionStyle = $0 == 0 ? nil : CaptionStyle.allCases[$0 - 1] }))
-                                .accessibilityIdentifier("settings.captionStyle")
-                        }
-                        .padding(.horizontal, Space.md).padding(.vertical, 10)
-
-                        Divider().padding(.leading, Space.md)
-
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            Text("Trim filler").font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            MarqueSegmented(options: FillerTrim.allCases.map(\.label),
-                                            index: Binding(get: { FillerTrim.allCases.firstIndex(of: store.editPrefs.fillerTrim) ?? 0 },
-                                                           set: { store.editPrefs.fillerTrim = FillerTrim.allCases[$0] }))
-                                .accessibilityIdentifier("settings.fillerTrim")
-                        }
-                        .padding(.horizontal, Space.md).padding(.vertical, 10)
-                    }
-                    .onChange(of: store.editPrefs) { _, _ in store.save() }
-
-                    Text("Every edit follows these. Changes apply to your next submission.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        .padding(.top, Space.sm)
+                    // Build 61: the "Editing" group moved WHOLESALE to Profile → Editing
+                    // style. It was a partial duplicate of the record screen's per-take
+                    // pickers (caption style lived in both, and the winner depended on
+                    // which screen you touched last); the craft dials now have exactly one
+                    // home, next to the sample reel that shows what they do.
 
                     // MARK: Notifications
                     settingsGroup("Notifications") {

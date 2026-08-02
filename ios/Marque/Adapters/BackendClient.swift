@@ -866,6 +866,23 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
     }
 
+    /// The ENDING picker's deck — 20 pre-rendered CTA templates plus the first-class
+    /// "No CTA" card the server always returns FIRST. The picked id returns to
+    /// POST /v1/clips as config.cta_style_id. Wire→model mapping lives in DeckDecoding
+    /// so it can be exercised against a captured payload without the network.
+    func ctaStyles() async -> [CTAStyleOption] {
+        guard let data = await get("/v1/cta-styles") else { return [] }
+        return DeckDecoding.ctaStyles(from: data)
+    }
+
+    /// The editing-taste swiper's deck + the archetype bank and pre-rendered samples the
+    /// Editing-style sheet matches a profile against. Returns nil (never a half-payload)
+    /// when the route is missing or unreadable, so callers fall back to cold start.
+    func styleDeck() async -> StyleDeckPayload? {
+        guard let data = await get("/v1/style-deck") else { return nil }
+        return DeckDecoding.styleDeck(from: data)
+    }
+
     private struct WarmResp: Decodable { let ok: Bool? }
 
     /// Fire-and-forget: pre-scrape a newly-added watched creator so their real

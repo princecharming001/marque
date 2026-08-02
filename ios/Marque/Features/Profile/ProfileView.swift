@@ -9,6 +9,7 @@ struct ProfileView: View {
     @State private var showBrandEditor = false
     @State private var showVoiceEditor = false
     @State private var showPillarsEditor = false
+    @State private var showEditingStyle = false
     @State private var isRefreshingSummary = false
 
     private var account: ConnectedAccount? { store.brand.connectedAccounts.first }
@@ -61,6 +62,10 @@ struct ProfileView: View {
                     profileRow(label: "Voice & tone") { showVoiceEditor = true }
                     MarqueHairline()
                     profileRow(label: "Content pillars") { showPillarsEditor = true }
+                    MarqueHairline()
+                    // Build 61: the single home for every standing craft dial (was split
+                    // between Settings → Editing and the record screen's per-take pickers).
+                    profileRow(label: "Editing style") { showEditingStyle = true }
                     // H-05: "Your formats" editor removed — the server infers style
                     // per take now; there is no preferred-styles knob to set.
                     if !store.pillars.isEmpty {
@@ -109,6 +114,7 @@ struct ProfileView: View {
         .sheet(isPresented: $showBrandEditor) { BrandEditorSheet(store: store) }
         .sheet(isPresented: $showVoiceEditor) { VoiceEditorSheet(store: store) }
         .sheet(isPresented: $showPillarsEditor) { PillarsEditorSheet(store: store) }
+        .sheet(isPresented: $showEditingStyle) { EditingStyleSheet() }
         .task {
             if store.brandSummary == nil { await refreshSummary() }
         }
@@ -474,7 +480,10 @@ private struct WatchedCreatorSlot: View {
 
 // MARK: - Wrapping flow layout (trait chips + pillar chips)
 
-private struct FlowWrap: Layout {
+// Internal (not file-private): the Editing-style sheet's resolved-config chip row wraps
+// the same way, and a second copy of a Layout is exactly the kind of duplication that
+// drifts.
+struct FlowWrap: Layout {
     var spacing: CGFloat = 8
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {

@@ -56,6 +56,12 @@ struct RecordView: View {
     @State private var editFormat: EditFormat
     // "Match a vibe": per-format example reels + the one the creator picked to mimic.
     @State private var exampleReels: [ReelItem] = []
+    // Build 61: the ending picked for THIS video. nil = the "None" tile (ends clean).
+    // Seeded once from the creator's DEFAULT saved CTA — `ctaSeeded` distinguishes
+    // "not chosen yet" from "deliberately set to None", which nil alone can't.
+    @State private var selectedCTAId: UUID? = nil
+    @State private var ctaSeeded = false
+    @State private var showCTALibrary = false
     // Honest submit-failure surface (never fake-ready mock clips against a real backend).
     @State private var submitFailedMessage: String? = nil
     // Which treatment the toggles were last seeded from (view re-creation must not reseed).
@@ -67,27 +73,11 @@ struct RecordView: View {
     @State private var visibleMimicIds: Set<String> = []
     @State private var failedMimicIds: Set<String> = []
     @State private var referenceReel: ReelItem? = nil
-    // B-ROLL STYLE picker: how much cutaway coverage the creator wants (full/balanced/
-    // minimal/none), each option demonstrated by a real example reel. The pick drives the
-    // edit via config.broll_coverage + the b-roll toggle ("none" switches cutaways off).
-    @State private var brollStyles: [BrollStyleOption] = []
-    @State private var selectedBrollStyle: String = "cutaway"
-    // v4 gen-z dial: how meme-heavy the edit should be (0 off · 1 subtle · 2 memey ·
-    // 3 brainrot). Drives config.meme_intensity → meme cue mandate + caps server-side.
-    @State private var memeLevel: Double = 1
-    // Build 54: pre-submit caption treatment. nil = "Auto" (the AI plan keeps choosing) —
-    // config keys are sent ONLY on an explicit pick so the planner's taste isn't silently
-    // overridden on every job. The picked style also steers the hook TITLE block server-side.
-    @State private var captionStyleChoice: String? = nil     // clean | bold-word | karaoke
-    @State private var captionSizeChoice: String? = nil      // small | medium | large
-    // Build 54: outro/CTA builder — preset copy or custom text, optional @handle + logo.
-    @State private var outroPreset = "none"                  // none | follow | comment | link | custom
-    @State private var outroCustomText = ""
-    @State private var outroHandle = ""
-    @State private var outroLogoURL = ""
-    @State private var outroLogoUploading = false
-    @State private var outroLogoFailed = false
-    @State private var outroLogoItem: PhotosPickerItem? = nil
+    // Build 61: the b-roll look, the meme dial and the caption treatment moved OUT of this
+    // screen and into Profile → Editing style (store.editPrefs). They were per-video
+    // questions asked on every single take for answers that never changed — and the same
+    // dials lived in three places. `brollConfig()` now reads them straight off editPrefs,
+    // so the wire payload is unchanged; only who answers them moved.
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -396,28 +386,17 @@ struct RecordView: View {
                             .foregroundStyle(.white.opacity(0.6))
                             .frame(maxWidth: .infinity, alignment: .center)
                         formatGrid
-                        mimicSection
-                        if liveScript.style == VideoStyle.duetSplit.rawValue || selectedBrollStyle == "split_screen" {
+                        // Build 61: react source is gated on the STANDING composition
+                        // choice now that the per-video b-roll picker is gone.
+                        if liveScript.style == VideoStyle.duetSplit.rawValue
+                            || store.editPrefs.brollStyle == "split_screen" {
                             reactSourceField
                         }
-                        // UX-B1b: the recorded screen is now the SINGLE context screen —
-                        // toggles + instructions live here (moved from the brief screen)
-                        // so submit goes straight to the render with no approve stop.
-                        VStack(spacing: Space.xs) {
-                            // v4: the b-roll ON/OFF toggle was redundant — picking the
-                            // "Talking head + B-roll" format at the top IS the opt-in
-                            // (syncBrollToggle keeps briefToggles.broll in step). In its
-                            // place: the gen-z meme dial.
-                            if briefCapability("broll") {
-                                memeSliderRow
-                            }
-                            if briefCapability("punch_ins") {
-                                briefToggleRow("Punch-ins for emphasis", isOn: $briefToggles.punchIns)
-                            }
-                            briefToggleRow("Background music", isOn: $briefToggles.music)
-                        }
-                        captionStyleSection        // build 54: caption look BEFORE the render is spent
-                        outroSection               // build 54: outro/CTA builder
+                        // Build 61: the only per-video craft question left. Punch-ins and
+                        // music are still SUBMITTED (via editFormat.defaultToggles) — they
+                        // just aren't asked, because nobody was flipping them; the meme /
+                        // caption / b-roll dials moved to Profile → Editing style.
+                        ctaChooserSection
                         // prompt: gives the placeholder a legible color — the plain title
                         // form renders it in system gray, unreadable on the dark overlay.
                         TextField("", text: $customInstructions,
@@ -442,7 +421,6 @@ struct RecordView: View {
                         lastSeededFormat = editFormat
                         syncBrollToggle()      // the picked b-roll style survives a format change
                     }
-                    await loadBrollStyles()
                 }
                 .task { await loadCapabilities() }
                 HStack(spacing: Space.lg) {
@@ -619,318 +597,96 @@ struct RecordView: View {
         }
     }
 
-    @ViewBuilder private var mimicSection: some View {
-        // The b-roll style picker belongs to "Talking Head + B-roll" only — plain Talking Head
-        // has no b-roll, so the "what kind of b-roll" choice would be meaningless there.
-        if editFormat == .talkingHeadBroll, !brollStyles.isEmpty {
-            VStack(alignment: .leading, spacing: Space.xs) {
-                Text("B-ROLL STYLE — PICK A LOOK")
-                    .font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(.white.opacity(0.5))
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: Space.sm) {
-                        ForEach(Array(brollStyles.enumerated()), id: \.element.id) { i, s in
-                            brollStyleCard(s, index: i)
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // MARK: Build 61 — the CTA chooser (the only per-video craft question left)
 
-    private func brollStyleCard(_ s: BrollStyleOption, index: Int) -> some View {
-        let selected = selectedBrollStyle == s.id
-        // The card SHOWS the style via a self-rendered demo clip through this exact
-        // composition (cutaway/panel/card/green-screen/split-screen) — a pixel-accurate
-        // preview of the treatment, not a mimicked creator reel. Picking the card sends
-        // config.broll_mode or config.composition_style, which forces that treatment.
-        let playable = !s.videoURL.isEmpty && !failedMimicIds.contains(s.id)
-        return Button {
-            withAnimation(.easeOut(duration: 0.15)) {
-                selectedBrollStyle = s.id
-                syncBrollToggle()
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                ZStack(alignment: .topTrailing) {
-                    if playable, visibleMimicIds.contains(s.id), let url = URL(string: s.videoURL) {
-                        FailableVideoPlayer(url: url, muted: true, showsControls: false,
-                                            onFailure: { failedMimicIds.insert(s.id) })
-                        .frame(width: 118, height: 148)
-                        .allowsHitTesting(false)         // the CARD is the tap target
-                    } else {
-                        AsyncImage(url: URL(string: s.thumbnailURL)) { img in
-                            ZStack {
-                                img.resizable().aspectRatio(contentMode: .fill)
-                                    .blur(radius: 12).opacity(0.55)
-                                img.resizable().aspectRatio(contentMode: .fit)
-                            }
-                        } placeholder: {
-                            Rectangle().fill(Color.white.opacity(0.08))
-                                .overlay(Image(systemName: "photo.on.rectangle.angled")
-                                    .foregroundStyle(.white.opacity(0.3)))
-                        }
-                        .frame(width: 118, height: 148).clipped()
-                    }
-                    if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Palette.accent)
-                            .background(Circle().fill(.white).padding(2))
-                            .padding(5)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                .onAppear { visibleMimicIds.insert(s.id) }
-                .onDisappear { visibleMimicIds.remove(s.id) }
-                Text(s.label)                            // the B-ROLL style — this is the choice
-                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(s.blurb)                            // what the style means for the cut
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(2, reservesSpace: true)
-                    .multilineTextAlignment(.leading)
-            }
-            .frame(width: 118)
-            .padding(4)
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("record.brollStyle.\(index)")
-    }
-
-    private func loadBrollStyles() async {
-        let opts = await store.backend.brollStyles(niche: store.brand.niche)
-        guard !Task.isCancelled else { return }
-        brollStyles = opts
-    }
-
-    /// B-roll is available only for the "Talking Head + B-roll" format — plain Talking Head
-    /// keeps it off (and hides the picker). The picked style steers the LOOK.
-    private func syncBrollToggle() {
-        briefToggles.broll = (editFormat == .talkingHeadBroll)
-    }
-
-    /// The config dict the pick maps to. cutaway/panel/card force every b-roll insert's mode
-    /// (broll_mode) AND signal that b-roll is explicitly wanted (broll_coverage:"full") so the
-    /// backend GUARANTEES b-roll appears (synthesizes a floor if the AI plan emits none).
-    /// green_screen/split_screen override the whole job style (composition_style). Nil for
-    /// plain Talking Head (no b-roll).
-    private func brollConfig() -> [String: String]? {
-        // v4: the meme dial rides along for EVERY b-roll-capable format (plain Talking
-        // Head has glimpse b-roll server-side, so memes can fire there too).
-        let meme = ["meme_intensity": String(Int(memeLevel))]
-        var cfg: [String: String]
-        if editFormat == .talkingHeadBroll {
-            switch selectedBrollStyle {
-            case "cutaway": cfg = meme.merging(["broll_mode": "full",  "broll_coverage": "full"]) { a, _ in a }
-            case "smart":   cfg = meme.merging(["broll_mode": "smart", "broll_coverage": "full"]) { a, _ in a }
-            case "panel":   cfg = meme.merging(["broll_mode": "panel", "broll_coverage": "full"]) { a, _ in a }
-            case "card":    cfg = meme.merging(["broll_mode": "card",  "broll_coverage": "full"]) { a, _ in a }
-            case "green_screen", "split_screen":
-                cfg = meme.merging(["composition_style": selectedBrollStyle]) { a, _ in a }
-            default: cfg = meme.merging(["broll_coverage": "full"]) { a, _ in a }   // TH+broll, no style yet
-            }
-        } else if editFormat == .talkingHead {
-            cfg = meme
-        } else {
-            cfg = [:]
-        }
-        // Build 54: caption treatment (only when explicitly picked — "Auto" leaves the
-        // planner's choice alone), outro/CTA, and the entitlement flag (server stamps the
-        // "powered by Yunicorn" watermark on free-tier renders).
-        if let s = captionStyleChoice { cfg["caption_style"] = s }
-        if let s = captionSizeChoice { cfg["caption_size"] = s }
-        cfg["is_pro"] = Entitlements.shared.isPro ? "1" : "0"
-        if outroPreset != "none" {
-            let text = (outroPreset == "custom" ? outroCustomText : Self.outroPresets[outroPreset] ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty {
-                cfg["outro_text"] = text
-                let h = outroHandle.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !h.isEmpty { cfg["outro_handle"] = h.hasPrefix("@") ? h : "@" + h }
-                if !outroLogoURL.isEmpty { cfg["outro_logo_url"] = outroLogoURL }
-            }
-        }
-        return cfg
-    }
-
-    // MARK: Build 54 — pre-submit caption treatment
-
-    /// WYSIWYG caption picker: each style is a mini 9:16 video frame with the caption
-    /// rendered at its REAL position (lower third), so the choice reads as "this is what
-    /// my video will look like" instead of an abstract text chip. Defaults to "Auto" so
-    /// the AI plan keeps choosing unless the creator explicitly takes the wheel.
-    /// The pick ALSO steers the hook title block server-side (shared font treatment).
-    private var captionStyleSection: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text("CAPTIONS").font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(.white.opacity(0.5))
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: Space.sm) {
-                    captionFrameCard(nil, label: "Auto") {
-                        VStack(spacing: 2) {
-                            Image(systemName: "wand.and.stars")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
-                            Text("AI picks").font(.system(size: 8, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.6))
-                        }
-                    }
-                    captionFrameCard("clean", label: "Clean") {
-                        Text("your words").font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
-                    }
-                    captionFrameCard("bold-word", label: "Bold") {
-                        VStack(spacing: 1) {
-                            Text("YOUR").font(.system(size: 10, weight: .black)).foregroundStyle(.white)
-                            Text("WORDS").font(.system(size: 10, weight: .black)).foregroundStyle(Palette.accent)
-                        }
-                    }
-                    captionFrameCard("karaoke", label: "Karaoke") {
-                        HStack(spacing: 2) {
-                            Text("your").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.ink)
-                                .padding(.horizontal, 3).padding(.vertical, 1)
-                                .background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 2))
-                            Text("words").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
-                        }
-                    }
-                }
-            }
-            // Size = literal type scale: three "Aa" at their relative sizes, not S/M/L
-            // circles disconnected from what they resize.
-            HStack(spacing: Space.sm) {
-                Text("Size").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
-                ForEach([(11.0, "small"), (14.0, "medium"), (17.0, "large")], id: \.1) { pt, v in
-                    let active = captionSizeChoice == v
-                    Button {
-                        withAnimation(.easeOut(duration: 0.12)) {
-                            captionSizeChoice = active ? nil : v
-                        }
-                    } label: {
-                        Text("Aa").font(.system(size: pt, weight: active ? .bold : .medium))
-                            .foregroundStyle(active ? Palette.ink : .white)
-                            .frame(width: 40, height: 32)
-                            .background(active ? Palette.onInk : Color.white.opacity(0.10))
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("record.capSize.\(v)")
-                }
-                if captionSizeChoice == nil {
-                    Text("Auto").font(AppFont.caption).foregroundStyle(.white.opacity(0.35))
-                }
-            }
-        }
-    }
-
-    /// A mini 9:16 "video frame" chip: faint head silhouette up top implies the footage,
-    /// the caption preview sits at the real lower-third position.
-    @ViewBuilder private func captionFrameCard(_ id: String?, label: String,
-                                               @ViewBuilder preview: () -> some View) -> some View {
-        let active = captionStyleChoice == id
-        Button {
-            withAnimation(.easeOut(duration: 0.12)) { captionStyleChoice = id }
-        } label: {
-            VStack(spacing: 4) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.black.opacity(0.55)],
-                                             startPoint: .top, endPoint: .bottom))
-                    // faint speaker silhouette — reads as "your video", never as content
-                    Circle().fill(Color.white.opacity(0.10))
-                        .frame(width: 20, height: 20)
-                        .offset(y: -16)
-                    preview()
-                        .frame(maxWidth: 56)
-                        .minimumScaleFactor(0.6)
-                        .offset(y: 18)
-                }
-                .frame(width: 62, height: 96)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
-                                  lineWidth: active ? 2 : 1))
-                Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
-                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
-            }
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("record.capStyle.\(id ?? "auto")")
-    }
-
-    // MARK: Build 54 — outro/CTA builder
-
-    static let outroPresets: [String: String] = [
-        "follow": "Follow for more",
-        "comment": "Comment your take below",
-        "link": "Everything's linked in my bio",
-    ]
-
-    /// WYSIWYG outro builder: presets are mini end-card tiles (you pick the card you'll
-    /// ship), and the chosen card becomes a LIVE editable preview — CTA text, @handle and
-    /// logo are edited in place on the card itself, exactly where they render. The backend
-    /// folds these into the end card (music continues underneath it).
-    private var outroSection: some View {
+    /// One-tap endings: the "None" tile, the creator's saved CTA library (built by the
+    /// onboarding endings swiper), and a way into the library editor. Each tile is a
+    /// postage-stamp of the end card it renders — the same 9:16 frame language the caption
+    /// picker used, so the row reads as "pick the card your video ends on".
+    private var ctaChooserSection: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             Text("ENDING").font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(.white.opacity(0.5))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.sm) {
-                    outroTile("none", label: "None") {
+                    ctaTile(id: nil, label: "None", tag: nil) {
                         Image(systemName: "slash.circle")
                             .font(.system(size: 14, weight: .light))
                             .foregroundStyle(.white.opacity(0.45))
                     }
-                    outroTile("follow", label: "Follow") { outroTileCard("Follow for more") }
-                    outroTile("comment", label: "Comment") { outroTileCard("Comment your take") }
-                    outroTile("link", label: "Link") { outroTileCard("Link in bio") }
-                    outroTile("custom", label: "Custom") {
-                        VStack(spacing: 2) {
-                            Image(systemName: "character.cursor.ibeam")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
-                            Text("your words").font(.system(size: 7, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.55))
+                    ForEach(Array(savedCTAs.enumerated()), id: \.element.id) { i, cta in
+                        ctaTile(id: cta.id, label: cta.name, tag: i == 0 ? "DEFAULT" : nil) {
+                            ctaTileFace(cta)
                         }
                     }
-                }
-            }
-            if outroPreset != "none" {
-                outroLiveCard
-                if outroLogoFailed {
-                    Text("Couldn't add that logo — try another image.")
-                        .font(AppFont.caption).foregroundStyle(Palette.critical)
-                }
-                if outroPreset == "custom",
-                   outroCustomText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text("Type your call to action on the card — the ending is skipped while it's empty.")
-                        .font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
+                    Button { showCTALibrary = true } label: {
+                        VStack(spacing: 4) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.white.opacity(0.06))
+                                Image(systemName: "slider.horizontal.3")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.7))
+                            }
+                            .frame(width: 62, height: 96)
+                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.12),
+                                              style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                            Text("Manage").font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.cta.manage")
                 }
             }
         }
-        // Build 55 audit: attached at the section ROOT — inside the preset-conditional,
-        // flipping to "None" while the picker sheet was returning orphaned the item (and
-        // re-picking the SAME photo then never re-fired onChange).
-        .onChange(of: outroLogoItem) { _, item in
-            if let item { Task { await uploadOutroLogo(item) } }
+        .onAppear {
+            // Seed the DEFAULT (first saved) CTA once. Guarded so returning to this screen
+            // after deliberately choosing None doesn't quietly re-arm an ending.
+            guard !ctaSeeded else { return }
+            ctaSeeded = true
+            selectedCTAId = savedCTAs.first?.id
+        }
+        .sheet(isPresented: $showCTALibrary) {
+            CTALibrarySheet(store: store) { surviving in
+                // The chosen CTA may have been deleted in the sheet — fall back to the
+                // (possibly new) default rather than submitting a dangling id.
+                if let id = selectedCTAId, !surviving.contains(where: { $0.id == id }) {
+                    selectedCTAId = surviving.first?.id
+                }
+            }
         }
     }
 
-    /// Mini end-card tile — same 9:16 frame language as the caption cards, so the row
-    /// reads as "pick the card your video ends on".
-    @ViewBuilder private func outroTile(_ id: String, label: String,
-                                        @ViewBuilder face: () -> some View) -> some View {
-        let active = outroPreset == id
+    private var savedCTAs: [SavedCTA] { store.brand.savedCTAs ?? [] }
+
+    /// The ending that will be submitted for this take. nil = the None tile → `cta_style_id`
+    /// "none" (a first-class pick server-side, not an absent one).
+    private var chosenCTA: SavedCTA? {
+        guard let id = selectedCTAId else { return nil }
+        return savedCTAs.first { $0.id == id }
+    }
+
+    @ViewBuilder private func ctaTile(id: UUID?, label: String, tag: String?,
+                                      @ViewBuilder face: () -> some View) -> some View {
+        let active = selectedCTAId == id
         Button {
-            withAnimation(.easeOut(duration: 0.15)) { outroPreset = id }
+            withAnimation(.easeOut(duration: 0.15)) { selectedCTAId = id }
         } label: {
             VStack(spacing: 4) {
-                ZStack {
+                ZStack(alignment: .top) {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Palette.ink.opacity(id == "none" ? 0.35 : 0.9))
+                        .fill(Palette.ink.opacity(id == nil ? 0.35 : 0.9))
                     face()
+                        .frame(maxHeight: .infinity)
+                    if let tag {
+                        Text(tag).font(.system(size: 7, weight: .bold)).tracking(0.6)
+                            .foregroundStyle(Palette.ink)
+                            .padding(.horizontal, 4).padding(.vertical, 2)
+                            .background(Palette.onInk).clipShape(Capsule())
+                            .padding(.top, 5)
+                    }
                 }
                 .frame(width: 62, height: 96)
                 .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -938,18 +694,19 @@ struct RecordView: View {
                                   lineWidth: active ? 2 : 1))
                 Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
                     .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
+                    .lineLimit(1).frame(width: 62)
             }
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("record.outro.\(id)")
+        .accessibilityIdentifier("record.cta.\(id?.uuidString ?? "none")")
     }
 
-    /// The tiny end-card face inside a tile: logo dot, serif CTA line, handle line —
-    /// the real card's layout at postage-stamp scale.
-    @ViewBuilder private func outroTileCard(_ copy: String) -> some View {
+    /// The real end card's layout at postage-stamp scale: logo dot, serif CTA line, handle rule.
+    @ViewBuilder private func ctaTileFace(_ cta: SavedCTA) -> some View {
         VStack(spacing: 3) {
-            Circle().fill(Color.white.opacity(0.18)).frame(width: 10, height: 10)
-            Text(copy)
+            Circle().fill(Color.white.opacity(cta.logoURL.isEmpty ? 0.10 : 0.30))
+                .frame(width: 10, height: 10)
+            Text(cta.text.isEmpty ? cta.name : cta.text)
                 .font(Typeface.display(8, .semibold))
                 .foregroundStyle(.white)
                 .multilineTextAlignment(.center)
@@ -960,120 +717,40 @@ struct RecordView: View {
         }
     }
 
-    /// The LIVE end card: what you see is the card that renders. CTA text, @handle and
-    /// logo are edited directly in place — no detached form fields.
-    private var outroLiveCard: some View {
-        VStack(spacing: Space.xs) {
-            VStack(spacing: Space.sm) {
-                // Logo slot — tap the circle to add/replace.
-                PhotosPicker(selection: $outroLogoItem, matching: .images) {
-                    ZStack {
-                        Circle().fill(Color.white.opacity(0.10))
-                        if outroLogoUploading {
-                            ProgressView().controlSize(.small).tint(.white)
-                        } else if let url = URL(string: outroLogoURL), !outroLogoURL.isEmpty {
-                            AsyncImage(url: url) { img in
-                                img.resizable().scaledToFill()
-                            } placeholder: {
-                                ProgressView().controlSize(.mini).tint(.white)
-                            }
-                            .frame(width: 44, height: 44)
-                            .clipShape(Circle())
-                        } else {
-                            Image(systemName: "plus")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.55))
-                        }
-                    }
-                    .frame(width: 44, height: 44)
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
-                }
-                .accessibilityIdentifier("record.outroLogo")
 
-                if outroPreset == "custom" {
-                    TextField("", text: $outroCustomText,
-                              prompt: Text("Your call to action")
-                                .font(Typeface.display(19, .semibold))
-                                .foregroundColor(.white.opacity(0.4)),
-                              axis: .vertical)
-                        .font(Typeface.display(19, .semibold))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .accessibilityIdentifier("record.outroCustom")
-                } else {
-                    Text(Self.outroPresets[outroPreset] ?? "")
-                        .font(Typeface.display(19, .semibold))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                }
-
-                TextField("", text: $outroHandle,
-                          prompt: Text("@handle (optional)").foregroundColor(.white.opacity(0.35)))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .multilineTextAlignment(.center)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityIdentifier("record.outroHandle")
-            }
-            .padding(.vertical, Space.lg)
-            .padding(.horizontal, Space.md)
-            .frame(maxWidth: .infinity)
-            .background(Palette.ink.opacity(0.9))
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-
-            Text("This card ends your video — the music keeps playing under it.")
-                .font(AppFont.caption).foregroundStyle(.white.opacity(0.4))
-        }
+    /// B-roll is available only for the "Talking Head + B-roll" format — plain Talking Head
+    /// keeps it off (and hides the picker). The picked style steers the LOOK.
+    private func syncBrollToggle() {
+        briefToggles.broll = (editFormat == .talkingHeadBroll)
     }
 
-    private func uploadOutroLogo(_ item: PhotosPickerItem) async {
-        outroLogoUploading = true
-        outroLogoFailed = false
-        defer { outroLogoUploading = false; outroLogoItem = nil }
-        guard let data = try? await item.loadTransferable(type: Data.self) else {
-            outroLogoFailed = true; return
-        }
-        // Build 55 (audit): the picker hands back the ORIGINAL bytes — iPhone camera photos
-        // are HEIC by default, and Chromium (the Lambda renderer) cannot decode HEIC, so a
-        // raw pass-through uploaded fine and then rendered a BLANK logo. Re-encode through
-        // UIImage to real PNG, downscaled to 512px (it renders at 168px; a 4032px camera
-        // PNG would be a multi-MB fetch per render for nothing).
-        guard let img = UIImage(data: data) else { outroLogoFailed = true; return }
-        let scaled = img.preparingThumbnail(of: thumbnailFit(img.size, maxEdge: 512)) ?? img
-        guard let png = scaled.pngData() else { outroLogoFailed = true; return }
-        let path = MediaStore.save(png, ext: "png")
-        if let url = await LiveClipEngine.uploadMedia(path: path, filename: "outro-logo.png") {
-            outroLogoURL = url
-        } else {
-            outroLogoFailed = true
-        }
-    }
-
-    /// Aspect-preserving fit within maxEdge (preparingThumbnail stretches to the exact
-    /// size it's given, so the target must already carry the aspect ratio).
-    private func thumbnailFit(_ size: CGSize, maxEdge: CGFloat) -> CGSize {
-        let m = max(size.width, size.height)
-        guard m > maxEdge, m > 0 else { return size }
-        let k = maxEdge / m
-        return CGSize(width: size.width * k, height: size.height * k)
+    /// The per-job `config` — now purely a projection of the creator's standing dials
+    /// (Profile → Editing style) plus the one ending they picked for this take. The KEY SET
+    /// is unchanged from build 54; only the source of the values moved, so no backend
+    /// change rides with this. See SubmitConfig for why the mapping lives outside the view.
+    private func brollConfig() -> [String: String]? {
+        SubmitConfig.build(editFormat: editFormat, prefs: store.editPrefs,
+                           cta: chosenCTA, isPro: Entitlements.shared.isPro)
     }
 
     /// v4 gen-z dial: Off · Subtle · Memey · Brainrot. A discrete 4-stop slider — how
     /// culturally unhinged the b-roll gets (meme frequency + reclassification server-side).
-    private static let memeLevelNames = ["Off", "Subtle", "Memey", "Brainrot"]
+    /// Build 61: the .recorded screen no longer shows this (the dial is standing, in
+    /// Profile → Editing style). It survives ONLY for the legacy brief-approve path, now
+    /// bound straight to editPrefs so both screens can never disagree about the value.
     private var memeSliderRow: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
+        let level = Binding<Double>(
+            get: { Double(store.editPrefs.memeIntensity ?? SubmitConfig.defaultMemeIntensity) },
+            set: { store.editPrefs.memeIntensity = Int($0); store.save() })
+        return VStack(alignment: .leading, spacing: Space.xs) {
             HStack {
                 Text("MEME ENERGY").font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer(minLength: Space.md)
-                Text(Self.memeLevelNames[Int(memeLevel)])
+                Text(MemeEnergy.names[Int(level.wrappedValue)])
                     .font(AppFont.caption).foregroundStyle(Palette.accent)
             }
-            Slider(value: $memeLevel, in: 0...3, step: 1)
+            Slider(value: level, in: 0...3, step: 1)
                 .tint(Palette.accent)
                 .accessibilityIdentifier("record.memeLevel")
         }

@@ -15,10 +15,14 @@ struct OnboardingView: View {
         // niche/audience/knownFor from real posts, so identity becomes
         // confirm-not-type for connected users (typing is the #1 completion
         // killer; taps and prefills are near-free).
+        // styleTaste + ctaPick sit AFTER pace and before the mirror: by then the creator
+        // has told us who they are, so the two swipe decks read as "now teach me your
+        // taste" rather than more intake — and both are skippable (a skipped deck just
+        // keeps the measured-winner defaults).
         case landing, goal, blocker, whyNow, frequency, method,
              connectAccounts, name, stage, niche, about, knownFor, platform,
              voiceInterview, voiceSliders, emulate, cameraComfort, pace,
-             mirror, building
+             styleTaste, ctaPick, mirror, building
 
         /// Quiz-progress dashes cover everything between landing and building.
         var quizIndex: Int? {
@@ -74,6 +78,8 @@ struct OnboardingView: View {
             case .emulate:         emulateStep
             case .cameraComfort:   cameraComfortStep
             case .pace:          paceStep
+            case .styleTaste:    styleTasteStep
+            case .ctaPick:       ctaPickStep
             case .mirror:        mirrorStep
             case .building:      buildingStep
             }
@@ -598,6 +604,58 @@ struct OnboardingView: View {
             selectAndAdvance { store.brand.weeklyTarget = n }
         }
         .accessibilityIdentifier("onboard.pace.\(n)")
+    }
+
+    // MARK: - Taste decks (editing style + endings)
+
+    private var styleTasteStep: some View {
+        scaffold("Which edits feel like you?",
+                 "Swipe right on the looks you'd actually post.") {
+            StyleTasteSwiper(
+                onFinish: { profile in
+                    store.editPrefs.styleProfile = profile
+                    store.save()
+                    advance()
+                },
+                // A deck we can't load is not a step worth stranding anyone on — the
+                // cold-start profile IS today's pipeline behavior, so skipping costs nothing.
+                onUnavailable: {})
+        } cta: {
+            Button { advance() } label: {
+                Text("Skip for now")
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+            }
+            .accessibilityIdentifier("onboard.styleTaste.skip")
+        }
+    }
+
+    private var ctaPickStep: some View {
+        scaffold("How should your videos end?",
+                 "Like the endings you'd ship — I'll build your CTA library from them.") {
+            CTAPickSwiper(onFinish: { picked in
+                // Order is preserved: the FIRST liked ending becomes the default tile on
+                // the record screen. "No CTA" is a verdict about the deck, not a library
+                // entry, so it never becomes a saved CTA (the record screen's None tile is
+                // always there anyway).
+                let saved = picked.filter { !$0.isNone }.map {
+                    SavedCTA(name: $0.label,
+                             text: SavedCTA.defaultCopy(for: $0),
+                             handle: store.brand.pageHandle.isEmpty ? "" : "@" + store.brand.pageHandle,
+                             logoURL: "", styleId: $0.id)
+                }
+                if !saved.isEmpty {
+                    store.brand.savedCTAs = saved
+                    store.save()
+                }
+                advance()
+            })
+        } cta: {
+            Button { advance() } label: {
+                Text("Skip for now")
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+            }
+            .accessibilityIdentifier("onboard.ctaPick.skip")
+        }
     }
 
     // MARK: - Interstitial B: brand mirror → build
