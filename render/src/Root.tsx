@@ -9,6 +9,7 @@ import { BrollCutaway } from "./compositions/BrollCutaway";
 import { DuetSplit } from "./compositions/DuetSplit";
 import { SourcePip } from "./compositions/SourcePip";
 import { CompositionProps, planDuration } from "./types";
+import { CtaPreview } from "./compositions/CtaPreview";
 
 // durationInFrames is resolved per-render from the plan's total_frames (the post-cut
 // output length) via calculateMetadata — a fixed 720 would either pad short edits with a
@@ -35,5 +36,11 @@ export const RemotionRoot: React.FC = () => (
       defaultProps={{ sourceUrl: "", edl: null, formatId: "green-screen" }} />
     <Composition id="Marque-SourcePip" component={SourcePip} calculateMetadata={meta} {...common}
       defaultProps={{ sourceUrl: "", edl: null, formatId: "green-screen" }} />
+    {/* Not a render target for real jobs — the neutral stage used to shoot the CTA
+        preview clips for the in-app picker (scripts/gen_cta_previews.py). Fixed 5s. */}
+    <Composition id="Marque-CtaPreview" component={CtaPreview}
+      fps={30} width={1080} height={1920} durationInFrames={150}
+      defaultProps={{ styleId: "classic", text: "Follow for more",
+                      handle: "@yourname", logoUrl: null }} />
   </>
 );

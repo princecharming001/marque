@@ -745,7 +745,8 @@ def test_end_card_stamped_when_hint_wanted_and_has_text():
     edl = _bare_edl("talking_head", ms_to_frame(10000))
     out = retention.place_end_card(edl, words, style="talking_head",
                                    hints={"end_card": {"wanted": True, "text": "Follow for more"}})
-    assert out["end_card"] == {"text": "Follow for more", "frames": 75, "show_handle": True}
+    assert out["end_card"] == {"text": "Follow for more", "frames": 75,
+                               "show_handle": True, "style_id": "classic"}
 
 
 def test_end_card_noop_when_not_wanted():
@@ -780,7 +781,8 @@ def test_end_card_xor_loop_tail_via_orchestrator():
     out = retention.apply_retention_passes(
         edl, words, style="talking_head",
         hints={"end_card": {"wanted": True, "text": "Follow for more"}})
-    assert out["end_card"] == {"text": "Follow for more", "frames": 75, "show_handle": True}
+    assert out["end_card"] == {"text": "Follow for more", "frames": 75,
+                               "show_handle": True, "style_id": "classic"}
     assert out["segments"][0]["src_out"] == 250   # trim_loop_tail did NOT run
 
 

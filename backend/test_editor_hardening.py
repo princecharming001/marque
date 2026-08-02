@@ -1697,7 +1697,8 @@ _TS_MUSIC_KEYS = {"url", "query", "volume", "duck_voice"}
 _TS_VOLUME_RANGE_KEYS = {"frame_in", "frame_out", "volume"}
 _TS_AUDIO_PLAN_KEYS = {"lufs_target", "gain", "music", "volume_ranges", "speech_frames", "sfx", "duck", "room_tone"}
 _TS_END_CARD_KEYS = {"text", "start_frame", "frames", "show_handle",
-                     "handle", "logo_url"}   # P4; +outro builder (schema v7)
+                     "handle", "logo_url",
+                     "style_id", "mount"}   # P4; +outro (v7); +CTA templates (v8)
 _TS_SFX_KEYS = {"frame", "kind", "gain", "url"}                        # P4
 
 
@@ -1788,7 +1789,10 @@ def test_end_card_extends_total_frames_by_its_own_length():
     assert plan["total_frames"] == base_total + 60
     assert plan["end_card"] == {"text": "Follow along", "start_frame": base_total,
                                 "frames": 60, "show_handle": True,
-                                "handle": "", "logo_url": None}   # build 54 outro fields, defaulted
+                                "handle": "", "logo_url": None,
+                                # v8: absent style => the classic TAIL card, so this
+                                # (the pre-v8 shape) still extends total_frames.
+                                "style_id": "classic", "mount": "tail"}
 
 
 def test_end_card_with_blank_text_is_dropped():

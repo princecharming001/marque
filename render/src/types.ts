@@ -109,6 +109,12 @@ export interface EndCardPlan {
   // Build 54 (outro builder): the creator's real @handle + an uploaded logo image.
   handle?: string;
   logo_url?: string | null;
+  // v8 (CTA template library): which template renders this CTA, and whether it is a
+  // tail card (appended after the last clip, extends total_frames) or an overlay that
+  // rides OVER the final seconds of live video. Both absent = classic tail card, so
+  // every pre-v8 plan renders byte-identically.
+  style_id?: string;
+  mount?: "tail" | "overlay";
 }
 
 export interface RenderPlan {
@@ -146,7 +152,9 @@ export interface RenderPlan {
 // the "finishing" filter preset.
 // v5 (Addendum composition modes): broll.mode (panel/card), layout.speaker_treatment/
 // pip_position (SourcePip), montage (listicle hook flash). All additive/defaulted.
-export const PLAN_SCHEMA_VERSION = 7;
+// v8 (CTA template library): end_card.style_id + end_card.mount. Additive/defaulted —
+// a v7 plan renders identically on a v8 bundle (style_id absent => "classic"/tail).
+export const PLAN_SCHEMA_VERSION = 8;
 
 let _schemaWarned = false;
 // Warn ONCE in the Lambda logs on a plan/bundle version mismatch. Never throws — a

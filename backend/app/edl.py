@@ -18,7 +18,7 @@ import re
 # sync_lead_frames/highlight_persist_frames, audio.duck, montserrat/anton fonts.
 # v4 (A8, superintelligence epic): added look.grain, whip/zoom_punch transitions,
 # the "finishing" filter preset.
-PLAN_SCHEMA_VERSION = 7   # v7: watermark + end_card.handle/logo_url (outro builder); v6: captions.bg; v5: broll.mode, montage
+PLAN_SCHEMA_VERSION = 8   # v8: end_card.style_id/mount (CTA template library); v7: watermark + end_card.handle/logo_url; v6: captions.bg; v5: broll.mode, montage
 
 MS_PER_FRAME = 1000.0 / 30.0  # 30fps
 
@@ -188,6 +188,11 @@ class EndCard(BaseModel):
     # Build 54 (outro builder): the creator's real @handle + an uploaded logo image.
     handle: str = ""             # rendered under the CTA text when non-empty
     logo_url: str = ""           # small logo above the text; "" = none
+    # v8 (CTA template library): which of the 20 templates renders this CTA. The
+    # template's layout class decides whether it plays as a TAIL card (appended after
+    # the last clip) or as an OVERLAY over the final seconds of live video — see
+    # app/cta_styles.py. Default "classic" = the pre-v8 card, byte-identical.
+    style_id: str = "classic"
 
 
 class Transition(BaseModel):
@@ -1185,12 +1190,31 @@ def build_render_plan(edl: dict, warnings: list[str] | None = None) -> dict:
     end_card_out = None
     tail_frames = 0
     if end_card_src and (end_card_src.get("text") or "").strip():
+        from app import cta_styles as _cta
         ec_frames = max(30, min(150, int(end_card_src.get("frames") or 75)))
-        end_card_out = {"text": end_card_src["text"], "start_frame": total_frames,
-                        "frames": ec_frames, "show_handle": bool(end_card_src.get("show_handle", True)),
-                        "handle": str(end_card_src.get("handle") or ""),
-                        "logo_url": end_card_src.get("logo_url") or None}
-        tail_frames = ec_frames
+        # v8: unknown ids clamp to "classic" so a plan authored by a newer backend can
+        # never hand the bundle a style it can't render.
+        style_id = _cta.clamp_style_id(end_card_src.get("style_id"))
+        mount = _cta.mount_for(style_id)
+        if mount == "overlay":
+            # Rides OVER the final seconds of live video: no tail extension, and never
+            # start before 60% of the runtime (a "CTA" that covers half the video isn't
+            # a CTA). tail_frames stays 0.
+            ec_frames = min(ec_frames, max(1, total_frames))
+            start = max(int(total_frames * 0.6), total_frames - ec_frames)
+            end_card_out = {"text": end_card_src["text"], "start_frame": max(0, start),
+                            "frames": max(1, total_frames - max(0, start)),
+                            "show_handle": bool(end_card_src.get("show_handle", True)),
+                            "handle": str(end_card_src.get("handle") or ""),
+                            "logo_url": end_card_src.get("logo_url") or None,
+                            "style_id": style_id, "mount": "overlay"}
+        else:
+            end_card_out = {"text": end_card_src["text"], "start_frame": total_frames,
+                            "frames": ec_frames, "show_handle": bool(end_card_src.get("show_handle", True)),
+                            "handle": str(end_card_src.get("handle") or ""),
+                            "logo_url": end_card_src.get("logo_url") or None,
+                            "style_id": style_id, "mount": "tail"}
+            tail_frames = ec_frames
 
     return {
         "style": edl.get("style", "talking_head"),

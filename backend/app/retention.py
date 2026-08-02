@@ -1375,12 +1375,20 @@ def place_cta_overlay(edl: dict, words: list[dict], *, style: str,
     # never stack on an existing overlay in the close window
     if any(o.get("src_out", 0) > src_in for o in overlays):
         return edl
-    overlays.append({
-        "type": "text_sticker", "src_in": src_in, "src_out": last_end,
-        "text": text[:120], "scale": 1.0, "pos_x": 0.5, "pos_y": 0.74,
-        "rotation": 0.0, "color": None, "bg": "box", "font": "inter",
-    })
-    edl["overlays"] = overlays
+    # v8: the overlay CTA rides the SAME end_card carrier as the tail card, with an
+    # overlay-class template — one contract, one renderer (build_render_plan does the
+    # start_frame math). The default `pill` template is a pixel-clone of the old
+    # text_sticker pill this pass used to emit.
+    from app import cta_styles as _cta
+    style_id = end_card_hint.get("style_id")
+    if not _cta.is_overlay(style_id):
+        style_id = _cta.DEFAULT_OVERLAY_STYLE
+    ec = {"text": text[:120], "frames": hold_src, "show_handle": True,
+          "style_id": style_id}
+    handle = str(end_card_hint.get("handle") or "").strip()
+    if handle:
+        ec["handle"] = handle[:40]
+    edl["end_card"] = ec
     return edl
 
 
@@ -1404,7 +1412,11 @@ def place_end_card(edl: dict, words: list[dict], *, style: str, hints: dict | No
         return edl
     edl = copy.deepcopy(edl)
     _frames = _cta_read_frames(text)
-    ec = {"text": text, "frames": _frames, "show_handle": True}
+    from app import cta_styles as _cta
+    # v8: the creator's template choice rides the hint. A tail-class card keeps the
+    # tail mount; an overlay id arriving here means the caller routed by class already.
+    _style = _cta.clamp_style_id(end_card_hint.get("style_id"))
+    ec = {"text": text, "frames": _frames, "show_handle": True, "style_id": _style}
     # Build 54 (outro builder): the creator's @handle + uploaded logo ride the hint.
     handle = str(end_card_hint.get("handle") or "").strip()
     if handle:

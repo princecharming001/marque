@@ -3,6 +3,7 @@ must be byte-identical to pre-conventions behavior, and every gate must be
 deterministic on job_seed."""
 import copy
 
+from app import cta_styles
 from app.conventions import (CAPTION_CONVENTIONS, CTA_PATTERN_WEIGHTS,
                              TITLE_CARD_POLICY, pick_weighted, seed_fraction)
 from app.retention import (apply_retention_passes, place_cta_overlay,
@@ -116,11 +117,16 @@ def test_three_way_close_exactly_one_treatment(monkeypatch):
     overlay = run("text_overlay")
     spoken = run("spoken_only")
 
+    # v8: BOTH visual patterns now ride the one end_card carrier; the template's
+    # layout class is what distinguishes them (tail card vs overlay-over-speaker),
+    # and build_render_plan does the mount math. The XOR contract is unchanged:
+    # exactly one close treatment per edit.
     def close_treatments(edl):
-        card = bool(edl.get("end_card"))
-        cta_sticker = any(o["type"] == "text_sticker" and o.get("src_out", 0) >= 890
-                          for o in edl.get("overlays") or [])
-        return card, cta_sticker
+        ec = edl.get("end_card") or {}
+        style = ec.get("style_id") or ""
+        card = bool(ec) and not cta_styles.is_overlay(style)
+        overlay_cta = bool(ec) and cta_styles.is_overlay(style)
+        return card, overlay_cta
 
     assert close_treatments(hard) == (True, False)
     assert close_treatments(overlay) == (False, True)
@@ -131,8 +137,9 @@ def test_cta_overlay_respects_skip_matrix_and_read_time():
     words = _words()
     hints = {"end_card": {"wanted": True, "text": "COMMENT 'GUIDE' AND FOLLOW"}}
     out = place_cta_overlay(_edl(), words, style="talking_head", hints=dict(hints))
-    st = [o for o in out["overlays"] if o["type"] == "text_sticker"]
-    assert st and st[0]["src_out"] == 900
-    assert 75 <= (st[0]["src_out"] - st[0]["src_in"]) <= 150
+    ec = out.get("end_card") or {}
+    assert ec, "overlay CTA stamps the end_card carrier (v8)"
+    assert cta_styles.is_overlay(ec["style_id"]), "overlay pattern picks an overlay template"
+    assert 75 <= ec["frames"] <= 150, "read-time hold unchanged"
     skipped = place_cta_overlay(_edl(), words, style="fast_cuts", hints=dict(hints))
-    assert not skipped.get("overlays"), "skip matrix applies to the overlay pattern too"
+    assert not skipped.get("end_card"), "skip matrix applies to the overlay pattern too"

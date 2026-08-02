@@ -1,6 +1,34 @@
 import React from "react";
-import { Sequence, OffthreadVideo, Img, useCurrentFrame, interpolate } from "remotion";
+import { Sequence, OffthreadVideo, Img, useCurrentFrame, useVideoConfig,
+         interpolate, spring } from "remotion";
 import { BRoll } from "../types";
+
+// Insert motion (owner directive 2026-07-29: "it shouldn't be rounded... it just blips in
+// and out with no animation"). Inserts are RECTANGLES that SLIDE in from the side they
+// live on and settle — a directional entrance reads as a deliberate editorial move, where
+// a symmetric fade reads as a render glitch. Card mode keeps a small radius (it's a
+// floating artifact card, the one case where a rounded plate is the convention).
+const SLIDE_PX = 60;                                   // travel distance
+const SLIDE_SPRING = { damping: 14, stiffness: 120, mass: 1 };   // ~0.35-0.45s settle @30fps
+const ANTI_FLASH_FRAMES = 2;                           // kills the 1-frame bright-source pop
+const SETTLE_OUT_FRAMES = 4;                           // exit: tiny scale settle, no fade
+
+// Shared entrance/exit for the inset modes. `axis` is the side the insert lives on, so it
+// always travels from its own edge inward. NOT a hook — a pure helper taking frame/fps, so
+// it can be called from inside the mode branches without breaking the rules of hooks.
+const insertMotion = (frame: number, fps: number, durationInFrames: number,
+                      axis: "top" | "right") => {
+  const s = spring({ frame, fps, config: SLIDE_SPRING });
+  const travel = interpolate(s, [0, 1], [SLIDE_PX, 0]);
+  const outAt = Math.max(1, durationInFrames - SETTLE_OUT_FRAMES);
+  const settle = interpolate(frame, [outAt, durationInFrames], [1, 0.985],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  // Opacity is effectively hard-on: a ≤2-frame ramp only, never a symmetric fade.
+  const opacity = interpolate(frame, [0, ANTI_FLASH_FRAMES], [0, 1],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const offset = axis === "top" ? `translateY(${-travel}px)` : `translateX(${travel}px)`;
+  return { transform: `${offset} scale(${settle})`, opacity };
+};
 
 // Renders b-roll inserts on the OUTPUT timeline, composited per the Addendum Part 2 mode
 // carried on each item (schema v5, additive — absent mode = "full" = v1 behavior):
@@ -30,10 +58,11 @@ export const BrollLayer: React.FC<{ broll: BRoll[] }> = ({ broll }) => (
 
 // Frame geometry (1080×1920). Panel: upper half, clear of the top platform UI; the face
 // (framed lower-half by selfie convention) and the caption band (~62%) stay visible.
-const PANEL = { left: 40, right: 40, top: 130, height: 0.46 * 1920, radius: 20 };
+const PANEL = { left: 40, right: 40, top: 130, height: 0.46 * 1920, radius: 0 };
 // Card: ≤35% of frame area, upper half, over one shoulder (right side — no gaze detection
-// yet, and the speaker is horizontally centered so either shoulder is safe).
-const CARD = { width: 0.44 * 1080, height: 0.35 * 1920 * 0.72, top: 220, right: 48, radius: 18 };
+// yet, and the speaker is horizontally centered so either shoulder is safe). The ONLY
+// rounded insert: a floating artifact card (screenshot/receipt/tweet) reads as a plate.
+const CARD = { width: 0.44 * 1080, height: 0.35 * 1920 * 0.72, top: 220, right: 48, radius: 8 };
 
 // Provider attribution — both GIPHY's and KLIPY's API terms require a visible mark
 // wherever their content displays. Small pill, bottom-right of the insert.
@@ -57,6 +86,7 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   url, durationInFrames, mode, source, insetRect,
 }) => {
   const frame = useCurrentFrame(); // local to the Sequence (0 at clip start)
+  const { fps } = useVideoConfig();
   const isImage = /\.(png|jpe?g|webp|gif)(\?|$)/i.test(url);
   const isGiphy = source === "giphy";
   const isKlipy = source === "klipy";
@@ -79,29 +109,19 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
 
   if (mode === "smart" && insetRect) {
     // v3 OTS face-aware inset: rect precomputed backend-side (opposite the face,
-    // safe-zone + caption-band clean). Same pop-in/out language as panel.
-    const inLen = Math.min(5, Math.max(1, Math.floor(durationInFrames / 3)));
-    const outLen = Math.min(4, Math.max(1, Math.floor(durationInFrames / 3)));
-    const popIn = interpolate(frame, [0, inLen], [0.92, 1], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const popOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0.95], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const fade = Math.min(
-      interpolate(frame, [0, inLen], [0, 1], { extrapolateLeft: "clamp", extrapolateRight: "clamp" }),
-      interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0],
-                  { extrapolateLeft: "clamp", extrapolateRight: "clamp" }));
+    // safe-zone + caption-band clean). Square-cornered rectangle that slides down from
+    // its top edge and settles — no rounding, no fade (owner directive).
+    const motion = insertMotion(frame, fps, durationInFrames, "top");
     return (
       <div style={{
         position: "absolute",
         left: insetRect.x * 1080, top: insetRect.y * 1920,
         width: insetRect.w * 1080, height: insetRect.h * 1920,
-        borderRadius: 20, overflow: "hidden",
+        borderRadius: 0, overflow: "hidden",
         border: "3px solid rgba(255,255,255,0.14)",
         boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
-        transform: `scale(${popIn * popOut})`, transformOrigin: "center",
-        opacity: fade,
+        transform: motion.transform, transformOrigin: "center",
+        opacity: motion.opacity,
       }}>
         {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
                  objectFit: "cover", transform: `scale(${kenBurns})` })}
@@ -111,30 +131,16 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   }
 
   if (mode === "panel" || mode === "smart") {
-    // Pop-in/pop-out so short inserts read as deliberate flashes, not render glitches.
-    // Ramps clamp to a third of the window so a 15f meme still gets in AND out.
-    const inLen = Math.min(5, Math.max(1, Math.floor(durationInFrames / 3)));
-    const outLen = Math.min(4, Math.max(1, Math.floor(durationInFrames / 3)));
-    const popIn = interpolate(frame, [0, inLen], [0.92, 1], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const popOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0.95], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const fadeIn = interpolate(frame, [0, inLen], [0, 1], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const fadeOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
+    // Upper-half panel: a square rectangle that slides down into place from the top.
+    const motion = insertMotion(frame, fps, durationInFrames, "top");
     return (
       <div style={{
         position: "absolute", left: PANEL.left, right: PANEL.right, top: PANEL.top,
         height: PANEL.height, borderRadius: PANEL.radius, overflow: "hidden",
         border: "3px solid rgba(255,255,255,0.14)",
         boxShadow: "0 18px 50px rgba(0,0,0,0.45)",
-        transform: `scale(${popIn * popOut})`, transformOrigin: "center",
-        opacity: Math.min(fadeIn, fadeOut),
+        transform: motion.transform, transformOrigin: "center",
+        opacity: motion.opacity,
       }}>
         {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
                  objectFit: "cover", transform: `scale(${kenBurns})` })}
@@ -144,17 +150,8 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
   }
 
   if (mode === "card") {
-    // Scale-pop entrance over ~3 frames (spec §6.6) + symmetric pop-out.
-    const outLen = Math.min(3, Math.max(1, Math.floor(durationInFrames / 3)));
-    const pop = interpolate(frame, [0, 3], [0.6, 1], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const popOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0.7], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
-    const fadeOut = interpolate(frame, [durationInFrames - outLen, durationInFrames], [1, 0], {
-      extrapolateLeft: "clamp", extrapolateRight: "clamp",
-    });
+    // Shoulder card: slides in from the right edge it sits on; keeps a small radius.
+    const motion = insertMotion(frame, fps, durationInFrames, "right");
     return (
       <div style={{
         position: "absolute", top: CARD.top, right: CARD.right,
@@ -162,8 +159,8 @@ const BrollClip: React.FC<{ url: string; durationInFrames: number; mode: string;
         borderRadius: CARD.radius, overflow: "hidden",
         border: "3px solid rgba(255,255,255,0.16)",
         boxShadow: "0 14px 40px rgba(0,0,0,0.5)",
-        transform: `scale(${pop * popOut})`, transformOrigin: "top right",
-        opacity: fadeOut,
+        transform: motion.transform, transformOrigin: "top right",
+        opacity: motion.opacity,
       }}>
         {media({ position: "absolute", inset: 0, width: "100%", height: "100%",
                  // A card is usually a screenshot/tweet/receipt — show the WHOLE artifact

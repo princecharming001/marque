@@ -87,7 +87,13 @@ test("viral-v2: BrollLayer carries KLIPY attribution + pop-in/pop-out ramps", ()
   const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "BrollLayer.tsx"), "utf8");
   assert.ok(/KlipyBadge/.test(content), "BrollLayer must define/render KlipyBadge (KLIPY ToS attribution)");
   assert.ok(/Powered by KLIPY/.test(content), "KLIPY badge label required");
-  assert.ok(/popIn/.test(content) && /popOut/.test(content), "panel needs pop-in AND pop-out ramps");
+  // 2026-07-29 (owner: inserts "shouldn't be rounded... blips in and out with no
+  // animation"): inserts are square rectangles that SLIDE in from their own edge and
+  // settle. Guard the new contract so it can't regress to the fade-blip.
+  assert.ok(/insertMotion/.test(content), "inserts need the shared slide+settle motion helper");
+  assert.ok(/spring\(\{\s*frame/.test(content), "insert entrance must be spring-driven");
+  assert.ok(/PANEL\s*=\s*\{[^}]*radius:\s*0/.test(content), "panel inserts must be square");
+  assert.ok(!/Math\.min\(fadeIn,\s*fadeOut\)/.test(content), "symmetric fade must be gone");
   assert.ok(/flashPunch/.test(content), "full-mode flash inserts (<30f) need a punch entrance");
 });
 
@@ -123,13 +129,22 @@ test("viral-v2: every composition mounts Grade look BELOW captions and Grade tra
   assert.deepEqual(offenders, [], offenders.join(" | "));
 });
 
-test("build 56: EndCard is an animated staggered build, not a static fade", () => {
+test("build 56: the classic card is still an animated staggered build", () => {
   // Owner contract: the CTA card must never regress to the "basic" single-property
-  // fade. Guard the three pillars of the v2 build: spring physics, per-word stagger,
-  // and the ambient (never-static) layer.
-  const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "EndCard.tsx"), "utf8");
-  assert.ok(/spring\(\{/.test(content), "EndCard must use spring() physics");
-  assert.ok(/words\.map/.test(content), "EndCard must stagger per word");
+  // fade. v8 moved that build out of EndCard.tsx (now a template dispatcher) into
+  // cta/ClassicCard.tsx — the guard follows it. Three pillars: spring physics,
+  // per-word stagger, and the ambient (never-static) layer.
+  const content = fs.readFileSync(
+    path.join(COMPOSITIONS_DIR, "..", "components", "cta", "ClassicCard.tsx"), "utf8");
+  assert.ok(/spring\(\{/.test(content), "ClassicCard must use spring() physics");
+  assert.ok(/words\.map/.test(content), "ClassicCard must stagger per word");
   assert.ok(/damping:\s*200/.test(content), "word settle must use the smooth damping-200 spring");
-  assert.ok(/ambientScale|drift/.test(content), "EndCard must keep an ambient motion layer");
+  assert.ok(/ambientScale|drift/.test(content), "ClassicCard must keep an ambient motion layer");
+});
+
+test("v8: EndCard dispatches to the CTA template registry", () => {
+  const content = fs.readFileSync(path.join(COMPOSITIONS_DIR, "..", "components", "EndCard.tsx"), "utf8");
+  assert.ok(/resolveCta/.test(content), "EndCard must resolve the template from the registry");
+  assert.ok(/style_id/.test(content), "EndCard must read end_card.style_id");
+  assert.ok(/<Sequence/.test(content), "EndCard must still mount inside its Sequence window");
 });

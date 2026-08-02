@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "styles": [
+    {"id": "classic", "label": "Classic Build", "blurb": "Dark card, logo pop, words rise in one by one.", "layout_class": "tail_card", "ui_class": "full_end_card", "cluster": "minimal", "params": ["text", "handle", "logo"], "default_frames": 90},
+    {"id": "paper_press", "label": "Paper Press", "blurb": "Cream card, ink headline, letterpress calm.", "layout_class": "tail_card", "ui_class": "full_end_card", "cluster": "minimal", "params": ["text", "handle", "logo"], "default_frames": 90},
+    {"id": "knockout", "label": "Knockout", "blurb": "Type punched out of an ink plate.", "layout_class": "tail_card", "ui_class": "full_end_card", "cluster": "minimal", "params": ["text", "handle"], "default_frames": 90},
+    {"id": "follow_mimic", "label": "Follow Button", "blurb": "Native-looking follow button that taps itself.", "layout_class": "tail_card", "ui_class": "full_end_card", "cluster": "energetic", "params": ["text", "handle", "logo"], "default_frames": 90},
+    {"id": "card_flip", "label": "Flip Card", "blurb": "Card flips in on its edge, content staggers up.", "layout_class": "tail_card", "ui_class": "full_end_card", "cluster": "energetic", "params": ["text", "handle", "logo"], "default_frames": 90},
+    {"id": "credits", "label": "Credits", "blurb": "Black screen, small quiet type. Barely there.", "layout_class": "tail_card", "ui_class": "full_end_card", "cluster": "minimal", "params": ["text", "handle"], "default_frames": 90},
+
+    {"id": "pill", "label": "Pill", "blurb": "Small solid pill, bottom centre. The safe one.", "layout_class": "overlay", "ui_class": "pill_button", "cluster": "minimal", "params": ["text"], "default_frames": 90},
+    {"id": "handle_reveal", "label": "Handle", "blurb": "Just your handle and a line that draws itself.", "layout_class": "overlay", "ui_class": "minimal_text", "cluster": "minimal", "params": ["handle"], "default_frames": 90},
+    {"id": "bar_sweep", "label": "Lower Third", "blurb": "Ink bar sweeps in, broadcast style.", "layout_class": "overlay", "ui_class": "lower_third", "cluster": "minimal", "params": ["text", "handle"], "default_frames": 90},
+    {"id": "serif_line", "label": "Serif Line", "blurb": "Italic serif between two hairlines. Editorial.", "layout_class": "overlay", "ui_class": "lower_third", "cluster": "minimal", "params": ["text"], "default_frames": 90},
+    {"id": "typewriter", "label": "Typewriter", "blurb": "Types itself out with a blinking caret.", "layout_class": "overlay", "ui_class": "minimal_text", "cluster": "minimal", "params": ["text"], "default_frames": 90},
+    {"id": "blur_in", "label": "Blur In", "blurb": "Resolves from blur to sharp. Very clean.", "layout_class": "overlay", "ui_class": "minimal_text", "cluster": "minimal", "params": ["text"], "default_frames": 90},
+    {"id": "scale_pop", "label": "Pop", "blurb": "One line, springs in with a little overshoot.", "layout_class": "overlay", "ui_class": "minimal_text", "cluster": "energetic", "params": ["text"], "default_frames": 90},
+    {"id": "underline_sweep", "label": "Underline", "blurb": "Headline rises, underline sweeps under it.", "layout_class": "overlay", "ui_class": "minimal_text", "cluster": "minimal", "params": ["text"], "default_frames": 90},
+    {"id": "corner_tag", "label": "Corner Tag", "blurb": "Small logo chip in the corner, like a broadcast bug.", "layout_class": "overlay", "ui_class": "overlay_speaker", "cluster": "minimal", "params": ["handle", "logo"], "default_frames": 90},
+    {"id": "progress_follow", "label": "Progress Bar", "blurb": "A bar fills across while the line sits above it.", "layout_class": "overlay", "ui_class": "overlay_speaker", "cluster": "minimal", "params": ["text"], "default_frames": 90},
+    {"id": "part_two", "label": "Part 2", "blurb": "Follow-for-part-2 pill with a nudging chevron.", "layout_class": "overlay", "ui_class": "pill_button", "cluster": "energetic", "params": ["text", "handle"], "default_frames": 90},
+    {"id": "arrow_nudge", "label": "Arrow Nudge", "blurb": "Text with an arrow bouncing toward the follow button.", "layout_class": "overlay", "ui_class": "overlay_speaker", "cluster": "energetic", "params": ["text"], "default_frames": 90},
+    {"id": "neon_pulse", "label": "Neon", "blurb": "Glowing outline pill with a slow pulse.", "layout_class": "overlay", "ui_class": "pill_button", "cluster": "energetic", "params": ["text"], "default_frames": 90},
+    {"id": "glitch", "label": "Glitch", "blurb": "Snaps in on an RGB split, then holds dead still.", "layout_class": "overlay", "ui_class": "minimal_text", "cluster": "energetic", "params": ["text"], "default_frames": 90}
+  ]
+}

@@ -5352,7 +5352,7 @@ def test_audio_duck_defaults_none_and_round_trips():
 
 def test_plan_schema_version_is_current():
     from app.edl import PLAN_SCHEMA_VERSION
-    assert PLAN_SCHEMA_VERSION == 7
+    assert PLAN_SCHEMA_VERSION == 8
 
 
 def test_caption_options_survive_edl_roundtrip_and_reach_render_plan():
