@@ -1,0 +1,58 @@
+appId: com.getmarque.app
+name: Library — bulk select → add to group (owner bug reproduction)
+---
+- launchApp:
+    arguments:
+      reset: "true"
+      demoLibrary: "true"
+
+# Land on Home, go to Library
+- extendedWaitUntil:
+    visible: "Library"
+    timeout: 15000
+- tapOn: "Library"
+- extendedWaitUntil:
+    visible: "Library"
+    timeout: 8000
+- takeScreenshot: .shots/groups-01-library
+
+# Enter selection mode
+- tapOn:
+    id: "library.selectToggle"
+- takeScreenshot: .shots/groups-02-selecting
+
+# Select the first two clips
+- tapOn:
+    id: "library.clip"
+    index: 0
+- tapOn:
+    id: "library.clip"
+    index: 1
+- takeScreenshot: .shots/groups-03-two-selected
+
+# Open the group sheet from the bulk bar
+- assertVisible: "2 selected"
+- tapOn:
+    id: "library.bulk.group"
+- extendedWaitUntil:
+    visible:
+      id: "library.groupAssign"
+    timeout: 6000
+- takeScreenshot: .shots/groups-04-sheet
+
+# Toggle the pre-existing group ON for the selection
+- tapOn:
+    id: "group.row"
+- takeScreenshot: .shots/groups-05-toggled
+
+# Create a second group with these clips in it
+- tapOn:
+    id: "group.newName"
+- inputText: "September batch"
+- tapOn:
+    id: "group.create"
+- takeScreenshot: .shots/groups-06-created
+- tapOn: "Done"
+
+# Back on the grid: the two clips must now carry group dots
+- takeScreenshot: .shots/groups-07-dots

@@ -3982,8 +3982,15 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip.pop("error_detail", None)
             clip.pop("last_render_error", None)          # G-05: a good render clears the flag
             clip["last_render_failed"] = False
-            # Refresh the poster for the new cut (the old thumbnail is now stale).
-            _spawn(_attach_poster(job.get("job_id", ""), clip, render_url, my_gen))
+            # Refresh the poster for the new cut BEFORE this path's ready flip below —
+            # same client race as the first render (see _render_all_clips): the app
+            # stops polling at "ready", so a poster attached after it is never seen.
+            try:
+                await asyncio.wait_for(
+                    _attach_poster(job.get("job_id", ""), clip, render_url, my_gen),
+                    timeout=8)
+            except (asyncio.TimeoutError, Exception):
+                _spawn(_attach_poster(job.get("job_id", ""), clip, render_url, my_gen))
             # A tweak (e.g. a fresh cut) can newly straddle an existing duet react
             # window, which build_render_plan then silently drops — this only
             # surfaces here (not in _run_pipeline's one-time check) since it's a
@@ -6563,10 +6570,18 @@ async def _render_all_clips(job_id: str) -> None:
                                             "original): %s", e)
             if _is_current_render(clip, my_gen):
                 clip["render_url"] = render_url
+                # Poster BEFORE the ready flip, capped at 8s. Fully fire-and-forget lost
+                # the race with the client every time: the app's poll loop returns the
+                # instant it sees "ready", and the poster attached seconds later — so the
+                # Library card never had a thumbnail (owner report, twice). A ≤8s wait
+                # ships ready+thumbnail in the SAME poll for the typical 2-6s poster;
+                # the timeout path degrades to the old behavior instead of stalling.
+                try:
+                    await asyncio.wait_for(
+                        _attach_poster(job_id, clip, render_url, my_gen), timeout=8)
+                except (asyncio.TimeoutError, Exception):
+                    _spawn(_attach_poster(job_id, clip, render_url, my_gen))
                 clip["status"] = "ready"
-                # Poster for the Library card — fire-and-forget so it never delays 'ready';
-                # iOS picks up clip["thumbnail_url"] on its next poll.
-                _spawn(_attach_poster(job_id, clip, render_url, my_gen))
         except PipelineError as e:
             if _is_current_render(clip, my_gen):
                 _fail_clip(clip, e.code, e.detail)

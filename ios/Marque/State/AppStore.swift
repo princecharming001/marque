@@ -169,6 +169,42 @@ final class AppStore {
             clip.jobId = demoStyleOverride.map { "demo-\($0)" } ?? "demo-clip-job"
             clips.insert(clip, at: 0)
         }
+        // Owner-bug reproduction seam (build 63): a Library with enough finished clips to
+        // exercise multi-select → group assignment → card dots, plus one pre-existing
+        // group. Same shape as -demoClip, just plural — drives
+        // .maestro/library-groups.yaml.
+        if CommandLine.arguments.contains("-demoLibrary") {
+            hasOnboarded = true
+            auth.continueAsDemo()
+            subscription.devContinue()
+            if clipGroups.isEmpty {
+                clipGroups = [ClipGroup(name: "Client A",
+                                        colorHex: ClipGroup.assignedColorHex(index: 0))]
+            }
+            let titles = ["Morning routine myth", "Pricing mistake", "One-take system",
+                          "Fusion recipe test", "Studio tour"]
+            for (i, t) in titles.enumerated() {
+                let script = Script(pillarName: "Seeded", title: t, summary: "",
+                                    style: VideoStyle.talkingHead.rawValue,
+                                    formatId: "myth-buster",
+                                    hook: Hook(text: t, signal: .narrative, strength: 70),
+                                    altHooks: [], body: t, cta: "",
+                                    shotPlan: [], targetSeconds: 20, predictedScore: 70)
+                scripts.append(script)
+                var clip = Clip(scriptId: script.id, formatId: script.formatId,
+                                formatName: "Myth-buster", caption: t,
+                                predictedScore: 70,
+                                status: i == 4 ? .rendering : .ready, seconds: 18 + i)
+                clip.title = t
+                clip.jobId = "demo-lib-\(i)"
+                // Remote posters so the grid shows REAL previews in the harness (the
+                // same LocalThumbnail path production posters use).
+                clip.thumbnailURL = "https://picsum.photos/seed/lib\(i)/400/711"
+                if i == 4 { clip.thumbnailURL = nil }
+                clip.finishedAt = Date().addingTimeInterval(Double(-i) * 3600)
+                clips.append(clip)
+            }
+        }
         #endif
     }
 
@@ -1026,6 +1062,44 @@ final class AppStore {
             Task {
                 await pollClipStatuses(jobId: jobId, clipIds: ids)
                 activeRepolls.remove(jobId)
+            }
+        }
+        backfillMissingPosters()
+    }
+
+    /// Jobs whose posters we've already asked about this launch — one ask per job, so a
+    /// library of poster-less clips from a long-gone backend job doesn't re-fetch on
+    /// every Library visit.
+    private var posterBackfillAsked: Set<String> = []
+
+    /// Library-card poster healer. The backend attaches `thumbnail_url` around the
+    /// ready flip; any clip that went ready before the poster landed (older builds
+    /// polled right past it — the owner's "no previews" report) is stuck without one.
+    /// One lightweight job fetch per affected job backfills it. A 404/410 job is left
+    /// ALONE — the clip stays ready and simply keeps its placeholder; this must never
+    /// re-enter the poll loop's dead-job handling for finished clips.
+    func backfillMissingPosters() {
+        let missing = clips.filter {
+            $0.status == .ready && ($0.thumbnailURL ?? "").isEmpty && $0.jobId != nil
+        }
+        for (jobId, group) in Dictionary(grouping: missing, by: { $0.jobId! })
+        where !posterBackfillAsked.contains(jobId) {
+            posterBackfillAsked.insert(jobId)
+            let ids = group.map { $0.id }
+            Task {
+                let (maybeResult, _) = await backend.pollClipJobWithStatus(jobId: jobId)
+                guard let jobClips = maybeResult?["clips"] as? [[String: Any]] else { return }
+                var changed = false
+                for jobClip in jobClips {
+                    guard let backendId = UUID(uuidString: jobClip["clip_id"] as? String ?? ""),
+                          ids.contains(backendId),
+                          let idx = clips.firstIndex(where: { $0.id == backendId }),
+                          let thumb = jobClip["thumbnail_url"] as? String, !thumb.isEmpty
+                    else { continue }
+                    clips[idx].thumbnailURL = thumb
+                    changed = true
+                }
+                if changed { save() }
             }
         }
     }

@@ -97,7 +97,15 @@ struct LibraryView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
         .shadow(color: Palette.shadowCool.opacity(0.18), radius: 16, y: 6)
-        .padding(.horizontal, Space.md).padding(.bottom, Space.sm)
+        .padding(.horizontal, Space.md)
+        // ABOVE the floating tab bar, not under it. RootTabView overlays MarqueTabBar on
+        // top of tab content and screens own their clearance (see MarqueTabBar.clearance)
+        // — with only Space.sm here the whole bulk bar rendered BEHIND the tab bar
+        // capsule: invisible, and its taps fell through to the tab bar's Film "+" button.
+        // That was the owner's "select doesn't let me add clips to groups" — the Group
+        // button existed but could never be seen or hit. Reproduced by
+        // .maestro/library-groups.yaml before this padding; green after.
+        .padding(.bottom, MarqueTabBar.clearance + Space.sm)
     }
 
     private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.accent,
@@ -204,8 +212,9 @@ struct ClipsSection: View {
                     }
                     .padding(.top, Space.sm)
                 }
-                // Room so the floating action bar never covers the last row.
-                if selecting { Color.clear.frame(height: 76) }
+                // Room so the floating action bar (now stacked above the tab bar) never
+                // covers the last row.
+                if selecting { Color.clear.frame(height: MarqueTabBar.clearance + 76) }
             }
         }
         .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
