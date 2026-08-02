@@ -118,17 +118,31 @@ name: "B63 — swiper steps"
     id: "onboard.comfort.natural"
 
 
-# --- build 63: CTA deck REMOVED — styleTaste goes straight to the brand mirror ---
+# --- build 63b: swipe DEEP into the deck — cards 1..5 must all show video, not black ---
 - extendedWaitUntil:
-    visible: "onboard.styleTaste.skip"
-    timeout: 20000
-    optional: true
+    visible:
+      id: "swiper.like"
+    timeout: 25000
+- waitForAnimationToEnd:
+    timeout: 5000
+- takeScreenshot: /Users/home/Marque/.shots/deck-card1
+- tapOn:
+    id: "swiper.like"
 - waitForAnimationToEnd:
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-style
+- takeScreenshot: /Users/home/Marque/.shots/deck-card2
 - tapOn:
-    id: "onboard.styleTaste.skip"
-- extendedWaitUntil:
-    visible: "Your brand, in a sentence"
-    timeout: 8000
-- takeScreenshot: /Users/home/Marque/.shots/b63-no-cta-step
+    id: "swiper.pass"
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/deck-card3
+- tapOn:
+    id: "swiper.like"
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/deck-card4
+- tapOn:
+    id: "swiper.like"
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/deck-card5

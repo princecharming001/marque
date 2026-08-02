@@ -34,6 +34,23 @@ DEFAULT_N = 18
 # 4 times. Both constraints trade a little vector spread for a deck that FEELS varied.
 MAX_DURATION_S = 90.0
 MAX_PER_NICHE = 2
+# Yunicorn is a TALKING-HEAD app, so every card must actually BE one. The old gate read
+# `a.get("tier") or "th"`, and `tier` is absent from every anatomy file on disk — so the
+# fallback made it unconditionally true and the deck filled with pure-b-roll reels (owner:
+# "it's showing all kinds of videos"). Measured instead, from the per-shot face data that
+# IS in every record: the share of runtime with a face on screen. The corpus median is
+# 0.44 and a third of it is 0.00 — 0.60 keeps "the creator is on camera for most of it".
+MIN_FACE_SHARE = 0.60
+
+
+def _face_share(a: dict) -> float:
+    shots = a.get("shots") or []
+    dur = float(a.get("duration_s") or 0.0)
+    if not shots or dur <= 0:
+        return 0.0
+    on = sum(float(s.get("t1", 0)) - float(s.get("t0", 0))
+             for s in shots if s.get("face_present"))
+    return max(0.0, min(1.0, on / dur))
 
 
 def _load_candidates() -> list[dict]:
@@ -46,8 +63,10 @@ def _load_candidates() -> list[dict]:
         if a.get("excluded") or a.get("platform") == "local":
             continue
         # b-roll norms only hold for TRUE talking-head reels; the deck teaches editing
-        # taste, so voiceover-over-b-roll reels would muddy every dimension.
-        if (a.get("tier") or "th") != "th":
+        # taste, so voiceover-over-b-roll reels would muddy every dimension — and the
+        # creator is being asked "which edits feel like you", which is meaningless over
+        # footage with no presenter in it.
+        if _face_share(a) < MIN_FACE_SHARE:
             continue
         entry = by_id.get(a["reel_id"])
         if not entry or not (entry.get("video_url_cdn") or "").startswith("http"):

@@ -57,6 +57,18 @@ enum PostingFrequency: String, CaseIterable, Codable, Identifiable {
     case daily = "Daily or more"
     var id: String { rawValue }
     var label: String { rawValue }
+
+    /// Onboarding asks for a weekly NUMBER (build 63 collapsed the two cadence questions
+    /// into one, and its ceiling is no longer 7 — plenty of creators run 14 or 21). This
+    /// keeps the coarse bucket the backend still reads derivable from that number.
+    static func bucket(forWeekly n: Int) -> PostingFrequency {
+        switch n {
+        case ..<2:  return .rarely
+        case 2...3: return .sometimes
+        case 4...5: return .often
+        default:    return .daily
+        }
+    }
 }
 
 enum CreatorBlocker: String, CaseIterable, Codable, Identifiable {

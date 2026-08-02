@@ -16,14 +16,25 @@ import AVFoundation
 @MainActor final class SwiperPlayerPool: ObservableObject {
     private let players = [AVPlayer(), AVPlayer()]
     private var urls: [URL?] = [nil, nil]
-    private var topSlot = 0
     private var loopObservers: [NSObjectProtocol] = []
     /// Bumped on every sync so the card views re-read `top`/`next` (AVPlayer is a
     /// reference type — SwiftUI can't see a role swap on its own).
     @Published private(set) var revision = 0
 
-    var top: AVPlayer { players[topSlot] }
-    var next: AVPlayer { players[1 - topSlot] }
+    /// THE player for a given DECK INDEX — parity, not depth.
+    ///
+    /// This mapping is the whole fix for the "every card after the first is black" bug.
+    /// The pool used to hand out players by DEPTH (`top`/`next`). Depth changes on every
+    /// swipe, and SwiftUI re-renders the stack when `index` changes BEFORE the
+    /// `.onChange(of: index)` that re-syncs the pool — so for one frame the new top card
+    /// was handed the OLD top player while the card behind it was handed the player that
+    /// actually held its video. Both AVPlayers got ripped between two AVPlayerLayers, and
+    /// an AVPlayer renders into exactly ONE layer: whichever lost the race went black.
+    ///
+    /// Keyed on `index % 2`, a card's player identity NEVER changes while it is on
+    /// screen. Advancing the deck only re-points the player belonging to the card that
+    /// just left, whose view is being torn down anyway.
+    func player(forCardIndex i: Int) -> AVPlayer { players[i % 2] }
 
     init() {
         // The deck plays SOUND — the owner's editing-taste swipe is meaningless without
@@ -55,12 +66,11 @@ import AVFoundation
         loopObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
-    /// Point the pool at the current top/next clip. Idempotent — safe to call on every
-    /// render pass.
-    func sync(top newTop: URL?, next newNext: URL?) {
-        // If the preload slot ALREADY holds what's now on top, just swap roles. That's the
-        // entire payoff of preloading: no re-buffer on the swipe the creator just made.
-        if let newTop, urls[1 - topSlot] == newTop { topSlot = 1 - topSlot }
+    /// Point the pool at the deck's current position. Idempotent — safe to call on every
+    /// render pass. Slots follow the SAME parity rule as `player(forCardIndex:)`, so the
+    /// clip a card is showing always lives in the player that card is bound to.
+    func sync(topIndex: Int, top newTop: URL?, next newNext: URL?) {
+        let topSlot = topIndex % 2
         load(slot: topSlot, url: newTop)
         load(slot: 1 - topSlot, url: newNext)
         players[1 - topSlot].pause()
@@ -98,13 +108,23 @@ struct PooledPlayerView: UIViewRepresentable {
         v.layer.cornerRadius = cornerRadius
         v.layer.cornerCurve = .continuous
         v.layer.masksToBounds = true
-        v.backgroundColor = .black
+        // CLEAR, not black: the card draws a poster UNDER this view, so any moment the
+        // player has nothing on screen (dead URL, still buffering, a card that lost its
+        // player) must fall through to that poster instead of an opaque black rectangle.
+        v.backgroundColor = .clear
         return v
     }
 
     func updateUIView(_ v: PlayerHostView, context: Context) {
         if v.playerLayer.player !== player { v.playerLayer.player = player }
         v.layer.cornerRadius = cornerRadius
+    }
+
+    /// Release the player as this card leaves. Without it the outgoing card's layer keeps
+    /// claiming a player the incoming card is binding to, and an AVPlayer renders into
+    /// exactly one layer — the loser draws nothing.
+    static func dismantleUIView(_ v: PlayerHostView, coordinator: ()) {
+        v.playerLayer.player = nil
     }
 
     final class PlayerHostView: UIView {
@@ -186,13 +206,13 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
             // Top 3 only: anything deeper is invisible behind the falloff and would just
             // cost layout. Drawn back-to-front so depth 0 receives the gesture.
             ForEach(visible.reversed(), id: \.1) { depth, i in
-                cardView(cards[i], context(depth: depth))
+                cardView(cards[i], context(depth: depth, cardIndex: i))
                     .frame(width: cardW, height: cardH)
                     .background(Palette.surfaceRaised)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
                         .strokeBorder(Palette.hairline, lineWidth: 1))
-                    .shadow(color: Palette.shadowCool.opacity(0.16), radius: 18, y: 10)
+                    .shadow(color: Palette.shadowCool.opacity(0.09), radius: 12, y: 6)
                     .scaleEffect(depth == 0 ? 1 : (depth == 1 ? 0.97 : 0.94))
                     .offset(y: CGFloat(depth) * 8)
                     .offset(depth == 0 ? offset : .zero)
@@ -217,11 +237,14 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
         return (index..<min(index + 3, cards.count)).enumerated().map { ($0.offset, $0.element) }
     }
 
-    private func context(depth: Int) -> SwiperCardContext {
-        // Re-read on every revision so a role swap in the pool re-renders both faces.
+    private func context(depth: Int, cardIndex: Int) -> SwiperCardContext {
+        // Re-read on every revision so a pool reload re-renders the faces.
         _ = pool.revision
+        // Bound to the CARD, never to the depth — see SwiperPlayerPool.player(forCardIndex:).
+        // Depth still decides WHO gets a player at all (the two-player budget): the top
+        // card plays, the one behind it pre-rolls, everything deeper shows its poster.
         return SwiperCardContext(depth: depth,
-                                 player: depth == 0 ? pool.top : (depth == 1 ? pool.next : nil))
+                                 player: depth <= 1 ? pool.player(forCardIndex: cardIndex) : nil)
     }
 
     private var swipe: some Gesture {
@@ -283,7 +306,7 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
                 .frame(width: size, height: size)
                 .background(Circle().fill(fill))
                 .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
-                .shadow(color: Palette.shadowWarm.opacity(0.08), radius: 10, y: 4)
+                .shadow(color: Palette.shadowWarm.opacity(0.05), radius: 7, y: 3)
         }
         .buttonStyle(PressableStyle())
         .disabled(index >= cards.count)
@@ -326,6 +349,6 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
     private func syncPool() {
         let top = index < cards.count ? videoURL(cards[index]) : nil
         let next = index + 1 < cards.count ? videoURL(cards[index + 1]) : nil
-        pool.sync(top: top, next: next)
+        pool.sync(topIndex: index, top: top, next: next)
     }
 }

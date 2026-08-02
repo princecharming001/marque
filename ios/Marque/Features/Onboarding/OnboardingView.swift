@@ -22,7 +22,7 @@ struct OnboardingView: View {
         // (owner, build 63; may return) — endings default to the pipeline conventions.
         case landing, goal, blocker, whyNow, frequency, method,
              connectAccounts, name, stage, niche, about, knownFor, platform,
-             voiceInterview, voiceSliders, emulate, cameraComfort, pace,
+             voiceInterview, voiceSliders, emulate, cameraComfort,
              styleTaste, mirror, building
 
         /// Quiz-progress dashes cover everything between landing and building.
@@ -78,7 +78,6 @@ struct OnboardingView: View {
             case .voiceSliders:    voiceSlidersStep
             case .emulate:         emulateStep
             case .cameraComfort:   cameraComfortStep
-            case .pace:          paceStep
             case .styleTaste:    styleTasteStep
             case .mirror:        mirrorStep
             case .building:      buildingStep
@@ -223,23 +222,25 @@ struct OnboardingView: View {
         .accessibilityIdentifier("onboard.whyNow.\(w.key)")
     }
 
+    /// THE posting-cadence question — there is exactly one (build 63). Onboarding used to
+    /// ask twice: "how often do you post right now?" here and "pick your weekly pace"
+    /// eleven steps later, which read as the same question asked again. This is the one
+    /// that matters, because `weeklyTarget` is what actually drives the plan
+    /// (AppStore.weekGoal); the old before-picture answer only ever rode along to the
+    /// backend, so it is DERIVED below instead of asked for.
+    ///
+    /// The ceiling is not 7. Serious creators run 2-3 posts a day across platforms, and
+    /// capping the answer at "daily" told them the app wasn't built for their volume.
     private var frequencyStep: some View {
-        scaffold("How often do you post right now?", "No judgment — this is the before picture.") {
+        scaffold("How often do you want to post?", "You can change this anytime.") {
             VStack(spacing: Space.md) {
-                freqCard(.rarely, "OnbIcon-freq-rarely", "tortoise", "rarely")
-                freqCard(.sometimes, "OnbIcon-freq-sometimes", "figure.walk", "sometimes")
-                freqCard(.often, "OnbIcon-freq-often", "hare", "often")
-                freqCard(.daily, "OnbIcon-freq-daily", "flame", "daily")
+                paceCard(3,  "OnbIcon-pace-3", "A strong start — one filming session covers it")
+                paceCard(5,  "OnbIcon-pace-5", "The growth sweet spot for most niches")
+                paceCard(7,  "OnbIcon-pace-7", "Daily presence — maximum compounding")
+                paceCard(14, "OnbIcon-pace-7", "Twice a day — a serious posting operation")
+                paceCard(21, "OnbIcon-pace-7", "Three a day — full content-machine volume")
             }
         }
-    }
-
-    private func freqCard(_ f: PostingFrequency, _ icon: String, _ sf: String, _ idKey: String) -> some View {
-        OptionCard(icon: icon, sfFallback: sf, title: f.rawValue,
-                   selected: store.brand.postingFrequency == f) {
-            selectAndAdvance { store.brand.postingFrequency = f }
-        }
-        .accessibilityIdentifier("onboard.frequency.\(idKey)")
     }
 
     // MARK: - Interstitial A: the method (belief builder)
@@ -588,20 +589,15 @@ struct OnboardingView: View {
         .accessibilityIdentifier("onboard.comfort.\(idKey)")
     }
 
-    private var paceStep: some View {
-        scaffold("Pick your weekly pace", "You can change this anytime.") {
-            VStack(spacing: Space.md) {
-                paceCard(3, "OnbIcon-pace-3", "A strong start — one filming session covers it")
-                paceCard(5, "OnbIcon-pace-5", "The growth sweet spot for most niches")
-                paceCard(7, "OnbIcon-pace-7", "Maximum compounding — daily presence")
-            }
-        }
-    }
-
     private func paceCard(_ n: Int, _ icon: String, _ subtitle: String) -> some View {
         OptionCard(icon: icon, sfFallback: "\(n).circle", title: "\(n) posts a week",
                    subtitle: subtitle, selected: store.brand.weeklyTarget == n) {
-            selectAndAdvance { store.brand.weeklyTarget = n }
+            selectAndAdvance {
+                store.brand.weeklyTarget = n
+                // Keep the coarse bucket the backend still reads in sync rather than
+                // leaving it nil now that nobody is asked for it directly.
+                store.brand.postingFrequency = PostingFrequency.bucket(forWeekly: n)
+            }
         }
         .accessibilityIdentifier("onboard.pace.\(n)")
     }

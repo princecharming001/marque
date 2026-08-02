@@ -87,28 +87,43 @@ struct StyleTasteSwiper: View {
 
     @ViewBuilder private func reelCard(_ reel: StyleDeckReel, _ ctx: SwiperCardContext) -> some View {
         ZStack(alignment: .bottom) {
+            // MEDIA IS DECORATION, NOT LAYOUT. `Color.clear` is what sizes this ZStack, so
+            // the card is exactly the frame the shell gave it. Previously the .fill poster
+            // sized the stack — a portrait thumb scaled to cover a 300x430 card is TALLER
+            // than 430, so the bottom-aligned chip row was pushed below the visible rect
+            // and sliced in half by the clip (owner: "not showing all the information that
+            // should be at the bottom of the reel").
+            //
             // The poster sits UNDER the player at every depth, not as an either/or: it is
             // both the depth-≥2 face (those cards never get a player — that's the whole
-            // two-player budget) and the honest fallback when a clip URL is dead, where a
-            // bare player would paint a black rectangle.
-            AsyncImage(url: URL(string: reel.thumbnailURL)) { img in
-                img.resizable().aspectRatio(contentMode: .fill)
-            } placeholder: {
-                Palette.surfaceSunken
-            }
-            .clipped()
-            if let player = ctx.player {
-                PooledPlayerView(player: player, cornerRadius: Radius.xl)
-            }
-            // Scrim so the attribute chips stay legible over any footage.
-            LinearGradient(colors: [.clear, .black.opacity(0.72)],
-                           startPoint: .center, endPoint: .bottom)
+            // two-player budget) and the honest fallback when a clip URL is dead or still
+            // buffering, where a bare player would paint a black rectangle.
+            Color.clear
+                .overlay {
+                    AsyncImage(url: URL(string: reel.thumbnailURL)) { img in
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    } placeholder: {
+                        Palette.surfaceSunken
+                    }
+                }
+                .overlay { if let player = ctx.player {
+                    PooledPlayerView(player: player, cornerRadius: Radius.xl)
+                } }
+                .clipped()
+            // Owner (build 63): "lighter everything". The old scrim was .black 0.72 from
+            // the CARD MIDPOINT — it darkened half of every reel just to make two chips
+            // legible. The chips now carry their own light pills, so this only needs to
+            // be a shallow foot to seat them: a third of the strength, over a quarter of
+            // the height.
+            LinearGradient(colors: [.clear, .black.opacity(0.24)],
+                           startPoint: .init(x: 0.5, y: 0.74), endPoint: .bottom)
             VStack(alignment: .leading, spacing: Space.sm) {
                 // The WHY: what we measured about this edit, not what the video is about.
                 FlowWrapChips(items: reel.displayAttrs)
                 Text("@\(reel.author) · \(compactNumber(reel.views)) views")
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
+                    .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
             }
             .padding(Space.md)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -246,11 +261,12 @@ struct FlowWrapChips: View {
             ForEach(items.prefix(3), id: \.self) { t in
                 Text(t)
                     .font(Typeface.sans(10, .medium)).tracking(0.2)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Palette.ink)
                     .lineLimit(1)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Capsule().fill(.white.opacity(0.16)))
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.22), lineWidth: 1))
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    // A light pill carries its own contrast, so the card underneath no
+                    // longer needs a heavy scrim to make these readable.
+                    .background(Capsule().fill(.white.opacity(0.92)))
             }
         }
     }

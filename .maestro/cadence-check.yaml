@@ -31,6 +31,11 @@ name: "B63 — swiper steps"
 - extendedWaitUntil:
     visible: "How often do you want to post?"
     timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/b63-cadence-options
+- assertVisible:
+    id: "onboard.pace.14"
+- assertVisible:
+    id: "onboard.pace.21"
 - tapOn:
     id: "onboard.pace.5"
 
@@ -116,19 +121,8 @@ name: "B63 — swiper steps"
 - assertVisible: "How do you feel on camera?"
 - tapOn:
     id: "onboard.comfort.natural"
+- assertNotVisible: "Pick your weekly pace"
 
 
-# --- build 63: CTA deck REMOVED — styleTaste goes straight to the brand mirror ---
-- extendedWaitUntil:
-    visible: "onboard.styleTaste.skip"
-    timeout: 20000
-    optional: true
-- waitForAnimationToEnd:
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-style
-- tapOn:
-    id: "onboard.styleTaste.skip"
-- extendedWaitUntil:
-    visible: "Your brand, in a sentence"
-    timeout: 8000
-- takeScreenshot: /Users/home/Marque/.shots/b63-no-cta-step
+# --- build 63: ONE cadence question, ceiling above 7 ---
+- takeScreenshot: /Users/home/Marque/.shots/b63-cadence
