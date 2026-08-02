@@ -66,6 +66,15 @@ STICKER_STYLE_TOKENS: dict = {}
 CTA_PATTERNS = ("hard_end_card", "text_overlay", "spoken_only")
 # per content-type weights; must sum to 1.0 per row. Identity: hard card always
 # (today's behavior when a card is wanted at all).
+# WITHIN a chosen pattern, which of the 20 templates draws it. Identity weights below
+# reproduce today's pixels exactly (classic card / pill overlay); the CTA study pass
+# (eval/study/cta_style.py) fills real distributions once it has classified how the
+# measured winners' visual CTAs actually look. Ids must exist in cta_styles.json.
+CTA_STYLE_WEIGHTS = {
+    "hard_end_card": {"classic": 1.0},
+    "text_overlay": {"pill": 1.0},
+}
+
 CTA_PATTERN_WEIGHTS = {
     # Winners: 86% NO visual CTA, 8% spoken-only, 5% small overlay, 2% end card.
     # Among plan-WANTED CTAs that maps to spoken-dominant. A creator-built outro

@@ -44,6 +44,14 @@ from app import knowledge as knowledge_mod
 from app import dossier as dossier_mod
 from app import push as push_mod
 from app import conventions as conventions_mod
+from app import cta_styles as cta_styles_mod
+from app import style_profile as style_profile_mod
+
+
+def style_deck_mod_load() -> dict:
+    """The committed swipe deck (built by eval/study/deck_export.py from the measured
+    corpus). Static file: no scrape at request time, and the URLs are durable."""
+    return style_profile_mod._load("style_deck.json")
 from app import higgsfield as higgsfield_mod
 from app import retention as retention_mod
 from app import edit_lint as edit_lint_mod
@@ -515,7 +523,12 @@ def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") ->
     for knob, values in EDIT_KNOBS.items():
         explicit = str(config.get(knob)) if config.get(knob) is not None else None
         if explicit is not None and explicit in values:
-            out["knobs"][knob] = {"value": explicit, "chosen_by": "creator",
+            # A pin that came from the creator's learned STYLE PROFILE is still an
+            # explicit pin (never settled as a bandit arm — settling it would credit
+            # the arm for a choice the bandit didn't make), but it is NOT a per-video
+            # hand pick, and the logs must be able to tell them apart.
+            _src = "profile" if config.get("_knobs_from_profile") else "creator"
+            out["knobs"][knob] = {"value": explicit, "chosen_by": _src,
                                   "propensity": 1.0}
             continue
         props = _knob_propensities(creator_id, knob, values, niche)
@@ -2490,6 +2503,53 @@ async def broll_styles(niche: str = ""):
          "handle": "", "sample": False}
         for opt in _COMPOSITION_STYLE_OPTIONS
     ]}
+
+
+_CTA_DEMO_BASE = _DEMO_BASE.rsplit("/", 1)[0] + "/cta-styles" if _DEMO_BASE else ""
+
+
+@app.get("/v1/cta-styles")
+async def cta_styles_route():
+    """The CTA picker's deck: 20 pre-rendered animated endings plus a first-class
+    "No CTA" card. Ordering is deliberate — "none" leads because 86% of the measured
+    winner corpus ends with no visual CTA at all, and the restrained templates follow
+    before the energetic ones. Each entry plays a real 5s render of that template, so
+    what the creator swipes IS what they get. The picked id returns as
+    config.cta_style_id."""
+    styles = [{
+        "id": cta_styles_mod.NONE_STYLE, "label": "No CTA",
+        "blurb": "Ends clean. Most reels that perform do exactly this.",
+        "cluster": "minimal", "ui_class": "none", "params": [],
+        "video_url": "", "thumbnail_url": "", "sample": False,
+    }]
+    styles += [{
+        "id": s["id"], "label": s["label"], "blurb": s["blurb"],
+        "cluster": s.get("cluster", "minimal"), "ui_class": s.get("ui_class", ""),
+        "params": s.get("params", []),
+        "video_url": f"{_CTA_DEMO_BASE}/{s['id']}.mp4" if _CTA_DEMO_BASE else "",
+        "thumbnail_url": "", "sample": False,
+    } for s in cta_styles_mod.styles()]
+    return {"mode": "live", "styles": styles}
+
+
+@app.get("/v1/style-deck")
+async def style_deck_route():
+    """The editing-taste swiper: a spread of real talking-head reels whose editing we
+    have already MEASURED, so each swipe is a labelled observation of attributes (pace,
+    caption weight, b-roll density...) rather than an opinion about an opaque item.
+    The client folds the session into a style vector (Rocchio) and maps it onto the
+    pipeline knobs. Also carries the archetype list + pre-rendered samples the settings
+    page uses to show "this is how your edits look"."""
+    deck = style_deck_mod_load()
+    return {
+        "deck_version": deck.get("deck_version", 0),
+        "dims": list(style_profile_mod.DIMS),
+        "cold_start": style_profile_mod.COLD_START,
+        "min_swipes": style_profile_mod.MIN_SWIPES,
+        "reels": deck.get("reels") or [],
+        "archetypes": style_profile_mod.archetypes(),
+        "samples": (style_profile_mod._load("style_samples.json") or {}).get("samples") or [],
+    }
 
 
 @app.get("/v1/reels/examples")
@@ -5366,18 +5426,59 @@ async def _run_edit(job_id: str, words: list[dict]):
                 # URL used to get the 90-frame logo card with no logo drawn.
                 _ec_hint["logo_url"] = _logo_url
             retention_hints["end_card"] = _ec_hint
-        # Build 62 (Wave 2): CTA pattern selection. A creator outro ALWAYS forces the
-        # hard card; a plan-authored card gets a deterministic weighted pick across
-        # the convention patterns (identity weights: hard card 1.0 — today's behavior).
+        # v8 CTA precedence. In order:
+        #   1. config.cta_style_id == "none"  -> the creator explicitly wants NO visual
+        #      CTA. Beats a plan-authored card and every weight. (86% of measured
+        #      winners end with no visual CTA, so this is a first-class pick, not a
+        #      degenerate case.)
+        #   2. a chosen template + outro text -> creator CTA; the TEMPLATE'S layout
+        #      class decides the pattern (tail card vs overlay), and it wins even on
+        #      the styles whose skip matrix normally drops end cards.
+        #   3. a chosen template with no outro text -> the style rides the plan's card
+        #      if the plan wanted one; a style alone is not itself a CTA.
+        #   4. no choice at all -> today's behavior: weighted pattern pick, then a
+        #      weighted template pick within that class (identity weights reproduce
+        #      the classic card / pill exactly).
+        _cta_choice = str((job.get("config") or {}).get("cta_style_id") or "").strip()
         _ec = retention_hints.get("end_card") or {}
-        if _ec.get("wanted") and not _ec.get("creator"):
+        if _cta_choice == cta_styles_mod.NONE_STYLE:
+            retention_hints.pop("end_card", None)
+            _ec = {}
+        elif _ec.get("wanted") and _cta_choice and cta_styles_mod.is_known(_cta_choice):
+            _ec["style_id"] = _cta_choice
+            _ec["pattern"] = cta_styles_mod.pattern_for(_cta_choice)
+        elif _ec.get("wanted") and not _ec.get("creator"):
             _weights = conventions_mod.CTA_PATTERN_WEIGHTS.get(
                 retention_hints.get("content_type") or "default",
                 conventions_mod.CTA_PATTERN_WEIGHTS["default"])
             _ec["pattern"] = conventions_mod.pick_weighted(
                 _weights, conventions_mod.seed_fraction(job_id, "cta_pattern"))
+            _style_weights = conventions_mod.CTA_STYLE_WEIGHTS.get(_ec["pattern"])
+            if _style_weights:
+                _ec["style_id"] = conventions_mod.pick_weighted(
+                    _style_weights, conventions_mod.seed_fraction(job_id, "cta_style"))
         elif _ec.get("wanted"):
             _ec["pattern"] = "hard_end_card"
+        # The creator's learned editing-style profile fills any knob they did NOT pick
+        # for this video. Merged UNDER the explicit config, so a per-video tap always
+        # wins; the raw vector rides along for logging + the conventions hooks.
+        _sp_raw = (job.get("config") or {}).get("style_profile")
+        if _sp_raw:
+            try:
+                _vec = style_profile_mod.normalize(
+                    json.loads(_sp_raw) if isinstance(_sp_raw, str) else _sp_raw)
+                _mapped = style_profile_mod.map_profile_to_config(_vec)
+                _cfg = job.get("config") or {}
+                _filled = [k for k in _mapped if k not in _cfg or _cfg.get(k) in (None, "")]
+                for k in _filled:
+                    _cfg[k] = _mapped[k]
+                if any(k in ("meme_intensity", "interrupt_density") for k in _filled):
+                    _cfg["_knobs_from_profile"] = "1"
+                job["config"] = _cfg
+                job["style_profile_applied"] = {"filled": _filled, "vector": _vec}
+                logging.info("style_profile applied: filled=%s", _filled)
+            except Exception as e:
+                logging.warning("style_profile ignored (%s) — using per-job config", e)
         # A7: a theme's own vibe is a FALLBACK under the plan's own vibe choice —
         # never forces music on/off (that's still purely prefs/plan-driven, so
         # clean_creator stays a golden-diff no-op); it only flavors track

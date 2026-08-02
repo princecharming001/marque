@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "note": "Golden profile->config cases. Asserted by test_style_profile.py AND the Swift StyleProfileMapper test; regenerate only with an intentional mapping change.",
+  "cases": [
+    {
+      "name": "cold_start",
+      "profile": {
+        "pace": 0.35,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "name": "all_zero",
+      "profile": {
+        "pace": 0.0,
+        "energy": 0.0,
+        "broll_density": 0.0,
+        "broll_share": 0.0,
+        "broll_overlay_bias": 0.0,
+        "caption_boldness": 0.0,
+        "caption_chunking": 0.0,
+        "title_cta_flair": 0.0
+      },
+      "expect": {
+        "caption_style": "clean",
+        "caption_size": "small",
+        "meme_intensity": "0",
+        "interrupt_density": "calm",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway",
+        "energy": "low"
+      }
+    },
+    {
+      "name": "all_max",
+      "profile": {
+        "pace": 1.0,
+        "energy": 1.0,
+        "broll_density": 1.0,
+        "broll_share": 1.0,
+        "broll_overlay_bias": 1.0,
+        "caption_boldness": 1.0,
+        "caption_chunking": 1.0,
+        "title_cta_flair": 1.0
+      },
+      "expect": {
+        "caption_style": "bold-word",
+        "caption_size": "large",
+        "meme_intensity": "3",
+        "interrupt_density": "dense",
+        "filler_trim": "aggressive",
+        "broll_mode": "panel",
+        "broll_coverage": "full",
+        "energy": "high"
+      }
+    },
+    {
+      "name": "fast_bold",
+      "profile": {
+        "pace": 0.9,
+        "energy": 0.8,
+        "broll_density": 0.3,
+        "broll_share": 0.2,
+        "broll_overlay_bias": 0.2,
+        "caption_boldness": 0.85,
+        "caption_chunking": 0.8,
+        "title_cta_flair": 0.5
+      },
+      "expect": {
+        "caption_style": "bold-word",
+        "caption_size": "large",
+        "meme_intensity": "3",
+        "interrupt_density": "dense",
+        "filler_trim": "aggressive",
+        "broll_mode": "cutaway",
+        "energy": "high"
+      }
+    },
+    {
+      "name": "calm_documentary",
+      "profile": {
+        "pace": 0.15,
+        "energy": 0.25,
+        "broll_density": 0.5,
+        "broll_share": 0.55,
+        "broll_overlay_bias": 0.75,
+        "caption_boldness": 0.1,
+        "caption_chunking": 0.1,
+        "title_cta_flair": 0.1
+      },
+      "expect": {
+        "caption_style": "clean",
+        "caption_size": "small",
+        "meme_intensity": "0",
+        "interrupt_density": "calm",
+        "filler_trim": "standard",
+        "broll_mode": "panel",
+        "broll_coverage": "full",
+        "energy": "low"
+      }
+    },
+    {
+      "name": "broll_heavy_overlay",
+      "profile": {
+        "pace": 0.5,
+        "energy": 0.5,
+        "broll_density": 0.9,
+        "broll_share": 0.7,
+        "broll_overlay_bias": 0.9,
+        "caption_boldness": 0.4,
+        "caption_chunking": 0.4,
+        "title_cta_flair": 0.4
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "panel",
+        "broll_coverage": "full"
+      }
+    },
+    {
+      "name": "boundary_bold_060_chunk_060",
+      "profile": {
+        "pace": 0.35,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.6,
+        "caption_chunking": 0.6,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "bold-word",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "name": "boundary_pace_060",
+      "profile": {
+        "pace": 0.6,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "aggressive",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "name": "boundary_pace_033",
+      "profile": {
+        "pace": 0.33,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "name": "boundary_overlay_035",
+      "profile": {
+        "pace": 0.35,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.35,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway"
+      }
+    },
+    {
+      "name": "boundary_overlay_060",
+      "profile": {
+        "pace": 0.35,
+        "energy": 0.45,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.6,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "panel"
+      }
+    },
+    {
+      "name": "energy_high",
+      "profile": {
+        "pace": 0.35,
+        "energy": 0.7,
+        "broll_density": 0.2,
+        "broll_share": 0.15,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.3,
+        "title_cta_flair": 0.15
+      },
+      "expect": {
+        "caption_style": "clean",
+        "meme_intensity": "1",
+        "interrupt_density": "standard",
+        "filler_trim": "standard",
+        "broll_mode": "cutaway",
+        "energy": "high"
+      }
+    }
+  ]
+}

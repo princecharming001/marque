@@ -1,0 +1,127 @@
+{
+  "bank_version": 1,
+  "generated_at": "2026-08-02T02:42:40+00:00",
+  "cta_styles_sha": "e36b428f1de86d15ec2f70c0d63da6134857cca09fb4adeed572415fdead816c",
+  "previews": [
+    {
+      "id": "classic",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/classic.mp4",
+      "bytes": 240366,
+      "duration_s": 5.056
+    },
+    {
+      "id": "paper_press",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/paper_press.mp4",
+      "bytes": 247964,
+      "duration_s": 5.056
+    },
+    {
+      "id": "knockout",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/knockout.mp4",
+      "bytes": 237372,
+      "duration_s": 5.056
+    },
+    {
+      "id": "follow_mimic",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/follow_mimic.mp4",
+      "bytes": 236792,
+      "duration_s": 5.056
+    },
+    {
+      "id": "card_flip",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/card_flip.mp4",
+      "bytes": 241293,
+      "duration_s": 5.056
+    },
+    {
+      "id": "credits",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/credits.mp4",
+      "bytes": 227252,
+      "duration_s": 5.056
+    },
+    {
+      "id": "pill",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/pill.mp4",
+      "bytes": 228788,
+      "duration_s": 5.056
+    },
+    {
+      "id": "handle_reveal",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/handle_reveal.mp4",
+      "bytes": 227651,
+      "duration_s": 5.056
+    },
+    {
+      "id": "bar_sweep",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/bar_sweep.mp4",
+      "bytes": 230194,
+      "duration_s": 5.056
+    },
+    {
+      "id": "serif_line",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/serif_line.mp4",
+      "bytes": 229235,
+      "duration_s": 5.056
+    },
+    {
+      "id": "typewriter",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/typewriter.mp4",
+      "bytes": 228779,
+      "duration_s": 5.056
+    },
+    {
+      "id": "blur_in",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/blur_in.mp4",
+      "bytes": 228430,
+      "duration_s": 5.056
+    },
+    {
+      "id": "scale_pop",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/scale_pop.mp4",
+      "bytes": 230371,
+      "duration_s": 5.056
+    },
+    {
+      "id": "underline_sweep",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/underline_sweep.mp4",
+      "bytes": 229553,
+      "duration_s": 5.056
+    },
+    {
+      "id": "corner_tag",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/corner_tag.mp4",
+      "bytes": 227803,
+      "duration_s": 5.056
+    },
+    {
+      "id": "progress_follow",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/progress_follow.mp4",
+      "bytes": 228319,
+      "duration_s": 5.056
+    },
+    {
+      "id": "part_two",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/part_two.mp4",
+      "bytes": 229845,
+      "duration_s": 5.056
+    },
+    {
+      "id": "arrow_nudge",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/arrow_nudge.mp4",
+      "bytes": 229755,
+      "duration_s": 5.056
+    },
+    {
+      "id": "neon_pulse",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/neon_pulse.mp4",
+      "bytes": 231148,
+      "duration_s": 5.056
+    },
+    {
+      "id": "glitch",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/glitch.mp4",
+      "bytes": 229372,
+      "duration_s": 5.056
+    }
+  ]
+}
