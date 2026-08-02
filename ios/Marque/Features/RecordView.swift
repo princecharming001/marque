@@ -73,11 +73,26 @@ struct RecordView: View {
     @State private var visibleMimicIds: Set<String> = []
     @State private var failedMimicIds: Set<String> = []
     @State private var referenceReel: ReelItem? = nil
-    // Build 61: the b-roll look, the meme dial and the caption treatment moved OUT of this
-    // screen and into Profile → Editing style (store.editPrefs). They were per-video
-    // questions asked on every single take for answers that never changed — and the same
-    // dials lived in three places. `brollConfig()` now reads them straight off editPrefs,
-    // so the wire payload is unchanged; only who answers them moved.
+    // Build 62 walk-back: the b-roll look, the meme dial and the caption treatment are
+    // BACK on this screen as per-video pickers (the build-61 move to Profile → Editing
+    // style made them standing-only; the owner reversed that). The standing dials survive
+    // as the DEFAULTS: each picker is seeded from store.editPrefs once (styleSeeded, same
+    // guard pattern as ctaSeeded), and a pick here wins for THIS video only — nothing on
+    // this screen writes back to the profile.
+    @State private var styleSeeded = false
+    // B-ROLL STYLE picker: how much cutaway coverage the creator wants (full/balanced/
+    // minimal/none), each option demonstrated by a real example reel. The pick drives the
+    // edit via config.broll_coverage + the b-roll toggle ("none" switches cutaways off).
+    @State private var brollStyles: [BrollStyleOption] = []
+    @State private var selectedBrollStyle: String = "cutaway"
+    // v4 gen-z dial: how meme-heavy the edit should be (0 off · 1 subtle · 2 memey ·
+    // 3 brainrot). Drives config.meme_intensity → meme cue mandate + caps server-side.
+    @State private var memeLevel: Double = Double(SubmitConfig.defaultMemeIntensity)
+    // Build 54: pre-submit caption treatment. nil = "Auto" (the AI plan keeps choosing) —
+    // config keys are sent ONLY on an explicit pick so the planner's taste isn't silently
+    // overridden on every job. The picked style also steers the hook TITLE block server-side.
+    @State private var captionStyleChoice: String? = nil     // clean | bold-word | karaoke
+    @State private var captionSizeChoice: String? = nil      // small | medium | large
 
     enum Phase { case ready, recording, paused, stitching, recorded, analyzing, brief, making }
 
@@ -386,16 +401,19 @@ struct RecordView: View {
                             .foregroundStyle(.white.opacity(0.6))
                             .frame(maxWidth: .infinity, alignment: .center)
                         formatGrid
-                        // Build 61: react source is gated on the STANDING composition
-                        // choice now that the per-video b-roll picker is gone.
-                        if liveScript.style == VideoStyle.duetSplit.rawValue
-                            || store.editPrefs.brollStyle == "split_screen" {
+                        mimicSection
+                        if liveScript.style == VideoStyle.duetSplit.rawValue || selectedBrollStyle == "split_screen" {
                             reactSourceField
                         }
-                        // Build 61: the only per-video craft question left. Punch-ins and
-                        // music are still SUBMITTED (via editFormat.defaultToggles) — they
-                        // just aren't asked, because nobody was flipping them; the meme /
-                        // caption / b-roll dials moved to Profile → Editing style.
+                        // Build 62 walk-back: the per-video craft questions are back —
+                        // meme dial, caption look, b-roll style (above) — each seeded
+                        // from the standing dials in Profile → Editing style, which stay
+                        // the DEFAULTS. Punch-ins and music remain unasked (still
+                        // SUBMITTED via editFormat.defaultToggles — nobody flipped them).
+                        if briefCapability("broll") {
+                            memeSliderRow
+                        }
+                        captionStyleSection        // caption look BEFORE the render is spent
                         ctaChooserSection
                         // prompt: gives the placeholder a legible color — the plain title
                         // form renders it in system gray, unreadable on the dark overlay.
@@ -421,7 +439,9 @@ struct RecordView: View {
                         lastSeededFormat = editFormat
                         syncBrollToggle()      // the picked b-roll style survives a format change
                     }
+                    await loadBrollStyles()
                 }
+                .onAppear { seedPerVideoStyle() }
                 .task { await loadCapabilities() }
                 HStack(spacing: Space.lg) {
                     // Multi-take: keep everything filmed so far and add one more take.
@@ -597,7 +617,198 @@ struct RecordView: View {
         }
     }
 
-    // MARK: Build 61 — the CTA chooser (the only per-video craft question left)
+    @ViewBuilder private var mimicSection: some View {
+        // The b-roll style picker belongs to "Talking Head + B-roll" only — plain Talking Head
+        // has no b-roll, so the "what kind of b-roll" choice would be meaningless there.
+        if editFormat == .talkingHeadBroll, !brollStyles.isEmpty {
+            VStack(alignment: .leading, spacing: Space.xs) {
+                Text("B-ROLL STYLE — PICK A LOOK")
+                    .font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(.white.opacity(0.5))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Space.sm) {
+                        ForEach(Array(brollStyles.enumerated()), id: \.element.id) { i, s in
+                            brollStyleCard(s, index: i)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func brollStyleCard(_ s: BrollStyleOption, index: Int) -> some View {
+        let selected = selectedBrollStyle == s.id
+        // The card SHOWS the style via a self-rendered demo clip through this exact
+        // composition (cutaway/panel/card/green-screen/split-screen) — a pixel-accurate
+        // preview of the treatment, not a mimicked creator reel. Picking the card sends
+        // config.broll_mode or config.composition_style, which forces that treatment.
+        let playable = !s.videoURL.isEmpty && !failedMimicIds.contains(s.id)
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                selectedBrollStyle = s.id
+                syncBrollToggle()
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                ZStack(alignment: .topTrailing) {
+                    if playable, visibleMimicIds.contains(s.id), let url = URL(string: s.videoURL) {
+                        FailableVideoPlayer(url: url, muted: true, showsControls: false,
+                                            onFailure: { failedMimicIds.insert(s.id) })
+                        .frame(width: 118, height: 148)
+                        .allowsHitTesting(false)         // the CARD is the tap target
+                    } else {
+                        AsyncImage(url: URL(string: s.thumbnailURL)) { img in
+                            ZStack {
+                                img.resizable().aspectRatio(contentMode: .fill)
+                                    .blur(radius: 12).opacity(0.55)
+                                img.resizable().aspectRatio(contentMode: .fit)
+                            }
+                        } placeholder: {
+                            Rectangle().fill(Color.white.opacity(0.08))
+                                .overlay(Image(systemName: "photo.on.rectangle.angled")
+                                    .foregroundStyle(.white.opacity(0.3)))
+                        }
+                        .frame(width: 118, height: 148).clipped()
+                    }
+                    if selected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(Palette.accent)
+                            .background(Circle().fill(.white).padding(2))
+                            .padding(5)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                .onAppear { visibleMimicIds.insert(s.id) }
+                .onDisappear { visibleMimicIds.remove(s.id) }
+                Text(s.label)                            // the B-ROLL style — this is the choice
+                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
+                    .lineLimit(1)
+                Text(s.blurb)                            // what the style means for the cut
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
+            }
+            .frame(width: 118)
+            .padding(4)
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("record.brollStyle.\(index)")
+    }
+
+    private func loadBrollStyles() async {
+        let opts = await store.backend.brollStyles(niche: store.brand.niche)
+        guard !Task.isCancelled else { return }
+        brollStyles = opts
+    }
+
+    // MARK: Per-video caption treatment (restored from build 61's pre-declutter screen)
+
+    /// WYSIWYG caption picker: each style is a mini 9:16 video frame with the caption
+    /// rendered at its REAL position (lower third), so the choice reads as "this is what
+    /// my video will look like" instead of an abstract text chip. Seeded from the standing
+    /// dial (Profile → Editing style) — "Auto" only when the profile has no opinion — and
+    /// a pick here wins for THIS video only.
+    private var captionStyleSection: some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text("CAPTIONS").font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(.white.opacity(0.5))
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.sm) {
+                    captionFrameCard(nil, label: "Auto") {
+                        VStack(spacing: 2) {
+                            Image(systemName: "wand.and.stars")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.85))
+                            Text("AI picks").font(.system(size: 8, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    captionFrameCard("clean", label: "Clean") {
+                        Text("your words").font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
+                    }
+                    captionFrameCard("bold-word", label: "Bold") {
+                        VStack(spacing: 1) {
+                            Text("YOUR").font(.system(size: 10, weight: .black)).foregroundStyle(.white)
+                            Text("WORDS").font(.system(size: 10, weight: .black)).foregroundStyle(Palette.accent)
+                        }
+                    }
+                    captionFrameCard("karaoke", label: "Karaoke") {
+                        HStack(spacing: 2) {
+                            Text("your").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.ink)
+                                .padding(.horizontal, 3).padding(.vertical, 1)
+                                .background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 2))
+                            Text("words").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
+                        }
+                    }
+                }
+            }
+            // Size = literal type scale: three "Aa" at their relative sizes, not S/M/L
+            // circles disconnected from what they resize.
+            HStack(spacing: Space.sm) {
+                Text("Size").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                ForEach([(11.0, "small"), (14.0, "medium"), (17.0, "large")], id: \.1) { pt, v in
+                    let active = captionSizeChoice == v
+                    Button {
+                        withAnimation(.easeOut(duration: 0.12)) {
+                            captionSizeChoice = active ? nil : v
+                        }
+                    } label: {
+                        Text("Aa").font(.system(size: pt, weight: active ? .bold : .medium))
+                            .foregroundStyle(active ? Palette.ink : .white)
+                            .frame(width: 40, height: 32)
+                            .background(active ? Palette.onInk : Color.white.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("record.capSize.\(v)")
+                }
+                if captionSizeChoice == nil {
+                    Text("Auto").font(AppFont.caption).foregroundStyle(.white.opacity(0.35))
+                }
+            }
+        }
+    }
+
+    /// A mini 9:16 "video frame" chip: faint head silhouette up top implies the footage,
+    /// the caption preview sits at the real lower-third position.
+    @ViewBuilder private func captionFrameCard(_ id: String?, label: String,
+                                               @ViewBuilder preview: () -> some View) -> some View {
+        let active = captionStyleChoice == id
+        Button {
+            withAnimation(.easeOut(duration: 0.12)) { captionStyleChoice = id }
+        } label: {
+            VStack(spacing: 4) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.black.opacity(0.55)],
+                                             startPoint: .top, endPoint: .bottom))
+                    // faint speaker silhouette — reads as "your video", never as content
+                    Circle().fill(Color.white.opacity(0.10))
+                        .frame(width: 20, height: 20)
+                        .offset(y: -16)
+                    preview()
+                        .frame(maxWidth: 56)
+                        .minimumScaleFactor(0.6)
+                        .offset(y: 18)
+                }
+                .frame(width: 62, height: 96)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
+                                  lineWidth: active ? 2 : 1))
+                Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
+                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("record.capStyle.\(id ?? "auto")")
+    }
+
+    // MARK: Build 61 — the CTA chooser (per-video ending)
 
     /// One-tap endings: the "None" tile, the creator's saved CTA library (built by the
     /// onboarding endings swiper), and a way into the library editor. Each tile is a
@@ -724,33 +935,56 @@ struct RecordView: View {
         briefToggles.broll = (editFormat == .talkingHeadBroll)
     }
 
-    /// The per-job `config` — now purely a projection of the creator's standing dials
-    /// (Profile → Editing style) plus the one ending they picked for this take. The KEY SET
-    /// is unchanged from build 54; only the source of the values moved, so no backend
-    /// change rides with this. See SubmitConfig for why the mapping lives outside the view.
+    /// Seed the per-video pickers from the standing dials (Profile → Editing style)
+    /// exactly once — re-entering the .recorded screen (add-a-take, honest submit-failure
+    /// return) must not wipe this video's picks. Same guard pattern as ctaSeeded.
+    private func seedPerVideoStyle() {
+        guard !styleSeeded else { return }
+        styleSeeded = true
+        selectedBrollStyle = store.editPrefs.brollStyle ?? "cutaway"
+        memeLevel = Double(store.editPrefs.memeIntensity ?? SubmitConfig.defaultMemeIntensity)
+        captionStyleChoice = store.editPrefs.captionStyle?.rawValue
+        captionSizeChoice = store.editPrefs.captionSize?.rawValue
+    }
+
+    /// The standing dials with THIS video's picks overlaid — what actually submits, so a
+    /// pick on the record screen always wins over the profile default. Until the .recorded
+    /// screen has seeded the pickers (the multi-import instant path never shows it), the
+    /// standing prefs pass through untouched. Never written back to the store: the profile
+    /// page stays the only place a DEFAULT changes.
+    private func effectiveEditPrefs() -> EditPrefs {
+        var prefs = store.editPrefs
+        guard styleSeeded else { return prefs }
+        prefs.brollStyle = selectedBrollStyle
+        prefs.memeIntensity = Int(memeLevel)
+        prefs.captionStyle = captionStyleChoice.flatMap(CaptionStyle.init(rawValue:))
+        prefs.captionSize = captionSizeChoice.flatMap(CaptionSize.init(rawValue:))
+        return prefs
+    }
+
+    /// The per-job `config` — the creator's standing dials with this take's per-video
+    /// picks overlaid, plus the one ending they picked. The KEY SET is unchanged from
+    /// build 54; see SubmitConfig for why the mapping lives outside the view.
     private func brollConfig() -> [String: String]? {
-        SubmitConfig.build(editFormat: editFormat, prefs: store.editPrefs,
+        SubmitConfig.build(editFormat: editFormat, prefs: effectiveEditPrefs(),
                            cta: chosenCTA, isPro: Entitlements.shared.isPro)
     }
 
     /// v4 gen-z dial: Off · Subtle · Memey · Brainrot. A discrete 4-stop slider — how
     /// culturally unhinged the b-roll gets (meme frequency + reclassification server-side).
-    /// Build 61: the .recorded screen no longer shows this (the dial is standing, in
-    /// Profile → Editing style). It survives ONLY for the legacy brief-approve path, now
-    /// bound straight to editPrefs so both screens can never disagree about the value.
+    /// Per-video again (build-62 walk-back): bound to memeLevel, which seeds from the
+    /// standing dial and wins over it for this job only. Shared by the .recorded screen
+    /// and the legacy brief-approve path, so the two can never disagree about the value.
     private var memeSliderRow: some View {
-        let level = Binding<Double>(
-            get: { Double(store.editPrefs.memeIntensity ?? SubmitConfig.defaultMemeIntensity) },
-            set: { store.editPrefs.memeIntensity = Int($0); store.save() })
-        return VStack(alignment: .leading, spacing: Space.xs) {
+        VStack(alignment: .leading, spacing: Space.xs) {
             HStack {
                 Text("MEME ENERGY").font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(.white.opacity(0.6))
                 Spacer(minLength: Space.md)
-                Text(MemeEnergy.names[Int(level.wrappedValue)])
+                Text(MemeEnergy.names[Int(memeLevel)])
                     .font(AppFont.caption).foregroundStyle(Palette.accent)
             }
-            Slider(value: level, in: 0...3, step: 1)
+            Slider(value: $memeLevel, in: 0...3, step: 1)
                 .tint(Palette.accent)
                 .accessibilityIdentifier("record.memeLevel")
         }

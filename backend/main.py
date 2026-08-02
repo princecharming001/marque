@@ -7,6 +7,7 @@ otherwise, so the whole surface is testable with zero keys. Prompt quality lives
 from __future__ import annotations
 
 import os
+import pathlib
 import json
 import math
 import re
@@ -2565,7 +2566,23 @@ async def cta_styles_route():
         "video_url": f"{_CTA_DEMO_BASE}/{s['id']}.mp4" if _CTA_DEMO_BASE else "",
         "thumbnail_url": "", "sample": False,
     } for s in cta_styles_mod.styles()]
-    return {"mode": "live", "styles": styles}
+    # v2 (owner directive, build 63): the ONBOARDING SWIPER shows a curated 5-card deck —
+    # each card a distinct CTA (its own copy, its own music, generated cinematic base)
+    # rather than 20 template variations of "Follow for more". `deck` carries the cards;
+    # the full `styles` list above still backs the Manage/library sheet. A backend
+    # without the manifest simply omits `deck` and old clients ignore it.
+    deck = []
+    try:
+        _m = json.loads((pathlib.Path(__file__).parent / "assets" / "cta_deck_v2.json").read_text())
+        deck = [{
+            "id": e["style_id"], "label": e["label"], "text": e.get("text", ""),
+            "blurb": e.get("blurb", ""), "video_url": e.get("video_url", ""),
+        } for e in _m.get("entries", []) if e.get("video_url")]
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logging.warning("[cta] deck v2 manifest unreadable: %s", e)
+    return {"mode": "live", "styles": styles, "deck": deck}
 
 
 @app.get("/v1/style-deck")

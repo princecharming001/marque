@@ -9,6 +9,11 @@ import SwiftUI
 // creator's current profile, and — at the bottom — the literal config the pipeline will be
 // sent. Dials in the middle. That ordering is deliberate: it makes the abstract vector
 // ("caption_boldness 0.42") answerable in the only terms that matter — what comes out.
+//
+// Visual language (build 62 polish): editorial kicker + Fraunces title, hero sample reel
+// framed like a poster (rounded, hairline, soft warm shadow) on a raised card, then each
+// dial group as a SectionLabel-headed card with its explanatory caption in textTertiary
+// and a consistent Space.md inner grid.
 struct EditingStyleSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -32,6 +37,7 @@ struct EditingStyleSheet: View {
         return NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
+                    header
                     samplePlayer
                     captionsSection
                     fillerSection
@@ -40,10 +46,12 @@ struct EditingStyleSheet: View {
                     resolvedSection
                     retakeSection
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding()
+                .padding(.top, Space.lg)
+                .padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Editing style")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
@@ -82,10 +90,26 @@ struct EditingStyleSheet: View {
         }
     }
 
-    // MARK: - Sample player
+    // MARK: - Header (Library's kicker + serif title treatment)
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("YOUR SIGNATURE CUT")
+                .font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(Palette.textTertiary)
+            Text("Editing style")
+                .font(Typeface.display(34)).tracking(-1)
+                .foregroundStyle(Palette.textPrimary)
+            Text("Set it once — every edit Yunicorn cuts for you starts here.")
+                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .padding(.top, 2)
+        }
+    }
+
+    // MARK: - Sample player (hero)
 
     @ViewBuilder private var samplePlayer: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(spacing: Space.md) {
             ZStack {
                 RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                     .fill(Palette.surfaceSunken)
@@ -107,19 +131,26 @@ struct EditingStyleSheet: View {
             .frame(width: 180, height: 320)
             .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 1))
-            .frame(maxWidth: .infinity, alignment: .center)
+            .shadow(color: Palette.shadowWarm.opacity(0.14), radius: 18, x: 0, y: 10)
 
-            VStack(spacing: 2) {
+            VStack(spacing: Space.xs) {
                 Text("CLOSEST MATCH TO YOUR STYLE")
                     .font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(Palette.textTertiary)
                 if let match {
                     Text(match.archetype.name)
-                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .font(Typeface.display(20, .semibold)).tracking(Track.title)
+                        .foregroundStyle(Palette.textPrimary)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .center)
         }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, Space.lg)
+        .background(Palette.surfaceRaised)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
     }
 
     // MARK: - Captions
@@ -131,13 +162,14 @@ struct EditingStyleSheet: View {
                             subtitle: "Burn word-timed captions into every clip.",
                             isOn: $store.editPrefs.autoCaptions)
                 .accessibilityIdentifier("editingStyle.autoCaptions")
+                .padding(.horizontal, Space.md).padding(.vertical, 13)
 
-            Divider()
+            cardDivider
 
             // WYSIWYG picker (moved from the record screen): each style is a mini 9:16
             // frame with the caption at its REAL lower-third position, so the choice reads
             // as "this is what my video looks like" rather than an abstract word.
-            VStack(alignment: .leading, spacing: Space.sm) {
+            VStack(alignment: .leading, spacing: Space.md) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Space.sm) {
                         captionFrameCard(nil, label: "Auto") {
@@ -197,7 +229,7 @@ struct EditingStyleSheet: View {
                     }
                 }
             }
-            .padding(.horizontal, Space.md).padding(.vertical, 10)
+            .padding(Space.md)
         }
     }
 
@@ -246,17 +278,14 @@ struct EditingStyleSheet: View {
 
     private var fillerSection: some View {
         @Bindable var store = store
-        return group("Filler") {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                Text("How hard to cut the ums, restarts and dead air.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                MarqueSegmented(options: FillerTrim.allCases.map(\.label),
-                                index: Binding(
-                                    get: { FillerTrim.allCases.firstIndex(of: store.editPrefs.fillerTrim) ?? 0 },
-                                    set: { store.editPrefs.fillerTrim = FillerTrim.allCases[$0] }))
-                    .accessibilityIdentifier("editingStyle.fillerTrim")
-            }
-            .padding(.horizontal, Space.md).padding(.vertical, 10)
+        return group("Filler",
+                     caption: "How hard to cut the ums, restarts and dead air.") {
+            MarqueSegmented(options: FillerTrim.allCases.map(\.label),
+                            index: Binding(
+                                get: { FillerTrim.allCases.firstIndex(of: store.editPrefs.fillerTrim) ?? 0 },
+                                set: { store.editPrefs.fillerTrim = FillerTrim.allCases[$0] }))
+                .accessibilityIdentifier("editingStyle.fillerTrim")
+                .padding(Space.md)
         }
     }
 
@@ -264,17 +293,14 @@ struct EditingStyleSheet: View {
 
     @ViewBuilder private var brollSection: some View {
         if !brollStyles.isEmpty {
-            group("B-roll style") {
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    Text("What a cutaway looks like when your edit calls for one.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Space.sm) {
-                            ForEach(brollStyles) { s in brollCard(s) }
-                        }
+            group("B-roll style",
+                  caption: "What a cutaway looks like when your edit calls for one.") {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: Space.sm) {
+                        ForEach(brollStyles) { s in brollCard(s) }
                     }
+                    .padding(Space.md)
                 }
-                .padding(.horizontal, Space.md).padding(.vertical, 10)
             }
         }
     }
@@ -329,11 +355,11 @@ struct EditingStyleSheet: View {
         let level = Binding<Double>(
             get: { Double(store.editPrefs.memeIntensity ?? SubmitConfig.defaultMemeIntensity) },
             set: { store.editPrefs.memeIntensity = Int($0) })
-        return group("Meme energy") {
+        return group("Meme energy",
+                     caption: "How culturally unhinged the cutaways get.") {
             VStack(alignment: .leading, spacing: Space.sm) {
                 HStack {
-                    Text("How culturally unhinged the cutaways get.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    Text("Level").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     Spacer(minLength: Space.md)
                     Text(MemeEnergy.name(Int(level.wrappedValue)))
                         .font(AppFont.callout).foregroundStyle(Palette.accent)
@@ -342,7 +368,7 @@ struct EditingStyleSheet: View {
                     .tint(Palette.ink)
                     .accessibilityIdentifier("editingStyle.memeLevel")
             }
-            .padding(.horizontal, Space.md).padding(.vertical, 10)
+            .padding(Space.md)
         }
     }
 
@@ -361,22 +387,18 @@ struct EditingStyleSheet: View {
         explicit["filler_trim"] = prefs.fillerTrim.rawValue
         let keys = Set(mapped.keys).union(explicit.keys).sorted()
 
-        return group("What gets sent") {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                Text(store.editPrefs.styleProfile == nil
-                     ? "You haven't taken the taste quiz — these are the proven defaults."
-                     : "Your taste, resolved into the settings your editor actually receives. A dial you set by hand always wins.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-                FlowWrap(spacing: 6) {
-                    ForEach(keys, id: \.self) { k in
-                        // `explicit` wins the display exactly the way it wins on the wire.
-                        resolvedChip(key: k, value: explicit[k] ?? mapped[k] ?? "",
-                                     byHand: explicit[k] != nil)
-                    }
+        return group("What gets sent",
+                     caption: store.editPrefs.styleProfile == nil
+                        ? "You haven't taken the taste quiz — these are the proven defaults."
+                        : "Your taste, resolved into the settings your editor actually receives. A dial you set by hand always wins.") {
+            FlowWrap(spacing: 6) {
+                ForEach(keys, id: \.self) { k in
+                    // `explicit` wins the display exactly the way it wins on the wire.
+                    resolvedChip(key: k, value: explicit[k] ?? mapped[k] ?? "",
+                                 byHand: explicit[k] != nil)
                 }
             }
-            .padding(.horizontal, Space.md).padding(.vertical, 10)
+            .padding(Space.md)
         }
     }
 
@@ -396,7 +418,7 @@ struct EditingStyleSheet: View {
     // MARK: - Retake
 
     private var retakeSection: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             GhostButton(title: "Retake the taste quiz", systemImage: "arrow.counterclockwise") {
                 showRetake = true
             }
@@ -408,6 +430,7 @@ struct EditingStyleSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .padding(.top, Space.xs)
     }
 
     private var retakeSheet: some View {
@@ -439,17 +462,32 @@ struct EditingStyleSheet: View {
 
     // MARK: - Chrome
 
+    /// Inset hairline between rows inside a card.
+    private var cardDivider: some View {
+        Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+    }
+
+    /// Kicker label (+ optional explanatory caption in textTertiary) above a white card
+    /// with hairline stroke and soft warm shadow — the same group chrome as Settings.
     @ViewBuilder
-    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title.uppercased())
-                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                .padding(.bottom, Space.sm)
-            VStack(spacing: 0) { content() }
+    private func group<Content: View>(_ title: String, caption: String? = nil,
+                                      @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            VStack(alignment: .leading, spacing: 4) {
+                SectionLabel(text: title)
+                if let caption {
+                    Text(caption)
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            VStack(alignment: .leading, spacing: 0) { content() }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Palette.surfaceRaised)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                     .strokeBorder(Palette.hairline, lineWidth: 1))
+                .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 14, x: 0, y: 6)
         }
     }
 }

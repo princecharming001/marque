@@ -1,7 +1,9 @@
 import Foundation
 
-// The submit-time `config` dict, as a PURE function of the creator's standing prefs plus
-// the one per-video choice the record screen still asks for (the CTA).
+// The submit-time `config` dict, as a PURE function of an EditPrefs value plus the CTA
+// picked for the take. The caller decides what those prefs ARE: RecordView overlays the
+// per-video picks from the .recorded screen onto the standing dials (Profile → Editing
+// style), so a pick made for one video wins over the profile default without touching it.
 //
 // WHY IT LIVES HERE AND NOT INSIDE RecordView
 // This dict IS the wire contract with the edit pipeline — every key is read by name on the

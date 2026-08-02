@@ -10,6 +10,7 @@ import { DuetSplit } from "./compositions/DuetSplit";
 import { SourcePip } from "./compositions/SourcePip";
 import { CompositionProps, planDuration } from "./types";
 import { CtaPreview } from "./compositions/CtaPreview";
+import { CtaPreviewV2 } from "./compositions/CtaPreviewV2";
 
 // durationInFrames is resolved per-render from the plan's total_frames (the post-cut
 // output length) via calculateMetadata — a fixed 720 would either pad short edits with a
@@ -42,5 +43,11 @@ export const RemotionRoot: React.FC = () => (
       fps={30} width={1080} height={1920} durationInFrames={150}
       defaultProps={{ styleId: "classic", text: "Follow for more",
                       handle: "@yourname", logoUrl: null }} />
+    {/* v2 swiper cards: generated base video + real template + music bed
+        (scripts/gen_cta_deck_v2.py). Also not a render target for real jobs. */}
+    <Composition id="Marque-CtaPreviewV2" component={CtaPreviewV2}
+      fps={30} width={1080} height={1920} durationInFrames={150}
+      defaultProps={{ styleId: "pill", text: "Save this for later", handle: "",
+                      logoUrl: null, videoSrc: "", audioSrc: "" }} />
   </>
 );

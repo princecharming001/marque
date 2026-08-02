@@ -1,0 +1,55 @@
+{
+  "deck_version": 1,
+  "entries": [
+    {
+      "style_id": "part_two",
+      "label": "Part two tease",
+      "text": "Follow for part 2",
+      "handle": "",
+      "blurb": "Neon-lit tease that promises the next video.",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/v2/part_two.mp4",
+      "bytes": 343338,
+      "duration_s": 5.056
+    },
+    {
+      "style_id": "pill",
+      "label": "Save prompt",
+      "text": "Save this for later",
+      "handle": "",
+      "blurb": "Calm, minimal \u2014 asks for the save, not the follow.",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/v2/pill.mp4",
+      "bytes": 429109,
+      "duration_s": 5.056
+    },
+    {
+      "style_id": "bar_sweep",
+      "label": "Comment trigger",
+      "text": "Comment GUIDE and it's yours",
+      "handle": "",
+      "blurb": "Broadcast lower-third that trades a comment for a resource.",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/v2/bar_sweep.mp4",
+      "bytes": 292147,
+      "duration_s": 5.056
+    },
+    {
+      "style_id": "serif_line",
+      "label": "Share nudge",
+      "text": "Send this to a founder",
+      "handle": "",
+      "blurb": "Editorial one-liner that asks for the share.",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/v2/serif_line.mp4",
+      "bytes": 325094,
+      "duration_s": 5.056
+    },
+    {
+      "style_id": "corner_tag",
+      "label": "Schedule stamp",
+      "text": "New drops every Tuesday",
+      "handle": "",
+      "blurb": "Persistent corner tag that trains the audience's calendar.",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/demo-assets/cta-styles/v2/corner_tag.mp4",
+      "bytes": 279569,
+      "duration_s": 5.056
+    }
+  ]
+}

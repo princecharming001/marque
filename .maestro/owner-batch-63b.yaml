@@ -1,0 +1,33 @@
+appId: com.getmarque.app
+name: "Build 63 — editing style page shots (state persisted from prior run)"
+---
+- launchApp:
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8000"
+- extendedWaitUntil:
+    visible:
+      id: "home.profile"
+    timeout: 15000
+- repeat:
+    while:
+      visible:
+        id: "tour.next"
+    commands:
+      - tapOn:
+          id: "tour.next"
+- tapOn:
+    id: "home.profile"
+- scrollUntilVisible:
+    element: "Editing style"
+    direction: DOWN
+    timeout: 20000
+- tapOn: "Editing style"
+- extendedWaitUntil:
+    visible: "YOUR SIGNATURE CUT"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/b63-editingstyle-top
+- scroll
+- takeScreenshot: /Users/home/Marque/.shots/b63-editingstyle-mid
+- scroll
+- takeScreenshot: /Users/home/Marque/.shots/b63-editingstyle-bottom

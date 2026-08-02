@@ -29,6 +29,13 @@ ASSETS = Path(__file__).resolve().parents[2] / "assets"
 DEFAULT_N = 18
 
 
+# Card-appropriateness (owner pass, build 63): a swipe card is judged in ~5-10s, so a
+# 3-minute reel wastes its slot, and 4 near-identical startup reels teach the same thing
+# 4 times. Both constraints trade a little vector spread for a deck that FEELS varied.
+MAX_DURATION_S = 90.0
+MAX_PER_NICHE = 2
+
+
 def _load_candidates() -> list[dict]:
     """Analyzed corpus reels that are actually playable and actually talking-head."""
     manifest = json.loads((DATA_DIR / "corpus_manifest.json").read_text())
@@ -44,6 +51,8 @@ def _load_candidates() -> list[dict]:
             continue
         entry = by_id.get(a["reel_id"])
         if not entry or not (entry.get("video_url_cdn") or "").startswith("http"):
+            continue
+        if float(a.get("duration_s") or 0.0) > MAX_DURATION_S:
             continue
         out.append({
             "reel_id": a["reel_id"],
@@ -85,13 +94,21 @@ def _medoid(items: list[dict]) -> int:
 
 
 def farthest_point_sample(items: list[dict], n: int) -> list[dict]:
-    """Maximize spread: each new pick is the candidate furthest from the current set."""
+    """Maximize spread: each new pick is the candidate furthest from the current set —
+    subject to the per-niche cap, so the deck also FEELS varied (a taste quiz where four
+    consecutive cards are startup founders reads as one card asked four times)."""
     if len(items) <= n:
         return list(items)
     picked = [items[_medoid(items)]]
     remaining = [x for x in items if x is not picked[0]]
     while len(picked) < n and remaining:
-        nxt = max(remaining,
+        counts: dict[str, int] = {}
+        for p in picked:
+            counts[p.get("niche") or ""] = counts.get(p.get("niche") or "", 0) + 1
+        eligible = [c for c in remaining
+                    if counts.get(c.get("niche") or "", 0) < MAX_PER_NICHE]
+        pool = eligible or remaining      # cap exhausts the pool → relax, don't starve
+        nxt = max(pool,
                   key=lambda c: min(sp.distance(c["vector"], p["vector"]) for p in picked))
         picked.append(nxt)
         remaining.remove(nxt)

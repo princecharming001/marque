@@ -1,0 +1,52 @@
+appId: com.getmarque.app
+name: "Build 63 owner batch — settings, editing style, CTA swiper cards"
+---
+# Backend: the LOCAL live server on :8000 (serves the v2 CTA deck + new style deck).
+
+# --- 1. Profile -> Settings (aesthetic pass) ---------------------------------
+- launchApp:
+    clearState: true
+    arguments:
+      demoHome: 1
+      backend.url: "http://127.0.0.1:8000"
+- extendedWaitUntil:
+    visible:
+      id: "home.profile"
+    timeout: 15000
+# First-launch tour intercepts every tap on a fresh state — step through it.
+- repeat:
+    while:
+      visible:
+        id: "tour.next"
+    commands:
+      - tapOn:
+          id: "tour.next"
+- tapOn:
+    id: "home.profile"
+- extendedWaitUntil:
+    visible: "Editing style"
+    timeout: 10000
+- takeScreenshot: /Users/home/Marque/.shots/b63-profile
+- tapOn:
+    id: "profile.settings"
+- extendedWaitUntil:
+    visible: "Settings"
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/b63-settings-top
+- scroll
+- takeScreenshot: /Users/home/Marque/.shots/b63-settings-mid
+- tapOn: "Done"
+
+# --- 2. Profile -> Editing style ---------------------------------------------
+- extendedWaitUntil:
+    visible: "Editing style"
+    timeout: 8000
+- tapOn: "Editing style"
+- extendedWaitUntil:
+    visible: "YOUR SIGNATURE CUT"
+    timeout: 12000
+- takeScreenshot: /Users/home/Marque/.shots/b63-editingstyle-top
+- scroll
+- takeScreenshot: /Users/home/Marque/.shots/b63-editingstyle-mid
+- scroll
+- takeScreenshot: /Users/home/Marque/.shots/b63-editingstyle-bottom

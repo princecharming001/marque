@@ -1,0 +1,157 @@
+appId: com.getmarque.app
+name: "B63 — swiper steps"
+---
+- launchApp:
+    arguments:
+      reset: "true"
+      # Drive the LOCAL keyless backend (scripts/dev.sh test expects one on :8000) —
+      # the Debug plist points at prod Render, which would mock-fallback past the
+      # analyze-first brief screen this flow asserts.
+      backend.url: "http://127.0.0.1:8000"
+
+# Landing (cream, unicorn hero)
+- assertVisible: "Get started"
+- tapOn:
+    id: "onboard.start"
+
+# Pain cluster — single-select MCQs AUTO-ADVANCE (no "Next" taps).
+- assertVisible: "What are you here to do?"
+- tapOn:
+    id: "onboard.goal.audience"
+- extendedWaitUntil:
+    visible: "What gets in the way most?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.blocker.time"
+- extendedWaitUntil:
+    visible: "Why now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.whyNow.serious"
+- extendedWaitUntil:
+    visible: "How often do you post right now?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.frequency.sometimes"
+
+# Interstitial A — the method
+- extendedWaitUntil:
+    visible: "Consistency beats virality"
+    timeout: 4000
+- tapOn:
+    id: "onboard.continue"
+
+# Connect accounts — now BEFORE identity so the scan can prefill it; fast path = skip
+- extendedWaitUntil:
+    visible: "Connect your accounts"
+    timeout: 4000
+- tapOn:
+    id: "onboard.connect.skip"
+
+# Identity cluster (freeform, Continue pills)
+- assertVisible: "What should I call you?"
+- tapOn:
+    id: "onboard.creatorName"
+- inputText: "Alex"
+- tapOn:
+    id: "onboard.nameContinue"
+
+# Stage (only shown when no account was connected)
+- assertVisible: "Where are you today?"
+- tapOn:
+    id: "onboard.stage.micro"
+
+- extendedWaitUntil:
+    visible: "What's your niche?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.niche"
+- inputText: "Fitness coaching"
+- tapOn:
+    id: "onboard.nicheContinue"
+
+- assertVisible: "Tell me about you"
+- tapOn:
+    id: "onboard.whatYouDo"
+- inputText: "I coach busy professionals"
+- tapOn:
+    id: "onboard.audience"
+- inputText: "busy professionals"
+- tapOn:
+    id: "onboard.aboutContinue"
+
+- assertVisible: "What do you want to be known for?"
+- tapOn:
+    id: "onboard.knownFor"
+- inputText: "no-nonsense fitness for busy people"
+- tapOn:
+    id: "onboard.knownForContinue"
+
+# Platform (auto-advance; only shown when no account was connected)
+- assertVisible: "Where does your audience live?"
+- tapOn:
+    id: "onboard.platform.instagram"
+
+# Voice interview — fast path = skip
+- extendedWaitUntil:
+    visible: "A few quick questions"
+    timeout: 4000
+- tapOn:
+    id: "onboard.interview.skip"
+
+# Voice sliders
+- assertVisible: "Fine-tune your voice"
+- tapOn:
+    id: "onboard.voiceContinue"
+
+# Emulate creators (multi-select; fast path = skip)
+- extendedWaitUntil:
+    visible: "Who do you want to sound like?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.emulate.skip"
+
+# Camera comfort (auto-advance). H-05: no styles step follows — the server
+# infers style from the take now, straight to pace.
+- assertVisible: "How do you feel on camera?"
+- tapOn:
+    id: "onboard.comfort.natural"
+
+# Pace (auto-advance)
+- assertVisible: "Pick your weekly pace"
+- tapOn:
+    id: "onboard.pace.5"
+
+
+# --- NEW (build 62/63): the two taste swipers sit between pace and the mirror ---
+- extendedWaitUntil:
+    visible: "onboard.styleTaste.skip"
+    timeout: 20000
+    optional: true
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-style
+# swipe the top card right (like) to show the gesture works, then screenshot again
+- swipe:
+    start: 50%, 45%
+    end: 90%, 45%
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-style-2
+- tapOn:
+    id: "onboard.styleTaste.skip"
+- waitForAnimationToEnd:
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-cta-1
+- swipe:
+    start: 50%, 45%
+    end: 90%, 45%
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-cta-2
+- swipe:
+    start: 50%, 45%
+    end: 90%, 45%
+- waitForAnimationToEnd:
+    timeout: 3000
+- takeScreenshot: /Users/home/Marque/.shots/b63-swiper-cta-3

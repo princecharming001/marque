@@ -171,7 +171,14 @@ struct CTAPickSwiper: View {
     private func load() async {
         guard styles.isEmpty else { return }
         let s = await store.backend.ctaStyles()
-        if s.isEmpty { loadFailed = true } else { styles = s }
+        if s.isEmpty { loadFailed = true; return }
+        // v2 (build 63): when the backend curates a deck, the swiper shows ONLY those
+        // cards — None + five finished-feeling endings, each with its own copy and
+        // music. The full 20-template catalog stays reachable via Manage/library. An
+        // older backend curates nothing → every card has inDeck == false except None →
+        // fall back to the whole catalog.
+        let curated = s.filter { $0.inDeck }
+        styles = curated.count > 1 ? curated : s
     }
 
     @ViewBuilder private func ctaCard(_ style: CTAStyleOption, _ ctx: SwiperCardContext) -> some View {

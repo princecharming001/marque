@@ -26,6 +26,12 @@ import AVFoundation
     var next: AVPlayer { players[1 - topSlot] }
 
     init() {
+        // The deck plays SOUND — the owner's editing-taste swipe is meaningless without
+        // hearing each reel's music/voice ("the slider for editing style doesn't have
+        // music"). .playback so the cards are audible even with the ring switch on
+        // silent, same as every reels surface.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+        try? AVAudioSession.sharedInstance().setActive(true)
         // Loop like the feed does — a preview that ends on a frozen frame reads as broken.
         for p in players {
             p.isMuted = true
@@ -58,11 +64,15 @@ import AVFoundation
         load(slot: topSlot, url: newTop)
         load(slot: 1 - topSlot, url: newNext)
         players[1 - topSlot].pause()
+        // Only the TOP card is audible; the preload slot stays muted so a buffering next
+        // card never bleeds its track under the one the creator is judging.
+        players[topSlot].isMuted = false
+        players[1 - topSlot].isMuted = true
         if newTop == nil { players[topSlot].pause() } else { players[topSlot].play() }
         revision += 1
     }
 
-    func pauseAll() { players.forEach { $0.pause() } }
+    func pauseAll() { players.forEach { $0.pause(); $0.isMuted = true } }
 
     private func load(slot: Int, url: URL?) {
         guard urls[slot] != url else { return }        // same clip: never re-buffer

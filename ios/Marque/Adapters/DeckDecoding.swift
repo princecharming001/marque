@@ -13,22 +13,43 @@ enum DeckDecoding {
 
     // MARK: CTA styles
 
-    private struct CTAStylesResp: Decodable { let styles: [CTAStyleDTO] }
+    private struct CTAStylesResp: Decodable {
+        let styles: [CTAStyleDTO]
+        // v2 (build 63): the curated 5-card ONBOARDING deck — unique copy + generated
+        // base + own music per card. Optional so an older backend (no `deck`) degrades
+        // to the full-catalog swiper.
+        let deck: [CTADeckDTO]?
+    }
     private struct CTAStyleDTO: Decodable {
         let id: String; let label: String; let blurb: String?
         let cluster: String?; let ui_class: String?; let params: [String]?
         let video_url: String?; let thumbnail_url: String?
     }
+    private struct CTADeckDTO: Decodable {
+        let id: String; let label: String?; let text: String?
+        let blurb: String?; let video_url: String?
+    }
 
     /// Server order is meaningful — "none" leads, then the restrained templates — so it is
-    /// preserved verbatim rather than re-sorted client-side.
+    /// preserved verbatim rather than re-sorted client-side. Styles that appear in the
+    /// curated deck come back with `inDeck` + their card-specific label/copy/preview
+    /// OVERLAID (the swiper shows the card; the Manage sheet still lists the template
+    /// under its template identity via the same id).
     static func ctaStyles(from data: Data) -> [CTAStyleOption] {
         guard let r = try? JSONDecoder().decode(CTAStylesResp.self, from: data) else { return [] }
+        let deckById = Dictionary(uniqueKeysWithValues: (r.deck ?? []).map { ($0.id, $0) })
         return r.styles.map {
-            CTAStyleOption(id: $0.id, label: $0.label, blurb: $0.blurb ?? "",
-                           cluster: $0.cluster ?? "minimal", uiClass: $0.ui_class ?? "",
-                           params: $0.params ?? [], videoURL: $0.video_url ?? "",
-                           thumbnailURL: $0.thumbnail_url ?? "")
+            let card = deckById[$0.id]
+            return CTAStyleOption(id: $0.id,
+                                  label: card?.label ?? $0.label,
+                                  blurb: card?.blurb ?? $0.blurb ?? "",
+                                  cluster: $0.cluster ?? "minimal", uiClass: $0.ui_class ?? "",
+                                  params: $0.params ?? [],
+                                  videoURL: (card?.video_url).flatMap { $0.isEmpty ? nil : $0 }
+                                            ?? $0.video_url ?? "",
+                                  thumbnailURL: $0.thumbnail_url ?? "",
+                                  seededText: card?.text ?? "",
+                                  inDeck: card != nil || $0.id == "none")
         }
     }
 

@@ -39,112 +39,64 @@
     "caption_chunking": 0.3,
     "title_cta_flair": 0.15
   },
-  "pool_size": 37,
+  "pool_size": 25,
   "coverage": {
     "pace": {
-      "low": 10,
-      "high": 5
+      "low": 9,
+      "high": 6
     },
     "energy": {
-      "low": 6,
-      "high": 7
+      "low": 7,
+      "high": 9
     },
     "broll_density": {
-      "low": 15,
+      "low": 13,
       "high": 0
     },
     "broll_share": {
       "low": 9,
-      "high": 7
+      "high": 8
     },
     "broll_overlay_bias": {
-      "low": 10,
-      "high": 8
+      "low": 11,
+      "high": 6
     },
     "caption_boldness": {
-      "low": 7,
-      "high": 5
+      "low": 8,
+      "high": 2
     },
     "caption_chunking": {
-      "low": 5,
-      "high": 8
+      "low": 7,
+      "high": 6
     },
     "title_cta_flair": {
-      "low": 15,
+      "low": 16,
       "high": 1
     }
   },
   "reels": [
     {
-      "reel_id": "tt_ea92da5f35",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/34401a83413530f4.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/34401a83413530f4.jpg",
-      "niche": "homecookingforbeginners",
-      "author": "janay.finn",
-      "views": 35600,
-      "duration_s": 139.32,
+      "reel_id": "tt_9e5d729c61",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/aba1d6c25f1ed6cd.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/aba1d6c25f1ed6cd.jpg",
+      "niche": "kombuchabrewing",
+      "author": "fitclaire",
+      "views": 1500000,
+      "duration_s": 79.04,
       "vector": {
-        "pace": 0.36,
-        "energy": 0.49,
-        "broll_density": 0.258,
-        "broll_share": 0.53125,
-        "broll_overlay_bias": 0.67,
-        "caption_boldness": 0.158,
+        "pace": 0.29000000000000004,
+        "energy": 1.0,
+        "broll_density": 0.0,
+        "broll_share": 0.0,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.55,
         "caption_chunking": 0.0,
         "title_cta_flair": 0.0
       },
       "display_attrs": [
-        "steady pace",
-        "clean captions",
-        "some b-roll"
-      ]
-    },
-    {
-      "reel_id": "tt_a940062bfe",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/352d0bc6221e9c49.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/352d0bc6221e9c49.jpg",
-      "niche": "kombuchabrewing",
-      "author": "nqobilemtshali0",
-      "views": 24800,
-      "duration_s": 94.93,
-      "vector": {
-        "pace": 1.0,
-        "energy": 0.53,
-        "broll_density": 0.0,
-        "broll_share": 0.0,
-        "broll_overlay_bias": 0.3,
-        "caption_boldness": 0.842,
-        "caption_chunking": 1.0,
-        "title_cta_flair": 0.0
-      },
-      "display_attrs": [
-        "fast cuts",
+        "slow cuts",
         "bold captions",
         "all face"
-      ]
-    },
-    {
-      "reel_id": "tt_9307b1e94b",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6bc475983bae8d6f.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6bc475983bae8d6f.jpg",
-      "niche": "startup",
-      "author": "ryanserhant",
-      "views": 895400,
-      "duration_s": 53.52,
-      "vector": {
-        "pace": 0.53,
-        "energy": 0.84,
-        "broll_density": 0.33599999999999997,
-        "broll_share": 0.22249999999999998,
-        "broll_overlay_bias": 0.0,
-        "caption_boldness": 0.79,
-        "caption_chunking": 0.3333333333333333,
-        "title_cta_flair": 1.0
-      },
-      "display_attrs": [
-        "steady pace",
-        "bold captions",
-        "some b-roll"
       ]
     },
     {
@@ -172,27 +124,75 @@
       ]
     },
     {
-      "reel_id": "tt_4a20d36bd7",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/f45d3fb123c03f3d.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/f45d3fb123c03f3d.jpg",
-      "niche": "skincare",
-      "author": "georginagio",
-      "views": 12800000,
-      "duration_s": 133.4,
+      "reel_id": "tt_6615acbb85",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/abf083a52171e554.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/abf083a52171e554.jpg",
+      "niche": "sourdoughbaking",
+      "author": "jeshastevens",
+      "views": 25500000,
+      "duration_s": 35.07,
       "vector": {
-        "pace": 0.0,
+        "pace": 1.0,
         "energy": 0.0,
         "broll_density": 0.0,
         "broll_share": 0.0,
         "broll_overlay_bias": 0.3,
-        "caption_boldness": 0.194,
-        "caption_chunking": 1.0,
+        "caption_boldness": 0.44999999999999996,
+        "caption_chunking": 0.6666666666666666,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "fast cuts",
+        "clean captions",
+        "all face"
+      ]
+    },
+    {
+      "reel_id": "tt_40d1adb0ca",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/ec81b7bfc72a90bc.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/ec81b7bfc72a90bc.jpg",
+      "niche": "sourdoughbaking",
+      "author": "littlebbanghouse",
+      "views": 316200,
+      "duration_s": 73.75,
+      "vector": {
+        "pace": 0.039999999999999994,
+        "energy": 0.27,
+        "broll_density": 0.162,
+        "broll_share": 0.8687499999999999,
+        "broll_overlay_bias": 0.0,
+        "caption_boldness": 0.42599999999999993,
+        "caption_chunking": 0.3333333333333333,
         "title_cta_flair": 0.0
       },
       "display_attrs": [
         "slow cuts",
         "clean captions",
-        "all face"
+        "some b-roll"
+      ]
+    },
+    {
+      "reel_id": "tt_9307b1e94b",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6bc475983bae8d6f.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6bc475983bae8d6f.jpg",
+      "niche": "startup",
+      "author": "ryanserhant",
+      "views": 895400,
+      "duration_s": 53.52,
+      "vector": {
+        "pace": 0.53,
+        "energy": 0.84,
+        "broll_density": 0.33599999999999997,
+        "broll_share": 0.22249999999999998,
+        "broll_overlay_bias": 0.0,
+        "caption_boldness": 0.79,
+        "caption_chunking": 0.3333333333333333,
+        "title_cta_flair": 1.0
+      },
+      "display_attrs": [
+        "steady pace",
+        "bold captions",
+        "some b-roll"
       ]
     },
     {
@@ -220,30 +220,6 @@
       ]
     },
     {
-      "reel_id": "tt_8bf051f1e7",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/a9ec9401f34f48ac.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/a9ec9401f34f48ac.jpg",
-      "niche": "potterywheel",
-      "author": "queen_maddie_official",
-      "views": 37500,
-      "duration_s": 71.59,
-      "vector": {
-        "pace": 0.25999999999999995,
-        "energy": 0.13,
-        "broll_density": 0.08399999999999999,
-        "broll_share": 0.7249999999999999,
-        "broll_overlay_bias": 0.0,
-        "caption_boldness": 0.65,
-        "caption_chunking": 0.6666666666666666,
-        "title_cta_flair": 0.5
-      },
-      "display_attrs": [
-        "slow cuts",
-        "bold captions",
-        "all face"
-      ]
-    },
-    {
       "reel_id": "tt_eab13947a9",
       "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/ab31036fe726305d.mp4",
       "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/ab31036fe726305d.jpg",
@@ -264,6 +240,174 @@
       "display_attrs": [
         "slow cuts",
         "bold captions",
+        "some b-roll"
+      ]
+    },
+    {
+      "reel_id": "tt_9b6910c9d7",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/5bad368ced2ba6fc.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/5bad368ced2ba6fc.jpg",
+      "niche": "sustainablefashionthrifting",
+      "author": "ellamolliee",
+      "views": 11100,
+      "duration_s": 56.54,
+      "vector": {
+        "pace": 0.0,
+        "energy": 0.83,
+        "broll_density": 0.0,
+        "broll_share": 0.0,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.482,
+        "caption_chunking": 1.0,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "slow cuts",
+        "clean captions",
+        "all face"
+      ]
+    },
+    {
+      "reel_id": "tt_bb4774e808",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/33fa544b4b494662.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/33fa544b4b494662.jpg",
+      "niche": "potteryandceramics",
+      "author": "emmezhou",
+      "views": 303000,
+      "duration_s": 53.5,
+      "vector": {
+        "pace": 1.0,
+        "energy": 1.0,
+        "broll_density": 0.5599999999999999,
+        "broll_share": 0.12874999999999998,
+        "broll_overlay_bias": 0.4,
+        "caption_boldness": 0.154,
+        "caption_chunking": 0.3333333333333333,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "fast cuts",
+        "clean captions",
+        "b-roll heavy"
+      ]
+    },
+    {
+      "reel_id": "tt_33002336d2",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/d600eb33a38ef86d.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/d600eb33a38ef86d.jpg",
+      "niche": "potterywheel",
+      "author": "carolinegreenepottery",
+      "views": 117800,
+      "duration_s": 37.7,
+      "vector": {
+        "pace": 0.36,
+        "energy": 0.0,
+        "broll_density": 0.16,
+        "broll_share": 0.9625,
+        "broll_overlay_bias": 1.0,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.0,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "steady pace",
+        "clean captions",
+        "some b-roll"
+      ]
+    },
+    {
+      "reel_id": "tt_638b25ee5d",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/638308787e794362.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/638308787e794362.jpg",
+      "niche": "skincare",
+      "author": "featherpro8",
+      "views": 253100,
+      "duration_s": 34.41,
+      "vector": {
+        "pace": 1.0,
+        "energy": 0.11,
+        "broll_density": 0.348,
+        "broll_share": 0.40625,
+        "broll_overlay_bias": 0.0,
+        "caption_boldness": 0.23399999999999999,
+        "caption_chunking": 0.0,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "fast cuts",
+        "clean captions",
+        "some b-roll"
+      ]
+    },
+    {
+      "reel_id": "tt_6669a85ef5",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/840526c4fbd60e4a.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/840526c4fbd60e4a.jpg",
+      "niche": "yoga",
+      "author": "tinyyogamom",
+      "views": 512600,
+      "duration_s": 25.1,
+      "vector": {
+        "pace": 0.0,
+        "energy": 0.48,
+        "broll_density": 0.24,
+        "broll_share": 1.0,
+        "broll_overlay_bias": 1.0,
+        "caption_boldness": 0.44999999999999996,
+        "caption_chunking": 0.6666666666666666,
+        "title_cta_flair": 0.5
+      },
+      "display_attrs": [
+        "slow cuts",
+        "clean captions",
+        "some b-roll"
+      ]
+    },
+    {
+      "reel_id": "tt_9ccf6b9b76",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/e1b3a21e0fe45365.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/e1b3a21e0fe45365.jpg",
+      "niche": "fitnessforbusyparents",
+      "author": "danimullenaux",
+      "views": 125700,
+      "duration_s": 59.33,
+      "vector": {
+        "pace": 0.0,
+        "energy": 0.43,
+        "broll_density": 0.0,
+        "broll_share": 0.0,
+        "broll_overlay_bias": 0.3,
+        "caption_boldness": 0.15,
+        "caption_chunking": 0.0,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "slow cuts",
+        "clean captions",
+        "all face"
+      ]
+    },
+    {
+      "reel_id": "tt_a11d9df241",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/08f22f3616005c91.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/08f22f3616005c91.jpg",
+      "niche": "startup",
+      "author": "sorhan.hq",
+      "views": 236600,
+      "duration_s": 24.7,
+      "vector": {
+        "pace": 0.16,
+        "energy": 0.83,
+        "broll_density": 0.242,
+        "broll_share": 1.0,
+        "broll_overlay_bias": 0.0,
+        "caption_boldness": 0.16999999999999998,
+        "caption_chunking": 0.0,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "slow cuts",
+        "clean captions",
         "some b-roll"
       ]
     },
@@ -316,193 +460,49 @@
       ]
     },
     {
-      "reel_id": "tt_0fd273320a",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/78281eeb95f3f1ff.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/78281eeb95f3f1ff.jpg",
-      "niche": "startup",
-      "author": "shwinnabego",
-      "views": 23000,
-      "duration_s": 145.77,
+      "reel_id": "tt_f6de41c6af",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/485cfc673912eb15.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/485cfc673912eb15.jpg",
+      "niche": "yoga",
+      "author": "maddiepricegym",
+      "views": 4500000,
+      "duration_s": 13.8,
       "vector": {
         "pace": 0.0,
+        "energy": 0.69,
+        "broll_density": 0.434,
+        "broll_share": 1.0,
+        "broll_overlay_bias": 1.0,
+        "caption_boldness": 0.6,
+        "caption_chunking": 0.6666666666666666,
+        "title_cta_flair": 0.0
+      },
+      "display_attrs": [
+        "slow cuts",
+        "bold captions",
+        "some b-roll"
+      ]
+    },
+    {
+      "reel_id": "tt_019c904c9b",
+      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6108ae0957420afb.mp4",
+      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6108ae0957420afb.jpg",
+      "niche": "homecookingforbeginners",
+      "author": "jennangary",
+      "views": 74500,
+      "duration_s": 81.63,
+      "vector": {
+        "pace": 0.35,
         "energy": 1.0,
-        "broll_density": 0.0,
-        "broll_share": 0.0,
-        "broll_overlay_bias": 0.3,
+        "broll_density": 0.074,
+        "broll_share": 0.02,
+        "broll_overlay_bias": 0.0,
         "caption_boldness": 0.15,
         "caption_chunking": 0.0,
         "title_cta_flair": 0.0
       },
       "display_attrs": [
-        "slow cuts",
-        "clean captions",
-        "all face"
-      ]
-    },
-    {
-      "reel_id": "tt_9b70f693aa",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/c7a3298313a6d627.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/c7a3298313a6d627.jpg",
-      "niche": "sourdoughbaking",
-      "author": "serenaneel",
-      "views": 20800000,
-      "duration_s": 127.48,
-      "vector": {
-        "pace": 0.53,
-        "energy": 0.65,
-        "broll_density": 0.048,
-        "broll_share": 0.06374999999999999,
-        "broll_overlay_bias": 1.0,
-        "caption_boldness": 0.834,
-        "caption_chunking": 0.6666666666666666,
-        "title_cta_flair": 0.0
-      },
-      "display_attrs": [
         "steady pace",
-        "bold captions",
-        "all face"
-      ]
-    },
-    {
-      "reel_id": "tt_a11d9df241",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/08f22f3616005c91.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/08f22f3616005c91.jpg",
-      "niche": "startup",
-      "author": "sorhan.hq",
-      "views": 236600,
-      "duration_s": 24.7,
-      "vector": {
-        "pace": 0.16,
-        "energy": 0.83,
-        "broll_density": 0.242,
-        "broll_share": 1.0,
-        "broll_overlay_bias": 0.0,
-        "caption_boldness": 0.16999999999999998,
-        "caption_chunking": 0.0,
-        "title_cta_flair": 0.0
-      },
-      "display_attrs": [
-        "slow cuts",
-        "clean captions",
-        "some b-roll"
-      ]
-    },
-    {
-      "reel_id": "tt_9b6910c9d7",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/5bad368ced2ba6fc.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/5bad368ced2ba6fc.jpg",
-      "niche": "sustainablefashionthrifting",
-      "author": "ellamolliee",
-      "views": 11100,
-      "duration_s": 56.54,
-      "vector": {
-        "pace": 0.0,
-        "energy": 0.83,
-        "broll_density": 0.0,
-        "broll_share": 0.0,
-        "broll_overlay_bias": 0.3,
-        "caption_boldness": 0.482,
-        "caption_chunking": 1.0,
-        "title_cta_flair": 0.0
-      },
-      "display_attrs": [
-        "slow cuts",
-        "clean captions",
-        "all face"
-      ]
-    },
-    {
-      "reel_id": "tt_fe0512cb0c",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/cee49ef010c17b6c.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/cee49ef010c17b6c.jpg",
-      "niche": "kombuchabrewing",
-      "author": "simplymoodsbyida",
-      "views": 157300,
-      "duration_s": 42.2,
-      "vector": {
-        "pace": 0.8,
-        "energy": 0.54,
-        "broll_density": 0.568,
-        "broll_share": 0.4775,
-        "broll_overlay_bias": 0.75,
-        "caption_boldness": 0.7620000000000001,
-        "caption_chunking": 0.0,
-        "title_cta_flair": 0.0
-      },
-      "display_attrs": [
-        "fast cuts",
-        "bold captions",
-        "b-roll heavy"
-      ]
-    },
-    {
-      "reel_id": "tt_fef4c7b738",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/0e5adbd897752a55.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/0e5adbd897752a55.jpg",
-      "niche": "startup",
-      "author": "dramas.11",
-      "views": 491800,
-      "duration_s": 180.0,
-      "vector": {
-        "pace": 0.0,
-        "energy": 0.0,
-        "broll_density": 0.0,
-        "broll_share": 0.0,
-        "broll_overlay_bias": 0.3,
-        "caption_boldness": 0.608,
-        "caption_chunking": 0.3333333333333333,
-        "title_cta_flair": 0.0
-      },
-      "display_attrs": [
-        "slow cuts",
-        "bold captions",
-        "all face"
-      ]
-    },
-    {
-      "reel_id": "tt_6669a85ef5",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/840526c4fbd60e4a.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/840526c4fbd60e4a.jpg",
-      "niche": "yoga",
-      "author": "tinyyogamom",
-      "views": 512600,
-      "duration_s": 25.1,
-      "vector": {
-        "pace": 0.0,
-        "energy": 0.48,
-        "broll_density": 0.24,
-        "broll_share": 1.0,
-        "broll_overlay_bias": 1.0,
-        "caption_boldness": 0.44999999999999996,
-        "caption_chunking": 0.6666666666666666,
-        "title_cta_flair": 0.5
-      },
-      "display_attrs": [
-        "slow cuts",
-        "clean captions",
-        "some b-roll"
-      ]
-    },
-    {
-      "reel_id": "tt_b6977a489c",
-      "video_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/00e641c7631e6b3a.mp4",
-      "thumbnail_url": "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/00e641c7631e6b3a.jpg",
-      "niche": "fitnessforbusyparents",
-      "author": "austinhaslam",
-      "views": 555200,
-      "duration_s": 127.47,
-      "vector": {
-        "pace": 0.0,
-        "energy": 0.99,
-        "broll_density": 0.048,
-        "broll_share": 1.0,
-        "broll_overlay_bias": 1.0,
-        "caption_boldness": 0.154,
-        "caption_chunking": 0.3333333333333333,
-        "title_cta_flair": 0.25
-      },
-      "display_attrs": [
-        "slow cuts",
         "clean captions",
         "all face"
       ]

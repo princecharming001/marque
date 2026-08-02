@@ -856,6 +856,12 @@ struct CTAStyleOption: Codable, Hashable, Identifiable {
     var params: [String] = []
     var videoURL: String = ""
     var thumbnailURL: String = ""
+    /// v2 deck: this card's UNIQUE copy ("Send this to a founder", not another "Follow
+    /// for more"). Empty for plain catalog templates.
+    var seededText: String = ""
+    /// True for the curated onboarding-swiper cards (and the None card). The Manage
+    /// sheet ignores this; the swiper filters to it when the backend curates a deck.
+    var inDeck: Bool = false
 
     /// The "ends clean" card — no template, no video, just type (see the swiper).
     var isNone: Bool { id == "none" }
@@ -875,8 +881,11 @@ struct SavedCTA: Codable, Hashable, Identifiable {
 
     /// Seed copy for a template the creator just liked. A liked ending with no words is a
     /// card the backend skips, so the library never starts empty-handed — the creator
-    /// edits from a working line instead of a blank field.
+    /// edits from a working line instead of a blank field. Deck cards carry their OWN
+    /// line (that copy is what the creator actually swiped right on); the label
+    /// heuristics only back-fill plain catalog templates.
     static func defaultCopy(for style: CTAStyleOption) -> String {
+        if !style.seededText.isEmpty { return style.seededText }
         let l = style.label.lowercased()
         if l.contains("follow") { return "Follow for more" }
         if l.contains("comment") { return "Comment your take" }
