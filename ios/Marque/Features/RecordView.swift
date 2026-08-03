@@ -74,6 +74,11 @@ struct RecordView: View {
     // guard pattern as lastSeededFormat), and a pick here wins for THIS video only — nothing on
     // this screen writes back to the profile.
     @State private var styleSeeded = false
+    // Build 66 (owner decision after comps research — Opus/Submagic/BigVU pattern): the
+    // standing style carries the edit; the per-video pickers are an OVERRIDE living
+    // behind one collapsed disclosure, not a questionnaire. Collapsed by default on
+    // every visit — a 14-posts-a-week creator answers zero questions on the happy path.
+    @State private var adjustExpanded = false
     // B-ROLL STYLE picker: how much cutaway coverage the creator wants (full/balanced/
     // minimal/none), each option demonstrated by a real example reel. The pick drives the
     // edit via config.broll_coverage + the b-roll toggle ("none" switches cutaways off).
@@ -395,19 +400,15 @@ struct RecordView: View {
                             .foregroundStyle(.white.opacity(0.6))
                             .frame(maxWidth: .infinity, alignment: .center)
                         formatGrid
-                        mimicSection
                         if liveScript.style == VideoStyle.duetSplit.rawValue || selectedBrollStyle == "split_screen" {
                             reactSourceField
                         }
-                        // Build 62 walk-back: the per-video craft questions are back —
-                        // meme dial, caption look, b-roll style (above) — each seeded
-                        // from the standing dials in Profile → Editing style, which stay
-                        // the DEFAULTS. Punch-ins and music remain unasked (still
-                        // SUBMITTED via editFormat.defaultToggles — nobody flipped them).
-                        if briefCapability("broll") {
-                            memeSliderRow
-                        }
-                        captionStyleSection        // caption look BEFORE the render is spent
+                        // The craft dials (b-roll look, meme dial, captions) ride the
+                        // creator's STANDING style by default — one disclosure expands
+                        // them as a this-video-only override, pre-filled from those
+                        // defaults. Punch-ins and music remain unasked (still SUBMITTED
+                        // via editFormat.defaultToggles — nobody flipped them).
+                        adjustEditSection
                         // prompt: gives the placeholder a legible color — the plain title
                         // form renders it in system gray, unreadable on the dark overlay.
                         TextField("", text: $customInstructions,
@@ -608,6 +609,75 @@ struct RecordView: View {
             referenceReel = nil        // the picked vibe belongs to the old format
             exampleReels = []          // .task(id: editFormat) refetches
         }
+    }
+
+    /// One-tap by default: a summary of the standing style with a chevron; expanding
+    /// reveals the per-video pickers (seeded from Profile → Editing style, this-video
+    /// wins, nothing writes back). The Opus/Submagic/BigVU "brand kit" pattern — ask
+    /// never, allow always.
+    private var adjustEditSection: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            Button {
+                withAnimation(Motion.quick) { adjustExpanded.toggle() }
+            } label: {
+                HStack(spacing: Space.sm) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("YOUR STYLE, APPLIED")
+                            .font(AppFont.micro).tracking(Track.label)
+                            .foregroundStyle(.white.opacity(0.5))
+                        Text(standingStyleSummary)
+                            .font(AppFont.callout).foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text(adjustExpanded ? "Done" : "Adjust")
+                        .font(AppFont.caption.weight(.semibold))
+                        .foregroundStyle(Palette.accent)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .rotationEffect(.degrees(adjustExpanded ? 180 : 0))
+                }
+                .padding(Space.md)
+                .background(Color.white.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("record.adjustEdit")
+
+            if adjustExpanded {
+                VStack(alignment: .leading, spacing: Space.md) {
+                    mimicSection
+                    if briefCapability("broll") {
+                        memeSliderRow
+                    }
+                    captionStyleSection
+                    Text("Changes apply to this video only — your defaults live in Profile → Editing style.")
+                        .font(AppFont.micro).foregroundStyle(.white.opacity(0.45))
+                }
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    /// The collapsed row's honest one-line answer to "what will this edit look like?".
+    private var standingStyleSummary: String {
+        var parts: [String] = []
+        switch captionStyleChoice {
+        case "bold-word": parts.append("Bold captions")
+        case "karaoke":   parts.append("Karaoke captions")
+        case "clean":     parts.append("Clean captions")
+        default:          parts.append("Auto captions")
+        }
+        if editFormat == .talkingHeadBroll {
+            let looks = ["cutaway": "cutaways", "smart": "smart b-roll", "panel": "b-roll panels",
+                         "card": "b-roll cards", "green_screen": "green screen",
+                         "split_screen": "split screen"]
+            parts.append(looks[selectedBrollStyle] ?? "cutaways")
+        }
+        parts.append("\(MemeEnergy.name(Int(memeLevel)).lowercased()) memes")
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder private var mimicSection: some View {
