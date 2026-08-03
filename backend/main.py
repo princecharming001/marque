@@ -7657,8 +7657,15 @@ async def social_auth_url(req: SocialAuthURLRequest):
     if not POSTFORME_KEY:
         return {"url": "", "platform": req.platform, "mode": "mock"}
     body: dict = {"platform": req.platform, "permissions": ["posts"]}
-    if req.external_id:
-        body["external_id"] = req.external_id
+    # NO external_id — deliberately (owner report, build 66). Post for Me allows exactly
+    # one external_id per social account, and its portal HARD-FAILS the whole OAuth
+    # ("External Id already exists for account spc_…") when a TikTok/IG that's already
+    # linked under any other tag is connected again — which is precisely the case of two
+    # Yunicorn creators sharing one social account. Posting never needed the tag (it goes
+    # by spc_ id), and attribution is the client's job: it snapshots the account list
+    # before the OAuth and claims the delta after (with a user pick when ambiguous). The
+    # request field is still ACCEPTED so older app builds keep working — their tag is
+    # simply no longer forwarded, which fixes the failure for them too.
     if req.redirect_url:
         body["redirect_url_override"] = req.redirect_url
     try:

@@ -274,7 +274,11 @@ final class AppStore {
     // so a repeat/shared connect is treated as an UPDATE to the single account record — and
     // we keep the user↔account mapping ourselves (local per-user `connectedAccounts`). We
     // attribute the account THIS user linked by diffing the account list around the OAuth.
-    private func sharedConnectTag(_ platform: String) -> String { "marque-\(platform)" }
+    // Build 66: external_id tagging is GONE from the connect flow — Post for Me permits
+    // one tag per social account and hard-fails the portal when a second creator links
+    // the same TikTok/IG. Attribution is ours now: snapshot the platform's account pool
+    // before OAuth, claim the delta after, and when the account already existed (two
+    // creators sharing one page — the delta is empty) fall back to a user pick.
     private var preConnectAccountIds: [String: Set<String>] = [:]
 
     /// The Post for Me account ids to publish `platforms` to (OAuth-linked accounts only).
@@ -288,12 +292,12 @@ final class AppStore {
     /// (mock backend / no key). No redirect override is sent — Post for Me Quickstart uses
     /// its own fixed success page, so we confirm the link by polling instead of a callback.
     func socialAuthURL(platform: String) async -> URL? {
-        // Snapshot accounts already under the shared tag so we can spot the one THIS user
-        // links (multiple creators/accounts share the tag).
-        let before = await backend.socialAccounts(externalId: sharedConnectTag(platform))
+        // Snapshot EVERYTHING on this platform so we can spot the account THIS user
+        // links. Untagged on purpose — see the note above preConnectAccountIds.
+        let before = await backend.socialAccounts(platform: platform)
         preConnectAccountIds[platform] = Set(before.map(\.accountId))
         let s = await backend.socialAuthURL(platform: platform,
-                                            externalId: sharedConnectTag(platform),
+                                            externalId: "",
                                             redirectURL: "")
         return s.flatMap(URL.init(string:))
     }
@@ -301,42 +305,52 @@ final class AppStore {
     /// After the OAuth web flow closes, poll for the now-connected account (Post for Me can
     /// take a moment to finalize the link). Stores the account carrying its spc_ id on first
     /// hit. Returns true once linked.
-    @discardableResult
-    func refreshLinkedAccount(platform: String, retries: Int = 4) async -> Bool {
+    /// Outcome of an OAuth connect attempt (see socialAuthURL's attribution note).
+    enum LinkOutcome {
+        case linked(ConnectedAccount)      // claimed automatically
+        case choose([ConnectedAccount])    // account already existed — user must pick theirs
+        case none                          // nothing linked (cancelled / PFM still finalizing)
+    }
+
+    /// After the OAuth web flow closes, attribute the connect. Post for Me can take a
+    /// moment to finalize, so poll. The DELTA against the pre-connect snapshot is the
+    /// strongest signal (a fresh connect). An empty delta with existing candidates is the
+    /// shared-account case — the page was already linked by another creator, PFM made no
+    /// new row, and only the user knows which username they just authorized: hand the
+    /// candidates back for a pick instead of guessing (the old single-candidate adopt
+    /// stays, because one candidate is unambiguous).
+    func finishLinkingAccount(platform: String, retries: Int = 4) async -> LinkOutcome {
         let before = preConnectAccountIds[platform] ?? []
+        var lastPool: [ConnectedAccount] = []
         for attempt in 0..<max(1, retries) {
-            // Accounts under our shared tag (a fresh connect or a same-tag re-link land here).
-            var pool = await backend.socialAccounts(externalId: sharedConnectTag(platform))
+            let pool = await backend.socialAccounts(platform: platform)
                 .filter { $0.platform == platform && $0.canPublish }
-            // Adopt-fallback: if the IG was previously linked under a LEGACY/other tag, Post
-            // for Me refused to re-tag it (hijack guard) so it never joined the shared tag.
-            // The account still exists and posts by spc_ id — list the whole platform and
-            // adopt it into THIS user's mapping. Guarded to the unambiguous single-account
-            // case so we never grab another creator's account.
-            if pool.isEmpty {
-                let all = await backend.socialAccounts(platform: platform)
-                    .filter { $0.platform == platform && $0.canPublish }
-                if all.count == 1 { pool = all }
-            }
-            // Prefer the account that appeared during THIS connect; else the only candidate.
+            lastPool = pool
             let fresh = pool.filter { !before.contains($0.accountId) }
-            if var acct = fresh.first ?? (pool.count == 1 ? pool.first : nil) {
-                // Post for Me returns username + photo but no follower/bio — enrich from the
-                // public profile for display + voice learning, keeping the spc_ accountId.
-                if !acct.handle.isEmpty,
-                   let preview = await backend.connectPreview(handle: acct.handle, platform: platform) {
-                    acct.followers = preview.followers
-                    acct.bio = preview.bio
-                    if acct.avatarUrl.isEmpty { acct.avatarUrl = preview.avatarUrl }
-                    if acct.displayName.isEmpty { acct.displayName = preview.displayName }
-                }
-                addConnectedAccount(acct)
-                preConnectAccountIds[platform] = nil   // attempt done
-                return true
+            if let acct = fresh.first ?? (pool.count == 1 ? pool.first : nil) {
+                await claimLinkedAccount(acct, platform: platform)
+                return .linked(brand.connectedAccounts.last ?? acct)
             }
             if attempt < retries - 1 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
         }
-        return false
+        // Don't offer accounts this creator already claimed — only genuinely new options.
+        let mine = Set(brand.connectedAccounts.map(\.accountId))
+        let candidates = lastPool.filter { !mine.contains($0.accountId) }
+        return candidates.isEmpty ? .none : .choose(candidates)
+    }
+
+    /// Store one Post for Me account as THIS creator's, enriched from the public profile.
+    func claimLinkedAccount(_ account: ConnectedAccount, platform: String) async {
+        var acct = account
+        if !acct.handle.isEmpty,
+           let preview = await backend.connectPreview(handle: acct.handle, platform: platform) {
+            acct.followers = preview.followers
+            acct.bio = preview.bio
+            if acct.avatarUrl.isEmpty { acct.avatarUrl = preview.avatarUrl }
+            if acct.displayName.isEmpty { acct.displayName = preview.displayName }
+        }
+        addConnectedAccount(acct)
+        preConnectAccountIds[platform] = nil
     }
 
     /// "Analyze my page" — runs real inference to design pillars tailored to the creator.
