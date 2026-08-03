@@ -11,11 +11,31 @@ struct PerformanceView: View {
     @State private var aiInsights: [BackendClient.InsightItem] = []
     @State private var showStrategy = false
 
-    private func insightColor(_ category: String) -> Color {
-        switch category {
-        case "orange", "yellow": return Palette.warning
-        default: return Palette.accent
+
+    /// Small inline glass segmented control — the row-height replacement for the old
+    /// full-width MarqueSegmented blocks (three of which stacked on this one screen).
+    @ViewBuilder
+    static func compactToggleView(options: [String], index: Binding<Int>) -> some View {
+        HStack(spacing: 2) {
+            ForEach(Array(options.enumerated()), id: \.offset) { i, label in
+                Button { index.wrappedValue = i } label: {
+                    Text(label)
+                        .font(Typeface.sans(12, index.wrappedValue == i ? .semibold : .regular))
+                        .foregroundStyle(index.wrappedValue == i ? Palette.onInk : Palette.textSecondary)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(index.wrappedValue == i ? Palette.ink : Color.clear))
+                }
+                .buttonStyle(.plain)
+            }
         }
+        .padding(2)
+        .background(LiquidGlassFill(radius: 20, sheen: 0.35, corners: false))
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+    }
+
+    private func compactToggle(options: [String], index: Binding<Int>) -> some View {
+        Self.compactToggleView(options: options, index: index)
     }
 
     private var week: [Date] {
@@ -27,17 +47,20 @@ struct PerformanceView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.lg) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("QUEUE + INSIGHTS").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                    ScreenTitle(text: "Performance")
-                }
+                ScreenTitle(text: "Performance")
 
-                // MARK: Upcoming queue
-                SectionLabel(text: "Coming up", accent: Palette.accent)
-                MarqueSegmented(options: CalMode.allCases.map(\.rawValue),
-                                index: Binding(get: { CalMode.allCases.firstIndex(of: mode) ?? 0 },
-                                               set: { mode = CalMode.allCases[$0] }))
-                    .accessibilityIdentifier("calendar.modeToggle")
+                // MARK: Upcoming queue — one quiet label, one compact control. The old
+                // stack (accent-bar eyebrow + full-width segmented pill) was two rows of
+                // chrome before any content.
+                HStack {
+                    Text("COMING UP").font(AppFont.micro).tracking(Track.label)
+                        .foregroundStyle(Palette.textTertiary)
+                    Spacer()
+                    compactToggle(options: CalMode.allCases.map(\.rawValue),
+                                  index: Binding(get: { CalMode.allCases.firstIndex(of: mode) ?? 0 },
+                                                 set: { mode = CalMode.allCases[$0] }))
+                        .accessibilityIdentifier("calendar.modeToggle")
+                }
 
                 if mode == .week {
                     // Seven identical "Nothing scheduled" cards read as a wall of holes —
@@ -46,26 +69,23 @@ struct PerformanceView: View {
                         store.schedule.contains { Calendar.current.isDate($0.date, inSameDayAs: day) }
                     }) {
                         VStack(spacing: Space.md) {
-                            EmptyStateView(icon: "calendar.badge.plus",
-                                           title: "Nothing scheduled this week",
-                                           message: "Queue a ready clip and it shows up here with its posting time.")
-                            Button {
-                                sheet = .schedule(day: Calendar.current.startOfDay(for: Date()), clipId: nil)
-                            } label: {
-                                Text("Schedule a clip").font(AppFont.headline)
-                                    .foregroundStyle(Palette.textPrimary)
-                                    .frame(maxWidth: .infinity).frame(height: 54)
-                                    .background(Palette.surfaceRaised)
-                                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                            VStack(spacing: 6) {
+                                Text("Nothing scheduled this week")
+                                    .font(Typeface.sans(16, .semibold)).foregroundStyle(Palette.textPrimary)
+                                Text("Queue a ready clip and it shows up here with its posting time.")
+                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                    .multilineTextAlignment(.center)
                             }
-                            .buttonStyle(PressableStyle(dim: 0.7))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, Space.xl)
+                            GhostButton(title: "Schedule a clip", systemImage: "calendar") {
+                                sheet = .schedule(day: Calendar.current.startOfDay(for: Date()), clipId: nil)
+                            }
                             .accessibilityIdentifier("performance.addClip")
                         }
                     } else {
                         VStack(spacing: 12) {
-                            ForEach(Array(week.enumerated()), id: \.element) { i, day in
+                            ForEach(Array(week.enumerated()), id: \.element) { _, day in
                                 DayRow(day: day,
                                        posts: store.schedule
                                         .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
@@ -75,7 +95,6 @@ struct PerformanceView: View {
                                        onAdd: { sheet = .schedule(day: day, clipId: nil) },
                                        onTapPost: { sheet = .edit($0) },
                                        onDuplicate: { store.duplicatePost($0) })
-                                    .staggerReveal(i)
                             }
                         }
                     }
@@ -85,12 +104,10 @@ struct PerformanceView: View {
 
                 // MARK: P7.3/P7.4 — the AI coach: strategy entry + post-performance insights
                 MarqueHairline().padding(.vertical, Space.sm)
-                SectionLabel(text: "From your AI", accent: Palette.accent)
+                Text("FROM YOUR AI").font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(Palette.textTertiary)
                 Button { showStrategy = true } label: {
                     HStack(spacing: Space.md) {
-                        Image(systemName: "brain")
-                            .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(Palette.accent)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Your Strategy").font(AppFont.headline)
                                 .foregroundStyle(Palette.textPrimary)
@@ -103,44 +120,53 @@ struct PerformanceView: View {
                             .foregroundStyle(Palette.textTertiary)
                     }
                     .padding(Space.md)
-                    .background(Palette.surfaceRaised)
+                    .background(LiquidGlassFill(radius: Radius.md, sheen: 0.5))
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                        .strokeBorder(Color.white.opacity(0.55), lineWidth: 1))
+                    .shadow(color: Palette.shadowCool.opacity(0.14), radius: 18, y: 8)
                 }
                 .buttonStyle(PressableStyle(dim: 0.7))
                 .accessibilityIdentifier("performance.yourStrategy")
 
-                ForEach(aiInsights.prefix(5)) { ins in
-                    Button {
-                        router.pendingChatPrompt = ins.seedPrompt
-                        router.selectedTab = .chat
-                    } label: {
-                        HStack(alignment: .top, spacing: Space.md) {
-                            Circle().fill(insightColor(ins.category))
-                                .frame(width: 8, height: 8).padding(.top, 6)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(ins.title).font(AppFont.headline)
-                                    .foregroundStyle(Palette.textPrimary)
-                                    .multilineTextAlignment(.leading)
-                                if !ins.description.isEmpty {
-                                    Text(ins.description).font(AppFont.caption)
-                                        .foregroundStyle(Palette.textSecondary)
-                                        .multilineTextAlignment(.leading)
-                                        .lineLimit(3)
+                if !aiInsights.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(Array(aiInsights.prefix(5).enumerated()), id: \.element.id) { i, ins in
+                            Button {
+                                router.pendingChatPrompt = ins.seedPrompt
+                                router.selectedTab = .chat
+                            } label: {
+                                HStack(alignment: .top, spacing: Space.md) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(ins.title).font(Typeface.sans(14, .semibold))
+                                            .foregroundStyle(Palette.textPrimary)
+                                            .multilineTextAlignment(.leading)
+                                        if !ins.description.isEmpty {
+                                            Text(ins.description).font(AppFont.caption)
+                                                .foregroundStyle(Palette.textSecondary)
+                                                .multilineTextAlignment(.leading)
+                                                .lineLimit(2)
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(Palette.textTertiary)
+                                        .padding(.top, 4)
                                 }
-                                Text("Ask about this →").font(AppFont.caption)
-                                    .foregroundStyle(Palette.accent)
+                                .padding(Space.md)
+                                .contentShape(Rectangle())
                             }
-                            Spacer(minLength: 0)
+                            .buttonStyle(.plain)
+                            if i < min(aiInsights.count, 5) - 1 {
+                                Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+                            }
                         }
-                        .padding(Space.md)
-                        .background(Palette.surfaceRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .strokeBorder(Palette.hairline, lineWidth: 1))
                     }
-                    .buttonStyle(PressableStyle(dim: 0.7))
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1))
                 }
 
                 // MARK: 30-day insights (Phase 9 completes: platform toggle, series, best post)
@@ -196,19 +222,38 @@ struct InsightsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack {
-                SectionLabel(text: "Performance", accent: Palette.accent)
+                Text("PERFORMANCE").font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(Palette.textTertiary)
                 Spacer()
                 if loading { ProgressView().controlSize(.small).tint(Palette.textTertiary) }
             }
 
-            // Time-window selector — the tracker always shows YOUR account over the
-            // chosen span, whether or not the learning loop has enough to coach on.
-            MarqueSegmented(options: periodLabels, index: $period)
-                .accessibilityIdentifier("performance.periodToggle")
-                .onChange(of: period) { _, _ in Task { await reload() } }
-
-            MarqueSegmented(options: ["All", "Instagram", "TikTok"], index: $platform)
+            // One control row instead of two stacked full-width segmented pills: the
+            // time window as a compact glass toggle, the platform as a quiet dropdown.
+            HStack {
+                PerformanceView.compactToggleView(options: ["7d", "30d", "90d"], index: $period)
+                    .accessibilityIdentifier("performance.periodToggle")
+                    .onChange(of: period) { _, _ in Task { await reload() } }
+                Spacer()
+                Menu {
+                    Picker("Platform", selection: $platform) {
+                        Text("All platforms").tag(0)
+                        Text("Instagram").tag(1)
+                        Text("TikTok").tag(2)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(platform == 0 ? "All" : platform == 1 ? "Instagram" : "TikTok")
+                            .font(Typeface.sans(12, .medium)).foregroundStyle(Palette.textSecondary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(Palette.textTertiary)
+                    }
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
                 .accessibilityIdentifier("performance.platformToggle")
+            }
 
             // Stat tiles — real numbers only. I-3: never show fabricated totals when the
             // series is placeholder (no_data); dashes read honestly instead.
@@ -244,7 +289,6 @@ struct InsightsSection: View {
                     Text(store.coaching)
                         .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                         .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-                    coachPicker
                 }
             }
         }
@@ -261,30 +305,6 @@ struct InsightsSection: View {
         loading = false
     }
 
-    // Coach-tone picker — controls how the coaching read-out is phrased.
-    private var coachPicker: some View {
-        HStack(spacing: Space.sm) {
-            ForEach(ChatPersona.allCases) { persona in
-                Button { store.coachPersona = persona } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: persona.icon).font(.system(size: 14, weight: .semibold))
-                        Text(persona.label).font(AppFont.micro).tracking(0.3)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(Space.md)
-                    .background(store.coachPersona == persona ? Color(hex: persona.glow) : Palette.surfaceRaised)
-                    .foregroundStyle(store.coachPersona == persona ? Color.white : Palette.textPrimary)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                        .strokeBorder(store.coachPersona == persona ? Color.clear : Palette.hairline, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("performance.coach.\(persona.rawValue)")
-            }
-        }
-        .padding(.top, Space.xs)
-    }
 
     private func views(_ s: BackendClient.PerformanceSummary) -> Int {
         switch platform {
@@ -314,14 +334,17 @@ struct InsightsSection: View {
 
     private func statTile(_ value: String, _ label: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(Typeface.display(22, .semibold)).foregroundStyle(Palette.textPrimary)
+            // Sans, not the serif display face — numbers are data, not headlines
+            // (owner: "uses the fancy font way too much").
+            Text(value).font(Typeface.sans(22, .semibold)).foregroundStyle(Palette.textPrimary)
             Text(label.uppercased()).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Space.md)
-        .background(Palette.surfaceRaised)
+        .background(LiquidGlassFill(radius: Radius.md, sheen: 0.45))
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+            .strokeBorder(Color.white.opacity(0.55), lineWidth: 1))
+        .shadow(color: Palette.shadowCool.opacity(0.12), radius: 14, y: 6)
     }
 }

@@ -29,6 +29,9 @@ struct TweakChatSheet: View {
     // UX-D2 preview-first: the staged (uncommitted) ops awaiting Apply/Discard, and
     // whether a preview proof-render is on screen.
     @State private var pendingOps: [[String: Any]] = []
+    // The instruction behind the commit currently in flight — becomes the landed
+    // version's label in the edit-version timeline (build 66).
+    @State private var lastInstruction: String = ""
     @State private var previewLive = false
 
     private let starters: [(chip: String, message: String)] = [
@@ -189,6 +192,7 @@ struct TweakChatSheet: View {
         guard let jobId = clip.jobId, !sending else { return }
         // A new instruction supersedes any staged preview — drop it first.
         if previewLive || !pendingOps.isEmpty { discardPreview(quiet: true) }
+        lastInstruction = text
         messages.append(Msg(role: .user, text: text))
         sending = true
         sendTask = Task {
@@ -336,7 +340,8 @@ struct TweakChatSheet: View {
                     // backend restores the previous good URL and flags last_render_failed.
                     // Reporting "the new cut is live" there is a lie (audit #8/#44): the
                     // player still shows the OLD cut. Surface the failure honestly.
-                    store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String)
+                    store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String,
+                                           label: lastInstruction)
                     rendering = false
                     if mine["last_render_failed"] as? Bool == true {
                         messages.append(Msg(role: .status,

@@ -101,6 +101,52 @@ final class ChatStore {
         }
     }
 
+    /// Build 66: attach a clip FROM THE LIBRARY instead of Photos. Same pipeline as
+    /// sendClips minus the import/stitch — the footage is already on disk. Uses the RAW
+    /// take when it exists (re-editing an already-rendered cut would double captions);
+    /// the cached render is the fallback for clips whose raw take is gone.
+    func sendLibraryClip(_ clip: Clip, instruction raw: String, store: AppStore,
+                         config: [String: String]? = nil, toggles: EditToggles? = nil,
+                         editFormat: String = "", reactSourceURL: String = "") {
+        guard !isStreaming else { return }
+        guard let footagePath = [clip.localVideoPath, clip.renderLocalPath]
+            .compactMap({ $0 })
+            .first(where: { FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path) })
+        else { return }
+        let instruction = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        chips = []
+        typewriterMessageId = nil
+
+        let name = clip.title.isEmpty ? "a clip from my library" : "\u{201C}\(clip.title)\u{201D}"
+        let convoId = ensureConversation(in: store,
+                                         firstMessage: instruction.isEmpty ? "Edit \(name)" : instruction)
+        append(ChatMessage(role: .user,
+                           content: instruction.isEmpty ? "📎 Attached \(name) to edit"
+                                                        : "\(instruction)\n📎 \(name) attached"),
+               to: convoId, in: store)
+
+        var card = ChatMessage(role: .assistant, content: "")
+        card.kind = .clipEdit
+        card.clipEdit = ClipEditState(stage: .uploading, clipCount: 1)
+        append(card, to: convoId, in: store)
+        // Same recovery payload as the Photos path — a failed edit retries from disk.
+        updateCard(card.id, in: convoId, store: store) {
+            $0.footagePath = footagePath; $0.instruction = instruction
+            $0.editFormat = editFormat; $0.reactSourceURL = reactSourceURL
+            $0.config = config; $0.toggles = toggles
+        }
+        store.save()
+
+        isStreaming = true
+        streamingConversationId = convoId
+        inFlight = Task {
+            await runEditFromFootage(footagePath: footagePath, instruction: instruction,
+                                     cardId: card.id, convoId: convoId, store: store,
+                                     config: config, chosenToggles: toggles,
+                                     editFormat: editFormat, reactSourceURL: reactSourceURL)
+        }
+    }
+
     /// Liveness v2: cards with a LIVE driving task this process. Static (survives the
     /// per-view ChatStore lifecycle) so AppStore.reconcileTransientState can tell a
     /// genuinely-orphaned persisted card (app was killed → set is empty) from one whose

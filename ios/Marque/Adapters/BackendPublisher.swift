@@ -14,13 +14,17 @@ struct BackendPublisher: Publishing {
 
     func schedule(_ post: ScheduledPost, accountIds: [String]) async -> PublishOutcome {
         let platforms = post.platforms.map { $0 == .instagram ? "instagram" : "tiktok" }
-        let iso = ISO8601DateFormatter().string(from: post.date)
         var body: [String: Any] = [
             "caption": post.caption,
             "platforms": platforms,              // legacy hint (backend uses account ids)
             "social_account_ids": accountIds,    // Post for Me spc_ids — the real targets
-            "schedule_date": iso,
         ]
+        // "Post now" (build 66) = a date at/near now. Post for Me publishes IMMEDIATELY
+        // when no scheduled_at is sent — omitting the date is the real post-now switch,
+        // and it also avoids handing PFM a timestamp it could reject as in-the-past.
+        if post.date.timeIntervalSinceNow > 90 {
+            body["schedule_date"] = ISO8601DateFormatter().string(from: post.date)
+        }
         if let media = post.mediaURL, media.hasPrefix("http") {
             body["media_url"] = media
         }

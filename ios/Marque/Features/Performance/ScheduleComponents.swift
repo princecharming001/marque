@@ -84,16 +84,12 @@ struct DayRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            // 3pt accent rail — visible only when this day has posts
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(hasContent ? Palette.accent : Color.clear)
-                .frame(width: 3)
-                .padding(.vertical, Space.md)
-
             VStack(alignment: .leading, spacing: Space.sm) {
                 HStack(spacing: Space.sm) {
+                    // Sans, not the serif display face — a weekday label is wayfinding,
+                    // not a headline (build 66 de-vibe pass).
                     Text(day.formatted(.dateTime.weekday(.wide)))
-                        .font(Typeface.display(17, .semibold)).tracking(Track.tight)
+                        .font(Typeface.sans(15, .semibold))
                         .foregroundStyle(Palette.textPrimary)
                     if isToday {
                         Text("TODAY").font(.system(size: 9, weight: .bold)).tracking(0.6)
@@ -147,10 +143,9 @@ struct DayRow: View {
             .padding(Space.md)
         }
         .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
     }
 }
 

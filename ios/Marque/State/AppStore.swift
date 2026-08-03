@@ -1820,7 +1820,7 @@ final class AppStore {
     // lets the existing watcher carry on.
     private var tweakWatchInFlight: Set<UUID> = []
 
-    func watchTweakRender(jobId: String, clipId: UUID) {
+    func watchTweakRender(jobId: String, clipId: UUID, label: String? = nil) {
         guard !tweakWatchInFlight.contains(clipId) else { return }
         tweakWatchInFlight.insert(clipId)
         Task {
@@ -1834,7 +1834,7 @@ final class AppStore {
                 else { continue }
                 switch mine["status"] as? String ?? "" {
                 case "ready":
-                    applyTweakResult(clipId, remoteURL: mine["render_url"] as? String)
+                    applyTweakResult(clipId, remoteURL: mine["render_url"] as? String, label: label)
                     if mine["last_render_failed"] as? Bool == true {
                         notifyTweakRender("That edit couldn't render",
                                           "Your previous cut is untouched in the Library.",
@@ -1873,11 +1873,11 @@ final class AppStore {
                                   content: content, trigger: nil))
     }
 
-    func applyTweakResult(_ clipId: UUID, remoteURL: String?) {
+    func applyTweakResult(_ clipId: UUID, remoteURL: String?, label: String? = nil) {
         if let idx = clips.firstIndex(where: { $0.id == clipId }) {
             clips[idx].status = .ready
             clips[idx].finishedAt = Date()      // a tweak re-render is a fresh "finished editing"
-            if let remoteURL, !remoteURL.isEmpty { updateRemoteURL(remoteURL, at: idx) }
+            if let remoteURL, !remoteURL.isEmpty { updateRemoteURL(remoteURL, at: idx, label: label) }
             save()
             cacheRender(clipId: clipId)
         }
@@ -1893,8 +1893,22 @@ final class AppStore {
     /// Reflect a (possibly new) render URL on a clip. When the URL actually CHANGES
     /// (tweak re-render), the cached render file + its poster are stale — invalidate
     /// both so playback never shows the previous edit.
-    private func updateRemoteURL(_ url: String, at idx: Int) {
+    private func updateRemoteURL(_ url: String, at idx: Int, label: String? = nil) {
         guard clips[idx].remoteURL != url else { return }
+        // Build 66 edit-version history. A RESTORE re-render must not re-append the
+        // versions it just undid — it trims instead (the undone versions are gone from
+        // the server's edl_history stack, so pretending they're restorable would lie).
+        if let trim = pendingRestoreTrims.removeValue(forKey: clips[idx].id) {
+            var h = clips[idx].renderHistory ?? []
+            h.removeFirst(min(trim.count, h.count))
+            clips[idx].renderHistory = h
+            clips[idx].currentVersionLabel = trim.label
+        } else if let old = clips[idx].remoteURL, !old.isEmpty {
+            var h = clips[idx].renderHistory ?? []
+            h.insert(RenderVersion(url: old, label: clips[idx].currentVersionLabel ?? ""), at: 0)
+            clips[idx].renderHistory = Array(h.prefix(10))   // UI depth; server undo holds 25
+            clips[idx].currentVersionLabel = label
+        }
         clips[idx].remoteURL = url
         if let old = clips[idx].renderLocalPath {
             try? FileManager.default.removeItem(at: MediaStore.url(for: old))
@@ -1904,6 +1918,57 @@ final class AppStore {
         if clips[idx].jobId != nil, clips[idx].source != "imported" {
             clips[idx].thumbnailPath = nil          // poster belonged to the old render/raw take
         }
+    }
+
+    // MARK: Build 66 — edit-version restore (real, server-truthful undo)
+
+    /// Restores in flight: clipId → how many history entries to trim (and the restored
+    /// version's own label) when the restore's re-render lands in updateRemoteURL.
+    private var pendingRestoreTrims: [UUID: (count: Int, label: String?)] = [:]
+
+    /// Roll a clip back to history entry `index` (0 = the version right before the
+    /// current one). Server-truthful: entry i is i+1 `undo` ops — the backend pops its
+    /// edl_history stack and re-renders that exact cut, so future tweaks build on the
+    /// restored edit, not a URL swap. Returns false when the backend refused (e.g. undo
+    /// depth exhausted after a restart, where the durable stack holds fewer states).
+    func restoreEditVersion(clipId: UUID, index: Int) async -> Bool {
+        guard let idx = clips.firstIndex(where: { $0.id == clipId }),
+              let jobId = clips[idx].jobId,
+              let history = clips[idx].renderHistory, index < history.count else { return false }
+        let ops = Array(repeating: ["type": "undo"], count: index + 1)
+        let resp = await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString, ops: ops)
+        let undos = (resp["applied"] as? [[String: Any]] ?? [])
+            .filter { $0["type"] as? String == "undo" }.count
+        guard undos > 0 else { return false }
+        let restored = history[index]
+        pendingRestoreTrims[clipId] = (count: undos, label: restored.label.isEmpty ? nil : restored.label)
+        clips[idx].status = .rendering
+        clips[idx].pipelineStage = "rendering"
+        save()
+        watchTweakRender(jobId: jobId, clipId: clipId)
+        return true
+    }
+
+    /// The current edit as a LOCAL video file for the share sheet. Sharing a remote URL
+    /// hands the recipient a link, not the video — so when the render cache is cold
+    /// (fresh tweak just invalidated it) this downloads the render first. nil only when
+    /// there is genuinely nothing shareable yet.
+    func shareableRenderFile(for clipId: UUID) async -> URL? {
+        guard let idx = clips.firstIndex(where: { $0.id == clipId }) else { return nil }
+        if let p = clips[idx].playbackLocalPath { return MediaStore.url(for: p) }
+        guard let remote = clips[idx].playbackRemoteURL, let url = URL(string: remote) else { return nil }
+        do {
+            let (tmp, resp) = try await URLSession.shared.download(from: url)
+            guard (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                  let data = try? Data(contentsOf: tmp) else { return nil }
+            let path = MediaStore.save(data, ext: "mp4")
+            if let i = clips.firstIndex(where: { $0.id == clipId }), clips[i].isServerRendered,
+               clips[i].remoteURL == remote {
+                clips[i].renderLocalPath = path                  // warm the cache while we're here
+                save()
+            }
+            return MediaStore.url(for: path)
+        } catch { return nil }
     }
 
     // MARK: UX-D2 — transient tweak-preview state (never persisted: no save() calls)

@@ -254,13 +254,16 @@ struct ClipsSection: View {
                 Divider()
                 Button { showNewGroup = true } label: { Label("New group…", systemImage: "plus") }
             } label: {
+                // Build 66: flush-left, no capsule — the pill's internal padding pushed
+                // the label off the left margin every other element on this screen sits
+                // on (owner: "line up with the rest of the stuff on the left").
                 HStack(spacing: 5) {
                     Text(groupFilterLabel).font(AppFont.callout).foregroundStyle(Palette.textPrimary)
                     Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Palette.textTertiary)
                 }
-                .padding(.horizontal, Space.md).padding(.vertical, 8)
-                .background(Palette.surfaceSunken, in: Capsule())
+                .padding(.vertical, 8)
+                .contentShape(Rectangle())
             }
             .accessibilityIdentifier("library.groupFilter")
             Spacer()
@@ -504,6 +507,12 @@ struct ClipDetailSheet: View {
     @State private var showDelete = false
     @State private var showTweak = false
     @State private var showEditor = false
+    @State private var showVersions = false
+    @State private var showPostNow = false
+    // Share resolves the EDITED render to a local FILE first (a remote URL shares as a
+    // link, not a video) — preparing covers the one-time download when the cache is cold.
+    @State private var sharePreparing = false
+    @State private var shareFileURL: URL?
 
     init(clip: Clip) {
         self.clip = clip
@@ -661,17 +670,36 @@ struct ClipDetailSheet: View {
                         .accessibilityIdentifier("clip.editManual")
                     }
 
+                    // Build 66: past edit versions — a timeline of every AI/manual edit,
+                    // any of which can be restored (server-side EDL undo + re-render).
+                    if !isDraft, clip.jobId != nil, !(current.renderHistory ?? []).isEmpty {
+                        GhostButton(title: "Versions", systemImage: "clock.arrow.circlepath") {
+                            showVersions = true
+                        }
+                        .accessibilityIdentifier("clip.versions")
+                    }
+
                     // Custom Share / Delete actions — first-class, on-brand pills instead of
                     // a buried Apple-native ellipsis menu. build 52: Delete now shows for
                     // DRAFTS too (it was gated behind !isDraft, leaving drafts un-deletable
                     // from the Library — the reported bug); Share stays non-draft only (a
                     // half-finished take has nothing shareable yet).
                     HStack(spacing: Space.sm) {
-                        if !isDraft, let shareURL {
-                            ShareLink(item: shareURL) {
-                                clipActionLabel("Share", systemImage: "square.and.arrow.up",
+                        if !isDraft, shareURL != nil {
+                            Button {
+                                guard !sharePreparing else { return }
+                                sharePreparing = true
+                                Task {
+                                    shareFileURL = await store.shareableRenderFile(for: clip.id)
+                                    sharePreparing = false
+                                }
+                            } label: {
+                                clipActionLabel(sharePreparing ? "Preparing…" : "Share",
+                                                systemImage: "square.and.arrow.up",
                                                 tint: Palette.textPrimary)
                             }
+                            .buttonStyle(PressableStyle(dim: 0.7))
+                            .disabled(sharePreparing)
                             .accessibilityIdentifier("clip.share")
                         }
                         Button { showDelete = true } label: {
@@ -759,10 +787,18 @@ struct ClipDetailSheet: View {
                         .background(.ultraThinMaterial)
                     }
                 } else if current.status == .ready {
-                    PrimaryButton(title: "Schedule this clip", systemImage: "calendar") {
-                        store.updateClipCaption(clip, caption: caption)
-                        router.pendingScheduleClipId = clip.id
-                        dismiss(); router.selectedTab = .performance
+                    HStack(spacing: Space.sm) {
+                        PrimaryButton(title: "Post now", systemImage: "paperplane.fill") {
+                            store.updateClipCaption(clip, caption: caption)
+                            showPostNow = true
+                        }
+                        .accessibilityIdentifier("clip.postNow")
+                        GhostButton(title: "Schedule", systemImage: "calendar") {
+                            store.updateClipCaption(clip, caption: caption)
+                            router.pendingScheduleClipId = clip.id
+                            dismiss(); router.selectedTab = .performance
+                        }
+                        .accessibilityIdentifier("clip.schedule")
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
@@ -778,8 +814,234 @@ struct ClipDetailSheet: View {
                 TweakChatSheet(clip: clip, autoFocus: true)
                     .presentationDetents([.medium, .large])   // UX-D1: chat over the player
             }
+            .sheet(isPresented: $showVersions) {
+                VersionTimelineSheet(clipId: clip.id)
+                    .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showPostNow) {
+                PostNowSheet(clip: clip, caption: caption) { dismiss() }
+                    .presentationDetents([.medium])
+            }
+            .sheet(isPresented: Binding(get: { shareFileURL != nil },
+                                        set: { if !$0 { shareFileURL = nil } })) {
+                if let url = shareFileURL { ActivityShareSheet(items: [url]) }
+            }
             .fullScreenCover(isPresented: $showEditor) { ProEditorView(clip: clip) }
         }
+    }
+}
+
+// MARK: - Share sheet (UIKit bridge)
+
+/// The system share sheet for a LOCAL video file. ShareLink hands a remote URL around as
+/// a link; this always receives a file URL (resolved/downloaded first), so the recipient
+/// gets the edited video itself.
+struct ActivityShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
+}
+
+// MARK: - Post now (build 66)
+
+/// Immediate publish: pick platforms (only OAuth-linked ones can post), confirm, done.
+/// Rides scheduleClip with date = now — the publisher omits the schedule date near-now,
+/// which is Post for Me's post-immediately mode.
+struct PostNowSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let clip: Clip
+    let caption: String
+    var onPosted: () -> Void = {}
+
+    @State private var chosen: Set<SocialPlatform> = []
+    @State private var posting = false
+    @State private var note: String?
+
+    private func linked(_ p: SocialPlatform) -> Bool {
+        !store.publishAccountIds(for: [p]).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("POST NOW").font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(Palette.textTertiary)
+                Text("Where should this go?")
+                    .font(Typeface.display(24)).foregroundStyle(Palette.textPrimary)
+            }
+            VStack(spacing: 0) {
+                ForEach(SocialPlatform.allCases) { p in
+                    let isLinked = linked(p)
+                    Button {
+                        if chosen.contains(p) { chosen.remove(p) } else { chosen.insert(p) }
+                    } label: {
+                        HStack(spacing: Space.md) {
+                            Text(p.label).font(AppFont.body)
+                                .foregroundStyle(isLinked ? Palette.textPrimary : Palette.textTertiary)
+                            if !isLinked {
+                                Text("not connected").font(AppFont.caption)
+                                    .foregroundStyle(Palette.textTertiary)
+                            }
+                            Spacer()
+                            Image(systemName: chosen.contains(p) ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 20, weight: .light))
+                                .foregroundStyle(chosen.contains(p) ? Palette.ink : Palette.textTertiary)
+                        }
+                        .padding(Space.md).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isLinked)
+                    .accessibilityIdentifier("postNow.\(p.rawValue)")
+                    if p != SocialPlatform.allCases.last {
+                        Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+                    }
+                }
+            }
+            .background(Palette.surfaceRaised)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
+            if let note {
+                Text(note).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+            PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {
+                guard !posting, !chosen.isEmpty else { return }
+                posting = true
+                Task {
+                    await store.scheduleClip(clip, on: Date(), platforms: Array(chosen),
+                                             caption: caption)
+                    posting = false
+                    let outcome = store.schedule.last?.outcome
+                    if outcome == .posted {
+                        dismiss(); onPosted()
+                    } else {
+                        note = "Couldn't post right now — it's saved in your queue instead. Check your connected accounts in Profile."
+                    }
+                }
+            }
+            .disabled(chosen.isEmpty || posting)
+            .accessibilityIdentifier("postNow.confirm")
+        }
+        .padding(Space.lg)
+        .background(Palette.canvas)
+        .onAppear {
+            chosen = Set(SocialPlatform.allCases.filter(linked))
+        }
+    }
+}
+
+// MARK: - Edit-version timeline (build 66)
+
+/// The clip's edit history as a vertical timeline: current cut on top, every past
+/// version below with what produced it and a one-tap Restore. Restore is server-truthful
+/// (EDL undo + re-render), so the clip briefly returns to "rendering" while the old cut
+/// comes back.
+struct VersionTimelineSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let clipId: UUID
+
+    @State private var restoring: UUID?
+    @State private var note: String?
+
+    private var clip: Clip? { store.clips.first(where: { $0.id == clipId }) }
+    private var history: [RenderVersion] { clip?.renderHistory ?? [] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("EDIT HISTORY").font(AppFont.micro).tracking(Track.label)
+                    .foregroundStyle(Palette.textTertiary)
+                Text("Versions").font(Typeface.display(24)).foregroundStyle(Palette.textPrimary)
+                Text("Every edit is kept. Restore any version — your video re-renders exactly as it was.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    timelineRow(label: clip?.currentVersionLabel ?? "", date: clip?.finishedAt,
+                                isCurrent: true, isLast: history.isEmpty, index: nil)
+                    ForEach(Array(history.enumerated()), id: \.element.id) { i, v in
+                        timelineRow(label: v.label, date: v.date, isCurrent: false,
+                                    isLast: i == history.count - 1, index: i)
+                    }
+                }
+            }
+            if let note {
+                Text(note).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(Space.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.canvas)
+    }
+
+    @ViewBuilder
+    private func timelineRow(label: String, date: Date?, isCurrent: Bool, isLast: Bool, index: Int?) -> some View {
+        HStack(alignment: .top, spacing: Space.md) {
+            VStack(spacing: 0) {
+                Circle()
+                    .strokeBorder(isCurrent ? Palette.ink : Palette.textTertiary, lineWidth: 1.5)
+                    .background(Circle().fill(isCurrent ? Palette.ink : Color.clear).padding(3))
+                    .frame(width: 14, height: 14)
+                if !isLast {
+                    Rectangle().fill(Palette.hairline).frame(width: 1)
+                        .frame(maxHeight: .infinity)
+                }
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: Space.sm) {
+                    Text(label.isEmpty ? "Original edit" : "\u{201C}\(label)\u{201D}")
+                        .font(Typeface.sans(14, isCurrent ? .semibold : .medium))
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(2)
+                    if isCurrent {
+                        Text("CURRENT").font(.system(size: 9, weight: .bold)).tracking(0.6)
+                            .foregroundStyle(Palette.onInk)
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Palette.ink).clipShape(Capsule())
+                    }
+                }
+                if let date {
+                    Text(date.formatted(.relative(presentation: .named)))
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                }
+                if let index, clip?.status == .ready {
+                    Button {
+                        guard restoring == nil else { return }
+                        let vid = history[index].id
+                        restoring = vid
+                        Task {
+                            let ok = await store.restoreEditVersion(clipId: clipId, index: index)
+                            restoring = nil
+                            if ok {
+                                dismiss()
+                            } else {
+                                note = "That version can't be restored anymore (the edit session moved on). Newer versions may still work."
+                            }
+                        }
+                    } label: {
+                        Text(restoring == history[index].id ? "Restoring…" : "Restore")
+                            .font(Typeface.sans(12, .semibold))
+                            .foregroundStyle(Palette.ink)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().strokeBorder(Palette.ink.opacity(0.4), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(restoring != nil)
+                    .accessibilityIdentifier("versions.restore.\(index)")
+                    .padding(.top, 2)
+                }
+            }
+            .padding(.bottom, Space.lg)
+            Spacer(minLength: 0)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

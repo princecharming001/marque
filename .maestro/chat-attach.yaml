@@ -1,8 +1,8 @@
 appId: com.getmarque.app
-name: W5 — chat "Edit my clips" attach entry
+name: "Build 66 — chat attach: Photos / Your library toggle"
 # The full stitch→upload→analyze→edit pipeline is covered by backend tests +
 # the analyze-first flow; this proves the chat entry point is wired: the attach
-# menu offers "Edit my clips" and it opens the system video picker.
+# sheet offers exactly the two sources (Photos toggle → system video picker).
 ---
 - launchApp:
     arguments:
@@ -19,8 +19,11 @@ name: W5 — chat "Edit my clips" attach entry
 - tapOn:
     id: "chat.attach"
 - extendedWaitUntil:
-    visible: "Edit my clips"
+    visible:
+      id: "chat.attachSource"
     timeout: 4000
+- assertVisible: "Your library"
 - takeScreenshot: /tmp/r5-chat-attach
-- tapOn: "Edit my clips"
+- tapOn:
+    id: "chat.attachPhotos"
 - takeScreenshot: /tmp/r5-chat-picker

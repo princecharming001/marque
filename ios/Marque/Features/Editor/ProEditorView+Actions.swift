@@ -851,7 +851,7 @@ extension ProEditorView {
                 // (survives this view) applies the result + notifies when the backend
                 // finishes, and the creator gets the app back immediately.
                 store.setClipRendering(clip.id)
-                store.watchTweakRender(jobId: jobId, clipId: clip.id)
+                store.watchTweakRender(jobId: jobId, clipId: clip.id, label: "Manual edit")
                 bumpHaptic()
                 dismiss()
             } else {
@@ -870,7 +870,7 @@ extension ProEditorView {
                   let mine = jobClips.first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id }) else { continue }
             let status = mine["status"] as? String ?? ""
             if status == "ready" {
-                store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String)
+                store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String, label: "Manual edit")
                 if mine["last_render_failed"] as? Bool == true { return (false, "That edit's render failed — your previous cut is untouched.") }
                 return (true, nil)
             }

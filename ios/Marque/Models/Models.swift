@@ -447,6 +447,14 @@ struct Clip: Codable, Hashable, Identifiable {
     // edit). Cleared on apply/discard/sheet-dismiss/remoteURL change; never written
     // with the snapshot save (set without save()). Optional-with-default → decode-safe.
     var previewURL: String? = nil
+    // Edit-version history (build 66): past render URLs, newest first, appended when a
+    // committed tweak lands a NEW render. Mirrors the backend's edl_history undo stack —
+    // restoring entry i = i+1 server `undo` ops + a re-render, so the timeline is real,
+    // not cosmetic. Optional-with-default → Snapshot-safe both directions.
+    var renderHistory: [RenderVersion]? = nil
+    // What produced the CURRENT render (the tweak instruction), so when the next edit
+    // pushes it into history the entry is labeled by what it was. nil = original edit.
+    var currentVersionLabel: String? = nil
     // Server's remaining-time estimate ("Ready in ~N min" in the Library). Refreshed
     // by the poll loops; the countdown anchors at etaSetAt (when the estimate was
     // taken), NOT createdAt — the server value is already remaining-from-now.
@@ -535,6 +543,15 @@ extension Clip {
     var playbackRemoteURL: String? {
         isServerRendered ? remoteURL : (localVideoPath == nil ? remoteURL : nil)
     }
+}
+
+/// One past edit of a clip: the render it produced and what made it. Timeline rows in
+/// the Versions sheet; restore = server-side EDL undo back to this point + re-render.
+struct RenderVersion: Codable, Hashable, Identifiable {
+    var id: UUID = UUID()
+    var url: String
+    var label: String          // the instruction that PRODUCED this version ("" = original edit)
+    var date: Date = Date()
 }
 
 enum SocialPlatform: String, CaseIterable, Codable, Identifiable {
