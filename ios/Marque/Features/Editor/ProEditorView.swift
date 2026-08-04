@@ -24,6 +24,7 @@ struct ProEditorView: View {
         case musicVolume
         case captionStyle
         case captionCustomize
+        case stickerStyle(idx: Int)
         case transitionDuration(boundary: Int)
     }
 
@@ -55,8 +56,15 @@ struct ProEditorView: View {
     @State var showCaptionList = false           // the batch caption list editor
     @State var hapticTick = 0                    // I-7: .sensoryFeedback trigger
     // One-time first-run coach: three lines of orientation, dismissed forever after.
-    @AppStorage("editorPro.coachShown") private var coachShown = false
-    @State private var showCoach = false
+    // Build 69 hint system (NN/g: one just-in-time hint at first encounter beats a
+    // one-shot multi-tip card that fades from working memory in ~20s). One pill at a
+    // time; each fires once ever (UserDefaults flag); max 2 per session after the first.
+    @State var activeHint: (icon: String, text: String)? = nil
+    @State private var hintWork: DispatchWorkItem? = nil
+    @State private var sessionHints = 0
+    @State private var zoomPill: String? = nil
+    @State private var zoomPillWork: DispatchWorkItem? = nil
+    @State private var lookTab = 0   // 0 Filter · 1 Adjust · 2 Theme (build 69 Look panel)
     // UX-4: slider drafts — the op commits once, on gesture end.
     @State private var musicVolDraft: Double = 0.15
     @State private var clipVolDraft: Double = 1.0
@@ -137,7 +145,6 @@ struct ProEditorView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showCoach { coachOverlay }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
@@ -169,7 +176,7 @@ struct ProEditorView: View {
         }
         .task { await load() }
         .onChange(of: phase) { _, p in
-            if p == .editing, !coachShown { showCoach = true }
+            if p == .editing { maybeHint("tapClip", icon: "hand.tap", text: "Tap a clip to select it") }
         }
         .onChange(of: rootPanel) { _, p in
             // The filter cards' representative frame loads lazily on first entry to Filters —
@@ -199,44 +206,51 @@ struct ProEditorView: View {
         }
     }
 
-    /// First-open orientation — three lines, one button, never again.
-    private var coachOverlay: some View {
-        ZStack {
-            Color.black.opacity(0.55).ignoresSafeArea()
-            VStack(alignment: .leading, spacing: Space.md) {
-                Text("Your editor")
-                    .font(Typeface.display(22, .semibold)).foregroundStyle(.white)
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    coachRow("hand.tap", "Tap a clip to select it — trim with the edge handles")
-                    coachRow("square.split.2x1", "Split cuts at the playhead — scrub to the exact moment first")
-                    coachRow("textformat", "Tap a caption strip, then Edit, to fix its words")
+    // MARK: Contextual hints (build 69)
+
+    /// Show `text` once ever (keyed flag), one at a time, ≤2 per session beyond the
+    /// first-entry hint. `transient: true` skips the once-ever flag (feedback hints).
+    func maybeHint(_ key: String, icon: String, text: String, transient: Bool = false) {
+        let flag = "editorPro.hint.\(key)"
+        if !transient {
+            guard !UserDefaults.standard.bool(forKey: flag), sessionHints < 3 else { return }
+            UserDefaults.standard.set(true, forKey: flag)
+            sessionHints += 1
+        }
+        hintWork?.cancel()
+        withAnimation(.easeOut(duration: 0.2)) { activeHint = (icon, text) }
+        let work = DispatchWorkItem { withAnimation(.easeOut(duration: 0.25)) { activeHint = nil } }
+        hintWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.5, execute: work)
+    }
+
+    /// One-line pill above the timeline — never occludes the playhead or the bar.
+    var hintPill: some View {
+        Group {
+            if let hint = activeHint {
+                HStack(spacing: 6) {
+                    Image(systemName: hint.icon).font(.system(size: 12, weight: .semibold))
+                    Text(hint.text).font(Typeface.sans(12, .medium))
                 }
-                Button {
-                    coachShown = true
-                    withAnimation(.easeOut(duration: 0.2)) { showCoach = false }
-                } label: {
-                    Text("Got it").font(AppFont.headline).foregroundStyle(Palette.night)
-                        .frame(maxWidth: .infinity).frame(height: 46)
-                        .background(Color.white).clipShape(Capsule())
-                }
-                .buttonStyle(PressableStyle())
-                .accessibilityIdentifier("editorPro.coachDismiss")
+                .foregroundStyle(.white)
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Capsule().fill(.black.opacity(0.72)))
+                .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+                .accessibilityIdentifier("editorPro.hint")
             }
-            .padding(Space.xl)
-            .background(Palette.ink)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-            .padding(Space.xl)
         }
     }
 
-    private func coachRow(_ icon: String, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: Space.sm) {
-            Image(systemName: icon).font(.system(size: 14)).foregroundStyle(Palette.accent)
-                .frame(width: 22)
-            Text(text).font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
-                .fixedSize(horizontal: false, vertical: true)
+    /// The gesture-teaching ladder, advanced by selection events (one per encounter).
+    func hintOnSelect(_ target: SelectionTarget?) {
+        guard case .seg = target else { return }
+        if !UserDefaults.standard.bool(forKey: "editorPro.hint.pinchZoom") {
+            maybeHint("pinchZoom", icon: "arrow.left.and.right.circle", text: "Pinch the timeline to zoom")
+        } else if !UserDefaults.standard.bool(forKey: "editorPro.hint.holdReorder") {
+            maybeHint("holdReorder", icon: "hand.tap.fill", text: "Hold a clip to reorder")
+        } else if !UserDefaults.standard.bool(forKey: "editorPro.hint.reframe") {
+            maybeHint("reframe", icon: "arrow.up.left.and.arrow.down.right", text: "Drag or pinch the video to reframe")
         }
     }
 
@@ -420,22 +434,52 @@ struct ProEditorView: View {
                     }
                     .accessibilityIdentifier("editorPro.addBroll")
                     if !punchInsSupported && !brollSupported {
-                        Text("No effects for this style").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).accessibilityIdentifier("editorPro.effects.empty")
+                        // Build 69: unreachable in practice (the Effects tile hides when
+                        // neither capability exists) — no dead label, ever.
+                        EmptyView()
                     }
                 }.padding(.horizontal, Space.md)
             }
             .frame(height: 52).background(Palette.ink.opacity(0.25))
         case .filters:
-            // Visual thumbnail cards (real frame through each look) + a tools row
-            // (Theme + Advanced) + intensity when a filter is active. Manual color knobs
-            // (Adjust) hide behind "Advanced" to keep the idle Filters panel to two rows.
-            filterCardsRow
-            filterToolsRow
-            if session?.draft.look.filter != nil { filterIntensityRow }
-            if showFilterAdvanced { adjustRow }
+            // Build 69 "Look" model: the three color systems get NAMES instead of
+            // disclosure layers — Filter (preset cards + intensity), Adjust (manual
+            // knobs), Theme (whole-video bundles). One tab row, no hidden "Advanced".
+            lookTabRow
+            switch lookTab {
+            case 1:
+                adjustRow
+            case 2:
+                filterToolsRow
+            default:
+                filterCardsRow
+                filterIntensityRow
+            }
         case nil:
             EmptyView()
         }
+    }
+
+    /// Build 69: the Look panel's tab row — Filter / Adjust / Theme as named systems.
+    private var lookTabRow: some View {
+        HStack(spacing: Space.sm) {
+            ForEach(Array(["Filter", "Adjust", "Theme"].enumerated()), id: \.offset) { i, label in
+                if i != 2 || !themes.isEmpty {
+                    Button { withAnimation(.easeOut(duration: 0.15)) { lookTab = i }; bumpHaptic() } label: {
+                        Text(label)
+                            .font(.system(size: 11, weight: lookTab == i ? .bold : .medium))
+                            .foregroundStyle(lookTab == i ? Palette.ink : .white)
+                            .padding(.horizontal, 12).frame(height: 26)
+                            .background(lookTab == i ? Palette.onInk : Color.white.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editorPro.look.\(label.lowercased())")
+                }
+            }
+            Spacer()
+        }
+        .padding(.horizontal, Space.md).frame(height: 34)
     }
 
     /// Filters tools: the Theme sheet (one-tap coherent look — captions+grade+music) plus an
@@ -518,7 +562,47 @@ struct ProEditorView: View {
         .padding(.horizontal, Space.md).frame(height: 38)
         .background(Palette.ink.opacity(0.25))
         .onAppear { filterIntensityDraft = session?.draft.look.intensity ?? 1.0 }
+        // Build 69: always present on the Filter tab, quietly disabled at "None" —
+        // an appearing/vanishing row read as broken.
+        .disabled(session?.draft.look.filter == nil)
+        .opacity(session?.draft.look.filter == nil ? 0.35 : 1)
         .accessibilityIdentifier("editorPro.filterIntensity")
+    }
+
+    /// Build 69: sticker Style — color chips, background pill toggle, font chips.
+    /// Every knob commits through the same edit_overlay op the server applies on Save.
+    private func stickerStyleRow(_ i: Int) -> some View {
+        let o = session?.draft.overlays[safe: i]
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Space.sm) {
+                ForEach(["FFFFFF", "FFD60A", "111111", "FF3B30", "0A84FF"], id: \.self) { hex in
+                    let active = (o?.color ?? "FFFFFF").replacingOccurrences(of: "#", with: "").uppercased() == hex
+                    Button { mutate([.editSticker(index: i, color: hex)]); bumpHaptic() } label: {
+                        Circle().fill(Color(hex: UInt(hex, radix: 16) ?? 0xFFFFFF))
+                            .frame(width: 24, height: 24)
+                            .overlay(Circle().strokeBorder(active ? Palette.accent : .white.opacity(0.3),
+                                                           lineWidth: active ? 2 : 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("editorPro.sticker.color.\(hex)")
+                }
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 22)
+                let hasBg = (o?.bg ?? "none") != "none" && !(o?.bg ?? "").isEmpty
+                optChip("Background", active: hasBg) {
+                    mutate([.editSticker(index: i, bg: hasBg ? "none" : "111111")]); bumpHaptic()
+                }
+                .accessibilityIdentifier("editorPro.sticker.bg")
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 22)
+                ForEach(["inter", "archivo", "serif"], id: \.self) { f in
+                    optChip(f.capitalized, active: (o?.font ?? "inter") == f) {
+                        mutate([.editSticker(index: i, font: f)]); bumpHaptic()
+                    }
+                    .accessibilityIdentifier("editorPro.sticker.font.\(f)")
+                }
+            }
+            .padding(.horizontal, Space.md)
+        }
+        .frame(height: 44)
     }
 
     /// #8 AI report card — the self-review vision score + issues, and the
@@ -1570,10 +1654,18 @@ struct ProEditorView: View {
                     }
                 }
                 .accessibilityIdentifier("editorPro.captionSim")
-                // Owner ask (intuitive select-all): tapping the caption on the canvas selects
-                // the WHOLE caption track — the style/position controls open right there, no
-                // hunting for a button. (Style/position were already track-wide.)
-                .onTapGesture { rootPanel = .captions }
+                // Build 69: tapping the caption you SEE selects that phrase (second tap
+                // opens its word editor) — the fix happens at the point of sight. The
+                // track-wide style route stays on the root Captions tile.
+                .onTapGesture {
+                    let f = playheadSourceFrame
+                    if let p = phrases.first(where: { f >= $0.startFrame && f < $0.endFrame })
+                        ?? phrases.first {
+                        if selectedPhraseID == p.id { beginPhraseEdit(p) } else { select(.phrase(p.id)) }
+                    } else {
+                        rootPanel = .captions
+                    }
+                }
                 // Selection affordance: dashed bounds invite the drag whenever captions are
                 // the working context (Captions panel open or a phrase selected); accent
                 // while a gesture is live (TikTok's selection box).
@@ -1792,7 +1884,11 @@ struct ProEditorView: View {
             musicVolume: session?.draft.music?.volume ?? 0.15,
             selectedMusic: selectedMusic,
             showMusicAdd: rootPanel == .sound && session?.draft.music == nil,
-            onTapPhrase: { p in select(selectedPhraseID == p.id ? nil : .phrase(p.id)) },
+            // Build 69: second tap on the selected phrase opens the word editor directly
+            // (CapCut double-tap-to-type) — fixing a mis-heard word is THE most common fix.
+            onTapPhrase: { p in
+                if selectedPhraseID == p.id { beginPhraseEdit(p) } else { select(.phrase(p.id)) }
+            },
             onTapMusic: { select(selectedMusic ? nil : .music) },
             onTapAddMusic: { showMusicSheet = true },
             onTapVoice: { segIdx in
@@ -1815,6 +1911,52 @@ struct ProEditorView: View {
         )
         .frame(height: timelineHeight)
         .background(Palette.ink.opacity(0.6))
+        // Build 69: the pinch-zoom gesture gets VISIBLE backup (Norman: invisible
+        // gestures fail) — a magnifier that cycles fit → default → close, plus a
+        // transient seconds-per-screen pill whenever the zoom level changes.
+        .overlay(alignment: .topTrailing) {
+            Button { cycleZoom() } label: {
+                Image(systemName: "plus.magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 34, height: 30)
+                    .background(.black.opacity(0.45), in: Capsule())
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 8).padding(.top, 2)
+            .accessibilityIdentifier("editorPro.zoomCycle")
+        }
+        .overlay(alignment: .top) {
+            if let z = zoomPill {
+                Text(z).font(Typeface.sans(11, .semibold)).monospacedDigit()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(.black.opacity(0.7)))
+                    .transition(.opacity)
+                    .accessibilityIdentifier("editorPro.zoomPill")
+            }
+        }
+        .overlay(alignment: .top) { hintPill.offset(y: -34) }
+        .onChange(of: pointsPerSecond) { _, pps in flashZoomPill(pps) }
+    }
+
+    /// Cycle fit-whole-video → default → close-up (the visible redundancy for pinch).
+    private func cycleZoom() {
+        let total = max(1.0, session?.draft.outputSeconds ?? 1)
+        let fit = max(6, min(110, (UIScreen.main.bounds.width - 60) / total))
+        let next: CGFloat = pointsPerSecond < 17 ? 18 : (pointsPerSecond < 55 ? 60 : fit)
+        withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = next }
+        bumpHaptic()
+    }
+
+    private func flashZoomPill(_ pps: CGFloat) {
+        let visible = (UIScreen.main.bounds.width - 60) / max(6, pps)
+        withAnimation(.easeOut(duration: 0.15)) { zoomPill = String(format: "%.0fs across", visible) }
+        zoomPillWork?.cancel()
+        let work = DispatchWorkItem { withAnimation(.easeOut(duration: 0.25)) { zoomPill = nil } }
+        zoomPillWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
     }
 
     // MARK: selection choke point (the one-bar invariant's enforcement)
@@ -1832,6 +1974,7 @@ struct ProEditorView: View {
     /// and a rootPanel are never both active; expansions never outlive their host; in-flight
     /// sticker typing commits BEFORE anything touches the shared editDraft buffer.
     func select(_ target: SelectionTarget?) {
+        hintOnSelect(target)
         if let idx = typingSticker { commitTyping(idx) }
         player?.pause()
         withAnimation(.easeOut(duration: 0.15)) {
@@ -1922,6 +2065,23 @@ struct ProEditorView: View {
 
     var oneBar: some View {
         HStack(spacing: 0) {
+            // Build 69: persistent one-tap Split (thumb zone). Splitting a bad take is
+            // the #1 job (10-20×/video) — it must not cost a select→split→deselect
+            // round-trip. Root state only; selection states keep the chevron there.
+            if atPlainRoot {
+                Button { quickSplitAtPlayhead() } label: {
+                    VStack(spacing: 4) {
+                        Image(systemName: "scissors").font(.system(size: 19))
+                        Text("Split").font(.system(size: 10))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(width: 52, height: 64)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("editorPro.quickSplit")
+                Rectangle().fill(.white.opacity(0.12)).frame(width: 1, height: 40)
+            }
             // Fixed deselect tile — hidden at plain root (nothing to pop). Topmost layer
             // only: expansion → selection → rootPanel (see chevronTap).
             if !atPlainRoot {
@@ -1960,16 +2120,18 @@ struct ProEditorView: View {
     @ViewBuilder private var vocabularyTiles: some View {
         switch toolbarState {
         case .root:
+            // Build 69 frequency order (talking-head jobs: cut > captions > cleanup >
+            // sound > overlays > effects > look). Restore left the root — it's only
+            // meaningful after Clean up ran, and lives inside that panel + cut seams.
             barTile("Edit", "scissors", id: "editorPro.root.edit") { rootEditTap() }
-            barTile("Sound", "music.note", id: "editorPro.root.sound", active: rootPanel == .sound) { openRootPanel(.sound) }
-            barTile("Text", "textformat", id: "editorPro.root.text", active: rootPanel == .text) { openRootPanel(.text) }
             barTile("Captions", "captions.bubble", id: "editorPro.root.captions", active: rootPanel == .captions) { openRootPanel(.captions) }
-            barTile("Clean up", "wand.and.sparkles", id: "editorPro.cleanup") {
+            barTile("Clean up", "wand.and.sparkles", id: "editorPro.cleanup",
+                    dot: !(session?.draft.drops.isEmpty ?? true)) {
                 player?.pause(); cleanupSkip = []
                 withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
             }
-            barTile("Restore", "arrow.uturn.backward.circle", id: "editorPro.restore",
-                    dot: !(session?.draft.drops.isEmpty ?? true)) { openRestorePanel() }
+            barTile("Sound", "music.note", id: "editorPro.root.sound", active: rootPanel == .sound) { openRootPanel(.sound) }
+            barTile("Text", "textformat", id: "editorPro.root.text", active: rootPanel == .text) { openRootPanel(.text) }
             if punchInsSupported || brollSupported {
                 barTile("Effects", "sparkles", id: "editorPro.root.effects", active: rootPanel == .effects) { openRootPanel(.effects) }
             }
@@ -1996,12 +2158,9 @@ struct ProEditorView: View {
                     mutedState(s) ? "speaker.slash.fill" : "speaker.slash",
                     id: "editorPro.muteToggle") { toggleMute(s); bumpHaptic() }
             barTile("Delete", "trash", id: "editorPro.ctx.delete") { deleteSelected(s); bumpHaptic() }
-            barTile("Move ◀", "arrow.left", id: "editorPro.moveLeft", disabled: !canMoveSelected(by: -1)) {
-                moveSelected(by: -1); bumpHaptic()
-            }
-            barTile("Move ▶", "arrow.right", id: "editorPro.moveRight", disabled: !canMoveSelected(by: 1)) {
-                moveSelected(by: 1); bumpHaptic()
-            }
+            // Build 69: Move ◀▶ removed — long-press drag reorder is the path (taught by
+            // the hold-to-reorder hint). The clip strip is now exactly CapCut's five:
+            // Split · Speed · Volume · Mute · Delete, fully visible without scrolling.
         case .music:
             let vol = session?.draft.music?.volume ?? 0.15
             barTile("Replace", "arrow.triangle.2.circlepath", id: "editorPro.music.replace") { showMusicSheet = true }
@@ -2016,24 +2175,27 @@ struct ProEditorView: View {
         case .phrase(let p):
             barTile("Edit", "pencil", id: "editorPro.phrase.edit") { beginPhraseEdit(p); bumpHaptic() }
             barTile("Edit all", "list.bullet.rectangle", id: "editorPro.editCaptions") { showCaptionList = true }
+            // Build 69: ONE Style expansion (presets on top, fine-tune below) — the
+            // adjacent Style/Customize pair opened two different expansions for what is
+            // one decision.
             barTile("Style", "paintbrush", id: "editorPro.phrase.style", active: expansion == .captionStyle) {
                 withAnimation(.easeOut(duration: 0.15)) {
                     expansion = (expansion == .captionStyle) ? nil : .captionStyle
                 }
                 bumpHaptic()
             }
-            barTile("Customize", "slider.horizontal.3", id: "editorPro.capCustomize", active: expansion == .captionCustomize) {
+            // Build 69: "Remove fillers" tile removed — it duplicated root Clean up
+            // under a different name and wrongly implied a caption-scoped operation.
+        case .textSticker(let i):
+            barTile("Edit", "pencil", id: "editorPro.ctx.edit") { beginTypingSticker(i); bumpHaptic() }
+            // Build 69: the engine always supported sticker color/background/font
+            // (edit_overlay carries them) — there was just no control. Now there is.
+            barTile("Style", "paintbrush", id: "editorPro.sticker.style", active: expansion == .stickerStyle(idx: i)) {
                 withAnimation(.easeOut(duration: 0.15)) {
-                    expansion = (expansion == .captionCustomize) ? nil : .captionCustomize
+                    expansion = (expansion == .stickerStyle(idx: i)) ? nil : .stickerStyle(idx: i)
                 }
                 bumpHaptic()
             }
-            barTile("Remove fillers", "wand.and.sparkles", id: "editorPro.phrase.fillers") {
-                player?.pause(); cleanupSkip = []
-                withAnimation(.easeOut(duration: 0.18)) { showCleanup = true }
-            }
-        case .textSticker(let i):
-            barTile("Edit", "pencil", id: "editorPro.ctx.edit") { beginTypingSticker(i); bumpHaptic() }
             barTile("Duplicate", "plus.square.on.square", id: "editorPro.ctx.duplicate") { duplicateSticker(i); bumpHaptic() }
             barTile("Delete", "trash", id: "editorPro.ctx.deleteOverlay") { deleteOverlay(i); bumpHaptic() }
         case .textCard(let i):
@@ -2098,13 +2260,34 @@ struct ProEditorView: View {
     private func rootEditTap() {
         player?.pause()
         if let idx = clipUnderPlayhead {
-            select(.seg(idx))
+            select(.seg(idx)); bumpHaptic()
         } else if let d = session?.draft {
             let order = d.segmentOrder ?? Array(d.segments.indices)
             if let last = order.last(where: { d.keptBounds(ofSegment: $0) != nil }) {
-                select(.seg(last))
+                select(.seg(last)); bumpHaptic()
+            } else {
+                // Never a silent tap (direct-manipulation rule: every action answers).
+                maybeHint("scrubFirst", icon: "hand.draw", text: "Scrub onto a clip first", transient: true)
             }
         }
+    }
+
+    /// Build 69: split under the playhead WITHOUT entering selection — the persistent
+    /// scissors keeps the user in scrub flow (no chevron round-trip after every cut).
+    func quickSplitAtPlayhead() {
+        player?.pause()
+        var idx: Int? = clipUnderPlayhead
+        if idx == nil, let d = session?.draft {
+            let order = d.segmentOrder ?? Array(d.segments.indices)
+            idx = order.last(where: { d.keptBounds(ofSegment: $0) != nil })
+        }
+        guard let idx else {
+            maybeHint("scrubFirst", icon: "hand.draw", text: "Scrub onto a clip first", transient: true)
+            return
+        }
+        splitSelected(idx)
+        selectedSeg = nil          // stay at root — splitSelected keeps the first half selected
+        bumpHaptic()
     }
 
     /// One icon-over-label tile (~60pt wide, CapCut geometry) with an optional green
@@ -2150,10 +2333,10 @@ struct ProEditorView: View {
                 Text(String(format: "%.1fx", speedDraft))
                     .font(.system(size: 12, weight: .bold)).monospacedDigit().foregroundStyle(.white)
                     .frame(width: 38)
-                ForEach([1.0, 2.0], id: \.self) { v in
+                ForEach([1.0, 1.5, 2.0], id: \.self) { v in
                     let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
                     Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
-                        Text(String(format: "%.0fx", v))
+                        Text(v == 1.5 ? "1.5x" : String(format: "%.0fx", v))
                             .font(.system(size: 11, weight: active ? .bold : .medium))
                             .foregroundStyle(active ? Palette.ink : .white)
                             .padding(.horizontal, 9).frame(height: 28)
@@ -2196,9 +2379,16 @@ struct ProEditorView: View {
                     .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
                     .frame(width: 42)
                 expansionConfirm()
+            case .stickerStyle(let i):
+                stickerStyleRow(i)
+                expansionConfirm()
             case .captionStyle:
                 // Picker rows get no Reset — active state is visible on the chips.
-                captionStyleRow
+                // Build 69: presets + fine-tune live in ONE expansion (stacked).
+                VStack(spacing: 4) {
+                    captionStyleRow
+                    captionOptionsRow
+                }
                 expansionConfirm()
             case .captionCustomize:
                 captionOptionsRow

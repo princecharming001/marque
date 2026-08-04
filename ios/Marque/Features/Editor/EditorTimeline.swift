@@ -308,8 +308,19 @@ struct EditorTimeline: View {
                     .padding(.trailing, selected ? 14 : 3).padding(.top, 3)
             }
         }
-        // (Mute state now lives on the voice lane below — the audio is a visible object there,
-        // so the video cell no longer doubles it with a badge.)
+        // Build 69: mute back on the cell — the voice lane collapses when idle, which
+        // made a muted clip INVISIBLE at root. Bottom-trailing, clear of both badges.
+        .overlay(alignment: .bottomTrailing) {
+            if document.volumeRanges.contains(where: { $0.srcIn <= srcIn && $0.srcOut >= srcOut && $0.volume == 0 }) {
+                Image(systemName: "speaker.slash.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(3)
+                    .background(Color.black.opacity(0.55)).clipShape(Circle())
+                    .padding(.trailing, selected ? 14 : 3).padding(.bottom, 3)
+                    .accessibilityIdentifier("editorPro.muteBadge")
+            }
+        }
         // Floating duration badge while trimming — the live feedback that was missing.
         .overlay(alignment: edgeAlignment) {
             if trimming {

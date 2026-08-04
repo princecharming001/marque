@@ -639,8 +639,10 @@ extension ProEditorView {
         guard let (a, b) = insertWindow(len: 75) else { return }
         // UX-2: don't stack an invisible duplicate — repeated taps used to append identical
         // overlays the user couldn't see or remove.
-        if session?.draft.overlays.contains(where: { $0.type == "punch_in" && $0.srcIn < b && a < $0.srcOut }) == true {
-            flash("There's already a zoom here — tap its block to adjust it.")
+        // Build 69: second tap means "edit this" — select the existing block (its
+        // intensity/duration strip opens) instead of dead-ending in a flash message.
+        if let existing = session?.draft.overlays.firstIndex(where: { $0.type == "punch_in" && $0.srcIn < b && a < $0.srcOut }) {
+            select(.overlay(existing))
             return
         }
         mutate([.addPunchIn(a, b, scale: 1.08)], rejectMsg: "Zooms aren't rendered for this style.")
@@ -837,6 +839,26 @@ extension ProEditorView {
                         .background(keep.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
                 }.buttonStyle(.plain).disabled(keep.isEmpty).padding(Space.md)
                     .accessibilityIdentifier("editorPro.cleanup.apply")
+                // Build 69: Restore moved off the root bar — it only means something
+                // after a cleanup ran, so its home is here (plus the amber cut seams).
+                if !(session?.draft.drops.isEmpty ?? true) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.15)) { showCleanup = false }
+                        openRestorePanel()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 13))
+                            Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
+                                .font(AppFont.callout)
+                        }
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(maxWidth: .infinity).frame(height: 36)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, Space.sm)
+                    .accessibilityIdentifier("editorPro.cleanup.restore")
+                }
             }
         }
         .frame(height: 340, alignment: .top)
