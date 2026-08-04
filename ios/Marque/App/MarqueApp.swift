@@ -72,9 +72,12 @@ struct RootView: View {
             if !store.hasOnboarded {
                 OnboardingView()
             } else if !store.subscription.isSubscribed {
-                SubscriptionGateView()
+                // Build 71: the maxapp-shaped payment plan screen replaces the old
+                // gate (SubscriptionGateView + YunicornProPaywall stay in the repo,
+                // unmounted, until this is signed off).
+                PaymentScreen()
             } else if !store.auth.isAuthed {
-                AuthGateView()
+                SignInScreen(showsBack: false)
             } else {
                 RootTabView()
             }

@@ -173,6 +173,13 @@ final class AppStore {
         // exercise multi-select → group assignment → card dots, plus one pre-existing
         // group. Same shape as -demoClip, just plural — drives
         // .maestro/library-groups.yaml.
+        // Build 71: land straight on the gates (payment → sign-in) — every other
+        // demo seam unlocks them, so they were unreachable to automation.
+        if CommandLine.arguments.contains("-demoGates") {
+            hasOnboarded = true
+            subscription.resetDev()
+            auth.signOut()
+        }
         if CommandLine.arguments.contains("-demoLibrary") {
             hasOnboarded = true
             auth.continueAsDemo()
