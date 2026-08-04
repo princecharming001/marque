@@ -53,16 +53,19 @@ extension ProEditorView {
             return WordSpan(text: text, startFrame: sf, endFrame: max(sf + 1, msToFrame(em)))
         }.sorted { $0.startFrame < $1.startFrame }
 
-        // Per-style capabilities gate the Effects tab.
-        if let all = await store.backend.editorCapabilities() { caps = all[doc.style] }
         captionsOn = !doc.captions.isEmpty       // #1: seed enabled-state from what loaded
-        await MusicCatalog.hydrate(using: store.backend)   // show the same beds the render uses
         // A7: the active theme (if EDIT_THEMES produced one) — optional, absent-safe
-        // (older jobs / EDIT_THEMES off never carry it). The read-only report card was removed
-        // in the declutter (self_review/lint are still computed server-side, just not surfaced here).
+        // (older jobs / EDIT_THEMES off never carry it).
         activeThemeId = result["theme_id"] as? String ?? ""
-        if themes.isEmpty { themes = await store.backend.fetchThemes() }
+        // Build 69 (owner: "manual edits should be almost instantaneous"): the editor
+        // opens the moment the EDL is in hand. Capabilities (Effects-tab gate), the music
+        // catalog, and the theme list were three SEQUENTIAL network round-trips standing
+        // between the tap and the timeline — none is needed to start cutting, so they
+        // hydrate in the background and their surfaces fill in as they land.
         phase = .editing
+        Task { if let all = await store.backend.editorCapabilities() { caps = all[doc.style] } }
+        Task { await MusicCatalog.hydrate(using: store.backend) }
+        Task { if themes.isEmpty { themes = await store.backend.fetchThemes() } }
     }
 
     // MARK: A7 feature #1 — retheme (a SEPARATE endpoint from /tweak: it only
