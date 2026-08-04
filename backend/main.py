@@ -963,6 +963,39 @@ async def coach_today(creator_id: str = "default"):
     return {"card": {**card, "kind": "insight", "mode": mode, "insight": insight}}
 
 
+async def _mix_for(creator_id: str) -> str:
+    """THE MIX (Palo rotation prior, code-computed): per-pillar recent-post counts from
+    the registry + queued unconsumed idea titles from the brief bank, rendered by
+    prompts.mix_block. Empty string whenever there's no rotation signal — the prompt
+    simply omits the section. Never raises."""
+    try:
+        counts: dict[str, int] = {}
+        for p in _post_registry.values():
+            if p.get("creator_id") != creator_id:
+                continue
+            pillar = (p.get("pillar") or "").strip()
+            if pillar:
+                counts[pillar] = counts.get(pillar, 0) + 1
+        queued_titles: list[str] = []
+        queued_counts: dict[str, int] = {}
+        if _palo_store is not None:
+            try:
+                briefs = await _palo_store.load_briefs(creator_id, status="new", limit=10)
+                queued_titles = [b.get("title", "") for b in briefs if b.get("title")]
+                for b in briefs:
+                    pl = (b.get("pillar") or "").strip()
+                    if pl:
+                        queued_counts[pl] = queued_counts.get(pl, 0) + 1
+            except Exception:
+                pass
+        lanes = [{"name": name, "recent": n, "queued": queued_counts.get(name, 0)}
+                 for name, n in counts.items()]
+        return prompts.mix_block(lanes, queued_titles)
+    except Exception as e:
+        logging.warning("[mix] _mix_for failed: %s", e)
+        return ""
+
+
 @app.get("/v1/suggestions/next-idea")
 async def next_idea(creator_id: str = "default", niche: str = ""):
     """One next-video idea brief (title + hook + beats). Grounded in the creator's own
@@ -984,7 +1017,8 @@ async def next_idea(creator_id: str = "default", niche: str = ""):
     mode = "mock"
     if ANTHROPIC_KEY and AI_QUALITY:
         try:
-            sys, usr = prompts.next_idea_prompt(niche, insight, pillar=pillar)
+            sys, usr = prompts.next_idea_prompt(niche, insight, pillar=pillar,
+                                                mix=await _mix_for(creator_id))
             data = extract_json(await anthropic(sys, usr, HAIKU, 700), array=False) or {}
             beats = [str(b)[:200] for b in (data.get("beats") or []) if str(b).strip()][:5]
             if data.get("title") and data.get("hook") and len(beats) >= 3:
@@ -7590,6 +7624,49 @@ async def connect_preview(req: ConnectPreviewRequest):
     return await preview_tiktok(handle)
 
 
+@app.post("/v1/connect/channel-read")
+async def connect_channel_read(req: ConnectPreviewRequest):
+    """Palo text_onboard port: the first channel read — one cheap call over METADATA
+    ONLY (titles/views/dates from the public scrape), fired right after an account
+    connects and BEFORE any deep analysis exists. Makes connecting feel instantly worth
+    it. Honest by construction: the prompt forbids "watched"-style claims and invented
+    numbers, and a thin/absent catalog degrades to fewer bubbles or none. Keyless →
+    {"lines": []} — the client simply doesn't show the moment (never a canned read)."""
+    handle = req.handle.lstrip("@").strip()
+    if not handle or not ANTHROPIC_KEY:
+        return {"mode": "mock", "lines": []}
+    try:
+        from app import metrics_pollers, palo_prompts
+        posts = await metrics_pollers._apify_fetch(handle)
+        rows = []
+        for p in posts[:40]:
+            cap = (p.get("caption") or p.get("text") or "").strip().replace("\n", " ")
+            rows.append({
+                "title": cap[:120],
+                "views": p.get("videoViewCount") or p.get("views") or p.get("playCount"),
+                "date": str(p.get("timestamp") or p.get("taken_at") or "")[:10],
+            })
+        rows = [r for r in rows if r["title"]]
+        if not rows:
+            return {"mode": "mock", "lines": []}
+        prof = {}
+        try:
+            prof = await (preview_tiktok(handle) if req.platform == "tiktok"
+                          else preview_instagram(handle))
+        except Exception:
+            pass
+        sys_p, usr = palo_prompts.channel_read_prompt(
+            req.platform or "instagram", handle, int(prof.get("followers", 0) or 0), rows)
+        data = extract_json(await anthropic(sys_p, usr, SONNET, 900), array=False) or {}
+        lines = [str(l)[:300] for l in (data.get("lines") or []) if str(l).strip()][:4]
+        return {"mode": "live" if lines else "mock", "lines": lines}
+    except HTTPException:
+        return {"mode": "mock", "lines": []}
+    except Exception as e:
+        logging.warning("[channel-read] failed: %s", e)
+        return {"mode": "mock", "lines": []}
+
+
 _reel_creator_cache: dict[str, dict] = {}
 _REEL_CREATOR_TTL_S = 21600   # 6h — profile pic/follower count move slowly
 
@@ -9505,6 +9582,25 @@ async def converse(req: ConverseRequest):
 
     stats = await _arms_for_prompt(req.creator_id)
     system = prompts.converse_system(req.mode, persona=req.persona, response_length=req.response_length)
+    # Palo port (interaction-agent identity-only mode + the mobile bouncer's epistemic-
+    # boundary rules): a pre-connection user has a brand identity but ZERO analyzed
+    # posts. Two failure classes this kills: helpless deflection ("tell me more about
+    # what you make" when the identity already answers it) and fabricated performance
+    # talk ("your videos are doing great"). Injected only when no settled posts exist.
+    _settled_n = sum(1 for p in _post_registry.values()
+                     if p.get("creator_id") == req.creator_id and p.get("settled"))
+    if _settled_n == 0:
+        system += (
+            "\n\nIDENTITY-ONLY MODE (no analyzed posts yet): USE the creator brand/memory context "
+            "to fulfill requests — brainstorm ideas that match their niche, voice, and style. Do "
+            "NOT say you lack context or ask what they make; you know who they are from the "
+            "context above. Epistemic boundaries: never reference 'your videos' or 'your "
+            "performance' — you haven't analyzed any. Your knowledge comes from their NICHE, not "
+            "their catalog: say 'in your space', never 'in your content'. Patterns are what works "
+            "in their space, not 'your patterns'. If they ask about their analytics: be honest — "
+            "their content isn't analyzed yet because no account is connected; connecting one "
+            "starts it. Never imply analysis is happening in the background when it isn't."
+        )
     # Palo port (flag MEMORY_V2, default OFF): inject compounding memory + the never-
     # re-pitch ledger into the strategist's system prompt. Defined unconditionally so the
     # write-side hooks below can reuse it; zero added work/latency when the flag is off.
@@ -10792,6 +10888,17 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
     the policy still applies (fail-CLOSED, not fail-open)."""
     out: list[dict] = []
     for i, s in enumerate(scripts):
+        # a5 port: "plan" is the model's internal structure pass (schema-ordered FIRST so
+        # planning happens before writing) — it never ships. This is the one hook every
+        # script path flows through, so the strip lives here. durationSeconds ships but
+        # gets clamped to something sane.
+        if isinstance(s, dict):
+            s.pop("plan", None)
+            try:
+                d = int(s.get("durationSeconds") or 0)
+                s["durationSeconds"] = max(5, min(600, d)) if d else s.get("targetSeconds", 0)
+            except (TypeError, ValueError):
+                s["durationSeconds"] = s.get("targetSeconds", 0)
         body = s.get("body") or ""
         style = s.get("style", "")
         reason = prompts.flag_stage_direction(body, style)

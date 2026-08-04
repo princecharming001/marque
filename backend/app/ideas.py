@@ -38,6 +38,19 @@ _EVAL_SCHEMA = {
                        "reason": {"type": "string"}}}}},
 }
 
+# Palo pulse/judge.py emit shape (score = sum of the four axes, 0-10).
+_JUDGE_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["specificity", "non_obvious", "evidence_grounded", "actionable", "score", "notes"],
+    "properties": {"specificity": {"type": "integer"}, "non_obvious": {"type": "integer"},
+                   "evidence_grounded": {"type": "integer"}, "actionable": {"type": "integer"},
+                   "score": {"type": "integer"}, "notes": {"type": "string"}},
+}
+
+# Palo's promotion threshold: >=8.0 is a "banger" worth interrupting the creator for
+# (proactive surfacing); everything else stays passive in-app discovery.
+PROMOTE_THRESHOLD = 8.0
+
 
 def _context_from_brand(brand: dict) -> tuple[str, str, str, str]:
     """(creator_signals, channel_identity, topic, format) from Marque's Brand dict."""
@@ -69,15 +82,28 @@ def mock_ideas(brand: dict) -> list[dict]:
 
 
 async def generate_ideas(store, brand: dict, exemplars: str = "",
-                         knowledge: str = "basic", creator_id: str = "") -> list[dict]:
+                         knowledge: str = "basic", creator_id: str = "",
+                         structural_patterns: str = "",
+                         recent_catalog: str = "") -> list[dict]:
     if not exemplars and creator_id:            # draw on the exemplar bank's proven patterns
         try:
             from app import exemplar
             exemplars = await exemplar.exemplar_block(store, creator_id)
         except Exception:
             exemplars = ""
+    if not structural_patterns:
+        # Cold-start structural grounding: NICHE_PRIORS formats stand in for the exemplar
+        # corpus until real per-niche video analyses exist. Honest by construction — these
+        # are format priors, not fabricated performance claims.
+        try:
+            import prompts as _p
+            structural_patterns = _p.niche_prior_block(brand.get("niche", ""))
+        except Exception:
+            structural_patterns = ""
     signals, identity, _topic, _fmt = _context_from_brand(brand)
-    base_sys, user = palo_prompts.idea_generation_prompt(signals, identity, exemplars, knowledge)
+    base_sys, user = palo_prompts.idea_generation_prompt(
+        signals, identity, exemplars, knowledge,
+        structural_patterns=structural_patterns, recent_catalog=recent_catalog)
     system = await get_prompt("palo.idea.generate", base_sys, store=store)
     data = await anthropic_cached_json(system, user, _IDEASET_SCHEMA, SONNET, max_tokens=1400)
     if not isinstance(data, dict) or not data.get("ideas"):
@@ -104,6 +130,35 @@ async def eval_ideas(store, ideas: list[dict], topic: str, fmt: str,
     await ai_usage.record(store, creator_id, "idea.eval", HAIKU, 700, 200)
     # idea_index is 1-based in the prompt; default to pass if the judge omitted one.
     return [verdict.get(i + 1, verdict.get(i, True)) for i in range(len(ideas))]
+
+
+async def judge_ideas(store, ideas: list[dict], brand: dict,
+                      recent_titles: list[str] | None = None,
+                      creator_id: str = "") -> list[float]:
+    """Score each idea 0-10 with the ported pulse judge (specificity / non_obvious /
+    evidence_grounded / actionable, axis-cap rejection rules). Keyless / failure ⇒ -1.0
+    sentinel per idea (callers keep their positional score — never fabricate a judged
+    score we didn't compute). Runs AFTER the binary eval gate: eval kills off-niche,
+    this ranks what survived."""
+    if not ideas:
+        return []
+    signals, identity, _t, _f = _context_from_brand(brand)
+    context = f"{signals}\n{identity}"
+    scores: list[float] = []
+    judged_any = False
+    for idea in ideas:
+        base_sys, user = palo_prompts.idea_judge_prompt(idea, context, recent_titles)
+        system = await get_prompt("palo.idea.judge", base_sys, store=store)
+        data = await anthropic_cached_json(system, user, _JUDGE_SCHEMA, HAIKU, max_tokens=300)
+        if isinstance(data, dict) and isinstance(data.get("score"), int):
+            scores.append(float(max(0, min(10, data["score"]))))
+            judged_any = True
+        else:
+            scores.append(-1.0)
+    if judged_any:
+        await ai_usage.record(store, creator_id, "idea.judge", HAIKU,
+                              900 * len(ideas), 120 * len(ideas))
+    return scores
 
 
 def to_briefs(creator_id: str, ideas: list[dict], source: str = "onboarding") -> list[dict]:
@@ -327,9 +382,22 @@ async def suggest_ideas(store, creator_id: str, brand: dict, source: str = "onbo
     try:
         _, _, topic, fmt = _context_from_brand(brand)
         ideas = await generate_ideas(store, brand, exemplars, creator_id=creator_id)
+        # Cheapest gate first (Palo gate.go): hedged suggestion copy is dead on arrival —
+        # a deterministic regex kill before any LLM spend. Never drop below one idea.
+        unhedged = [i for i in ideas
+                    if not palo_prompts.hedges(f"{i.get('title', '')} {i.get('content', '')}")]
+        ideas = unhedged or ideas[:1]
         passes = await eval_ideas(store, ideas, topic, fmt, creator_id=creator_id)
         kept = [idea for idea, ok in zip(ideas, passes) if ok] or ideas[:1]
+        # Quality scoring (pulse judge port): a real 0-10 ranks the survivors; -1.0
+        # sentinel (keyless / vendor error) keeps the positional score below.
+        judge_scores = await judge_ideas(store, kept, brand, creator_id=creator_id)
         briefs = to_briefs(creator_id, kept, source)
+        for b, js in zip(briefs, judge_scores):
+            if js >= 0:
+                b["score"] = round(js / 10.0, 3)          # same 0..1 scale as positional
+                b["promoted"] = js >= PROMOTE_THRESHOLD   # banger: worth proactive surfacing
+        briefs.sort(key=lambda b: float(b.get("score", 0) or 0), reverse=True)
         if store is not None:
             for b in briefs:
                 try:

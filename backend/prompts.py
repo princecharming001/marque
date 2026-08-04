@@ -869,9 +869,14 @@ SIGNALS = "[stakes,authority,curiosity,patternInterrupt,specificity,contrarian,n
 SIGNAL_LIST = [s.strip() for s in SIGNALS.strip("[]").split(",")]
 
 SCRIPT_SCHEMA = (
-    'Each item: {"title": str (≤6 words, a human title), "summary": str (one line), "hook": str, '
+    'Each item: {"plan": str (INTERNAL, write it FIRST, ≤50 words: the read — what this video is '
+    'and the one question the hook opens; the rungs — one short line per beat; the self-check — '
+    'after each reveal, what is the viewer still waiting for? fix structure here, never mid-write), '
+    '"title": str (≤6 words, a human title), "summary": str (one line), "hook": str, '
     '"hookSignal": one of ' + SIGNALS + ', "formatId": one of the allowed format ids, "body": str, '
-    '"cta": str, "shotPlan": [str], "targetSeconds": int, "predictedScore": int 0-100, '
+    '"cta": str, "shotPlan": [str], "targetSeconds": int, '
+    '"durationSeconds": int (your HONEST estimate of the finished video spoken at this creator\'s '
+    'real pace — a measurement, not a wish), "predictedScore": int 0-100, '
     '"altHooks": [{"text": str, "signal": str, "strength": int}], "style": str}'
 )
 
@@ -1461,15 +1466,23 @@ def edit_plan_prompt(style: str, transcript_words: list[dict], script: dict, bra
 
 SCRIPT_JSON_ELEMENT = {
     "type": "object", "additionalProperties": False,
-    "required": ["title", "summary", "hook", "hookSignal", "formatId", "body", "cta",
-                 "shotPlan", "targetSeconds", "predictedScore", "altHooks", "style"],
+    # "plan" is defined FIRST on purpose: generation walks properties in definition
+    # order, so the model plans the structure before it writes a single script line
+    # (Palo's write-agent <planning> stage, folded into the JSON contract). main.py
+    # strips it before the response ships. "durationSeconds" is the honest length
+    # estimate (a5 rule 9) — it DOES ship (clients ignore unknown keys until the UI
+    # lands).
+    "required": ["plan", "title", "summary", "hook", "hookSignal", "formatId", "body", "cta",
+                 "shotPlan", "targetSeconds", "durationSeconds", "predictedScore", "altHooks",
+                 "style"],
     "properties": {
+        "plan": _STR,
         "title": _STR, "summary": _STR, "hook": _STR,
         "hookSignal": {"type": "string", "enum": SIGNAL_LIST},
         "formatId": {"type": "string", "enum": FORMAT_IDS},
         "body": _STR, "cta": _STR,
         "shotPlan": {"type": "array", "items": _STR},
-        "targetSeconds": _INT, "predictedScore": _INT,
+        "targetSeconds": _INT, "durationSeconds": _INT, "predictedScore": _INT,
         "altHooks": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["text", "signal", "strength"],
@@ -1549,22 +1562,55 @@ def _post_lines(posts: list[dict] | None) -> str:
 
 
 def _voice_exemplars(posts: list[dict] | None, k: int = 4) -> str:
-    """Quote the literal opening line of the creator's best-performing posts so
-    the generator matches their REAL phrasing/rhythm instead of a described,
-    regress-to-generic-AI version. Voice fidelity is example-bound, not float-bound."""
+    """The creator's best posts as a VOICEPRINT (Palo pulse/_render_exemplars + write
+    v3.3 rule 5). Two lessons carried from Palo's live A/Bs: (a) few-shot conditioning
+    at generation time is what actually transfers voice — a post-hoc voice scorer was
+    retired for this; (b) transcripts teach VOICE, never CONTENT — a new script that
+    retells an old video's story is a failure even when every sentence sounds like them."""
     if not posts:
         return ""
     ranked = sorted(posts, key=lambda p: (p.get("likes", 0) + p.get("comments", 0)), reverse=True)
-    openers = []
+    notes = []
     for p in ranked[:k]:
         text = (p.get("caption") or p.get("transcript") or "").strip().replace("\n", " ")
         first = text.split(". ")[0][:120].strip()
+        if len(first) < 8:
+            continue
+        line = f'  • opener: "{first}"'
+        rest = text[len(first):].strip(" .")
+        if rest:
+            # A compact cadence sample (the next ~100 chars) — sentence length and
+            # rhythm carry more voice than any adjective could.
+            line += f' — cadence: "{rest[:100].strip()}…"'
+        notes.append(line)
+    if not notes:
+        return ""
+    return ("THE VOICEPRINT (this creator's highest-engagement posts — study the verbatim openers, "
+            "the sentence lengths, the lexicon, then write THIS script in that hand. Mimic the "
+            "SHAPE, never lift the line. These teach VOICE, never content — retelling one of these "
+            "posts as a new script is a failure even if every sentence sounds like them):\n"
+            + "\n".join(notes))
+
+
+def _opener_dedup_block(posts: list[dict] | None, k: int = 5) -> str:
+    """Palo write_pyro's opener-dedup guard: the first line of the creator's most recent
+    posts, injected with a hard don't-duplicate rule. Repetition is the most user-visible
+    'it's a template' tell — nothing else stops the writer converging on one winning hook
+    shape verbatim."""
+    if not posts:
+        return ""
+    recent = sorted(posts, key=lambda p: str(p.get("timestamp") or p.get("taken_at")
+                                             or p.get("created_at") or ""), reverse=True)
+    openers = []
+    for p in recent[:k]:
+        text = (p.get("caption") or p.get("transcript") or "").strip().replace("\n", " ")
+        first = text.split(". ")[0][:100].strip()
         if len(first) >= 8:
             openers.append(f'  "{first}"')
     if not openers:
         return ""
-    return ("HOW THIS CREATOR REALLY OPENS (their highest-engagement posts — match this exact voice, "
-            "diction, and rhythm; do NOT sanitize into generic copy):\n" + "\n".join(openers))
+    return ("OPENING LINES of this creator's most recent posts — your hook must NOT duplicate or "
+            "closely paraphrase any of these openers:\n" + "\n".join(openers))
 
 
 def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
@@ -1659,7 +1705,9 @@ def pillar_judge_prompt(niche: str, pillars: list[dict]) -> tuple[str, str]:
         "You are a strict content editor checking pillars for SPECIFICITY. A pillar FAILS if it would apply to "
         "basically any creator in the same niche, or if its angle is vague. It PASSES only if the angle names "
         "something concrete and ownable to this specific creator. Be harsh — generic pillars are the #1 quality "
-        "failure. Reply with ONLY a JSON array of {\"index\": int, \"pass\": bool, \"reason\": str}."
+        "failure. THE TEST (apply to every pillar): read it and ask, could this describe a different creator in "
+        "the same niche? If yes, it fails. 'Authentic, relatable content' is a horoscope, not a pillar. "
+        "Reply with ONLY a JSON array of {\"index\": int, \"pass\": bool, \"reason\": str}."
     )
     items = "\n".join(
         f'{i}. {p.get("name","")} — angle: {p.get("angle","") or p.get("summary","")}'
@@ -1682,16 +1730,24 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
     s = STYLES.get(style, STYLES["talking_head"])
     voice_ex = _voice_exemplars(posts)
     voice_section = f"\n\n{voice_ex}" if voice_ex else ""
+    dedup = _opener_dedup_block(posts)
+    dedup_section = f"\n\n{dedup}" if dedup else ""
     system = (
         f"You are Marque's script engine writing {s['label']} short-form videos. "
         "Write in the creator's EXACT voice — match their tone sliders, echo their real phrasing, and NEVER use "
         "a banned phrase. The hook must stop the scroll in the first 3 seconds. "
-        f"\n\n{VIRALITY_BLOCK}\n\n"
+        f"\n\n{CRAFT_RULES_BLOCK}\n\n"
+        f"{VIRALITY_BLOCK}\n\n"
         f"{GROUNDING_BLOCK}\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
         f"{BODY_FORMAT_RULE}\n\n"
+        f"{CRAFT_EXAMPLES_BLOCK}\n\n"
         f"A correctly-structured example for this style (match the STRUCTURE, not the content):\n{s['exemplar']}"
-        f"{voice_section}\n\n"
+        f"{voice_section}{dedup_section}\n\n"
+        "SELF-CHECK before you answer (Palo's viewer-seat test): read each script as a random "
+        "viewer scrolling their feed at 2am. Does the first line stop the thumb? Is there a beat "
+        "where they'd leave because nothing new is coming? Does the last line answer the question "
+        "the hook opened? Fix what fails, then reply.\n"
         "Reply with ONLY valid JSON, no prose, no code fences."
     )
     media = f"\nReference footage the creator already has (reuse where natural): {media_context}" if media_context else ""
@@ -1785,6 +1841,21 @@ def script_judge_prompt(scripts: list[dict], style: str, brand: dict | None = No
         "(0 = main hook is already best; otherwise the 1-based position in altHooks). "
         "verdict='revise' if hook_strength<70 OR specificity<65 OR format_fit<65 OR relevance_to_creator<60 "
         "OR slop is true OR fabricated is true; else 'keep'. Be decisive and consistent.\n\n"
+        "AXIS CAPS (apply BEFORE scoring — a script that trips one is capped no matter how good the "
+        "rest looks): a greeting, set-up line, or question-opener hook → cap hook_strength at 40. "
+        "Hedging language in the body ('you might want to', 'consider', 'have you thought') → cap "
+        "voice_match at 50 (no creator speaks like that). A payoff revealed in the hook → cap "
+        "hook_strength at 45 (nothing left to watch for). A recap/summary after the payoff, or a "
+        "stacked second CTA → cap format_fit at 55.\n\n"
+        "ANCHORED EXAMPLES (calibrate your scoring to these):\n"
+        '- hook "I fired my biggest client on a Tuesday. By Friday I understood why I should\'ve '
+        'done it a year ago." with a body that escalates and lands the reason last → hook_strength '
+        "~88, verdict keep (mid-action open, concrete stake, loop closed at the end).\n"
+        '- hook "Let\'s talk about morning routines and why they matter." → hook_strength ~25, '
+        "slop=true, verdict revise (set-up register, no stake, nothing to wait for).\n"
+        '- body asserting "my client went from 2k to 90k followers in 6 weeks" when no client work '
+        "appears in CREATOR CONTEXT → fabricated=true, verdict revise regardless of every other "
+        "axis (the creator would have to say a lie on camera).\n\n"
         f"{VIRALITY_BLOCK}\n\n" + SCRIPT_JUDGE_SCHEMA
     )
     items = []
@@ -1903,9 +1974,30 @@ def hook_judge_prompt(topic: str, hooks: list[dict]) -> tuple[str, str]:
 
 def steer_prompt(brand: dict, script: dict, instruction: str,
                  arm_stats: list[dict] | None = None) -> tuple[str, str]:
+    # Steering is the highest-frequency post-generation path and was the least protected
+    # prompt in the codebase. Rules 0-4 are Palo's shared section-edit frame (LD
+    # build-tensions / rephrase / shorten — battle-tested on live edits), which exists to
+    # stop the two classic revision failures: drifting from what the writer meant, and
+    # "improving" natural speech into cringe.
     system = (
-        "You revise a short-form script per an instruction while preserving the creator's voice and the "
-        "structure of its video style. Reply with ONLY a JSON object."
+        "You revise a short-form script per the creator's instruction. You are an expert short-form "
+        "script consultant; the content is a script we want to go viral. Rules:\n"
+        "0. Identify the essence of what the writer is trying to say and PRESERVE that intent — no "
+        "new ideas unless they clarify or enhance engagement. Change only what the instruction "
+        "asks; keep everything already strong.\n"
+        "1. Retention is the master metric — structure sentences so key details and payoffs come at "
+        "the END, each line building curiosity and pulling the viewer further in.\n"
+        "2. Fluff kills engagement — sensibly remove filler, but never sacrifice emotional depth or "
+        "flow.\n"
+        "3. The script must sound natural SPOKEN. Conversational phrasing, short sentences. Match "
+        "the writer's existing tone and phrasing; do not change words for the sake of it — keeping "
+        "the current language is better than changing to a less natural or cringe phrasing. Avoid "
+        "corny phrases like 'the full picture' or 'dig deeper'.\n"
+        "4. Flow: the revision must read as a seamless continuation of what surrounds it — same "
+        "tone, meaning, and rhythm. Read it back; if it doesn't flow, fix it.\n\n"
+        f"{GROUNDING_BLOCK}\n\n"
+        f"{BODY_FORMAT_RULE}\n\n"
+        "Reply with ONLY a JSON object."
     )
     learn = learning_block(arm_stats or [])
     if not learn:                                    # cold start → niche baseline
@@ -2255,6 +2347,43 @@ def learning_block(arm_stats: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# THE MIX (Palo strategy-synthesis v2.7 + offline idea-pass rule 1 + orchestrator rule 4):
+# a programming-rotation prior that every suggestion surface reads. The bandit already
+# ROTATES implicitly; this states the rotation to the model in words, which is what kills
+# the "5 variants of the same video" failure — and the lane-inventory rule stops a fresh
+# idea landing in a lane whose queued idea is still unbuilt ("the monoculture failure
+# wearing variety's clothes").
+def mix_block(lanes: list[dict], queued_titles: list[str] | None = None) -> str:
+    """Pure. lanes = [{"name": str, "recent": int (posts in the window), "queued": int}].
+    Returns "" when there's no rotation signal to state (0-1 lanes or no activity)."""
+    lanes = [l for l in (lanes or []) if l.get("name")]
+    if len(lanes) < 2:
+        return ""
+    total_activity = sum(int(l.get("recent", 0)) + int(l.get("queued", 0)) for l in lanes)
+    if total_activity == 0:
+        return ""
+    scored = sorted(lanes, key=lambda l: (int(l.get("recent", 0)) + int(l.get("queued", 0))))
+    under = [l["name"] for l in scored[:2] if int(l.get("recent", 0)) + int(l.get("queued", 0))
+             <= scored[-1].get("recent", 0)]
+    over = scored[-1]["name"] if int(scored[-1].get("recent", 0)) >= 2 else ""
+    lines = ["THE MIX (rotation state — read this against what was recently made):"]
+    for l in lanes:
+        q = f", {l['queued']} queued unbuilt" if int(l.get("queued", 0)) else ""
+        lines.append(f"- {l['name']}: {int(l.get('recent', 0))} recent{q}")
+    if under:
+        lines.append(f"Under-served right now: {', '.join(under)} — the next idea leans there "
+                     "unless the data says otherwise.")
+    if over:
+        lines.append(f"Over-served: {over} — if the last few were this type, vary.")
+    lines.append("A lane whose queued idea sits unbuilt is SERVED — do not commission a second "
+                 "entrant into it until the first ships or dies.")
+    if queued_titles:
+        qt = "; ".join(f'"{t}"' for t in queued_titles[:6] if t)
+        if qt:
+            lines.append(f"Already queued and unconsumed (do NOT duplicate their ground): {qt}")
+    return "\n".join(lines)
+
+
 ATTRIBUTION_SCHEMA = (
     'Reply with ONLY a JSON object, no prose: '
     '{"dimension": "hook_signal"|"style"|"format_id"|"pillar"|"none", '
@@ -2368,7 +2497,8 @@ def mock_next_idea(niche: str, insight: dict | None,
     }
 
 
-def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "") -> tuple[str, str]:
+def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "",
+                     mix: str = "") -> tuple[str, str]:
     """Talking-head next-video ideation (adapted from Palo's ideate/video-to-brief
     doctrine): one idea, concrete beats, hook-first. Same number discipline as the
     coach — the model may reference the provided strength but NEVER invents a stat;
@@ -2389,7 +2519,8 @@ def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "") -> tupl
     else:
         strength = f"No settled performance data yet.\n{niche_prior_block(niche)}"
     pillar_line = f"\nBuild it inside their content pillar: '{pillar}'." if pillar else ""
-    user = f"Creator niche: {niche or 'general'}.\n{strength}{pillar_line}\nSuggest the one idea."
+    mix_line = f"\n{mix}\n" if mix else ""
+    user = f"Creator niche: {niche or 'general'}.\n{strength}{pillar_line}{mix_line}\nSuggest the one idea."
     return system, user
 
 
@@ -2670,6 +2801,73 @@ VIRALITY_BLOCK = (
 )
 
 
+# Palo port (a5-script-generator, LD pulse-script-prompt/"stage" — the prompt Palo PROD serves
+# for script writing). These are the tested craft rules, adapted to Marque's talking-head JSON
+# contract: structure decided before words, first-line/payoff-last discipline, the read-aloud
+# test, and a worked WRONG example annotated failure-by-failure. VIRALITY_BLOCK keeps the
+# platform mechanics; this block owns the WRITING craft.
+CRAFT_RULES_BLOCK = (
+    "SCRIPT CRAFT (the bar is the read-aloud test — if any line sounds like writing instead of "
+    "this creator talking, it fails; if any moment feels finished before the actual end, it fails):\n"
+    "- PLAN BEFORE WORDS. Fill the \"plan\" field FIRST: the read (what this video is + the one "
+    "question the hook opens), the rungs (one line per beat), then walk the rungs as a viewer — "
+    "after each reveal, what are they still waiting for? If the answer is ever 'nothing', fix the "
+    "structure NOW. Structure problems get solved in the plan, never mid-write.\n"
+    "- THE FIRST LINE IS THE VIDEO. Open mid-action or consequence-first — never with setup, never "
+    "with context, and never revealing the payoff or the central answer. The hook creates the one "
+    "question the final line will answer.\n"
+    "- EVERY LINE EARNS THE NEXT. New information every few seconds; each revelation re-contextualizes "
+    "what came before; re-hooks planted through the body, not just the top. Before any beat pays off, "
+    "the next tension is already planted — a line that could end the video before the end is a line "
+    "to rewrite.\n"
+    "- THE PAYOFF LANDS LAST. The most satisfying information arrives in the final lines, with a "
+    "callback that reframes the opening. Emotional and informational closure together, then stop — "
+    "no recap, no summary, no trailing punchline after the close.\n"
+    "- WRITE WITH THE CREATOR'S MOUTH. Spoken language only — contractions, short breaths, lines "
+    "that survive being said fast. Mimic the SHAPE of their real openers and cadence, never lift "
+    "the line.\n"
+    "- EXPLAIN THE PROP. Any device, place, or reference the median viewer wouldn't know gets one "
+    "layman's line in the flow. Familiarity beats name recognition.\n"
+    "- DURATION IS A MEASUREMENT, NOT A WISH. \"durationSeconds\" is your honest estimate of the "
+    "finished video spoken at this creator's real pace (~165 wpm default) — not the target you wish "
+    "for.\n"
+    "- BANNED PHRASINGS (never in a script): \"consider\", \"you might want to\", \"have you "
+    "thought\", \"let me explain\", \"buckle up\", \"in this video\", \"without further ado\", "
+    "\"this is going to blow your mind\", \"welcome back\".\n"
+    "- VOCABULARY FIREWALL. The creator reads every word. No internal terms — no \"pillar\", "
+    "\"baseline\", \"median\", \"lift\", \"arm\", \"signal\", no strategy-doc vocabulary — and no "
+    "em dashes in spoken lines; punctuation is commas, periods, and line breaks."
+)
+
+# The worked pair from the a5 prompt, recast into Marque's hook/body/cta shape. The WRONG
+# example is the valuable half — it names the exact failure classes the judge and lint
+# catch AFTER generation; showing them AT generation is cheaper than repairing.
+CRAFT_EXAMPLES_BLOCK = (
+    "A RIGHT script (structure, not content — note: mid-action open, escalation, payoff held to "
+    "the last line, callback close, every line speakable):\n"
+    '  hook: "Security is 10 feet away and I don\'t have a ticket. Watch this."\n'
+    '  body: "So the trick isn\'t sneaking down, it\'s acting like you belong down. I started in '
+    "the concourse where nobody checks, and grabbed the first empty seat I could find.\\n\\nFor a "
+    "minute I thought I was good. Then I saw him. A steward, going row by row, checking every "
+    "single ticket.\\n\\nGoing back up meant walking straight past him, so the only way out was "
+    "down. Timeout hits, everybody stands, and I'm in the lower bowl before anyone sits back "
+    'down.\\n\\nAt this point I could hear the shoes squeaking from the tunnel. One more rung. But '
+    'the second I stepped in, a hand landed on my shoulder."\n'
+    '  cta: "They walked me out past every seat I\'d earned. Worth it."\n'
+    "A WRONG script and why it fails:\n"
+    '  hook: "Today I am going to attempt to sneak into the NBA Finals, and by the end of this '
+    'video you will see me get ejected."\n'
+    '  body: "Little did I know that my journey would take me past over 20,000 passionate fans. As '
+    'I contemplated my next move, I reflected on how stadiums represent the pinnacle of security."\n'
+    '  cta: "And then I woke up. It was all a dream. Like and subscribe for more."\n'
+    "  FAILURES: the first line reveals the payoff and opens with setup instead of mid-action. "
+    "\"Little did I know\" and \"contemplated my next move\" are written language no creator "
+    "speaks. \"Over 20,000 passionate fans\" is an invented specific — the worst failure. The "
+    "dream ending adds a twist the concept never had, and \"like and subscribe\" is a recap-"
+    "register close."
+)
+
+
 # B-3: body formatting. Scripts render in a teleprompter/reader — a single wall of text is hard
 # to read on camera and hides the structure. The `body` string must be broken into short beats
 # separated by a blank line (a literal \n\n inside the JSON string). This OVERRIDES the spacing
@@ -2738,6 +2936,17 @@ _VISUAL_ARTIFACT_RE = _sr_re.compile(
     r"\b(?:picture|imagine|visualize) (?:a |the )?"
     r"(?:chart|graph|graphic|screen|image|footage|b-?roll|montage)",
     _sr_re.I)
+# Palo a5 banned phrasings + the gate.go script-slop subset — phrases that are NEVER
+# legitimate spoken copy in a short. Deterministic, runs before any LLM judge (the
+# cheapest gate fires first). Kept narrow on purpose: only phrases with ~zero
+# false-positive risk in real speech ("consider" alone is legal speech; "in this video"
+# is not).
+_BANNED_PHRASE_RE = _sr_re.compile(
+    r"\b(?:without further ado|buckle up|(?:is |it'?s )?(?:going to|gonna) blow your mind|"
+    r"in (?:this|today'?s) video|welcome back to my channel|hey guys,? welcome|"
+    r"little did i know|let'?s dive in|let'?s dive into|make sure to like and subscribe|"
+    r"don'?t forget to like and subscribe)\b",
+    _sr_re.I)
 # First-/second-person pronoun check for the bullet-summary structural test below.
 _PERSONAL_PRONOUN_RE = _sr_re.compile(r"\b(?:i|i'm|i'll|i've|my|me|you|you're|you'll|your)\b", _sr_re.I)
 _BULLET_LINE_RE = _sr_re.compile(r"^\s*[-•*]\s+(.*)$", _sr_re.M)
@@ -2754,6 +2963,8 @@ def flag_stage_direction(body: str, style: str = "") -> str | None:
     # broll_cutaway embeds "[broll: …]" cues in the body on purpose — strip them before
     # linting so a legit cue doesn't trip "b-roll of / cut to".
     scrubbed = _sr_re.sub(r"\[broll:[^\]]*\]", "", body, flags=_sr_re.I)
+    if _BANNED_PHRASE_RE.search(scrubbed):
+        return "banned phrase (AI-tell / never-spoken register)"
     if _STAGE_ANYWHERE_RE.search(scrubbed) or _STAGE_LINESTART_RE.search(scrubbed):
         return "stage direction / description instead of spoken copy"
     if _META_NARRATION_RE.search(scrubbed):

@@ -184,9 +184,15 @@ async def _card(store, creator_id: str, event: dict, recent_titles: list[str],
     system = await get_prompt("palo.insight.discovery", system, store=store)
     data = await anthropic_cached_json(system, user, _CARD_SCHEMA, HAIKU, max_tokens=200)
     if isinstance(data, dict) and data.get("title"):
+        title = str(data["title"])[:60]
+        desc = str(data.get("description", base["description"]))[:100]
+        # Palo gate.go banned-phrase gate, cheapest-first: hedged card copy ("you might
+        # want to", "keep it up") is dead on arrival — the deterministic template's
+        # factual numbers are the safe floor, never hedged prose.
+        if palo_prompts.hedges(f"{title} {desc}"):
+            return base
         await ai_usage.record(store, creator_id, "insight.card", HAIKU, 500, 80)
-        return {"title": str(data["title"])[:60],
-                "description": str(data.get("description", base["description"]))[:100]}
+        return {"title": title, "description": desc}
     return base
 
 
