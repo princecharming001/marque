@@ -4872,7 +4872,10 @@ def test_brand_keeps_quiz_context_fields():
     }).d()
     block = prompts.brand_block(b)
     assert "generate hooks and topics generously" in block      # blocker hint fires
-    assert "faceless voiceover and fast-cuts preferred" in block  # comfort hint fires
+    # OWNER MANDATE: even camera-shy creators film talking-head — the hint steers to
+    # shorter takes + editor b-roll coverage, never to faceless/montage formats.
+    assert "shortest possible talking-head takes" in block       # comfort hint fires
+    assert "faceless" not in block
     assert "weekly post target: 5" in block
     assert "2–3x a week" in block
     assert "instagram" in block
@@ -6068,10 +6071,14 @@ def test_reels_blank_everything_serves_cross_niche_aggregate(monkeypatch):
         "any cached rows anywhere must beat an empty feed"
 
 
-def test_reels_filter_relaxes_instead_of_emptying(monkeypatch):
-    # Corpus exists but nothing passes the TH filter → serve non-TH playable rows.
+def test_reels_th_filter_never_relaxes(monkeypatch):
+    # OWNER MANDATE 2026-08-04: the talking-head requirement NEVER relaxes — a
+    # montage-only corpus serves an EMPTY page (the app mimics talking-head content;
+    # a montage can't be emulated by talking to camera). The only permitted
+    # relaxation is playability: a thumbnail-only TALKING-HEAD row still serves.
     key = main._niche_cache_key("fitness")
     montage = _ladder_reel("r3", ef="recap_music")
+    thumb_only_th = {**_ladder_reel("r4", ef="talking_head"), "video_url": ""}
     monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
     monkeypatch.setattr(main, "_supabase_client", None)
     monkeypatch.setattr(main, "_niche_reels_cache",
@@ -6079,7 +6086,13 @@ def test_reels_filter_relaxes_instead_of_emptying(monkeypatch):
     monkeypatch.setattr(main, "_watched_reels_cache", {})
     monkeypatch.setattr(main, "_reels_refreshing", {key})
     r = client.get("/v1/reels", params={"niche": "fitness"}).json()
-    assert r["reels"] and r["reels"][0]["id"] == "r3", "degraded row beats empty feed"
+    assert all(x["id"] != "r3" for x in r["reels"]), "montage must never serve"
+    # thumbnail-only TH row survives via the playability relax rung
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {key: {"reels": [montage, thumb_only_th], "ts": main.time.time()}})
+    r2 = client.get("/v1/reels", params={"niche": "fitness"}).json()
+    ids = [x["id"] for x in r2["reels"]]
+    assert "r4" in ids and "r3" not in ids
 
 
 def test_reels_truly_empty_is_honest_and_kicks_default_refresh(monkeypatch):
@@ -6119,10 +6132,16 @@ def test_reels_durable_page_preferred_over_cdn(monkeypatch):
 
 def test_aggregate_strips_foreign_watched_flag(monkeypatch):
     # Adversarial-review fix: tier-2 aggregate rows lose from_watched — the badge
-    # and TH-filter bypass are per-creator trust, not transferable.
-    watched = {**_ladder_reel("w1", ef="recap_music"), "from_watched": True}
+    # and TH-filter bypass are per-creator trust, not transferable. OWNER MANDATE:
+    # the aggregate is also TH-only now, so a foreign watched MONTAGE is dropped
+    # entirely (the stripped flag means no bypass), while a watched TH reel serves
+    # with the flag stripped.
+    watched_montage = {**_ladder_reel("w1", ef="recap_music"), "from_watched": True}
+    watched_th = {**_ladder_reel("w2", ef="talking_head"), "from_watched": True}
     monkeypatch.setattr(main, "_niche_reels_cache", {})
     monkeypatch.setattr(main, "_watched_reels_cache",
-                        {"instagram:@x": {"reels": [watched], "ts": main.time.time()}})
+                        {"instagram:@x": {"reels": [watched_montage, watched_th],
+                                          "ts": main.time.time()}})
     rows = main._any_cached_reels()
-    assert rows and rows[0]["from_watched"] is False
+    assert [r["id"] for r in rows] == ["w2"], "montage dropped even when watched-foreign"
+    assert rows[0]["from_watched"] is False

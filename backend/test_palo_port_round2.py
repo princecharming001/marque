@@ -242,3 +242,36 @@ def test_channel_read_route_keyless_empty():
         assert r.status_code == 200
         body = r.json()
         assert body["lines"] == [] and body["mode"] == "mock"   # keyless -> honest silence
+
+
+# --- OWNER MANDATE (2026-08-04): talking-head only, everywhere ---------------------
+
+def test_active_styles_are_talking_head_only():
+    # Every offered style films identically: the creator's face to camera, one take.
+    assert prompts.ACTIVE_STYLES == ["talking_head", "green_screen", "broll_cutaway",
+                                     "duet_split"]
+    for retired in ("faceless", "fast_cuts", "split_three"):
+        assert retired in prompts.STYLES          # legacy clips still decode
+        assert retired not in prompts.ACTIVE_STYLES
+
+
+def test_mandate_reaches_every_generation_surface():
+    assert "TALKING-HEAD ONLY" in prompts.TALKING_HEAD_MANDATE
+    sys_s, _ = prompts.scripts_prompt(BRAND, {"name": "Openings"}, "talking_head", 1)
+    assert "TALKING-HEAD ONLY" in sys_s
+    sys_i, _ = palo_prompts.idea_generation_prompt("s", "i")
+    assert "TALKING-HEAD ONLY" in sys_i
+    assert "TALKING-HEAD ONLY" in palo_prompts.DIRECTION_OPTIONS_SYSTEM
+    assert "TALKING-HEAD ONLY" in palo_prompts.SCRIPT_FROM_BRIEF_SYSTEM
+    assert "TALKING-HEAD ONLY" in palo_prompts.WRITE_AGENT_SYSTEM
+    from app import sketch_ideas as _sk
+    assert "TALKING-HEAD ONLY" in _sk._SKETCH_SYSTEM
+    assert "TALKING-HEAD ONLY" in _sk._IDEA_SYSTEM
+
+
+def test_mock_ideas_never_demand_extra_filming():
+    for idea in ideas.mock_ideas(BRAND):
+        text = f"{idea['title']} {idea['content']}".lower()
+        assert "talking to camera" in text
+        for banned in ("montage", "b-roll heavy", "film with your phone"):
+            assert banned not in text

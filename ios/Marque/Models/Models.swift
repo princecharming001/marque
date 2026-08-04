@@ -242,8 +242,12 @@ enum VideoStyle: String, CaseIterable, Codable, Identifiable {
     var id: String { rawValue }
 
     /// The render styles offered in-app right now (mirrors backend prompts.ACTIVE_STYLES).
-    /// `fastCuts` stays a valid case so old persisted data still decodes, but isn't offered.
-    static let offered: [VideoStyle] = [.talkingHead, .greenScreen, .brollCutaway, .splitThree, .duetSplit, .faceless]
+    /// OWNER MANDATE (build 72): the creator only ever films themselves talking to
+    /// camera — every offered style films identically (face to camera, one take); the AI
+    /// editor adds all other visuals. `faceless` (voiceover over footage), `splitThree`
+    /// (per-panel demo shots), and `fastCuts` (filmed montage) stay valid cases so old
+    /// persisted clips still decode, but are never offered.
+    static let offered: [VideoStyle] = [.talkingHead, .greenScreen, .brollCutaway, .duetSplit]
 
     var label: String {
         switch self {

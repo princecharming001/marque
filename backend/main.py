@@ -10629,6 +10629,11 @@ def _any_cached_reels(limit: int = 24) -> list[dict]:
                         # the WATCHING badge and the TH-filter bypass are per-creator
                         # trust, not transferable across the aggregate.
                         r = {**r, "from_watched": False}
+                    # OWNER MANDATE: talking-head ONLY on every serve path — this
+                    # aggregate previously let montages through (they only sank in
+                    # rank). A montage can't be emulated by talking to a camera.
+                    if not (r.get("video_url") and _is_talking_head_reel(r)):
+                        continue
                     out.append(r)
     out.sort(key=_emulatable_rank)
     return out[:limit]
@@ -10831,13 +10836,14 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
         # with no video_url isn't "steal-able," it's just a picture. Require a video_url.
         filtered = [r for r in corpus
                     if r.get("video_url") and (_is_talking_head_reel(r) or r.get("from_watched"))]
-        # Tier 3: the filter emptied a NON-empty corpus — relax it stepwise (drop the
-        # talking-head requirement, then allow thumbnail-only rows) instead of serving
-        # nothing: a degraded real reel beats an empty screen; ranking still floats the
-        # best rows up.
+        # Tier 3 (OWNER MANDATE 2026-08-04): the talking-head requirement NEVER relaxes —
+        # a montage the creator can't emulate by talking to camera is worse than a
+        # shorter page. The only permitted relaxation is playability (allow a
+        # thumbnail-only TALKING-HEAD row) so a cold cache still shows something real.
         if not filtered and corpus:
-            filtered = [r for r in corpus if r.get("video_url")] \
-                or [r for r in corpus if r.get("thumbnail_url")]
+            filtered = [r for r in corpus
+                        if r.get("thumbnail_url") and (_is_talking_head_reel(r)
+                                                       or r.get("from_watched"))]
         corpus = filtered
         # Durability is a RANKING preference, not a filter: _emulatable_rank floats
         # Supabase-rehosted rows above raw CDN links (which can 403 on-device), but

@@ -27,9 +27,38 @@ FORMAT_IDS = [
 # The render/edit styles offered in-app right now. `fast_cuts` stays defined in STYLES
 # (and its Remotion composition stays registered) but is held back from the active set
 # until later — mirror this list in the iOS VideoStyle "offered" list.
+# OWNER MANDATE (2026-08-04): the creator only ever films ONE thing — themselves talking
+# to the camera. Every visual beyond their face (b-roll, memes, splits, keyed screenshots,
+# captions, effects) is added by the AI editor automatically. Styles whose scripts demand
+# the creator film anything else are RETIRED from the active set:
+#   - faceless   (voiceover over footage — not talking to camera)
+#   - fast_cuts  (a montage of filmed shots)
+#   - split_three (its shot plans call for demonstration footage per panel)
+# The STYLES dict below keeps their entries so legacy clips still decode; they are never
+# offered or generated. The active four all film identically: face to camera, one take.
 ACTIVE_STYLES = [
-    "talking_head", "green_screen", "broll_cutaway", "split_three", "duet_split", "faceless",
+    "talking_head", "green_screen", "broll_cutaway", "duet_split",
 ]
+
+# Injected into every surface that invents or writes content (ideas, scripts, sketches,
+# direction lanes, write agent). Palo serves mixed-format creators; Yunicorn does not —
+# this is the product line, stated to the model everywhere it could drift.
+TALKING_HEAD_MANDATE = (
+    "TALKING-HEAD ONLY (hard product rule): the creator films exactly ONE thing — themselves "
+    "talking to the camera, in one sitting, phone at face height. Every other visual (b-roll, "
+    "stock cutaways, memes, screenshots keyed behind them, captions, split layouts, effects, "
+    "music) is added AUTOMATICALLY by the AI editor afterward. Therefore:\n"
+    "- Every idea must be fully tellable by a person speaking to camera. If the idea only works "
+    "when the viewer SEES the creator doing something (a stunt, a build, a recipe, a location, "
+    "a demonstration), it fails — reframe it as the STORY of that thing, told to camera.\n"
+    "- NEVER require the creator to film separate footage: no screen recordings, no outdoor "
+    "shots, no process/demo shots, no second angles, no locations, no props on camera.\n"
+    "- shotPlan may only contain: framing/energy direction for their face (eye contact, "
+    "punch-in on a line) and editor-added visuals (b-roll cues, keyed screenshots, captions) — "
+    "never a shot the creator must film.\n"
+    "- The b-roll the editor adds is sourced from stock/GIF libraries automatically; a "
+    "[broll: …] cue describes what the editor should FIND, never what the creator should film."
+)
 
 # ---------------------------------------------------------------------------
 # Edit formats — the four cut treatments the creator picks at SUBMIT time (how
@@ -1642,7 +1671,7 @@ def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
             'ideas': 'generate hooks and topics generously',
             'time': 'keep scripts tight and batch-friendly',
             'editing': 'favor simple single-shot formats over complex cuts',
-            'confidence': 'lean toward voiceover/faceless formats to build comfort',
+            'confidence': 'keep scripts short and conversational — one 20-second take builds comfort',
         }
         blocker = brand['biggest_blocker']
         hint = blocker_map.get(blocker, '')
@@ -1650,8 +1679,9 @@ def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
     if brand.get('camera_comfort'):
         comfort_map = {
             'natural': 'talking-head and green-screen styles preferred',
-            'getting_there': 'mix of talking-head and faceless; build confidence gradually',
-            'prefer_off': 'faceless voiceover and fast-cuts preferred; minimize on-camera',
+            'getting_there': 'short talking-head takes; the editor covers cuts with b-roll',
+            'prefer_off': 'shortest possible talking-head takes (15-20s), teleprompter-paced; '
+                          'heavy editor b-roll coverage so their face carries less screen time',
         }
         comfort = brand['camera_comfort']
         hint = comfort_map.get(comfort, '')
@@ -1736,7 +1766,8 @@ def scripts_prompt(brand: dict, pillar: dict, style: str, count: int,
         f"You are Marque's script engine writing {s['label']} short-form videos. "
         "Write in the creator's EXACT voice — match their tone sliders, echo their real phrasing, and NEVER use "
         "a banned phrase. The hook must stop the scroll in the first 3 seconds. "
-        f"\n\n{CRAFT_RULES_BLOCK}\n\n"
+        f"\n\n{TALKING_HEAD_MANDATE}\n\n"
+        f"{CRAFT_RULES_BLOCK}\n\n"
         f"{VIRALITY_BLOCK}\n\n"
         f"{GROUNDING_BLOCK}\n\n"
         f"STYLE RULES ({s['label']}): {s['rubric']}\n\n"
@@ -2529,7 +2560,9 @@ def next_idea_prompt(niche: str, insight: dict | None, pillar: str = "",
     system = (
         "You suggest exactly ONE next talking-head short-form video idea for a creator.\n"
         "HARD RULES:\n"
-        "- Concrete and filmable today: a specific angle, not a theme.\n"
+        "- Concrete and filmable today: a specific angle, not a theme. Filmable means the creator "
+        "talks to camera — nothing to stage, demo, or shoot beyond their own face; the AI editor "
+        "adds all other visuals automatically.\n"
         "- The hook must stop the scroll in the first 3 seconds.\n"
         "- If a performance strength is provided, build the idea AROUND it, citing it "
         "qualitatively only — do NOT invent, estimate, or repeat any number.\n"
@@ -2867,27 +2900,29 @@ CRAFT_RULES_BLOCK = (
 # catch AFTER generation; showing them AT generation is cheaper than repairing.
 CRAFT_EXAMPLES_BLOCK = (
     "A RIGHT script (structure, not content — note: mid-action open, escalation, payoff held to "
-    "the last line, callback close, every line speakable):\n"
-    '  hook: "Security is 10 feet away and I don\'t have a ticket. Watch this."\n'
-    '  body: "So the trick isn\'t sneaking down, it\'s acting like you belong down. I started in '
-    "the concourse where nobody checks, and grabbed the first empty seat I could find.\\n\\nFor a "
-    "minute I thought I was good. Then I saw him. A steward, going row by row, checking every "
-    "single ticket.\\n\\nGoing back up meant walking straight past him, so the only way out was "
-    "down. Timeout hits, everybody stands, and I'm in the lower bowl before anyone sits back "
-    'down.\\n\\nAt this point I could hear the shoes squeaking from the tunnel. One more rung. But '
-    'the second I stepped in, a hand landed on my shoulder."\n'
-    '  cta: "They walked me out past every seat I\'d earned. Worth it."\n'
+    "the last line, callback close, every line speakable, all of it TOLD to camera):\n"
+    '  hook: "My biggest client fired me on a Tuesday, and by Friday I was thanking him."\n'
+    '  body: "So Tuesday morning I get the call. Contract\'s done, effective now. That client was '
+    "forty percent of my income, and I did what you'd do — panicked, opened my laptop, started "
+    "writing the please-take-me-back email.\\n\\nThen I looked at my calendar. Every red block on "
+    "it, for two years, was him. Rush jobs. Sunday calls. The projects I actually wanted to do "
+    "were sitting in a folder called someday.\\n\\nSo instead of sending the email, I sent three "
+    "pitches to the someday folder people. Two answered by Thursday.\\n\\nFriday, the math came "
+    'back: the two of them together paid more than he ever did."\n'
+    '  cta: "Look at your calendar. Whatever your version of that red block is — that\'s the email '
+    'to write today."\n'
     "A WRONG script and why it fails:\n"
-    '  hook: "Today I am going to attempt to sneak into the NBA Finals, and by the end of this '
-    'video you will see me get ejected."\n'
-    '  body: "Little did I know that my journey would take me past over 20,000 passionate fans. As '
-    'I contemplated my next move, I reflected on how stadiums represent the pinnacle of security."\n'
-    '  cta: "And then I woke up. It was all a dream. Like and subscribe for more."\n'
+    '  hook: "Today I want to talk about the time I got fired by a client, and by the end of this '
+    'video you\'ll see why it was the best thing that ever happened to me."\n'
+    '  body: "Little did I know that this setback would become an opportunity. As I contemplated '
+    'my next move, I reflected on how challenges are really just growth in disguise. Studies show '
+    'that over 73% of freelancers experience this."\n'
+    '  cta: "And that\'s why everything happens for a reason. Like and subscribe for more."\n'
     "  FAILURES: the first line reveals the payoff and opens with setup instead of mid-action. "
     "\"Little did I know\" and \"contemplated my next move\" are written language no creator "
-    "speaks. \"Over 20,000 passionate fans\" is an invented specific — the worst failure. The "
-    "dream ending adds a twist the concept never had, and \"like and subscribe\" is a recap-"
-    "register close."
+    "speaks. \"Over 73% of freelancers\" is an invented specific — the worst failure. The body "
+    "never tells the actual story (no calendar, no email, no numbers the creator owns), and "
+    "\"like and subscribe\" is a recap-register close."
 )
 
 

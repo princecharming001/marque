@@ -70,14 +70,20 @@ def _context_from_brand(brand: dict) -> tuple[str, str, str, str]:
 
 
 def mock_ideas(brand: dict) -> list[dict]:
+    """Deterministic fallback ideas. OWNER MANDATE: every idea is TOLD to camera — one
+    take, the creator talking; the AI editor adds all other visuals. No idea may require
+    filming demos, montages, or extra footage."""
     niche = (brand.get("niche") or "your niche").strip()
     return [
         {"title": f"I Tried the Most-Watched {niche} Format for 7 Days",
-         "content": f"Open on the setup every {niche} viewer recognizes. Escalate one constraint each day. End on the before/after. Film with your phone."},
+         "content": "Open mid-story on day 7's result, then tell the week: what you copied, "
+                    "what flopped, the one day it flipped. One take, talking to camera."},
         {"title": f"The {niche} Mistake Everyone Makes (I Tested It)",
-         "content": f"Hook with the common belief. Run the experiment on camera. Reveal what actually happened. One take, talking to camera."},
+         "content": "Hook with the common belief. Tell what you tested and what actually "
+                    "happened, numbers last. One take, talking to camera."},
         {"title": f"What 100 Hours of {niche} Taught Me",
-         "content": f"Fast montage of the grind. Land three counterintuitive lessons. Close on the one that breaks out of {niche}. B-roll heavy."},
+         "content": f"Land three counterintuitive lessons as spoken beats, saving the one that "
+                    f"breaks out of {niche} for last. One take, talking to camera."},
     ]
 
 

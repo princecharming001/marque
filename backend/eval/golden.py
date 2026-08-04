@@ -114,12 +114,14 @@ KNOWN_GOOD = [
         "hookSignal": "contrarian", "formatId": "myth-buster",
         "body": "Everyone sells the 60-minute grind. For a parent that's a fantasy. Here's the 15-minute block that actually moves the needle: 5 squats, 5 push-ups, 5 rows, repeat.",
         "cta": "Save this for tomorrow morning.", "predictedScore": 82, "style": "talking_head"}},
+    # OWNER MANDATE 2026-08-04: talking-head only — this golden was style "faceless"
+    # (retired from ACTIVE_STYLES); same body works as spoken-to-camera copy.
     {"brand": _FIN_BRAND, "script": {
         "title": "Index funds, plainly", "summary": "One concept, 30 seconds.",
         "hook": "An index fund is just buying a tiny slice of 500 companies at once.",
-        "hookSignal": "authority", "formatId": "faceless",
+        "hookSignal": "authority", "formatId": "myth-buster",
         "body": "Instead of betting on one stock, you own a sliver of all of them. When the market grows, you grow with it. That's it. No stock-picking, no timing.",
-        "cta": "Follow for the next one.", "predictedScore": 78, "style": "faceless"}},
+        "cta": "Follow for the next one.", "predictedScore": 78, "style": "talking_head"}},
 ]
 
 # Each: script + the check name(s) it must trip.
