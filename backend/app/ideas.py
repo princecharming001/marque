@@ -101,9 +101,32 @@ async def generate_ideas(store, brand: dict, exemplars: str = "",
         except Exception:
             structural_patterns = ""
     signals, identity, _topic, _fmt = _context_from_brand(brand)
+    # The {channel_identity} slot's intended payload is the full identity DOC (macro
+    # dials, voice anchors, data_confidence) — the 3-field join is the cold fallback.
+    try:
+        if creator_id and palo_flags.enabled(palo_flags.CHANNEL_IDENTITY):
+            from app import channel_identity
+            doc_block = channel_identity.identity_block(
+                await channel_identity.load_identity(store, creator_id))
+            if doc_block:
+                identity = doc_block
+    except Exception:
+        pass
     base_sys, user = palo_prompts.idea_generation_prompt(
         signals, identity, exemplars, knowledge,
         structural_patterns=structural_patterns, recent_catalog=recent_catalog)
+    # Engagement loop (Palo): the soft-no list (ideas the creator saw and ignored —
+    # inaction is an answer; collision runs on the ENGINE) + the tier digest ("ignoring
+    # earns fewer, better ones"). Both "" when the ENGAGEMENT flag is off.
+    try:
+        from app import engagement
+        soft = await engagement.soft_no_block(store, creator_id)
+        feed = await engagement.feedback_block(store, creator_id)
+        extra = "\n\n".join(x for x in (soft, feed) if x)
+        if extra:
+            base_sys = f"{base_sys}\n\n{extra}"
+    except Exception:
+        pass
     system = await get_prompt("palo.idea.generate", base_sys, store=store)
     data = await anthropic_cached_json(system, user, _IDEASET_SCHEMA, SONNET, max_tokens=1400)
     if not isinstance(data, dict) or not data.get("ideas"):
@@ -144,6 +167,14 @@ async def judge_ideas(store, ideas: list[dict], brand: dict,
         return []
     signals, identity, _t, _f = _context_from_brand(brand)
     context = f"{signals}\n{identity}"
+    try:                                       # judge sees the engagement tier (Palo policy)
+        from app import engagement
+        tier = await engagement.engagement_tier(store, creator_id)
+        if tier and tier != "skimming":
+            context += (f"\nENGAGEMENT: {tier} — engaged earns more ideas; "
+                        "ignoring earns fewer, better ones (judge accordingly).")
+    except Exception:
+        pass
     scores: list[float] = []
     judged_any = False
     for idea in ideas:
@@ -317,7 +348,29 @@ async def run_ideate_for(store, creator_id: str, brand: dict, tier: str,
         last = await store.get_watermark(creator_id, "ideate_last_run") or 0
         if not is_ideate_due(tier, float(last), now_epoch):
             return 0
-        briefs = await spitfire(store, creator_id, brand, exemplar)
+        briefs: list[dict] = []
+        if palo_flags.enabled(palo_flags.SKETCH_IDEAS):
+            # Palo's sketch→idea bake-off (supersedes the spitfire chain). Its
+            # NO-FALLBACK-COPY contract returns [] on any failure, so falling through
+            # to spitfire (which has its own mock floor) is always safe.
+            try:
+                from app import sketch_ideas
+                recent = [b.get("title", "") for b in
+                          await store.load_briefs(creator_id, limit=20)]
+                identity_ctx = ""
+                try:
+                    from app import channel_identity
+                    identity_ctx = channel_identity.identity_block(
+                        await channel_identity.load_identity(store, creator_id))
+                except Exception:
+                    pass
+                briefs = await sketch_ideas.bake_ideas(
+                    store, creator_id, brand, identity_context=identity_ctx,
+                    exemplars=exemplar, recent_titles=[t for t in recent if t])
+            except Exception as e:
+                logging.warning("[ideas] bake_ideas failed, spitfire fallback: %s", e)
+        if not briefs:
+            briefs = await spitfire(store, creator_id, brand, exemplar)
         for b in briefs:
             try:
                 await store.upsert_brief(b)
@@ -338,10 +391,26 @@ async def brief_feed_items(store, creator_id: str, limit: int = 6,
     if not palo_flags.enabled(palo_flags.IDEA_BANK) or store is None or not creator_id:
         return []
     briefs = await store.load_briefs(creator_id, status="new", limit=limit * 2)
+    # Palo's promotion split: judge-promoted bangers surface FIRST (they're the ones
+    # worth interrupting for); within each tier the stored score orders.
+    briefs = sorted(briefs, key=lambda b: (not bool(b.get("promoted")),
+                                           -float(b.get("score", 0) or 0)))
     items = [{"id": b.get("id"), "kind": "idea", "source": "idea_bank",
-              "title": b.get("title", ""), "summary": b.get("summary", ""),
-              "score": b.get("score", 0), "brief_id": b.get("id")}
+              "title": b.get("title", ""), "summary": b.get("pitch") or b.get("summary", ""),
+              "score": b.get("score", 0), "brief_id": b.get("id"),
+              "promoted": bool(b.get("promoted"))}
              for b in briefs if float(b.get("score", 0) or 0) >= min_score]
+    # Outcome reranker (flag-gated, measured-signal): silent stable rerank when a
+    # trained per-creator model exists; identity otherwise. Callers gate the flag
+    # before any work (outcome_ranker convention).
+    try:
+        if palo_flags.enabled(palo_flags.OUTCOME_RANKER):
+            from app import outcome_ranker
+            model = await outcome_ranker.load_model(store, creator_id)
+            if model:
+                items = outcome_ranker.rerank(items, model)
+    except Exception:
+        pass
     return items[:limit]
 
 

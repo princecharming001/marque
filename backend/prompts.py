@@ -1972,6 +1972,29 @@ def hook_judge_prompt(topic: str, hooks: list[dict]) -> tuple[str, str]:
     return system, user
 
 
+# Named one-tap steer ops — the mission lines from Palo's LD section-op family
+# (build-tensions / improve-hook-prompt / rephrase / remove-fluff-prompt /
+# shorten-prompt2), verbatim where creator-visible behavior is defined. The shared
+# rules 0-4 live in steer_prompt's system; each op contributes only its mission.
+STEER_OPS: dict[str, str] = {
+    "build_tension": ("Enhance the script to build tension while retaining its original length and "
+                      "language level: delay the payoff of each section to the end and build "
+                      "anticipation up to it — structure sentences so key details come at the end "
+                      "of each line."),
+    "improve_hook": ("Rewrite ONLY the opening line(s) to stop the scroll harder: open mid-action "
+                     "or consequence-first with a concrete stake, never a greeting, set-up, or "
+                     "question; the hook must create the one question the last line answers."),
+    "rephrase": ("Rephrase the script to an alternative variation, preserving the original "
+                 "meaning, tone, and narrative — natural when spoken aloud, no formal sentence "
+                 "structures."),
+    "remove_fluff": ("Remove unnecessary fluff and filler words, making the content more concise "
+                     "while maintaining the core message and engagement."),
+    "shorten": ("Trim a little off the fluff; don't replace the narrative or flow, but bend a "
+                "little if something sounds off. Prioritize hooking elements that re-engage the "
+                "viewer — it should keep good retention."),
+}
+
+
 def steer_prompt(brand: dict, script: dict, instruction: str,
                  arm_stats: list[dict] | None = None) -> tuple[str, str]:
     # Steering is the highest-frequency post-generation path and was the least protected

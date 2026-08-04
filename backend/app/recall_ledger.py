@@ -81,6 +81,63 @@ async def record(store, creator_id: str, user_msg: str, assistant_msg: str,
         return 0
 
 
+_SUMMARY_SCHEMA = {
+    "type": "object", "additionalProperties": False, "required": ["summary", "decisions"],
+    "properties": {"summary": {"type": "string"}, "decisions": {"type": "array", "items": {
+        "type": "object", "additionalProperties": False,
+        "required": ["who", "stance", "what", "quote"],
+        "properties": {"who": {"type": "string"}, "stance": {"type": "string"},
+                       "what": {"type": "string"}, "quote": {"type": "string"}}}}},
+}
+
+_VALID_STANCES = {"proposed", "accepted", "rejected", "deferred"}
+
+
+async def summarize_dropped(store, creator_id: str, dropped: list[dict],
+                            conversation_id: str = "") -> int:
+    """Palo summarizer v4.1 wiring: when converse truncates a long chat, the DROPPED
+    prefix is summarized ONCE into the ledger (decision rows + one conversation row) so
+    decision recall survives truncation. Fire-and-forget; returns #rows appended.
+    Same gates as record(); swallows all errors."""
+    try:
+        if not palo_flags.enabled(palo_flags.MEMORY_V2) or store is None \
+                or not palo_flags.real_creator(creator_id):
+            return 0
+        if len(dropped) < 4:                     # too little context to be worth a call
+            return 0
+        system, user = palo_prompts.conversation_summary_prompt(dropped)
+        from app.prompt_store import get_prompt
+        system = await get_prompt("palo.conversation.summary", system, store=store)
+        data = await anthropic_cached_json(system, user, _SUMMARY_SCHEMA, HAIKU, max_tokens=900)
+        if not isinstance(data, dict):
+            return 0
+        entries: list[dict] = []
+        for d in (data.get("decisions") or [])[:12]:
+            if not isinstance(d, dict) or d.get("stance") not in _VALID_STANCES:
+                continue
+            what = str(d.get("what") or "").strip()[:120]
+            if not what:
+                continue
+            quote = str(d.get("quote") or "").strip()[:140]
+            who = "user" if d.get("who") == "user" else "assistant"
+            line = f"{who} {d['stance']}: {what}" + (f' — "{quote}"' if quote else "")
+            entries.append({"conversation_id": conversation_id, "kind": "decision",
+                            "summary": line[:200]})
+        summary = str(data.get("summary") or "").strip()[:200]
+        if summary:
+            entries.append({"conversation_id": conversation_id, "kind": "verdict",
+                            "summary": f"earlier in this chat: {summary}"[:200]})
+        if not entries:
+            return 0                             # rule 4: empty is correct
+        if await store.append_ledger(creator_id, entries):
+            await ai_usage.record(store, creator_id, "ledger.summary", HAIKU, 1500, 300)
+            return len(entries)
+        return 0
+    except Exception as e:
+        logging.warning("[recall_ledger] summarize_dropped failed: %s", e)
+        return 0
+
+
 async def ledger_block(store, creator_id: str, limit: int = 25) -> str:
     """Render recent proposals/decisions as the <prior_recommendations> block, so the
     agent doesn't re-pitch. Empty string when off/empty."""

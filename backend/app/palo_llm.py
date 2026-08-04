@@ -52,6 +52,31 @@ async def aclose() -> None:
             _client = None
 
 
+# --- Emission armor (Palo live-debugged gotchas, recorded HERE because this wrapper is
+# where a model bump lands first) -------------------------------------------------------
+# 1. THINKING vs FIXED-FORMAT EMISSIONS: on models with extended thinking enabled by
+#    default, a fixed-format emission (sentinel plain-text, forced-tool, tight schema)
+#    MUST send thinking={"type": "disabled"} — Palo measured the model burning the
+#    ENTIRE output budget on thinking with zero text at 768 AND 2048 max_tokens.
+#    Current models here don't default-think, so no body change yet; apply on bump.
+# 2. TEXT EXTRACTION: always join every text block (done below) — content[0] may be a
+#    thinking block on thinking models.
+# 3. SCHEMA PROPERTY ORDER: constrained decoding walks properties in definition order —
+#    put fields you want generated FIRST first (see prompts.SCRIPT_JSON_ELEMENT "plan"),
+#    and big free-text fields LAST so they can't burn the budget before required slots.
+
+
+def wcut(text: str, cap: int) -> str:
+    """Cap a context block at a WORD boundary (Palo's _wcut). Never [:N]-slice prompt
+    material mid-word — a truncated token reads as garbage to the model and a sliced
+    JSON blob is worse than an absent one."""
+    t = text or ""
+    if len(t) <= cap:
+        return t
+    cut = t.rfind(" ", 0, cap)
+    return t[:cut if cut > cap // 2 else cap].rstrip() + "…"
+
+
 def build_system(system: str) -> str | list[dict]:
     """If `system` contains a CACHE_BREAKPOINT marker, split into a cached prefix block
     (cache_control:ephemeral) + a dynamic tail block. Otherwise return the plain string.

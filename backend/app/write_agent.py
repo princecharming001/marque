@@ -31,11 +31,16 @@ def _spawn(coro):
     t.add_done_callback(_bg_tasks.discard)
     return t
 
+# v3.3: reasoning is the 3rd field — the internal colleague-briefing that powers the
+# teach-back tutorial (app/tutorial.py). The creator never sees it raw.
 _SCRIPT_SCHEMA = {
-    "type": "object", "additionalProperties": False, "required": ["title", "script"],
-    "properties": {"title": {"type": "string"}, "script": {"type": "string"}},
+    "type": "object", "additionalProperties": False,
+    "required": ["title", "script", "reasoning"],
+    "properties": {"title": {"type": "string"}, "script": {"type": "string"},
+                   "reasoning": {"type": "string"}},
 }
 
+_PLANNING_RE = re.compile(r"<planning>(?P<content>.*?)</planning>", re.DOTALL)
 _FILL_RE = re.compile(r"<fill>(?P<content>.*?)</fill>", re.DOTALL)
 _EDIT_RE = re.compile(r"<edit>\s*<old>(?P<old>.*?)</old>\s*<new>(?P<new>.*?)</new>\s*</edit>", re.DOTALL)
 # Tolerant to attribute order / extra whitespace (a reordered <add> is otherwise silently
@@ -46,11 +51,21 @@ _ADD_REF_RE = re.compile(r'ref\s*=\s*"(.*?)"', re.DOTALL)
 _ANSWER_RE = re.compile(r"<answer>(?P<text>.*?)</answer>", re.DOTALL)
 
 
+def parse_planning(text: str) -> str:
+    """The v3.3 <planning> block — internal structure pass, never an action. Captured
+    separately so a client can render it as a thinking dropdown (Palo's UX: reasoning
+    becomes user-visible theater, not chat)."""
+    m = _PLANNING_RE.search(text or "")
+    return m.group("content").strip() if m else ""
+
+
 def parse_write_actions(text: str) -> list[dict]:
     """Extract actions in document order. Each: {op, ...}. Unrecognized text is ignored
-    (the model is instructed to speak only in tags)."""
+    (the model is instructed to speak only in tags). <planning> is intentionally NOT an
+    action — see parse_planning."""
     if not text:
         return []
+    text = _PLANNING_RE.sub("", text)          # a fill inside planning must not apply
     spans: list[tuple[int, dict]] = []
     for m in _FILL_RE.finditer(text):
         spans.append((m.start(), {"op": "fill", "content": m.group("content").strip()}))
@@ -161,8 +176,9 @@ async def script_from_brief(store, creator_id: str, brief: dict,
         except Exception:
             pass
         return {"title": data.get("title", (brief or {}).get("title", "")),
-                "body": data["script"], "mode": "live"}
-    return {**_mock_script_from_brief(brief), "mode": "mock"}
+                "body": data["script"], "reasoning": data.get("reasoning", ""),
+                "mode": "live"}
+    return {**_mock_script_from_brief(brief), "reasoning": "", "mode": "mock"}
 
 
 async def _context_blocks(store, creator_id: str, instruction: str, brand: dict | None) -> tuple[str, str]:
@@ -189,10 +205,31 @@ async def _context_blocks(store, creator_id: str, instruction: str, brand: dict 
     return strat, mem
 
 
+# Palo write_pyro corrective-error pattern: a failed op's error message is shown to the
+# MODEL, never the user — "the tool result IS the repair prompt". One bounded retry.
+_BAD_OLD_ERROR = ("Error: an <edit>'s <old> (or an <add>'s ref) is not an exact "
+                  "character-for-character substring of CURRENT SCRIPT. Copy the text "
+                  "EXACTLY from CURRENT SCRIPT in the message above — never from context "
+                  "or memory — or switch to a full <fill>. Keep everything else identical.")
+
+
+def _invalid_anchor_ops(script_body: str, actions: list[dict]) -> list[dict]:
+    doc = script_body or ""
+    bad = []
+    for a in actions:
+        if a.get("op") == "edit" and (not a.get("old") or a["old"] not in doc):
+            bad.append(a)
+        elif a.get("op") == "add" and a.get("ref") and a["ref"] not in doc:
+            bad.append(a)
+    return bad
+
+
 async def write_turn(store, creator_id: str, script_body: str, instruction: str,
                      brand: dict | None = None) -> dict:
-    """One write-agent turn. Returns {"actions": [...], "raw": str}. Keyless ⇒ a mock
-    <answer>. Flag-gated (off ⇒ {"actions": [], "mode": "off"})."""
+    """One write-agent turn. Returns {"actions": [...], "raw": str, "planning": str}.
+    Keyless ⇒ a mock <answer>. Flag-gated (off ⇒ {"actions": [], "mode": "off"}).
+    v3.3: a turn whose edit anchors miss the script gets ONE invisible corrective retry
+    before anything reaches the caller (self-heal, don't surface the failure)."""
     if not palo_flags.enabled(palo_flags.WRITE_AGENT):
         return {"actions": [], "mode": "off"}
     strat, mem = await _context_blocks(store, creator_id, instruction, brand)
@@ -203,8 +240,19 @@ async def write_turn(store, creator_id: str, script_body: str, instruction: str,
     if not raw:
         return {"actions": [{"op": "answer",
                              "text": "Tell me what to change and I'll suggest a precise edit."}],
-                "raw": "", "mode": "mock"}
+                "raw": "", "planning": "", "mode": "mock"}
     actions = parse_write_actions(raw)
+    if actions and _invalid_anchor_ops(script_body, actions):
+        retry_user = (f"{user}\n\nYOUR PREVIOUS ATTEMPT:\n{raw[:6000]}\n\n{_BAD_OLD_ERROR}")
+        raw2 = await anthropic_cached(system, retry_user, OPUS, max_tokens=1500)
+        if raw2:
+            actions2 = parse_write_actions(raw2)
+            # Accept the retry only when it actually healed — else keep the original
+            # (apply_actions will mark the bad ops applied=False for the client).
+            if actions2 and not _invalid_anchor_ops(script_body, actions2):
+                logging.info("[write_agent] corrective retry healed %d bad anchor(s)",
+                             len(_invalid_anchor_ops(script_body, actions)))
+                raw, actions = raw2, actions2
     if not actions:                          # model spoke prose -> treat as an answer
         actions = [{"op": "answer", "text": raw.strip()[:500]}]
     try:                                        # off the response path
@@ -212,4 +260,4 @@ async def write_turn(store, creator_id: str, script_body: str, instruction: str,
         _spawn(ai_usage.record(store, creator_id, "write.turn", OPUS, 3000, 800))
     except Exception as e:
         logging.warning("[write_agent] usage record failed: %s", e)
-    return {"actions": actions, "raw": raw, "mode": "live"}
+    return {"actions": actions, "raw": raw, "planning": parse_planning(raw), "mode": "live"}

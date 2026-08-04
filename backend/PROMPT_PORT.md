@@ -91,3 +91,66 @@ macro_style (M), sketch→idea bake-off replacing spitfire (M-L), write-agent v3
 flag first), decider/Today briefing, engagement feedback loop + soft-no, outcome predictor
 (L — Palo measured LLM zero-shot ranking at coin-flip 49.3%; own-history 68.2%), first-
 script teach-back tutorial, MODE 2 direction cards, nightly factory chassis.
+
+---
+
+## Round 3 — 2026-08-04 (full parity: the suggestion organism)
+
+Owner directive: "our system should mimic Palo's as closely as possible — implement all
+the suggestions and go further." Seven new modules + shared-file wiring, ALL flag-gated
+default OFF (deploy-safe dark): CHANNEL_IDENTITY, SKETCH_IDEAS, DECIDER, ENGAGEMENT,
+OUTCOME_RANKER, MORNING_BRIEF, TUTORIAL.
+
+New modules (each with its own keyless test suite):
+- **app/channel_identity.py** — the identity DOC every Palo generation consumes: Path B
+  cold recipe (voice from how the user writes, anchors, anti-horoscope THE TEST),
+  STRONG/PARTIAL/THIN synthesis ladder with code-clamped data_confidence, macro_style
+  six dials, Layer1/Layer2 established recipe + ghostwriter-brief test. Stored on
+  creators.channel_identity; injected via _inject_brain + the idea-gen identity slot;
+  built at onboarding completion.
+- **app/sketch_ideas.py** — the a5a sketch → a5b bake-off funnel (supersedes spitfire
+  when armed): 8 engine-level sketches → 3 rivals → judge → winner(s) with the
+  pitch/brief two-reader card anatomy; vocab firewall (digit-window), scaffold
+  discard-never-repair, NO-FALLBACK-COPY ([] on failure → spitfire floor), ≥0.6
+  containment dedup. Wired into run_ideate_for.
+- **app/decider.py** — pulse/decide port: diagnosis → the RIGHT response type
+  (OBSERVE_REVIEW / GENERATE_IDEAS / GENERATE_ALT_IDEA / REVIVE_PROJECT / NUDGE_ONLY),
+  ≤3/day, destination FORCED in code (_DEST), pills number-scrubbed against evidence,
+  silent day on any failure; vitals thresholds (decisive-negative 0-of-n≥5, weakest n≥3,
+  posting_gap max(4, usual×2)); briefing shape w/ hero preference + provenance.
+  Route: GET /v1/today.
+- **app/engagement.py** — suggestion outbox (suggestion_outbox table) + Palo's tier
+  policy (engaged / ignoring / skimming over last 10 shown) + the soft-no with the
+  undelivered-mail nuance (zero opens ⇒ no soft-nos). Injected into idea generation +
+  judge. Route: POST /v1/suggestions/track.
+- **app/outcome_ranker.py** — the measured-signal ranker (Palo: LLM zero-shot = 49.3%
+  coin-flip; own-history 68.2%): 30-dim featurizer, pairwise logistic (MIN_RATIO 2.0,
+  censor 30d, ≥8 pairs or no model), stable rerank in brief_feed_items, 21-statement
+  anchor brief into _inject_brain, retrain spawned on settle. creators.outcome_model.
+- **app/tutorial.py** — first-script teach-back pregen: exact-substring highlights
+  (drop-never-repair), hook/payoff always taught, shared-ownership voice; honest
+  2-step template keyless. Route: POST /v1/scripts/tutorial. Feeds on the new
+  {script, reasoning} 2-field contract from write_agent.script_from_brief.
+- **app/comms.py** — morning brief (proactive-daily "stage" rules): selects, never
+  writes; exact-title quotes code-validated (hallucinated title ⇒ discarded);
+  empty body = honest silence; perf_phrase tone bible (never raw multipliers).
+  Route: GET /v1/morning-brief.
+
+Shared-file upgrades in the same round:
+- **WRITE_AGENT_SYSTEM → v3.3** (agent-write-prompt "Treatment 1" adapted tool-less):
+  mode-detection ladder, reply envelope, <planning> contract (parsed + returned
+  separately), payoff-first grounding, 8-item self-audit; corrective-error invisible
+  retry on bad edit anchors ("the error message IS the repair prompt");
+  script_from_brief emits {script, reasoning}.
+- **Direction options MODE 2** (POST /v1/onboarding/direction-options): format-lane
+  cards written as "a video you'd recognize while scrolling", honestly framed.
+- **Conversation summarizer v4.1**: /v1/converse truncation now summarizes the dropped
+  prefix into the recall ledger (decision rows w/ verbatim quotes) in the background.
+- **STEER_OPS** named one-tap ops (build_tension/improve_hook/rephrase/remove_fluff/
+  shorten) from the LD section-op family.
+- **palo_llm**: wcut word-boundary cap + the recorded Sonnet-5 emission armor notes.
+- Migration `palo_round3_parity_additive` APPLIED (additive only): creators.channel_identity,
+  creators.outcome_model, briefs.pitch/brief/concept/promoted, suggestion_outbox table.
+
+Arming order suggestion: CHANNEL_IDENTITY → ENGAGEMENT → SKETCH_IDEAS (with IDEA_BANK)
+→ DECIDER → MORNING_BRIEF → TUTORIAL → OUTCOME_RANKER (needs settled volume).

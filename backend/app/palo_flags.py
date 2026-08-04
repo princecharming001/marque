@@ -29,6 +29,16 @@ TRACK_INSIGHTS = _on("TRACK_INSIGHTS")  # Phase 3 — post-performance learning
 STRATEGY_COMPILER = _on("STRATEGY_COMPILER")  # Phase 4 — the self-learning brain
 WRITE_AGENT = _on("WRITE_AGENT")        # Phase 5 — interactive write agent
 EXEMPLAR_BANK = _on("EXEMPLAR_BANK")    # Phase 6 — golden-craft pattern library
+
+# Round 2 (2026-08-04) — full-parity port of Palo's newest suggestion organism.
+# Same convention: each defaults OFF, and PALO_PORT stays the global kill-switch.
+CHANNEL_IDENTITY = _on("CHANNEL_IDENTITY")  # R2 — identity doc (macro_style + data_confidence)
+SKETCH_IDEAS = _on("SKETCH_IDEAS")          # R2 — sketch→idea bake-off (supersedes spitfire)
+DECIDER = _on("DECIDER")                    # R2 — daily diagnosis → right-response-type
+ENGAGEMENT = _on("ENGAGEMENT")              # R2 — suggestion outbox + tier + soft-no
+OUTCOME_RANKER = _on("OUTCOME_RANKER")      # R2 — pairwise outcome reranker
+MORNING_BRIEF = _on("MORNING_BRIEF")        # R2 — daily comms digest (select, never write)
+TUTORIAL = _on("TUTORIAL")                  # R2 — first-script teach-back pregen
 # (VIDEO_BRAIN removed — audit found it was a dead gate no code path consumed; video
 #  evidence already flows under EXEMPLAR_BANK / STRATEGY_COMPILER via the dossier
 #  adapter. Re-add only when per-reel deep analysis is actually ported.)

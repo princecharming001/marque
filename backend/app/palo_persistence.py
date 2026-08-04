@@ -20,8 +20,12 @@ _STRATEGY_COLS = ("creator_id", "strategy_markdown", "strategy_playbooks",
                   "strategy_footnotes", "strategy_revision", "strategy_updated_at",
                   "exemplar_bank", "element_inventory", "exemplar_bank_revision",
                   "exemplar_bank_built_at", "brand_hash")
+# R3 (2026-08-04): pitch/brief/concept are the sketch→idea bake-off's two-reader card
+# anatomy (pitch = creator-facing ≤30 words, brief = internal handoff ≤60 words);
+# promoted = the judge's ≥8.0 banger split. All additive (migration palo_round3).
 _BRIEF_COLS = ("id", "creator_id", "source", "title", "summary", "beginning",
-               "middle", "ending", "score", "status", "meta", "created_at")
+               "middle", "ending", "score", "status", "meta", "created_at",
+               "pitch", "brief", "concept", "promoted")
 _INSIGHT_COLS = ("id", "creator_id", "type", "category", "title", "description",
                  "content", "chips", "dedup_hash", "delivered", "conversation_seed",
                  "created_at")

@@ -405,6 +405,29 @@ async def _inject_brain(system: str, creator_id: str, query: str = "") -> str:
                     blocks.append(mem)
     except Exception as e:
         logging.warning("[brain] memory inject failed: %s", e)
+    try:
+        # R3: the channel identity DOC (macro dials + voice anchors + data_confidence)
+        # — the substrate every Palo generation consumes. Load-only on the hot path;
+        # building happens at onboarding completion / account connect.
+        if palo_flags.enabled(palo_flags.CHANNEL_IDENTITY):
+            from app import channel_identity
+            ident = channel_identity.identity_block(
+                await channel_identity.load_identity(_palo_store, creator_id))
+            if ident:
+                blocks.append(ident)
+    except Exception as e:
+        logging.warning("[brain] identity inject failed: %s", e)
+    try:
+        # R3: trained outcome anchors — "hooks that win here / lose here" from the
+        # measured pairwise model. Only exists with a real trained model.
+        if palo_flags.enabled(palo_flags.OUTCOME_RANKER):
+            from app import outcome_ranker
+            model = await outcome_ranker.load_model(_palo_store, creator_id)
+            anch = outcome_ranker.anchor_brief(model) if model else ""
+            if anch:
+                blocks.append(anch)
+    except Exception as e:
+        logging.warning("[brain] anchor inject failed: %s", e)
     return system + ("\n\n" + "\n\n".join(blocks) if blocks else "")
 
 
@@ -7395,6 +7418,11 @@ async def create_digest_job(req: DigestRequest):
     # hot path; flag- and real-creator-gated inside.
     if palo_flags.enabled(palo_flags.IDEA_BANK) and palo_flags.real_creator(req.creator_id):
         _spawn(ideas.suggest_ideas(_palo_store, req.creator_id, req.d(), source="onboarding"))
+    # R3: onboarding completion is also the identity-doc moment (Palo: the doc every
+    # downstream generation consumes). Build-and-save once, in the background.
+    if palo_flags.enabled(palo_flags.CHANNEL_IDENTITY) and palo_flags.real_creator(req.creator_id):
+        from app import channel_identity
+        _spawn(channel_identity.ensure_identity(_palo_store, req.creator_id, req.d()))
     return {"mode": "live", "job_id": job_id, "status": "running"}
 
 
@@ -7665,6 +7693,153 @@ async def connect_channel_read(req: ConnectPreviewRequest):
     except Exception as e:
         logging.warning("[channel-read] failed: %s", e)
         return {"mode": "mock", "lines": []}
+
+
+# ----- R3: engagement outbox + morning brief + tutorial (Palo parity) ------------
+
+
+class SuggestionTrackRequest(BaseModel):
+    creator_id: str = "default"
+    suggestion_id: str = ""
+    kind: str = "idea"
+    title: str = ""
+    event: str = "shown"          # shown | opened | saved | dismissed
+
+
+@app.post("/v1/suggestions/track")
+async def suggestions_track(req: SuggestionTrackRequest):
+    """Engagement outbox (Palo): every suggestion surface reports shown/opened/saved/
+    dismissed so ideation can read the tier + soft-no list. Flag-gated no-op otherwise."""
+    from app import engagement
+    ok = await engagement.track(_palo_store, req.creator_id, req.suggestion_id,
+                                req.kind, req.title, req.event)
+    return {"ok": bool(ok)}
+
+
+@app.get("/v1/morning-brief")
+async def morning_brief_route(creator_id: str = "default"):
+    """Palo comms: one daily selection over what got made overnight — copy reused
+    verbatim from the artifacts, never rewritten. Empty body = nothing worth saying
+    (the client shows no card). Flag-gated + keyless → honest empty."""
+    from app import comms
+    artifacts: dict = {"promoted_ideas": [], "overnight_scripts": [], "insights": []}
+    if _palo_store is not None:
+        try:
+            briefs = await _palo_store.load_briefs(creator_id, status="new", limit=10)
+            artifacts["promoted_ideas"] = [
+                {"title": b.get("title", ""), "pitch": b.get("pitch") or b.get("summary", "")}
+                for b in briefs if b.get("promoted")][:3]
+        except Exception:
+            pass
+        try:
+            ins = await _palo_store.load_insights(creator_id, limit=5)
+            artifacts["insights"] = [{"title": r.get("title", "")}
+                                     for r in ins if r.get("title") and not r.get("delivered")][:3]
+        except Exception:
+            pass
+    out = await comms.morning_brief(_palo_store, creator_id, artifacts)
+    return {"body": out.get("body", ""), "mentioned": out.get("mentioned", [])}
+
+
+@app.get("/v1/today")
+async def today_briefing(creator_id: str = "default"):
+    """Palo's Decider + Today briefing: diagnosis → the RIGHT response type (review the
+    execution / ideas in a proven format / alt-idea / revive / nudge), ≤3 decisions,
+    destination forced in code, provenance on every card. Empty candidates or flag off
+    → a silent day ({} decisions) with zero LLM spend — always a safe degrade."""
+    from app import decider
+    await _ensure_arms_loaded(creator_id)
+    arms = await _arms_for_prompt(creator_id)
+    now = datetime.now(timezone.utc)
+    posts = []
+    for p in _post_registry.values():
+        if p.get("creator_id") != creator_id:
+            continue
+        entry = dict(p)
+        ts = str(p.get("settled_at") or p.get("registered_at") or p.get("created_at") or "")
+        try:                                     # age_days is required by the pure sensors
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            entry["age_days"] = max(0.0, (now - dt).total_seconds() / 86400.0)
+        except (ValueError, TypeError):
+            pass                                 # sensors needing age just won't fire
+        posts.append(entry)
+    briefs = []
+    if _palo_store is not None:
+        try:
+            briefs = await _palo_store.load_briefs(creator_id, status="new", limit=10)
+        except Exception:
+            pass
+    cands = decider.build_candidates(arms, posts, briefs)
+    strategy_text = ""
+    try:
+        from app import strategy_compiler
+        strategy_text = await strategy_compiler.strategy_block(_palo_store, creator_id)
+    except Exception:
+        pass
+    day = await decider.decide(_palo_store, creator_id, cands, strategy_text=strategy_text)
+    promoted = [b for b in briefs if b.get("promoted")]
+    shaped = decider.shape_briefing(day.get("decisions", []), promoted)
+    return {"mode": "live" if day.get("decisions") else "quiet",
+            "day_header": day.get("day_header", ""),
+            "day_summary": day.get("day_summary", ""), **shaped}
+
+
+class DirectionOptionsRequest(BaseModel):
+    creator_id: str = "default"
+    signals: str = ""             # the creator's own words: topic, angle, format hints
+
+
+@app.post("/v1/onboarding/direction-options")
+async def direction_options(req: DirectionOptionsRequest):
+    """Palo MODE 2 direction cards: 3-4 format-based content lanes written as videos
+    you'd recognize while scrolling — honestly framed format knowledge, not fake niche
+    data (no exemplar corpus yet → permanent low-confidence mode). Keyless → a
+    deterministic talking-head-first lane set."""
+    from app import palo_prompts as _pp
+    mock = {
+        "differentiating_axis": "format — proven short-form lanes for this type of content",
+        "options": [
+            {"id": "tips_to_camera", "label": "Quick tips to camera, one concept per video, casual proof that it works",
+             "exemplar_ids": [], "performance_signal": "One clear takeaway per video gives the viewer a reason to save and share."},
+            {"id": "story_with_payoff", "label": "A real story told to camera that builds to one payoff you hold for the end",
+             "exemplar_ids": [], "performance_signal": "The held-back payoff is what keeps viewers to the last second."},
+            {"id": "myth_test", "label": "Taking a common belief in your space and testing or debunking it on camera",
+             "exemplar_ids": [], "performance_signal": "Contrarian openers create an instant open loop."},
+        ],
+        "recommendation": "tips_to_camera",
+        "recommendation_reason": "Your niche is specific enough that I'm recommending based on what "
+                                 "formats work for this type of content, rather than specific "
+                                 "creators in your space.",
+    }
+    if not ANTHROPIC_KEY:
+        return {"mode": "mock", **mock}
+    try:
+        sys_p, usr = _pp.direction_options_prompt(req.signals, exemplars="",
+                                                  search_confidence="low")
+        data = extract_json(await anthropic(sys_p, usr, SONNET, 1200), array=False)
+        if isinstance(data, dict) and isinstance(data.get("options"), list) and data["options"]:
+            return {"mode": "live", **data}
+        return {"mode": "mock", **mock}
+    except HTTPException:
+        return {"mode": "mock", **mock}
+
+
+class TutorialRequest(BaseModel):
+    creator_id: str = "default"
+    script: dict = {}
+    reasoning: str = ""
+    knowledge: str = "basic"
+
+
+@app.post("/v1/scripts/tutorial")
+async def scripts_tutorial(req: TutorialRequest):
+    """First-script teach-back (Palo tutorial pregen): step-by-step 'why this works'
+    walkthrough with exact-substring highlights. Pregen once — the client stores and
+    replays the steps deterministically. Keyless/flag-off → the honest template."""
+    from app import tutorial
+    out = await tutorial.pregen_tutorial(_palo_store, req.creator_id, req.script or {},
+                                         reasoning=req.reasoning, knowledge=req.knowledge)
+    return out
 
 
 _reel_creator_cache: dict[str, dict] = {}
@@ -9239,6 +9414,18 @@ async def _settle_from_scrape(creator_id: str, rows: list[dict]) -> int:
     if settled:
         logging.info("[settle] %s: %d registered posts settled from scraped metrics",
                      creator_id, settled)
+        # R3: fresh settled outcomes are the outcome-ranker's training substrate —
+        # retrain the per-creator pairwise model in the background (flag-gated inside
+        # train_for; <8 usable pairs → no model, honestly).
+        try:
+            if palo_flags.enabled(palo_flags.OUTCOME_RANKER):
+                from app import outcome_ranker
+                settled_posts = [p for p in _post_registry.values()
+                                 if p.get("creator_id") == creator_id and p.get("settled")]
+                if settled_posts:
+                    _spawn(outcome_ranker.train_for(_palo_store, creator_id, settled_posts))
+        except Exception as e:
+            logging.warning("[settle] ranker train spawn failed: %s", e)
     return settled
 
 
@@ -9568,6 +9755,11 @@ async def converse(req: ConverseRequest):
     if req.mode not in ("chat", "voice"):
         req.mode = "chat"
     if len(req.messages) > 40:
+        # Palo summarizer v4.1: the dropped prefix is summarized ONCE into the recall
+        # ledger (decision rows survive truncation) — background, off the reply path.
+        _dropped = [m.model_dump() if hasattr(m, "model_dump") else dict(m)
+                    for m in req.messages[:-40]]
+        _spawn(recall_ledger.summarize_dropped(_palo_store, req.creator_id, _dropped))
         req.messages = req.messages[-40:]  # keep the recent tail, same window iOS already caps at
     if not ANTHROPIC_KEY:
         out = mock_converse(req)
