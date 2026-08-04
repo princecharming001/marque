@@ -9019,6 +9019,27 @@ async def register_post(req: PostRegisterRequest):
     return resp
 
 
+@app.get("/v1/posts/synced-metrics")
+async def synced_post_metrics(creator_id: str = "default"):
+    """Build 68: the read-back half of metrics auto-sync. The insights cron scrapes the
+    creator's connected account and settles views/likes/comments into _post_registry —
+    this hands those settled numbers to the app so a post's results appear WITHOUT the
+    creator ever typing them (manual logging is gone). Registry-only read; never raises."""
+    out = []
+    for pid, entry in _post_registry.items():
+        if entry.get("creator_id") != creator_id:
+            continue
+        m = entry.get("metrics")
+        if not m:
+            continue
+        out.append({"post_id": pid,
+                    "views": int(m.get("views", 0)), "likes": int(m.get("likes", 0)),
+                    "comments": int(m.get("comments", 0)),
+                    "settled": bool(entry.get("settled")),
+                    "settled_at": entry.get("settled_at", "")})
+    return {"mode": "live" if _supabase_client else "mock", "posts": out}
+
+
 @app.post("/v1/metrics/ingest")
 async def ingest_metrics(req: MetricsIngestRequest):
     """Ingest post metrics and update the learning bandit (idempotent on post_id)."""

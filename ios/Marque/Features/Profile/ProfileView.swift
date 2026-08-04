@@ -10,6 +10,7 @@ struct ProfileView: View {
     @State private var showVoiceEditor = false
     @State private var showPillarsEditor = false
     @State private var showEditingStyle = false
+    @State private var showCreatorProfile = false
     @State private var isRefreshingSummary = false
 
     private var account: ConnectedAccount? { store.brand.connectedAccounts.first }
@@ -19,37 +20,27 @@ struct ProfileView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Avatar hero
+                // Header — identity only (Mobbin/Airbnb anatomy: avatar, name, ONE quiet
+                // meta line). The rank became a word here; its bar lives in the Creator
+                // profile sheet. No cards, no prose above the fold.
                 VStack(spacing: Space.md) {
                     avatarHero
                     VStack(spacing: 4) {
                         Text(displayName)
                             .font(Typeface.display(24, .semibold)).tracking(-0.5)
                             .foregroundStyle(Palette.textPrimary)
-                        if !handle.isEmpty {
-                            Text(handle).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                        }
-                        if !store.brand.niche.isEmpty {
-                            Text(store.brand.niche)
-                                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        }
+                        Text(metaLine)
+                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            .lineLimit(1)
                     }
                 }
                 .padding(.vertical, Space.xl)
                 .padding(.horizontal, Space.screenH)
-                .staggerReveal(0)
 
-                // The Marque Path — the creator's current rank + progress to the next.
-                rankCard
+                // Evidence — Strava-style plain typographic numbers, hairline-divided.
+                statRow
                     .padding(.horizontal, Space.screenH)
                     .padding(.bottom, Space.lg)
-                    .staggerReveal(1)
-
-                // Brand summary — the AI-written card (skeleton until the first fetch lands)
-                brandSummaryCard
-                    .padding(.horizontal, Space.screenH)
-                    .padding(.bottom, Space.lg)
-                    .staggerReveal(1)
 
                 MarqueHairline()
 
@@ -57,6 +48,10 @@ struct ProfileView: View {
                 // squares (the tinted-square-plus-chevron pattern reads as template UI).
                 VStack(alignment: .leading, spacing: 0) {
                     sectionHeader("Brand")
+                    // The AI summary + rank progression, demoted from an on-page card to
+                    // a door (Strava collapses Athlete Intelligence the same way).
+                    profileRow(label: "Creator profile") { showCreatorProfile = true }
+                    MarqueHairline()
                     profileRow(label: "Brand identity") { showBrandEditor = true }
                     MarqueHairline()
                     profileRow(label: "Voice & tone") { showVoiceEditor = true }
@@ -82,7 +77,6 @@ struct ProfileView: View {
                     // per take now; there is no preferred-styles knob to set.
                 }
                 .padding(.horizontal, Space.screenH)
-                .staggerReveal(2)
 
                 MarqueHairline()
 
@@ -90,8 +84,7 @@ struct ProfileView: View {
                 creatorsSection
                     .padding(.horizontal, Space.screenH)
                     .padding(.bottom, Space.lg)
-                    .staggerReveal(3)
-
+    
                 MarqueHairline()
 
                 // Accounts group
@@ -101,7 +94,6 @@ struct ProfileView: View {
                 }
                 .padding(.horizontal, Space.screenH)
                 .padding(.bottom, Space.lg)
-                .staggerReveal(4)
 
                 Spacer().frame(height: 120)
             }
@@ -122,130 +114,38 @@ struct ProfileView: View {
         .sheet(isPresented: $showVoiceEditor) { VoiceEditorSheet(store: store) }
         .sheet(isPresented: $showPillarsEditor) { PillarsEditorSheet(store: store) }
         .sheet(isPresented: $showEditingStyle) { EditingStyleSheet() }
-        .task {
-            if store.brandSummary == nil { await refreshSummary() }
+        .sheet(isPresented: $showCreatorProfile) { CreatorProfileSheet() }
+
+    }
+
+    // MARK: - Header meta + stats
+
+    private var metaLine: String {
+        var parts: [String] = []
+        if !handle.isEmpty { parts.append(handle) }
+        if !store.brand.niche.isEmpty { parts.append(store.brand.niche) }
+        parts.append(store.creatorRank.title)
+        return parts.joined(separator: " · ")
+    }
+
+    private var statRow: some View {
+        HStack(spacing: 0) {
+            stat(value: "\(store.reelsShot)", label: store.reelsShot == 1 ? "reel" : "reels")
+            Rectangle().fill(Palette.hairline).frame(width: 1, height: 28)
+            stat(value: "\(store.creatorXP)", label: "xp")
+            Rectangle().fill(Palette.hairline).frame(width: 1, height: 28)
+            stat(value: "\(store.brand.connectedAccounts.count)", label: store.brand.connectedAccounts.count == 1 ? "account" : "accounts")
         }
     }
 
-    // MARK: - Brand summary card
-
-    // The Marque Path — one quiet unboxed strip (build 67 de-vibe: the boxed card with
-    // eyebrow label + subtitle blurb + footer row read as a widget, not a profile).
-    // Seal, rank name, thin gold rail, one meta line. XP clamped to the displayed
-    // tier's floor so the bar and the "to next" number always agree (build 53 B6).
-    private var rankCard: some View {
-        let rank = store.creatorRank
-        let xp = max(store.creatorXP, rank.minXP)
-        let progress = RankSystem.progress(xp: xp, in: rank)
-        let toNext = rank.nextXP.map { max(0, $0 - xp) }
-        return HStack(spacing: Space.md) {
-            RankSeal(level: rank.level, size: 34)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(rank.title)
-                        .font(Typeface.sans(14, .semibold)).foregroundStyle(Palette.textPrimary)
-                    Spacer(minLength: Space.sm)
-                    if let toNext, !rank.isMax {
-                        Text("\(toNext) XP to \(RankSystem.rank(atLevel: rank.level + 1).title)")
-                            .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-                    } else {
-                        Text("Top rank").font(AppFont.micro).foregroundStyle(Palette.gold)
-                    }
-                }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Palette.surfaceSunken)
-                        Capsule().fill(Palette.gold).frame(width: max(3, geo.size.width * progress))
-                    }
-                }
-                .frame(height: 3)
-            }
+    private func stat(value: String, label: String) -> some View {
+        VStack(spacing: 2) {
+            Text(value).font(Typeface.sans(18, .semibold)).monospacedDigit()
+                .foregroundStyle(Palette.textPrimary)
+            Text(label.uppercased()).font(AppFont.micro).tracking(Track.label)
+                .foregroundStyle(Palette.textTertiary)
         }
-    }
-
-    private var brandSummaryCard: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(alignment: .center, spacing: Space.sm) {
-                SectionLabel(text: "What Yunicorn knows about you", accent: Palette.accent)
-                Spacer(minLength: 0)
-                Button {
-                    Task { await refreshSummary() }
-                } label: {
-                    Group {
-                        if isRefreshingSummary {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Image(systemName: "arrow.clockwise")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(Palette.textTertiary)
-                        }
-                    }
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(isRefreshingSummary)
-                .accessibilityIdentifier("profile.refreshSummary")
-                .accessibilityLabel("Refresh brand summary")
-            }
-
-            if let card = store.brandSummary {
-                Text(card.summary)
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                    .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-                if !card.traits.isEmpty {
-                    // Quiet hairline chips — the blue-tinted pills read as tag soup.
-                    FlowWrap(spacing: 6) {
-                        ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
-                            Text(trait)
-                                .font(Typeface.sans(11, .medium)).tracking(0.2)
-                                .foregroundStyle(Palette.textSecondary)
-                                .padding(.horizontal, 10).padding(.vertical, 4)
-                                .background(Capsule().fill(Palette.surfaceRaised))
-                                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                        }
-                    }
-                    .padding(.top, 2)
-                }
-                if !card.workingOn.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("WORKING ON")
-                            .font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(Palette.textTertiary)
-                        Text(card.workingOn)
-                            .font(AppFont.caption)
-                            .foregroundStyle(Palette.textSecondary)
-                            .lineSpacing(3)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.top, Space.xs)
-                }
-            } else {
-                // Skeleton paragraph while the first summary is being written
-                VStack(alignment: .leading, spacing: Space.sm) {
-                    RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
-                        .frame(height: 12)
-                        .frame(maxWidth: .infinity)
-                    RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
-                        .frame(height: 12)
-                        .frame(maxWidth: 220)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .padding(.vertical, 2)
-            }
-        }
-        .marqueCard()
-    }
-
-    @MainActor
-    private func refreshSummary() async {
-        guard !isRefreshingSummary else { return }
-        isRefreshingSummary = true
-        if let card = await store.backend.fetchBrandSummary(brand: store.brand, memory: store.memory) {
-            store.brandSummary = card
-            store.save()
-        }
-        isRefreshingSummary = false
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Pillars glance (read-only; tap opens the editor)
@@ -833,3 +733,130 @@ private struct PillarEditRow: View {
     }
 }
 
+
+
+// MARK: - Creator profile sheet (build 68)
+
+/// The AI's read on the creator + the Marque Path progression — moved off the profile
+/// page (no best-in-class profile carries a prose card; Strava collapses its AI summary
+/// the same way) into this tap-through sheet.
+struct CreatorProfileSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @State private var refreshing = false
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    // The Marque Path — seal, rail, one meta line.
+                    let rank = store.creatorRank
+                    let xp = max(store.creatorXP, rank.minXP)
+                    let progress = RankSystem.progress(xp: xp, in: rank)
+                    HStack(spacing: Space.md) {
+                        RankSeal(level: rank.level, size: 40)
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text(rank.title).font(Typeface.sans(15, .semibold))
+                                    .foregroundStyle(Palette.textPrimary)
+                                Spacer(minLength: Space.sm)
+                                if let next = rank.nextXP, !rank.isMax {
+                                    Text("\(max(0, next - xp)) XP to \(RankSystem.rank(atLevel: rank.level + 1).title)")
+                                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                                } else {
+                                    Text("Top rank").font(AppFont.micro).foregroundStyle(Palette.gold)
+                                }
+                            }
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    Capsule().fill(Palette.surfaceSunken)
+                                    Capsule().fill(Palette.gold)
+                                        .frame(width: max(3, geo.size.width * progress))
+                                }
+                            }
+                            .frame(height: 3)
+                            Text(rank.subtitle).font(AppFont.caption)
+                                .foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    MarqueHairline()
+
+                    HStack {
+                        Text("WHAT YUNICORN KNOWS").font(AppFont.micro).tracking(Track.label)
+                            .foregroundStyle(Palette.textTertiary)
+                        Spacer()
+                        Button {
+                            Task { await refresh() }
+                        } label: {
+                            if refreshing {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(Palette.textTertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(refreshing)
+                        .accessibilityIdentifier("profile.refreshSummary")
+                    }
+
+                    if let card = store.brandSummary {
+                        Text(card.summary)
+                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                        if !card.traits.isEmpty {
+                            FlowWrap(spacing: 6) {
+                                ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
+                                    Text(trait)
+                                        .font(Typeface.sans(11, .medium)).tracking(0.2)
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .padding(.horizontal, 10).padding(.vertical, 4)
+                                        .background(Capsule().fill(Palette.surfaceRaised))
+                                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                                }
+                            }
+                        }
+                        if !card.workingOn.isEmpty {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("WORKING ON").font(AppFont.micro).tracking(Track.label)
+                                    .foregroundStyle(Palette.textTertiary)
+                                Text(card.workingOn).font(AppFont.caption)
+                                    .foregroundStyle(Palette.textSecondary).lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
+                                .frame(height: 12).frame(maxWidth: .infinity)
+                            RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
+                                .frame(height: 12).frame(maxWidth: 220)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .screenPadding().padding(.vertical, Space.lg)
+            }
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Creator profile").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
+            .task { if store.brandSummary == nil { await refresh() } }
+        }
+    }
+
+    @MainActor
+    private func refresh() async {
+        guard !refreshing else { return }
+        refreshing = true
+        if let card = await store.backend.fetchBrandSummary(brand: store.brand, memory: store.memory) {
+            store.brandSummary = card
+            store.save()
+        }
+        refreshing = false
+    }
+}

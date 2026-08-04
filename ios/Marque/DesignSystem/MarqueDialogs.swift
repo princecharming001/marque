@@ -278,48 +278,72 @@ struct MarqueTimePicker: View {
 
     private let cal = Calendar.current
 
+    // Build 68 compact rewrite (owner: the day-card rail + three snapping wheels "take
+    // up way too much space", and the serif digits "look odd" here). Two quiet lines:
+    // a 30pt text-chip date row and a single inline time line whose hour/minute/period
+    // are small dropdown menus. Everything sans; no wheels, no swiping.
     var body: some View {
-        VStack(spacing: Space.md) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             if includeDate { dateRail }
-
-            ZStack {
-                // Center highlight band the selected values sit inside.
-                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .fill(Palette.surfaceSunken)
-                    .frame(height: 40)
-
-                HStack(spacing: Space.xs) {
-                    MarqueWheel(items: Array(1...12), selection: hourBinding) { String($0) }
-                    Text(":").font(Typeface.display(22, .semibold)).foregroundStyle(Palette.textTertiary)
-                    MarqueWheel(items: Array(0...59), selection: minuteBinding) { String(format: "%02d", $0) }
-                    MarqueWheel(items: ["AM", "PM"], selection: periodBinding, label: { $0 }, width: 52)
-                }
+            HStack(spacing: 6) {
+                timeMenu(Array(1...12), selection: hourBinding) { String($0) }
+                Text(":").font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textTertiary)
+                timeMenu(Array(stride(from: 0, through: 55, by: 5)), selection: nearestFiveMinuteBinding) { String(format: "%02d", $0) }
+                timeMenu(["AM", "PM"], selection: periodBinding) { $0 }
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: .infinity)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("marque.timePicker")
     }
 
-    // MARK: Date rail
+    /// One value as a small bordered dropdown — the whole control reads "6 : 30 PM".
+    private func timeMenu<T: Hashable>(_ items: [T], selection: Binding<T>,
+                                       label: @escaping (T) -> String) -> some View {
+        Menu {
+            Picker("", selection: selection) {
+                ForEach(items, id: \.self) { v in Text(label(v)).tag(v) }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(label(selection.wrappedValue))
+                    .font(Typeface.sans(15, .semibold)).monospacedDigit()
+                    .foregroundStyle(Palette.textPrimary)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(Palette.textTertiary)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background(Palette.surfaceSunken)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        }
+    }
+
+    /// Minutes snapped to 5s for the dropdown (posting times don't need :07 precision);
+    /// an existing odd minute maps to its nearest step without mutating until changed.
+    private var nearestFiveMinuteBinding: Binding<Int> {
+        Binding(get: {
+            let m = cal.component(.minute, from: time)
+            return min(55, Int((Double(m) / 5).rounded()) * 5)
+        }, set: { setComponents(minute: $0) })
+    }
+
+    // MARK: Date rail — text chips, one line, 30pt tall.
 
     private var dateRail: some View {
         let start = cal.startOfDay(for: time)
         let base = cal.startOfDay(for: Date())
         return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Space.sm) {
+            HStack(spacing: 6) {
                 ForEach(0..<14, id: \.self) { offset in
                     let day = cal.date(byAdding: .day, value: offset, to: base) ?? base
                     let active = cal.isDate(day, inSameDayAs: start)
                     Button { setDate(day) } label: {
-                        VStack(spacing: 2) {
-                            Text(weekday(day)).font(AppFont.micro).tracking(Track.label)
-                            Text(dayNum(day)).font(Typeface.display(18, .semibold))
-                        }
-                        .foregroundStyle(active ? Palette.onInk : Palette.textSecondary)
-                        .frame(width: 48, height: 56)
-                        .background(active ? Palette.ink : Palette.surfaceSunken)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        Text(offset == 0 ? "Today" : offset == 1 ? "Tomorrow" : "\(weekday(day)) \(dayNum(day))")
+                            .font(Typeface.sans(13, active ? .semibold : .regular))
+                            .foregroundStyle(active ? Palette.onInk : Palette.textSecondary)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(Capsule().fill(active ? Palette.ink : Palette.surfaceSunken))
                     }
                     .buttonStyle(.plain)
                 }

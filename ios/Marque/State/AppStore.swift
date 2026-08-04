@@ -197,6 +197,12 @@ final class AppStore {
                                 status: i == 4 ? .rendering : .ready, seconds: 18 + i)
                 clip.title = t
                 clip.jobId = "demo-lib-\(i)"
+                // Build 68 harness: the FIRST demo clip carries a real hosted render so
+                // the detail player (timecode/scrub) and the duration heal are
+                // observable in the sim — everything else keeps fake media.
+                if i == 0 {
+                    clip.remoteURL = "https://nxibeiykcgxpbmkeadth.supabase.co/storage/v1/object/public/marque-clips/reels/6108ae0957420afb.mp4"
+                }
                 // Remote posters so the grid shows REAL previews in the harness (the
                 // same LocalThumbnail path production posters use).
                 clip.thumbnailURL = "https://picsum.photos/seed/lib\(i)/400/711"
@@ -1064,6 +1070,7 @@ final class AppStore {
             }
         }
         backfillMissingPosters()
+        backfillClipDurations()
     }
 
     /// Jobs whose posters we've already asked about this launch — one ask per job, so a
@@ -1077,6 +1084,33 @@ final class AppStore {
     /// One lightweight job fetch per affected job backfills it. A 404/410 job is left
     /// ALONE — the clip stays ready and simply keeps its placeholder; this must never
     /// re-enter the poll loop's dead-job handling for finished clips.
+    /// Real duration of a media asset, in whole seconds (0 on any failure).
+    static func assetDurationSeconds(_ url: URL) async -> Int {
+        let asset = AVURLAsset(url: url)
+        guard let d = try? await asset.load(.duration).seconds, d.isFinite, d > 0 else { return 0 }
+        return max(1, Int(d.rounded()))
+    }
+
+    /// Build 68 heal: ready server-rendered clips created before duration measurement
+    /// existed all wear their SCRIPT-TARGET length (the universal "24s"). Measure the
+    /// actual render once per clip — cached file preferred, one remote probe otherwise.
+    func backfillClipDurations() {
+        let stale = clips.filter { $0.status == .ready && $0.isServerRendered && $0.durationMeasured != true }
+        guard !stale.isEmpty else { return }
+        Task {
+            for clip in stale.prefix(12) {
+                let url: URL? = clip.renderLocalPath.map { MediaStore.url(for: $0) }
+                    ?? clip.remoteURL.flatMap { URL(string: $0) }
+                guard let url else { continue }
+                let dur = await Self.assetDurationSeconds(url)
+                guard let i = clips.firstIndex(where: { $0.id == clip.id }) else { continue }
+                if dur > 0 { clips[i].seconds = dur }
+                clips[i].durationMeasured = true      // measured (or probed and failed) — don't loop
+            }
+            save()
+        }
+    }
+
     func backfillMissingPosters() {
         let missing = clips.filter {
             $0.status == .ready && ($0.thumbnailURL ?? "").isEmpty && $0.jobId != nil
@@ -1900,6 +1934,7 @@ final class AppStore {
         }
         clips[idx].renderLocalPath = nil
         clips[idx].previewURL = nil                 // UX-D2: a landed render outdates any preview
+        clips[idx].durationMeasured = nil           // new render → re-measure the badge length
         if clips[idx].jobId != nil, clips[idx].source != "imported" {
             clips[idx].thumbnailPath = nil          // poster belonged to the old render/raw take
         }
@@ -2013,6 +2048,13 @@ final class AppStore {
                 }
                 self.clips[i].renderLocalPath = path
                 if let posterData { self.clips[i].thumbnailPath = MediaStore.save(posterData, ext: "jpg") }
+                // Build 68: the badge shows the RENDER's real length, not the script's
+                // target estimate (owner: everything said 24s).
+                let dur = await Self.assetDurationSeconds(MediaStore.url(for: path))
+                if dur > 0, let k = self.clips.firstIndex(where: { $0.id == clipId }) {
+                    self.clips[k].seconds = dur
+                    self.clips[k].durationMeasured = true
+                }
                 self.save()
             } catch {
                 // fail-soft: streaming continues from remoteURL
@@ -2250,13 +2292,21 @@ final class AppStore {
 
     // MARK: Metrics logging
 
-    func logMetrics(_ metrics: PostMetrics, for post: ScheduledPost) {
-        if let idx = schedule.firstIndex(where: { $0.id == post.id }) {
-            schedule[idx].metrics = metrics
-            save()
+    /// Build 68: metrics flow IN from the backend's account scrape (the insights cron
+    /// polls the creator's connected Instagram/TikTok) — the creator never types results.
+    /// Pull the settled numbers onto matching scheduled posts.
+    func syncPostMetrics() async {
+        let synced = await backend.fetchSyncedPostMetrics()
+        guard !synced.isEmpty else { return }
+        var changed = false
+        for idx in schedule.indices {
+            if let m = synced[schedule[idx].id.uuidString.lowercased()],
+               schedule[idx].metrics != m {
+                schedule[idx].metrics = m
+                changed = true
+            }
         }
-        // Register with backend learning loop
-        Task { await backend.registerPostMetrics(postId: post.id.uuidString, metrics: metrics) }
+        if changed { save() }
     }
 
     func loadRecommendations() async {

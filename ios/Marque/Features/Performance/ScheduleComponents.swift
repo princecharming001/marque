@@ -127,17 +127,8 @@ struct DayRow: View {
                                 Button { onDuplicate(p) } label: { Label("Duplicate to next day", systemImage: "plus.square.on.square") }
                             }
                     }
-                    if hasReady {
-                        Button(action: onAdd) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
-                                Text("Add another").font(AppFont.caption)
-                            }
-                            .foregroundStyle(Palette.accent)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("calendar.addClip")
-                    }
+                    // Build 68: "Add another" removed — queueing more clips happens
+                    // from the Library (select → Post), not from the day row.
                 }
             }
             .padding(Space.md)
@@ -357,7 +348,6 @@ struct PostEditorSheet: View {
     @State private var autoCaptions: Bool
     @State private var posting = false
     @State private var showSubscribe = false      // C-07
-    @State private var showMetrics = false
     @State private var showRemoveConfirm = false
     @State private var showConnect = false
 
@@ -406,20 +396,21 @@ struct PostEditorSheet: View {
 
                     MarqueToggleRow(title: "Auto-captions", isOn: $autoCaptions)
 
-                    // Log real results so Today/Insights/Coach learn from measured reach, not guesses.
-                    Button { showMetrics = true } label: {
+                    // Build 68: results are never hand-typed — the backend polls the
+                    // connected Instagram/TikTok account and metrics flow in on their own.
+                    if let m = post.metrics {
                         HStack(spacing: Space.sm) {
-                            Image(systemName: post.metrics == nil ? "chart.bar.doc.horizontal" : "checkmark.circle.fill")
-                                .foregroundStyle(post.metrics == nil ? Palette.goldDeep : Palette.positive)
-                            Text(post.metrics == nil ? "Log results" : "Results logged — edit")
-                                .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
+                            Text("\(compactNumber(m.views)) views · \(compactNumber(m.likes)) likes — synced from your account")
+                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                             Spacer()
-                            Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(Palette.textTertiary)
                         }
                         .padding(.vertical, Space.xs)
+                    } else if post.outcome == .posted {
+                        Text("Results sync automatically from your connected account once views come in.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("post.logMetrics")
 
                     Button(role: .destructive) { showRemoveConfirm = true } label: {
                         Text("Remove from schedule").font(AppFont.callout).foregroundStyle(Palette.critical)
@@ -436,7 +427,6 @@ struct PostEditorSheet: View {
             }
             .marqueConfirm($showRemoveConfirm, title: "Remove this post from your schedule?",
                            confirm: "Remove", destructive: true) { store.deleteScheduledPost(post); dismiss() }
-            .sheet(isPresented: $showMetrics) { MetricsEntrySheet(post: post) }
             .safeAreaInset(edge: .bottom) {
                 if store.canPublish && hasPostableAccount {
                     PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {

@@ -455,6 +455,9 @@ struct Clip: Codable, Hashable, Identifiable {
     // What produced the CURRENT render (the tweak instruction), so when the next edit
     // pushes it into history the entry is labeled by what it was. nil = original edit.
     var currentVersionLabel: String? = nil
+    // Build 68: true once `seconds` reflects the MEASURED render duration (probed via
+    // AVURLAsset), not the script's pre-render target. Optional-with-default → safe.
+    var durationMeasured: Bool? = nil
     // Server's remaining-time estimate ("Ready in ~N min" in the Library). Refreshed
     // by the poll loops; the countdown anchors at etaSetAt (when the estimate was
     // taken), NOT createdAt — the server value is already remaining-from-now.

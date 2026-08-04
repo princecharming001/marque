@@ -642,6 +642,26 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         _ = await self.post("/v1/posts/register", body)
     }
 
+    /// Build 68: settled metrics the backend scraped from the creator's connected
+    /// account — keyed by post id. Replaces manual "Log results" entirely.
+    func fetchSyncedPostMetrics() async -> [String: PostMetrics] {
+        guard let data = await get("/v1/posts/synced-metrics?creator_id=\(q(creatorId))"),
+              let r = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rows = r["posts"] as? [[String: Any]] else { return [:] }
+        var out: [String: PostMetrics] = [:]
+        for row in rows {
+            guard let pid = row["post_id"] as? String else { continue }
+            var m = PostMetrics()
+            m.views = row["views"] as? Int ?? 0
+            m.likes = row["likes"] as? Int ?? 0
+            m.comments = row["comments"] as? Int ?? 0
+            m.reach = m.views                     // scrape carries no reach; views stands in
+            m.settled = row["settled"] as? Bool ?? false
+            out[pid.lowercased()] = m
+        }
+        return out
+    }
+
     func registerPostMetrics(postId: String, metrics: PostMetrics) async {
         let body: [String: Any] = [
             "post_id": postId,

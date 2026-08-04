@@ -14,6 +14,10 @@ final class InkPlayerModel: ObservableObject {
     let player: AVPlayer
     @Published var isPlaying = false
     @Published var progress: Double = 0        // 0…1 of duration
+    // Build 68: the numbers. A bar alone can't answer "how far in am I" (owner
+    // complaint + the iOS-18 Photos regression thread) — elapsed/total ride every frame.
+    @Published var currentS: Double = 0
+    @Published var durationS: Double = 0
     @Published var muted: Bool
     let loops: Bool
     private var timeObs: Any?
@@ -30,6 +34,8 @@ final class InkPlayerModel: ObservableObject {
         ) { [weak self] t in
             guard let self, let dur = self.player.currentItem?.duration.seconds,
                   dur.isFinite, dur > 0 else { return }
+            self.durationS = dur
+            self.currentS = min(dur, max(0, t.seconds))
             self.progress = min(1, max(0, t.seconds / dur))
         }
         endObs = NotificationCenter.default.addObserver(
@@ -55,6 +61,13 @@ final class InkPlayerModel: ObservableObject {
         player.seek(to: CMTime(seconds: f * dur, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero)
         progress = f
+        durationS = dur
+        currentS = f * dur
+    }
+
+    static func timecode(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded()))
+        return String(format: "%d:%02d", t / 60, t % 60)
     }
     deinit {
         player.pause()          // belt: never leave audio running past the model's life
@@ -105,6 +118,7 @@ struct InkVideoPlayer: View {
 
     @State private var chromeVisible = true
     @State private var hideTask: DispatchWorkItem?
+    @State private var scrubbing = false
 
     var body: some View {
         ZStack {
@@ -128,29 +142,23 @@ struct InkVideoPlayer: View {
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
 
-            // Bottom row: scrubbable progress + optional mute.
-            VStack {
+            // Bottom chrome (build 68, research-grounded: TikTok/CapCut hybrid for
+            // review-before-posting). Elapsed/total timecode is ALWAYS readable — it
+            // dims with the chrome but never disappears; the thin bar never hides at
+            // all. Dragging thickens the bar and grows the timecode, TikTok-style.
+            VStack(spacing: 6) {
                 Spacer()
                 HStack(spacing: 10) {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.white.opacity(0.28))
-                            Capsule().fill(Palette.accent)
-                                .frame(width: max(2, geo.size.width * model.progress))
-                        }
-                        .frame(height: 3)
-                        .frame(maxHeight: .infinity, alignment: .center)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { v in
-                                    model.seek(to: v.location.x / max(1, geo.size.width))
-                                    flashChrome()
-                                }
-                        )
+                    if model.durationS > 0 {
+                        Text("\(InkPlayerModel.timecode(model.currentS)) / \(InkPlayerModel.timecode(model.durationS))")
+                            .font(.system(size: scrubbing ? 15 : 11, weight: .semibold))
+                            .monospacedDigit()
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Capsule().fill(.black.opacity(0.35)))
+                            .accessibilityIdentifier("player.timecode")
                     }
-                    .frame(height: 22)
-
+                    Spacer(minLength: 0)
                     if showsMute {
                         Button { model.toggleMute() } label: {
                             Image(systemName: model.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
@@ -159,14 +167,44 @@ struct InkVideoPlayer: View {
                                 .frame(width: 30, height: 30)
                                 .background(.ultraThinMaterial, in: Circle())
                         }
+                        .opacity(model.isPlaying && !chromeVisible ? 0 : 1)
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.bottom, 10)
-                .opacity(model.isPlaying && !chromeVisible ? 0 : 1)
-                .animation(.easeInOut(duration: 0.25), value: chromeVisible)
-                .animation(.easeInOut(duration: 0.25), value: model.isPlaying)
+                .opacity(scrubbing || !model.isPlaying || chromeVisible ? 1 : 0.55)
+
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(.white.opacity(0.28))
+                        Capsule().fill(Palette.accent)
+                            .frame(width: max(2, geo.size.width * model.progress))
+                        if scrubbing {
+                            Circle().fill(.white)
+                                .frame(width: 12, height: 12)
+                                .offset(x: max(0, geo.size.width * model.progress - 6))
+                                .shadow(color: .black.opacity(0.3), radius: 2)
+                        }
+                    }
+                    .frame(height: scrubbing ? 6 : 3)
+                    .frame(maxHeight: .infinity, alignment: .center)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { v in
+                                scrubbing = true
+                                model.seek(to: v.location.x / max(1, geo.size.width))
+                                flashChrome()
+                            }
+                            .onEnded { _ in scrubbing = false }
+                    )
+                }
+                .frame(height: 26)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
             }
+            .animation(.easeInOut(duration: 0.18), value: scrubbing)
+            .animation(.easeInOut(duration: 0.25), value: chromeVisible)
+            .animation(.easeInOut(duration: 0.25), value: model.isPlaying)
         }
         .background(Color.black)
         // Built-in rounding so the aspect-fill video surface is always clipped, even

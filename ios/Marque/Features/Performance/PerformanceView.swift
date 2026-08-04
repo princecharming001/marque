@@ -185,7 +185,10 @@ struct PerformanceView: View {
         }
         .onAppear { consumePendingSchedule() }
         .sheet(isPresented: $showStrategy) { StrategyView() }
-        .task { aiInsights = await store.backend.fetchInsights() }
+        .task {
+            aiInsights = await store.backend.fetchInsights()
+            await store.syncPostMetrics()        // build 68: results arrive on their own
+        }
         .onChange(of: router.pendingScheduleClipId) { _, _ in consumePendingSchedule() }
     }
 
