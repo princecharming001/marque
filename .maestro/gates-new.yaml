@@ -1,0 +1,36 @@
+appId: com.getmarque.app
+name: "Gates - payment then sign-in (Google only)"
+---
+# -demoGates: onboarded, unsubscribed, signed out -> lands straight on the paywall.
+- launchApp:
+    clearState: true
+    arguments:
+      "-demoGates": true
+    permissions:
+      all: allow
+
+# Gate 1 = PaymentScreen
+- extendedWaitUntil:
+    visible: { id: "payment.cta" }
+    timeout: 8000
+- assertVisible: { id: "payment.restore" }
+- takeScreenshot: /Users/home/Marque/.shots/gates-1-payment
+# plan toggle switches the CTA copy (trial preselected -> subscribe now)
+- tapOn: { id: "payment.plan.other" }
+- assertVisible: "Subscribe now"
+- takeScreenshot: /Users/home/Marque/.shots/gates-1-payment-paynow
+# click-through: no StoreKit purchase, unlocks locally
+- tapOn: { id: "payment.cta" }
+
+# Gate 2 = SignInScreen, Google only (Apple removed in build 71)
+- extendedWaitUntil:
+    visible: { id: "auth.google" }
+    timeout: 8000
+- assertVisible: { id: "auth.email" }
+- assertVisible: { id: "auth.continue" }
+- assertNotVisible: { id: "auth.apple" }
+- takeScreenshot: /Users/home/Marque/.shots/gates-2-signin
+# mode toggle -> create account
+- tapOn: { id: "auth.toggleMode" }
+- assertVisible: "create account"
+- takeScreenshot: /Users/home/Marque/.shots/gates-2-create
