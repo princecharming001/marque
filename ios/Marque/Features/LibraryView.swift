@@ -951,6 +951,9 @@ struct VersionTimelineSheet: View {
 
     @State private var restoring: UUID?
     @State private var note: String?
+    // Build 70: watch a past cut BEFORE committing to it — restoring used to be blind
+    // (a re-render you could only judge after it landed). Holds the previewed entry.
+    @State private var previewing: RenderVersion?
 
     private var clip: Clip? { store.clips.first(where: { $0.id == clipId }) }
     private var history: [RenderVersion] { clip?.renderHistory ?? [] }
@@ -982,6 +985,18 @@ struct VersionTimelineSheet: View {
         .padding(Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.canvas)
+        .sheet(item: $previewing) { v in
+            VersionPreviewSheet(version: v,
+                                index: history.firstIndex(where: { $0.id == v.id }) ?? 0,
+                                canRestore: clip?.status == .ready) { idx in
+                previewing = nil
+                Task {
+                    let ok = await store.restoreEditVersion(clipId: clipId, index: idx)
+                    if ok { dismiss() }
+                    else { note = "That version can't be restored anymore (the edit session moved on). Newer versions may still work." }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1014,7 +1029,21 @@ struct VersionTimelineSheet: View {
                     Text(date.formatted(.relative(presentation: .named)))
                         .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 }
-                if let index, clip?.status == .ready {
+                if let index {
+                    HStack(spacing: Space.sm) {
+                    Button { previewing = history[index] } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "play.fill").font(.system(size: 9, weight: .bold))
+                            Text("Preview").font(Typeface.sans(12, .semibold))
+                        }
+                        .foregroundStyle(Palette.textPrimary)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(Palette.surfaceRaised))
+                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("versions.preview.\(index)")
+                    if clip?.status == .ready {
                     Button {
                         guard restoring == nil else { return }
                         let vid = history[index].id
@@ -1038,6 +1067,8 @@ struct VersionTimelineSheet: View {
                     .buttonStyle(.plain)
                     .disabled(restoring != nil)
                     .accessibilityIdentifier("versions.restore.\(index)")
+                    }
+                    }
                     .padding(.top, 2)
                 }
             }
@@ -1399,6 +1430,56 @@ struct BulkScheduleSheet: View {
                 }
             }
             .sheet(isPresented: $showConnect) { ConnectAccountsView() }
+        }
+    }
+}
+
+
+// MARK: - Version preview (build 70)
+
+/// Watch a past cut before committing to it. The player is the same one the clip
+/// detail uses (timecode + scrubber), so you can jump to the moment you care about;
+/// "Restore this version" is right underneath, so preview → decide is one flow.
+struct VersionPreviewSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let version: RenderVersion
+    let index: Int
+    var canRestore: Bool = true
+    let onRestore: (Int) -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: Space.lg) {
+                ClipPreviewPlayer(path: nil, remoteURL: version.url)
+                    .aspectRatio(9.0 / 16.0, contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 460)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                VStack(spacing: 4) {
+                    Text(version.label.isEmpty ? "Original edit" : "\u{201C}\(version.label)\u{201D}")
+                        .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textPrimary)
+                        .multilineTextAlignment(.center)
+                    Text(version.date.formatted(.relative(presentation: .named)))
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(Space.lg)
+            .frame(maxWidth: .infinity)
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Preview").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+            }
+            .safeAreaInset(edge: .bottom) {
+                if canRestore {
+                    PrimaryButton(title: "Restore this version", systemImage: "arrow.uturn.backward") {
+                        onRestore(index)
+                    }
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
+                    .background(.ultraThinMaterial)
+                    .accessibilityIdentifier("versions.previewRestore")
+                }
+            }
         }
     }
 }

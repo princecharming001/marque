@@ -1914,15 +1914,10 @@ final class AppStore {
     /// both so playback never shows the previous edit.
     private func updateRemoteURL(_ url: String, at idx: Int, label: String? = nil) {
         guard clips[idx].remoteURL != url else { return }
-        // Build 66 edit-version history. A RESTORE re-render must not re-append the
-        // versions it just undid — it trims instead (the undone versions are gone from
-        // the server's edl_history stack, so pretending they're restorable would lie).
-        if let trim = pendingRestoreTrims.removeValue(forKey: clips[idx].id) {
-            var h = clips[idx].renderHistory ?? []
-            h.removeFirst(min(trim.count, h.count))
-            clips[idx].renderHistory = h
-            clips[idx].currentVersionLabel = trim.label
-        } else if let old = clips[idx].remoteURL, !old.isEmpty {
+        // Build 66 edit-version history. (Build 70: restores no longer pass through
+        // here — they swap the URL directly and trim in restoreEditVersion, since the
+        // archived render already exists and needs no re-render.)
+        if let old = clips[idx].remoteURL, !old.isEmpty {
             var h = clips[idx].renderHistory ?? []
             h.insert(RenderVersion(url: old, label: clips[idx].currentVersionLabel ?? ""), at: 0)
             clips[idx].renderHistory = Array(h.prefix(10))   // UI depth; server undo holds 25
@@ -1942,31 +1937,48 @@ final class AppStore {
 
     // MARK: Build 66 — edit-version restore (real, server-truthful undo)
 
-    /// Restores in flight: clipId → how many history entries to trim (and the restored
-    /// version's own label) when the restore's re-render lands in updateRemoteURL.
-    private var pendingRestoreTrims: [UUID: (count: Int, label: String?)] = [:]
-
     /// Roll a clip back to history entry `index` (0 = the version right before the
-    /// current one). Server-truthful: entry i is i+1 `undo` ops — the backend pops its
-    /// edl_history stack and re-renders that exact cut, so future tweaks build on the
-    /// restored edit, not a URL swap. Returns false when the backend refused (e.g. undo
-    /// depth exhausted after a restart, where the durable stack holds fewer states).
+    /// current one) — INSTANTLY. The archived render already exists in storage, so
+    /// playback swaps immediately; the server's EDL is rewound in the same breath with
+    /// `defer_render` (commit-without-render), which keeps the next tweak building on
+    /// the cut the creator is actually looking at. No Lambda re-render, no waiting.
+    ///
+    /// Build 70: this used to fire undo ops WITH a re-render and sit in `.rendering`
+    /// for minutes to reproduce a video we already had (owner: "reverting should be
+    /// almost instantaneous"). The re-render was pure waste — same EDL, same output.
+    @discardableResult
     func restoreEditVersion(clipId: UUID, index: Int) async -> Bool {
         guard let idx = clips.firstIndex(where: { $0.id == clipId }),
               let jobId = clips[idx].jobId,
               let history = clips[idx].renderHistory, index < history.count else { return false }
+        let restored = history[index]
+
+        // 1) Swap the picture NOW — the old render is already hosted.
+        clips[idx].remoteURL = restored.url
+        if let old = clips[idx].renderLocalPath {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: old))
+        }
+        clips[idx].renderLocalPath = nil        // cached file belonged to the newer cut
+        clips[idx].previewURL = nil
+        clips[idx].thumbnailPath = nil          // poster too — regenerated from the restored render
+        clips[idx].durationMeasured = nil
+        clips[idx].currentVersionLabel = restored.label.isEmpty ? nil : restored.label
+        var trimmed = history
+        trimmed.removeFirst(min(index + 1, trimmed.count))
+        clips[idx].renderHistory = trimmed
+        clips[idx].status = .ready
+        save()
+        cacheRender(clipId: clipId)             // re-warm the local file + poster in the background
+
+        // 2) Rewind the server EDL to match — committed, NOT re-rendered.
         let ops = Array(repeating: ["type": "undo"], count: index + 1)
-        let resp = await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString, ops: ops)
+        let resp = await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString,
+                                              ops: ops, deferRender: true)
         let undos = (resp["applied"] as? [[String: Any]] ?? [])
             .filter { $0["type"] as? String == "undo" }.count
-        guard undos > 0 else { return false }
-        let restored = history[index]
-        pendingRestoreTrims[clipId] = (count: undos, label: restored.label.isEmpty ? nil : restored.label)
-        clips[idx].status = .rendering
-        clips[idx].pipelineStage = "rendering"
-        save()
-        watchTweakRender(jobId: jobId, clipId: clipId)
-        return true
+        // The picture is already right either way; a failed rewind only means the NEXT
+        // tweak would branch from the newer EDL, so say so rather than silently diverge.
+        return undos > 0
     }
 
     /// The current edit as a LOCAL video file for the share sheet. Sharing a remote URL

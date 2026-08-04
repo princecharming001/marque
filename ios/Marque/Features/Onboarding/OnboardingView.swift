@@ -233,13 +233,22 @@ struct OnboardingView: View {
     /// capping the answer at "daily" told them the app wasn't built for their volume.
     private var frequencyStep: some View {
         scaffold("How often do you want to post?", "You can change this anytime.") {
-            VStack(spacing: Space.md) {
-                paceCard(3,  "OnbIcon-pace-3", "A strong start — one filming session covers it")
-                paceCard(5,  "OnbIcon-pace-5", "The growth sweet spot for most niches")
-                paceCard(7,  "OnbIcon-pace-7", "Daily presence — maximum compounding")
-                paceCard(14, "OnbIcon-pace-7", "Twice a day — a serious posting operation")
-                paceCard(21, "OnbIcon-pace-7", "Three a day — full content-machine volume")
+            PaceSlider(weekly: Binding(
+                get: { store.brand.weeklyTarget ?? 5 },
+                set: { n in
+                    store.brand.weeklyTarget = n
+                    // Keep the coarse bucket the backend still reads in sync.
+                    store.brand.postingFrequency = PostingFrequency.bucket(forWeekly: n)
+                }))
+        } cta: {
+            OnbPill(title: "That's my pace") {
+                if store.brand.weeklyTarget == nil {
+                    store.brand.weeklyTarget = 5
+                    store.brand.postingFrequency = PostingFrequency.bucket(forWeekly: 5)
+                }
+                advance()
             }
+            .accessibilityIdentifier("onboard.continue")
         }
     }
 
@@ -258,7 +267,15 @@ struct OnboardingView: View {
         // No mascot, no stat card — just the copy, typed out. The scaffold's static
         // header is suppressed (empty headline) so the typewriter owns the reveal.
         return scaffold("") {
-            OnboardingTypewriter(headline: "Consistency beats virality", message: line)
+            VStack(spacing: Space.lg) {
+                // Owner ask: the consistency card carries the mascot — the belief-builder
+                // beat is the one place in onboarding that should feel like Yuni talking.
+                Image("UnicornProud")
+                    .resizable().scaledToFit()
+                    .frame(height: 132)
+                    .accessibilityIdentifier("onboard.method.unicorn")
+                OnboardingTypewriter(headline: "Consistency beats virality", message: line)
+            }
         } cta: {
             OnbPill(title: "Let's do it") { advance() }
                 .accessibilityIdentifier("onboard.continue")
@@ -587,19 +604,6 @@ struct OnboardingView: View {
         .accessibilityIdentifier("onboard.comfort.\(idKey)")
     }
 
-    private func paceCard(_ n: Int, _ icon: String, _ subtitle: String) -> some View {
-        OptionCard(icon: icon, sfFallback: "\(n).circle", title: "\(n) posts a week",
-                   subtitle: subtitle, selected: store.brand.weeklyTarget == n) {
-            selectAndAdvance {
-                store.brand.weeklyTarget = n
-                // Keep the coarse bucket the backend still reads in sync rather than
-                // leaving it nil now that nobody is asked for it directly.
-                store.brand.postingFrequency = PostingFrequency.bucket(forWeekly: n)
-            }
-        }
-        .accessibilityIdentifier("onboard.pace.\(n)")
-    }
-
     // MARK: - Taste decks (editing style + endings)
 
     private var styleTasteStep: some View {
@@ -764,5 +768,82 @@ private struct OnboardingTypewriter: View {
             try? await Task.sleep(nanoseconds: 500_000_000)
             caretOn.toggle()
         }
+    }
+}
+
+
+// MARK: - Posts-per-week slider (build 70)
+
+/// Cadence as a real slider, not five stacked cards. 1–21 posts a week with a live
+/// readout, a plain-language read of what that pace means, and snap ticks at the
+/// meaningful thresholds (daily = 7, twice daily = 14, three a day = 21) so the common
+/// answers are still one gesture away.
+private struct PaceSlider: View {
+    @Binding var weekly: Int
+    @State private var draft: Double = 5
+
+    private var perDay: String {
+        let d = Double(weekly) / 7.0
+        if weekly % 7 == 0 { return weekly == 7 ? "1 a day" : "\(weekly / 7) a day" }
+        return d < 1 ? "\(weekly) a week" : String(format: "%.1f a day", d)
+    }
+
+    private var meaning: String {
+        switch weekly {
+        case ...2:  return "A gentle start — one filming session covers a month."
+        case 3...4: return "A strong start — one filming session covers the week."
+        case 5...6: return "The growth sweet spot for most niches."
+        case 7:     return "Daily presence — maximum compounding."
+        case 8...14: return "A serious posting operation."
+        default:    return "Full content-machine volume."
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: Space.xl) {
+            VStack(spacing: 2) {
+                Text("\(weekly)")
+                    .font(Typeface.display(64, .semibold)).monospacedDigit()
+                    .foregroundStyle(Palette.textPrimary)
+                    .contentTransition(.numericText())
+                    .animation(.snappy(duration: 0.2), value: weekly)
+                Text(weekly == 1 ? "post a week" : "posts a week")
+                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                Text(perDay)
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            }
+            VStack(spacing: Space.sm) {
+                Slider(value: $draft, in: 1...21, step: 1)
+                    .tint(Palette.ink)
+                    .accessibilityIdentifier("onboard.paceSlider")
+                    .onChange(of: draft) { _, v in
+                        let n = Int(v.rounded())
+                        if n != weekly {
+                            weekly = n
+                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        }
+                    }
+                // Tick labels at the answers people actually mean.
+                HStack {
+                    ForEach([1, 7, 14, 21], id: \.self) { t in
+                        Button { draft = Double(t); weekly = t } label: {
+                            Text("\(t)")
+                                .font(Typeface.sans(11, weekly == t ? .bold : .regular))
+                                .foregroundStyle(weekly == t ? Palette.textPrimary : Palette.textTertiary)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("onboard.pace.\(t)")
+                    }
+                }
+            }
+            Text(meaning)
+                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
+                .animation(.easeOut(duration: 0.15), value: weekly)
+        }
+        .onAppear { draft = Double(weekly) }
     }
 }
