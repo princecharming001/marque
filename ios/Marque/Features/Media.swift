@@ -202,10 +202,13 @@ struct ClipPreviewPlayer: View {
     // showing the placeholder or the raw take at a different radius) read with square
     // corners. Now the component owns its rounding at the caller's exact radius.
     var cornerRadius: CGFloat = Radius.lg
+    /// Build 69: presenter-driven pause (fullScreenCover leaves this view alive underneath).
+    var suspended: Bool = false
     var body: some View {
         Group {
             if let url = resolved {
-                InkVideoPlayer(url: url, loops: false, startMuted: false, cornerRadius: cornerRadius)
+                InkVideoPlayer(url: url, loops: false, startMuted: false, cornerRadius: cornerRadius,
+                               suspended: suspended)
             } else {
                 ZStack {
                     Palette.surfaceSunken

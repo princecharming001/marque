@@ -1512,6 +1512,31 @@ struct ProEditorView: View {
     /// The caption block on the canvas — DIRECTLY MANIPULABLE (TikTok model): drag
     /// vertically to place it (snaps to top/middle/bottom anchors), pinch to resize.
     /// One gesture = one committed op = one undo step.
+    /// The caption group as ONE AttributedString — per-word color/weight (karaoke,
+    /// highlights, bold-word) preserved, layout owned by a single Text.
+    private func captionAttributed(group: (words: [String], activeInGroup: Int),
+                                   d: EditorDocument, o: EditorCaptionOptions,
+                                   base: CGFloat, effScale: CGFloat) -> AttributedString {
+        var out = AttributedString()
+        for (i, w) in group.words.enumerated() {
+            let norm = w.lowercased().filter { $0.isLetter || $0.isNumber }
+            let isHi = o.highlightWords.contains(norm)
+            var run = AttributedString(o.uppercase || d.captionStyle == "bold-word" ? w.uppercased() : w)
+            run.font = simCaptionFont(o.font, size: base * effScale,
+                                      heavy: d.captionStyle == "bold-word" || isHi)
+            var color = isHi ? (o.accent.map { colorFromHex($0) } ?? Color(hex: 0xFFD60A))
+                             : simCaptionColor(d, isHot: i == group.activeInGroup,
+                                               spoken: i <= group.activeInGroup)
+            if d.captionStyle == "clean" && i != group.activeInGroup && !isHi {
+                color = color.opacity(0.55)
+            }
+            run.foregroundColor = color
+            if !out.characters.isEmpty { out += AttributedString(" ") }
+            out += run
+        }
+        return out
+    }
+
     @ViewBuilder private var captionSimOverlay: some View {
         if let d = session?.draft, !d.captions.isEmpty, let group = currentCaptionGroup(d) {
             GeometryReader { geo in
@@ -1524,20 +1549,19 @@ struct ProEditorView: View {
                 let base: CGFloat = d.captionStyle == "bold-word" ? 30 : 17
                 let effY = capDragY ?? o.posY ?? discreteCaptionY(o.position)
                 let interacting = capDragY != nil || capPinch != nil || capSizeDraft != nil
-                HStack(spacing: 5) {
-                    ForEach(Array(group.words.enumerated()), id: \.offset) { i, w in
-                        let norm = w.lowercased().filter { $0.isLetter || $0.isNumber }
-                        let isHi = o.highlightWords.contains(norm)
-                        Text(o.uppercase || d.captionStyle == "bold-word" ? w.uppercased() : w)
-                            .font(simCaptionFont(o.font, size: base * effScale,
-                                                 heavy: d.captionStyle == "bold-word" || isHi))
-                            .foregroundStyle(isHi ? (o.accent.map { colorFromHex($0) } ?? Color(hex: 0xFFD60A))
-                                                  : simCaptionColor(d, isHot: i == group.activeInGroup,
-                                                                    spoken: i <= group.activeInGroup))
-                            .opacity(d.captionStyle == "clean" && i != group.activeInGroup && !isHi ? 0.55 : 1)
-                            .shadow(radius: 4)
-                    }
-                }
+                // ONE attributed Text, not an HStack of word views. Per-word Texts had no
+                // width constraint: a multi-word grouping (phrase/line presets) that
+                // exceeded the canvas made SwiftUI wrap EACH WORD onto its own lines —
+                // the owner's "words split between different lines, formatted very
+                // poorly" after a style switch. A single Text wraps at word boundaries
+                // as a centered paragraph, exactly like the render does.
+                Text(captionAttributed(group: group, d: d, o: o, base: base, effScale: effScale))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.6)
+                    .shadow(radius: 4)
+                    .frame(maxWidth: geo.size.width * 0.92)
+                    .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, o.bg.isEmpty ? 10 : 14).padding(.vertical, o.bg.isEmpty ? 4 : 6)
                 // v6: live preview of the background pill (Boxed / Bubble presets).
                 .background {
@@ -1545,7 +1569,6 @@ struct ProEditorView: View {
                         RoundedRectangle(cornerRadius: 10, style: .continuous).fill(colorFromHex(o.bg))
                     }
                 }
-                .drawingGroup()   // flatten the word stack to one layer — kills the per-change raster spike
                 .accessibilityIdentifier("editorPro.captionSim")
                 // Owner ask (intuitive select-all): tapping the caption on the canvas selects
                 // the WHOLE caption track — the style/position controls open right there, no

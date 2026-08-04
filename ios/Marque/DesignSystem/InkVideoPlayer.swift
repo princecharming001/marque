@@ -108,12 +108,17 @@ struct InkVideoPlayer: View {
     @StateObject private var model: InkPlayerModel
     var showsMute: Bool
     var cornerRadius: CGFloat
+    // Build 69: external mute switch. fullScreenCover does NOT remove the presenting
+    // view, so onDisappear never fires and the detail player kept talking under the
+    // editor. The presenter flips this when it covers the player.
+    var suspended: Bool = false
 
     init(url: URL, loops: Bool = false, startMuted: Bool = false, showsMute: Bool = true,
-         cornerRadius: CGFloat = Radius.lg) {
+         cornerRadius: CGFloat = Radius.lg, suspended: Bool = false) {
         _model = StateObject(wrappedValue: InkPlayerModel(url: url, loops: loops, muted: startMuted))
         self.showsMute = showsMute
         self.cornerRadius = cornerRadius
+        self.suspended = suspended
     }
 
     @State private var chromeVisible = true
@@ -215,6 +220,9 @@ struct InkVideoPlayer: View {
         // Stop playback the moment the view leaves screen (preview sheet dismissed) so
         // audio never keeps running behind a closed popup.
         .onDisappear { model.stop() }
+        .onChange(of: suspended) { _, covered in
+            if covered { model.stop() }
+        }
     }
 
     private func flashChrome() {

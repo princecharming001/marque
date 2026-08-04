@@ -565,7 +565,10 @@ struct ClipDetailSheet: View {
                         // everything while it exists — badged so it can't be mistaken
                         // for the committed cut.
                         ClipPreviewPlayer(path: current.previewURL == nil ? current.playbackLocalPath : nil,
-                                          remoteURL: current.previewURL ?? current.playbackRemoteURL)
+                                          remoteURL: current.previewURL ?? current.playbackRemoteURL,
+                                          // Build 69: the manual editor covers this sheet —
+                                          // pause the moment it opens (owner: video kept playing).
+                                          suspended: showEditor)
                             // Re-create the player when a tweak lands a NEW render URL,
                             // the render cache download completes, or a preview stages.
                             .id((current.previewURL ?? "") + (current.remoteURL ?? "")

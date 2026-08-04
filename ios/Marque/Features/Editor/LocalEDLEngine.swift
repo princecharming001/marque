@@ -12,6 +12,10 @@ struct WireOp: Equatable {
     var order: [Int]? = nil           // reorder_segments permutation
     var bool: [String: Bool] = [:]
     var strings: [String: [String]] = [:]   // string-list args (highlight_words)
+    // LOCAL-ONLY payload (never serialized): the transcript-derived captions to seed the
+    // draft with when captions are re-enabled, so the preview shows them IMMEDIATELY.
+    // The server ignores this and rebuilds from its own transcript on Save — same result.
+    var captionSeed: [EditorCaption]? = nil
 
     /// The JSON dict the backend expects.
     func json() -> [String: Any] {
@@ -32,7 +36,9 @@ struct WireOp: Equatable {
     static func segmentVolume(_ a: Int, _ b: Int, _ v: Double) -> WireOp { WireOp(type: "set_segment_volume", i: ["start_frame": a, "end_frame": b], d: ["volume": v]) }
     static func split(_ index: Int, at: Int) -> WireOp { WireOp(type: "split_segment", i: ["index": index, "at_frame": at]) }
     static func reorder(_ order: [Int]) -> WireOp { WireOp(type: "reorder_segments", order: order) }
-    static func captionsEnabled(_ on: Bool) -> WireOp { WireOp(type: "set_captions_enabled", bool: ["enabled": on]) }
+    static func captionsEnabled(_ on: Bool, seed: [EditorCaption]? = nil) -> WireOp {
+        WireOp(type: "set_captions_enabled", bool: ["enabled": on], captionSeed: on ? seed : nil)
+    }
     static func captionStyle(_ style: String) -> WireOp { WireOp(type: "set_caption_style", s: ["style": style]) }
     /// Partial caption-options update — only the provided keys change (backend parity).
     /// `accent` uses "default" to reset to the style's own color; posY/scale are the
@@ -301,11 +307,16 @@ enum LocalEDLEngine {
                 rotation: min(45, max(-45, op.d["rotation"] ?? 0)),
                 color: op.s["color"], bg: op.s["bg"] ?? "none", font: op.s["font"] ?? "inter"))
         case "set_captions_enabled":
-            // Enabling is a logged no-op locally (the server rebuilds captions from the
-            // transcript on render); the view shows a live preview from its `words` array.
-            // Disabling clears the local captions. Previously enabling returned nil, so the
-            // op was dropped and captions could NEVER be turned back on.
-            if op.bool["enabled"] == false { d.captions = [] }
+            // Disabling clears the local captions. Enabling seeds them from the op's
+            // transcript payload (owner bug: off→on left the draft's captions EMPTY —
+            // no lane, no list, no preview — until a full server round-trip, which read
+            // as "it doesn't let me add them back"). The server ignores the seed and
+            // rebuilds from its own transcript on Save; both produce word-per-slot.
+            if op.bool["enabled"] == false {
+                d.captions = []
+            } else if let seed = op.captionSeed, !seed.isEmpty {
+                d.captions = seed.sorted { $0.frame < $1.frame }
+            }
         case "edit_caption":
             guard let frame = op.i["frame"] else { return nil }
             let word = op.s["word"] ?? ""

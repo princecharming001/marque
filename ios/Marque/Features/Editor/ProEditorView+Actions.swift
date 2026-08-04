@@ -225,10 +225,12 @@ extension ProEditorView {
     // MARK: Text-mode actions
 
     func toggleCaptions(_ on: Bool) {
-        // #1: enabling needs a transcript; the op is a logged no-op locally (server rebuilds),
-        // and captionsOn drives the live word-preview + button label.
         if on, words.isEmpty { flash("No transcript to caption."); return }
-        mutate([.captionsEnabled(on)])
+        // Enabling carries a transcript-derived seed so the draft (lane, caption list,
+        // player preview) shows the captions INSTANTLY — the server rebuilds the same
+        // set from its own transcript on Save.
+        let seed = words.map { EditorCaption(word: $0.text, frame: $0.startFrame) }
+        mutate([.captionsEnabled(on, seed: seed)])
         captionsOn = on
         // The caption lane hides with the toggle — drop any phrase selection with it.
         if !on, selectedPhraseID != nil { selectedPhraseID = nil }
@@ -504,11 +506,41 @@ extension ProEditorView {
             withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
             return
         }
-        guard let (aF, bF) = insertWindow(len: 90) else { return }
+        // Build 69: a picked VIDEO defaults to its own real length (was a fixed ~3s
+        // window regardless); stills keep ~3s. Both remain stretchable by dragging the
+        // roll's edges on the timeline.
+        var len = 90
+        if isVideo {
+            let d = await Self.assetSeconds(MediaStore.url(for: path))
+            if d > 0 { len = max(15, Int(d * 30)) }
+        }
+        // insertWindow used to bail SILENTLY when the playhead had no room (the owner's
+        // "add button doesn't work") — fall back to the start of the timeline instead,
+        // and say something when even that can't fit.
+        let window = insertWindow(len: len) ?? fallbackWindow(len: len)
+        guard let (aF, bF) = window else {
+            flashPublic("No room on the timeline for that media.")
+            return
+        }
         mutate([.addMediaRoll(aF, bF, url: url)])
         localMediaPreviews[url] = path              // instant canvas preview
         selectLastRoll()
         withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
+    }
+
+    /// Real duration of a local media file in seconds (0 on failure).
+    static func assetSeconds(_ url: URL) async -> Double {
+        let asset = AVURLAsset(url: url)
+        guard let d = try? await asset.load(.duration).seconds, d.isFinite, d > 0 else { return 0 }
+        return d
+    }
+
+    /// Last-resort insert window when the playhead position has no room: anchor at the
+    /// start of the take, clamped to its extent. nil only when the take is shorter than
+    /// the minimum roll (15 frames).
+    private func fallbackWindow(len: Int) -> (Int, Int)? {
+        guard let maxOut = session?.draft.segments.map(\.srcOut).max(), maxOut >= 15 else { return nil }
+        return (0, min(len, maxOut))
     }
 
     private func selectLastRoll() {
