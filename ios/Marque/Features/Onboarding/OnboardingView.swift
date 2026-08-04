@@ -468,9 +468,7 @@ struct OnboardingView: View {
             VoiceInterviewView { advance() }
         } cta: {
             Button {
-                // Don't clobber a successful connect-analyze from the prior step.
-                if !store.brand.analyzed { store.derivePillars() }
-                advance()
+                advance()   // build 67: skipping never fabricates pillars
             } label: {
                 Text("Skip for now")
                     .font(AppFont.callout).foregroundStyle(Palette.textSecondary)

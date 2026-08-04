@@ -62,17 +62,24 @@ struct ProfileView: View {
                     profileRow(label: "Voice & tone") { showVoiceEditor = true }
                     MarqueHairline()
                     profileRow(label: "Content pillars") { showPillarsEditor = true }
+                    if !store.pillars.isEmpty {
+                        pillarsStrip
+                            .padding(.bottom, Space.md)
+                    } else {
+                        // Build 67: pillars are never invented. Cold start says so plainly
+                        // instead of showing five generic buckets as if they were yours.
+                        Text("No pillars yet — connect your Instagram or TikTok and they're built from your real posts, or write your own.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.bottom, Space.md)
+                            .accessibilityIdentifier("profile.pillarsEmpty")
+                    }
                     MarqueHairline()
                     // Build 61: the single home for every standing craft dial (was split
                     // between Settings → Editing and the record screen's per-take pickers).
                     profileRow(label: "Editing style") { showEditingStyle = true }
                     // H-05: "Your formats" editor removed — the server infers style
                     // per take now; there is no preferred-styles knob to set.
-                    if !store.pillars.isEmpty {
-                        pillarsStrip
-                            .padding(.top, Space.sm)
-                            .padding(.bottom, Space.md)
-                    }
                 }
                 .padding(.horizontal, Space.screenH)
                 .staggerReveal(2)
@@ -122,55 +129,38 @@ struct ProfileView: View {
 
     // MARK: - Brand summary card
 
-    // The Marque Path rank card — seal + tier + a gold progress bar to the next rank.
+    // The Marque Path — one quiet unboxed strip (build 67 de-vibe: the boxed card with
+    // eyebrow label + subtitle blurb + footer row read as a widget, not a profile).
+    // Seal, rank name, thin gold rail, one meta line. XP clamped to the displayed
+    // tier's floor so the bar and the "to next" number always agree (build 53 B6).
     private var rankCard: some View {
         let rank = store.creatorRank
-        // Audit (build 53, B6): `creatorRank` is FLOORED (a streak dip can't demote you), but
-        // `creatorXP` is raw. When XP has dipped below the held tier's minXP, the old
-        // `nextXP - xp` produced a "XP to next" larger than the tier is wide — inconsistent with
-        // the (correctly clamped-to-0) progress bar. Clamp XP to the displayed tier's floor so
-        // both agree: bar at 0%, "full tier" to next. In the normal case (XP within the tier)
-        // this is a no-op.
         let xp = max(store.creatorXP, rank.minXP)
         let progress = RankSystem.progress(xp: xp, in: rank)
         let toNext = rank.nextXP.map { max(0, $0 - xp) }
-        return VStack(alignment: .leading, spacing: Space.sm) {
-            HStack(spacing: Space.md) {
-                RankSeal(level: rank.level, size: 52)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("The Marque Path").font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.textTertiary)
-                    Text(rank.title).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                    Text(rank.subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+        return HStack(spacing: Space.md) {
+            RankSeal(level: rank.level, size: 34)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(rank.title)
+                        .font(Typeface.sans(14, .semibold)).foregroundStyle(Palette.textPrimary)
+                    Spacer(minLength: Space.sm)
+                    if let toNext, !rank.isMax {
+                        Text("\(toNext) XP to \(RankSystem.rank(atLevel: rank.level + 1).title)")
+                            .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                    } else {
+                        Text("Top rank").font(AppFont.micro).foregroundStyle(Palette.gold)
+                    }
                 }
-                Spacer(minLength: 0)
-            }
-            // Progress rail
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Palette.surfaceSunken)
-                    Capsule().fill(Palette.gold).frame(width: max(4, geo.size.width * progress))
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Palette.surfaceSunken)
+                        Capsule().fill(Palette.gold).frame(width: max(3, geo.size.width * progress))
+                    }
                 }
-            }
-            .frame(height: 6)
-            HStack {
-                Text("\(store.reelsShot) \(store.reelsShot == 1 ? "reel" : "reels") shot")
-                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-                Spacer()
-                if let toNext, !rank.isMax {
-                    Text("\(toNext) XP to \(RankSystem.rank(atLevel: rank.level + 1).title)")
-                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-                } else {
-                    Text("Top rank reached").font(AppFont.micro).foregroundStyle(Palette.gold)
-                }
+                .frame(height: 3)
             }
         }
-        .padding(Space.md)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 
     private var brandSummaryCard: some View {
@@ -355,6 +345,12 @@ private struct WatchedCreatorSlot: View {
     @State private var expanded = false
     @State private var platform: SocialPlatform = .instagram
     @State private var handle = ""
+    // Build 67 verify-then-add: Save fetches the REAL profile first, shows it (avatar,
+    // name, followers), and only a confirmed preview is added — a watched creator never
+    // reads as "a random name".
+    @State private var verifying = false
+    @State private var preview: ConnectedAccount?
+    @State private var lookupFailed = false
 
     private var saved: WatchedCreator? {
         let list = store.brand.watchedCreators ?? []
@@ -364,6 +360,7 @@ private struct WatchedCreatorSlot: View {
     var body: some View {
         if let creator = saved {
             savedRow(creator)
+                .task(id: creator.handle) { await backfill(creator) }
         } else if expanded {
             editor
         } else {
@@ -373,12 +370,20 @@ private struct WatchedCreatorSlot: View {
 
     private func savedRow(_ creator: WatchedCreator) -> some View {
         HStack(spacing: Space.md) {
+            creatorAvatar(url: creator.avatarUrl, handle: creator.handle, size: 40)
             VStack(alignment: .leading, spacing: 1) {
-                Text("@\(creator.handle)")
+                Text(creator.displayName?.isEmpty == false ? creator.displayName! : "@\(creator.handle)")
                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                Text(creator.platform.label.uppercased())
-                    .font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
+                HStack(spacing: 5) {
+                    Text("@\(creator.handle)")
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(1)
+                    if let f = creator.followers, f > 0 {
+                        Text("· \(compactNumber(f)) followers")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    }
+                    Text("· \(creator.platform.label)")
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                }
             }
             Spacer(minLength: 0)
             Button { withAnimation(Motion.quick) { clear() } } label: {
@@ -396,6 +401,42 @@ private struct WatchedCreatorSlot: View {
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
+    /// Rows saved before build 67 (or added from the reel feed without profile data)
+    /// hydrate lazily: one preview fetch, persisted, never repeated once filled.
+    private func backfill(_ creator: WatchedCreator) async {
+        guard creator.avatarUrl == nil || creator.avatarUrl?.isEmpty == true else { return }
+        guard let p = await store.backend.connectPreview(handle: creator.handle,
+                                                        platform: creator.platform.rawValue) else { return }
+        var list = store.brand.watchedCreators ?? []
+        guard let i = list.firstIndex(where: { $0.id == creator.id }) else { return }
+        list[i].displayName = p.displayName
+        list[i].avatarUrl = p.avatarUrl
+        list[i].followers = p.followers
+        store.brand.watchedCreators = list
+        store.save()
+    }
+
+    @ViewBuilder
+    private func creatorAvatar(url: String?, handle: String, size: CGFloat) -> some View {
+        ZStack {
+            Circle().fill(Palette.surfaceSunken)
+            if let url, !url.isEmpty, let u = URL(string: url) {
+                AsyncImage(url: u) { img in
+                    img.resizable().scaledToFill()
+                } placeholder: {
+                    Text(String(handle.prefix(1)).uppercased())
+                        .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textTertiary)
+                }
+            } else {
+                Text(String(handle.prefix(1)).uppercased())
+                    .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textTertiary)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
     }
 
     private var addRow: some View {
@@ -438,36 +479,86 @@ private struct WatchedCreatorSlot: View {
             .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 1))
 
+            // The verified profile, shown BEFORE anything is added — this is the
+            // preview the whole flow exists for.
+            if let p = preview {
+                HStack(spacing: Space.md) {
+                    creatorAvatar(url: p.avatarUrl, handle: p.handle, size: 40)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(p.displayName.isEmpty ? "@\(p.handle)" : p.displayName)
+                            .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                        Text("@\(p.handle)" + (p.followers > 0 ? " · \(compactNumber(p.followers)) followers" : ""))
+                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(Space.md)
+                .background(Palette.surfaceRaised)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .strokeBorder(Palette.ink.opacity(0.25), lineWidth: 1))
+                .accessibilityIdentifier("profile.creatorPreview\(index)")
+            } else if lookupFailed {
+                Text("Couldn't find that account — check the handle and platform.")
+                    .font(AppFont.caption).foregroundStyle(Palette.critical)
+            }
+
             HStack {
-                Button("Cancel") { withAnimation(Motion.quick) { expanded = false; handle = "" } }
+                Button("Cancel") {
+                    withAnimation(Motion.quick) {
+                        expanded = false; handle = ""; preview = nil; lookupFailed = false
+                    }
+                }
                     .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 Spacer()
-                Button { save() } label: {
-                    Text("Save")
-                        .font(AppFont.callout).foregroundStyle(Palette.onInk)
-                        .padding(.horizontal, Space.lg).frame(height: 40)
-                        .background(Palette.ink).clipShape(Capsule())
+                Button { preview == nil ? verify() : confirmAdd() } label: {
+                    HStack(spacing: 6) {
+                        if verifying { ProgressView().controlSize(.small).tint(Palette.onInk) }
+                        Text(preview == nil ? (verifying ? "Checking…" : "Preview") : "Add")
+                            .font(AppFont.callout).foregroundStyle(Palette.onInk)
+                    }
+                    .padding(.horizontal, Space.lg).frame(height: 40)
+                    .background(Palette.ink).clipShape(Capsule())
                 }
                 .buttonStyle(PressableStyle())
-                .disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty || verifying)
                 .accessibilityIdentifier("profile.saveCreator\(index)")
             }
         }
         .padding(.vertical, Space.xs)
+        .onChange(of: handle) { _, _ in preview = nil; lookupFailed = false }
+        .onChange(of: platform) { _, _ in preview = nil; lookupFailed = false }
     }
 
-    private func save() {
+    /// Step 1: resolve the handle into the real profile and show it.
+    private func verify() {
         let h = handle.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "@", with: "")
-        guard !h.isEmpty else { return }
+        guard !h.isEmpty, !verifying else { return }
+        verifying = true
+        lookupFailed = false
+        Task {
+            let p = await store.backend.connectPreview(handle: h, platform: platform.rawValue)
+            verifying = false
+            if let p { preview = p } else { lookupFailed = true }
+        }
+    }
+
+    /// Step 2: the creator confirmed the previewed profile — store it WITH its identity.
+    private func confirmAdd() {
+        guard let p = preview else { return }
         var list = store.brand.watchedCreators ?? []
-        let creator = WatchedCreator(platform: platform, handle: h)
+        let creator = WatchedCreator(platform: platform, handle: p.handle,
+                                     displayName: p.displayName, avatarUrl: p.avatarUrl,
+                                     followers: p.followers)
         if index < list.count { list[index] = creator } else { list.append(creator) }
         store.brand.watchedCreators = Array(list.prefix(2))
         store.save()
         // Kick a background scrape so this creator's REAL reels are cached before
         // the user reaches Home — non-blocking, fire-and-forget.
-        Task { await store.backend.warmWatchedCreator(handle: h, platform: platform.rawValue) }
-        withAnimation(Motion.quick) { expanded = false; handle = "" }
+        let h = p.handle
+        let plat = platform.rawValue
+        Task { await store.backend.warmWatchedCreator(handle: h, platform: plat) }
+        withAnimation(Motion.quick) { expanded = false; handle = ""; preview = nil }
     }
 
     private func clear() {
@@ -642,6 +733,9 @@ struct PillarsEditorSheet: View {
                             .accessibilityIdentifier("pillars.add")
                     }
 
+                    // Build 67: AI refresh derives from REAL posts only — without a
+                    // connected account there is nothing honest to generate from.
+                    if store.brand.connectedAccounts.contains(where: { !$0.handle.isEmpty }) {
                     GhostButton(title: regenerating ? "Regenerating…" : "Refresh with AI", systemImage: "sparkles") {
                         confirmRefresh = true
                     }
@@ -652,6 +746,11 @@ struct PillarsEditorSheet: View {
                                    cancel: "Keep my edits") {
                         regenerating = true
                         Task { await store.analyzePage(); draft = store.pillars; regenerating = false }
+                    }
+                    } else {
+                        Text("Connect your Instagram or TikTok and Yunicorn builds pillars from your real posts.")
+                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .screenPadding().padding(.vertical, Space.lg)

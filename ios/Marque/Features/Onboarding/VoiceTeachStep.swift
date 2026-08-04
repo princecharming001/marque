@@ -72,7 +72,8 @@ struct VoiceInterviewView: View {
                                                                     transcript: transcript) {
             store.applyVoiceScan(result)
         } else {
-            store.derivePillars()
+            // Build 67: no fabricated pillars — the profile shows an honest empty state
+            // until a real account is connected or the creator writes their own.
             store.brand.analyzed = true
             store.save()
         }

@@ -1208,6 +1208,12 @@ struct WatchedCreator: Codable, Hashable, Identifiable {
     var id = UUID()
     var platform: SocialPlatform = .instagram
     var handle: String = ""
+    // Build 67: the real face of the account, so a watched creator never reads as "a
+    // random name" — verified via /v1/connect/preview when added, lazily backfilled for
+    // rows saved before this existed. Optional-with-default → Snapshot-safe.
+    var displayName: String? = nil
+    var avatarUrl: String? = nil
+    var followers: Int? = nil
 }
 
 /// The AI-written Profile hero card ("what Marque knows about you").

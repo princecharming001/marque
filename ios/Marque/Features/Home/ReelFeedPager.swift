@@ -36,7 +36,11 @@ struct ReelFeedPager: View {
         let plat: SocialPlatform = reel.platform == "tiktok" ? .tiktok : .instagram
         var list = store.brand.watchedCreators ?? []
         if !list.contains(where: { $0.handle.lowercased() == h.lowercased() }) {
-            list.append(WatchedCreator(platform: plat, handle: h))
+            // Carry the identity the feed already fetched for this card, so the Profile
+            // row shows a face immediately (backfill covers the rare empty case).
+            list.append(WatchedCreator(platform: plat, handle: h,
+                                       avatarUrl: reel.pfpURL.isEmpty ? nil : reel.pfpURL,
+                                       followers: reel.followerCount > 0 ? reel.followerCount : nil))
             store.brand.watchedCreators = Array(list.suffix(20))   // keep the most-recent 20
             store.save()
             Task { _ = await store.backend.warmWatchedCreator(handle: h, platform: plat.rawValue) }

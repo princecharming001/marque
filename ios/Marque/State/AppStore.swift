@@ -210,22 +210,14 @@ final class AppStore {
 
     // MARK: Onboarding
 
-    /// A short, niche-aware fallback pillar set (used on the "skip" path). The richer set
-    /// — with each pillar's angle + example topics — comes from the LLM via analyzePage().
-    func derivePillars() {
-        let niche = brand.niche.isEmpty ? "your field" : brand.niche
-        let specs: [(String, String)] = [
-            ("Teach the fundamentals", "Lessons that make your audience better at \(niche)."),
-            ("Myth-busting", "Contrarian takes that fix what people get wrong about \(niche)."),
-            ("Behind the scenes", "The real, unpolished story of your work."),
-            ("Hot takes", "Sharp opinions that start conversations in \(niche)."),
-            ("Proof & results", "Receipts: transformations and case studies in \(niche)."),
-        ]
-        let colors = Catalog.pillarColors
-        pillars = specs.enumerated().map { i, s in
-            Pillar(name: s.0, summary: s.1, weight: 0.2, colorHex: colors[i % colors.count])
-        }
-        brand.topThemes = pillars.map { $0.name }
+    // Build 67: the deterministic pillar fabricator is GONE (owner: with no accounts
+    // "it just comes up with random stuff — it shouldn't do this"). Pillars now exist
+    // only when derived from real posts (brand-scan / digest) or written by the creator.
+    // Script/feed generation that needs a pillar uses `workingPillar` — an unpersisted,
+    // honest stand-in named after the niche, never shown as if it were a real pillar.
+    var workingPillar: Pillar {
+        pillars.first ?? Pillar(name: brand.niche.isEmpty ? "Your niche" : brand.niche,
+                                weight: 1, colorHex: Catalog.pillarColors[0])
     }
 
     // MARK: Connected accounts
@@ -351,16 +343,21 @@ final class AppStore {
         }
         addConnectedAccount(acct)
         preConnectAccountIds[platform] = nil
+        // Build 67: pillars come only from real posts — the moment the first account
+        // lands, build them from it.
+        if pillars.isEmpty {
+            Task { await analyzePage() }
+        }
     }
 
-    /// "Analyze my page" — runs real inference to design pillars tailored to the creator.
-    /// When a connected account is present, calls /v1/brand-scan/handle so pillars derive
-    /// from what the creator actually posts; falls back to /v1/pillars (generic) otherwise.
+    /// "Analyze my page" — pillars derive ONLY from real posts (/v1/brand-scan/handle on a
+    /// connected account). Build 67: with no account there is deliberately NO fallback —
+    /// the old generic-LLM and hardcoded-bucket nets invented pillars from thin air
+    /// (owner: "random stuff"), so a cold-start profile now shows an honest empty state
+    /// and pillars appear the moment an account is connected (or the creator writes them).
     func analyzePage() async {
         try? await Task.sleep(nanoseconds: 600_000_000)   // brief "reading your page" UX
         brand.analyzed = true
-
-        // Prefer the brand-scan path when a handle is known — derives pillars from real posts.
         if let account = brand.connectedAccounts.first, !account.handle.isEmpty {
             if let result = await backend.brandScan(handle: account.handle,
                                                      platform: account.platform,
@@ -370,19 +367,8 @@ final class AppStore {
                     brand.topThemes = result.topThemes
                     if let v = result.voiceUpdate { brand.voice = v }
                     applyScanIdentity(result)
-                    save()
-                    return
                 }
             }
-        }
-
-        // Fallback: generic pillar generation from brand graph alone.
-        let derived = await llm.generatePillars(brand: brand)
-        if !derived.isEmpty {
-            pillars = derived
-            brand.topThemes = derived.map { $0.name }
-        } else if pillars.isEmpty {
-            derivePillars()
         }
         save()
     }
@@ -416,7 +402,6 @@ final class AppStore {
     }
 
     func completeOnboarding() {
-        if pillars.isEmpty { derivePillars() }
         // The aha scripts become the first entries in the Film queue.
         for s in scripts.prefix(3) { readiedScripts.append(SavedScript(script: s, source: .onboarding)) }
         hasOnboarded = true
@@ -448,8 +433,10 @@ final class AppStore {
     }
 
     func generateStarterScripts() async {
-        guard scripts.isEmpty, let p = pillars.first else { return }
-        await generateScripts(for: p, style: brand.preferredStyles.first ?? .talkingHead, count: 3)
+        guard scripts.isEmpty else { return }
+        // workingPillar: real pillar when one exists, honest niche stand-in otherwise —
+        // scripts still flow on a cold start without fabricating visible pillars.
+        await generateScripts(for: workingPillar, style: brand.preferredStyles.first ?? .talkingHead, count: 3)
     }
 
     // MARK: Starter digest (onboarding plan-building — async + backgroundable)
@@ -514,8 +501,7 @@ final class AppStore {
             if s.status == "ready" {
                 UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
                 if let scan = s.scan { applyVoiceScan(scan) }
-                if pillars.isEmpty { derivePillars() }
-                if scripts.isEmpty { scripts = s.scripts }
+                        if scripts.isEmpty { scripts = s.scripts }
                 guard !scripts.isEmpty else { return false }
                 starterScriptsState = .ready
                 save()
@@ -543,7 +529,6 @@ final class AppStore {
     private func localStarterFallback() async {
         UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
         starterScriptsState = .running(stage: 2)
-        if pillars.isEmpty { derivePillars() }
         starterScriptsState = .running(stage: 3)
         await generateStarterScripts()
         guard !scripts.isEmpty else { starterScriptsState = .failed; return }
