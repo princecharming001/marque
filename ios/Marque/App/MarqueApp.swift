@@ -153,6 +153,9 @@ private struct DevJumpMenu: View {
     /// Replays the onboarding flow. Auth + subscription are left intact, so finishing
     /// the quiz drops straight back into the app without re-hitting the gates.
     private func jumpToOnboarding() {
+        // Build 71: onboarding remembers where you were — a REPLAY has to start over,
+        // or the dev jump lands mid-quiz.
+        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep")
         store.hasOnboarded = false
         store.save()
     }

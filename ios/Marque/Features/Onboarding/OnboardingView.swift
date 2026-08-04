@@ -35,6 +35,11 @@ struct OnboardingView: View {
 
     @State private var step: Step = .landing
     @State private var goingBack = false
+    // Build 71: quitting mid-quiz used to drop you back on the landing screen and make
+    // you re-tap every answer (the answers themselves were already persisted on the
+    // brand graph — only the POSITION was @State). The furthest step reached is
+    // remembered so a relaunch resumes exactly where you left off.
+    @AppStorage("onboarding.resumeStep") private var resumeStepRaw = 0
 
     // Auto-advance plumbing: last tap wins within the 300ms window; back cancels.
     @State private var advanceTask: Task<Void, Never>?
@@ -58,6 +63,7 @@ struct OnboardingView: View {
                     onHaveAccount: {
                         // Existing users skip the quiz — straight to the gates;
                         // their brand data restores after sign-in.
+                        resumeStepRaw = 0
                         store.hasOnboarded = true
                         store.save()
                     }
@@ -90,6 +96,7 @@ struct OnboardingView: View {
         .animation(Motion.enter, value: step)
         .sensoryFeedback(.impact(weight: .light), trigger: selectionTick)
         .background(Palette.canvas.ignoresSafeArea())
+        .task { restoreProgress() }
     }
 
     // MARK: - Navigation
@@ -97,6 +104,19 @@ struct OnboardingView: View {
     private func go(_ target: Step) {
         goingBack = target.rawValue < step.rawValue
         withAnimation(Motion.enter) { step = target }
+        // Remember the position (including backwards moves — where you ARE is what a
+        // relaunch should restore). Cleared when onboarding finishes.
+        resumeStepRaw = target.rawValue
+    }
+
+    /// Restore the saved position on launch. Guards: never resume onto `.landing`
+    /// (nothing to restore), never past the enum, and skip any step whose answer is
+    /// already derived (same `shouldSkip` rule the forward path uses).
+    private func restoreProgress() {
+        guard resumeStepRaw > Step.landing.rawValue,
+              var target = Step(rawValue: resumeStepRaw) else { return }
+        while shouldSkip(target), let next = Step(rawValue: target.rawValue + 1) { target = next }
+        step = target
     }
 
     /// Steps we already have the answer to (from a linked account) are never shown.
@@ -671,7 +691,7 @@ struct OnboardingView: View {
                 OnboardingScaffold(headline: "Your first 3 scripts are ready",
                                    subtitle: "Record when you've got a few minutes — I'll do the editing.",
                                    showsBack: false) {
-                    PlanReadyView { store.completeOnboarding() }
+                    PlanReadyView { resumeStepRaw = 0; store.completeOnboarding() }
                 }
             } else {
                 OnboardingScaffold(headline: "Building your content plan",
