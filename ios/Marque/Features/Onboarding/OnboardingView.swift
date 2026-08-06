@@ -102,11 +102,19 @@ struct OnboardingView: View {
     // MARK: - Navigation
 
     private func go(_ target: Step) {
-        goingBack = target.rawValue < step.rawValue
+        let back = target.rawValue < step.rawValue
+        goingBack = back
         withAnimation(Motion.enter) { step = target }
         // Remember the position (including backwards moves — where you ARE is what a
         // relaunch should restore). Cleared when onboarding finishes.
         resumeStepRaw = target.rawValue
+        // FUNNEL (2026-08-04): the onboarding had ZERO instrumentation — drop-off was
+        // unmeasurable, so every redesign was an opinion. One fire-and-forget event per
+        // step entry gives us the per-step funnel. Back-navigation is tagged so it
+        // doesn't inflate forward-progress counts.
+        store.backend.reportClientEvent(
+            "onboard_step",
+            detail: "\(target.rawValue):\(String(describing: target))\(back ? ":back" : "")")
     }
 
     /// Restore the saved position on launch. Guards: never resume onto `.landing`

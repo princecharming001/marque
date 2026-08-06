@@ -147,10 +147,34 @@ private struct DevJumpMenu: View {
         .ignoresSafeArea(.keyboard)
         .accessibilityIdentifier("dev.jump")
         .confirmationDialog("Dev: jump to", isPresented: $showMenu, titleVisibility: .visible) {
-            Button("Onboarding") { jumpToOnboarding() }
-            Button("Home") { jumpToHome() }
+            Button("① First launch (brand-new user)") { jumpToFirstLaunch() }
+            Button("② Home (test user)") { jumpToTestUserHome() }
+            Divider()
+            Button("Onboarding only (keep account)") { jumpToOnboarding() }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// ① EXACTLY what a brand-new install sees: the first onboarding screen, with every
+    /// gate re-armed (unsubscribed, signed out) and all local state wiped — so the full
+    /// path is onboarding → payment → sign-in → home, same as the App Store download.
+    private func jumpToFirstLaunch() {
+        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep")
+        UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
+        FeedStore.clearSnapshot()
+        store.resetToFirstRun()
+        router.showFilm = false
+        router.selectedTab = .home
+    }
+
+    /// ② A populated test creator on Home — brand, pillars and starter scripts seeded,
+    /// gates open. For checking Home/Library/Performance without doing the quiz.
+    private func jumpToTestUserHome() {
+        store.seedTestUser()
+        if !store.auth.isAuthed { store.auth.continueAsDemo() }
+        if !store.subscription.isSubscribed { store.subscription.devContinue() }
+        router.showFilm = false
+        router.selectedTab = .home
     }
 
     /// Replays the onboarding flow. Auth + subscription are left intact, so finishing

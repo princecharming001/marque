@@ -1,0 +1,28 @@
+appId: com.getmarque.app
+name: "Funnel events fire through onboarding"
+---
+# Walks the first few onboarding steps so onboard_step telemetry is emitted.
+# Verification is server-side: the backend log / client_events table must show
+# onboard_step rows for landing -> goal -> blocker -> whyNow.
+- launchApp:
+    clearState: true
+    arguments:
+      "-reset": true
+    permissions:
+      all: allow
+- extendedWaitUntil:
+    visible: { id: "onboard.start" }
+    timeout: 15000
+- tapOn: { id: "onboard.start" }
+- extendedWaitUntil:
+    visible: { id: "onboard.goal.audience" }
+    timeout: 8000
+- tapOn: { id: "onboard.goal.audience" }
+- extendedWaitUntil:
+    visible: { id: "onboard.blocker.ideas" }
+    timeout: 8000
+- tapOn: { id: "onboard.blocker.ideas" }
+- extendedWaitUntil:
+    visible: { id: "onboard.whyNow.serious" }
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/funnel-walk

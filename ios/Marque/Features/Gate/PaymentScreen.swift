@@ -164,6 +164,9 @@ struct PaymentScreen: View {
         }
         .task {
             await store.subscription.load()
+            // FUNNEL: paywall impression — the denominator for every conversion rate.
+            store.backend.reportClientEvent(
+                "paywall_view", detail: dismissible ? "upgrade_sheet" : "onboarding_gate")
             withAnimation(.easeInOut(duration: 9).repeatForever(autoreverses: true)) { bgScale = 1.07 }
             withAnimation(.easeInOut(duration: 12).repeatForever(autoreverses: true)) { bgOffset = 9 }
             withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) { dotPhase = 1 }
@@ -264,6 +267,10 @@ struct PaymentScreen: View {
     // exist — swap devUnlock() back to it and delete this comment.
     private func subscribe() async {
         guard !busy else { return }
+        // FUNNEL: which plan box was live when they committed — the trial-vs-pay-now split
+        // is what tells us whether the trial length is doing any work.
+        store.backend.reportClientEvent(
+            "paywall_action", detail: payNow ? "subscribe_now" : "start_trial")
         busy = true
         try? await Task.sleep(nanoseconds: 350_000_000)   // a beat, so the tap reads as real
         store.subscription.devContinue()

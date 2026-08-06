@@ -421,6 +421,72 @@ final class AppStore {
         save()
     }
 
+#if DEBUG
+    // MARK: Dev jumps (DEBUG only — never compiled into a release build)
+
+    /// ① Wipe to a pristine first-run: every gate re-armed, all creator state cleared.
+    /// Equivalent to deleting and reinstalling the app, without the reinstall.
+    func resetToFirstRun() {
+        digestTask?.cancel(); digestTask = nil
+        backgroundDigestTask?.cancel(); backgroundDigestTask = nil
+        brand = BrandGraph()
+        pillars = []; scripts = []; clips = []; readiedScripts = []
+        media = []; memory = CreatorMemory()
+        starterScriptsState = .idle
+        hasOnboarded = false
+        auth.signOut()
+        subscription.resetDev()
+        save()
+    }
+
+    /// ② A believable populated creator: brand + pillars + three starter scripts, so
+    /// Home/Library/Performance all have something real to render without running the
+    /// quiz. Uses the same on-device generator the live starter path uses, so the
+    /// scripts obey the talking-head mandate exactly like production ones.
+    func seedTestUser() {
+        digestTask?.cancel(); digestTask = nil
+        backgroundDigestTask?.cancel(); backgroundDigestTask = nil
+        brand = BrandGraph()
+        brand.creatorName = "Test Creator"
+        brand.niche = "productivity for founders"
+        brand.whatYouDo = "help early founders run their week without burning out"
+        brand.audience = "solo founders and small teams"
+        brand.knownFor = "the 90-minute morning block"
+        brand.goal = .audience
+        brand.preferredStyles = [.talkingHead]
+        brand.weeklyTarget = 3
+        brand.analyzed = true
+        pillars = [
+            Pillar(name: "Founder time", summary: "How founders actually spend their week",
+                   angle: "calendar math, not motivation",
+                   exampleTopics: ["The 90-minute block", "Meetings that should be messages",
+                                   "Why your mornings leak"],
+                   weight: 0.4, colorHex: 0x2E2A26),
+            Pillar(name: "Burnout tells", summary: "Early signals founders miss",
+                   angle: "named from real patterns, never vibes",
+                   exampleTopics: ["The Sunday dread test", "When 'busy' means avoidant",
+                                   "The 3pm crash"],
+                   weight: 0.35, colorHex: 0x6B5B4A),
+            Pillar(name: "Systems that stick", summary: "Small systems that survive a bad week",
+                   angle: "one rule beats a whole system",
+                   exampleTopics: ["One-list rule", "The Friday reset", "Kill your backlog"],
+                   weight: 0.25, colorHex: 0x8A7A66),
+        ]
+        scripts = []; clips = []; readiedScripts = []
+        starterScriptsState = .idle
+        hasOnboarded = true
+        save()
+        Task { @MainActor in
+            await generateStarterScriptsLocally()
+            for s in scripts.prefix(3) {
+                readiedScripts.append(SavedScript(script: s, source: .onboarding))
+            }
+            starterScriptsState = .ready
+            save()
+        }
+    }
+#endif
+
     // MARK: Scripts
 
     /// A compact summary of the personal-media corpus, injected so the AI plans shots that
@@ -462,12 +528,20 @@ final class AppStore {
     }
     var starterScriptsState: StarterScriptsState = .idle
     private var digestTask: Task<Void, Never>?
+    /// The demoted real digest (build 73) — runs AFTER onboarding completes, never gates it.
+    private var backgroundDigestTask: Task<Void, Never>?
     private static let digestJobKey = "marque.digest.jobId"
 
-    /// Fired from the brand-mirror step ("Build my plan"). Prefers the backend
-    /// digest job (scrape reels → transcribe → derive → write scripts; keeps
-    /// running server-side if the app is closed) and falls back to the local
-    /// keyless path so onboarding never dead-ends.
+    /// OWNER (build 73): onboarding must feel INSTANT. It used to block on the full
+    /// backend digest (scrape reels → transcribe → derive → write) — 30s to minutes on a
+    /// spinner, which reads as broken, not as thinking. Now the first three scripts come
+    /// from the on-device generator (~1s, brand-aware, always talking-head), paced over a
+    /// short staged check-off so the AI reads as working rather than stalling, and the
+    /// REAL digest keeps running in the BACKGROUND to upgrade the scripts + voice scan
+    /// for later. The user never waits on the network to finish onboarding.
+    static let starterStageMs = 700          // per check-off line
+    static let starterFloorSeconds = 3.0     // never flash past the loading screen
+
     func beginStarterScripts() {
         switch starterScriptsState {
         case .running, .ready: return
@@ -476,18 +550,104 @@ final class AppStore {
         if !scripts.isEmpty { starterScriptsState = .ready; return }
         starterScriptsState = .running(stage: 0)
         digestTask?.cancel()
-        digestTask = Task { await runStarterDigest() }
+        digestTask = Task { await runFastStarter() }
     }
 
-    /// Resume after a relaunch mid-job (building step onAppear).
+    /// Local-first starter: generate on device, pace the theater, then hand off to the
+    /// background upgrade. Never touches the blocking digest poll.
+    private func runFastStarter() async {
+        let started = Date()
+        // The write and the staged animation run CONCURRENTLY — the stages are pacing,
+        // not progress reporting, so a fast write never skips them.
+        async let written: Void = generateStarterScriptsLocally()
+        for stage in 1...(PlanBuildingView.stages.count - 1) {
+            try? await Task.sleep(for: .milliseconds(Self.starterStageMs))
+            if case .running = starterScriptsState { starterScriptsState = .running(stage: stage) }
+        }
+        await written
+        let elapsed = Date().timeIntervalSince(started)
+        if elapsed < Self.starterFloorSeconds {
+            try? await Task.sleep(for: .seconds(Self.starterFloorSeconds - elapsed))
+        }
+        guard !Task.isCancelled else { return }
+        guard !scripts.isEmpty else {
+            starterScriptsState = .failed
+            backend.reportClientEvent("aha_failed")
+            return
+        }
+        starterScriptsState = .ready
+        // FUNNEL: the north-star activation event — "viewed >=3 generated scripts in
+        // their own voice". Carries elapsed seconds so we can track time-to-aha against
+        // the <90s target in docs/03-onboarding.md.
+        backend.reportClientEvent(
+            "aha_reached",
+            detail: "scripts=\(scripts.count) secs=\(Int(Date().timeIntervalSince(started)))")
+        save()
+        notifyScriptsReady()
+        warmFeed()                     // ideas/reels generating BEFORE Home ever mounts
+        startBackgroundDigestUpgrade() // real scrape/transcribe/derive, off the hot path
+    }
+
+    /// The on-device generator (MockLLMRouter) — deterministic, brand-aware, no network.
+    /// Deliberately NOT `llm` (BackendClient): /v1/scripts is a multi-second Opus call
+    /// with a judge pass, which is exactly the wait we're removing from onboarding.
+    private func generateStarterScriptsLocally() async {
+        guard scripts.isEmpty else { return }
+        isGenerating = true
+        let local = MockLLMRouter()
+        let new = await local.generateScripts(
+            brand: brand, pillar: workingPillar, count: 3,
+            mediaContext: mediaContext,
+            style: brand.preferredStyles.first ?? .talkingHead,
+            memory: memory)
+        scripts.insert(contentsOf: new, at: 0)
+        isGenerating = false
+    }
+
+    /// The real digest, demoted to a background quality upgrade. It still scrapes,
+    /// transcribes and derives the voice scan (which powers pillars + later generation);
+    /// its scripts only replace the local ones if the user hasn't recorded against them
+    /// yet, so nothing the creator has touched changes underneath them.
+    private func startBackgroundDigestUpgrade() {
+        guard backgroundDigestTask == nil else { return }
+        backgroundDigestTask = Task { [weak self] in
+            guard let self else { return }
+            guard let jobId = await self.backend.startBrandDigest(brand: self.brand) else { return }
+            UserDefaults.standard.set(jobId, forKey: Self.digestJobKey)
+            var misses = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))
+                guard let s = await self.backend.pollBrandDigest(jobId: jobId, brand: self.brand) else {
+                    misses += 1
+                    if misses >= 5 { break }
+                    continue
+                }
+                misses = 0
+                if s.status == "ready" {
+                    if let scan = s.scan { self.applyVoiceScan(scan) }
+                    // Only swap in server scripts while the starter set is untouched.
+                    if !s.scripts.isEmpty && self.clips.isEmpty {
+                        self.scripts = s.scripts + self.scripts.filter { sc in
+                            !s.scripts.contains(where: { $0.id == sc.id })
+                        }
+                    }
+                    self.save()
+                    break
+                }
+                if s.status == "failed" { break }
+            }
+            UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
+            self.backgroundDigestTask = nil
+        }
+    }
+
+    /// Resume after a relaunch mid-build. Build 73: the starter path is local and takes
+    /// ~3s, so a relaunch just re-runs it rather than resuming a server job — an
+    /// interrupted onboarding must never re-enter the long poll.
     func resumeStarterDigestIfNeeded() {
         guard case .idle = starterScriptsState, scripts.isEmpty else { return }
-        guard let jobId = UserDefaults.standard.string(forKey: Self.digestJobKey) else { return }
-        starterScriptsState = .running(stage: 0)
-        digestTask = Task {
-            if await pollDigest(jobId: jobId) { return }
-            await localStarterFallback()
-        }
+        UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
+        beginStarterScripts()
     }
 
     private func runStarterDigest() async {

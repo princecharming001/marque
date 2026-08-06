@@ -502,6 +502,13 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     /// or nil when keyless/offline (caller falls back to local generation).
     func startBrandDigest(brand: BrandGraph, voiceTranscript: String? = nil) async -> String? {
         var body = brandBody(brand)
+        // BUG (found 2026-08-04): brandBody carries no creator_id, so DigestRequest fell
+        // back to "default". palo_flags.real_creator("default") is FALSE, which silently
+        // skipped BOTH ideas.suggest_ideas and channel_identity.ensure_identity at
+        // onboarding completion — the idea bank and the identity doc every downstream
+        // generation reads were never built — and wrote the scraped posts into the shared
+        // "default" bucket. Every other route adds this explicitly; this one didn't.
+        body["creator_id"] = creatorId
         if let acct = brand.connectedAccounts.first {
             body["handle"] = acct.handle
             body["scan_platform"] = acct.platform

@@ -2572,13 +2572,34 @@ class _ClientEventRequest(BaseModel):
 
 @app.post("/v1/telemetry/client")
 async def client_telemetry(req: _ClientEventRequest):
-    """Client-failure breadcrumbs. An on-device failure between upload-mint and job
-    creation (e.g. the chat edit flow memory-killing mid-upload) previously left ZERO
-    server trace — clips showed 'failed' with nothing in any log. The app now reports
-    those here so they're greppable in Render logs as [client]."""
+    """Client-failure breadcrumbs AND the onboarding funnel. An on-device failure between
+    upload-mint and job creation (e.g. the chat edit flow memory-killing mid-upload)
+    previously left ZERO server trace — clips showed 'failed' with nothing in any log.
+
+    2026-08-04: the log line alone made the ONBOARDING funnel unmeasurable (Render logs
+    aren't queryable and roll off), so events now also land in the `client_events` table.
+    Persistence is best-effort and off the response path — telemetry must never be able
+    to fail a client call."""
     logging.warning("[client] build=%s creator=%s %s: %s",
                     req.build[:8], req.creator_id[:24], req.event[:40], req.detail[:300])
+    _spawn(_persist_client_event(req))
     return {"ok": True}
+
+
+async def _persist_client_event(req: _ClientEventRequest) -> None:
+    """Append one funnel/breadcrumb row. Swallows everything — a missing table (pre-
+    migration) or a Supabase blip must not surface to the app."""
+    if _palo_store is None:
+        return
+    try:
+        await _palo_store._request("POST", "/client_events", json={
+            "creator_id": req.creator_id[:64] or "unknown",
+            "event": req.event[:64],
+            "detail": req.detail[:300],
+            "build": req.build[:16],
+        }, headers={"Prefer": "return=minimal"})
+    except Exception as e:
+        logging.warning("[client] persist failed: %s", e)
 
 
 @app.get("/v1/broll-styles")
