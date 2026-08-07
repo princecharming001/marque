@@ -1,31 +1,38 @@
 import SwiftUI
 
-// Onboarding — Cal AI-clean rebuild (docs/ONBOARDING-DESIGN.md).
-// One universal scaffold: pain cluster (incl. "why now") → belief interstitial →
-// connect (scan prefills identity) → identity confirm → voice-teach → format →
-// brand mirror → async plan-building aha. Single-select questions auto-advance
-// (no "Next"); back is always available and cancels a pending advance. Steps
-// whose answer a linked account already gave (stage, platform) auto-skip.
+// Onboarding — Cal AI-clean chrome (docs/ONBOARDING-DESIGN.md), flow per the
+// documented thesis (docs/03-onboarding.md §1): ONE framing question → connect
+// (the inference jackpot) → confirm what the scan learned → taste → goal → pace
+// → async plan-building aha. ≤2 questions before value; a connected user types
+// nothing. Single-select questions auto-advance (no "Next"); back is always
+// available and cancels a pending advance.
 struct OnboardingView: View {
     @Environment(AppStore.self) private var store
 
     enum Step: Int, CaseIterable {
-        // H-05: no styles step — the server infers style from the take now.
-        // Connect comes BEFORE the identity cluster: the brand-scan derives
-        // niche/audience/knownFor from real posts, so identity becomes
-        // confirm-not-type for connected users (typing is the #1 completion
-        // killer; taps and prefills are near-free).
-        // styleTaste sits AFTER pace and before the mirror: by then the creator has
-        // told us who they are, so the swipe deck reads as "now teach me your taste"
-        // rather than more intake — and it is skippable (a skipped deck just keeps the
-        // measured-winner defaults). The CTA deck (ctaPick) was REMOVED from the flow
-        // (owner, build 63; may return) — endings default to the pipeline conventions.
-        case landing, goal, blocker, whyNow, frequency, method,
-             connectAccounts, name, stage, niche, about, knownFor, platform,
-             voiceInterview, voiceSliders, emulate, cameraComfort,
-             styleTaste, mirror, building
+        // REBUILT 2026-08-04 to the documented thesis (docs/03-onboarding.md §1):
+        // "≤2 questions before value … cadence/format are inferred, not asked",
+        // time-to-aha <90s. The shipped flow had drifted to 20 screens / 9 typed
+        // fields; the funnel research (RevenueCat/Superwall/Videoleap teardowns,
+        // plan file 2026-08-04) says tolerance for questions is proportional to how
+        // visibly each answer changes the output. Every surviving step passes that
+        // test; everything else was cut or moved to progressive profiling:
+        //   CUT  blocker/whyNow (overlapping motivation asks; never steered output
+        //        beyond one prompt line), cameraComfort (promised formats we retired),
+        //        name (captured, never read ANYWHERE), stage/platform (derived from
+        //        the linked account), method interstitial, the 4-question typed
+        //        voiceInterview (voice is derived from real posts), the social-proof
+        //        screen (no real numbers yet — inventing them is the Blinkist trap).
+        //   MOVED voiceSliders + neverSay → Profile (already live there);
+        //        styleTaste swiper → Profile's Editing-style page (already live).
+        // Order: one framing question → connect (the inference jackpot) → confirm
+        // what the scan learned → taste (emulate) → goal (personalizes the paywall)
+        // → pace (commitment device) → the aha.
+        case landing, niche, connect, identity, emulate, goal, frequency, building
 
         /// Quiz-progress dashes cover everything between landing and building.
+        /// No step auto-skips anymore (the skippable ones were cut), so this
+        /// denominator is finally honest for every path.
         var quizIndex: Int? {
             guard self != .landing, self != .building else { return nil }
             return rawValue - 1
@@ -39,7 +46,9 @@ struct OnboardingView: View {
     // you re-tap every answer (the answers themselves were already persisted on the
     // brand graph — only the POSITION was @State). The furthest step reached is
     // remembered so a relaunch resumes exactly where you left off.
-    @AppStorage("onboarding.resumeStep") private var resumeStepRaw = 0
+    // v2 key: the rebuild renumbered every step, so a persisted v1 position would
+    // resume onto the wrong screen. Old key is simply ignored.
+    @AppStorage("onboarding.resumeStep.v2") private var resumeStepRaw = 0
 
     // Auto-advance plumbing: last tap wins within the 300ms window; back cancels.
     @State private var advanceTask: Task<Void, Never>?
@@ -48,18 +57,23 @@ struct OnboardingView: View {
     // Defaulted enums render unselected until touched (so every MCQ auto-advances
     // on a real choice, never on a default).
     @State private var goalTouched = false
-    // Distinguishes "stage answered in the quiz" from "stage derived from a linked
-    // account" — only the derived case auto-skips the step (incl. on back-nav).
-    @State private var stageTouched = false
-    // Disambiguates "nil because unset" from "nil because user picked Both".
-    @State private var platformBothChosen = false
+    // Niche chips: "Something else" flips to a freeform field.
+    @State private var customNiche = false
+    @FocusState private var nicheFocused: Bool
+    @FocusState private var identityFocused: Bool
+    // Scan hold: connected users wait on branded theater while the real page scan
+    // runs (owner-decided over confirm-later), capped at ~12s so a slow or dead
+    // backend can never strand anyone — the identity screen just falls back to
+    // editable-empty and the scan keeps filling in the background if it lands.
+    @State private var scanHolding = false
+    @State private var scanTask: Task<Void, Never>?
 
     var body: some View {
         Group {
             switch step {
             case .landing:
                 WelcomeLanding(
-                    onStart: { go(.goal) },
+                    onStart: { go(.niche) },
                     onHaveAccount: {
                         // Existing users skip the quiz — straight to the gates;
                         // their brand data restores after sign-in.
@@ -68,25 +82,13 @@ struct OnboardingView: View {
                         store.save()
                     }
                 )
-            case .goal:          goalStep
-            case .blocker:       blockerStep
-            case .whyNow:        whyNowStep
-            case .frequency:     frequencyStep
-            case .method:        methodStep
-            case .connectAccounts: connectAccountsStep
-            case .name:          nameStep
-            case .stage:         stageStep
-            case .niche:         nicheStep
-            case .about:         aboutStep
-            case .knownFor:      knownForStep
-            case .platform:        platformStep
-            case .voiceInterview:  voiceInterviewStep
-            case .voiceSliders:    voiceSlidersStep
-            case .emulate:         emulateStep
-            case .cameraComfort:   cameraComfortStep
-            case .styleTaste:    styleTasteStep
-            case .mirror:        mirrorStep
-            case .building:      buildingStep
+            case .niche:     nicheStep
+            case .connect:   connectStep
+            case .identity:  identityStep
+            case .emulate:   emulateStep
+            case .goal:      goalStep
+            case .frequency: frequencyStep
+            case .building:  buildingStep
             }
         }
         .id(step)
@@ -118,28 +120,15 @@ struct OnboardingView: View {
     }
 
     /// Restore the saved position on launch. Guards: never resume onto `.landing`
-    /// (nothing to restore), never past the enum, and skip any step whose answer is
-    /// already derived (same `shouldSkip` rule the forward path uses).
+    /// (nothing to restore) and never past the enum.
     private func restoreProgress() {
         guard resumeStepRaw > Step.landing.rawValue,
-              var target = Step(rawValue: resumeStepRaw) else { return }
-        while shouldSkip(target), let next = Step(rawValue: target.rawValue + 1) { target = next }
+              let target = Step(rawValue: resumeStepRaw) else { return }
         step = target
     }
 
-    /// Steps we already have the answer to (from a linked account) are never shown.
-    private func shouldSkip(_ s: Step) -> Bool {
-        switch s {
-        case .stage:    return store.brand.stage != nil && !stageTouched // derived from real follower count
-        case .platform: return !store.brand.connectedAccounts.isEmpty // derived from what they linked
-        default:        return false
-        }
-    }
-
     private func advance() {
-        var raw = step.rawValue + 1
-        while let next = Step(rawValue: raw), shouldSkip(next) { raw += 1 }
-        guard let next = Step(rawValue: raw) else { return }
+        guard let next = Step(rawValue: step.rawValue + 1) else { return }
         go(next)
     }
 
@@ -147,9 +136,7 @@ struct OnboardingView: View {
         advanceTask?.cancel()
         advanceTask = nil
         guard step != .landing else { return }
-        var raw = step.rawValue - 1
-        while let prev = Step(rawValue: raw), shouldSkip(prev) { raw -= 1 }
-        guard let prev = Step(rawValue: raw) else { return }
+        guard let prev = Step(rawValue: step.rawValue - 1) else { return }
         go(prev)
     }
 
@@ -188,7 +175,168 @@ struct OnboardingView: View {
                            content: content, cta: cta)
     }
 
-    // MARK: - Pain cluster
+    // MARK: - Q1: niche — the ONE framing question the spec allows before value
+
+    private static let nicheChips = [
+        "Fitness", "Finance", "Business", "Beauty",
+        "Food", "Gaming", "Education", "Lifestyle",
+    ]
+
+    private var nicheStep: some View {
+        @Bindable var store = store
+        return scaffold("What do you make videos about?",
+                        "One tap — this seeds everything I write for you.") {
+            VStack(spacing: Space.md) {
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.md),
+                                    GridItem(.flexible())],
+                          spacing: Space.md) {
+                    ForEach(Self.nicheChips, id: \.self) { chip in
+                        NicheChip(title: chip, selected: !customNiche && store.brand.niche == chip) {
+                            selectAndAdvance {
+                                customNiche = false
+                                nicheFocused = false
+                                store.brand.niche = chip
+                            }
+                        }
+                        .accessibilityIdentifier("onboard.niche.\(chip.lowercased())")
+                    }
+                }
+                NicheChip(title: "Something else", selected: customNiche) {
+                    advanceTask?.cancel(); advanceTask = nil
+                    withAnimation(Motion.spring) { customNiche = true }
+                    nicheFocused = true
+                }
+                .accessibilityIdentifier("onboard.niche.other")
+                if customNiche {
+                    FreeformField(placeholder: "Your niche", text: $store.brand.niche,
+                                  fontSize: 26, focused: $nicheFocused,
+                                  accessibilityID: "onboard.niche")
+                        .padding(.top, Space.sm)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        } cta: {
+            if customNiche {
+                OnbPill(title: "Continue",
+                        enabled: !store.brand.niche.trimmingCharacters(in: .whitespaces).isEmpty) {
+                    nicheFocused = false
+                    advance()
+                }
+                .accessibilityIdentifier("onboard.nicheContinue")
+            }
+        }
+    }
+
+    // MARK: - Connect (hero) — the inference jackpot
+
+    private var connectStep: some View {
+        scaffold("Let me study your page",
+                 "Connect one account and I'll read your recent posts — your niche, your audience, and how you actually talk. No typing.") {
+            VStack(spacing: Space.lg) {
+                ConnectAccountsView()
+                // Named-provider AI consent (Apple 5.1.2(i)) — page content reaches
+                // Anthropic's Claude; say so where the connection happens.
+                Text("Your public posts are analyzed by Claude (Anthropic) to build your voice profile. Nothing is ever posted without you.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("onboard.connect.consent")
+            }
+        } cta: {
+            VStack(spacing: Space.md) {
+                OnbPill(title: "Read my posts",
+                        enabled: !store.brand.connectedAccounts.isEmpty) {
+                    beginScanHold()
+                    advance()
+                }
+                .accessibilityIdentifier("onboard.connect.continue")
+                Button {
+                    advance()
+                } label: {
+                    Text("Skip for now")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                }
+                .accessibilityIdentifier("onboard.connect.skip")
+            }
+        }
+    }
+
+    /// Hold the connected user on branded theater while the real scan runs.
+    /// Two release paths — scan lands, or the 12s cap fires — whichever first.
+    private func beginScanHold() {
+        scanHolding = true
+        scanTask?.cancel()
+        scanTask = Task {
+            await store.analyzePage()
+            guard !Task.isCancelled else { return }
+            withAnimation(Motion.enter) { scanHolding = false }
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(12))
+            withAnimation(Motion.enter) { scanHolding = false }
+        }
+    }
+
+    // MARK: - Identity: theater → one editable confirmation
+    // Replaces SIX typed screens (name/stage/niche/about/knownFor/platform) —
+    // connected users confirm what the scan learned; skippers type two lines.
+
+    private var identityStep: some View {
+        Group {
+            if scanHolding {
+                OnboardingScaffold(headline: "Reading your posts",
+                                   subtitle: nil,
+                                   showsBack: false) {
+                    ScanTheaterView()
+                }
+            } else {
+                identityConfirm
+            }
+        }
+    }
+
+    private var identityConfirm: some View {
+        @Bindable var store = store
+        // "Learned" only if the scan actually filled something — a scan that came
+        // back empty (scrape found no posts) must not claim knowledge over three
+        // blank fields; those users get the honest type-it-in variant.
+        let scanned = store.brand.analyzed && !store.brand.connectedAccounts.isEmpty
+            && (!store.brand.audience.isEmpty || !store.brand.knownFor.isEmpty
+                || !store.brand.whatYouDo.isEmpty)
+        return scaffold(scanned ? "Here's what I learned" : "Tell me about you",
+                        scanned ? "Straight from your posts — fix anything that's off."
+                                : "Two lines. What you do, and who it's for.") {
+            VStack(spacing: Space.lg) {
+                TextField("What do you do?", text: $store.brand.whatYouDo, axis: .vertical)
+                    .focused($identityFocused)
+                    .marqueField()
+                    .lineLimit(1...3)
+                    .accessibilityIdentifier("onboard.whatYouDo")
+                TextField("Who is it for?", text: $store.brand.audience, axis: .vertical)
+                    .marqueField()
+                    .lineLimit(1...3)
+                    .accessibilityIdentifier("onboard.audience")
+                TextField("Known for… (optional)", text: $store.brand.knownFor, axis: .vertical)
+                    .marqueField()
+                    .lineLimit(1...3)
+                    .accessibilityIdentifier("onboard.knownFor")
+            }
+        } cta: {
+            // Skippers must give the two load-bearing lines; a scanned profile
+            // passes on what the scan filled (audience + knownFor) with zero typing.
+            OnbPill(title: scanned ? "Looks right" : "Continue",
+                    enabled: !store.brand.audience.trimmingCharacters(in: .whitespaces).isEmpty
+                          && (!store.brand.whatYouDo.trimmingCharacters(in: .whitespaces).isEmpty
+                              || !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty)) {
+                identityFocused = false
+                advance()
+            }
+            .accessibilityIdentifier("onboard.identityContinue")
+        }
+        .onAppear { if !scanned { identityFocused = true } }
+    }
+
+    // MARK: - Goal — kept because it personalizes the paywall headline
 
     private var goalStep: some View {
         scaffold("What are you here to do?", "This shapes every script I write for you.") {
@@ -212,43 +360,7 @@ struct OnboardingView: View {
         .accessibilityIdentifier("onboard.goal.\(String(describing: goal))")
     }
 
-    private var blockerStep: some View {
-        scaffold("What gets in the way most?", "I'll build your plan around fixing this.") {
-            VStack(spacing: Space.md) {
-                blockerCard(.ideas, "OnbIcon-blocker-ideas", "lightbulb", "ideas")
-                blockerCard(.time, "OnbIcon-blocker-time", "hourglass", "time")
-                blockerCard(.editing, "OnbIcon-blocker-editing", "scissors", "editing")
-                blockerCard(.confidence, "OnbIcon-blocker-confidence", "face.dashed", "confidence")
-            }
-        }
-    }
-
-    private func blockerCard(_ b: CreatorBlocker, _ icon: String, _ sf: String, _ idKey: String) -> some View {
-        OptionCard(icon: icon, sfFallback: sf, title: b.rawValue,
-                   selected: store.brand.biggestBlocker == b) {
-            selectAndAdvance { store.brand.biggestBlocker = b }
-        }
-        .accessibilityIdentifier("onboard.blocker.\(idKey)")
-    }
-
-    private var whyNowStep: some View {
-        scaffold("Why now?", "This is the moment we build everything around.") {
-            VStack(spacing: Space.md) {
-                whyNowCard(.serious, "OnbIcon-why-serious", "flame")
-                whyNowCard(.launch, "OnbIcon-why-launch", "paperplane")
-                whyNowCard(.inspired, "OnbIcon-why-inspired", "chart.line.uptrend.xyaxis")
-                whyNowCard(.income, "OnbIcon-why-income", "banknote")
-            }
-        }
-    }
-
-    private func whyNowCard(_ w: WhyNow, _ icon: String, _ sf: String) -> some View {
-        OptionCard(icon: icon, sfFallback: sf, title: w.rawValue,
-                   selected: store.brand.whyNow == w) {
-            selectAndAdvance { store.brand.whyNow = w }
-        }
-        .accessibilityIdentifier("onboard.whyNow.\(w.key)")
-    }
+    // MARK: - Pace — the commitment device
 
     /// THE posting-cadence question — there is exactly one (build 63). Onboarding used to
     /// ask twice: "how often do you post right now?" here and "pick your weekly pace"
@@ -274,318 +386,13 @@ struct OnboardingView: View {
                     store.brand.weeklyTarget = 5
                     store.brand.postingFrequency = PostingFrequency.bucket(forWeekly: 5)
                 }
+                // Pace was the last question — the aha starts NOW (the brand mirror
+                // interstitial that used to sit here was cut; its ×52 math lives on
+                // the pace slider itself).
+                store.beginStarterScripts()
                 advance()
             }
             .accessibilityIdentifier("onboard.continue")
-        }
-    }
-
-    // MARK: - Interstitial A: the method (belief builder)
-
-    private var methodStep: some View {
-        let freq = store.brand.postingFrequency
-        let line: String = switch freq {
-        case .rarely, .none:
-            "Most creators stall because every post is built from scratch. Yunicorn flips that: film once a week, and I turn it into daily content."
-        case .sometimes:
-            "You're already posting — the problem is the cost per post. Film once a week with me, and every session becomes 5+ pieces of content."
-        case .often, .daily:
-            "You've got the volume. Now make every post compound: one filming session, scripts in your voice, edits handled."
-        }
-        // No mascot, no stat card — just the copy, typed out. The scaffold's static
-        // header is suppressed (empty headline) so the typewriter owns the reveal.
-        return scaffold("") {
-            VStack(spacing: Space.lg) {
-                // Owner ask: the consistency card carries the mascot — the belief-builder
-                // beat is the one place in onboarding that should feel like Yuni talking.
-                Image("UnicornProud")
-                    .resizable().scaledToFit()
-                    .frame(height: 132)
-                    .accessibilityIdentifier("onboard.method.unicorn")
-                OnboardingTypewriter(headline: "Consistency beats virality", message: line)
-            }
-        } cta: {
-            OnbPill(title: "Let's do it") { advance() }
-                .accessibilityIdentifier("onboard.continue")
-        }
-    }
-
-    // MARK: - Identity cluster (freeform)
-
-    @FocusState private var nameFocused: Bool
-
-    private var nameStep: some View {
-        @Bindable var store = store
-        return scaffold("What should I call you?", "The name you'd like to go by.") {
-            FreeformField(placeholder: "Your name", text: $store.brand.creatorNameBinding,
-                          capitalization: .words, focused: $nameFocused,
-                          accessibilityID: "onboard.creatorName")
-        } cta: {
-            OnbPill(title: "Continue",
-                    enabled: !(store.brand.creatorName ?? "").trimmingCharacters(in: .whitespaces).isEmpty) {
-                nameFocused = false
-                advance()
-            }
-            .accessibilityIdentifier("onboard.nameContinue")
-        }
-        .onAppear { nameFocused = true }
-    }
-
-    // Only shown when no account was connected — a linked account's real follower
-    // count sets `stage` and this step auto-skips (see shouldSkip).
-    private var stageStep: some View {
-        scaffold("Where are you today?", "So I calibrate for where you are — not where you're going.") {
-            VStack(spacing: Space.md) {
-                stageCard(.nano, "OnbIcon-stage-nano", "person", "nano")
-                stageCard(.micro, "OnbIcon-stage-micro", "person.2", "micro")
-                stageCard(.established, "OnbIcon-stage-established", "person.3", "established")
-                stageCard(.pro, "OnbIcon-stage-pro", "crown", "pro")
-            }
-        }
-    }
-
-    private func stageCard(_ s: CreatorStage, _ icon: String, _ sf: String, _ idKey: String) -> some View {
-        OptionCard(icon: icon, sfFallback: sf, title: s.rawValue,
-                   selected: store.brand.stage == s) {
-            selectAndAdvance {
-                store.brand.stage = s
-                stageTouched = true
-            }
-        }
-        .accessibilityIdentifier("onboard.stage.\(idKey)")
-    }
-
-    @FocusState private var nicheFocused: Bool
-
-    private var nicheStep: some View {
-        @Bindable var store = store
-        let prefilled = store.brand.analyzed && !store.brand.niche.trimmingCharacters(in: .whitespaces).isEmpty
-        return scaffold("What's your niche?",
-                        prefilled ? "Pulled from your page — fix it if it's off."
-                                  : "Fitness, finance, cooking… whatever you make content about.") {
-            FreeformField(placeholder: "Your niche", text: $store.brand.niche,
-                          fontSize: 30, focused: $nicheFocused,
-                          accessibilityID: "onboard.niche")
-        } cta: {
-            OnbPill(title: "Continue",
-                    enabled: !store.brand.niche.trimmingCharacters(in: .whitespaces).isEmpty) {
-                nicheFocused = false
-                advance()
-            }
-            .accessibilityIdentifier("onboard.nicheContinue")
-        }
-        .onAppear { nicheFocused = true }
-    }
-
-    @FocusState private var aboutFocused: Bool
-
-    private var aboutStep: some View {
-        @Bindable var store = store
-        return scaffold("Tell me about you", "What you do, and who it's for.") {
-            VStack(spacing: Space.lg) {
-                TextField("What do you do?", text: $store.brand.whatYouDo, axis: .vertical)
-                    .focused($aboutFocused)
-                    .marqueField()
-                    .lineLimit(1...3)
-                    .accessibilityIdentifier("onboard.whatYouDo")
-                TextField("Who is it for?", text: $store.brand.audience, axis: .vertical)
-                    .marqueField()
-                    .lineLimit(1...3)
-                    .accessibilityIdentifier("onboard.audience")
-            }
-        } cta: {
-            OnbPill(title: "Continue",
-                    enabled: !store.brand.whatYouDo.trimmingCharacters(in: .whitespaces).isEmpty
-                          && !store.brand.audience.trimmingCharacters(in: .whitespaces).isEmpty) {
-                aboutFocused = false
-                advance()
-            }
-            .accessibilityIdentifier("onboard.aboutContinue")
-        }
-        .onAppear { aboutFocused = true }
-    }
-
-    @FocusState private var knownForFocused: Bool
-
-    private var knownForStep: some View {
-        @Bindable var store = store
-        let prefilled = store.brand.analyzed && !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty
-        return scaffold("What do you want to be known for?",
-                        prefilled ? "Here's what your page already says — make it yours."
-                                  : "The heart of your brand — one sentence.") {
-            FreeformField(placeholder: "Known for…", text: $store.brand.knownFor,
-                          fontSize: 26, focused: $knownForFocused,
-                          accessibilityID: "onboard.knownFor")
-        } cta: {
-            VStack(spacing: Space.md) {
-                OnbPill(title: "Continue",
-                        enabled: !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty) {
-                    knownForFocused = false
-                    advance()
-                }
-                .accessibilityIdentifier("onboard.knownForContinue")
-                Button {
-                    knownForFocused = false
-                    advance()
-                } label: {
-                    Text("Skip — I'll add this later")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                }
-                .accessibilityIdentifier("onboard.knownForSkip")
-            }
-        }
-        .onAppear { knownForFocused = true }
-    }
-
-    // MARK: - Platform
-
-    private var platformStep: some View {
-        scaffold("Where does your audience live?", "Where your clips will land first.") {
-            VStack(spacing: Space.md) {
-                OptionCard(icon: "OnbIcon-platform-instagram", sfFallback: "camera",
-                           title: "Instagram",
-                           selected: !platformBothChosen && store.brand.primaryPlatform == .instagram) {
-                    selectAndAdvance {
-                        store.brand.primaryPlatform = .instagram
-                        platformBothChosen = false
-                    }
-                }
-                .accessibilityIdentifier("onboard.platform.instagram")
-
-                OptionCard(icon: "OnbIcon-platform-tiktok", sfFallback: "music.note",
-                           title: "TikTok",
-                           selected: !platformBothChosen && store.brand.primaryPlatform == .tiktok) {
-                    selectAndAdvance {
-                        store.brand.primaryPlatform = .tiktok
-                        platformBothChosen = false
-                    }
-                }
-                .accessibilityIdentifier("onboard.platform.tiktok")
-
-                OptionCard(icon: "OnbIcon-platform-both", sfFallback: "square.on.square",
-                           title: "Both",
-                           selected: platformBothChosen) {
-                    selectAndAdvance {
-                        store.brand.primaryPlatform = nil
-                        platformBothChosen = true
-                    }
-                }
-                .accessibilityIdentifier("onboard.platform.both")
-            }
-        }
-    }
-
-    // MARK: - Voice teach (in flow, two consecutive steps — connect THEN interview)
-
-    private var connectAccountsStep: some View {
-        scaffold("Connect your accounts", "I'll read your posts, learn how you actually talk, and fill in the next steps for you.") {
-            ConnectAccountsView()
-        } cta: {
-            VStack(spacing: Space.md) {
-                OnbPill(title: "Continue") {
-                    // Reading past posts is never worth blocking onboarding for — kick it
-                    // off detached and move on immediately. By the time onboarding
-                    // finishes (several more screens), the scan has usually landed;
-                    // analyzePage() is safe to call concurrently with itself/mirrorStep
-                    // and just overwrites pillars/voice when it resolves.
-                    if !store.brand.connectedAccounts.isEmpty {
-                        Task { await store.analyzePage() }
-                    }
-                    advance()
-                }
-                .accessibilityIdentifier("onboard.connect.continue")
-                Button {
-                    advance()
-                } label: {
-                    Text("Skip for now")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                }
-                .accessibilityIdentifier("onboard.connect.skip")
-            }
-        }
-    }
-
-    private var voiceInterviewStep: some View {
-        scaffold("A few quick questions",
-                 store.brand.analyzed
-                    ? "I've studied your posts already — these sharpen what I learned. Skip if you're short on time."
-                    : "Two minutes, typed — I listen for your real voice.") {
-            VoiceInterviewView { advance() }
-        } cta: {
-            Button {
-                advance()   // build 67: skipping never fabricates pillars
-            } label: {
-                Text("Skip for now")
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-            }
-            .accessibilityIdentifier("onboard.interview.skip")
-        }
-    }
-
-    private var voiceSlidersStep: some View {
-        @Bindable var store = store
-        return scaffold("Fine-tune your voice", "Slide until the preview sounds like you.") {
-            VStack(spacing: Space.lg) {
-                VStack(spacing: Space.lg) {
-                    voiceSliderRow("Funny", "Serious", value: $store.brand.voice.funnyToSerious)
-                    MarqueHairline()
-                    voiceSliderRow("Polished", "Raw", value: $store.brand.voice.polishedToRaw)
-                    MarqueHairline()
-                    voiceSliderRow("Teacher", "Peer", value: $store.brand.voice.teacherToPeer)
-                }
-                .padding(Space.lg)
-                .background(Palette.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
-
-                Text(voicePreviewLine)
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                // Optional guardrail — the backend's "never say" prompt line existed
-                // for months with nothing ever collecting it.
-                TextField("Words I should never use (optional)", text: $neverSayDraft)
-                    .marqueField()
-                    .accessibilityIdentifier("onboard.neverSay")
-            }
-        } cta: {
-            OnbPill(title: "Continue") {
-                store.brand.nonNegotiables = neverSayDraft
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                advance()
-            }
-            .accessibilityIdentifier("onboard.voiceContinue")
-        }
-    }
-
-    @State private var neverSayDraft = ""
-
-    private var voicePreviewLine: String {
-        let funny = store.brand.voice.funnyToSerious
-        let polished = store.brand.voice.polishedToRaw
-        let teacher = store.brand.voice.teacherToPeer
-        let tone = funny < 0.35 ? "witty and light" : funny > 0.65 ? "grounded and serious" : "balanced"
-        let style = polished < 0.35 ? "clean and produced" : polished > 0.65 ? "unfiltered and real" : "conversational"
-        let mode = teacher < 0.35 ? "teaching the room" : teacher > 0.65 ? "talking to peers" : "guiding alongside"
-        return "\u{201C}\(tone.capitalized), \(style), \(mode).\u{201D} Yunicorn will write every script in this voice."
-    }
-
-    private func voiceSliderRow(_ leading: String, _ trailing: String, value: Binding<Double>) -> some View {
-        VStack(spacing: Space.xs) {
-            HStack {
-                Text(leading)
-                    .font(AppFont.callout)
-                    .foregroundStyle(value.wrappedValue < 0.4 ? Palette.textPrimary : Palette.textTertiary)
-                Spacer()
-                Text(trailing)
-                    .font(AppFont.callout)
-                    .foregroundStyle(value.wrappedValue > 0.6 ? Palette.textPrimary : Palette.textTertiary)
-            }
-            Slider(value: value).tint(Palette.ink)
         }
     }
 
@@ -610,87 +417,6 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Format cluster
-
-    private var cameraComfortStep: some View {
-        scaffold("How do you feel on camera?", "There's a format for every comfort level.") {
-            VStack(spacing: Space.md) {
-                comfortCard(.natural, "OnbIcon-comfort-natural", "video", "natural")
-                comfortCard(.gettingThere, "OnbIcon-comfort-getting", "video.badge.checkmark", "getting")
-                comfortCard(.preferOff, "OnbIcon-comfort-off", "mic", "off")
-            }
-        }
-    }
-
-    private func comfortCard(_ c: CameraComfort, _ icon: String, _ sf: String, _ idKey: String) -> some View {
-        // H-05: comfort no longer seeds preferredStyles — the server infers the
-        // right style from the actual take (analyze-first), not a quiz answer.
-        OptionCard(icon: icon, sfFallback: sf, title: c.rawValue,
-                   selected: store.brand.cameraComfort == c) {
-            selectAndAdvance { store.brand.cameraComfort = c }
-        }
-        .accessibilityIdentifier("onboard.comfort.\(idKey)")
-    }
-
-    // MARK: - Taste decks (editing style + endings)
-
-    private var styleTasteStep: some View {
-        scaffold("Which edits feel like you?",
-                 "Swipe right on the looks you'd actually post.") {
-            StyleTasteSwiper(
-                onFinish: { profile in
-                    store.editPrefs.styleProfile = profile
-                    store.save()
-                    advance()
-                },
-                // A deck we can't load is not a step worth stranding anyone on — the
-                // cold-start profile IS today's pipeline behavior, so skipping costs nothing.
-                onUnavailable: {})
-        } cta: {
-            Button { advance() } label: {
-                Text("Skip for now")
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-            }
-            .accessibilityIdentifier("onboard.styleTaste.skip")
-        }
-    }
-
-    // MARK: - Interstitial B: brand mirror → build
-
-    private var mirrorStep: some View {
-        let niche = store.brand.niche.isEmpty ? "your niche" : store.brand.niche
-        let audience = store.brand.audience.isEmpty ? "your audience" : store.brand.audience
-        let knownFor = store.brand.knownFor.isEmpty ? "what you stand for" : store.brand.knownFor
-        return scaffold("Your brand, in a sentence") {
-            VStack(spacing: Space.xl) {
-                UnicornMascot(pose: .proud, size: 130)
-                (Text("A ").foregroundStyle(Palette.textSecondary)
-                 + Text(niche).foregroundStyle(Palette.textPrimary)
-                 + Text(" creator for ").foregroundStyle(Palette.textSecondary)
-                 + Text(audience).foregroundStyle(Palette.textPrimary)
-                 + Text(", known for ").foregroundStyle(Palette.textSecondary)
-                 + Text(knownFor).foregroundStyle(Palette.textPrimary)
-                 + Text(".").foregroundStyle(Palette.textSecondary))
-                    .font(Typeface.display(26)).tracking(-0.4)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("Every script I write points back to this.")
-                    .font(AppFont.body).foregroundStyle(Palette.textTertiary)
-                if let pace = store.brand.weeklyTarget {
-                    Text("\(pace) posts a week — that's \(pace * 52) in a year, every one in your voice.")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                        .multilineTextAlignment(.center)
-                }
-            }
-        } cta: {
-            OnbPill(title: "Build my plan") {
-                store.beginStarterScripts()
-                advance()
-            }
-            .accessibilityIdentifier("onboard.buildPlan")
-        }
-    }
-
     // MARK: - Building → ready (non-blocking aha)
 
     private var buildingStep: some View {
@@ -712,89 +438,63 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Small helpers
+// MARK: - Niche chip
 
-private extension BrandGraph {
-    /// `creatorName` is Optional in the model; the text field wants a String binding.
-    var creatorNameBinding: String {
-        get { creatorName ?? "" }
-        set { creatorName = newValue.isEmpty ? nil : newValue }
+/// Capsule chip for the one framing question — tap-not-type. OptionCard rows with
+/// icons would make eight niches a full screen of scrolling; a 2-up capsule grid
+/// keeps every choice above the fold.
+private struct NicheChip: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(Typeface.sans(16, selected ? .semibold : .regular))
+                .foregroundStyle(selected ? Palette.canvas : Palette.textPrimary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(selected ? Palette.ink : Palette.surfaceRaised)
+                .clipShape(Capsule())
+                .overlay(Capsule().strokeBorder(selected ? .clear : Palette.hairline, lineWidth: 1))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
-// MARK: - Method interstitial stat card
+// MARK: - Scan theater
 
-/// The "consistency beats virality" comparison — two labeled, animated bars with
-/// trailing multiplier values, on a sunken track. Replaces the old floaty capsule
-/// pair; owns its own appear-animation state so the bars grow in on first render.
-// A typed-out reveal for interstitial copy: the serif headline types itself first, then
-// the body types beneath it, each trailed by a blinking caret — a calm "message arriving"
-// feel that replaces the old mascot + stat card. Reuses the chat typewriter cadence.
-private struct OnboardingTypewriter: View {
-    let headline: String
-    let message: String
-
-    @State private var headlineShown = ""
-    @State private var bodyShown = ""
-    @State private var stage = 0          // 0 = typing headline · 1 = typing body · 2 = done
-    @State private var caretOn = true
+/// The hold screen while the real page scan runs — rotating progress lines so the
+/// ~5-12s of genuine scraping reads as work being done for you, not a hang.
+private struct ScanTheaterView: View {
+    private static let lines = [
+        "Reading your recent posts…",
+        "Learning how you hook…",
+        "Mapping your audience…",
+        "Finding your voice…",
+    ]
+    @State private var idx = 0
 
     var body: some View {
-        VStack(spacing: Space.lg) {
-            headlineText
-                .fixedSize(horizontal: false, vertical: true)
-            if stage >= 1 {
-                bodyText
-                    .fixedSize(horizontal: false, vertical: true)
-                    .transition(.opacity)
-            }
+        VStack(spacing: Space.xl) {
+            UnicornMascot(pose: .proud, size: 130)
+            Text(Self.lines[idx])
+                .font(Typeface.display(24)).tracking(-0.4)
+                .foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
+                .id(idx)
+                .transition(.opacity)
+            ProgressView().tint(Palette.ink)
         }
         .frame(maxWidth: .infinity)
-        .multilineTextAlignment(.center)
-        .animation(Motion.quick, value: stage)
-        .task { await type() }
-        .task { await blink() }
-    }
-
-    private var headlineText: Text {
-        let base = Text(headlineShown)
-            .font(Typeface.display(30)).tracking(-0.6)
-            .foregroundColor(Palette.textPrimary)
-        return stage == 0 ? base + caret : base
-    }
-
-    private var bodyText: Text {
-        let base = Text(bodyShown)
-            .font(AppFont.body).foregroundColor(Palette.textSecondary)
-        return stage == 1 ? base + caret : base
-    }
-
-    private var caret: Text {
-        Text("▍").foregroundColor(caretOn ? Palette.accent : .clear)
-    }
-
-    private func type() async {
-        await reveal(headline) { headlineShown = $0 }
-        try? await Task.sleep(nanoseconds: 280_000_000)   // a beat before the body
-        withAnimation(Motion.quick) { stage = 1 }
-        await reveal(message) { bodyShown = $0 }
-        stage = 2
-    }
-
-    /// Reveal `full` 2–3 characters at a time (~20ms/step), the chat typewriter cadence.
-    private func reveal(_ full: String, _ set: (String) -> Void) async {
-        var idx = full.startIndex
-        while idx < full.endIndex, !Task.isCancelled {
-            idx = full.index(idx, offsetBy: Int.random(in: 2...3), limitedBy: full.endIndex) ?? full.endIndex
-            set(String(full[..<idx]))
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
-    }
-
-    private func blink() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            caretOn.toggle()
+        .accessibilityIdentifier("onboard.scanTheater")
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2.4))
+                withAnimation(.easeInOut(duration: 0.3)) { idx = (idx + 1) % Self.lines.count }
+            }
         }
     }
 }
@@ -810,10 +510,12 @@ private struct PaceSlider: View {
     @Binding var weekly: Int
     @State private var draft: Double = 5
 
-    private var perDay: String {
-        let d = Double(weekly) / 7.0
+    /// Below daily volume a per-day readout ("5 a week") just repeats the headline —
+    /// only translate once the number means more than one a day.
+    private var perDay: String? {
+        guard weekly >= 7 else { return nil }
         if weekly % 7 == 0 { return weekly == 7 ? "1 a day" : "\(weekly / 7) a day" }
-        return d < 1 ? "\(weekly) a week" : String(format: "%.1f a day", d)
+        return String(format: "%.1f a day", Double(weekly) / 7.0)
     }
 
     private var meaning: String {
@@ -837,8 +539,10 @@ private struct PaceSlider: View {
                     .animation(.snappy(duration: 0.2), value: weekly)
                 Text(weekly == 1 ? "post a week" : "posts a week")
                     .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                Text(perDay)
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                if let perDay {
+                    Text(perDay)
+                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                }
             }
             VStack(spacing: Space.sm) {
                 Slider(value: $draft, in: 1...21, step: 1)
@@ -865,12 +569,18 @@ private struct PaceSlider: View {
                     }
                 }
             }
-            Text(meaning)
-                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity)
-                .animation(.easeOut(duration: 0.15), value: weekly)
+            VStack(spacing: Space.xs) {
+                Text(meaning)
+                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                // The answer visibly changing the output is the contract that earns
+                // the question (the cut brand-mirror screen carried this math before).
+                Text("\(weekly * 52) posts a year — every one in your voice.")
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            }
+            .multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .animation(.easeOut(duration: 0.15), value: weekly)
         }
         .onAppear { draft = Double(weekly) }
     }

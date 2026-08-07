@@ -1,0 +1,32 @@
+appId: com.getmarque.app
+name: "Google sign-in probe - does the OAuth sheet open"
+---
+- launchApp:
+    clearState: true
+    arguments:
+      "-demoGates": true
+    permissions:
+      all: allow
+- extendedWaitUntil:
+    visible: { id: "payment.cta" }
+    timeout: 8000
+- tapOn: { id: "payment.cta" }
+- extendedWaitUntil:
+    visible: { id: "auth.google" }
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/gsi-1-signin
+- tapOn: { id: "auth.google" }
+# ASWebAuthenticationSession: first a system consent alert, then the Google page.
+- extendedWaitUntil:
+    visible: { text: "ZZZ_WAIT_ZZZ" }
+    timeout: 4000
+    optional: true
+- takeScreenshot: /Users/home/Marque/.shots/gsi-2-after-tap
+- tapOn:
+    text: "Continue"
+    optional: true
+- extendedWaitUntil:
+    visible: { text: "ZZZ_WAIT_ZZZ" }
+    timeout: 6000
+    optional: true
+- takeScreenshot: /Users/home/Marque/.shots/gsi-3-oauth-sheet

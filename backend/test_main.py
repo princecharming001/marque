@@ -4854,9 +4854,10 @@ def test_digest_degrades_on_llm_failure(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Quiz-context fields must survive Brand validation. Pydantic's default
-# extra='ignore' silently dropped biggest_blocker / camera_comfort / stage /
-# posting_frequency / weekly_target / primary_platform / why_now for months,
-# so brand_block()'s strategy hints never fired in production.
+# extra='ignore' silently dropped these fields for months, so brand_block()'s
+# strategy hints never fired in production. The 2026-08 onboarding rebuild cut
+# the blocker/comfort/why-now questions — legacy clients may still send those
+# fields and they must validate, but they are no longer rendered into prompts.
 # ---------------------------------------------------------------------------
 
 def test_brand_keeps_quiz_context_fields():
@@ -4865,22 +4866,21 @@ def test_brand_keeps_quiz_context_fields():
         "primary_platform": "instagram",
         "stage": "1K–10K followers",
         "posting_frequency": "2–3x a week",
-        "biggest_blocker": "ideas",
-        "camera_comfort": "prefer_off",
+        "biggest_blocker": "ideas",     # legacy field — accepted, not rendered
+        "camera_comfort": "prefer_off",  # legacy field — accepted, not rendered
         "weekly_target": 5,
-        "why_now": "launch",
+        "why_now": "launch",             # legacy field — accepted, not rendered
     }).d()
     block = prompts.brand_block(b)
-    assert "generate hooks and topics generously" in block      # blocker hint fires
-    # OWNER MANDATE: even camera-shy creators film talking-head — the hint steers to
-    # shorter takes + editor b-roll coverage, never to faceless/montage formats.
-    assert "shortest possible talking-head takes" in block       # comfort hint fires
-    assert "faceless" not in block
     assert "weekly post target: 5" in block
     assert "2–3x a week" in block
     assert "instagram" in block
     assert "1K–10K followers" in block
-    assert "tie scripts to their offer" in block                # why_now hint fires
+    # Cut-question hints must NOT render (and never steer toward faceless formats).
+    assert "biggest blocker" not in block
+    assert "camera comfort" not in block
+    assert "why they started now" not in block
+    assert "faceless" not in block
 
 
 # ---------------------------------------------------------------------------

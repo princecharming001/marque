@@ -5,143 +5,64 @@ name: Marque — onboarding per-step screenshot walk (visual QA)
     arguments:
       reset: "true"
 
+# New 8-screen flow (2026-08 rebuild): landing → niche chips → connect →
+# identity → emulate → goal → pace → building. Skip path shown here.
 - assertVisible: "Get started"
 - takeScreenshot: /Users/home/Marque/.shots/onb-00-landing
 - tapOn:
     id: "onboard.start"
 
-- assertVisible: "What are you here to do?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-01-goal
+- assertVisible: "What do you make videos about?"
+- takeScreenshot: /Users/home/Marque/.shots/onb-01-niche
 - tapOn:
-    id: "onboard.goal.audience"
+    id: "onboard.niche.fitness"
 
 - extendedWaitUntil:
-    visible: "What gets in the way most?"
+    visible: "Let me study your page"
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-02-blocker
-- tapOn:
-    id: "onboard.blocker.time"
-
-- extendedWaitUntil:
-    visible: "Why now?"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-03-whynow
-- tapOn:
-    id: "onboard.whyNow.serious"
-
-- extendedWaitUntil:
-    visible: "How often do you post right now?"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-04-frequency
-- tapOn:
-    id: "onboard.frequency.sometimes"
-
-- extendedWaitUntil:
-    visible: "Consistency beats virality"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-05-method
-- tapOn:
-    id: "onboard.continue"
-
-# Connect now precedes identity so the scan can prefill it (skip = manual path).
-- extendedWaitUntil:
-    visible: "Connect your accounts"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-06-connect
+- takeScreenshot: /Users/home/Marque/.shots/onb-02-connect
 - tapOn:
     id: "onboard.connect.skip"
 
-- assertVisible: "What should I call you?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-07-name
-- tapOn:
-    id: "onboard.creatorName"
-- inputText: "Alex"
-- takeScreenshot: /Users/home/Marque/.shots/onb-07b-name-keyboard
-- tapOn:
-    id: "onboard.nameContinue"
-
-# Stage — only shown on the no-connect path (a linked account derives it).
-- assertVisible: "Where are you today?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-08-stage
-- tapOn:
-    id: "onboard.stage.micro"
-
-- extendedWaitUntil:
-    visible: "What's your niche?"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-09-niche
-- tapOn:
-    id: "onboard.niche"
-- inputText: "Fitness coaching"
-- tapOn:
-    id: "onboard.nicheContinue"
-
 - assertVisible: "Tell me about you"
-- takeScreenshot: /Users/home/Marque/.shots/onb-10-about
+- takeScreenshot: /Users/home/Marque/.shots/onb-03-identity
 - tapOn:
     id: "onboard.whatYouDo"
 - inputText: "I coach busy professionals"
 - tapOn:
     id: "onboard.audience"
 - inputText: "busy professionals"
+- takeScreenshot: /Users/home/Marque/.shots/onb-03b-identity-filled
 - tapOn:
-    id: "onboard.aboutContinue"
-
-- assertVisible: "What do you want to be known for?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-11-knownfor
-- tapOn:
-    id: "onboard.knownForSkip"
-
-# Platform — only shown on the no-connect path (linking derives it).
-- assertVisible: "Where does your audience live?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-12-platform
-- tapOn:
-    id: "onboard.platform.instagram"
-
-- extendedWaitUntil:
-    visible: "A few quick questions"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-13-interview
-- tapOn:
-    id: "onboard.interview.skip"
-
-- assertVisible: "Fine-tune your voice"
-- takeScreenshot: /Users/home/Marque/.shots/onb-14-sliders
-- tapOn:
-    id: "onboard.voiceContinue"
+    id: "onboard.identityContinue"
 
 - extendedWaitUntil:
     visible: "Who do you want to sound like?"
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-15-emulate
+- takeScreenshot: /Users/home/Marque/.shots/onb-04-emulate
 - tapOn:
-    id: "onboard.emulate.preset.tate"
-- takeScreenshot: /Users/home/Marque/.shots/onb-15b-emulate-selected
-- tapOn:
-    id: "onboard.emulate.continue"
-
-- assertVisible: "How do you feel on camera?"
-- takeScreenshot: /Users/home/Marque/.shots/onb-16-comfort
-- tapOn:
-    id: "onboard.comfort.natural"
-
-- assertVisible: "Pick your weekly pace"
-- takeScreenshot: /Users/home/Marque/.shots/onb-17-pace
-- tapOn:
-    id: "onboard.pace.5"
+    id: "onboard.emulate.skip"
 
 - extendedWaitUntil:
-    visible: "Your brand, in a sentence"
+    visible: "What are you here to do?"
     timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-18-mirror
+- takeScreenshot: /Users/home/Marque/.shots/onb-05-goal
 - tapOn:
-    id: "onboard.buildPlan"
+    id: "onboard.goal.audience"
+
+- extendedWaitUntil:
+    visible: "How often do you want to post?"
+    timeout: 4000
+- takeScreenshot: /Users/home/Marque/.shots/onb-06-pace
+# 5/week is the slider default; the tick shortcuts are 1/7/14/21.
+- tapOn:
+    id: "onboard.continue"
 
 # Building screen may flash past instantly when generation is fast (mock/local
 # fallback) — screenshot whatever state we're in, then wait for ready.
-- takeScreenshot: /Users/home/Marque/.shots/onb-19-building
+- takeScreenshot: /Users/home/Marque/.shots/onb-07-building
 
 - extendedWaitUntil:
     visible: "Enter Yunicorn"
     timeout: 120000
-- takeScreenshot: /Users/home/Marque/.shots/onb-20-ready
+- takeScreenshot: /Users/home/Marque/.shots/onb-08-ready

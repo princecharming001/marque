@@ -121,6 +121,15 @@ final class AppStore {
             // no reels/trends). Give it a real one so demo == the real experience.
             if brand.niche.isEmpty { brand.niche = "fitness" }
         }
+        // Deterministic connected-path onboarding entry: seed a linked account so
+        // Maestro can drive connect → scan theater → prefilled identity confirm
+        // without real OAuth (ASWebAuthenticationSession can't be automated).
+        // The page scan itself still runs for real against the backend.
+        if CommandLine.arguments.contains("-seedAccount") {
+            var acct = ConnectedAccount(platform: "tiktok", handle: "mrbeast")
+            acct.displayName = "MrBeast"
+            brand.connectedAccounts = [acct]
+        }
         // Deterministic editor-verification entry: seed one READY clip with a
         // placeholder jobId so Library → Edit manually → ProEditorView opens
         // without driving the full record→makeClips flow. ProEditorView's
@@ -386,14 +395,18 @@ final class AppStore {
         save()
     }
 
-    /// Prefill identity the scan derived from real posts — fill-only-if-empty, so a
-    /// user's own words are never clobbered by a guess. During onboarding this turns
-    /// the freeform identity steps into confirm-not-type.
+    /// Prefill identity the scan derived from real posts. During onboarding the scan
+    /// OVERWRITES (non-empty guesses only) — the identity-confirm screen shows the
+    /// result editable right after, so real-post evidence beats the one chip tapped
+    /// before connect. After onboarding it reverts to fill-only-if-empty, so a
+    /// Profile re-scan never clobbers words the creator wrote themselves.
     private func applyScanIdentity(_ result: BackendClient.BrandScanResult) {
+        let overwrite = !hasOnboarded
         func fill(_ path: WritableKeyPath<BrandGraph, String>, _ guess: String) {
             let g = guess.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !g.isEmpty,
-                  brand[keyPath: path].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            guard !g.isEmpty else { return }
+            guard overwrite
+                || brand[keyPath: path].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             else { return }
             brand[keyPath: path] = g
         }

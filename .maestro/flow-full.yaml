@@ -14,62 +14,21 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.start"
 
-# Pain cluster — single-select MCQs AUTO-ADVANCE (no "Next" taps).
-- assertVisible: "What are you here to do?"
+# Q1: niche chips — the ONE framing question before value (auto-advances on tap).
+- assertVisible: "What do you make videos about?"
 - tapOn:
-    id: "onboard.goal.audience"
-- extendedWaitUntil:
-    visible: "What gets in the way most?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.blocker.time"
-- extendedWaitUntil:
-    visible: "Why now?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.whyNow.serious"
-- extendedWaitUntil:
-    visible: "How often do you want to post?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.pace.5"
+    id: "onboard.niche.fitness"
 
-# Interstitial A — the method
+# Connect (hero) — fast path = skip. The cut steps must be GONE:
+# no blocker/whyNow/method/name/stage/platform/interview/sliders/comfort.
 - extendedWaitUntil:
-    visible: "Consistency beats virality"
+    visible: "Let me study your page"
     timeout: 4000
-- tapOn:
-    id: "onboard.continue"
-
-# Connect accounts — now BEFORE identity so the scan can prefill it; fast path = skip
-- extendedWaitUntil:
-    visible: "Connect your accounts"
-    timeout: 4000
+- assertNotVisible: "What gets in the way most?"
 - tapOn:
     id: "onboard.connect.skip"
 
-# Identity cluster (freeform, Continue pills)
-- assertVisible: "What should I call you?"
-- tapOn:
-    id: "onboard.creatorName"
-- inputText: "Alex"
-- tapOn:
-    id: "onboard.nameContinue"
-
-# Stage (only shown when no account was connected)
-- assertVisible: "Where are you today?"
-- tapOn:
-    id: "onboard.stage.micro"
-
-- extendedWaitUntil:
-    visible: "What's your niche?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.niche"
-- inputText: "Fitness coaching"
-- tapOn:
-    id: "onboard.nicheContinue"
-
+# Identity — skippers type the two load-bearing lines on ONE screen.
 - assertVisible: "Tell me about you"
 - tapOn:
     id: "onboard.whatYouDo"
@@ -78,31 +37,7 @@ name: Marque — full core loop
     id: "onboard.audience"
 - inputText: "busy professionals"
 - tapOn:
-    id: "onboard.aboutContinue"
-
-- assertVisible: "What do you want to be known for?"
-- tapOn:
-    id: "onboard.knownFor"
-- inputText: "no-nonsense fitness for busy people"
-- tapOn:
-    id: "onboard.knownForContinue"
-
-# Platform (auto-advance; only shown when no account was connected)
-- assertVisible: "Where does your audience live?"
-- tapOn:
-    id: "onboard.platform.instagram"
-
-# Voice interview — fast path = skip
-- extendedWaitUntil:
-    visible: "A few quick questions"
-    timeout: 4000
-- tapOn:
-    id: "onboard.interview.skip"
-
-# Voice sliders
-- assertVisible: "Fine-tune your voice"
-- tapOn:
-    id: "onboard.voiceContinue"
+    id: "onboard.identityContinue"
 
 # Emulate creators (multi-select; fast path = skip)
 - extendedWaitUntil:
@@ -111,18 +46,20 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.emulate.skip"
 
-# Camera comfort (auto-advance). H-05: no styles step follows — the server
-# infers style from the take now, straight to pace.
-- assertVisible: "How do you feel on camera?"
-- tapOn:
-    id: "onboard.comfort.natural"
-
-# Interstitial B — brand mirror → kick the digest
+# Goal (auto-advance) — kept because it personalizes the paywall headline.
 - extendedWaitUntil:
-    visible: "Your brand, in a sentence"
+    visible: "What are you here to do?"
     timeout: 4000
 - tapOn:
-    id: "onboard.buildPlan"
+    id: "onboard.goal.audience"
+
+# Pace — the LAST question; its CTA kicks the starter-script build directly
+# (the brand-mirror interstitial was cut).
+- extendedWaitUntil:
+    visible: "How often do you want to post?"
+    timeout: 4000
+- tapOn:
+    id: "onboard.continue"
 
 # Non-blocking aha: staged build screen → ready (live Claude writes 3 scripts; allow time)
 - extendedWaitUntil:

@@ -1666,38 +1666,11 @@ def brand_block(brand: dict, posts: list[dict] | None = None) -> str:
         lines.append(f"- creator stage: {brand['stage']} (calibrate authority level accordingly)")
     if brand.get('posting_frequency'):
         lines.append(f"- current posting frequency: {brand['posting_frequency']}")
-    if brand.get('biggest_blocker'):
-        blocker_map = {
-            'ideas': 'generate hooks and topics generously',
-            'time': 'keep scripts tight and batch-friendly',
-            'editing': 'favor simple single-shot formats over complex cuts',
-            'confidence': 'keep scripts short and conversational — one 20-second take builds comfort',
-        }
-        blocker = brand['biggest_blocker']
-        hint = blocker_map.get(blocker, '')
-        lines.append(f"- biggest blocker: {blocker}" + (f" → {hint}" if hint else ""))
-    if brand.get('camera_comfort'):
-        comfort_map = {
-            'natural': 'talking-head and green-screen styles preferred',
-            'getting_there': 'short talking-head takes; the editor covers cuts with b-roll',
-            'prefer_off': 'shortest possible talking-head takes (15-20s), teleprompter-paced; '
-                          'heavy editor b-roll coverage so their face carries less screen time',
-        }
-        comfort = brand['camera_comfort']
-        hint = comfort_map.get(comfort, '')
-        lines.append(f"- camera comfort: {comfort}" + (f" → {hint}" if hint else ""))
+    # blocker / camera-comfort / why-now hint maps were removed with the 2026-08
+    # onboarding rebuild — those questions are no longer asked (legacy clients may
+    # still send the fields; they are deliberately not rendered).
     if brand.get('weekly_target'):
         lines.append(f"- weekly post target: {brand['weekly_target']} posts (plan batch scripts to hit this)")
-    if brand.get('why_now'):
-        why_map = {
-            'serious': 'they just committed to taking content seriously — reward momentum, build identity',
-            'launch': 'they are launching something — tie scripts to their offer and urgency',
-            'inspired': 'they watched peers win and want their turn — lean into proof-it-works angles',
-            'income': 'they want content to become income — bias toward authority + monetizable topics',
-        }
-        why = brand['why_now']
-        hint = why_map.get(why, '')
-        lines.append(f"- why they started now: {why}" + (f" → {hint}" if hint else ""))
     return "\n".join(lines) + _post_lines(posts)
 
 

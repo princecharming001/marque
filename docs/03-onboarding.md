@@ -1,7 +1,23 @@
 # 03 — Onboarding & Activation
 
+> **⚠️ AS-BUILT (2026-08): the shipped flow is 8 screens, not the 10-step table in §3.**
+> The app drifted to 20 screens / 9 typed fields without this doc noticing; the 2026-08
+> rebuild restored the §1 thesis (≤2 questions before value, <90s to aha) with this flow:
+>
+> **Landing → niche chips (the ONE question) → connect hero (+ named-provider AI-consent
+> line) → scan theater → identity confirm (one editable screen; skippers type 2 lines) →
+> emulate → goal → pace slider → building/aha → soft paywall → sign-in.**
+>
+> Deltas from §3 v1 spec: page-connect is OAuth/handle-link (not paste); the consent
+> *screen* (step 3, hard gate) is still TODO before App Store submission — today it's a
+> consent line on the connect screen; social proof is CUT until real numbers exist;
+> paywall is soft/dismissible into a watermarked free tier (owner decision, Adapty/
+> RevenueCat 2026 data) with a second hard wall planned at export. A connected user
+> types nothing; `aha_reached`/`onboard_step`/`paywall_view` events instrument the
+> funnel. Source of truth: `ios/Marque/Features/Onboarding/OnboardingView.swift`.
+
 > **Section owner:** Growth + iOS
-> **Status:** Build spec (v1)
+> **Status:** Build spec (v1) + as-built addendum above
 > **Canonical product:** Marque — *the calm app that turns overwhelmed creators into consistent ones.*
 > **Sibling docs referenced:** `01-information-architecture.md`, `02-design-system.md`, `06-brand-graph.md`, `08-format-virality.md`, `08-format-virality.md`, `07-ai-system.md`, `05-screens-produce.md`, `09-video-pipeline.md`, `10-social-publishing.md`, `11-monetization.md`, `12-backend-data-security.md`, `15-infra-observability-testing.md`.
 

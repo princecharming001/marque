@@ -5,16 +5,13 @@ appId: com.getmarque.app
     permissions:
       all: allow
 
-# Connect now sits right after the method interstitial (before identity) so the
-# brand-scan can prefill the freeform steps.
+# Connect is the hero step, immediately after the one niche question.
 - assertVisible: "Get started"
 - tapOn: { id: onboard.start }
-- tapOn: { id: onboard.goal.audience }
-- tapOn: { id: onboard.blocker.time }
-- tapOn: { id: onboard.whyNow.serious }
-- tapOn: { id: onboard.frequency.sometimes }
-- tapOn: { id: onboard.continue }
-- assertVisible: "Connect your accounts"
+- tapOn: { id: onboard.niche.fitness }
+- extendedWaitUntil:
+    visible: "Let me study your page"
+    timeout: 4000
 - takeScreenshot: /Users/home/Marque/.shots/connect-new.png
 - tapOn: { id: connect.instagram }
 - extendedWaitUntil:

@@ -20,6 +20,9 @@ struct MarqueApp: App {
             UserDefaults.standard.removeObject(forKey: "dev.subscribed")
             UserDefaults.standard.removeObject(forKey: "mock.subscribed")
             UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
+            // Without this, a run killed mid-quiz "resumes" mid-quiz on the next
+            // supposedly-fresh -reset launch (the position key survived the wipe).
+            UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
             FeedStore.clearSnapshot()   // the disk feed snapshot lives in Documents, not UserDefaults
         }
         // Without an explicit category, iOS defaults every AVPlayer to .soloAmbient,
@@ -159,7 +162,7 @@ private struct DevJumpMenu: View {
     /// gate re-armed (unsubscribed, signed out) and all local state wiped — so the full
     /// path is onboarding → payment → sign-in → home, same as the App Store download.
     private func jumpToFirstLaunch() {
-        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep")
+        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
         UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
         FeedStore.clearSnapshot()
         store.resetToFirstRun()
@@ -182,7 +185,7 @@ private struct DevJumpMenu: View {
     private func jumpToOnboarding() {
         // Build 71: onboarding remembers where you were — a REPLAY has to start over,
         // or the dev jump lands mid-quiz.
-        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep")
+        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
         store.hasOnboarded = false
         store.save()
     }

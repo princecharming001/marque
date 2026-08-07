@@ -1,53 +1,36 @@
 appId: com.getmarque.app
-name: Marque — connect & verify a real account (via the connectAccounts step)
+name: Marque — connected onboarding path (scan theater → prefilled confirm)
 ---
+# Connect is real OAuth now (ASWebAuthenticationSession — not automatable), so the
+# -seedAccount DEBUG hook injects a linked @mrbeast TikTok account at launch. The
+# page scan itself still runs for real against the backend.
 - launchApp:
     arguments:
       reset: "true"
+      -seedAccount: "true"
 - tapOn:
     id: "onboard.start"
 
-# Fast-path the pain cluster — connect now comes right after the method
-# interstitial (before identity, so the scan can prefill it).
+# One framing question, then connect is immediately next (the hero step).
 - tapOn:
-    id: "onboard.goal.audience"
+    id: "onboard.niche.fitness"
 - extendedWaitUntil:
-    visible: "What gets in the way most?"
+    visible: "Let me study your page"
     timeout: 4000
-- tapOn:
-    id: "onboard.blocker.time"
-- extendedWaitUntil:
-    visible: "Why now?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.whyNow.serious"
-- extendedWaitUntil:
-    visible: "How often do you post right now?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.frequency.sometimes"
-- extendedWaitUntil:
-    visible: "Consistency beats virality"
-    timeout: 4000
-- tapOn:
-    id: "onboard.continue"
-
-# connectAccounts step: link a real TikTok account and verify it comes back
-# with a follower count + avatar.
-- extendedWaitUntil:
-    visible: "Connect your accounts"
-    timeout: 4000
-- tapOn:
-    id: "connect.tiktok"
-- tapOn:
-    id: "connect.handle"
-- inputText: "mrbeast"
-- tapOn:
-    point: "50%,12%"
-- tapOn:
-    id: "connect.link"
-- extendedWaitUntil:
-    visible:
-      id: "connect.linked"
-    timeout: 25000
+# The seeded account renders as a linked card.
+- assertVisible:
+    id: "connect.linked"
 - takeScreenshot: /Users/home/Marque/.shots/connect-verified
+
+# Continue → scan theater holds while the page scan runs (12s cap), then the
+# confirm screen. Headline depends on scan yield: "Here's what I learned"
+# (prefilled) when the scrape found posts, "Tell me about you" (honest empty)
+# when it didn't — both are correct outcomes of this path.
+- tapOn:
+    id: "onboard.connect.continue"
+- assertVisible: "Reading your posts"
+- takeScreenshot: /Users/home/Marque/.shots/connect-scan-theater
+- extendedWaitUntil:
+    visible: "Here's what I learned|Tell me about you"
+    timeout: 20000
+- takeScreenshot: /Users/home/Marque/.shots/connect-identity-prefilled

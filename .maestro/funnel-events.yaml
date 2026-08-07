@@ -3,7 +3,7 @@ name: "Funnel events fire through onboarding"
 ---
 # Walks the first few onboarding steps so onboard_step telemetry is emitted.
 # Verification is server-side: the backend log / client_events table must show
-# onboard_step rows for landing -> goal -> blocker -> whyNow.
+# onboard_step rows for landing -> niche -> connect -> identity.
 - launchApp:
     clearState: true
     arguments:
@@ -15,14 +15,14 @@ name: "Funnel events fire through onboarding"
     timeout: 15000
 - tapOn: { id: "onboard.start" }
 - extendedWaitUntil:
-    visible: { id: "onboard.goal.audience" }
+    visible: { id: "onboard.niche.fitness" }
     timeout: 8000
-- tapOn: { id: "onboard.goal.audience" }
+- tapOn: { id: "onboard.niche.fitness" }
 - extendedWaitUntil:
-    visible: { id: "onboard.blocker.ideas" }
+    visible: { id: "onboard.connect.skip" }
     timeout: 8000
-- tapOn: { id: "onboard.blocker.ideas" }
+- tapOn: { id: "onboard.connect.skip" }
 - extendedWaitUntil:
-    visible: { id: "onboard.whyNow.serious" }
+    visible: { id: "onboard.identityContinue" }
     timeout: 8000
 - takeScreenshot: /Users/home/Marque/.shots/funnel-walk
