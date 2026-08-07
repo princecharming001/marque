@@ -1,0 +1,43 @@
+appId: com.getmarque.app
+name: Marque — soft paywall (personalized headline, 7-day trial, free-tier escape)
+---
+- launchApp:
+    arguments:
+      reset: "true"
+
+# Fast skip-path onboarding to reach the wall.
+- tapOn: { id: "onboard.start" }
+- tapOn: { id: "onboard.niche.fitness" }
+- extendedWaitUntil: { visible: "Let me study your page", timeout: 4000 }
+- tapOn: { id: "onboard.connect.skip" }
+- tapOn: { id: "onboard.whatYouDo" }
+- inputText: "I coach busy professionals"
+- tapOn: { id: "onboard.audience" }
+- inputText: "busy professionals"
+- tapOn: { id: "onboard.identityContinue" }
+- extendedWaitUntil: { visible: "Who do you want to sound like?", timeout: 4000 }
+- tapOn: { id: "onboard.emulate.skip" }
+- extendedWaitUntil: { visible: "What are you here to do?", timeout: 4000 }
+- tapOn: { id: "onboard.goal.clients" }
+- extendedWaitUntil: { visible: "How often do you want to post?", timeout: 4000 }
+- tapOn: { id: "onboard.continue" }
+- extendedWaitUntil: { visible: "Enter Yunicorn", timeout: 120000 }
+- waitForAnimationToEnd: { timeout: 5000 }
+- tapOn: "Enter Yunicorn"
+
+# The soft wall: personalized with goal (clients) + pace (5/wk), 7-day trial,
+# and the quiet free-tier escape.
+- extendedWaitUntil:
+    visible: { id: "payment.personalLine" }
+    timeout: 8000
+- assertVisible: "Land clients from your content — 5 posts a week is 260 videos this year, every one in your voice."
+- assertVisible: "Start my 7-day free trial"
+- assertVisible: { id: "payment.continueFree" }
+- takeScreenshot: /Users/home/Marque/.shots/paywall-soft
+
+# Continue free → falls through to the account wall (free tier still signs in).
+- tapOn: { id: "payment.continueFree" }
+- extendedWaitUntil:
+    visible: "Continue with Google"
+    timeout: 8000
+- takeScreenshot: /Users/home/Marque/.shots/paywall-free-signin

@@ -17,8 +17,11 @@ struct PaymentScreen: View {
     @Environment(\.dismiss) private var dismiss
     /// Shown as a dismissible sheet (upgrade path) vs the hard gate in the funnel.
     var dismissible: Bool = false
+    /// Soft-wall mode (the onboarding gate): non-nil adds a quiet "continue with the
+    /// watermark" escape into the free tier. nil keeps the sheet/dismiss behavior.
+    var onContinueFree: (() -> Void)? = nil
 
-    @State private var payNow = false          // false = the 3-day trial box (preselected)
+    @State private var payNow = false          // false = the 7-day trial box (preselected)
     @State private var busy = false
     @State private var restoring = false
     @State private var bgScale: CGFloat = 1.0
@@ -40,8 +43,29 @@ struct PaymentScreen: View {
         (store.subscription.monthly ?? store.subscription.products.first)?
             .displayPrice ?? "$14.99"
     }
+    // 7-day, NOT 3: the ASC intro offer was configured as 1 week, so 3-day copy was
+    // under-selling what StoreKit will actually grant — and RevenueCat 2026 puts
+    // ≤4-day trials in the worst-converting bucket (25.5% vs 42.5% for longer).
+    // A week spans at least one full film → edit → post → see-results cycle.
     private var ctaLabel: String {
-        busy ? "Processing…" : (payNow ? "Subscribe now" : "Start my 3-day free trial")
+        busy ? "Processing…" : (payNow ? "Subscribe now" : "Start my 7-day free trial")
+    }
+
+    /// The two onboarding answers we kept exist to be honored HERE — a paywall that
+    /// reflects the user's own goal and pace outperforms layout experiments
+    /// (Airbridge: a single personalized string beats redesigns).
+    private var personalLine: String {
+        let goalPhrase: String
+        switch store.brand.goal {
+        case .audience:  goalPhrase = "Grow your audience"
+        case .clients:   goalPhrase = "Land clients from your content"
+        case .authority: goalPhrase = "Become the name in your niche"
+        case .monetize:  goalPhrase = "Turn content into income"
+        }
+        if let pace = store.brand.weeklyTarget {
+            return "\(goalPhrase) — \(pace) posts a week is \(pace * 52) videos this year, every one in your voice."
+        }
+        return "\(goalPhrase) — every video in your voice."
     }
 
     var body: some View {
@@ -87,12 +111,20 @@ struct PaymentScreen: View {
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 5)
                     .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 1))
+
+                Text(personalLine)
+                    .font(Typeface.sans(13, .medium)).tracking(0.1)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
                     .padding(.bottom, 14)
+                    .accessibilityIdentifier("payment.personalLine")
 
                 featureCard
 
                 HStack(spacing: 10) {
-                    planBox(selected: !payNow, title: "3-day trial",
+                    planBox(selected: !payNow, title: "7-day trial",
                             price: "Free", sub: "then \(price)/mo") { payNow = false }
                     planBox(selected: payNow, title: "Subscribe now",
                             price: "\(price)/mo", sub: "start today") { payNow = true }
@@ -127,6 +159,24 @@ struct PaymentScreen: View {
                 .font(Typeface.sans(11, .regular))
                 .foregroundStyle(.white.opacity(0.42))
                 .underline()
+
+                // The soft-wall escape: quiet, below the fold of attention, but real.
+                // Free tier = scripts/recording/editing with the watermark; the hard
+                // re-ask happens at publish/export where sunk cost is highest.
+                if let onContinueFree {
+                    Button {
+                        store.backend.reportClientEvent("paywall_action", detail: "continue_free")
+                        onContinueFree()
+                    } label: {
+                        Text("Continue with the watermark for now")
+                            .font(Typeface.sans(13, .medium)).tracking(0.1)
+                            .foregroundStyle(.white.opacity(0.58))
+                            .underline()
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 8)
+                    .accessibilityIdentifier("payment.continueFree")
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 100).padding(.bottom, 36)

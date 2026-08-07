@@ -20,9 +20,11 @@ struct MarqueApp: App {
             UserDefaults.standard.removeObject(forKey: "dev.subscribed")
             UserDefaults.standard.removeObject(forKey: "mock.subscribed")
             UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
-            // Without this, a run killed mid-quiz "resumes" mid-quiz on the next
-            // supposedly-fresh -reset launch (the position key survived the wipe).
+            // Without these, a run killed mid-quiz "resumes" mid-quiz — and a run
+            // that chose the free tier skips the paywall — on the next supposedly
+            // fresh -reset launch (the keys survived the wipe).
             UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
+            UserDefaults.standard.removeObject(forKey: "paywall.freeTier")
             FeedStore.clearSnapshot()   // the disk feed snapshot lives in Documents, not UserDefaults
         }
         // Without an explicit category, iOS defaults every AVPlayer to .soloAmbient,
@@ -74,11 +76,14 @@ struct RootView: View {
         Group {
             if !store.hasOnboarded {
                 OnboardingView()
-            } else if !store.subscription.isSubscribed {
-                // Build 71: the maxapp-shaped payment plan screen replaces the old
-                // gate (SubscriptionGateView + YunicornProPaywall stay in the repo,
-                // unmounted, until this is signed off).
-                PaymentScreen()
+            } else if !store.subscription.isSubscribed && !store.subscription.freeTierChosen {
+                // SOFT wall (2026-08, owner decision): shown once after onboarding,
+                // dismissible into the watermarked free tier. The hard re-ask lives
+                // at publish/export — the moment of maximum sunk cost, which is
+                // where this category actually converts (Videoleap/Opus Clip
+                // pattern; Adapty: soft walls convert ~50% better, and 23% of
+                // freemium conversions land 6+ weeks out).
+                PaymentScreen(onContinueFree: { store.subscription.chooseFreeTier() })
             } else if !store.auth.isAuthed {
                 SignInScreen(showsBack: false)
             } else {
@@ -88,6 +93,7 @@ struct RootView: View {
         .animation(Motion.calm, value: store.hasOnboarded)
         .animation(Motion.calm, value: store.auth.isAuthed)
         .animation(Motion.calm, value: store.subscription.isSubscribed)
+        .animation(Motion.calm, value: store.subscription.freeTierChosen)
         .safeAreaInset(edge: .top) {
             if !net.isOnline { OfflineBanner() }
         }

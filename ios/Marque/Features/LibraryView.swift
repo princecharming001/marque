@@ -862,6 +862,7 @@ struct PostNowSheet: View {
     @State private var chosen: Set<SocialPlatform> = []
     @State private var posting = false
     @State private var note: String?
+    @State private var showUpgrade = false
 
     private func linked(_ p: SocialPlatform) -> Bool {
         !store.publishAccountIds(for: [p]).isEmpty
@@ -912,26 +913,37 @@ struct PostNowSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
-            PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {
-                guard !posting, !chosen.isEmpty else { return }
-                posting = true
-                Task {
-                    await store.scheduleClip(clip, on: Date(), platforms: Array(chosen),
-                                             caption: caption)
-                    posting = false
-                    let outcome = store.schedule.last?.outcome
-                    if outcome == .posted {
-                        dismiss(); onPosted()
-                    } else {
-                        note = "Couldn't post right now — it's saved in your queue instead. Check your connected accounts in Profile."
+            if store.canPublish {
+                PrimaryButton(title: posting ? "Posting…" : "Post now", systemImage: "paperplane.fill") {
+                    guard !posting, !chosen.isEmpty else { return }
+                    posting = true
+                    Task {
+                        await store.scheduleClip(clip, on: Date(), platforms: Array(chosen),
+                                                 caption: caption)
+                        posting = false
+                        let outcome = store.schedule.last?.outcome
+                        if outcome == .posted {
+                            dismiss(); onPosted()
+                        } else {
+                            note = "Couldn't post right now — it's saved in your queue instead. Check your connected accounts in Profile."
+                        }
                     }
                 }
+                .disabled(chosen.isEmpty || posting)
+                .accessibilityIdentifier("postNow.confirm")
+            } else {
+                // Wall 2 (dual paywall): a free-tier post attempt used to silently
+                // no-op behind scheduleClip's canPublish guard — this is the moment
+                // the free tier's limit bites, so it re-asks honestly instead.
+                PrimaryButton(title: "Upgrade to post", systemImage: "lock.fill") {
+                    showUpgrade = true
+                }
+                .accessibilityIdentifier("postNow.upgrade")
             }
-            .disabled(chosen.isEmpty || posting)
-            .accessibilityIdentifier("postNow.confirm")
         }
         .padding(Space.lg)
         .background(Palette.canvas)
+        .sheet(isPresented: $showUpgrade) { PaymentScreen(dismissible: true) }
         .onAppear {
             chosen = Set(SocialPlatform.allCases.filter(linked))
         }
@@ -1347,6 +1359,7 @@ struct BulkScheduleSheet: View {
     @State private var autoCaptions = true
     @State private var posting = false
     @State private var showConnect = false
+    @State private var showUpgrade = false
 
     private var readyCount: Int {
         store.clips.filter { clipIDs.contains($0.id) && $0.status == .ready }.count
@@ -1420,6 +1433,9 @@ struct BulkScheduleSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(posting ? "Scheduling…" : "Schedule") {
                         guard !platforms.isEmpty, readyCount > 0 else { return }
+                        // Wall 2: scheduling/auto-posting is paid — the store-level
+                        // canPublish guard would otherwise swallow this silently.
+                        guard store.canPublish else { showUpgrade = true; return }
                         posting = true
                         Task {
                             await store.scheduleClips(clipIDs, on: date, platforms: Array(platforms),
@@ -1430,6 +1446,7 @@ struct BulkScheduleSheet: View {
                 }
             }
             .sheet(isPresented: $showConnect) { ConnectAccountsView() }
+            .sheet(isPresented: $showUpgrade) { PaymentScreen(dismissible: true) }
         }
     }
 }

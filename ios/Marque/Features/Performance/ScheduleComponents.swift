@@ -461,7 +461,10 @@ struct PostEditorSheet: View {
                     }
                     .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .background(.ultraThinMaterial)
-                    .sheet(isPresented: $showSubscribe) { SubscriptionGateView() }
+                    // Wall 2 of the dual-paywall shape: the free tier ends exactly here,
+                    // where the user has already made something worth posting. Same
+                    // PaymentScreen as the onboarding soft wall, sheet-dismissible.
+                    .sheet(isPresented: $showSubscribe) { PaymentScreen(dismissible: true) }
                 }
             }
         }

@@ -29,8 +29,41 @@ final class SubscriptionManager {
     var isWorking = false
     var lastError = ""
 
+    init() {
+        // The -reset wipe in MarqueApp.init runs AFTER stored-property initializers
+        // have already read UserDefaults (Swift init order), so a "fresh" -reset
+        // launch silently kept last session's unlock/free-tier state. Handle the
+        // flag here, where the ordering is guaranteed.
+        if CommandLine.arguments.contains("-reset") {
+            UserDefaults.standard.removeObject(forKey: "dev.subscribed")
+            UserDefaults.standard.removeObject(forKey: "mock.subscribed")
+            UserDefaults.standard.removeObject(forKey: "paywall.freeTier")
+            devUnlocked = false
+            mockUnlocked = false
+            freeTierChosen = false
+        }
+    }
+
     var isSubscribed: Bool { entitled || devUnlocked || mockUnlocked }
     var monthly: Product? { products.first { $0.id == "com.marque.pro.monthly" } }
+
+    // Soft paywall (2026-08, owner decision): dismissing the onboarding wall lands in
+    // the watermarked free tier instead of dead-ending. Persisted so the wall shows
+    // ONCE — after that, upgrade prompts live at the moments the limits bite
+    // (publish/export), which is where the category actually converts.
+    private(set) var freeTierChosen = UserDefaults.standard.bool(forKey: "paywall.freeTier")
+    func chooseFreeTier() {
+        UserDefaults.standard.set(true, forKey: "paywall.freeTier")
+        freeTierChosen = true
+    }
+
+    /// Any unlock (real, mock, or dev) also flips the render entitlement — the
+    /// watermark rides `Entitlements.shared.isPro` into every clip job's `is_pro`,
+    /// and a paying user must never ship watermarked clips because the two
+    /// entitlement stores drifted.
+    private func syncRenderEntitlement() {
+        if isSubscribed { Entitlements.shared.isPro = true }
+    }
 
     func load() async {
         products = (try? await Product.products(for: StoreKitBilling.productIDs)) ?? []
@@ -43,6 +76,7 @@ final class SubscriptionManager {
             if case .verified = result { ok = true }
         }
         entitled = ok
+        syncRenderEntitlement()
     }
 
     func purchase() async {
@@ -56,6 +90,7 @@ final class SubscriptionManager {
             // SWIFT_ACTIVE_COMPILATION_CONDITIONS) before App Review.
             UserDefaults.standard.set(true, forKey: "mock.subscribed")
             mockUnlocked = true
+            syncRenderEntitlement()
             #else
             lastError = "Products unavailable right now. Try Restore, or check your connection."
             #endif
@@ -89,13 +124,17 @@ final class SubscriptionManager {
     func devContinue() {
         UserDefaults.standard.set(true, forKey: "dev.subscribed")
         devUnlocked = true
+        syncRenderEntitlement()
     }
 
     func resetDev() {
         UserDefaults.standard.removeObject(forKey: "dev.subscribed")
         UserDefaults.standard.removeObject(forKey: "mock.subscribed")
+        UserDefaults.standard.removeObject(forKey: "paywall.freeTier")
         devUnlocked = false
         mockUnlocked = false
+        freeTierChosen = false
+        Entitlements.shared.isPro = false
     }
 }
 
