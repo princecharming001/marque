@@ -9,7 +9,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "72"
+    CURRENT_PROJECT_VERSION: "74"
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
     # Real signing (was CODE_SIGNING_ALLOWED: NO — sim-only). Automatic style lets
     # xcodebuild -allowProvisioningUpdates manage certs/profiles via the ASC API key,
@@ -73,7 +73,12 @@ targets:
       properties:
         CFBundleDisplayName: Yunicorn
         CFBundleIconName: AppIcon
-        CFBundleVersion: "65"
+        # ⚠️ THE build number. xcodegen REGENERATES Marque/Info.plist from this
+        # block, so editing that plist (or the project-level
+        # CURRENT_PROJECT_VERSION alone) is silently overwritten on the next
+        # `xcodegen generate` — which is how archives kept shipping as 65.
+        # Bump HERE, and keep CURRENT_PROJECT_VERSION above in sync.
+        CFBundleVersion: "74"
         # Answers ASC's "does your app use encryption?" prompt at the binary
         # level so it never asks per-build. Accurate: the only crypto usage
         # in the app is SHA256 content hashing (Media.swift) plus standard
