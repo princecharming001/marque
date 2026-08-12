@@ -633,8 +633,15 @@ final class AppStore {
     /// Resume after a relaunch mid-build. Build 73: the starter path is local and takes
     /// ~3s, so a relaunch just re-runs it rather than resuming a server job — an
     /// interrupted onboarding must never re-enter the long poll.
+    ///
+    /// BETA STUCK-STATE FIX (2026-08-06): this used to also guard on `scripts.isEmpty`,
+    /// which inverted after a relaunch — scripts are PERSISTED but the state machine
+    /// resets to .idle, so a user who killed the app on (or after) the building screen
+    /// came back to "Building your content plan" with nothing running and no way out.
+    /// beginStarterScripts already handles the scripts-exist case by flipping straight
+    /// to .ready, so the position-vs-work resume is one unconditional call.
     func resumeStarterDigestIfNeeded() {
-        guard case .idle = starterScriptsState, scripts.isEmpty else { return }
+        guard case .idle = starterScriptsState else { return }
         UserDefaults.standard.removeObject(forKey: Self.digestJobKey)
         beginStarterScripts()
     }

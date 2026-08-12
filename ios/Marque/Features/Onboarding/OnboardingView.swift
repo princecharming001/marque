@@ -421,13 +421,28 @@ struct OnboardingView: View {
 
     private var buildingStep: some View {
         Group {
-            if store.starterScriptsState == .ready {
+            switch store.starterScriptsState {
+            case .ready:
                 OnboardingScaffold(headline: "Your first 3 scripts are ready",
                                    subtitle: "Record when you've got a few minutes — I'll do the editing.",
                                    showsBack: false) {
                     PlanReadyView { resumeStepRaw = 0; store.completeOnboarding() }
                 }
-            } else {
+            case .failed:
+                // BETA STUCK-STATE FIX: .failed used to render the building spinner
+                // forever — a dead end with no affordance. Own screen + retry
+                // (beginStarterScripts re-runs from .failed; the generator is local,
+                // so a retry costs ~3s and can't hang on the network).
+                OnboardingScaffold(headline: "That didn't build right",
+                                   subtitle: "One tap and I'll write your scripts again.",
+                                   showsBack: false) {
+                    VStack(spacing: Space.xl) {
+                        UnicornMascot(pose: .proud, size: 130)
+                        OnbPill(title: "Try again") { store.beginStarterScripts() }
+                            .accessibilityIdentifier("onboard.buildRetry")
+                    }
+                }
+            case .idle, .running:
                 OnboardingScaffold(headline: "Building your content plan",
                                    subtitle: nil,
                                    showsBack: false) {
