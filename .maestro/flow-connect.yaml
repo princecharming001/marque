@@ -23,14 +23,13 @@ name: Marque — connected onboarding path (scan theater → prefilled confirm)
 - takeScreenshot: /Users/home/Marque/.shots/connect-verified
 
 # Continue → scan theater holds while the page scan runs (12s cap), then the
-# confirm screen. Headline depends on scan yield: "Here's what I learned"
-# (prefilled) when the scrape found posts, "Tell me about you" (honest empty)
-# when it didn't — both are correct outcomes of this path.
+# single audience question. Same headline either way; only the subtitle differs
+# (prefilled from the scan vs the honest ask when the scrape found nothing).
 - tapOn:
     id: "onboard.connect.continue"
 - assertVisible: "Reading your posts"
 - takeScreenshot: /Users/home/Marque/.shots/connect-scan-theater
 - extendedWaitUntil:
-    visible: "Here's what I learned|Tell me about you"
+    visible: "Who's it for?"
     timeout: 20000
 - takeScreenshot: /Users/home/Marque/.shots/connect-identity-prefilled

@@ -24,11 +24,8 @@ name: Marque — onboarding per-step screenshot walk (visual QA)
 - tapOn:
     id: "onboard.connect.skip"
 
-- assertVisible: "Tell me about you"
+- assertVisible: "Who's it for?"
 - takeScreenshot: /Users/home/Marque/.shots/onb-03-identity
-- tapOn:
-    id: "onboard.whatYouDo"
-- inputText: "I coach busy professionals"
 - tapOn:
     id: "onboard.audience"
 - inputText: "busy professionals"

@@ -28,11 +28,8 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.connect.skip"
 
-# Identity — skippers type the two load-bearing lines on ONE screen.
-- assertVisible: "Tell me about you"
-- tapOn:
-    id: "onboard.whatYouDo"
-- inputText: "I coach busy professionals"
+# Identity — one question: audience (niche already covered the topic).
+- assertVisible: "Who's it for?"
 - tapOn:
     id: "onboard.audience"
 - inputText: "busy professionals"

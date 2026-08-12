@@ -277,9 +277,15 @@ struct OnboardingView: View {
         }
     }
 
-    // MARK: - Identity: theater → one editable confirmation
-    // Replaces SIX typed screens (name/stage/niche/about/knownFor/platform) —
-    // connected users confirm what the scan learned; skippers type two lines.
+    // MARK: - Identity: theater → the audience question
+    // Replaces SIX typed screens (name/stage/niche/about/knownFor/platform).
+    // OWNER (2026-08-12): this was a three-field form whose first field asked
+    // "What do you do?" — which is the niche question two screens earlier, asked
+    // again. Audience is the one thing niche does NOT already tell us, so it is
+    // the only thing left to ask, and this is now a single-question page like
+    // every other one. `whatYouDo`/`knownFor` are still filled by the page scan
+    // for connected users and remain editable in Profile; for a skipper they stay
+    // empty and `brand_block` simply omits them (niche carries the topic).
 
     private var identityStep: some View {
         Group {
@@ -297,43 +303,25 @@ struct OnboardingView: View {
 
     private var identityConfirm: some View {
         @Bindable var store = store
-        // "Learned" only if the scan actually filled something — a scan that came
-        // back empty (scrape found no posts) must not claim knowledge over three
-        // blank fields; those users get the honest type-it-in variant.
-        let scanned = store.brand.analyzed && !store.brand.connectedAccounts.isEmpty
-            && (!store.brand.audience.isEmpty || !store.brand.knownFor.isEmpty
-                || !store.brand.whatYouDo.isEmpty)
-        return scaffold(scanned ? "Here's what I learned" : "Tell me about you",
-                        scanned ? "Straight from your posts — fix anything that's off."
-                                : "Two lines. What you do, and who it's for.") {
-            VStack(spacing: Space.lg) {
-                TextField("What do you do?", text: $store.brand.whatYouDo, axis: .vertical)
-                    .focused($identityFocused)
-                    .marqueField()
-                    .lineLimit(1...3)
-                    .accessibilityIdentifier("onboard.whatYouDo")
-                TextField("Who is it for?", text: $store.brand.audience, axis: .vertical)
-                    .marqueField()
-                    .lineLimit(1...3)
-                    .accessibilityIdentifier("onboard.audience")
-                TextField("Known for… (optional)", text: $store.brand.knownFor, axis: .vertical)
-                    .marqueField()
-                    .lineLimit(1...3)
-                    .accessibilityIdentifier("onboard.knownFor")
-            }
+        // Prefilled only when the scan actually derived an audience — a scan that
+        // came back empty (scrape found no posts) must not claim knowledge over a
+        // blank field; those users get the honest ask instead.
+        let prefilled = store.brand.analyzed && !store.brand.audience.isEmpty
+        return scaffold("Who's it for?",
+                        prefilled ? "Pulled from your posts — fix it if it's off."
+                                  : "The people on the other side of the camera.") {
+            FreeformField(placeholder: "Your audience", text: $store.brand.audience,
+                          fontSize: 26, focused: $identityFocused,
+                          accessibilityID: "onboard.audience")
         } cta: {
-            // Skippers must give the two load-bearing lines; a scanned profile
-            // passes on what the scan filled (audience + knownFor) with zero typing.
-            OnbPill(title: scanned ? "Looks right" : "Continue",
-                    enabled: !store.brand.audience.trimmingCharacters(in: .whitespaces).isEmpty
-                          && (!store.brand.whatYouDo.trimmingCharacters(in: .whitespaces).isEmpty
-                              || !store.brand.knownFor.trimmingCharacters(in: .whitespaces).isEmpty)) {
+            OnbPill(title: prefilled ? "That's them" : "Continue",
+                    enabled: !store.brand.audience.trimmingCharacters(in: .whitespaces).isEmpty) {
                 identityFocused = false
                 advance()
             }
             .accessibilityIdentifier("onboard.identityContinue")
         }
-        .onAppear { if !scanned { identityFocused = true } }
+        .onAppear { if !prefilled { identityFocused = true } }
     }
 
     // MARK: - Goal — kept because it personalizes the paywall headline
