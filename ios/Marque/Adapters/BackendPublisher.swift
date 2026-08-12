@@ -18,6 +18,7 @@ struct BackendPublisher: Publishing {
             "caption": post.caption,
             "platforms": platforms,              // legacy hint (backend uses account ids)
             "social_account_ids": accountIds,    // Post for Me spc_ids — the real targets
+            "claimant_id": client.installId,     // server verifies these ids are OURS
         ]
         // "Post now" (build 66) = a date at/near now. Post for Me publishes IMMEDIATELY
         // when no scheduled_at is sent — omitting the date is the real post-now switch,

@@ -7917,9 +7917,67 @@ async def _pfm_request(method: str, path: str, *, json_body: dict | None = None,
     return r.status_code, data
 
 
+# SECURITY (2026-08-06): the Post for Me workspace is APP-GLOBAL (one key, one pool
+# of social accounts). Nothing upstream says which creator owns which account, so
+# ownership is OURS to enforce: `social_account_claims` (Supabase) maps
+# claimant_id → spc_ account id, and a claim is created ONLY by the verified link
+# path below. Every read (accounts) and use (publish, disconnect) is scoped to the
+# caller's claims. Before this, /v1/social/accounts returned the whole workspace to
+# any client and the iOS attribution fallback auto-adopted the owner's account
+# after a CANCELLED OAuth (the "bluecrouton" leak).
+#
+# Attribution protocol (server-authoritative):
+#  1. /v1/social/auth-url (with claimant_id) snapshots the platform pool —
+#     account ids AND access_token_expires_at — as this creator's attempt.
+#  2. The user completes (or cancels) OAuth in the browser.
+#  3. /v1/social/finish diffs the live pool against the snapshot:
+#       - a NEW account id           → that creator just linked it   → claim
+#       - a CHANGED token expiry     → they re-authorized a page another creator
+#         already linked (legit shared-page case; PFM makes no new row, it just
+#         refreshes the token)       → claim
+#       - neither                    → they cancelled → NOTHING is linked.
+#     The global pool is never returned to a client, and there is no fallback.
+# Attempts live in memory (single-instance service; a restart just means tapping
+# Connect again) and expire after 15 minutes.
+
+_social_link_attempts: dict[tuple[str, str], dict] = {}
+_SOCIAL_ATTEMPT_TTL = 900.0
+
+
+async def _pfm_pool(platform: str) -> list[dict]:
+    """Raw Post for Me account rows for one platform (empty on any failure)."""
+    try:
+        code, data = await _pfm_request("GET", "/social-accounts",
+                                        params={"platform": platform} if platform else None)
+    except httpx.HTTPError:
+        return []
+    if not (200 <= code < 300):
+        return []
+    return [a for a in (data.get("data") or []) if isinstance(a, dict)]
+
+
+def _norm_social_account(a: dict) -> dict:
+    return {
+        "id": a.get("id", ""),
+        "platform": a.get("platform", ""),
+        "username": a.get("username", ""),
+        "profile_photo_url": a.get("profile_photo_url", ""),
+        "status": a.get("status", ""),
+        "external_id": a.get("external_id", ""),
+    }
+
+
+async def _claimed_account_ids(claimant_id: str) -> set[str]:
+    if not (_supabase_client and claimant_id):
+        return set()
+    return {c.get("account_id", "") for c in
+            await _supabase_client.load_social_claims(creator_id=claimant_id)}
+
+
 class SocialAuthURLRequest(BaseModel):
     platform: str                    # "instagram" | "tiktok" | "youtube" | ...
-    external_id: str = ""            # our per-user tag; how we find this account later
+    claimant_id: str = ""            # per-install id — whose link attempt this is
+    external_id: str = ""            # legacy field; accepted, never forwarded
     redirect_url: str = ""           # optional: deep-link back into the app after OAuth
 
 
@@ -7929,6 +7987,15 @@ async def social_auth_url(req: SocialAuthURLRequest):
     Mock (no key) returns an empty url so the client shows 'linking unavailable'."""
     if not POSTFORME_KEY:
         return {"url": "", "platform": req.platform, "mode": "mock"}
+    # Snapshot the pool BEFORE the OAuth can possibly complete — /v1/social/finish
+    # attributes this attempt by diffing against it (see the protocol note above).
+    if req.claimant_id:
+        pool = await _pfm_pool(req.platform)
+        _social_link_attempts[(req.claimant_id, req.platform)] = {
+            "tokens": {a.get("id", ""): str(a.get("access_token_expires_at") or "")
+                       for a in pool},
+            "started": time.time(),
+        }
     body: dict = {"platform": req.platform, "permissions": ["posts"]}
     # NO external_id — deliberately (owner report, build 66). Post for Me allows exactly
     # one external_id per social account, and its portal HARD-FAILS the whole OAuth
@@ -7960,43 +8027,86 @@ async def social_auth_url(req: SocialAuthURLRequest):
     return {"url": "", "platform": req.platform, "mode": "live", "error": data.get("message", f"http_{code}")}
 
 
+class SocialFinishRequest(BaseModel):
+    claimant_id: str
+    platform: str
+
+
+@app.post("/v1/social/finish")
+async def social_finish(req: SocialFinishRequest):
+    """Attribute an OAuth attempt (see the protocol note above). Returns ONLY the
+    account(s) verifiably linked by THIS creator's attempt — never the pool, and
+    never anything after a cancelled OAuth."""
+    if not POSTFORME_KEY:
+        return {"linked": [], "mode": "mock"}
+    key = (req.claimant_id, req.platform)
+    attempt = _social_link_attempts.get(key)
+    if not (attempt and req.claimant_id):
+        return {"linked": [], "mode": "live", "reason": "no_attempt"}
+    if time.time() - attempt["started"] > _SOCIAL_ATTEMPT_TTL:
+        _social_link_attempts.pop(key, None)
+        return {"linked": [], "mode": "live", "reason": "expired"}
+    before: dict = attempt["tokens"]
+    linked: list[dict] = []
+    for a in await _pfm_pool(req.platform):
+        aid = a.get("id", "")
+        if not aid or a.get("status") != "connected":
+            continue
+        expires = str(a.get("access_token_expires_at") or "")
+        if aid not in before:
+            linked.append(a)                                   # fresh connect
+        elif expires and expires != before.get(aid, ""):
+            linked.append(a)                                   # verified re-auth (shared page)
+    if linked:
+        _social_link_attempts.pop(key, None)
+        if _supabase_client:
+            for a in linked:
+                await _supabase_client.add_social_claim(
+                    req.claimant_id, a.get("id", ""), req.platform, a.get("username", ""))
+        else:
+            logging.warning("social_finish: no claim store — link for %s not persisted",
+                            req.claimant_id)
+    return {"linked": [_norm_social_account(a) for a in linked], "mode": "live"}
+
+
 @app.get("/v1/social/accounts")
-async def social_accounts(external_id: str = "", platform: str = ""):
-    """List a user's connected accounts (filtered by our external_id tag). Returns the
-    normalized shape the app stores: id (spc_...), platform, username, profile photo."""
+async def social_accounts(claimant_id: str = "", external_id: str = "", platform: str = ""):
+    """List THIS creator's claimed accounts only. `external_id` is a legacy no-op;
+    callers without a claimant_id get an empty list (fail closed — the old behavior
+    of returning the whole workspace pool is exactly the bug this replaced)."""
     if not POSTFORME_KEY:
         return {"accounts": [], "mode": "mock"}
-    params: dict = {}
-    if external_id:
-        params["external_id"] = external_id
-    if platform:
-        params["platform"] = platform
-    try:
-        code, data = await _pfm_request("GET", "/social-accounts", params=params)
-    except httpx.HTTPError:
-        return {"accounts": [], "mode": "live", "error": "network"}
-    accounts = [
-        {
-            "id": a.get("id", ""),
-            "platform": a.get("platform", ""),
-            "username": a.get("username", ""),
-            "profile_photo_url": a.get("profile_photo_url", ""),
-            "status": a.get("status", ""),
-            "external_id": a.get("external_id", ""),
-        }
-        for a in (data.get("data") or [])
-    ]
+    claimed = await _claimed_account_ids(claimant_id)
+    if not claimed:
+        return {"accounts": [], "mode": "live"}
+    pool = await _pfm_pool(platform)
+    accounts = [_norm_social_account(a) for a in pool if a.get("id", "") in claimed]
     return {"accounts": accounts, "mode": "live"}
 
 
 class SocialDisconnectRequest(BaseModel):
     account_id: str
+    claimant_id: str = ""
 
 
 @app.post("/v1/social/disconnect")
 async def social_disconnect(req: SocialDisconnectRequest):
     if not POSTFORME_KEY:
         return {"ok": True, "mode": "mock"}
+    # Only a claimant may disconnect, and the upstream PFM disconnect fires only
+    # when the LAST claimant lets go (a shared page must survive one creator
+    # leaving). No claim store / no claimant → fail closed (an unauthenticated
+    # client must not be able to sever the owner's accounts).
+    if _supabase_client:
+        claimants = {c.get("creator_id", "") for c in
+                     await _supabase_client.load_social_claims(account_id=req.account_id)}
+        if req.claimant_id not in claimants:
+            return {"ok": False, "mode": "live", "reason": "not_yours"}
+        await _supabase_client.delete_social_claim(req.claimant_id, req.account_id)
+        if claimants - {req.claimant_id}:
+            return {"ok": True, "mode": "live", "kept_upstream": True}
+    else:
+        return {"ok": False, "mode": "live", "reason": "no_claim_store"}
     try:
         code, _ = await _pfm_request("POST", f"/social-accounts/{req.account_id}/disconnect")
     except httpx.HTTPError:
@@ -8010,6 +8120,7 @@ class PublishRequest(BaseModel):
     platforms: list[str] = []            # legacy field (kept for back-compat)
     schedule_date: str = ""
     social_account_ids: list[str] = []   # Post for Me spc_ids to post to
+    claimant_id: str = ""                # per-install id — must have claimed the accounts
     draft: bool = False                  # if true, create as draft (no real post) — used for tests
 
 
@@ -8021,7 +8132,19 @@ async def publish(req: PublishRequest):
     if not POSTFORME_KEY or not req.social_account_ids:
         return {"ok": True, "mode": "mock", "id": f"post_{uuid.uuid4().hex[:10]}",
                 "posted": False, "reason": "no_key" if not POSTFORME_KEY else "no_accounts"}
-    body: dict = {"caption": req.caption, "social_accounts": req.social_account_ids}
+    # SECURITY: only accounts THIS creator has claimed may be posted to. The spc_ ids
+    # are workspace-global, so an unchecked list is posting authority to anyone's
+    # account. Fail closed when the claim store is configured; when it isn't
+    # (keyless tests / local dev) there are no claims to check and no real accounts
+    # to protect.
+    account_ids = req.social_account_ids
+    if _supabase_client:
+        claimed = await _claimed_account_ids(req.claimant_id)
+        account_ids = [i for i in account_ids if i in claimed]
+        if not account_ids:
+            return {"ok": False, "mode": "live", "id": "",
+                    "posted": False, "reason": "unauthorized_accounts"}
+    body: dict = {"caption": req.caption, "social_accounts": account_ids}
     if req.media_url.startswith("http"):
         body["media"] = [{"url": req.media_url}]
     if req.schedule_date:

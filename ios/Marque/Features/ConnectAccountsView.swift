@@ -7,10 +7,12 @@ struct ConnectAccountsView: View {
     @Environment(AppStore.self) private var store
     @State private var linking: String?          // platform mid-OAuth (spinner)
     @State private var error: String?
-    // Shared-account case (build 66): the page was already linked by another creator, so
-    // OAuth produced no new row — only the user knows which username they authorized.
-    @State private var chooseFrom: [ConnectedAccount] = []
-    @State private var choosePlatform: String = ""
+    // SECURITY (2026-08-06): the "which account is yours?" picker is GONE. It offered
+    // the app-global Post for Me pool — i.e. OTHER creators' accounts — to anyone whose
+    // OAuth failed, and picking one granted real posting authority. The shared-page
+    // case it existed for is handled server-side now: /v1/social/finish detects the
+    // token refresh a genuine re-authorization causes and claims that account without
+    // ever asking the user to pick from a list they mostly don't own.
 
     var body: some View {
         VStack(spacing: Space.md) {
@@ -28,64 +30,6 @@ struct ConnectAccountsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .sheet(isPresented: Binding(get: { !chooseFrom.isEmpty },
-                                    set: { if !$0 { chooseFrom = [] } })) {
-            accountPicker
-        }
-    }
-
-    /// "Which account did you just connect?" — the shared-page resolver. Rows are the
-    /// platform's known accounts this creator hasn't claimed yet; tapping one claims it.
-    private var accountPicker: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("ALREADY LINKED ON \(choosePlatform.uppercased())")
-                    .font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Text("Which account is yours?")
-                    .font(Typeface.display(24)).foregroundStyle(Palette.textPrimary)
-                Text("This page is connected to Yunicorn already — pick your username and it joins this account too.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-            }
-            VStack(spacing: 0) {
-                ForEach(chooseFrom) { acct in
-                    Button {
-                        let platform = choosePlatform
-                        chooseFrom = []
-                        Task { await store.claimLinkedAccount(acct, platform: platform) }
-                    } label: {
-                        HStack(spacing: Space.md) {
-                            AsyncImage(url: URL(string: acct.avatarUrl)) { img in
-                                img.resizable().scaledToFill()
-                            } placeholder: {
-                                Palette.surfaceSunken
-                            }
-                            .frame(width: 40, height: 40).clipShape(Circle())
-                            Text("@\(acct.handle)")
-                                .font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                            Spacer()
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(Palette.textTertiary)
-                        }
-                        .padding(Space.md).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("connect.claim.\(acct.handle)")
-                    if acct.id != chooseFrom.last?.id {
-                        Divider().overlay(Palette.hairline).padding(.leading, 66)
-                    }
-                }
-            }
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
-            Spacer(minLength: 0)
-        }
-        .padding(Space.lg)
-        .presentationDetents([.medium])
-        .background(Palette.canvas)
     }
 
     // MARK: OAuth connect (real posting authority)
@@ -125,9 +69,6 @@ struct ConnectAccountsView: View {
         switch await store.finishLinkingAccount(platform: platform) {
         case .linked:
             break
-        case .choose(let candidates):
-            choosePlatform = platform
-            chooseFrom = candidates
         case .none:
             error = "Didn't finish connecting \(platform.capitalized). Tap Connect to try again."
         }

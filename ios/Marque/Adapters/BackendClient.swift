@@ -9,6 +9,18 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     private let fallback = MockLLMRouter()
     var token: String?               // Supabase JWT, attached once auth lands
     var creatorId = "default"        // set by AuthManager on sign-in (scopes memory + learning)
+    /// Stable per-install identity used ONLY for social-account claims. Linking happens
+    /// during onboarding — BEFORE sign-in — so claims can't key on `creatorId` (it's
+    /// still "default" there, which would pool every user's accounts together: the
+    /// exact bug this exists to prevent). Survives -reset on purpose: it identifies
+    /// the install, not the session.
+    let installId: String = {
+        let key = "marque.install.id"
+        if let v = UserDefaults.standard.string(forKey: key), !v.isEmpty { return v }
+        let v = UUID().uuidString
+        UserDefaults.standard.set(v, forKey: key)
+        return v
+    }()
     var creatorHandle = ""           // creator's own social handle — feeds the metrics poller
     var editPrefs: [String: Any] = [:]   // set by AppStore; threaded into every clip job
     private(set) var lastMode = "Mock"   // "Claude" once a live response comes back
@@ -336,12 +348,12 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         }
     }
 
-    /// Mint an OAuth URL for the user to connect one platform account. `externalId`
-    /// tags the account so we can look it up afterwards. Empty url => linking unavailable
-    /// (no key / mock backend).
-    func socialAuthURL(platform: String, externalId: String, redirectURL: String) async -> String? {
+    /// Mint an OAuth URL for the user to connect one platform account. The server
+    /// snapshots the account pool against this install's id so /v1/social/finish can
+    /// attribute what THIS user linked. Empty url => linking unavailable (no key / mock).
+    func socialAuthURL(platform: String, redirectURL: String) async -> String? {
         guard let data = await post("/v1/social/auth-url",
-                                    ["platform": platform, "external_id": externalId,
+                                    ["platform": platform, "claimant_id": installId,
                                      "redirect_url": redirectURL]),
               let r = try? JSONDecoder().decode(AuthURLResp.self, from: data),
               let url = r.url, !url.isEmpty else { return nil }
@@ -349,18 +361,33 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return url
     }
 
-    /// Fetch connected accounts, filtered by our `externalId` tag and/or `platform`
-    /// (post-OAuth). Returns the ConnectedAccount(s) carrying the Post for Me `accountId`
-    /// (spc_…) needed to publish. Passing only `platform` lists every account on that
-    /// platform — used to ADOPT an account already linked under another tag (Post for Me
-    /// forbids re-linking it under a new tag, but it still posts fine by spc_ id).
-    func socialAccounts(externalId: String = "", platform: String = "") async -> [ConnectedAccount] {
-        var items: [String] = []
-        if !externalId.isEmpty {
-            items.append("external_id=" + (externalId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? externalId))
+    /// Post-OAuth attribution: asks the server which account(s) THIS install's attempt
+    /// verifiably linked (fresh row, or a token refresh on a shared page). Empty means
+    /// nothing linked — including the cancelled-OAuth case, which used to leak other
+    /// creators' accounts through the old pool-adoption fallback.
+    func socialFinish(platform: String) async -> [ConnectedAccount] {
+        guard let data = await post("/v1/social/finish",
+                                    ["claimant_id": installId, "platform": platform]),
+              let r = try? JSONDecoder().decode(SocialFinishResp.self, from: data) else { return [] }
+        note(r.mode ?? "")
+        return r.linked.map { a in
+            ConnectedAccount(platform: a.platform, handle: a.username ?? "",
+                             displayName: a.username ?? "", avatarUrl: a.profile_photo_url ?? "",
+                             accountId: a.id)
         }
+    }
+
+    private struct SocialFinishResp: Decodable {
+        let linked: [SocialAccountsResp.Acct]
+        let mode: String?
+    }
+
+    /// Fetch the accounts THIS install has claimed (optionally one platform). The server
+    /// scopes by claim — the workspace pool is never exposed.
+    func socialAccounts(platform: String = "") async -> [ConnectedAccount] {
+        var items = ["claimant_id=" + installId]
         if !platform.isEmpty { items.append("platform=" + platform) }
-        let query = items.isEmpty ? "" : "?" + items.joined(separator: "&")
+        let query = "?" + items.joined(separator: "&")
         guard let data = await get("/v1/social/accounts\(query)"),
               let r = try? JSONDecoder().decode(SocialAccountsResp.self, from: data) else { return [] }
         note(r.mode ?? "")
@@ -388,11 +415,13 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             .map { MusicCatalog.Track(name: $0.name, url: $0.url) }
     }
 
-    /// Revoke an OAuth-linked account on Post for Me (best-effort).
+    /// Release this install's claim on an account (the server only severs the upstream
+    /// Post for Me link when the last claimant lets go).
     @discardableResult
     func socialDisconnect(accountId: String) async -> Bool {
         guard !accountId.isEmpty,
-              let data = await post("/v1/social/disconnect", ["account_id": accountId]),
+              let data = await post("/v1/social/disconnect",
+                                    ["account_id": accountId, "claimant_id": installId]),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         return (json["ok"] as? Bool) ?? false
     }

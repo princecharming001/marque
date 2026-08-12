@@ -742,6 +742,204 @@ def test_social_disconnect_mock_ok():
     assert b["ok"] is True and b["mode"] == "mock"
 
 
+# ---------------------------------------------------------------------------
+# SECURITY (2026-08-06): server-authoritative social-account ownership.
+# The Post for Me workspace is app-global; before this, /v1/social/accounts
+# returned the whole pool to any client and the iOS fallback auto-adopted the
+# single pool account after a CANCELLED OAuth (the owner's TikTok was being
+# claimed by strangers). These tests pin the new attribution protocol.
+# ---------------------------------------------------------------------------
+
+class _FakeClaimStore:
+    """In-memory stand-in for SupabaseClient's social-claim methods."""
+    def __init__(self):
+        self.rows: list[dict] = []
+
+    async def add_social_claim(self, creator_id, account_id, platform="", username=""):
+        if not any(r["creator_id"] == creator_id and r["account_id"] == account_id
+                   for r in self.rows):
+            self.rows.append({"creator_id": creator_id, "account_id": account_id,
+                              "platform": platform, "username": username})
+        return True
+
+    async def load_social_claims(self, creator_id="", account_id=""):
+        return [r for r in self.rows
+                if (not creator_id or r["creator_id"] == creator_id)
+                and (not account_id or r["account_id"] == account_id)]
+
+    async def delete_social_claim(self, creator_id, account_id):
+        self.rows = [r for r in self.rows
+                     if not (r["creator_id"] == creator_id and r["account_id"] == account_id)]
+        return True
+
+
+def _pfm_pool_stub(rows):
+    async def fake(method, path, json_body=None, params=None):
+        if method == "GET" and path == "/social-accounts":
+            return 200, {"data": rows}
+        return 200, {}
+    return fake
+
+
+def _owner_tiktok(expires="2026-08-05T00:00:00+00:00", status="connected"):
+    return {"id": "spc_owner", "platform": "tiktok", "username": "bluecrouton",
+            "status": status, "access_token_expires_at": expires,
+            "profile_photo_url": "", "external_id": None}
+
+
+def _start_attempt(claimant, platform):
+    b = client.post("/v1/social/auth-url",
+                    json={"platform": platform, "claimant_id": claimant}).json()
+    assert b["mode"] == "live"
+
+
+def test_social_finish_cancelled_oauth_links_nothing(monkeypatch):
+    # THE bluecrouton regression: pool has exactly one account (someone else's),
+    # user cancels OAuth → pool unchanged → NOTHING may be linked or offered.
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    monkeypatch.setattr(main, "_pfm_request",
+                        _pfm_pool_stub([_owner_tiktok()]))
+    store = _FakeClaimStore()
+    monkeypatch.setattr(main, "_supabase_client", store)
+    main._social_link_attempts.clear()
+
+    _start_attempt("user_b", "tiktok")
+    b = client.post("/v1/social/finish",
+                    json={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert b["linked"] == []
+    assert store.rows == []                      # no claim was recorded either
+
+
+def test_social_finish_fresh_account_is_claimed(monkeypatch):
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    store = _FakeClaimStore()
+    monkeypatch.setattr(main, "_supabase_client", store)
+    main._social_link_attempts.clear()
+
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub([_owner_tiktok()]))
+    _start_attempt("user_b", "tiktok")
+    # After OAuth a NEW row exists → it belongs to this attempt.
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub([
+        _owner_tiktok(),
+        {"id": "spc_new", "platform": "tiktok", "username": "userb_tt",
+         "status": "connected", "access_token_expires_at": "2026-09-01T00:00:00+00:00",
+         "profile_photo_url": "", "external_id": None},
+    ]))
+    b = client.post("/v1/social/finish",
+                    json={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert [a["id"] for a in b["linked"]] == ["spc_new"]
+    assert store.rows == [{"creator_id": "user_b", "account_id": "spc_new",
+                           "platform": "tiktok", "username": "userb_tt"}]
+
+
+def test_social_finish_reauth_token_refresh_claims_shared_page(monkeypatch):
+    # Two creators legitimately share one page: PFM makes no new row on the second
+    # OAuth, it refreshes the token. The changed expiry IS the proof of authorization.
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    store = _FakeClaimStore()
+    monkeypatch.setattr(main, "_supabase_client", store)
+    main._social_link_attempts.clear()
+
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub([_owner_tiktok()]))
+    _start_attempt("user_b", "tiktok")
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub(
+        [_owner_tiktok(expires="2026-12-31T00:00:00+00:00")]))   # token refreshed
+    b = client.post("/v1/social/finish",
+                    json={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert [a["id"] for a in b["linked"]] == ["spc_owner"]
+    assert store.rows[0]["creator_id"] == "user_b"
+
+
+def test_social_finish_without_attempt_is_refused(monkeypatch):
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub([_owner_tiktok()]))
+    main._social_link_attempts.clear()
+    b = client.post("/v1/social/finish",
+                    json={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert b["linked"] == [] and b["reason"] == "no_attempt"
+
+
+def test_social_accounts_scoped_to_claims(monkeypatch):
+    # The pool is NEVER exposed: no claimant → empty; a claimant sees only their claims.
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    store = _FakeClaimStore()
+    store.rows.append({"creator_id": "user_b", "account_id": "spc_mine",
+                       "platform": "tiktok", "username": "userb_tt"})
+    monkeypatch.setattr(main, "_supabase_client", store)
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub([
+        _owner_tiktok(),
+        {"id": "spc_mine", "platform": "tiktok", "username": "userb_tt",
+         "status": "connected", "access_token_expires_at": "x",
+         "profile_photo_url": "", "external_id": None},
+    ]))
+    b = client.get("/v1/social/accounts", params={"platform": "tiktok"}).json()
+    assert b["accounts"] == []                                   # fail closed
+    b = client.get("/v1/social/accounts",
+                   params={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert [a["id"] for a in b["accounts"]] == ["spc_mine"]      # never spc_owner
+
+
+def test_publish_rejects_unclaimed_accounts(monkeypatch):
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    store = _FakeClaimStore()
+    store.rows.append({"creator_id": "user_b", "account_id": "spc_mine",
+                       "platform": "tiktok", "username": "userb_tt"})
+    monkeypatch.setattr(main, "_supabase_client", store)
+    posted_bodies = []
+
+    async def fake_pfm(method, path, json_body=None, params=None):
+        posted_bodies.append(json_body)
+        return 201, {"id": "pfm_1", "status": "scheduled"}
+    monkeypatch.setattr(main, "_pfm_request", fake_pfm)
+
+    # Someone else's account id → refused outright, nothing reaches PFM.
+    b = client.post("/v1/publish", json={"caption": "hi", "claimant_id": "user_b",
+                                         "social_account_ids": ["spc_owner"]}).json()
+    assert b["ok"] is False and b["posted"] is False
+    assert b["reason"] == "unauthorized_accounts"
+    assert posted_bodies == []
+
+    # Mixed list → silently narrowed to the claimed id.
+    b = client.post("/v1/publish", json={"caption": "hi", "claimant_id": "user_b",
+                                         "social_account_ids": ["spc_owner", "spc_mine"]}).json()
+    assert b["ok"] is True and b["posted"] is True
+    assert posted_bodies[-1]["social_accounts"] == ["spc_mine"]
+
+    # No claimant at all (legacy client) → fail closed.
+    b = client.post("/v1/publish", json={"caption": "hi",
+                                         "social_account_ids": ["spc_owner"]}).json()
+    assert b["ok"] is False and b["reason"] == "unauthorized_accounts"
+
+
+def test_social_disconnect_requires_claim(monkeypatch):
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    store = _FakeClaimStore()
+    store.rows.append({"creator_id": "user_b", "account_id": "spc_shared",
+                       "platform": "tiktok", "username": "shared"})
+    store.rows.append({"creator_id": "user_c", "account_id": "spc_shared",
+                       "platform": "tiktok", "username": "shared"})
+    monkeypatch.setattr(main, "_supabase_client", store)
+    upstream = []
+
+    async def fake_pfm(method, path, json_body=None, params=None):
+        upstream.append(path)
+        return 200, {}
+    monkeypatch.setattr(main, "_pfm_request", fake_pfm)
+
+    # A non-claimant may not sever anyone's account.
+    b = client.post("/v1/social/disconnect",
+                    json={"account_id": "spc_shared", "claimant_id": "stranger"}).json()
+    assert b["ok"] is False and b["reason"] == "not_yours"
+    # First claimant leaving keeps the upstream link (the other still uses it).
+    b = client.post("/v1/social/disconnect",
+                    json={"account_id": "spc_shared", "claimant_id": "user_b"}).json()
+    assert b["ok"] is True and b.get("kept_upstream") is True and upstream == []
+    # Last claimant leaving disconnects upstream.
+    b = client.post("/v1/social/disconnect",
+                    json={"account_id": "spc_shared", "claimant_id": "user_c"}).json()
+    assert b["ok"] is True and upstream == ["/social-accounts/spc_shared/disconnect"]
+
+
 def test_mint_upload_url():
     r = client.post("/v1/uploads/mint", json={"filename": "test.mov", "content_type": "video/quicktime"})
     assert r.status_code == 200

@@ -281,19 +281,15 @@ final class AppStore {
 
     // MARK: OAuth account linking (Post for Me — real posting authority)
 
-    // Post for Me FORBIDS linking the same social account under two DIFFERENT external_ids
-    // (anti-hijack: "External Id already exists for account spc_…"). A per-user/per-attempt
-    // tag therefore blocked re-linking and blocked a SECOND creator linking a shared IG.
-    // Per PFM's multi-user guidance, we use ONE stable per-platform tag for every connect,
-    // so a repeat/shared connect is treated as an UPDATE to the single account record — and
-    // we keep the user↔account mapping ourselves (local per-user `connectedAccounts`). We
-    // attribute the account THIS user linked by diffing the account list around the OAuth.
-    // Build 66: external_id tagging is GONE from the connect flow — Post for Me permits
-    // one tag per social account and hard-fails the portal when a second creator links
-    // the same TikTok/IG. Attribution is ours now: snapshot the platform's account pool
-    // before OAuth, claim the delta after, and when the account already existed (two
-    // creators sharing one page — the delta is empty) fall back to a user pick.
-    private var preConnectAccountIds: [String: Set<String>] = [:]
+    // SECURITY (2026-08-06): attribution is SERVER-authoritative now. The old
+    // client-side scheme (snapshot the pool, claim the delta, and — fatally — adopt
+    // the pool when it had exactly one account, or offer the whole pool as a picker)
+    // handed the owner's accounts to anyone whose OAuth failed: the Post for Me
+    // workspace is app-global, so "the pool" is EVERY user's accounts. The server
+    // now snapshots at auth-url time, verifies the link (fresh row or a token
+    // refresh observed during this install's own attempt), records the claim, and
+    // scopes every accounts/publish/disconnect call to it. A cancelled OAuth links
+    // nothing, ever.
 
     /// The Post for Me account ids to publish `platforms` to (OAuth-linked accounts only).
     func publishAccountIds(for platforms: [SocialPlatform]) -> [String] {
@@ -303,54 +299,35 @@ final class AppStore {
     }
 
     /// Ask the backend for the OAuth URL to connect `platform`. nil => linking unavailable
-    /// (mock backend / no key). No redirect override is sent — Post for Me Quickstart uses
-    /// its own fixed success page, so we confirm the link by polling instead of a callback.
+    /// (mock backend / no key). The server snapshots the pool against this install's id
+    /// as part of minting the URL. No redirect override is sent — Post for Me Quickstart
+    /// uses its own fixed success page, so we confirm the link by polling instead.
     func socialAuthURL(platform: String) async -> URL? {
-        // Snapshot EVERYTHING on this platform so we can spot the account THIS user
-        // links. Untagged on purpose — see the note above preConnectAccountIds.
-        let before = await backend.socialAccounts(platform: platform)
-        preConnectAccountIds[platform] = Set(before.map(\.accountId))
-        let s = await backend.socialAuthURL(platform: platform,
-                                            externalId: "",
-                                            redirectURL: "")
+        let s = await backend.socialAuthURL(platform: platform, redirectURL: "")
         return s.flatMap(URL.init(string:))
     }
 
-    /// After the OAuth web flow closes, poll for the now-connected account (Post for Me can
-    /// take a moment to finalize the link). Stores the account carrying its spc_ id on first
-    /// hit. Returns true once linked.
-    /// Outcome of an OAuth connect attempt (see socialAuthURL's attribution note).
+    /// Outcome of an OAuth connect attempt.
     enum LinkOutcome {
-        case linked(ConnectedAccount)      // claimed automatically
-        case choose([ConnectedAccount])    // account already existed — user must pick theirs
+        case linked(ConnectedAccount)      // server verified this attempt linked it
         case none                          // nothing linked (cancelled / PFM still finalizing)
     }
 
-    /// After the OAuth web flow closes, attribute the connect. Post for Me can take a
-    /// moment to finalize, so poll. The DELTA against the pre-connect snapshot is the
-    /// strongest signal (a fresh connect). An empty delta with existing candidates is the
-    /// shared-account case — the page was already linked by another creator, PFM made no
-    /// new row, and only the user knows which username they just authorized: hand the
-    /// candidates back for a pick instead of guessing (the old single-candidate adopt
-    /// stays, because one candidate is unambiguous).
+    /// After the OAuth web flow closes, ask the server what THIS attempt linked.
+    /// Post for Me can take a moment to finalize, so poll a few times. An empty
+    /// answer after retries means nothing was linked — there is deliberately no
+    /// fallback and no pick-from-pool.
     func finishLinkingAccount(platform: String, retries: Int = 4) async -> LinkOutcome {
-        let before = preConnectAccountIds[platform] ?? []
-        var lastPool: [ConnectedAccount] = []
         for attempt in 0..<max(1, retries) {
-            let pool = await backend.socialAccounts(platform: platform)
+            let linked = await backend.socialFinish(platform: platform)
                 .filter { $0.platform == platform && $0.canPublish }
-            lastPool = pool
-            let fresh = pool.filter { !before.contains($0.accountId) }
-            if let acct = fresh.first ?? (pool.count == 1 ? pool.first : nil) {
+            if let acct = linked.first {
                 await claimLinkedAccount(acct, platform: platform)
                 return .linked(brand.connectedAccounts.last ?? acct)
             }
             if attempt < retries - 1 { try? await Task.sleep(nanoseconds: 1_500_000_000) }
         }
-        // Don't offer accounts this creator already claimed — only genuinely new options.
-        let mine = Set(brand.connectedAccounts.map(\.accountId))
-        let candidates = lastPool.filter { !mine.contains($0.accountId) }
-        return candidates.isEmpty ? .none : .choose(candidates)
+        return .none
     }
 
     /// Store one Post for Me account as THIS creator's, enriched from the public profile.
@@ -364,7 +341,6 @@ final class AppStore {
             if acct.displayName.isEmpty { acct.displayName = preview.displayName }
         }
         addConnectedAccount(acct)
-        preConnectAccountIds[platform] = nil
         // Build 67: pillars come only from real posts — the moment the first account
         // lands, build them from it.
         if pillars.isEmpty {

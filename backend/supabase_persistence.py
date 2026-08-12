@@ -370,6 +370,42 @@ class SupabaseClient:
 
     # --- device_tokens (UX-B2a APNs) ------------------------------------------
 
+    # --- social account claims (SECURITY 2026-08-06) ------------------------
+    # Server-authoritative creator↔PFM-account ownership. The PFM workspace is
+    # app-global; these rows are the ONLY thing that scopes accounts/publishing
+    # to a creator, so they are written exclusively by the verified link path.
+
+    async def add_social_claim(self, creator_id: str, account_id: str,
+                               platform: str = "", username: str = "") -> bool:
+        r = await self._request(
+            "POST", "/social_account_claims",
+            params={"on_conflict": "creator_id,account_id"},
+            json={"creator_id": creator_id, "account_id": account_id,
+                  "platform": platform, "username": username},
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_social_claims(self, creator_id: str = "", account_id: str = "") -> list[dict]:
+        params: dict = {}
+        if creator_id:
+            params["creator_id"] = f"eq.{creator_id}"
+        if account_id:
+            params["account_id"] = f"eq.{account_id}"
+        r = await self._request("GET", "/social_account_claims", params=params)
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            return r.json()
+        except ValueError:
+            return []
+
+    async def delete_social_claim(self, creator_id: str, account_id: str) -> bool:
+        r = await self._request("DELETE", "/social_account_claims",
+                                params={"creator_id": f"eq.{creator_id}",
+                                        "account_id": f"eq.{account_id}"},
+                                headers={"Prefer": "return=minimal"})
+        return bool(r and r.status_code < 300)
+
     async def upsert_device_token(self, row: dict) -> bool:
         payload = {k: row.get(k) for k in ("creator_id", "token", "environment", "platform",
                                            "app_version", "timezone", "permission")}
