@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import UserNotifications
 
 // Onboarding — Cal AI-clean chrome (docs/ONBOARDING-DESIGN.md), flow per the
 // documented thesis (docs/03-onboarding.md §1): ONE framing question → connect
@@ -28,16 +30,22 @@ struct OnboardingView: View {
         // Order: one framing question → connect (the inference jackpot) → confirm
         // what the scan learned → taste (emulate) → goal (personalizes the paywall)
         // → pace (commitment device) → the aha.
-        case landing, niche, connect, identity, emulate, goal, frequency, building
+        // `notifications` (OWNER 2026-08-12): the permission ask was popping "at a
+        // random time" (the first clips-ready moment, wherever that caught you).
+        // Research placement (NN/g pre-permission priming; the RevenueCat/Superwall
+        // funnel work in docs/03-onboarding.md): a dedicated page immediately AFTER
+        // the aha — value just demonstrated, concrete promise attached — and before
+        // the paywall. Never a cold OS prompt anywhere else in the app.
+        case landing, niche, connect, identity, emulate, goal, frequency, building,
+             notifications
 
-        /// Quiz-progress dashes cover everything between landing and building.
-        /// No step auto-skips anymore (the skippable ones were cut), so this
-        /// denominator is finally honest for every path.
+        /// Quiz-progress dashes cover the QUESTIONS between landing and building.
+        /// building/notifications are outcome screens, not quiz steps.
         var quizIndex: Int? {
-            guard self != .landing, self != .building else { return nil }
+            guard self != .landing, self != .building, self != .notifications else { return nil }
             return rawValue - 1
         }
-        static let quizTotal = allCases.count - 2
+        static let quizTotal = allCases.count - 3
     }
 
     @State private var step: Step = .landing
@@ -86,9 +94,10 @@ struct OnboardingView: View {
             case .connect:   connectStep
             case .identity:  identityStep
             case .emulate:   emulateStep
-            case .goal:      goalStep
-            case .frequency: frequencyStep
-            case .building:  buildingStep
+            case .goal:          goalStep
+            case .frequency:     frequencyStep
+            case .building:      buildingStep
+            case .notifications: notificationsStep
             }
         }
         .id(step)
@@ -414,7 +423,10 @@ struct OnboardingView: View {
                 OnboardingScaffold(headline: "Your first 3 scripts are ready",
                                    subtitle: "Record when you've got a few minutes — I'll do the editing.",
                                    showsBack: false) {
-                    PlanReadyView { resumeStepRaw = 0; store.completeOnboarding() }
+                    // The aha lands, then ONE more page: the notification primer
+                    // (permission is asked right after demonstrated value, never
+                    // at a random moment mid-app).
+                    PlanReadyView { go(.notifications) }
                 }
             case .failed:
                 // BETA STUCK-STATE FIX: .failed used to render the building spinner
@@ -438,6 +450,55 @@ struct OnboardingView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Notifications — the ONE permission page (owner, 2026-08-12)
+    // Placement per the funnel research: immediately after the aha, before the
+    // paywall, with concrete promises (clip-ready ping + filming reminder). The OS
+    // dialog fires only from the explicit button — "Not now" never burns the
+    // one-shot system prompt, and no other surface in the app cold-prompts.
+
+    private var notificationsStep: some View {
+        OnboardingScaffold(headline: "Know the moment it's ready",
+                          subtitle: "Editing takes a couple of minutes — I'll ping you when your clip lands, and nudge you on filming days so the plan actually happens.",
+                          showsBack: false) {
+            VStack(spacing: Space.xl) {
+                Spacer(minLength: 0)
+                Image(systemName: "bell.badge")
+                    .font(.system(size: 44, weight: .medium))
+                    .foregroundStyle(Palette.accent)
+                Spacer(minLength: 0)
+                VStack(spacing: Space.md) {
+                    OnbPill(title: "Turn on notifications") { finishWithNotifications() }
+                        .accessibilityIdentifier("onboard.notifications.enable")
+                    Button { completeAll() } label: {
+                        Text("Not now")
+                            .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    }
+                    .accessibilityIdentifier("onboard.notifications.skip")
+                }
+            }
+        }
+    }
+
+    private func finishWithNotifications() {
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            Task { @MainActor in
+                if granted {
+                    // Both promises made above: remote "clip landed" pushes and the
+                    // local filming-day reminder.
+                    UIApplication.shared.registerForRemoteNotifications()
+                    store.remindersEnabled = true
+                }
+                completeAll()
+            }
+        }
+    }
+
+    private func completeAll() {
+        resumeStepRaw = 0
+        store.completeOnboarding()
     }
 }
 

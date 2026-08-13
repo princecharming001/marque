@@ -23,6 +23,11 @@ name: Marque — soft paywall (personalized headline, 7-day trial, free-tier esc
 - waitForAnimationToEnd: { timeout: 5000 }
 - tapOn: "Enter Yunicorn"
 
+# Notification primer page sits between the aha and the wall — skip through.
+- extendedWaitUntil: { visible: { id: "onboard.notifications.skip" }, timeout: 6000 }
+- takeScreenshot: /Users/home/Marque/.shots/onb-notifications
+- tapOn: { id: "onboard.notifications.skip" }
+
 # The soft wall: personalized with goal (clients) + pace (5/wk), 7-day trial,
 # and the quiet free-tier escape.
 - extendedWaitUntil:

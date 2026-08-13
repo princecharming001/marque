@@ -43,8 +43,13 @@ def test_style_theme_ids_are_real_themes():
 
 
 def _th_reel(rid, handle, url, views=1000):
+    # A VERIFIED talking head — the feed requires transcribed real speech now
+    # (2026-08-12 TH mandate): 24 words / 12s = 2.0 wps.
     return {"id": rid, "creator_handle": handle, "video_url": url,
-            "thumbnail_url": url + "-t", "edit_format": "talking_head", "views": views}
+            "thumbnail_url": url + "-t", "edit_format": "talking_head", "views": views,
+            "transcribed": True, "duration_s": 12,
+            "transcript": "the real reason your videos flop is not the algorithm it is "
+                          "the first three seconds and here is how you fix that today"}
 
 
 def test_style_demos_are_distinct_and_sourced_cross_niche(monkeypatch):

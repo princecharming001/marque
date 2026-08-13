@@ -566,7 +566,12 @@ def test_reels_endpoint_hydrates_from_supabase_on_cold_miss(monkeypatch):
     key = main._niche_cache_key("fitness")
     reel = main._reel_from_post(
         {"author": "c", "platform": "instagram", "views": 50000, "likes": 9,
-         "caption": "cap", "transcript": "spoken", "posted_at": "t1",
+         "caption": "cap",
+         # A REAL spoken take: the TH filter now rejects "transcribed" reels whose
+         # whole transcript is a word or two (that's a montage, not a talking head).
+         "transcript": "here is the one thing nobody tells you about building "
+                       "a real audience from scratch in ninety days",
+         "posted_at": "t1",
          "video_url": "http://cdn/v.mp4"},   # playable — /v1/reels now drops video-less cards
         "c", "instagram", 0, False)
     fake = _FakeReelsPersistence({key: {"reels": [reel], "ts": main.time.time()}})
@@ -577,7 +582,106 @@ def test_reels_endpoint_hydrates_from_supabase_on_cold_miss(monkeypatch):
     monkeypatch.setattr(main, "_reels_refreshing", set())
     r = client.get("/v1/reels", params={"niche": "fitness"}).json()
     assert r["mode"] == "live"
-    assert len(r["reels"]) == 1 and r["reels"][0]["transcript"] == "spoken"
+    assert len(r["reels"]) == 1 and r["reels"][0]["transcript"].startswith("here is the one thing")
+
+
+# ---------------------------------------------------------------------------
+# OWNER (2026-08-12): "the only videos on the infinite scroll are talking head."
+# Pins the three leaks that let mesh/skit content through, and the CDN-freshness
+# rule that was serving dead (expired) video links as frozen posters.
+# ---------------------------------------------------------------------------
+
+def _th_reel(**over):
+    base = {"id": "r1", "platform": "instagram", "views": 1000, "likes": 100,
+            "caption": "why your first 100 videos matter", "video_url": "http://cdn/v.mp4",
+            "thumbnail_url": "http://cdn/t.jpg",
+            # 24 words / 12s = 2.0 words-per-second — normal talking-head speech.
+            "duration_s": 12,
+            "transcript": "the real reason your videos flop is not the algorithm it is "
+                          "the first three seconds and here is how you fix that today",
+            "transcribed": True, "edit_format": "talking_head"}
+    base.update(over)
+    return base
+
+
+def test_th_filter_rejects_transcribed_junk():
+    # A "transcribed" reel whose entire speech is a couple of words is a montage.
+    assert main._is_talking_head_reel(_th_reel()) is True
+    assert main._is_talking_head_reel(_th_reel(transcript="lets go", duration_s=15)) is False
+    # Sparse speech over a long runtime = music edit with a shouted line, not a take
+    # (13 words / 40s ≈ 0.3 wps — past the ≥12-word rule, caught by the wps rule).
+    assert main._is_talking_head_reel(
+        _th_reel(transcript="these are thirteen words spoken over a very long runtime right here now",
+                 duration_s=40)) is False
+    # Workout-counter transcripts (mostly numbers + go/stop/round) are drill videos,
+    # not talking heads — the exact leak seen live (@arielyu.fit, 47.8M views).
+    assert main._is_talking_head_reel(
+        _th_reel(transcript="5 4 3 2 1 go round 1 3 2 1 stop 3 2 1 go round 3 halfway 3 2 1 go",
+                 duration_s=20)) is False
+
+
+def test_classifier_buckets_skits_out_of_talking_head():
+    for cap in ("#skit when the gym bro sees a mirror", "#comedy #funny gym life",
+                "pov: your trainer catches you", "when your client says no #relatable"):
+        fmt, _ = main._classify_edit_format({"caption": cap, "duration_s": 25,
+                                             "transcript": ""})
+        assert fmt not in main._TALKING_HEAD_FORMATS, cap
+
+
+def test_reels_no_watched_bypass_and_cdn_freshness(monkeypatch):
+    """Watched-creator reels obey the TH mandate like everything else, and a raw-CDN
+    video link older than the freshness window is treated as unplayable (dropped),
+    while a Supabase-rehosted link of the same age survives."""
+    now = main.time.time()
+    skit = _th_reel(id="skit", edit_format="recap_music", transcript="", transcribed=False,
+                    from_watched=True)
+    fresh_cdn = _th_reel(id="fresh")
+    stale_cdn = _th_reel(id="stale")
+    durable = _th_reel(id="durable",
+                       video_url=main.SUPABASE_URL.rstrip("/") + "/storage/v1/reel.mp4"
+                       if main.SUPABASE_URL else "https://sb.example/storage/reel.mp4")
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test")
+    if not main.SUPABASE_URL:
+        monkeypatch.setattr(main, "SUPABASE_URL", "https://sb.example")
+        durable["video_url"] = "https://sb.example/storage/reel.mp4"
+    monkeypatch.setattr(main, "_supabase_client", None)
+    monkeypatch.setattr(main, "_reels_refreshing", {main._niche_cache_key("fitness"),
+                                                    "instagram:coach"})
+    monkeypatch.setattr(main, "_watched_reels_cache",
+                        {"instagram:coach": {"reels": [skit], "ts": now}})
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {main._niche_cache_key("fitness"):
+                         {"reels": [fresh_cdn, durable], "ts": now}})
+    r = client.get("/v1/reels", params={"niche": "fitness",
+                                        "watched": "instagram:coach"}).json()
+    ids = [x["id"] for x in r["reels"]]
+    assert "skit" in " ".join([]) or "skit" not in ids          # watched skit excluded
+    assert "fresh" in ids and "durable" in ids
+    assert all("_cache_ts" not in x for x in r["reels"])        # bookkeeping never served
+
+    # Age the niche entry past the CDN window: raw link drops, durable survives.
+    old = now - main._CDN_FRESH_S - 60
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {main._niche_cache_key("fitness"):
+                         {"reels": [stale_cdn, durable], "ts": old}})
+    r = client.get("/v1/reels", params={"niche": "fitness"}).json()
+    ids = [x["id"] for x in r["reels"]]
+    assert "durable" in ids and "stale" not in ids
+
+
+def test_social_caption_mock_shape():
+    b = client.post("/v1/social-caption", json={
+        "hook": "Nobody tells you this about fat loss",
+        "body": "The real reason your deficit stalls.",
+        "cta": "Save this", "niche": "fitness coaching",
+        "audience": "busy professionals"}).json()
+    assert b["mode"] == "mock"
+    cap = b["caption"]
+    lines = cap.splitlines()
+    assert lines[0].startswith("Nobody tells you this")          # hook line first
+    tags = [w for w in cap.split() if w.startswith("#")]
+    assert 3 <= len(tags) <= 5                                    # doctrine hashtag band
+    assert "#fyp" not in cap and "tag 3 friends" not in cap.lower()
 
 
 def test_trends_mock_rotates_by_bucket(monkeypatch):
@@ -6233,8 +6337,13 @@ def test_resolve_broll_uses_own_media_before_stock(monkeypatch):
 # --- Build 62: /v1/reels never-empty ladder ---------------------------------
 
 def _ladder_reel(rid, niche_word="fitness", video_url="http://cdn/v.mp4", ef="talking_head"):
+    # A VERIFIED talking head: the feed now requires transcribed speech (2026-08-12,
+    # after a CGI reel leaked through the caption heuristic) — 24 words / 12s = 2 wps.
     return {"id": rid, "creator_handle": "@c", "hook_text": f"{niche_word} hook",
-            "transcript": "spoken", "why_trending": "", "format_id": "pov-story",
+            "transcript": "the real reason your videos flop is not the algorithm it is "
+                          "the first three seconds and here is how you fix that today",
+            "transcribed": True, "duration_s": 12,
+            "why_trending": "", "format_id": "pov-story",
             "video_url": video_url, "thumbnail_url": "http://cdn/t.jpg",
             "edit_format": ef, "views": 10_000, "likes": 5, "title": "t",
             "style": "talking_head", "platform": "instagram"}

@@ -97,7 +97,9 @@ struct ReelFeedPager: View {
             .background(Color.black)
             .overlay(alignment: .topTrailing) { closeButton }
             .task { if currentId == nil { currentId = startReel.id } }
-            .sheet(item: $detailReel) { ReelDetailSheet(reel: $0) }
+            // OWNER (2026-08-12): the stats button opens the compact numbers-only
+            // popup — never the full teardown that replays the video mid-watch.
+            .sheet(item: $detailReel) { ReelStatsSheet(reel: $0) }
             .preferredColorScheme(.dark)
         }
     }
@@ -223,7 +225,7 @@ struct ReelFeedPager: View {
             Button { runMimic(reel) } label: {
                 HStack(spacing: 6) {
                     if mimicking == reel.id {
-                        ProgressView().tint(Palette.onInk)
+                        ProgressView().tint(Palette.ink)
                         Text("Rewriting…").font(AppFont.headline)
                     } else {
                         Image(systemName: "wand.and.stars").font(.system(size: 15, weight: .semibold))
@@ -231,7 +233,11 @@ struct ReelFeedPager: View {
                             .font(AppFont.headline).lineLimit(1).minimumScaleFactor(0.85)
                     }
                 }
-                .foregroundStyle(Palette.onInk)
+                // OWNER (2026-08-12, "text on the biggest button is not visible"):
+                // this was Palette.onInk (pure white) on a WHITE pill — invisible.
+                // onInk means "text on an ink fill"; this fill is white, so the text
+                // is ink. The detail sheet's CTA (ink fill + onInk text) was right.
+                .foregroundStyle(Palette.ink)
                 .frame(maxWidth: .infinity).frame(height: 50)
                 .background(.white, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
             }
@@ -300,14 +306,25 @@ private struct ReelPagerMedia: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
         } else if !reel.thumbnailURL.isEmpty && !thumbFailed, let url = URL(string: reel.thumbnailURL) {
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let img): img.resizable().scaledToFill()
-                case .failure: Color.black.onAppear { thumbFailed = true }
-                default: ProgressView().tint(.white)
+            // OWNER (2026-08-12, "if I go too far the mimic button becomes overly
+            // wide"): far pages are exactly where expired-CDN reels fall back to
+            // this thumbnail path, and `resizable().scaledToFill()` REPORTS the
+            // filled (overflowing) size to layout — a landscape cover filling a
+            // portrait cell claims width ≫ screen, the cell's ZStack inherits it,
+            // and the overlay's `maxWidth: .infinity` action row stretches with it.
+            // Color.clear owns the layout (exactly the proposed cell size); the
+            // image lives in an overlay, which is never consulted for layout.
+            Color.clear
+                .overlay {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let img): img.resizable().scaledToFill()
+                        case .failure: Color.black.onAppear { thumbFailed = true }
+                        default: ProgressView().tint(.white)
+                        }
+                    }
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                .clipped()
         } else {
             VStack {
                 Spacer()

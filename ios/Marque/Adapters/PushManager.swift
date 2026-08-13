@@ -94,70 +94,7 @@ final class PushManager: NSObject, UIApplicationDelegate, UNUserNotificationCent
     }
 }
 
-// MARK: - Push primer (UX-B2b) — the permission ask, never a cold system prompt.
-// Shown once at the first clips-ready moment: explain WHY, then request. UserDefaults
-// cooldown (72h) + max 3 lifetime shows; never once authorized or hard-denied.
-enum PushPrimer {
-    private static let countKey = "marque.pushPrimer.count"
-    private static let lastKey = "marque.pushPrimer.lastShownAt"
-
-    /// Whether the primer may be shown right now (status must still be undetermined).
-    static func shouldShow(status: UNAuthorizationStatus) -> Bool {
-        guard status == .notDetermined else { return false }
-        let d = UserDefaults.standard
-        guard d.integer(forKey: countKey) < 3 else { return false }
-        let last = d.double(forKey: lastKey)
-        return last == 0 || Date().timeIntervalSince1970 - last > 72 * 3600
-    }
-
-    static func markShown() {
-        let d = UserDefaults.standard
-        d.set(d.integer(forKey: countKey) + 1, forKey: countKey)
-        d.set(Date().timeIntervalSince1970, forKey: lastKey)
-    }
-}
-
-struct PushPrimerSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    var body: some View {
-        VStack(spacing: Space.lg) {
-            Image(systemName: "bell.badge")
-                .font(.system(size: 40, weight: .medium))
-                .foregroundStyle(Palette.accent)
-                .padding(.top, Space.xl)
-            Text("Know the moment your clip lands")
-                .font(AppFont.title).foregroundStyle(Palette.textPrimary)
-                .multilineTextAlignment(.center)
-            Text("Editing takes a couple of minutes. Turn on notifications and we'll tell you the second it's ready — even if you've closed the app.")
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                .multilineTextAlignment(.center)
-            Button {
-                UNUserNotificationCenter.current()
-                    .requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
-                        if granted {
-                            DispatchQueue.main.async {
-                                UIApplication.shared.registerForRemoteNotifications()
-                            }
-                        }
-                    }
-                dismiss()
-            } label: {
-                Text("Turn on notifications")
-                    .font(AppFont.headline).foregroundStyle(Palette.onInk)
-                    .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
-                    .background(Palette.ink)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("pushPrimer.enable")
-            Button { dismiss() } label: {
-                Text("Not now").font(AppFont.callout).foregroundStyle(Palette.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .padding(.bottom, Space.lg)
-        }
-        .padding(.horizontal, Space.xl)
-        .presentationDetents([.medium])
-        .onAppear { PushPrimer.markShown() }
-    }
-}
+// The old PushPrimer sheet (first-clips-ready permission ask) was DELETED
+// (owner, 2026-08-12): it surfaced "at a random time." The one and only
+// permission ask is the dedicated onboarding notifications page
+// (OnboardingView.notificationsStep); Settings keeps the manual toggle.

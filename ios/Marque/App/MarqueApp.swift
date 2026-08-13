@@ -97,12 +97,9 @@ struct RootView: View {
         .safeAreaInset(edge: .top) {
             if !net.isOnline { OfflineBanner() }
         }
-        // UX-B2b: the branded push primer — explain-then-ask at the first
-        // clips-ready moment, never a cold system prompt.
-        .sheet(isPresented: Binding(get: { store.showPushPrimer },
-                                    set: { store.showPushPrimer = $0 })) {
-            PushPrimerSheet()
-        }
+        // The notification permission ask lives on ONE dedicated onboarding page
+        // now (owner, 2026-08-12) — the old first-clips-ready primer sheet popped
+        // "at a random time" and is gone. Settings keeps the manual re-entry.
         // C-03: retry transport-failed publishes when the app returns to the foreground
         // or the network comes back — a queued post lands the moment we can reach the API.
         .onChange(of: scenePhase) { _, phase in

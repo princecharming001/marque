@@ -843,6 +843,7 @@ final class AppStore {
                          localVideoPath: storedPath)
         clips.insert(draft, at: 0)
         save()
+        upgradeSocialCaption(for: script)
         // Build 46: generate + persist a poster frame so the draft card shows WHICH video
         // was saved (the whole point of a draft) instead of a blank tile. Off the main
         // actor; patched back onto the clip when ready.
@@ -1028,6 +1029,7 @@ final class AppStore {
         clips.insert(ph, at: 0)
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
+        upgradeSocialCaption(for: script)
 
         // Build 49 — durable journal entry BEFORE the upload starts, capturing the full
         // analyze payload so a kill/relaunch resumes with the creator's real edit settings
@@ -1188,6 +1190,7 @@ final class AppStore {
             return c
         }
         clips.insert(contentsOf: tagged, at: 0)
+        upgradeSocialCaption(for: script)
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
         if tagged.contains(where: { $0.status == .rendering }) {
@@ -1774,6 +1777,38 @@ final class AppStore {
         return true
     }
 
+    // MARK: Social caption upgrade (owner, 2026-08-12 — "caption generation is shit")
+
+    /// The post caption used to be literally the script's CTA line. This upgrades every
+    /// clip of a script to the doctrine-driven viral caption (hook line + one
+    /// exchange-shaped CTA + 3-5 niche hashtags) in the background. One request per
+    /// script; never clobbers a caption the creator already edited (only rows still
+    /// carrying the raw CTA placeholder are touched).
+    private var captionUpgradesInFlight: Set<UUID> = []
+
+    func upgradeSocialCaption(for script: Script) {
+        guard !captionUpgradesInFlight.contains(script.id) else { return }
+        // Already upgraded (or hand-edited) somewhere → nothing to do.
+        if clips.contains(where: { $0.scriptId == script.id && $0.caption != script.cta }),
+           !clips.contains(where: { $0.scriptId == script.id && $0.caption == script.cta }) {
+            return
+        }
+        captionUpgradesInFlight.insert(script.id)
+        Task { [weak self] in
+            guard let self else { return }
+            let cap = await self.backend.socialCaption(script: script, brand: self.brand)
+            self.captionUpgradesInFlight.remove(script.id)
+            guard let cap else { return }
+            var changed = false
+            for i in self.clips.indices
+            where self.clips[i].scriptId == script.id && self.clips[i].caption == script.cta {
+                self.clips[i].caption = cap
+                changed = true
+            }
+            if changed { self.save() }
+        }
+    }
+
     // MARK: Scheduling / publishing
 
     func scheduleClip(_ clip: Clip, on date: Date, platforms: [SocialPlatform],
@@ -2319,16 +2354,13 @@ final class AppStore {
         center.add(UNNotificationRequest(identifier: "marque.daily", content: content, trigger: trigger))
     }
 
-    /// UX-B2b: drives the branded PushPrimerSheet (RootView presents it). Set at the
-    /// first clips-ready moment when permission is still undetermined — replacing the
-    /// old cold system prompt with an explain-then-ask flow.
-    var showPushPrimer = false
-
     /// "Your edited clips landed" nudge — called from both completion paths (live pollJob
     /// and the mock render loop in makeClips). Fires only when ≥1 clip ended .ready; never
-    /// fires for drafts. UX-B2b: permission-undetermined now shows the branded primer
-    /// (never a cold system prompt), and the LOCAL notification stays as the fallback,
-    /// deduped by job id against any remote clips_ready push already received.
+    /// fires for drafts. OWNER (2026-08-12): the permission ASK lives on the dedicated
+    /// onboarding page only — this surface never prompts (the old primer sheet here was
+    /// the "Allow Notifications at a random time" report). Undetermined/denied → silent;
+    /// the LOCAL notification stays as the authorized-path fallback, deduped by job id
+    /// against any remote clips_ready push already received.
     private func notifyClipsReady(count: Int, jobId: String? = nil) {
         guard count > 0 else { return }
         // Dedup: the server already pushed for this job while we were foregrounded.
@@ -2336,14 +2368,10 @@ final class AppStore {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             switch settings.authorizationStatus {
-            case .notDetermined:
-                if PushPrimer.shouldShow(status: settings.authorizationStatus) {
-                    Task { @MainActor in self.showPushPrimer = true }
-                }
-            case .denied:
-                break
-            default:
+            case .authorized, .provisional:
                 AppStore.postClipsReadyNotification(jobId: jobId)
+            default:
+                break
             }
         }
     }

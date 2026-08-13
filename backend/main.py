@@ -2268,6 +2268,45 @@ async def captions(req: CaptionRequest):
     return {"mode": "mock", "lines": [ln for s in sentences if s for ln in chunk(s)]}
 
 
+class SocialCaptionRequest(BaseModel):
+    hook: str = ""
+    body: str = ""
+    cta: str = ""
+    niche: str = ""
+    audience: str = ""
+    platform: str = "instagram"       # "instagram" | "tiktok"
+    creator_id: str = "default"
+
+
+def _mock_social_caption(req: "SocialCaptionRequest") -> str:
+    """Deterministic doctrine-shaped fallback (keyless/dev): hook line → save CTA →
+    3-4 niche hashtags derived from the niche words. Never engagement bait."""
+    hook = (req.hook or req.body.split(".")[0] or "This one's worth a save").strip().rstrip(".") + "."
+    niche_words = [w.strip("#").lower() for w in re.findall(r"[A-Za-z]+", req.niche or "creator")][:2]
+    base = "".join(niche_words) or "creator"
+    tags = [f"#{base}"] + [f"#{w}tips" for w in niche_words][:2] + [f"#{base}coach"]
+    tags = list(dict.fromkeys(tags))[:4]
+    save_line = f"Save this for your next {niche_words[0] if niche_words else 'filming'} session."
+    return f"{hook}\n\n{save_line}\n\n{' '.join(tags)}"
+
+
+@app.post("/v1/social-caption")
+async def social_caption(req: SocialCaptionRequest):
+    """The post caption published WITH a clip (hashtags included) — doctrine-driven
+    (see prompts.SOCIAL_CAPTION_SYSTEM). One cheap HAIKU call; mock is a
+    deterministic doctrine-shaped skeleton so dev/keyless still produces structure."""
+    if ANTHROPIC_KEY:
+        try:
+            sys, usr = prompts.social_caption_prompt(
+                req.hook, req.body, req.cta, req.niche, req.audience, req.platform)
+            out = (await anthropic(sys, usr, HAIKU, 500) or "").strip().strip('"')
+            if out:
+                return {"mode": "live", "caption": out[:2000]}
+        except HTTPException:
+            pass
+    return {"mode": "mock", "caption": _mock_social_caption(req)}
+
+
 @app.post("/v1/teardown")
 async def teardown(req: TeardownRequest):
     has_metrics = (req.clip.get("metrics") or {}).get("views", 0) > 0
@@ -10303,6 +10342,15 @@ def _classify_edit_format(post: dict) -> tuple[str, str]:
     words = len(transcript.split())
     musicish = any(t in low for t in ("#montage", "#edit", "#recap", "#aesthetic", "#asmr",
                                       "sound on", "🎵", "#transition", "#fyp"))
+    # OWNER (2026-08-12): skits/memes were defaulting into talking_head (a skit IS
+    # people talking) and leaking into the emulate feed. Their caption tags are a
+    # strong tell; bucket them with the non-emulatable treatments. recap_music is the
+    # label only in the sense of "not a take a creator can copy by talking to camera".
+    skitish = any(t in low for t in ("#skit", "#skits", "#comedy", "#funny", "#meme",
+                                     "#memes", "#relatable", "#humor", "#prank",
+                                     "#couplecomedy", "when your", "when you ", "pov:"))
+    if skitish:
+        return "recap_music", "fast_cuts"
     # Short-or-no speech + short duration + music-ish caption → music recap.
     if (words < 12 and dur and dur <= 20) or (musicish and words < 25):
         return "recap_music", "fast_cuts"
@@ -10347,7 +10395,30 @@ def _is_talking_head_reel(reel: dict) -> bool:
     """HARD filter for recommended/mimic reels: keep only a person-talking-to-camera reel
     (with or without b-roll cutaways). A served reel usually carries `edit_format`; when
     it doesn't, fall back to the free heuristic. Excludes recap_music/recap_voiceover and
-    anything the heuristic reads as a montage."""
+    anything the heuristic reads as a montage.
+
+    OWNER (2026-08-12, "you're showing me mesh videos / skits"): when we HAVE watched
+    evidence — a real transcription — it OVERRIDES the caption heuristic in both
+    directions. A transcribed reel with almost no spoken words is a montage/skit no
+    matter how talking-head its caption reads; sparse speech over a long runtime is a
+    music edit with a couple of yelled lines, not a person talking to camera."""
+    t = (reel.get("transcript") or "").strip()
+    if reel.get("transcribed") and t:
+        toks = t.split()
+        words = len(toks)
+        if words < 12:
+            return False                                   # music/montage with stray words
+        dur = float(reel.get("duration_s") or 0)
+        if dur >= 8 and words / dur < 1.0:
+            return False                                   # sparse speech → edit, not a take
+        # Workout-counter / drill videos "speak" but say nothing — their transcript
+        # is mostly counting ("5, 4, 3, 2, 1, go! Round 2…"). Not emulatable speech.
+        counting = sum(1 for w in toks
+                       if w.strip(".,!?").isdigit()
+                       or w.strip(".,!?").lower() in ("go", "stop", "round", "rest",
+                                                      "next", "switch", "halfway"))
+        if counting / words >= 0.4:
+            return False
     ef = reel.get("edit_format") or ""
     if not ef:
         ef = _classify_edit_format(reel)[0]
@@ -10721,6 +10792,20 @@ async def _refresh_niche_reels(niche: str) -> None:
         _reels_refreshing.discard(key)
 
 
+# How long a RAW (non-rehosted) CDN video link is trusted to still play after its
+# cache entry was written. IG/TikTok links carry expiries in the hours-to-a-day
+# range; past this window the row serves thumbnail-only (and the feed's playability
+# filter drops it) instead of a video that 403s into a frozen poster on-device.
+_CDN_FRESH_S = int(os.environ.get("REELS_CDN_FRESH_S", str(12 * 3600)))
+
+
+def _stamped(reels: list[dict], ts: float) -> list[dict]:
+    """Copies annotated with their cache entry's write time — the CDN-freshness check
+    at serve time needs to know how old a raw video link is. Copies, not mutation:
+    these dicts live in the shared cache."""
+    return [{**r, "_cache_ts": ts} for r in reels]
+
+
 def _watched_real_reels(parsed: list[tuple[str, str]]) -> list[dict]:
     now = time.time()
     out: list[dict] = []
@@ -10728,7 +10813,7 @@ def _watched_real_reels(parsed: list[tuple[str, str]]) -> list[dict]:
         key = f"{platform}:{handle}"
         entry = _watched_reels_cache.get(key)
         if entry:
-            out.extend(entry["reels"])
+            out.extend(_stamped(entry["reels"], entry.get("ts") or now))
         stale = not entry or (now - entry["ts"]) > _WATCHED_REELS_TTL_S
         if stale and APIFY_KEY and key not in _reels_refreshing:
             _reels_refreshing.add(key)
@@ -10741,7 +10826,7 @@ def _niche_real_reels(niche: str) -> list[dict]:
         return []
     key = _niche_cache_key(niche)
     entry = _niche_reels_cache.get(key)
-    out = list(entry["reels"]) if entry else []
+    out = _stamped(entry["reels"], entry.get("ts") or time.time()) if entry else []
     stale = not entry or (time.time() - entry["ts"]) > _NICHE_REELS_TTL_S
     if stale and APIFY_KEY and key not in _reels_refreshing:
         _reels_refreshing.add(key)
@@ -10770,15 +10855,15 @@ def _any_cached_reels(limit: int = 24) -> list[dict]:
                     seen.add(rid)
                     if r.get("from_watched"):
                         # Foreign creators' watched rows serve as ORDINARY reels here:
-                        # the WATCHING badge and the TH-filter bypass are per-creator
-                        # trust, not transferable across the aggregate.
+                        # the WATCHING badge is per-creator trust, not transferable
+                        # across the aggregate.
                         r = {**r, "from_watched": False}
                     # OWNER MANDATE: talking-head ONLY on every serve path — this
                     # aggregate previously let montages through (they only sank in
                     # rank). A montage can't be emulated by talking to a camera.
                     if not (r.get("video_url") and _is_talking_head_reel(r)):
                         continue
-                    out.append(r)
+                    out.append({**r, "_cache_ts": entry.get("ts") or time.time()})
     out.sort(key=_emulatable_rank)
     return out[:limit]
 
@@ -10971,23 +11056,42 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
         # cross-niche aggregate rather than a blank feed while the scrape fills.
         if not corpus:
             corpus = _any_cached_reels()
-        # HARD talking-head filter: this app mimics talking-head content, so a montage or
-        # faceless-voiceover reel can't be turned into a cut the creator could make —
-        # exclude them entirely (not just rank them down). Then order the survivors
-        # talking-head-with-transcript first. Keep a watched reel even if unclassifiable
-        # (the creator explicitly follows them) so the "watched" row never empties.
-        # PLAYABILITY: never serve a card that can only ever be a static thumbnail — a reel
-        # with no video_url isn't "steal-able," it's just a picture. Require a video_url.
+        # PLAYABILITY (owner, 2026-08-12 "some reels aren't playing"): a raw IG/TikTok
+        # CDN video link EXPIRES — hours to a day or two after the scrape — and a
+        # cycled/hydrated row far past its scrape time serves a video URL that 403s
+        # on-device, leaving a dead poster frame. A Supabase-rehosted URL is durable;
+        # a raw CDN link only counts as playable while its cache entry is fresh.
+        # Stale raw-CDN rows are stripped to thumbnail-only here, which the video_url
+        # requirement below then excludes from the feed.
+        _sb_prefix = SUPABASE_URL.rstrip("/") if SUPABASE_URL else "\x00"
+        now_ts = time.time()
+        for r in corpus:
+            vurl = r.get("video_url") or ""
+            if vurl and not vurl.startswith(_sb_prefix) \
+                    and now_ts - float(r.get("_cache_ts") or now_ts) > _CDN_FRESH_S:
+                r["video_url"] = ""
+        # HARD talking-head filter. OWNER (2026-08-12, after a CGI exercise-animation
+        # reel surfaced in the feed): caption heuristics cannot SEE the video, so
+        # classification alone is not proof. The proof a person is talking to camera
+        # is REAL TRANSCRIBED SPEECH — require it. `_is_talking_head_reel` then
+        # rejects transcribed junk (a two-word "transcript", sparse speech over a
+        # long runtime) and the skit caption tags. Consequences accepted: the feed
+        # only serves reels the transcription pass has verified; the pool grows as
+        # background enrichment transcribes more (spend is already TH-first via
+        # _talking_head_first), and cycling keeps the scroll endless.
+        # Also gone: the watched-creator bypass — a skit from a creator the user
+        # tracks is still a skit. PLAYABILITY: never serve a card that can only
+        # ever be a static thumbnail; a reel with no video_url isn't "steal-able."
         filtered = [r for r in corpus
-                    if r.get("video_url") and (_is_talking_head_reel(r) or r.get("from_watched"))]
-        # Tier 3 (OWNER MANDATE 2026-08-04): the talking-head requirement NEVER relaxes —
-        # a montage the creator can't emulate by talking to camera is worse than a
-        # shorter page. The only permitted relaxation is playability (allow a
-        # thumbnail-only TALKING-HEAD row) so a cold cache still shows something real.
+                    if r.get("video_url") and r.get("transcribed")
+                    and _is_talking_head_reel(r)]
+        # Tier 3 (OWNER MANDATE): the talking-head requirement NEVER relaxes — the
+        # only permitted relaxation is playability (a thumbnail-only VERIFIED
+        # talking-head row) so a cold cache still shows something real.
         if not filtered and corpus:
             filtered = [r for r in corpus
-                        if r.get("thumbnail_url") and (_is_talking_head_reel(r)
-                                                       or r.get("from_watched"))]
+                        if r.get("thumbnail_url") and r.get("transcribed")
+                        and _is_talking_head_reel(r)]
         corpus = filtered
         # Durability is a RANKING preference, not a filter: _emulatable_rank floats
         # Supabase-rehosted rows above raw CDN links (which can 403 on-device), but
@@ -11017,6 +11121,8 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
     else:
         page = corpus[start:start + REELS_PAGE]   # 0 or 1 reel: honest single page
         next_cursor = None
+    # _cache_ts is serve-side bookkeeping (CDN freshness), not payload.
+    page = [{k: v for k, v in r.items() if k != "_cache_ts"} for r in page]
     return {"mode": mode, "reels": page, "next_cursor": next_cursor}
 
 

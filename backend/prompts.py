@@ -2038,6 +2038,66 @@ def steer_prompt(brand: dict, script: dict, instruction: str,
     return system, user
 
 
+# ---------------------------------------------------------------------------
+# Social post caption (the text published WITH the clip, hashtags included).
+# Doctrine researched 2026-08-12 (Hootsuite Reels caption-length experiment,
+# Socialinsider 9M-post study, Later/Social Media Today on IG's 5-hashtag cap,
+# Meta Transparency Center engagement-bait categories, Mosseri 2025 ranking
+# statements). Before this, the "caption" was literally the script's CTA line.
+# ---------------------------------------------------------------------------
+
+SOCIAL_CAPTION_SYSTEM = (
+    "You write the POST CAPTION for a short-form talking-head video (the text published with it, "
+    "not on-screen subtitles). The goal is reach: captions are indexed as search text on both "
+    "platforms, and the ranking signals that matter are watch time, DM shares, saves and comments.\n\n"
+    "STRUCTURE (hard rules):\n"
+    "- Line 1 is a HOOK that works standalone in the first ~100 characters (that's all most "
+    "viewers see before '…more'). It must ADD to the video — a bold claim, specific number, or "
+    "curiosity gap — never restate the spoken hook word-for-word, and never open with a date, "
+    "an @mention, a hashtag, or 'New video!'.\n"
+    "- Work the niche's natural search phrase (what a person would type into search) into the "
+    "first line in plain sentence form. Keywords in the caption text outrank hashtags for "
+    "discovery now.\n"
+    "- Default SHORT: 1-3 lines, under ~30 words before the hashtags (short captions measurably "
+    "outperform long ones on Reels/TikTok). Go longer ONLY when the script opens a loop the "
+    "caption should pay off — then use one thought per line, blank lines between thoughts, and "
+    "a numbered list for steps.\n"
+    "- EXACTLY ONE call-to-action, framed as an exchange, chosen to fit the content: "
+    "a keyword-comment trade ('Comment WORD and I'll send you X'), a save tied to a concrete "
+    "future moment ('Save this for your next …'), or a share aimed at a specific person "
+    "('Send this to the friend who …'). Blend the script's CTA idea into this shape rather "
+    "than copying it.\n"
+    "- End with hashtags on their own line: exactly 3-5, all literally describing the video, "
+    "mixing niche-specific and mid-size topical tags. lowercase, no spaces.\n\n"
+    "NEVER (these are demoted or read as spam):\n"
+    "- Engagement bait: 'comment YES if…', 'tag 3 friends', 'share this with everyone', "
+    "'like if…', 'follow for more' as the CTA.\n"
+    "- Generic reach tags (#fyp #viral #foryou #trending) or more than 5 hashtags.\n"
+    "- AI-genericisms: 'unlock', 'level up', 'game changer', 'in today's fast-paced world', "
+    "sparkle emoji, an emoji after every sentence (0-3 emoji total, functional only).\n"
+    "- A wall of text, or a caption that merely transcribes the video.\n\n"
+    "Voice: first person, specific numbers and named outcomes, the way this creator actually "
+    "talks. Reply with ONLY the caption text — no quotes, no preamble, no labels."
+)
+
+
+def social_caption_prompt(hook: str, body: str, cta: str, niche: str,
+                          audience: str, platform: str = "instagram") -> tuple[str, str]:
+    plat = ("TikTok — compress toward one conversational line or a tight short block, "
+            "hook under ~100 chars; comment-trade CTAs perform best here."
+            if platform == "tiktok" else
+            "Instagram Reels — hook under ~125 chars before the fold; line breaks and "
+            "whitespace encouraged; save/send CTAs perform best here.")
+    user = (f"Platform: {plat}\n"
+            f"Creator niche: {niche or 'general'}\n"
+            f"Audience: {audience or 'their followers'}\n"
+            f"Spoken hook: {hook}\n"
+            f"Script body (what the video says):\n{body[:1200]}\n"
+            f"Script CTA idea: {cta or '(none — pick the best-fit CTA shape)'}\n\n"
+            "Write the post caption.")
+    return SOCIAL_CAPTION_SYSTEM, user
+
+
 def captions_prompt(hook: str, body: str) -> tuple[str, str]:
     system = (
         "You turn a short-form script into punchy on-screen caption lines — ≤5 words each, covering all the "

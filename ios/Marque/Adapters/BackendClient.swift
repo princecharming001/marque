@@ -405,6 +405,24 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         struct MTrack: Decodable { let name: String; let url: String }
     }
 
+    /// The doctrine-driven POST caption (hook line + one exchange-shaped CTA + 3-5
+    /// hashtags) for a clip — replaces the old "caption = the script's CTA line".
+    func socialCaption(script: Script, brand: BrandGraph) async -> String? {
+        let body: [String: Any] = [
+            "hook": script.hook.text,
+            "body": script.body,
+            "cta": script.cta,
+            "niche": brand.niche,
+            "audience": brand.audience,
+            "platform": brand.primaryPlatform?.rawValue ?? "instagram",
+            "creator_id": creatorId,
+        ]
+        guard let data = await post("/v1/social-caption", body),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cap = json["caption"] as? String, !cap.isEmpty else { return nil }
+        return cap
+    }
+
     /// GET /v1/music — the beds the render/auto-selection uses, so the editor picker shows
     /// the SAME catalog (single source of truth). Empty on failure → caller keeps fallback.
     func musicCatalog() async -> [MusicCatalog.Track] {

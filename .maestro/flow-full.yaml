@@ -69,6 +69,14 @@ name: Marque — full core loop
     timeout: 5000
 - tapOn: "Enter Yunicorn"
 
+# Notification primer page (owner, 2026-08-12): the ONE permission ask, right
+# after the aha. Fast path = skip (tapping enable would need the OS dialog).
+- extendedWaitUntil:
+    visible: { id: "onboard.notifications.skip" }
+    timeout: 6000
+- tapOn:
+    id: "onboard.notifications.skip"
+
 # Gate 1 (REORDERED): hard subscription wall first. The tap is optional:
 # a real/leftover StoreKit entitlement in the simulator legitimately skips
 # this screen entirely.
