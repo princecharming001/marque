@@ -1,5 +1,6 @@
 import json
 import copy
+import re
 import time
 import uuid
 
@@ -682,6 +683,34 @@ def test_social_caption_mock_shape():
     tags = [w for w in cap.split() if w.startswith("#")]
     assert 3 <= len(tags) <= 5                                    # doctrine hashtag band
     assert "#fyp" not in cap and "tag 3 friends" not in cap.lower()
+
+
+def test_caption_hashtags_must_be_real_words():
+    """The first live call produced #fitnescoach / #deficitstalse — misspelled tags
+    reach nobody. Ungrounded tags are dropped and topped up deterministically."""
+    cap = ("Water retention masks 3 weeks of real fat loss.\n\n"
+           "Save this for next time.\n\n"
+           "#fitnescoach #fatloss #deficitstalse")
+    out = main._sanitize_caption_hashtags(
+        cap, niche="fitness coaching", audience="busy professionals",
+        body="the real reason your fat loss deficit stalls is water retention")
+    tags = re.findall(r"#[A-Za-z0-9_]+", out)
+    assert "#fitnescoach" not in tags and "#deficitstalse" not in tags   # misspellings gone
+    assert "#fatloss" in tags                                            # grounded tag kept
+    assert 3 <= len(tags) <= 5                                           # topped back up
+    assert "Water retention masks" in out                                # body preserved
+    # Every surviving tag is composed of the creator's own (correctly spelled) words.
+    vocab = main._tag_vocab("fitness coaching", "busy professionals",
+                            "the real reason your fat loss deficit stalls is water retention")
+    assert all(main._tag_is_grounded(t, vocab) for t in tags)
+
+
+def test_caption_hashtag_segmentation():
+    vocab = main._tag_vocab("fitness coaching", "busy professionals", "fat loss deficit")
+    assert main._tag_is_grounded("#fatlosscoach", vocab) is True      # fat+loss+coach
+    assert main._tag_is_grounded("#fitnesstips", vocab) is True       # fitness+tips
+    assert main._tag_is_grounded("#deficitstalse", vocab) is False    # not real words
+    assert main._tag_is_grounded("#fitnescoach", vocab) is False      # typo'd 'fitnes'
 
 
 def test_trends_mock_rotates_by_bucket(monkeypatch):

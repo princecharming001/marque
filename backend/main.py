@@ -2278,6 +2278,81 @@ class SocialCaptionRequest(BaseModel):
     creator_id: str = "default"
 
 
+# Suffixes that legitimately compound onto a niche word in real tags
+# (#fitnesstips, #fatlosscoach). Kept small and real — this list is part of the
+# "spelled correctly by construction" guarantee below.
+_TAG_SUFFIXES = ("tips", "coach", "coaching", "hacks", "advice", "life", "tok",
+                 "gram", "reels", "daily", "journey", "motivation", "routine",
+                 "forbeginners", "101")
+
+
+def _tag_vocab(*texts: str) -> set[str]:
+    """Known-good lowercase words drawn from the creator's own inputs — these are
+    spelled correctly by definition (they came from a human), so any tag built
+    only from them is spelled correctly too."""
+    vocab: set[str] = set()
+    for t in texts:
+        for w in re.findall(r"[A-Za-z]{3,}", t or ""):
+            vocab.add(w.lower())
+    return vocab
+
+
+def _tag_is_grounded(tag: str, vocab: set[str]) -> bool:
+    """True when the tag body can be fully segmented into known-good words
+    (optionally ending in a real suffix). Greedy longest-match segmentation —
+    #fatlosscoach passes (fat+loss+coach), #deficitstalse does not."""
+    body = tag.lstrip("#").lower()
+    if not body:
+        return False
+    words = sorted(vocab | set(_TAG_SUFFIXES), key=len, reverse=True)
+    i = 0
+    while i < len(body):
+        for w in words:
+            if body.startswith(w, i):
+                i += len(w)
+                break
+        else:
+            return False
+    return True
+
+
+def _fallback_tags(niche: str, audience: str) -> list[str]:
+    """Deterministic, correctly-spelled tags from the creator's own niche words."""
+    words = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", niche or "")][:2]
+    if not words:
+        words = [w.lower() for w in re.findall(r"[A-Za-z]{3,}", audience or "")][:1] or ["creator"]
+    base = "".join(words)
+    out = [f"#{base}"] + [f"#{w}tips" for w in words] + [f"#{words[0]}coach"]
+    return list(dict.fromkeys(out))
+
+
+def _sanitize_caption_hashtags(caption: str, niche: str, audience: str, body: str) -> str:
+    """OWNER-VISIBLE DEFECT (2026-08-15, caught on the first live call): the model
+    invented MISSPELLED tags (#fitnescoach, #deficitstalse). A misspelled tag is a
+    dead tag — nobody follows it, nobody searches it, so it reaches zero people and
+    the whole 3-5 hashtag rule is wasted. Prompt guidance alone can't guarantee
+    spelling, so drop any tag that isn't fully composed of words the creator
+    actually gave us (+ real suffixes), then top back up to 3 deterministically."""
+    tags = re.findall(r"#[A-Za-z0-9_]+", caption)
+    if not tags:
+        return caption
+    vocab = _tag_vocab(niche, audience, body)
+    kept = [t for t in tags if _tag_is_grounded(t, vocab)]
+    dropped = [t for t in tags if t not in kept]
+    if dropped:
+        logging.info("social-caption: dropped ungrounded tags %s", dropped)
+    for cand in _fallback_tags(niche, audience):
+        if len(kept) >= 3:
+            break
+        if cand.lower() not in {k.lower() for k in kept}:
+            kept.append(cand)
+    kept = kept[:5]
+    # Rebuild: strip every original tag, then append the clean line.
+    stripped = re.sub(r"#[A-Za-z0-9_]+", "", caption)
+    stripped = "\n".join(ln.rstrip() for ln in stripped.splitlines())
+    return stripped.rstrip() + "\n\n" + " ".join(kept)
+
+
 def _mock_social_caption(req: "SocialCaptionRequest") -> str:
     """Deterministic doctrine-shaped fallback (keyless/dev): hook line → save CTA →
     3-4 niche hashtags derived from the niche words. Never engagement bait."""
@@ -2301,7 +2376,8 @@ async def social_caption(req: SocialCaptionRequest):
                 req.hook, req.body, req.cta, req.niche, req.audience, req.platform)
             out = (await anthropic(sys, usr, HAIKU, 500) or "").strip().strip('"')
             if out:
-                return {"mode": "live", "caption": out[:2000]}
+                out = _sanitize_caption_hashtags(out[:2000], req.niche, req.audience, req.body)
+                return {"mode": "live", "caption": out}
         except HTTPException:
             pass
     return {"mode": "mock", "caption": _mock_social_caption(req)}
