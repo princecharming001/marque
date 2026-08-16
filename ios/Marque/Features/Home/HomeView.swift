@@ -98,7 +98,7 @@ struct HomeView: View {
     private var avatarButton: some View {
         ZStack {
             Circle().fill(Palette.accent.opacity(0.16)).frame(width: 34, height: 34)
-            if let url = store.brand.connectedAccounts.first?.avatarUrl, !url.isEmpty, let u = URL(string: url) {
+            if let url = store.primaryAccount?.avatarUrl, !url.isEmpty, let u = URL(string: url) {
                 AsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { initial }
                     .frame(width: 34, height: 34).clipShape(Circle())
             } else {
@@ -112,14 +112,14 @@ struct HomeView: View {
     }
 
     private var initial: some View {
-        Text(String((store.brand.connectedAccounts.first?.handle ?? store.brand.niche).prefix(1)).uppercased())
+        Text(String((store.primaryAccount?.handle ?? store.brand.niche).prefix(1)).uppercased())
             .font(Typeface.display(15, .semibold)).foregroundStyle(Palette.accent)
     }
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
         let part = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
-        if let h = store.brand.connectedAccounts.first?.handle, !h.isEmpty { return "\(part), @\(h)" }
+        if let h = store.primaryAccount?.handle, !h.isEmpty { return "\(part), @\(h)" }
         return part
     }
 

@@ -34,8 +34,9 @@ struct RootTabView: View {
 
     @ViewBuilder
     private func content(for tab: AppTab) -> some View {
+        @Bindable var router = router
         switch tab {
-        case .home: NavigationStack { HomeView() }
+        case .home: NavigationStack(path: $router.homePath) { HomeView() }
         case .chat: NavigationStack { ChatView() }
         case .library: NavigationStack { LibraryView() }
         case .performance: NavigationStack { PerformanceView() }

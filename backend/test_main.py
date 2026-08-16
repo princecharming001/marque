@@ -1012,6 +1012,50 @@ def test_social_accounts_scoped_to_claims(monkeypatch):
     assert [a["id"] for a in b["accounts"]] == ["spc_mine"]      # never spc_owner
 
 
+def test_social_accounts_backfill_avatar_from_public_profile(monkeypatch):
+    # Post for Me usually returns profile_photo_url="" — the creator's own picture is
+    # then re-derived from their public profile, so the app can show it instead of a
+    # letter monogram. A scrape failure must degrade to "" and never fail the call.
+    monkeypatch.setattr(main, "POSTFORME_KEY", "k")
+    store = _FakeClaimStore()
+    store.rows.append({"creator_id": "user_b", "account_id": "spc_mine",
+                       "platform": "tiktok", "username": "userb_tt"})
+    monkeypatch.setattr(main, "_supabase_client", store)
+    monkeypatch.setattr(main, "_pfm_request", _pfm_pool_stub([
+        {"id": "spc_mine", "platform": "tiktok", "username": "userb_tt",
+         "status": "connected", "access_token_expires_at": "x",
+         "profile_photo_url": "", "external_id": None},
+    ]))
+
+    main._avatar_cache.clear()
+    calls = []
+
+    async def _fake_tt(handle):
+        calls.append(handle)
+        return {"found": True, "platform": "tiktok", "handle": handle,
+                "avatarUrl": "https://cdn.example/userb.jpg", "followers": 10,
+                "displayName": handle, "bio": ""}
+    monkeypatch.setattr(main, "preview_tiktok", _fake_tt)
+    b = client.get("/v1/social/accounts",
+                   params={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert b["accounts"][0]["profile_photo_url"] == "https://cdn.example/userb.jpg"
+
+    # Cached: the picture survives a second call WITHOUT re-scraping. This route is
+    # hit on every cold start, and the scrape is the expensive part of it.
+    b = client.get("/v1/social/accounts",
+                   params={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert b["accounts"][0]["profile_photo_url"] == "https://cdn.example/userb.jpg"
+    assert len(calls) == 1
+
+    async def _boom(handle):
+        raise RuntimeError("profile page blocked")
+    monkeypatch.setattr(main, "preview_tiktok", _boom)
+    main._avatar_cache.clear()
+    b = client.get("/v1/social/accounts",
+                   params={"claimant_id": "user_b", "platform": "tiktok"}).json()
+    assert b["accounts"][0]["profile_photo_url"] == ""            # degrades, never 500s
+
+
 def test_publish_rejects_unclaimed_accounts(monkeypatch):
     monkeypatch.setattr(main, "POSTFORME_KEY", "k")
     store = _FakeClaimStore()

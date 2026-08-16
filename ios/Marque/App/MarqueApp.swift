@@ -118,6 +118,10 @@ struct RootView: View {
         // Liveness v2: same sweep once per cold start, regardless of which screen the
         // app opens on (scenePhase's initial transition isn't guaranteed to fire).
         .task { store.repollRenderingClips() }
+        // Heal the creator's profile picture: Post for Me frequently has no photo at
+        // link time and its CDN URLs expire, so the server re-derives one from the
+        // public profile and this pulls it in. Silent no-op with nothing linked.
+        .task { await store.refreshAccountAvatars() }
         .onChange(of: net.isOnline) { _, online in
             if online { Task { await store.retryPendingPublishes() } }
         }

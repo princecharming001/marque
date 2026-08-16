@@ -79,6 +79,7 @@ struct ReelFeedPager: View {
         // and thread it into the overlay padding.
         GeometryReader { proxy in
             let bottomInset = proxy.safeAreaInsets.bottom
+            let topInset = proxy.safeAreaInsets.top
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(feed.reelItems) { reel in
@@ -95,7 +96,7 @@ struct ReelFeedPager: View {
             .scrollIndicators(.hidden)
             .ignoresSafeArea()
             .background(Color.black)
-            .overlay(alignment: .topTrailing) { closeButton }
+            .overlay(alignment: .topTrailing) { closeButton(topInset: topInset) }
             .task { if currentId == nil { currentId = startReel.id } }
             // OWNER (2026-08-12): the stats button opens the compact numbers-only
             // popup — never the full teardown that replays the video mid-watch.
@@ -104,15 +105,21 @@ struct ReelFeedPager: View {
         }
     }
 
-    private var closeButton: some View {
+    /// Same safe-area rule as the bottom overlay: the pager ignores the safe area so
+    /// video is full-bleed, so this must re-add the REAL top inset instead of guessing
+    /// with a fixed pad (which floats too low on a notch phone and clips on others).
+    private func closeButton(topInset: CGFloat) -> some View {
         Button { dismiss() } label: {
-            Image(systemName: "xmark").font(.system(size: 15, weight: .bold))
+            Image(systemName: "xmark").font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(.black.opacity(0.35), in: Circle())
+                .frame(width: 36, height: 36)
+                // Glass, not flat black — reads as one material family with the
+                // action row and lets the video through behind it.
+                .background(.ultraThinMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
         }
         .buttonStyle(.plain)
-        .padding(.top, Space.xl)
+        .padding(.top, topInset + Space.sm)
         .padding(.trailing, Space.md)
         .accessibilityIdentifier("reelPager.close")
     }
@@ -121,9 +128,17 @@ struct ReelFeedPager: View {
         ZStack {
             Color.black
             ReelPagerMedia(reel: reel, active: reel.id == currentId)
-            // Legibility scrim + bottom info/actions overlay.
-            LinearGradient(colors: [.clear, .clear, .black.opacity(0.55), .black.opacity(0.8)],
-                           startPoint: .top, endPoint: .bottom)
+            // Legibility scrim. Eased in over more stops so it fades into the frame
+            // instead of banding — the old 4-stop ramp put a visible hard edge across
+            // the middle of every reel. Slight top scrim carries the close button.
+            LinearGradient(stops: [
+                .init(color: .black.opacity(0.30), location: 0.00),
+                .init(color: .clear,               location: 0.16),
+                .init(color: .clear,               location: 0.44),
+                .init(color: .black.opacity(0.20), location: 0.62),
+                .init(color: .black.opacity(0.52), location: 0.78),
+                .init(color: .black.opacity(0.82), location: 1.00),
+            ], startPoint: .top, endPoint: .bottom)
                 .allowsHitTesting(false)
             VStack(alignment: .leading, spacing: Space.sm) {
                 Spacer()
@@ -131,14 +146,14 @@ struct ReelFeedPager: View {
                 if !reel.hookText.isEmpty {
                     Text(reel.hookText)
                         .font(AppFont.body).foregroundStyle(.white.opacity(0.95))
-                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .padding(.trailing, Space.xl)   // never runs to the hard edge
                 }
-                HStack(spacing: Space.md) {
-                    Label(compactNumber(reel.views), systemImage: "eye")
-                    Label(compactNumber(reel.likes), systemImage: "heart")
-                }
-                .font(AppFont.caption).foregroundStyle(.white.opacity(0.8))
+                // Views/likes read as one quiet metadata line rather than two
+                // icon+number Labels competing with the hook above them.
+                metricsRow(reel)
                 actionRow(reel)
+                    .padding(.top, Space.xxs)
             }
             .onAppear { fetchProfile(for: reel) }
             // build 52 formatting fix: FILL the cell FIRST, then inset. Previously
@@ -157,6 +172,24 @@ struct ReelFeedPager: View {
         }
     }
 
+    /// Views · likes · length as one hairline metadata row.
+    private func metricsRow(_ reel: ReelItem) -> some View {
+        HStack(spacing: 6) {
+            Text(compactNumber(reel.views)).fontWeight(.semibold)
+            Text("views")
+            Text("·").opacity(0.5)
+            Text(compactNumber(reel.likes)).fontWeight(.semibold)
+            Text("likes")
+            if reel.durationS > 0 {
+                Text("·").opacity(0.5)
+                Text("\(reel.durationS)s")
+            }
+        }
+        .font(AppFont.caption)
+        .foregroundStyle(.white.opacity(0.72))
+        .lineLimit(1)
+    }
+
     /// Creator identity: real profile pic + tappable @handle (→ their Instagram/TikTok) +
     /// follower count. pfp/followers arrive lazily from GET /v1/reels/creator; until then the
     /// avatar is a monogram placeholder and the follower line is hidden.
@@ -167,7 +200,9 @@ struct ReelFeedPager: View {
             VStack(alignment: .leading, spacing: 1) {
                 Button { openProfile(reel) } label: {
                     HStack(spacing: 5) {
-                        Text("@\(reel.creatorHandle)").font(AppFont.headline).lineLimit(1)
+                        Text("@\(reel.creatorHandle)")
+                            .font(AppFont.headline).lineLimit(1)
+                            .minimumScaleFactor(0.85)   // long handles shrink, never clip
                         Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .bold)).opacity(0.7)
                     }.foregroundStyle(.white)
                 }.buttonStyle(.plain).accessibilityIdentifier("reelPager.handle")
@@ -176,18 +211,21 @@ struct ReelFeedPager: View {
                         .font(AppFont.micro).foregroundStyle(.white.opacity(0.75))
                 }
             }
+            .layoutPriority(1)
             if reel.fromWatched {
                 Text("WATCHING").font(AppFont.micro).tracking(0.5)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
                     .foregroundStyle(.white)
-                    .background(Palette.accent.opacity(0.25), in: Capsule())
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.20), lineWidth: 0.5))
+                    .fixedSize()
             }
             Spacer(minLength: 0)
         }
     }
 
     @ViewBuilder private func avatar(_ reel: ReelItem, pfp: String) -> some View {
-        let ring = Circle().strokeBorder(.white.opacity(0.6), lineWidth: 1.5)
+        let ring = Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1)
         Group {
             if let url = URL(string: pfp), !pfp.isEmpty {
                 AsyncImage(url: url) { img in img.resizable().scaledToFill() }
@@ -196,12 +234,26 @@ struct ReelFeedPager: View {
                 monogram(reel.creatorHandle)
             }
         }
-        .frame(width: 34, height: 34).clipShape(Circle()).overlay(ring)
+        .frame(width: 36, height: 36).clipShape(Circle()).overlay(ring)
     }
 
     private func monogram(_ handle: String) -> some View {
-        Circle().fill(Palette.accent.opacity(0.35)).overlay(
-            Text(String(handle.prefix(1)).uppercased()).font(AppFont.caption.weight(.bold)).foregroundStyle(.white))
+        Circle().fill(.ultraThinMaterial).overlay(
+            Text(String(handle.prefix(1)).uppercased())
+                .font(AppFont.caption.weight(.bold)).foregroundStyle(.white))
+    }
+
+    /// The two secondary controls share one glass chip treatment — 48pt square,
+    /// ultraThinMaterial over the video with a hairline rim, matching the tab bar's
+    /// material language instead of the old flat 15%-white block.
+    private func glassChip(_ symbol: String, tint: Color = .white) -> some View {
+        Image(systemName: symbol)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(tint)
+            .frame(width: 48, height: 48)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
     }
 
     /// Elegant, minimal "track this creator" pill — feeds their reels into the feed as
@@ -209,23 +261,20 @@ struct ReelFeedPager: View {
     private func trackButton(_ reel: ReelItem) -> some View {
         let tracked = isTracked(reel.creatorHandle)
         return Button { trackCreator(reel) } label: {
-            Image(systemName: tracked ? "checkmark" : "plus")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(tracked ? Palette.accent : .white)
-                .frame(width: 50, height: 50)
-                .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            glassChip(tracked ? "checkmark" : "plus", tint: tracked ? Palette.accent : .white)
         }
         .buttonStyle(.plain)
         .disabled(tracked)
+        .accessibilityLabel(tracked ? "Tracking this creator" : "Track this creator")
         .accessibilityIdentifier("reelPager.track")
     }
 
     private func actionRow(_ reel: ReelItem) -> some View {
         HStack(spacing: Space.sm) {
             Button { runMimic(reel) } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     if mimicking == reel.id {
-                        ProgressView().tint(Palette.ink)
+                        ProgressView().tint(Palette.ink).controlSize(.small)
                         Text("Rewriting…").font(AppFont.headline)
                     } else {
                         Image(systemName: "wand.and.stars").font(.system(size: 15, weight: .semibold))
@@ -238,8 +287,10 @@ struct ReelFeedPager: View {
                 // onInk means "text on an ink fill"; this fill is white, so the text
                 // is ink. The detail sheet's CTA (ink fill + onInk text) was right.
                 .foregroundStyle(Palette.ink)
-                .frame(maxWidth: .infinity).frame(height: 50)
-                .background(.white, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .frame(maxWidth: .infinity).frame(height: 48)
+                // Capsule + the other two as squares gives the row a clear primary;
+                // three equal rounded rects read as a toolbar with no hierarchy.
+                .background(.white, in: Capsule())
             }
             .buttonStyle(PressableStyle())
             .disabled(mimicking == reel.id)
@@ -252,12 +303,10 @@ struct ReelFeedPager: View {
                 if let p = profiles[reel.creatorHandle.lowercased()] { r.pfpURL = p.pfp; r.followerCount = p.followers }
                 detailReel = r
             } label: {
-                Image(systemName: "chart.bar.fill").font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 50, height: 50)
-                    .background(.white.opacity(0.15), in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                glassChip("chart.bar.fill")
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Stats")
             .accessibilityIdentifier("reelPager.details")
         }
     }

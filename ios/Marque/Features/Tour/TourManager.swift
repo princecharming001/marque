@@ -52,6 +52,7 @@ final class TourManager {
     /// Explicit replay (Settings → "Replay walkthrough").
     func start(router: AppRouter) {
         router.selectedTab = .home   // the voice-bubble step needs Home's content on screen
+        router.homePath.removeAll()  // …and nothing pushed over it (Settings → Replay)
         index = 0
         isActive = true
     }

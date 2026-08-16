@@ -78,13 +78,13 @@ struct ReelStatsSheet: View {
     // counts follow. Watch-time/retention isn't public for other creators'
     // posts, so nothing here is invented.
     private var tiles: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            HStack(spacing: Space.md) {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(spacing: Space.sm) {
                 tile(String(format: "%.1f%%", engagementRate * 100), "engagement", strong: true)
                 tile(compactNumber(reel.views), "views")
                 if reel.followerCount > 0 { tile(compactNumber(reel.followerCount), "followers") }
             }
-            HStack(spacing: Space.md) {
+            HStack(spacing: Space.sm) {
                 tile(compactNumber(reel.likes), "likes")
                 if reel.comments > 0 { tile(compactNumber(reel.comments), "comments") }
                 if reel.durationS > 0 { tile("\(reel.durationS)s", "length") }
@@ -93,14 +93,24 @@ struct ReelStatsSheet: View {
     }
 
     private func tile(_ value: String, _ label: String, strong: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 3) {
             Text(value).font(strong ? AppFont.title : AppFont.headline)
                 .foregroundStyle(strong ? Palette.accent : Palette.textPrimary)
-            Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+                .lineLimit(1).minimumScaleFactor(0.7)   // 15.6M never truncates
+            // "ENGAGEMENT" at Track.label overflows a third-width tile and used to
+            // render as "ENGAGEME…". Tighter tracking + scale-down keeps every label
+            // whole rather than truncating the one that names the headline metric.
+            Text(label.uppercased()).font(AppFont.micro).tracking(0.8)
+                .foregroundStyle(Palette.textTertiary)
+                .lineLimit(1).minimumScaleFactor(0.72)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Space.sm)
-        .background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
+        .padding(.horizontal, Space.sm).padding(.vertical, Space.sm)
+        // Card, not a flat gray block: white over the canvas with a hairline rim, so
+        // the tiles read as one set with the rest of the app's surfaces.
+        .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 
     // "Make sure the captions are shown" — the spoken words when we transcribed

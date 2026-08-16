@@ -92,10 +92,21 @@ struct MarqueTabBar: View {
             selected = item.tab
         } label: {
             VStack(spacing: 3) {
+                // OWNER (2026-08-15): tab icons are blue — the selected one at full
+                // accent, the rest at 40% so the bar still reads as one blue family
+                // while the current tab stays obvious. Labels keep the neutral ink
+                // ramp: five blue words would fight the icons for attention.
                 Image(systemName: item.icon).font(.system(size: 20, weight: .regular))
-                Text(item.label).font(.custom("Inter-Medium", size: 10))
+                    .foregroundStyle(selected == item.tab ? Palette.accent
+                                                          : Palette.accent.opacity(0.40))
+                Text(item.label)
+                    // "Inter-Medium" isn't a bundled face (the app ships Matter +
+                    // Fraunces), so this silently fell back to system at a size
+                    // that wrapped "Performance" onto two lines in the bar.
+                    .font(Typeface.sans(10, .medium))
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .foregroundStyle(selected == item.tab ? Palette.textPrimary : Palette.textTertiary)
             }
-            .foregroundStyle(selected == item.tab ? Palette.textPrimary : Palette.textTertiary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 2)
             .contentShape(Rectangle())

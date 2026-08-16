@@ -9,6 +9,12 @@ final class AppStore {
     // Persisted-ish app state
     var brand = BrandGraph()
     var pillars: [Pillar] = []
+    /// Set once the creator edits pillars by hand. Background scans (voice digest,
+    /// brand-scan) may seed pillars but must never overwrite hand-edited ones — the
+    /// digest lands minutes after onboarding and used to silently clobber edits made
+    /// in that window, so a delete would "come back". Mirrors the untouched-guard the
+    /// same code path already applies to starter scripts.
+    var pillarsUserEdited = false
     var scripts: [Script] = []
     var clips: [Clip] = []
     var clipGroups: [ClipGroup] = []     // build 59: user-created Library collections (filter-only)
@@ -237,17 +243,76 @@ final class AppStore {
     // only when derived from real posts (brand-scan / digest) or written by the creator.
     // Script/feed generation that needs a pillar uses `workingPillar` — an unpersisted,
     // honest stand-in named after the niche, never shown as if it were a real pillar.
+    /// The pillar to write against next. The Mix slider in the pillars editor is what
+    /// steers this: pillars are drawn in proportion to their weights, so raising a
+    /// pillar to 50% really does make ~half the ideas come from it. (Before, this was
+    /// `pillars.first` and weight had zero consumers anywhere in the app — the dial
+    /// moved but nothing downstream read it, which is why "adjusting" felt broken.)
     var workingPillar: Pillar {
-        pillars.first ?? Pillar(name: brand.niche.isEmpty ? "Your niche" : brand.niche,
-                                weight: 1, colorHex: Catalog.pillarColors[0])
+        weightedPillar() ?? Pillar(name: brand.niche.isEmpty ? "Your niche" : brand.niche,
+                                   weight: 1, colorHex: Catalog.pillarColors[0])
+    }
+
+    /// Weighted random pick over `pillars`. Non-positive/absent weights degrade to a
+    /// uniform draw rather than always returning the first pillar.
+    func weightedPillar() -> Pillar? {
+        guard !pillars.isEmpty else { return nil }
+        let total = pillars.map { max(0, $0.weight) }.reduce(0, +)
+        guard total > 0.0001 else { return pillars.randomElement() }
+        var roll = Double.random(in: 0..<total)
+        for p in pillars {
+            roll -= max(0, p.weight)
+            if roll < 0 { return p }
+        }
+        return pillars.last
     }
 
     // MARK: Connected accounts
+
+    /// The account whose identity represents the creator across the app — OWNER
+    /// (2026-08-15): "the profile picture should be the same as the social media
+    /// account they first synced." That's the EARLIEST-linked account, by the durable
+    /// `linkedAt` stamp rather than array position (position shifts whenever an
+    /// account is re-linked, which would silently hand the profile to a different
+    /// account). Falls back to array order for pre-existing accounts that share a
+    /// default timestamp.
+    var primaryAccount: ConnectedAccount? {
+        brand.connectedAccounts.min { $0.linkedAt < $1.linkedAt }
+    }
+
+    /// Refresh linked-account avatars from the backend. PFM often has no photo at
+    /// link time (and its CDN URLs expire), so the server re-derives one from the
+    /// public profile — this pulls the healed value in. Silent no-op when nothing
+    /// is linked or the call fails.
+    func refreshAccountAvatars() async {
+        let accounts = brand.connectedAccounts.filter { !$0.handle.isEmpty }
+        guard !accounts.isEmpty else { return }
+        for platform in Set(accounts.map(\.platform)) {
+            let fresh = await backend.socialAccounts(platform: platform)
+            for f in fresh where !f.avatarUrl.isEmpty {
+                guard let i = brand.connectedAccounts.firstIndex(where: {
+                    $0.platform == f.platform && $0.handle.lowercased() == f.handle.lowercased()
+                }) else { continue }
+                brand.connectedAccounts[i].avatarUrl = f.avatarUrl
+            }
+        }
+        save()
+    }
 
     func connectPreview(handle: String, platform: String) async -> ConnectedAccount? {
         await backend.connectPreview(handle: handle, platform: platform)
     }
     func addConnectedAccount(_ a: ConnectedAccount) {
+        var a = a
+        // Re-linking an account must not reset its seniority: the profile picture comes
+        // from the FIRST account the creator synced (see `primaryAccount`), and this
+        // remove-then-append would otherwise make a re-auth look brand new.
+        if let existing = brand.connectedAccounts.first(where: {
+            $0.platform == a.platform && $0.handle.lowercased() == a.handle.lowercased()
+        }) {
+            a.linkedAt = existing.linkedAt
+            if a.avatarUrl.isEmpty { a.avatarUrl = existing.avatarUrl }
+        }
         brand.connectedAccounts.removeAll { $0.platform == a.platform && $0.handle.lowercased() == a.handle.lowercased() }
         brand.connectedAccounts.append(a)
         if brand.pageHandle.isEmpty { brand.pageHandle = a.handle }
@@ -356,12 +421,22 @@ final class AppStore {
     func analyzePage() async {
         try? await Task.sleep(nanoseconds: 600_000_000)   // brief "reading your page" UX
         brand.analyzed = true
-        if let account = brand.connectedAccounts.first, !account.handle.isEmpty {
+        // The account the profile presents (first synced), not whichever row happens
+        // to sit at index 0 — a re-auth moves an account to the end of the array, and
+        // scanning a different platform than the one shown is quietly wrong.
+        if let account = brand.connectedAccounts
+            .filter({ !$0.handle.isEmpty })
+            .min(by: { $0.linkedAt < $1.linkedAt }) {
             if let result = await backend.brandScan(handle: account.handle,
                                                      platform: account.platform,
                                                      niche: brand.niche) {
                 if !result.pillars.isEmpty {
+                    // "Refresh with AI" is the one place a scan may replace
+                    // hand-edited pillars — the creator explicitly asked for it
+                    // there and confirmed a destructive dialog. Everywhere else
+                    // the edited set wins (see pillarsUserEdited).
                     pillars = result.pillars
+                    pillarsUserEdited = false
                     brand.topThemes = result.topThemes
                     if let v = result.voiceUpdate { brand.voice = v }
                     applyScanIdentity(result)
@@ -392,8 +467,11 @@ final class AppStore {
     }
 
     /// Apply a voice-onboarding finalize result (called after the conversational session).
+    /// Also runs from the background digest, which lands minutes after onboarding — so
+    /// it must never overwrite pillars the creator has since edited by hand (that made
+    /// deletes reappear). Same untouched-guard this path already gives starter scripts.
     func applyVoiceScan(_ result: BackendClient.BrandScanResult) {
-        if !result.pillars.isEmpty {
+        if !result.pillars.isEmpty, !pillarsUserEdited {
             pillars = result.pillars
             brand.topThemes = result.topThemes
         }
@@ -422,7 +500,7 @@ final class AppStore {
         pillars = []; scripts = []; clips = []; readiedScripts = []
         media = []; memory = CreatorMemory()
         starterScriptsState = .idle
-        hasOnboarded = false
+        hasOnboarded = false; pillarsUserEdited = false
         auth.signOut()
         subscription.resetDev()
         save()
@@ -2621,6 +2699,7 @@ final class AppStore {
         // already earned. Persist the earned floor in the snapshot too.
         var rankFloorLevel: Int? = nil
         var clipGroups: [ClipGroup]? = nil             // build 59: Library collections (decode-safe)
+        var pillarsUserEdited: Bool? = nil             // hand-edited pillars survive scans
     }
 
     func save() {
@@ -2635,7 +2714,8 @@ final class AppStore {
                             likedPicks: likedPicks, dismissedPicks: dismissedPicks,
                             reelsShot: reelsShot,
                             rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey),
-                            clipGroups: clipGroups)
+                            clipGroups: clipGroups,
+                            pillarsUserEdited: pillarsUserEdited)
         if let data = try? JSONEncoder().encode(snap) {
             UserDefaults.standard.set(data, forKey: saveKey)
             // Best-effort mirror to Supabase when configured (no-op otherwise).
@@ -2671,6 +2751,7 @@ final class AppStore {
         brand = snap.brand; pillars = snap.pillars; scripts = snap.scripts
         clips = snap.clips; footage = snap.footage; media = snap.media
         clipGroups = snap.clipGroups ?? []
+        pillarsUserEdited = snap.pillarsUserEdited ?? false
         // Build 61: bring the decoded blob up to the multi-group schema — backfill group
         // colors, lift the legacy single `groupId` into `groupIds`, drop memberships whose
         // group no longer exists. Runs on BOTH local load and cloud restore, because a

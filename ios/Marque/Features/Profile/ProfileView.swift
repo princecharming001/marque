@@ -13,7 +13,9 @@ struct ProfileView: View {
     @State private var showCreatorProfile = false
     @State private var isRefreshingSummary = false
 
-    private var account: ConnectedAccount? { store.brand.connectedAccounts.first }
+    // The first-synced account (see AppStore.primaryAccount) — its picture is the
+    // creator's profile picture everywhere.
+    private var account: ConnectedAccount? { store.primaryAccount }
     private var displayName: String { account?.displayName ?? account?.handle ?? "Creator" }
     private var handle: String { account.map { "@\($0.handle)" } ?? "" }
 
@@ -612,6 +614,19 @@ struct PillarsEditorSheet: View {
     @State private var draft: [Pillar] = []
     @State private var regenerating = false
     @State private var confirmRefresh = false
+    /// The row awaiting delete confirmation. OWNER (2026-08-15, "deleting/adjusting
+    /// pillars doesn't work"): the confirm used to be a `.marqueConfirm` attached to
+    /// the 14pt trash Button INSIDE the row's `.marqueCard`. marqueConfirm is an
+    /// `.overlay`, not a presentation — so the dialog laid out against a 14pt frame
+    /// and was then clipped away by the card's `.clipShape`. Tapping trash did
+    /// nothing visible and the Delete action was unreachable, so pillars could never
+    /// be removed. The repo already documents this rule (ProEditorView.swift:159):
+    /// dialogs must be hosted on the ROOT view. Hoisted here, one per sheet.
+    @State private var pendingDelete: UUID?
+    /// Cancel means DISCARD. `.onDisappear` fires on every teardown path, so without
+    /// this flag the commit-on-dismiss (added so swipe-down stops silently losing
+    /// edits) would make Cancel save too — identical to Done.
+    @State private var cancelled = false
     @FocusState private var focusedNew: UUID?
 
     var body: some View {
@@ -623,9 +638,10 @@ struct PillarsEditorSheet: View {
 
                     ForEach($draft) { $p in
                         PillarEditRow(pillar: $p,
+                                      total: draftWeightTotal,
                                       canDelete: draft.count > 1,
                                       focusedNew: $focusedNew,
-                                      onDelete: { draft.removeAll { $0.id == p.id } })
+                                      onDelete: { pendingDelete = p.id })
                     }
 
                     if draft.count < 6 {
@@ -659,43 +675,75 @@ struct PillarsEditorSheet: View {
             .navigationTitle("Content pillars")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { cancelled = true; dismiss() }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { commit(); dismiss() }.fontWeight(.semibold)
                         .accessibilityIdentifier("pillars.done")
                 }
             }
         }
+        // Root-level host: full-screen scrim, nothing clips it, Delete is tappable.
+        .marqueConfirm(Binding(get: { pendingDelete != nil },
+                               set: { if !$0 { pendingDelete = nil } }),
+                       title: "Delete this pillar?",
+                       confirm: "Delete", destructive: true) {
+            if let id = pendingDelete { draft.removeAll { $0.id == id } }
+            pendingDelete = nil
+        }
+        // Swiping the sheet away used to discard every edit silently (only Done
+        // committed). Commit on the way out so "adjusting" always sticks — unless
+        // the creator explicitly hit Cancel.
+        .onDisappear { if !cancelled { commit() } }
         .onAppear { if draft.isEmpty { draft = store.pillars } }
+    }
+
+    /// Sum of the raw slider weights. Weights are STORED raw (so a slider never snaps
+    /// back) and normalized where they're consumed, so the row must show the same
+    /// normalized share the generator actually uses — otherwise three pillars at 0.2
+    /// would each read "20%" while each is really drawn a third of the time.
+    private var draftWeightTotal: Double {
+        max(0.0001, draft.map { max(0, $0.weight) }.reduce(0, +))
     }
 
     private func addPillar() {
         let colors = Catalog.pillarColors
+        // An even share of the mix, clamped into the slider's own 0.05…0.5 range —
+        // the first pillar used to be seeded at 1.0 (rendered "100%") with the handle
+        // pinned past the end of a slider that maxes at 50%.
+        let even = min(0.5, max(0.05, 1.0 / Double(draft.count + 1)))
         let p = Pillar(name: "", summary: "", angle: "", exampleTopics: [],
-                       weight: 1.0 / Double(draft.count + 1),
+                       weight: even,
                        colorHex: colors[draft.count % colors.count])
         draft.append(p)
         focusedNew = p.id
     }
 
-    /// Drop empty-named rows, normalize weights to sum 1.0, mirror topThemes, persist.
+    /// Drop empty-named rows, mirror topThemes, persist.
+    ///
+    /// Weights are stored EXACTLY as the user set them. They used to be renormalized
+    /// to sum 1.0 here, so someone who dragged a pillar to 50% reopened the sheet and
+    /// found 38% — "adjusting doesn't work". Normalization is a consumption-time
+    /// concern (weightedPillar), not a storage one.
     private func commit() {
         var kept = draft.filter { !$0.name.trimmingCharacters(in: .whitespaces).isEmpty }
         if kept.isEmpty { kept = draft }               // never leave zero pillars
-        let total = kept.map(\.weight).reduce(0, +)
-        if total > 0.0001 { for i in kept.indices { kept[i].weight /= total } }
+        guard kept != store.pillars else { return }    // no-op on plain dismiss
         store.pillars = kept
         store.brand.topThemes = kept.map(\.name)
+        store.pillarsUserEdited = true                 // scans must stop overwriting
         store.save()
     }
 }
 
 private struct PillarEditRow: View {
     @Binding var pillar: Pillar
+    /// Sum of all pillars' raw weights — this row's percentage is its share of it.
+    let total: Double
     let canDelete: Bool
     var focusedNew: FocusState<UUID?>.Binding
     let onDelete: () -> Void
-    @State private var confirmDelete = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
@@ -706,14 +754,16 @@ private struct PillarEditRow: View {
                     .focused(focusedNew, equals: pillar.id)
                     .accessibilityIdentifier("pillars.name")
                 Spacer(minLength: 0)
-                Button { confirmDelete = true } label: {
-                    Image(systemName: "trash").font(.system(size: 14)).foregroundStyle(Palette.textTertiary)
+                Button { onDelete() } label: {
+                    Image(systemName: "trash").font(.system(size: 15))
+                        .foregroundStyle(Palette.textTertiary)
+                        .frame(width: 34, height: 34)          // real 34pt tap target
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .disabled(!canDelete)
                 .opacity(canDelete ? 1 : 0.3)
                 .accessibilityIdentifier("pillars.delete")
-                .marqueConfirm($confirmDelete, title: "Delete this pillar?",
-                               confirm: "Delete", destructive: true) { onDelete() }
             }
             TextField("One-line summary", text: $pillar.summary, axis: .vertical)
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...2)
@@ -724,7 +774,7 @@ private struct PillarEditRow: View {
                 Slider(value: $pillar.weight, in: 0.05...0.5)
                     .tint(Color(hex: pillar.colorHex))
                     .accessibilityIdentifier("pillars.weight")
-                Text("\(Int((pillar.weight * 100).rounded()))%")
+                Text("\(Int((pillar.weight / max(total, 0.0001) * 100).rounded()))%")
                     .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .frame(width: 38, alignment: .trailing)
             }

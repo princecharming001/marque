@@ -556,7 +556,10 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         // generation reads were never built — and wrote the scraped posts into the shared
         // "default" bucket. Every other route adds this explicitly; this one didn't.
         body["creator_id"] = creatorId
-        if let acct = brand.connectedAccounts.first {
+        // First-synced account (durable linkedAt), not index 0 — a re-auth moves an
+        // account to the end of the array, which would silently point the digest at
+        // a different platform than the one the profile presents.
+        if let acct = brand.connectedAccounts.min(by: { $0.linkedAt < $1.linkedAt }) {
             body["handle"] = acct.handle
             body["scan_platform"] = acct.platform
         }

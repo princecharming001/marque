@@ -73,29 +73,46 @@ struct TourOverlay: View {
         }
     }
 
-    // Fixed geometry so the bubble + mascot can be positioned exactly on-screen (no clip),
-    // and so their .position values are stable enough to animate between steps.
-    private static let bubbleW: CGFloat = 232
-    private static let bubbleH: CGFloat = 176
+    // OWNER (2026-08-15, "the guided walkthrough spacing on my phone is wonky…
+    // spacing, font, and the yunicorns sized/placed weird"): the cluster used to be
+    // FIXED at edge(12) + mascot(104) + gap(6) + bubble(232) = 354pt. On a 393pt
+    // iPhone that dumped all 39 leftover points on one side — 12pt margin against
+    // 39pt — and on a Pro Max the imbalance grew to 12 vs 76. The bubble width is now
+    // DERIVED from the screen, so both margins are `edge` by construction on every
+    // device, and the card self-sizes instead of being pinned to a fake 176pt.
     private static let mascotW: CGFloat = 104
-    private static let mascotH: CGFloat = 132
-    private static let gap: CGFloat = 6
-    private static let edge: CGFloat = 12
+    private static let mascotH: CGFloat = mascotW * 1.25   // one source of truth (was 132 vs 130)
+    private static let gap: CGFloat = Space.sm
+    private static let edge: CGFloat = Space.md
+
+    private static func bubbleWidth(_ screenW: CGFloat) -> CGFloat {
+        max(200, screenW - 2 * edge - mascotW - gap)
+    }
+
+    /// Measured height of the speech card, so the cluster can be bottom-anchored for
+    /// real. The old code positioned by a hardcoded 176 that the card didn't actually
+    /// honor — short steps left a hollow band above the buttons, long ones overflowed.
+    @State private var bubbleH: CGFloat = 150
 
     @ViewBuilder
     private func overlay(step: TourManager.Step, target: CGRect, screen: CGSize) -> some View {
         let hole = target.insetBy(dx: ringPad, dy: ringPad)
-        let peekLeft = target.midX < screen.width * 0.5
+        let bubbleW = Self.bubbleWidth(screen.width)
+        // A target dead-center (the Film button sits at exactly screen.width/2) used to
+        // fall to the `false` branch and throw the whole cluster off-axis under a
+        // perfectly centered control. Treat near-center as "point from the left".
+        let centered = abs(target.midX - screen.width / 2) < 40
+        let peekLeft = centered ? true : target.midX < screen.width * 0.5
         let below = target.midY < screen.height * 0.55
         // Bottom edge the bubble + mascot both sit on (below the target up top, above it
         // when it's down low, so the cluster never covers what it points at).
-        let bottomY: CGFloat = below ? min(target.maxY + 24 + Self.bubbleH, screen.height - 24)
-                                     : max(target.minY - 24, 24 + Self.bubbleH)
+        let bottomY: CGFloat = below ? min(target.maxY + 24 + bubbleH, screen.height - 24)
+                                     : max(target.minY - 24, 24 + bubbleH)
         let mascotX: CGFloat = peekLeft ? Self.edge + Self.mascotW / 2
                                         : screen.width - Self.edge - Self.mascotW / 2
         let bubbleX: CGFloat = peekLeft
-            ? Self.edge + Self.mascotW + Self.gap + Self.bubbleW / 2
-            : screen.width - Self.edge - Self.mascotW - Self.gap - Self.bubbleW / 2
+            ? Self.edge + Self.mascotW + Self.gap + bubbleW / 2
+            : screen.width - Self.edge - Self.mascotW - Self.gap - bubbleW / 2
 
         ZStack {
             // Dimmed backdrop with an ANIMATABLE spotlight hole — the dark cutout slides +
@@ -116,8 +133,9 @@ struct TourOverlay: View {
 
             // Bubble — stable identity, so its .position animates: it TRAVELS to the next
             // step rather than fading in and out. (Its text crossfades inside — see below.)
-            bubble(step)
-                .position(x: bubbleX, y: bottomY - Self.bubbleH / 2)
+            bubble(step, width: bubbleW)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { bubbleH = $0 }
+                .position(x: bubbleX, y: bottomY - bubbleH / 2)
 
             // Mascot — the frame travels while the POSE crossfades to the next one, so Yuni
             // glides toward the next control and changes pose on the way.
@@ -126,15 +144,15 @@ struct TourOverlay: View {
                     .id(step.mascot)
                     .transition(.opacity)
             }
-            .frame(width: Self.mascotW, height: Self.mascotH)
+            .frame(width: Self.mascotW, height: Self.mascotH, alignment: .bottom)
             .position(x: mascotX, y: bottomY - Self.mascotH / 2)
         }
         .animation(.spring(response: 0.5, dampingFraction: 0.82), value: tour.index)
     }
 
-    private func bubble(_ step: TourManager.Step) -> some View {
+    private func bubble(_ step: TourManager.Step, width: CGFloat) -> some View {
         TourSpeechBubble(
-            step: step, width: Self.bubbleW,
+            step: step, width: width,
             index: tour.index,
             total: TourManager.steps.count,
             isLast: tour.isLastStep,
@@ -162,7 +180,11 @@ private struct TourMascotView: View {
                 UnicornMascot(pose: .hero, size: size * 0.9)   // fallback keeps the tour intact
             }
         }
-        .frame(width: size, height: size * 1.25)
+        // The poses' natural aspects run from 0.59 (Cheer, tall) to 1.65 (Chill, wide),
+        // and scaledToFit centers the letterbox — so wide poses used to float ~34pt off
+        // the shared baseline while tall ones sat on it ("yunicorns placed weird").
+        // Bottom-aligning puts every pose's feet on the same line as the bubble's edge.
+        .frame(width: size, height: size * 1.25, alignment: .bottom)
     }
 }
 
@@ -183,8 +205,12 @@ private struct TourSpeechBubble: View {
             // Title + message crossfade to the next step's copy while the card travels;
             // the progress dots and controls stay put so buttons never double up.
             VStack(alignment: .leading, spacing: Space.sm) {
+                // Sans, not the Fraunces Black display face: serif is reserved for
+                // screen titles, and the heavy cut wrapped these short titles onto
+                // two lines inside a narrow card — the main source of the cramped
+                // look. Sans at 18 fits every step's title on one line.
                 Text(step.title)
-                    .font(Typeface.display(22, .semibold)).tracking(-0.3)   // fancy serif
+                    .font(Typeface.sans(18, .semibold)).tracking(Track.tight)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(step.message)
@@ -194,11 +220,13 @@ private struct TourSpeechBubble: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .id(step.id)
             .transition(.opacity)
-            Spacer(minLength: Space.sm)
             controls
+                .padding(.top, Space.xs)
         }
         .padding(Space.lg)
-        .frame(width: width, height: 176, alignment: .topLeading)
+        // Self-sizing: the old fixed 176pt left a hollow band under short steps and
+        // squeezed long ones. Height now follows the copy.
+        .frame(width: width, alignment: .topLeading)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .shadow(color: .black.opacity(0.28), radius: 22, y: 10)

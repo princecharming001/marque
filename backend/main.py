@@ -8082,6 +8082,58 @@ def _norm_social_account(a: dict) -> dict:
     }
 
 
+# Scraped avatars, keyed (platform, username) -> (url, stamped_at). The scrape is the
+# expensive part of the route below, and a creator's picture changes rarely, so a
+# process-local TTL keeps the common case free. Negative results are cached too —
+# Instagram blocks datacenter IPs routinely, and without this every request would pay
+# the full timeout to rediscover that.
+_avatar_cache: dict[tuple[str, str], tuple[str, float]] = {}
+_AVATAR_TTL = 6 * 3600.0
+_AVATAR_TIMEOUT = 4.0
+
+
+async def _scrape_avatar(platform: str, username: str) -> str:
+    key = (platform, username.lower())
+    hit = _avatar_cache.get(key)
+    if hit and time.time() - hit[1] < _AVATAR_TTL:
+        return hit[0]
+    url = ""
+    try:
+        prof = await asyncio.wait_for(
+            preview_instagram(username) if platform == "instagram" else preview_tiktok(username),
+            timeout=_AVATAR_TIMEOUT)
+        if prof.get("found") and prof.get("avatarUrl"):
+            url = prof["avatarUrl"]
+    except Exception:                                    # noqa: BLE001 — never block a link
+        logging.info("avatar enrich failed for %s", username)
+    _avatar_cache[key] = (url, time.time())
+    return url
+
+
+async def _with_avatar(accounts: list[dict]) -> list[dict]:
+    """Fill in profile_photo_url from the public profile when Post for Me doesn't
+    give us one — which is most of the time, since PFM only guarantees id/platform/
+    username/status. The app shows the creator's own picture as their profile photo,
+    and without this backstop it falls back to a letter monogram forever.
+
+    Best-effort by construction: any scrape failure leaves the field empty and the
+    client keeps its monogram, so a slow or blocked profile page can never fail the
+    link itself. Scrapes run concurrently behind a short timeout so this stays a
+    latency rounding error on the accounts route rather than serial seconds.
+    """
+    todo = [a for a in accounts
+            if not a.get("profile_photo_url") and a.get("username")]
+    if not todo:
+        return accounts
+    urls = await asyncio.gather(*(
+        _scrape_avatar((a.get("platform") or "").lower(), a["username"]) for a in todo
+    ))
+    for a, url in zip(todo, urls):
+        if url:
+            a["profile_photo_url"] = url
+    return accounts
+
+
 async def _claimed_account_ids(claimant_id: str) -> set[str]:
     if not (_supabase_client and claimant_id):
         return set()
@@ -8181,7 +8233,8 @@ async def social_finish(req: SocialFinishRequest):
         else:
             logging.warning("social_finish: no claim store — link for %s not persisted",
                             req.claimant_id)
-    return {"linked": [_norm_social_account(a) for a in linked], "mode": "live"}
+    return {"linked": await _with_avatar([_norm_social_account(a) for a in linked]),
+            "mode": "live"}
 
 
 @app.get("/v1/social/accounts")
@@ -8196,7 +8249,7 @@ async def social_accounts(claimant_id: str = "", external_id: str = "", platform
         return {"accounts": [], "mode": "live"}
     pool = await _pfm_pool(platform)
     accounts = [_norm_social_account(a) for a in pool if a.get("id", "") in claimed]
-    return {"accounts": accounts, "mode": "live"}
+    return {"accounts": await _with_avatar(accounts), "mode": "live"}
 
 
 class SocialDisconnectRequest(BaseModel):

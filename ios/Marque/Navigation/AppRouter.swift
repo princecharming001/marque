@@ -12,6 +12,11 @@ enum AppTab: Hashable {
 final class AppRouter {
     var selectedTab: AppTab = .home
     var hideTabBar = false
+    /// Home's navigation path (currently only "profile"). Bound so the tour can pop
+    /// back to Home before it starts — replaying the walkthrough from Settings used
+    /// to leave Profile pushed on top, so the spotlight rings landed on Home's
+    /// coordinates over an unrelated screen.
+    var homePath: [String] = []
     /// The center Film button — fullScreenCover with the script picker + teleprompter flow.
     var showFilm = false
     /// Deep-link: "Film this" from the feed/chat preselects a readied script in the Film flow.
