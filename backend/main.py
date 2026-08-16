@@ -10742,7 +10742,19 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
         _reels_refreshing.discard(key)
 
 
-_REEL_TRANSCRIBE_TOP_N = int(os.environ.get("REEL_TRANSCRIBE_TOP_N", "4"))
+# How many NEW reels per niche refresh get a real spoken transcript.
+#
+# This is the CEILING on the feed, not just an enrichment budget. Build 75 made
+# `transcribed` a hard requirement to serve a reel (the only honest proof a human
+# is talking to camera — see the filter in /v1/reels), but this cap stayed at 4
+# while the scrape collects 18. So at most 4 reels per niche could ever qualify,
+# and after the talking-head quality checks the feed served 1-3 ("I only see one
+# reel under steal these"). The gate and the evidence budget have to match.
+#
+# `_talking_head_first` runs before this, so the budget goes to the most likely
+# talking-head candidates, and `_transcribe_top_posts` skips reels that already
+# carry a transcript — so coverage compounds across refresh cycles.
+_REEL_TRANSCRIBE_TOP_N = int(os.environ.get("REEL_TRANSCRIBE_TOP_N", "12"))
 _REEL_REHOST_TOP_N = int(os.environ.get("REEL_REHOST_TOP_N", "6"))
 
 

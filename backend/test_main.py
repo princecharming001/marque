@@ -629,6 +629,18 @@ def test_classifier_buckets_skits_out_of_talking_head():
         assert fmt not in main._TALKING_HEAD_FORMATS, cap
 
 
+def test_transcribe_budget_covers_the_servable_pool():
+    """The feed's hard gate is `transcribed`, so the transcription budget IS the
+    ceiling on how many reels can ever be served. It stayed at 4 while the niche
+    scrape kept 18, which starved "Steal these" down to 1-3 cards. Keep the budget
+    a meaningful fraction of the scrape, or the gate silently caps the feed again.
+    """
+    assert main._REEL_TRANSCRIBE_TOP_N >= 10, (
+        "transcription budget is the feed ceiling — raising the TH gate without "
+        "raising this starves the reels feed"
+    )
+
+
 def test_reels_no_watched_bypass_and_cdn_freshness(monkeypatch):
     """Watched-creator reels obey the TH mandate like everything else, and a raw-CDN
     video link older than the freshness window is treated as unplayable (dropped),
