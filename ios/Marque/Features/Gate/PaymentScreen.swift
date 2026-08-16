@@ -152,6 +152,17 @@ struct PaymentScreen: View {
                     .foregroundStyle(.white.opacity(0.58))
                     .padding(.top, 2)
 
+                // A failed/unavailable purchase must say so — silently staying on
+                // the wall reads as a frozen app.
+                if !store.subscription.lastError.isEmpty {
+                    Text(store.subscription.lastError)
+                        .font(Typeface.sans(13, .medium))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 6)
+                        .accessibilityIdentifier("payment.error")
+                }
+
                 HStack(spacing: 14) {
                     Link("Terms of Service", destination: LegalURLs.terms)
                     Link("Privacy Policy", destination: LegalURLs.privacy)
@@ -310,11 +321,11 @@ struct PaymentScreen: View {
 
     // MARK: actions
 
-    // ⚠️ OWNER DIRECTIVE (build 71): NO payment functionality yet — this screen is
-    // click-through. The CTA unlocks locally and moves on; no StoreKit purchase is
-    // attempted, nothing is charged, no receipt is verified. `store.subscription.purchase()`
-    // (real StoreKit 2) stays untouched and is one line away when the ASC products
-    // exist — swap devUnlock() back to it and delete this comment.
+    // App Store submission (2026-08-16, owner: "wire real StoreKit now"): the
+    // click-through era is over. This buys com.marque.pro.monthly through
+    // StoreKit 2 — real sheet, real charge, receipt-verified entitlement. The
+    // screen only advances when StoreKit reports an entitlement; a cancelled or
+    // failed purchase stays here with the error shown.
     private func subscribe() async {
         guard !busy else { return }
         // FUNNEL: which plan box was live when they committed — the trial-vs-pay-now split
@@ -322,20 +333,21 @@ struct PaymentScreen: View {
         store.backend.reportClientEvent(
             "paywall_action", detail: payNow ? "subscribe_now" : "start_trial")
         busy = true
-        try? await Task.sleep(nanoseconds: 350_000_000)   // a beat, so the tap reads as real
-        store.subscription.devContinue()
+        await store.subscription.purchase()
         busy = false
-        if dismissible { dismiss() }
+        if store.subscription.isSubscribed {
+            store.backend.reportClientEvent("paywall_action", detail: "purchase_success")
+            if dismissible { dismiss() }
+        }
     }
 
-    /// Restore is a no-op while payment is disabled — it still answers (Apple's 3.1.1
-    /// control must never dead-end) and unlocks the same way.
+    /// Real restore (Apple's 3.1.1 control must never dead-end): syncs with the
+    /// App Store and re-reads current entitlements.
     private func restore() async {
         guard !restoring else { return }
         restoring = true
-        try? await Task.sleep(nanoseconds: 250_000_000)
-        store.subscription.devContinue()
+        await store.subscription.restore()
         restoring = false
-        if dismissible { dismiss() }
+        if store.subscription.isSubscribed, dismissible { dismiss() }
     }
 }

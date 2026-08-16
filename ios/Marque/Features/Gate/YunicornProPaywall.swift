@@ -12,11 +12,19 @@ import SwiftUI
 // upsell reached from Settings / gate points, dismissible, with a paid state.
 struct YunicornProPaywall: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppStore.self) private var store
     @State private var entitlements = Entitlements.shared
     @State private var working = false
     @State private var selectedPlan = 0     // 0 = trial, 1 = pay now
 
-    private static let weeklyPrice = "$6.99"
+    // The ONE real product (com.marque.pro.monthly, $14.99/mo, 7-day free trial).
+    // This sheet used to advertise a $6.99 WEEKLY plan that never existed in ASC
+    // while purchase() bought the monthly — a price-mismatch rejection waiting to
+    // happen. Price now comes from StoreKit itself, hardcoded only as fallback.
+    private var monthlyPrice: String {
+        (store.subscription.monthly ?? store.subscription.products.first)?
+            .displayPrice ?? "$14.99"
+    }
 
     var body: some View {
         ZStack {
@@ -80,16 +88,16 @@ struct YunicornProPaywall: View {
                     featureCard
 
                     HStack(spacing: 10) {
-                        planCard(idx: 0, title: "3-day trial", price: "Free",
-                                 sub: "then \(Self.weeklyPrice)/wk")
-                        planCard(idx: 1, title: "Go Plus now", price: "\(Self.weeklyPrice)/wk",
+                        planCard(idx: 0, title: "7-day trial", price: "Free",
+                                 sub: "then \(monthlyPrice)/mo")
+                        planCard(idx: 1, title: "Go Plus now", price: "\(monthlyPrice)/mo",
                                  sub: "start today")
                     }
 
                     VStack(spacing: Space.sm) {
                         Button { Task { await purchase() } } label: {
                             Text(working ? "Processing…"
-                                 : selectedPlan == 0 ? "Start my 3-day free trial" : "Go Plus now")
+                                 : selectedPlan == 0 ? "Start my 7-day free trial" : "Go Plus now")
                                 .font(AppFont.headline).foregroundStyle(Palette.ink)
                                 .frame(maxWidth: .infinity).frame(height: 56)
                                 .background(Color.white).clipShape(Capsule())
@@ -235,17 +243,19 @@ struct YunicornProPaywall: View {
         }
     }
 
-    // MARK: mock transactions
+    // MARK: transactions — real StoreKit 2 (App Store submission, 2026-08-16).
+    // SubscriptionManager verifies the transaction and syncs
+    // Entitlements.shared.isPro, which is what flips this sheet to paidState.
 
     private func purchase() async {
         working = true
-        await entitlements.mockPurchase()
+        await store.subscription.purchase()
         working = false
     }
 
     private func restore() async {
         working = true
-        await entitlements.mockRestore()
+        await store.subscription.restore()
         working = false
     }
 }

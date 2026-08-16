@@ -28,5 +28,7 @@ enum AppConfig {
 enum LegalURLs {
     static let privacy = URL(string: "https://marque.app/privacy")!
     static let terms = URL(string: "https://marque.app/terms")!
-    static let support = URL(string: "https://marque.app/support")!
+    // /support 404s on the site — the root page carries contact/support until a
+    // dedicated page exists. A dead link inside Settings is an App Review 2.1 flag.
+    static let support = URL(string: "https://marque.app")!
 }

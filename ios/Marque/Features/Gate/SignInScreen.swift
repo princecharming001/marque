@@ -1,4 +1,5 @@
 import SwiftUI
+import AuthenticationServices
 
 // Sign-in, ported from maxapp's LoginScreen.tsx structure beat-for-beat: soft
 // off-white canvas, a circular back chip, a big serif wordmark over a lowercase
@@ -182,12 +183,11 @@ struct SignInScreen: View {
                     }
                     .padding(.vertical, 20)
 
-                    // Google only for now (owner, build 71). Apple's button + the
-                    // AuthManager plumbing behind it (prepareAppleRequest /
-                    // handleAppleCompletion, the applesignin entitlement) are all
-                    // intact — re-adding is a SignInWithAppleButton block below this
-                    // one. ⚠️ App Review 4.8 requires an equivalent privacy-focused
-                    // login option alongside Google, so Apple goes back before submit.
+                    // Google + Apple, maxapp's order and chrome. Apple returned for
+                    // App Store submission (guideline 4.8 — offering Google alone
+                    // requires an equivalent privacy-focused option). The AuthManager
+                    // plumbing (prepareAppleRequest / handleAppleCompletion → Supabase
+                    // id_token grant) shipped in builds ≤70 and is known-good.
                     VStack(spacing: 10) {
                         Button { Task { await store.auth.signInWithGoogle() } } label: {
                             HStack(spacing: 10) {
@@ -206,6 +206,18 @@ struct SignInScreen: View {
                         .buttonStyle(.plain)
                         .disabled(busy)
                         .accessibilityIdentifier("auth.google")
+
+                        SignInWithAppleButton(.continue) { request in
+                            store.auth.prepareAppleRequest(request)
+                        } onCompletion: { result in
+                            Task { await store.auth.handleAppleCompletion(result) }
+                        }
+                        .signInWithAppleButtonStyle(.white)
+                        .frame(maxWidth: .infinity).frame(height: 54)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(MaxParity.border, lineWidth: 1))
+                        .disabled(busy)
+                        .accessibilityIdentifier("auth.apple")
                     }
 
                     Button {

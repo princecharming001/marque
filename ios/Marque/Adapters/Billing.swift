@@ -60,12 +60,34 @@ final class SubscriptionManager {
     /// Any unlock (real, mock, or dev) also flips the render entitlement — the
     /// watermark rides `Entitlements.shared.isPro` into every clip job's `is_pro`,
     /// and a paying user must never ship watermarked clips because the two
-    /// entitlement stores drifted.
+    /// entitlement stores drifted. The reverse matters too now that purchases are
+    /// real: when StoreKit says the subscription lapsed (and no dev/mock unlock is
+    /// active), Pro drops — otherwise a cancelled subscriber keeps clean exports
+    /// forever off a stale flag.
     private func syncRenderEntitlement() {
-        if isSubscribed { Entitlements.shared.isPro = true }
+        if isSubscribed {
+            Entitlements.shared.isPro = true
+        } else if !devUnlocked && !mockUnlocked {
+            Entitlements.shared.isPro = false
+        }
     }
 
+    /// Lives for the app's lifetime: renewals, refunds, Ask-to-Buy approvals and
+    /// App Store purchases completed outside the app all land here. Without it a
+    /// refund keeps Pro until the next cold start.
+    private var updatesTask: Task<Void, Never>?
+
     func load() async {
+        if updatesTask == nil {
+            updatesTask = Task { [weak self] in
+                for await update in Transaction.updates {
+                    if case .verified(let transaction) = update {
+                        await transaction.finish()
+                    }
+                    await self?.refresh()
+                }
+            }
+        }
         products = (try? await Product.products(for: StoreKitBilling.productIDs)) ?? []
         await refresh()
     }

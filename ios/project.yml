@@ -9,7 +9,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "76"
+    CURRENT_PROJECT_VERSION: "77"
     ENABLE_USER_SCRIPT_SANDBOXING: "YES"
     # Real signing (was CODE_SIGNING_ALLOWED: NO — sim-only). Automatic style lets
     # xcodebuild -allowProvisioningUpdates manage certs/profiles via the ASC API key,
@@ -57,10 +57,12 @@ targets:
           CODE_SIGN_IDENTITY: "iPhone Distribution"
           PROVISIONING_PROFILE_SPECIFIER: "Marque App Store"
           DEVELOPMENT_TEAM: 3TJ8RC3JCX
-          # ⚠️ REMOVE MOCK_PAYWALL BEFORE APP REVIEW — lets "Start my week free"
-          # mock-subscribe on TestFlight while no ASC IAP products exist yet.
-          # (Only fires on the empty-products branch in Billing.purchase().)
-          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) MOCK_PAYWALL"
+          # App Store submission (2026-08-16): MOCK_PAYWALL removed — the ASC
+          # subscription (com.marque.pro.monthly) is complete, so Release
+          # purchases are real StoreKit 2 end-to-end. The mock branch it armed
+          # (Billing.purchase(), empty-products path) is now dead code in
+          # Release and only reachable in Debug sim runs.
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
     entitlements:
       path: Marque/Marque.entitlements
       properties:
@@ -78,7 +80,7 @@ targets:
         # CURRENT_PROJECT_VERSION alone) is silently overwritten on the next
         # `xcodegen generate` — which is how archives kept shipping as 65.
         # Bump HERE, and keep CURRENT_PROJECT_VERSION above in sync.
-        CFBundleVersion: "76"
+        CFBundleVersion: "77"
         # Answers ASC's "does your app use encryption?" prompt at the binary
         # level so it never asks per-build. Accurate: the only crypto usage
         # in the app is SHA256 content hashing (Media.swift) plus standard
