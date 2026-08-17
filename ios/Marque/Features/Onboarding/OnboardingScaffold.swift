@@ -19,6 +19,10 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
     var showsProgress: Bool = false
     var progressIndex: Int = 0
     var progressTotal: Int = 1
+    /// Chip-cloud steps (Gymshark reference): the header pins under the chrome
+    /// and the cloud fills the remaining height, instead of the default
+    /// float-in-the-middle block that leaves a dead band above the title.
+    var topAligned: Bool = false
     var onBack: (() -> Void)? = nil
     @ViewBuilder var content: () -> Content
     @ViewBuilder var cta: () -> CTA
@@ -48,7 +52,11 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
             // middle of the space between the chrome and the CTA. Internal gaps
             // are fixed (Space.xxl between header and content) so the question and
             // its choices always read as a unit wherever the block lands.
-            Spacer(minLength: Space.md)
+            if topAligned {
+                Color.clear.frame(height: Space.lg)
+            } else {
+                Spacer(minLength: Space.md)
+            }
 
             VStack(spacing: 0) {
                 // An empty headline means the step draws its own header (e.g. a typed-out

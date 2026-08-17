@@ -66,7 +66,6 @@ struct OnboardingView: View {
     // on a real choice, never on a default).
     @State private var goalTouched = false
     // Niche chips: "Something else" flips to a freeform field.
-    @State private var moreNiches = false
     @State private var audienceTouched = false
     // Scan hold: connected users wait on branded theater while the real page scan
     // runs (owner-decided over confirm-later), capped at ~12s so a slow or dead
@@ -173,66 +172,96 @@ struct OnboardingView: View {
     }
 
     private func scaffold<C: View, T: View>(_ headline: String, _ subtitle: String? = nil,
+                                            topAligned: Bool = false,
                                             @ViewBuilder content: @escaping () -> C,
                                             @ViewBuilder cta: @escaping () -> T) -> some View {
         OnboardingScaffold(headline: headline, subtitle: subtitle,
                            showsProgress: step.quizIndex != nil,
                            progressIndex: (step.quizIndex ?? 0) + 1,
                            progressTotal: Step.quizTotal,
+                           topAligned: topAligned,
                            onBack: { retreat() },
                            content: content, cta: cta)
     }
 
     // MARK: - Q1: niche — the ONE framing question the spec allows before value
 
-    // Tap-only (owner, 2026-08-16: "remove all of the text-based questions").
-    // The typed "Something else" field is gone — a keyboard mid-quiz is where
-    // tap-through momentum dies (Cal AI's 29-card flow and every funnel teardown
-    // run choices only). Coverage comes from a second tier of chips instead;
-    // for connected users the page scan derives the true niche anyway, so the
-    // chip is a seed, not a sentence.
-    private static let nicheChips = [
-        "Fitness", "Finance", "Business", "Beauty",
-        "Food", "Gaming", "Education", "Lifestyle",
+    // Tap-only (owner, 2026-08-16: "remove all of the text-based questions"),
+    // then rebuilt as a Gymshark-style CHIP CLOUD (owner, same day: "more options
+    // and niches… slide left and right… mimic this format almost exactly"):
+    // staggered horizontal bands of capsule chips that bleed off both screen
+    // edges and scroll independently. Coverage by breadth — ~50 niches across
+    // three color-coded families — instead of typing; for connected users the
+    // page scan derives the true niche anyway, so the chip is a seed.
+    // cat: 0 = money & business (blue) · 1 = health & lifestyle (green) ·
+    //      2 = create & entertain (amber)
+    private static let nicheCloud: [(title: String, cat: Int)] = [
+        ("Fitness", 1), ("Finance", 0), ("Comedy", 2), ("Beauty", 1),
+        ("Startups", 0), ("Food & cooking", 1), ("Gaming", 2), ("Investing", 0),
+        ("Self-improvement", 1), ("Music", 2), ("Real estate", 0), ("Fashion", 1),
+        ("Filmmaking", 2), ("Marketing", 0), ("Nutrition", 1), ("Art & design", 2),
+        ("E-commerce", 0), ("Gym & lifting", 1), ("Storytelling", 2), ("Crypto", 0),
+        ("Skincare", 1), ("Photography", 2), ("Sales", 0), ("Travel", 1),
+        ("Education", 2), ("Career growth", 0), ("Mental health", 1), ("Books & learning", 2),
+        ("Side hustles", 0), ("Parenting", 1), ("Dance", 2), ("AI & tech", 0),
+        ("Relationships", 1), ("Pop culture", 2), ("Coding", 0), ("Motivation", 1),
+        ("Language learning", 2), ("Productivity", 0), ("Running", 1), ("Sports", 2),
+        ("Business", 0), ("Yoga", 1), ("Pets & dogs", 2), ("Weight loss", 1),
+        ("Home & DIY", 1), ("Cars", 2), ("Coffee", 1), ("Faith & spirituality", 1),
+        ("Outdoors", 1), ("Lifestyle", 1), ("Golf", 2), ("Basketball", 2),
+        ("Interior design", 1), ("Streetwear", 1), ("Baking", 1), ("Soccer", 2),
     ]
-    private static let nicheChipsMore = [
-        "Fashion", "Tech & AI", "Travel", "Parenting",
-        "Real estate", "Music", "Motivation", "Comedy",
-    ]
+    private static let nicheCatColors: [Color] = [Palette.accent, Palette.positive, Palette.warning]
+
+    /// Deal the flat list into `rows` horizontal bands, round-robin, so every band
+    /// mixes families like the reference.
+    private static func cloudRows(_ items: [(title: String, cat: Int)], rows: Int) -> [[(title: String, cat: Int)]] {
+        var out = Array(repeating: [(title: String, cat: Int)](), count: rows)
+        for (i, item) in items.enumerated() { out[i % rows].append(item) }
+        return out
+    }
 
     private var nicheStep: some View {
         @Bindable var store = store
         return scaffold("What do you make videos about?",
-                        "One tap — this seeds everything I write for you.") {
+                        "One tap — this seeds everything I write for you.",
+                        topAligned: true) {
             VStack(spacing: Space.md) {
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.md),
-                                    GridItem(.flexible())],
-                          spacing: Space.md) {
-                    ForEach(Self.nicheChips, id: \.self) { chip in
-                        nicheChipView(chip)
-                    }
-                    if moreNiches {
-                        ForEach(Self.nicheChipsMore, id: \.self) { chip in
-                            nicheChipView(chip)
+                // Category legend, Gymshark-style.
+                HStack(spacing: Space.md) {
+                    legendDot(Self.nicheCatColors[0], "Money")
+                    legendDot(Self.nicheCatColors[1], "Lifestyle")
+                    legendDot(Self.nicheCatColors[2], "Create")
+                }
+                .frame(maxWidth: .infinity)
+
+                // The staggered cloud: horizontal bands that bleed off both edges
+                // and slide independently.
+                VStack(spacing: Space.md) {
+                    ForEach(Array(Self.cloudRows(Self.nicheCloud, rows: 8).enumerated()),
+                            id: \.offset) { i, row in
+                        ChipCloudRow(phase: i) {
+                            ForEach(row, id: \.title) { item in
+                                CloudChip(title: item.title,
+                                          dot: Self.nicheCatColors[item.cat],
+                                          selected: store.brand.niche == item.title) {
+                                    selectAndAdvance { store.brand.niche = item.title }
+                                }
+                                .accessibilityIdentifier("onboard.niche.\(item.title.lowercased())")
+                            }
                         }
                     }
                 }
-                if !moreNiches {
-                    NicheChip(title: "More niches…", selected: false) {
-                        advanceTask?.cancel(); advanceTask = nil
-                        withAnimation(Motion.spring) { moreNiches = true }
-                    }
-                    .accessibilityIdentifier("onboard.niche.more")
-                }
+                .padding(.horizontal, -Space.screenH)   // full-bleed past the scaffold gutter
             }
         } cta: {}
     }
 
-    private func nicheChipView(_ chip: String) -> some View {
-        NicheChip(title: chip, selected: store.brand.niche == chip) {
-            selectAndAdvance { store.brand.niche = chip }
+    private func legendDot(_ color: Color, _ label: String) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(color).frame(width: 8, height: 8)
+            Text(label).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
         }
-        .accessibilityIdentifier("onboard.niche.\(chip.lowercased())")
     }
 
     // MARK: - Connect (hero) — the inference jackpot
@@ -316,12 +345,18 @@ struct OnboardingView: View {
     /// prompts consume; a connected user's scan-derived audience gets the top
     /// card so the honor-the-scan moment survives with zero typing.
     private static let audienceChips = [
-        "Beginners starting out",
-        "People a few steps behind me",
-        "Busy professionals",
-        "Founders & business owners",
-        "Parents & families",
-        "Students & Gen Z",
+        "Beginners starting out", "People a few steps behind me",
+        "Busy professionals", "Founders & business owners",
+        "Parents & families", "Students & Gen Z",
+        "Women 30+", "Men 30+",
+        "Creators & freelancers", "Corporate professionals",
+        "Athletes & gym-goers", "Small business owners",
+        "New grads", "Career changers", "Retirees",
+        "Coaches & consultants", "Side hustlers",
+        "Stay-at-home parents", "College students",
+        "First-time founders", "Remote workers",
+        "People trying to get fit", "Aspiring creators",
+        "Local customers",
     ]
 
     private var identityConfirm: some View {
@@ -333,7 +368,8 @@ struct OnboardingView: View {
         let prefilled = !derived.isEmpty
         return scaffold("Who's it for?",
                         prefilled ? "Pulled from your posts — or pick a better fit."
-                                  : "The people on the other side of the camera.") {
+                                  : "The people on the other side of the camera.",
+                        topAligned: true) {
             VStack(spacing: Space.md) {
                 if prefilled {
                     OptionCard(icon: "OnbIcon-identity", sfFallback: "sparkles",
@@ -347,20 +383,25 @@ struct OnboardingView: View {
                     }
                     .accessibilityIdentifier("onboard.audience.derived")
                 }
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.md),
-                                    GridItem(.flexible())],
-                          spacing: Space.md) {
-                    ForEach(Self.audienceChips, id: \.self) { chip in
-                        NicheChip(title: chip,
-                                  selected: audienceTouched && store.brand.audience == chip) {
-                            selectAndAdvance {
-                                store.brand.audience = chip
-                                audienceTouched = true
+                VStack(spacing: Space.md) {
+                    ForEach(Array(Self.cloudRows(Self.audienceChips.map { ($0, 0) },
+                                                 rows: 7).enumerated()),
+                            id: \.offset) { i, row in
+                        ChipCloudRow(phase: i) {
+                            ForEach(row, id: \.title) { item in
+                                CloudChip(title: item.title, dot: nil,
+                                          selected: audienceTouched && store.brand.audience == item.title) {
+                                    selectAndAdvance {
+                                        store.brand.audience = item.title
+                                        audienceTouched = true
+                                    }
+                                }
+                                .accessibilityIdentifier("onboard.audience.\(item.title.prefix(8).lowercased())")
                             }
                         }
-                        .accessibilityIdentifier("onboard.audience.\(chip.prefix(8).lowercased())")
                     }
                 }
+                .padding(.horizontal, -Space.screenH)
             }
         } cta: {}
     }
@@ -539,6 +580,61 @@ struct OnboardingView: View {
 /// Capsule chip for the one framing question — tap-not-type. OptionCard rows with
 /// icons would make eight niches a full screen of scrolling; a 2-up capsule grid
 /// keeps every choice above the fold.
+// MARK: - Chip cloud (Gymshark-style staggered horizontal bands)
+
+/// One horizontal band of the cloud. `phase` staggers where each row's content
+/// starts so chips never align into columns, and the default scroll anchor
+/// offsets rows differently so pills are cut off at BOTH screen edges — the
+/// visual cue that there's more to slide to.
+private struct ChipCloudRow<Content: View>: View {
+    let phase: Int
+    @ViewBuilder let content: () -> Content
+
+    private var anchor: UnitPoint {
+        [UnitPoint(x: 0.30, y: 0), UnitPoint(x: 0.62, y: 0),
+         UnitPoint(x: 0.45, y: 0), UnitPoint(x: 0.70, y: 0),
+         UnitPoint(x: 0.38, y: 0)][phase % 5]
+    }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Space.sm, content: content)
+                .padding(.horizontal, Space.lg)
+        }
+        .scrollIndicators(.hidden)
+        .defaultScrollAnchor(anchor)
+    }
+}
+
+/// A content-hugging capsule chip for the cloud (NicheChip stretches to fill a
+/// grid column; these must size to their label like the reference).
+private struct CloudChip: View {
+    let title: String
+    let dot: Color?
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                if let dot {
+                    Circle().fill(dot).frame(width: 7, height: 7)
+                }
+                Text(title)
+                    .font(Typeface.sans(16, selected ? .semibold : .regular))
+                    .lineLimit(1).fixedSize()
+            }
+            .foregroundStyle(selected ? Palette.canvas : Palette.textPrimary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 15)
+            .background(selected ? Palette.ink : Palette.surfaceRaised, in: Capsule())
+            .overlay(Capsule().strokeBorder(selected ? .clear : Palette.hairline, lineWidth: 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct NicheChip: View {
     let title: String
     let selected: Bool
