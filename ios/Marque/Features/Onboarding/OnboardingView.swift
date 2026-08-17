@@ -66,9 +66,8 @@ struct OnboardingView: View {
     // on a real choice, never on a default).
     @State private var goalTouched = false
     // Niche chips: "Something else" flips to a freeform field.
-    @State private var customNiche = false
-    @FocusState private var nicheFocused: Bool
-    @FocusState private var identityFocused: Bool
+    @State private var moreNiches = false
+    @State private var audienceTouched = false
     // Scan hold: connected users wait on branded theater while the real page scan
     // runs (owner-decided over confirm-later), capped at ~12s so a slow or dead
     // backend can never strand anyone — the identity screen just falls back to
@@ -186,9 +185,19 @@ struct OnboardingView: View {
 
     // MARK: - Q1: niche — the ONE framing question the spec allows before value
 
+    // Tap-only (owner, 2026-08-16: "remove all of the text-based questions").
+    // The typed "Something else" field is gone — a keyboard mid-quiz is where
+    // tap-through momentum dies (Cal AI's 29-card flow and every funnel teardown
+    // run choices only). Coverage comes from a second tier of chips instead;
+    // for connected users the page scan derives the true niche anyway, so the
+    // chip is a seed, not a sentence.
     private static let nicheChips = [
         "Fitness", "Finance", "Business", "Beauty",
         "Food", "Gaming", "Education", "Lifestyle",
+    ]
+    private static let nicheChipsMore = [
+        "Fashion", "Tech & AI", "Travel", "Parenting",
+        "Real estate", "Music", "Motivation", "Comedy",
     ]
 
     private var nicheStep: some View {
@@ -200,40 +209,30 @@ struct OnboardingView: View {
                                     GridItem(.flexible())],
                           spacing: Space.md) {
                     ForEach(Self.nicheChips, id: \.self) { chip in
-                        NicheChip(title: chip, selected: !customNiche && store.brand.niche == chip) {
-                            selectAndAdvance {
-                                customNiche = false
-                                nicheFocused = false
-                                store.brand.niche = chip
-                            }
+                        nicheChipView(chip)
+                    }
+                    if moreNiches {
+                        ForEach(Self.nicheChipsMore, id: \.self) { chip in
+                            nicheChipView(chip)
                         }
-                        .accessibilityIdentifier("onboard.niche.\(chip.lowercased())")
                     }
                 }
-                NicheChip(title: "Something else", selected: customNiche) {
-                    advanceTask?.cancel(); advanceTask = nil
-                    withAnimation(Motion.spring) { customNiche = true }
-                    nicheFocused = true
-                }
-                .accessibilityIdentifier("onboard.niche.other")
-                if customNiche {
-                    FreeformField(placeholder: "Your niche", text: $store.brand.niche,
-                                  fontSize: 26, focused: $nicheFocused,
-                                  accessibilityID: "onboard.niche")
-                        .padding(.top, Space.sm)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
+                if !moreNiches {
+                    NicheChip(title: "More niches…", selected: false) {
+                        advanceTask?.cancel(); advanceTask = nil
+                        withAnimation(Motion.spring) { moreNiches = true }
+                    }
+                    .accessibilityIdentifier("onboard.niche.more")
                 }
             }
-        } cta: {
-            if customNiche {
-                OnbPill(title: "Continue",
-                        enabled: !store.brand.niche.trimmingCharacters(in: .whitespaces).isEmpty) {
-                    nicheFocused = false
-                    advance()
-                }
-                .accessibilityIdentifier("onboard.nicheContinue")
-            }
+        } cta: {}
+    }
+
+    private func nicheChipView(_ chip: String) -> some View {
+        NicheChip(title: chip, selected: store.brand.niche == chip) {
+            selectAndAdvance { store.brand.niche = chip }
         }
+        .accessibilityIdentifier("onboard.niche.\(chip.lowercased())")
     }
 
     // MARK: - Connect (hero) — the inference jackpot
@@ -310,27 +309,60 @@ struct OnboardingView: View {
         }
     }
 
+    /// Tap-only audience archetypes (owner, 2026-08-16). This was the ONE field
+    /// every skipper had to type — the keyboard popping mid-quiz is the exact
+    /// momentum break the funnel research says kills completion. Archetypes read
+    /// as first-person audience descriptors, which is precisely what the script
+    /// prompts consume; a connected user's scan-derived audience gets the top
+    /// card so the honor-the-scan moment survives with zero typing.
+    private static let audienceChips = [
+        "Beginners starting out",
+        "People a few steps behind me",
+        "Busy professionals",
+        "Founders & business owners",
+        "Parents & families",
+        "Students & Gen Z",
+    ]
+
     private var identityConfirm: some View {
-        @Bindable var store = store
         // Prefilled only when the scan actually derived an audience — a scan that
-        // came back empty (scrape found no posts) must not claim knowledge over a
-        // blank field; those users get the honest ask instead.
-        let prefilled = store.brand.analyzed && !store.brand.audience.isEmpty
+        // came back empty (scrape found no posts) must not claim knowledge; those
+        // users pick an archetype like everyone else.
+        let derived = store.brand.analyzed ? store.brand.audience
+            .trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        let prefilled = !derived.isEmpty
         return scaffold("Who's it for?",
-                        prefilled ? "Pulled from your posts — fix it if it's off."
+                        prefilled ? "Pulled from your posts — or pick a better fit."
                                   : "The people on the other side of the camera.") {
-            FreeformField(placeholder: "Your audience", text: $store.brand.audience,
-                          fontSize: 26, focused: $identityFocused,
-                          accessibilityID: "onboard.audience")
-        } cta: {
-            OnbPill(title: prefilled ? "That's them" : "Continue",
-                    enabled: !store.brand.audience.trimmingCharacters(in: .whitespaces).isEmpty) {
-                identityFocused = false
-                advance()
+            VStack(spacing: Space.md) {
+                if prefilled {
+                    OptionCard(icon: "OnbIcon-identity", sfFallback: "sparkles",
+                               title: derived,
+                               subtitle: "From your posts",
+                               selected: audienceTouched && store.brand.audience == derived) {
+                        selectAndAdvance {
+                            store.brand.audience = derived
+                            audienceTouched = true
+                        }
+                    }
+                    .accessibilityIdentifier("onboard.audience.derived")
+                }
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.md),
+                                    GridItem(.flexible())],
+                          spacing: Space.md) {
+                    ForEach(Self.audienceChips, id: \.self) { chip in
+                        NicheChip(title: chip,
+                                  selected: audienceTouched && store.brand.audience == chip) {
+                            selectAndAdvance {
+                                store.brand.audience = chip
+                                audienceTouched = true
+                            }
+                        }
+                        .accessibilityIdentifier("onboard.audience.\(chip.prefix(8).lowercased())")
+                    }
+                }
             }
-            .accessibilityIdentifier("onboard.identityContinue")
-        }
-        .onAppear { if !prefilled { identityFocused = true } }
+        } cta: {}
     }
 
     // MARK: - Goal — kept because it personalizes the paywall headline
