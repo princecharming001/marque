@@ -2777,6 +2777,86 @@ NICHE_PRIORS: dict[str, dict] = {
         "styles": ["talking_head", "green_screen"],
         "note": "Growth receipts (real view/follower numbers) and algorithm myth-busting over-index; show the data on screen.",
     },
+    # --- Visual / craft / lifestyle niches (added 2026-08-18) -----------------
+    # A photographer beta tester was fed beauty ideas ("Before-After Makeup
+    # Transformations") because `photography` had no prior and `match_niche` fell
+    # through to "default" — while the beauty alias list was greedy enough to catch
+    # any beauty-adjacent phrasing. 22 of the 56 onboarding niche chips resolved to
+    # "default", i.e. 39% of the taxonomy had no niche-true grounding at all. These
+    # priors close that gap; the `note` is what actually reaches the model, so each
+    # one has to be true of the craft, not generic engagement advice.
+    "photography": {
+        "signals": ["authority", "specificity", "curiosity"],
+        "formats": ["do-this-not-that", "before-after", "broll-hook"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Show the frame, then the settings that made it — side-by-side edits and one concrete gear/light/composition decision beat abstract 'find your style' advice. The work on screen is the proof.",
+    },
+    "design": {
+        "signals": ["authority", "specificity", "contrarian"],
+        "formats": ["do-this-not-that", "before-after", "listicle"],
+        "styles": ["talking_head", "green_screen", "broll_cutaway"],
+        "note": "Critique something real on screen and name the specific rule it breaks; before/after redraws travel because the improvement is visible in a second.",
+    },
+    "gaming": {
+        "signals": ["curiosity", "stakes", "specificity"],
+        "formats": ["listicle", "broll-hook", "pov-story"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "Lead with the clip or the mechanic, not the intro; a specific, testable tip ('do this on the third round') outperforms general commentary.",
+    },
+    "music": {
+        "signals": ["curiosity", "authority", "specificity"],
+        "formats": ["before-after", "broll-hook", "do-this-not-that"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Play it, then explain it — the sound has to arrive in the first two seconds. Breaking down why a familiar song works travels further than theory in the abstract.",
+    },
+    "sports": {
+        "signals": ["contrarian", "authority", "stakes"],
+        "formats": ["myth-buster", "do-this-not-that", "pov-story"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "A specific, defensible take with the receipt (a stat, a play, a clip) beats vague opinion; technique corrections work when the wrong version is shown first.",
+    },
+    "pets": {
+        "signals": ["curiosity", "authority", "specificity"],
+        "formats": ["do-this-not-that", "myth-buster", "broll-hook"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "The animal is the hook — lead on the behavior, then the fix. Training myths ('they know they did wrong') myth-bust well; keep advice specific to a breed or an age.",
+    },
+    "home": {
+        "signals": ["specificity", "authority", "curiosity"],
+        "formats": ["before-after", "do-this-not-that", "listicle"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Before/after with the real cost and the real time is the whole format; name the exact product or measurement rather than 'the right materials'.",
+    },
+    "auto": {
+        "signals": ["authority", "specificity", "contrarian"],
+        "formats": ["myth-buster", "do-this-not-that", "listicle"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Dealership and maintenance myth-busting with an exact dollar figure travels; point the camera at the actual part you're talking about.",
+    },
+    "outdoors": {
+        "signals": ["stakes", "specificity", "authority"],
+        "formats": ["listicle", "do-this-not-that", "pov-story"],
+        "styles": ["talking_head", "broll_cutaway"],
+        "note": "Consequence is the hook — the mistake that ends a trip. Name the exact gear, the exact conditions; scenery alone doesn't hold attention past three seconds.",
+    },
+    "faith": {
+        "signals": ["curiosity", "authority", "stakes"],
+        "formats": ["pov-story", "myth-buster", "listicle"],
+        "styles": ["talking_head"],
+        "note": "First-person and specific — a question people are actually sitting with, answered plainly. Avoid the register of a sermon; keep it one idea at conversational pace.",
+    },
+    "relationships": {
+        "signals": ["curiosity", "stakes", "contrarian"],
+        "formats": ["pov-story", "myth-buster", "do-this-not-that"],
+        "styles": ["talking_head"],
+        "note": "Name the exact situation in the first line — people self-select on recognizing themselves. Scripts, not sentiments: give the words to say, not the feeling to have.",
+    },
+    "culture": {
+        "signals": ["curiosity", "contrarian", "stakes"],
+        "formats": ["pov-story", "listicle", "myth-buster"],
+        "styles": ["talking_head", "green_screen"],
+        "note": "Timeliness is the asset — react while it's live, and take an actual position. A recommendation works only when you say precisely who it's not for.",
+    },
     "default": {
         "signals": ["contrarian", "specificity", "curiosity"],
         "formats": ["myth-buster", "listicle", "do-this-not-that"],
@@ -2793,12 +2873,23 @@ NICHE_PRIORS: dict[str, dict] = {
 # matches "wheelc<hair>"). A trailing "$" forces a whole-word match, for short
 # ambiguous tokens where prefix would over-fire ("ai" must not match "airbnb").
 _NICHE_ALIASES: list[tuple[tuple[str, ...], str]] = [
-    (("fitness", "gym", "workout", "lifting", "bodybuild", "personal train", "calisthenic", "crossfit", "run"), "fitness"),
+    (("fitness", "gym", "workout", "lifting", "bodybuild", "personal train", "calisthenic", "crossfit", "run", "yoga", "pilates", "weight loss", "fat loss"), "fitness"),
     (("finance", "money", "invest", "stock", "wealth", "budget", "personal finance", "fire$", "crypto", "trading"), "finance"),
-    (("business", "entrepreneur", "startup", "founder", "ecommerce", "e-commerce", "dropship", "saas", "small business"), "business"),
+    (("business", "entrepreneur", "startup", "founder", "ecommerce", "e-commerce", "dropship", "saas", "small business", "sales$", "selling", "cold call", "side hustle", "side income"), "business"),
     (("marketing", "agency", "social media", "copywrit", "seo", "paid ads", "growth marketing", "branding"), "marketing"),
-    (("food", "cook", "recipe", "baking", "chef", "kitchen", "meal prep", "barista"), "food"),
-    (("beauty", "skincare", "makeup", "cosmetic", "esthet", "derm", "hair", "nails"), "beauty"),
+    (("food", "cook", "recipe", "baking", "chef", "kitchen", "meal prep", "barista", "coffee"), "food"),
+    # Visual crafts sit ABOVE beauty deliberately. "First match wins", and a
+    # portrait/wedding/editorial photographer's self-description very often contains
+    # a beauty-adjacent word ("beauty & portrait photography", "hair and editorial
+    # shoots") — which used to slug them as a beauty creator and hand them makeup
+    # ideas. Whoever says "photography" is a photographer first.
+    (("photograph", "photographer", "photo shoot", "portrait", "videograph", "filmmak", "cinematograph", "film making"), "photography"),
+    # NOT bare "artist"/"art" — "makeup artist", "tattoo artist" and "nail art" all
+    # collide with it, and the collision is exactly the class of bug this block fixes.
+    (("graphic design", "design$", "designer", "illustrat", "interior design", "architect", "typograph", "fine art", "digital art"), "design"),
+    # "hair"/"derm"/"nails" are whole-word now: as bare prefixes they matched
+    # "hairline", "dermatology-adjacent" copy, and anything with "nail" in it.
+    (("beauty", "skincare", "makeup", "cosmetic", "esthet", "derm$", "hair$", "haircare", "nails$"), "beauty"),
     (("fashion", "style$", "outfit", "streetwear", "thrift", "wardrobe"), "fashion"),
     (("tech", "ai$", "artificial intel", "software", "coding", "developer", "programming", "gadget", "no-code", "cybersec"), "tech"),
     (("study", "student", "education", "teacher", "exam", "language learning", "academ", "college", "medical school"), "education"),
@@ -2806,10 +2897,20 @@ _NICHE_ALIASES: list[tuple[tuple[str, ...], str]] = [
     (("real estate", "realtor", "property", "mortgage", "airbnb", "landlord"), "real_estate"),
     (("health", "wellness", "nutrition", "diet", "gut$", "hormone", "sleep", "biohack", "therapist", "mental health"), "health"),
     (("parent", "mom$", "dad$", "toddler", "newborn", "family", "motherhood"), "parenting"),
+    (("relationship", "dating", "marriage", "couples", "breakup", "divorce"), "relationships"),
     (("travel", "digital nomad", "backpack", "destination", "van life"), "travel"),
     (("comedy", "skit", "entertain", "funny", "prank", "meme"), "comedy"),
     (("career", "corporate", "9-5", "9 to 5", "resume", "job interview", "salary", "consulting"), "career"),
     (("creator", "content creation", "influencer", "youtube", "podcast", "streamer"), "creator"),
+    (("gaming", "gamer", "video game", "esport", "speedrun", "twitch"), "gaming"),
+    (("music", "musician", "producer", "guitar", "piano", "singer", "songwrit", "dj$", "beatmak", "dance$", "dancer", "choreograph"), "music"),
+    (("sports", "athlet", "golf", "basketball", "soccer", "football", "tennis", "baseball", "hockey", "coach$", "boxing", "mma$"), "sports"),
+    (("pets", "dog", "puppy", "cat$", "cats$", "kitten", "veterinar", "animal train", "horse"), "pets"),
+    (("home &", "home improvement", "diy", "woodwork", "renovat", "gardening", "organizing", "declutter", "handyman"), "home"),
+    (("cars", "car$", "auto", "motorcycle", "truck", "mechanic", "detailing", "ev$"), "auto"),
+    (("outdoors", "hiking", "camping", "fishing", "hunting", "backcountr", "climbing", "surfing", "overland"), "outdoors"),
+    (("faith", "christian", "spirituality", "bible", "church", "islam", "muslim", "buddhis", "prayer"), "faith"),
+    (("pop culture", "books", "reading", "storytelling", "film review", "movie", "tv show", "celebrity", "anime"), "culture"),
 ]
 
 

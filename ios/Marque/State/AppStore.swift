@@ -1178,7 +1178,13 @@ final class AppStore {
                             }
                         }
                     }
-                    if publicURL == nil {
+                    // Build 78: don't re-run a hoisted upload that failed because the take
+                    // can't be compressed under the storage cap — the second run would pay
+                    // the same multi-minute transcode to reach the identical verdict. Every
+                    // other failure still gets the fresh attempt (reliability unchanged).
+                    let hoistTooLarge = UploadJournal.shared.entry(uploadId: uploadId)?.lastErrorCode
+                        == MediaCompressor.tooLargeErrorCode
+                    if publicURL == nil, !hoistTooLarge {
                         publicURL = await LiveClipEngine.mintAndUpload(uploadId: uploadId, footagePath: footagePath) { [weak self] frac in
                             Task { @MainActor in
                                 guard let self, let i = self.clips.firstIndex(where: { $0.id == pid }),
@@ -1230,7 +1236,11 @@ final class AppStore {
                               caption: script.cta, predictedScore: script.predictedScore,
                               status: .failed, seconds: script.targetSeconds, jobId: nil)
             failed.localVideoPath = footagePath
-            failed.lastError = "upload_failed"
+            // Build 78: carry the journal's specific reason onto the card when there is one.
+            // "upload_too_large" is the take that can't be compressed under the cap — it must
+            // NOT read as a connection problem, because retrying verbatim will fail forever.
+            failed.lastError = journalEntry?.lastErrorCode == MediaCompressor.tooLargeErrorCode
+                ? MediaCompressor.tooLargeErrorCode : "upload_failed"
             clips.insert(failed, at: 0)
             save()
             return
@@ -1730,6 +1740,11 @@ final class AppStore {
             return "The upload was interrupted before it finished. Tap Try again to resume."
         case "upload_failed":
             return "Your take couldn't be uploaded — check your connection and tap Try again."
+        case MediaCompressor.tooLargeErrorCode:
+            // Build 78: the one upload failure where "check your connection" is actively
+            // wrong — no network on earth fixes a body that can't be squeezed under the
+            // storage cap. Give the creator the action that actually works.
+            return "That video is too large to upload — try a shorter take or trim it first."
         default:
             if let detail, !detail.isEmpty {
                 return "This clip didn't finish (\(detail)). Tap to try again."
@@ -1827,7 +1842,12 @@ final class AppStore {
                 self.clips[i].uploadProgress = frac
             }
         }) else {
-            fail("Couldn't re-upload your footage — tap Try again."); return true
+            // Build 78: same distinction as the instant path — a take that can't be
+            // compressed under the storage cap gets the "trim it" copy, not "try again",
+            // which would just re-run the identical doomed compression.
+            fail(UploadJournal.shared.entry(uploadId: uploadId)?.lastErrorCode == MediaCompressor.tooLargeErrorCode
+                 ? MediaCompressor.tooLargeErrorCode : "upload_failed")
+            return true
         }
         // Restore the creator's real edit settings from the journal payload (build 49) instead
         // of the bare EditToggles() that used to silently drop them on every resume.

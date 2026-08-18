@@ -62,15 +62,23 @@ struct LiveClipEngine: ClipEngineProtocol {
         if let footagePath, !footagePath.isEmpty, !uploadURLString.isEmpty {
             // Compress the raw take (full device bitrate — often >50MB) down to fit
             // the storage cap before uploading; keep the on-disk original for the
-            // local rough-cut preview. Fall back to the original if compression
-            // fails (an oversize original just fails the upload → mock fallback).
+            // local rough-cut preview. Build 78: an over-cap original is NEVER sent —
+            // it's a guaranteed 413 (fatal, unretryable) and it costs the creator a
+            // multi-hundred-MB transfer to learn that. Fall to the local mock pipeline.
             let original = MediaStore.url(for: footagePath)
             let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
-            let compressed = await MediaCompressor.forUpload(original, maxBytes: cap)
-            let toUpload = compressed ?? original
+            var toUpload = original
+            var cleanup: URL? = nil
+            switch await MediaCompressor.forUpload(original, maxBytes: cap) {
+            case .original: break
+            case .compressed(let out): toUpload = out; cleanup = out
+            case .tooLarge:
+                BackendClient.shared.reportClientEvent("upload_source_too_large", detail: "makeClips")
+                return await fallback.makeClips(from: script, formats: formats)
+            }
             let ok = await Self.uploadFootage(to: uploadURLString, fileURL: toUpload,
                                               uploadId: UUID().uuidString)
-            if let compressed { try? FileManager.default.removeItem(at: compressed) }
+            if let cleanup { try? FileManager.default.removeItem(at: cleanup) }
             guard ok else { return await fallback.makeClips(from: script, formats: formats) }
         }
         // 3. Create the clip job pointing at the (now-uploaded) public source. The
@@ -137,7 +145,16 @@ struct LiveClipEngine: ClipEngineProtocol {
         var cleanup: URL? = nil
         if filename.lowercased().hasSuffix(".mov") || filename.lowercased().hasSuffix(".mp4") {
             let cap = (mintData["max_upload_bytes"] as? Int) ?? MediaCompressor.defaultMaxUploadBytes
-            if let compressed = await MediaCompressor.forUpload(original, maxBytes: cap) { toUpload = compressed; cleanup = compressed }
+            switch await MediaCompressor.forUpload(original, maxBytes: cap) {
+            case .original: break
+            case .compressed(let out): toUpload = out; cleanup = out
+            case .tooLarge:
+                // Build 78: bail rather than PUT an over-cap body. The caller reads nil as
+                // "upload failed" and keeps the local media; sending it would 413 (fatal in
+                // UploadRetryPolicy) after minutes of pointless transfer.
+                BackendClient.shared.reportClientEvent("upload_source_too_large", detail: filename)
+                return nil
+            }
         }
         let ok = await uploadFootage(to: uploadURLString, fileURL: toUpload,
                                      uploadId: UUID().uuidString,
@@ -190,12 +207,33 @@ struct LiveClipEngine: ClipEngineProtocol {
         UploadJournal.shared.update(uploadId: uploadId) { $0.state = .compressing }
         let original = MediaStore.url(for: footagePath)
         let workDir = UploadJournal.workDir(uploadId: uploadId)
-        let compressed = await MediaCompressor.forUpload(original, maxBytes: mint.cap, into: workDir) { p in
+        var toUpload = original
+        switch await MediaCompressor.forUpload(original, maxBytes: mint.cap, into: workDir, onProgress: { p in
             onProgress?(min(0.4, p * 0.4))
-        }
-        let toUpload = compressed ?? original
-        if let compressed {
-            UploadJournal.shared.update(uploadId: uploadId) { $0.compressedPath = compressed.path }
+        }) {
+        case .original:
+            break
+        case .compressed(let out):
+            toUpload = out
+            UploadJournal.shared.update(uploadId: uploadId) { $0.compressedPath = out.path }
+        case .tooLarge:
+            // Build 78 — the defect this round fixes. We used to fall back to the RAW file
+            // here (`compressed ?? original`), so a 4K HDR import that outran the transcode
+            // deadline was PUT at 350–500MB against a 48MB cap: the bucket 413s, and 413 is
+            // classified permanently fatal (UploadRetryPolicy.decide) — the beta's "failed
+            // twice" with no retry, after minutes of uploading. Fail here instead, with a
+            // code the card turns into an instruction the creator can actually act on.
+            // failedRetryable (not a terminal state) keeps the local take and "Try again"
+            // alive — the same take trimmed shorter WILL fit.
+            UploadJournal.shared.update(uploadId: uploadId) {
+                $0.state = .failedRetryable
+                $0.lastErrorCode = MediaCompressor.tooLargeErrorCode
+            }
+            BackendClient.shared.reportClientEvent(
+                "upload_source_too_large",
+                detail: "uid=\(uploadId.prefix(8)) | \((fileBytes(original)) / 1_000_000)MB | cap=\(mint.cap / 1_000_000)MB")
+            onProgress?(0)
+            return nil
         }
         let ok = await uploadFootage(to: mint.signed, fileURL: toUpload, uploadId: uploadId,
                                      contentType: "video/quicktime",
@@ -205,6 +243,11 @@ struct LiveClipEngine: ClipEngineProtocol {
         // On success the object is durable; publicURL may have changed if we re-minted.
         publicURL = UploadJournal.shared.entry(uploadId: uploadId)?.publicUrl ?? publicURL
         return ok ? publicURL : nil
+    }
+
+    /// Size on disk in bytes, 0 when it can't be read (telemetry only — never a control flow).
+    private static func fileBytes(_ url: URL) -> Int {
+        (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int).flatMap { $0 } ?? 0
     }
 
     /// Content-type from a filename extension (fixes the build-48 bug where images uploaded
@@ -245,6 +288,10 @@ struct LiveClipEngine: ClipEngineProtocol {
         // mid-upload. Labeled break instead; parking is also bounded now (it deliberately
         // doesn't consume an attempt, so an endless offline park needs its own ceiling).
         var networkParks = 0
+        // Build 78: restarts caused by OUR OWN stall watchdog. They don't consume an attempt
+        // (the transport never actually failed), so they need their own ceiling for the same
+        // reason parking does — otherwise a truly wedged transfer would loop forever.
+        var stallRestarts = 0
         // Audit (build 53, A5): the journal's attemptCount is the LIFETIME count across launches
         // (the reconcile sweep re-enters this on every cold start). Seed from the persisted value
         // and accumulate, so maxLifetimeAttempts actually bounds a clip that burns its per-session
@@ -276,7 +323,7 @@ struct LiveClipEngine: ClipEngineProtocol {
             let decision = UploadRetryPolicy.decide(
                 status: result.statusCode, attempt: attempt,
                 networkSatisfied: BackgroundUploader.shared.networkSatisfied, nsError: result.error,
-                lifetimeAttempt: lifetime)
+                lifetimeAttempt: lifetime, watchdogStalled: result.watchdogStalled)
             switch decision {
             case .retry(let delay):
                 UploadJournal.shared.update(uploadId: uploadId) { $0.state = .retrying }
@@ -286,6 +333,20 @@ struct LiveClipEngine: ClipEngineProtocol {
                 guard let fresh = await remint?() else { break retryLoop }
                 signedURL = fresh
                 onProgress?(0)
+            case .restartStalled(let delay):
+                // Our watchdog aborted a quiet transfer. Restart it, but DON'T bill the retry
+                // budget: before build 78 a large take could burn all six attempts on
+                // self-inflicted cancels and land on a failed card without a single real
+                // transport error. The journal's attemptCount is left alone too (it's written
+                // from `lifetime`, which only moves when `attempt` does).
+                stallRestarts += 1
+                if stallRestarts > 3 { break retryLoop }   // genuinely wedged → retryable card
+                BackendClient.shared.reportClientEvent("upload_stall_restart",
+                                                       detail: "uid=\(uploadId.prefix(8)) | #\(stallRestarts)")
+                UploadJournal.shared.update(uploadId: uploadId) { $0.state = .retrying }
+                onProgress?(0)
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                continue   // skips `attempt += 1` — same contract as a network park
             case .waitForNetwork:
                 networkParks += 1
                 if networkParks > 8 { break retryLoop }   // ~16min parked → retryable card
@@ -339,18 +400,61 @@ enum MediaCompressor {
     private static let audioBps = 96_000            // AAC voice budget subtracted from the cap
     private static let longTakeThresholdSec = 150.0 // above this, 1080p bitrate would be too low → 720p ladder
 
+    /// The journal/clip error code for "we could not get this take under the storage cap".
+    /// Distinct from the generic upload failure so the card can tell the creator something
+    /// ACTIONABLE (trim it) instead of "check your connection" — nothing about their
+    /// connection would ever fix a 500MB body against a 48MB cap.
+    static let tooLargeErrorCode = "upload_too_large"
+
+    /// Build 78 — what one compress-for-upload pass concluded. `forUpload` used to answer
+    /// with a bare `URL?`, which collapsed two OPPOSITE meanings into `nil`: "the source
+    /// already fits, send it untouched" and "we could NOT get this under the cap". Every
+    /// caller read `nil` as the first (`let toUpload = compressed ?? original`) and PUT the
+    /// raw file — so a 4K HDR import whose transcode blew its deadline went out as a
+    /// 350–500MB body, the bucket answered 413, and UploadRetryPolicy classifies 413 as
+    /// permanently fatal. That is the beta report verbatim: unusually long, then failed
+    /// twice with no retry. The two cases are separate values now so `nil` can't lie.
+    enum UploadSource: Equatable {
+        case original           // already under the cap — PUT the source file untouched
+        case compressed(URL)    // a transcoded copy that fits; caller deletes it after the PUT
+        case tooLarge           // could not fit the cap — NEVER PUT this; surface `tooLargeErrorCode`
+    }
+
+    /// Build 78 — wall-clock budget for the WHOLE device-side compression of a source of
+    /// `bytes`. The old numbers were fixed (90s HEVC deadline + 140s ladder budget) and were
+    /// sized for the in-app 1080p capture (~60–150MB for a 60–90s take). A Photos import can
+    /// be 4K HDR — 350–500MB for the same duration — which is 3–4× the pixel work: the flat
+    /// 90s deadline guillotined the HEVC pass shortly before it would have finished, and we
+    /// then paid the export ladder on top (~230s worst case) to redo the same work. Scale
+    /// with source BYTES (the quantity that actually predicts decode+encode time — HDR 10-bit
+    /// `copyNextSampleBuffer` is the bottleneck, and it's per-sample, not per-second), floor
+    /// at the old combined budget so nothing that used to work gets slower to fail, and keep
+    /// a hard ceiling so a pathological import still resolves well inside the caller's 420s
+    /// submit window (AppStore.submitTakeInstant) with room left for the PUT itself.
+    static func compressionBudget(bytes: Int) -> TimeInterval {
+        let perMB = 0.55                    // ≈2MB of SOURCE per second, worst case (A-series, 10-bit HDR)
+        return min(300, max(150, Double(bytes) / 1_000_000 * perMB))
+    }
+
     /// `maxBytes` comes from the mint response so raising the storage tier is backend-only.
     /// `into` (build 49): the output directory. Instant uploads pass a stable per-upload dir
     /// under Documents so the compressed file survives a relaunch mid-transfer; legacy callers
     /// default to tmp/.
     static func forUpload(_ source: URL, maxBytes: Int = defaultMaxUploadBytes,
                           into dir: URL? = nil,
-                          onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
+                          onProgress: (@Sendable (Double) -> Void)? = nil) async -> UploadSource {
         let outDir = dir ?? FileManager.default.temporaryDirectory
         // OPT-7: skip re-encoding entirely when the source already fits — short takes
         // upload as-is instead of paying a full export on the critical path.
         let srcSize = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int
-        if let srcSize, srcSize <= maxBytes { onProgress?(1.0); return nil }   // caller uploads the original
+        if let srcSize, srcSize <= maxBytes { onProgress?(1.0); return .original }
+
+        // One budget for the whole ladder, started BEFORE any encoding: the HEVC pass gets
+        // the majority of it and whatever it leaves over funds the export presets, so the
+        // two stages can never chain two independent deadlines back to back the way the old
+        // fixed 90s + 140s pair could.
+        let startedAt = Date()
+        let budget = compressionBudget(bytes: srcSize ?? maxBytes)
 
         let asset = AVURLAsset(url: source)
         let seconds = CMTimeGetSeconds(asset.duration)
@@ -363,12 +467,15 @@ enum MediaCompressor {
             let capBudgetBps = Int(Double(maxBytes) * 8.0 / seconds) - audioBps
             let tierTarget = seconds <= 90 ? 3_800_000 : 2_600_000   // ≤90s vs 90–150s
             let videoBps = max(1_200_000, min(tierTarget, Int(Double(capBudgetBps) * 0.92)))
-            // transcodeHEVC self-bounds via an internal 90s reader/writer-cancel deadline, so an
-            // undecodable import can't hang here — it returns nil and we fall through to the
-            // robust export preset ladder (AVAssetExportSession tonemaps HDR→SDR / handles odd formats).
-            if let out = await transcodeHEVC(asset, videoBps: videoBps, into: outDir),
+            // transcodeHEVC self-bounds via a reader/writer-cancel deadline, so an undecodable
+            // import can't hang here — it returns nil and we fall through to the robust export
+            // preset ladder (AVAssetExportSession tonemaps HDR→SDR / handles odd formats).
+            // Build 78: that deadline is 60% of the size-scaled budget rather than a flat 90s,
+            // which is what a big HDR import actually needs to reach `finishWriting` at all.
+            if let out = await transcodeHEVC(asset, videoBps: videoBps, into: outDir,
+                                             deadline: budget * 0.6),
                let size = fileSize(out), size <= maxBytes {
-                return out
+                return .compressed(out)
             }
             // Overshoot / writer failure / transcode timeout → fall through to the preset ladder.
         }
@@ -383,16 +490,30 @@ enum MediaCompressor {
         // Build 45: cap the WHOLE ladder to one export budget so it can't chain two
         // 120s cancel-deadlines back to back (a stalled ladder used to burn ~4 min
         // before the outer submit ceiling caught it — that's the "stuck" window).
-        let ladderDeadline = Date().addingTimeInterval(140)
+        // Build 78: the ceiling is now the size-scaled budget measured from BEFORE the HEVC
+        // pass, so HEVC + ladder together stay inside one bounded window (previously the
+        // ladder started its own fresh 140s after HEVC had already spent 90).
+        let ladderDeadline = startedAt.addingTimeInterval(budget)
         for preset in presets {
-            if Date() > ladderDeadline { break }
+            let remaining = ladderDeadline.timeIntervalSinceNow
+            if remaining <= 0 { break }
             // export() self-bounds via its own cancelExport() deadline — a wedged export drops
-            // to the next preset / fails instead of hanging.
-            guard let out = await export(source, preset: preset, into: outDir, onProgress: onProgress) else { continue }
-            if let size = fileSize(out), size <= maxBytes { return out }
+            // to the next preset / fails instead of hanging. Floor it at 45s: a deadline shorter
+            // than that can't complete ANY export, so it would just burn the tail of the budget
+            // producing nothing; better to overshoot the window slightly on the last preset.
+            guard let out = await export(source, preset: preset, into: outDir,
+                                         deadline: min(180, max(45, remaining)),
+                                         onProgress: onProgress) else { continue }
+            if let size = fileSize(out), size <= maxBytes { return .compressed(out) }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
-        return nil
+        // Every path failed or overshot. Emphatically NOT `.original`: the source is by
+        // definition over the cap here (we returned `.original` above when it fit — and a
+        // source whose size can't even be read is unreadable, so it has no business on the
+        // wire either), so
+        // uploading it is a guaranteed 413 → a permanently-fatal classification → a dead
+        // card the creator can't retry. Tell the caller to fail LOUDLY and retryably instead.
+        return .tooLarge
     }
 
     private static func fileSize(_ url: URL) -> Int? {
@@ -402,7 +523,10 @@ enum MediaCompressor {
     /// Native-resolution HEVC transcode at an explicit average bitrate (AVAssetReader →
     /// AVAssetWriter). Preserves the source dimensions + orientation so 1080p stays 1080p
     /// (the whole point — no upscale in the render). Re-encodes audio to AAC at `audioBps`.
-    private static func transcodeHEVC(_ asset: AVURLAsset, videoBps: Int, into dir: URL) async -> URL? {
+    /// `deadline` (build 78) is seconds of wall clock this pass may spend — caller-scaled to
+    /// the source size instead of the old hard-coded 90s.
+    private static func transcodeHEVC(_ asset: AVURLAsset, videoBps: Int, into dir: URL,
+                                      deadline: TimeInterval) async -> URL? {
         guard let vTrack = asset.tracks(withMediaType: .video).first else { return nil }
         let out = dir.appendingPathComponent(UUID().uuidString + ".mov")
         guard let reader = try? AVAssetReader(asset: asset),
@@ -467,8 +591,8 @@ enum MediaCompressor {
         // Task/taskGroup cancel does NOT interrupt that non-cooperative AVFoundation call —
         // cancelReading()/cancelWriting() DO (subsequent copyNextSampleBuffer returns nil, the
         // pump resumes, reader.status != .completed, we bail to the robust export ladder).
-        let deadline = Task {
-            try? await Task.sleep(nanoseconds: 90 * 1_000_000_000)
+        let deadlineTask = Task {
+            try? await Task.sleep(nanoseconds: UInt64(max(30, deadline) * 1_000_000_000))
             reader.cancelReading(); writer.cancelWriting()
         }
         // Pump video + (optional) audio inputs concurrently; resume once both drain.
@@ -478,7 +602,7 @@ enum MediaCompressor {
                 group.addTask { await pump(aIn, from: aOut) }
             }
         }
-        deadline.cancel()
+        deadlineTask.cancel()
 
         guard reader.status == .completed else {
             writer.cancelWriting(); try? FileManager.default.removeItem(at: out); return nil
@@ -518,7 +642,10 @@ enum MediaCompressor {
         }
     }
 
+    /// `deadline` (build 78): seconds this single export may spend, handed down from the
+    /// ladder's remaining size-scaled budget (was a hard-coded 120s per export).
     private static func export(_ source: URL, preset: String, into dir: URL,
+                               deadline: TimeInterval = 120,
                                onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
         let asset = AVURLAsset(url: source)
         guard let session = AVAssetExportSession(asset: asset, presetName: preset) else { return nil }
@@ -530,8 +657,8 @@ enum MediaCompressor {
             // HARD deadline: an export can wedge on a pathological import. cancelExport()
             // forces the completion handler to fire with .cancelled — a Task/taskGroup cancel
             // does NOT touch the underlying AVFoundation work, so we cancel the SESSION itself.
-            let deadline = Task {
-                try? await Task.sleep(nanoseconds: 120 * 1_000_000_000)
+            let deadlineTask = Task {
+                try? await Task.sleep(nanoseconds: UInt64(max(30, deadline) * 1_000_000_000))
                 session.cancelExport()
             }
             // Poll session.progress on a light timer so the bar moves during compression
@@ -545,7 +672,7 @@ enum MediaCompressor {
                 }
             }
             session.exportAsynchronously {
-                deadline.cancel()
+                deadlineTask.cancel()
                 progressPoll?.cancel()
                 if session.status == .completed {
                     onProgress?(1.0)

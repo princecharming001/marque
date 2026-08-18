@@ -36,7 +36,14 @@ struct OnboardingView: View {
         // funnel work in docs/03-onboarding.md): a dedicated page immediately AFTER
         // the aha — value just demonstrated, concrete promise attached — and before
         // the paywall. Never a cold OS prompt anywhere else in the app.
-        case landing, niche, connect, identity, emulate, goal, frequency, building,
+        // `emulate` ("Who do you want to sound like?" — Hormozi/Tate/Sapp/MrBeast) was
+        // cut on beta feedback 2026-08-18: a photographer found the four hardcoded
+        // creators irrelevant to their account, and they were. The step also failed the
+        // flow's own contract above — the first three scripts are generated on-device
+        // and never read emulationTargets, so the answer changed nothing the user could
+        // see. Emulation still exists where the choice is INFORMED: Profile →
+        // "Creators to watch", and the track button on any reel in the niche feed.
+        case landing, niche, connect, identity, goal, frequency, building,
              notifications
 
         /// Quiz-progress dashes cover the QUESTIONS between landing and building.
@@ -56,7 +63,9 @@ struct OnboardingView: View {
     // remembered so a relaunch resumes exactly where you left off.
     // v2 key: the rebuild renumbered every step, so a persisted v1 position would
     // resume onto the wrong screen. Old key is simply ignored.
-    @AppStorage("onboarding.resumeStep.v2") private var resumeStepRaw = 0
+    // v3: cutting `emulate` renumbered every step after it, so a v2 position would
+    // resume a mid-flight tester onto the wrong screen.
+    @AppStorage("onboarding.resumeStep.v3") private var resumeStepRaw = 0
 
     // Auto-advance plumbing: last tap wins within the 300ms window; back cancels.
     @State private var advanceTask: Task<Void, Never>?
@@ -65,7 +74,6 @@ struct OnboardingView: View {
     // Defaulted enums render unselected until touched (so every MCQ auto-advances
     // on a real choice, never on a default).
     @State private var goalTouched = false
-    // Niche chips: "Something else" flips to a freeform field.
     @State private var audienceTouched = false
     // Scan hold: connected users wait on branded theater while the real page scan
     // runs (owner-decided over confirm-later), capped at ~12s so a slow or dead
@@ -91,7 +99,6 @@ struct OnboardingView: View {
             case .niche:     nicheStep
             case .connect:   connectStep
             case .identity:  identityStep
-            case .emulate:   emulateStep
             case .goal:          goalStep
             case .frequency:     frequencyStep
             case .building:      buildingStep
@@ -467,25 +474,6 @@ struct OnboardingView: View {
     }
 
     // MARK: - Emulate creators
-
-    private var emulateStep: some View {
-        scaffold("Who do you want to sound like?",
-                 "Pick creators whose style you admire — I'll study how they hook, pace, and talk.") {
-            EmulateStep()
-        } cta: {
-            VStack(spacing: Space.md) {
-                OnbPill(title: "Continue", enabled: !(store.brand.emulationTargets ?? []).isEmpty) {
-                    advance()
-                }
-                .accessibilityIdentifier("onboard.emulate.continue")
-                Button { advance() } label: {
-                    Text("Skip for now")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                }
-                .accessibilityIdentifier("onboard.emulate.skip")
-            }
-        }
-    }
 
     // MARK: - Building → ready (non-blocking aha)
 

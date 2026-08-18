@@ -101,7 +101,9 @@ targets:
         NSCameraUsageDescription: "Yunicorn records talking-head video so the AI can edit it into clips."
         NSMicrophoneUsageDescription: "Yunicorn records audio with your video so your clips have sound."
         NSPhotoLibraryUsageDescription: "Yunicorn imports existing videos to repurpose into clips."
-        NSSpeechRecognitionUsageDescription: "Yunicorn transcribes what you say to the voice assistant so it can build your content."
+        # NSSpeechRecognitionUsageDescription removed with the voice orb (2026-08-18):
+        # nothing calls SFSpeechRecognizer any more. NSMicrophoneUsageDescription STAYS —
+        # video recording still captures audio (CameraModel).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UIAppFonts:

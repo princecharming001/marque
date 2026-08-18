@@ -28,6 +28,11 @@ struct UploadResult {
     let ok: Bool          // true iff a 2xx landed
     let statusCode: Int   // HTTP status (0 on transport error)
     let error: Error?
+    // Build 78: true when THIS app's stall watchdog cancelled the task. Indistinguishable
+    // from a real transport failure at the URLSession layer (status 0 + NSURLErrorCancelled),
+    // so it has to be carried out-of-band — the retry policy treats a self-inflicted cancel
+    // very differently from a transport that actually broke.
+    var watchdogStalled: Bool = false
 }
 
 final class BackgroundUploader: NSObject, URLSessionDataDelegate {
@@ -42,6 +47,9 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
     private var progress: [Int: @Sendable (Double) -> Void] = [:]
     private var uploadIds: [Int: String] = [:]
     private var lastProgressAt: [Int: Date] = [:]
+    // Task ids the stall watchdog cancelled — read once in didCompleteWithError so the
+    // caller can tell "we gave up on a quiet transfer" from "the network died".
+    private var watchdogCancelled: Set<Int> = []
 
     // App-lifecycle flag read by the watchdog (kept off the main thread's hot path).
     private let appActive = NSLock()
@@ -118,11 +126,13 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         let task = session.uploadTask(with: req, fromFile: fileURL)
         task.taskDescription = uploadId    // survives a kill → relaunch re-binding
+        var bodyBytes: Int64 = 0
         if let total = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int, total > 0 {
             task.countOfBytesClientExpectsToSend = Int64(total)
+            bodyBytes = Int64(total)
         }
         let id = task.taskIdentifier
-        let watchdog = startWatchdog(taskId: id, task: task)
+        let watchdog = startWatchdog(taskId: id, task: task, bodyBytes: bodyBytes)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { (cont: CheckedContinuation<UploadResult, Never>) in
                 lock.lock()
@@ -149,15 +159,31 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
             let cont = self.conts.removeValue(forKey: id)
             self.progress.removeValue(forKey: id)
             self.lastProgressAt.removeValue(forKey: id)
+            self.watchdogCancelled.remove(id)   // no awaiter left to attribute it to
             self.lock.unlock()
             cont?.resume(returning: UploadResult(ok: false, statusCode: 0, error: CancellationError()))
         }
     }
 
-    /// Foreground-only stall watchdog: cancel a task whose bytes have frozen for 60s while the
-    /// app is active and connected. Does nothing while backgrounded (the OS owns retries there).
-    private func startWatchdog(taskId: Int, task: URLSessionTask) -> Task<Void, Never> {
-        Task.detached { [weak self] in
+    /// Build 78 — how long bytes may stay frozen before the watchdog calls it stalled, scaled
+    /// by body size. A background-session upload is handed to `nsurlsessiond`, which COPIES
+    /// the body file into its own sandbox before the first byte reaches the wire; for a
+    /// several-hundred-MB take that copy alone can outlast a flat 60s of "no
+    /// didSendBodyData", so the watchdog was cancelling perfectly healthy large transfers and
+    /// restarting each one from byte 0 — precisely the "uploading is taking unusually long"
+    /// loop from the beta. The 60s floor keeps small takes fast-failing exactly as before;
+    /// +0.2s/MB buys a big one room; the 4-minute ceiling keeps a genuinely wedged transfer
+    /// well inside the 20-minute `timeoutIntervalForResource` backstop.
+    static func stallLimit(forBytes bytes: Int64) -> TimeInterval {
+        min(240, max(60, 60 + Double(bytes) / 1_000_000 * 0.2))
+    }
+
+    /// Foreground-only stall watchdog: cancel a task whose bytes have frozen for
+    /// `stallLimit(forBytes:)` while the app is active and connected. Does nothing while
+    /// backgrounded (the OS owns retries there).
+    private func startWatchdog(taskId: Int, task: URLSessionTask, bodyBytes: Int64) -> Task<Void, Never> {
+        let limit = Self.stallLimit(forBytes: bodyBytes)
+        return Task.detached { [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 15 * 1_000_000_000)
@@ -168,8 +194,11 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
                 self.lock.unlock()
                 guard stillLive, let last else { return }
                 if self.appIsActive, self.networkSatisfied,
-                   Date().timeIntervalSince(last) > 60 {
-                    task.cancel()   // stalled in the foreground → fast-fail into a retry
+                   Date().timeIntervalSince(last) > limit {
+                    // Mark BEFORE cancelling: didCompleteWithError can fire on the delegate
+                    // queue the instant cancel() lands, and it must see the attribution.
+                    self.lock.lock(); self.watchdogCancelled.insert(taskId); self.lock.unlock()
+                    task.cancel()   // stalled in the foreground → fast-fail into a restart
                     return
                 }
             }
@@ -216,6 +245,7 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
         lastProgressAt.removeValue(forKey: id)
         lastJournalWrite.removeValue(forKey: id)
         let uid = uploadIds.removeValue(forKey: id) ?? task.taskDescription
+        let stalled = watchdogCancelled.remove(id) != nil
         lock.unlock()
 
         var status = 0
@@ -238,7 +268,8 @@ final class BackgroundUploader: NSObject, URLSessionDataDelegate {
                 }
             }
         }
-        cont?.resume(returning: UploadResult(ok: ok, statusCode: status, error: error))
+        cont?.resume(returning: UploadResult(ok: ok, statusCode: status, error: error,
+                                            watchdogStalled: stalled && !ok))
     }
 
     /// Called after the system relaunched us to deliver background events; fire the stored

@@ -232,3 +232,51 @@ def test_generate_still_keyless_noop(monkeypatch):
     from app import higgsfield as hf
     monkeypatch.setattr(hf, "CONFIGURED", False)
     assert asyncio.run(hf.generate_still("x")) is None
+
+
+# --- per-stage timing instrumentation ----------------------------------------------
+# The ETA table above is a promise to the USER; this is the number that tells US whether
+# the promise was kept. Before it existed, "editing is taking unusually long" could only
+# be answered by reading code.
+
+def test_stage_timings_accumulate_and_log(caplog):
+    import logging as _logging
+    job: dict = {}
+    with main._timed(job, "broll_resolve"):
+        pass
+    main._mark_timing(job, "render", main.time.perf_counter() - 12.0)
+    main._mark_timing(job, "render", main.time.perf_counter() - 3.0)   # additive, not last-wins
+    assert 14.9 < job["_stage_timings"]["render"] < 15.2
+    with caplog.at_level(_logging.INFO):
+        main._log_stage_timings("job-1", job)
+    lines = [r.getMessage() for r in caplog.records if "[timing]" in r.getMessage()]
+    assert len(lines) == 1                                  # ONE line per job
+    assert "job=job-1" in lines[0] and "render=15.0s" in lines[0]
+    # slowest stage first — the whole point is that the answer is the first thing you read
+    assert lines[0].index("render=") < lines[0].index("broll_resolve=")
+
+
+def test_stage_timings_survive_a_raising_stage():
+    """A stage that blew up is exactly the one whose duration you want."""
+    job: dict = {}
+    try:
+        with main._timed(job, "author"):
+            raise RuntimeError("llm down")
+    except RuntimeError:
+        pass
+    assert "author" in job["_stage_timings"]
+
+
+def test_log_stage_timings_silent_when_nothing_measured(caplog):
+    import logging as _logging
+    with caplog.at_level(_logging.INFO):
+        main._log_stage_timings("job-2", {})
+    assert not [r for r in caplog.records if "[timing]" in r.getMessage()]
+
+
+def test_higgsfield_timeout_cannot_dominate_an_edit():
+    """Generation is a NICETY on the interactive path: the whole-chain budget x the
+    per-job cap must stay well inside the editing stage's own ETA."""
+    assert main.higgsfield_mod.HIGGSFIELD_TIMEOUT_S <= 60
+    assert (main.higgsfield_mod.HIGGSFIELD_TIMEOUT_S * main._HIGGSFIELD_MAX_PER_JOB
+            < main._STAGE_ETA_S["editing"])

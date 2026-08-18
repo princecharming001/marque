@@ -162,6 +162,33 @@ struct ChatTypingIndicator: View {
     }
 }
 
+// MARK: - Day plan card (chat intent payload)
+
+// Moved here from the deleted VoiceSessionView when the voice orb was retired —
+// the day plan is a chat intent card and always was; it just happened to live in
+// the voice file because that's where it was first rendered.
+struct DayPlanCard: View {
+    let plan: DayPlan
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            SectionLabel(text: "Your day", accent: Palette.accent)
+            ForEach(plan.blocks) { b in
+                HStack(alignment: .top, spacing: Space.md) {
+                    Text(b.time)
+                        .font(AppFont.caption).foregroundStyle(Palette.accent)
+                        .frame(width: 46, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(b.action).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        Text(b.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .marqueCard(padding: Space.md)
+    }
+}
+
 // MARK: - Script card (compact — chat intent payload)
 
 struct ChatScriptCard: View {
@@ -475,7 +502,11 @@ struct ChatSuggestedChips: View {
     }
 }
 
-// MARK: - Morphing send button (mic ↔ arrow ↔ stop)
+// MARK: - Morphing send button (idle ↔ arrow ↔ stop)
+//
+// The `.empty` state used to be a mic (tap to dictate). Speech input went out with
+// the voice orb, so it is now an inert dimmed arrow — ChatGPT's behavior: the send
+// affordance is always in place, it just isn't armed until there's something to send.
 
 enum ComposerSendState: Equatable { case empty, ready, streaming }
 
@@ -502,8 +533,9 @@ struct MorphSendButton: View {
                         }
                         .transition(.scale.combined(with: .opacity))
                 case .empty:
-                    Circle().fill(Palette.onInk.opacity(0.35))
-                        .frame(width: 6, height: 6)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Palette.onInk.opacity(0.35))
                         .transition(.scale.combined(with: .opacity))
                 case .ready:
                     Image(systemName: "arrow.up")
@@ -518,7 +550,7 @@ struct MorphSendButton: View {
         .buttonStyle(PressableStyle())
         .animation(Motion.quick, value: state)
         .accessibilityIdentifier("chat.send")
-        .accessibilityLabel(state == .streaming ? "Stop" : state == .ready ? "Send" : "Voice input")
+        .accessibilityLabel(state == .streaming ? "Stop" : "Send")
     }
 }
 

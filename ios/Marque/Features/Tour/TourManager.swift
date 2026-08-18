@@ -17,11 +17,8 @@ final class TourManager {
     /// One pass through the things a brand-new creator needs to find. Each step gets its
     /// own Yuni pose so it's never the same unicorn twice.
     static let steps: [Step] = [
-        Step(id: "tour.voiceBubble", title: "Talk to Yuni",
-             message: "Tap here anytime to talk out loud — scripts, ideas, or your whole day, planned.",
-             mascot: "UnicornTourTalk"),
-        Step(id: "tour.chat", title: "Prefer typing?",
-             message: "Chat has the same brain as the voice bubble — same Yuni, just text.",
+        Step(id: "tour.chatComposer", title: "Ask Yuni anything",
+             message: "Scripts, ideas, or your whole day planned — just type it here.",
              mascot: "UnicornTourType"),
         Step(id: "tour.film", title: "Ready to record?",
              message: "Tap here to film. I'll turn your take into ready-to-post clips.",
@@ -51,7 +48,7 @@ final class TourManager {
 
     /// Explicit replay (Settings → "Replay walkthrough").
     func start(router: AppRouter) {
-        router.selectedTab = .home   // the voice-bubble step needs Home's content on screen
+        router.selectedTab = .home   // the composer step needs Home's content on screen
         router.homePath.removeAll()  // …and nothing pushed over it (Settings → Replay)
         index = 0
         isActive = true

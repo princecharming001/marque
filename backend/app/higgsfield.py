@@ -13,7 +13,7 @@ cache results per query. Transport seams `_submit` / `_poll_request` are monkeyp
 
 Env: HIGGSFIELD_KEY="key_id:key_secret" (matches the SDK's HF_CREDENTIALS convention; the
 split HIGGSFIELD_KEY_ID/HIGGSFIELD_KEY_SECRET pair also works), HIGGSFIELD_BASE,
-HIGGSFIELD_TIMEOUT_S (whole-chain budget, default 150s — b-roll is a nicety, never let it
+HIGGSFIELD_TIMEOUT_S (whole-chain budget, default 40s — b-roll is a nicety, never let it
 stall the edit), HIGGSFIELD_BROLL=0 to disable without removing the key.
 """
 from __future__ import annotations
@@ -28,7 +28,12 @@ HIGGSFIELD_BASE = os.environ.get("HIGGSFIELD_BASE", "https://platform.higgsfield
 _RAW_KEY = os.environ.get("HIGGSFIELD_KEY", "")
 _KEY_ID = os.environ.get("HIGGSFIELD_KEY_ID", "") or (_RAW_KEY.split(":", 1)[0] if ":" in _RAW_KEY else "")
 _KEY_SECRET = os.environ.get("HIGGSFIELD_KEY_SECRET", "") or (_RAW_KEY.split(":", 1)[1] if ":" in _RAW_KEY else "")
-HIGGSFIELD_TIMEOUT_S = float(os.environ.get("HIGGSFIELD_TIMEOUT_S", "150"))
+# 40s, not 150: this runs INSIDE the interactive edit (a creator is watching a progress
+# bar), the per-job cap allows 2 of them, and a 150s budget meant generation alone could
+# own 5 minutes of an edit that promises ~2. A cutaway that isn't ready in 40s is worth
+# less than the wait — the pipeline degrades to a punch-in and ships. Raise via env for
+# offline/batch callers where tail latency doesn't cost a user anything.
+HIGGSFIELD_TIMEOUT_S = float(os.environ.get("HIGGSFIELD_TIMEOUT_S", "40"))
 _ENABLED = os.environ.get("HIGGSFIELD_BROLL", "1").lower() not in ("0", "false", "no")
 CONFIGURED = bool(_KEY_ID and _KEY_SECRET and _ENABLED)
 

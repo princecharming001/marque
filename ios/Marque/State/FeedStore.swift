@@ -23,6 +23,9 @@ final class FeedStore {
     // Cursors: -1 means exhausted (hide the corresponding load-more control).
     var feedCursor: Int = 0               // mixed-feed pagination (scripts + trend)
     var reelCursor: Int = 1               // reels-only pagination; page 0's reels came in the feed
+    /// Server had nothing cached for this niche yet, so these reels are from OTHER
+    /// niches. Home labels the section honestly instead of promising "your niche".
+    var reelsAreOffNiche = false
     var loadedOnce = false
     // One-shot poller that swaps mock first-paint picks for the real AI ones when ready.
     private var aiUpgradeTask: Task<Void, Never>? = nil
@@ -269,6 +272,7 @@ final class FeedStore {
         guard let result = await store.backend.fetchReels(brand: store.brand, cursor: reelCursor) else { return }
         for r in result.reels { appendReel(r) }
         reelCursor = result.nextCursor ?? -1
+        reelsAreOffNiche = result.offNiche
         scheduleSave()
     }
 

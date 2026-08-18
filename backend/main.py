@@ -29,7 +29,7 @@ from pydantic import BaseModel
 
 import prompts
 from prompts import OPUS, HAIKU, SONNET, STYLES, FORMAT_IDS
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      ms_to_frame, build_render_plan, apply_edl_ops,
@@ -172,6 +172,17 @@ _post_registry: dict[str, dict] = {}
 # post register) so the bandit can seed cold arms from a niche prior. In-memory only,
 # no migration; a miss just means the neutral Beta(1,1) prior, i.e. today's behavior.
 _creator_niche: dict[str, str] = {}
+
+
+def _remember_niche(creator_id: str, niche: str) -> None:
+    """Record a creator's niche for cold-arm Beta seeding — but NEVER for the shared
+    'default'/demo bucket. Onboarding is pre-auth, so every user's niche used to land
+    on the same key: whoever answered last decided what niche the next signed-out user
+    appeared to be in, and `_load_learning_state` rehydrated that pollution across
+    redeploys. A photographer inherited "beauty" this way (2026-08-18)."""
+    if not niche or not niche.strip() or not palo_flags.real_creator(creator_id):
+        return
+    _creator_niche[creator_id] = niche
 # Durable backing store for the two dicts above. None keyless → pure in-memory (unchanged).
 _supabase_client: SupabaseClient | None = (
     SupabaseClient(SUPABASE_URL, SUPABASE_KEY) if (SUPABASE_URL and SUPABASE_KEY) else None
@@ -453,7 +464,7 @@ async def _load_learning_state():
             for c in await _supabase_client.load_all_creators():   # rehydrate niches (A-10)
                 cid, niche = c.get("creator_id"), c.get("niche")
                 if cid and niche:
-                    _creator_niche[cid] = niche
+                    _remember_niche(cid, niche)
         except Exception as e:
             logging.warning("startup creators load failed: %s", e)
         posts = await _supabase_client.load_all_posts()
@@ -800,7 +811,7 @@ async def _ensure_arms_loaded(creator_id: str):
         try:
             row = await _supabase_client.load_creator(creator_id)
             if row and row.get("niche"):
-                _creator_niche[creator_id] = row["niche"]
+                _remember_niche(creator_id, row["niche"])
         except Exception as e:
             logging.warning("lazy load_creator failed: %s", e)
     _arms_loaded.add(creator_id)
@@ -1027,7 +1038,7 @@ async def next_idea(creator_id: str = "default", niche: str = ""):
     LLM may shape the idea but can never make the performance claim."""
     await _ensure_arms_loaded(creator_id)
     if niche:
-        _creator_niche[creator_id] = niche
+        _remember_niche(creator_id, niche)
     niche = niche or _creator_niche.get(creator_id, "")
     insight = await _coach_insight(creator_id)
     # UX-G1: the idea's TOPIC comes from the same Thompson source as the feed — the
@@ -4745,6 +4756,47 @@ def _mark_stage(job: dict, status: str) -> None:
             pass                       # no running loop (unit test) — the caller's own persist covers it
 
 
+# --- per-stage timing ------------------------------------------------------------
+# There was NO timing instrumentation anywhere in the pipeline, so a beta report like
+# "editing is taking unusually long" could only be answered by reading code and guessing
+# (and _STAGE_ETA_S above is hand-written fiction nobody has ever been able to check
+# against a real job). Every expensive await in the edit path now accumulates into a
+# per-job dict, and _log_stage_timings emits ONE structured line when the job leaves the
+# editor — the next "it's slow" report should be a log grep, not an investigation.
+#
+# Timings live under an underscore key (like _theme/_silent_spans) so they never leak into
+# an API payload, and every write goes through these two helpers: an unmeasured stage is
+# simply absent from the line rather than silently reported as zero.
+def _mark_timing(job: dict, stage: str, t0: float) -> None:
+    """Charge (perf_counter() - t0) to `stage`. Additive — a stage that runs twice
+    (e.g. a face detect on both gates) reports its TOTAL cost, which is what a
+    latency investigation actually wants."""
+    acc = job.setdefault("_stage_timings", {})
+    acc[stage] = round(acc.get(stage, 0.0) + (time.perf_counter() - t0), 3)
+
+
+@contextmanager
+def _timed(job: dict, stage: str):
+    """`with _timed(job, "render"):` — same accounting for blocks that aren't a single
+    call. Charges on the way out even when the body raises or returns early."""
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        _mark_timing(job, stage, t0)
+
+
+def _log_stage_timings(job_id: str, job: dict) -> None:
+    """One line per job, slowest stage first. Fires from _run_edit's finally, so a
+    failed/abandoned job still reports where its time went (that's the interesting case)."""
+    acc = job.get("_stage_timings") or {}
+    if not acc:
+        return
+    logging.info("[timing] job=%s total=%.1fs %s", job_id, sum(acc.values()),
+                 " ".join(f"{k}={v:.1f}s" for k, v in
+                          sorted(acc.items(), key=lambda kv: -kv[1])))
+
+
 def _job_eta_seconds(job: dict) -> int | None:
     """Remaining-time estimate for a non-terminal job, or None once terminal or
     parked on user action. Stage baseline minus elapsed-IN-STAGE, floored at 20s."""
@@ -5029,7 +5081,11 @@ async def _run_auto_pipeline(job_id: str) -> None:
     job = _clip_jobs[job_id]
     my_pgen = job.get("pipeline_gen", 0)
     try:
-        await _analyze_to_brief(job_id, briefless_on_error=True)
+        # Timed into the SAME per-job accumulator _run_edit reports at the end, so the one
+        # log line covers the whole one-tap path (analysis included) rather than starting
+        # its story halfway through.
+        with _timed(job, "analyze"):
+            await _analyze_to_brief(job_id, briefless_on_error=True)
     except PipelineError as e:
         if _owns_pipeline(job, my_pgen):
             _fail_job(job, e.code, e.detail, e.stage)
@@ -5056,10 +5112,11 @@ async def _run_pipeline(job_id: str):
     try:
         # P0.6: loudness probe parallel with transcription (same as _run_analysis).
         # P1.2: + visual dossier in the same gather (all fail-soft).
-        words, lufs, dossier = await asyncio.gather(
-            _transcribe_job(job_id),
-            audio_mod.probe_loudness(job.get("source_url") or ""),
-            _dossier_job(job_id))
+        with _timed(job, "transcribe"):
+            words, lufs, dossier = await asyncio.gather(
+                _transcribe_job(job_id),
+                audio_mod.probe_loudness(job.get("source_url") or ""),
+                _dossier_job(job_id))
         job["loudness_lufs"] = lufs
         job["dossier"] = dossier
     except PipelineError as e:
@@ -5518,6 +5575,7 @@ async def _run_edit(job_id: str, words: list[dict]):
                 user += "\n\nCREATOR EDIT PREFERENCES:\n" + "\n".join(f"- {h}" for h in hints)
         used_safe_default = False
         plan_data: dict = {}   # P5: the plan path's own typed retention decisions (see below)
+        _t_author = time.perf_counter()      # → "author" in the per-job timing line
         if EDL_AUTHOR == "plan":
             # P3.3: LLM emits a typed plan; code assembles the EDL (captions, filler drops,
             # brief cuts, b-roll grammar, prefs all enforced inside assemble_edl). No legacy
@@ -5600,6 +5658,10 @@ async def _run_edit(job_id: str, words: list[dict]):
                 edl_data, prefs, emphasis_spans=emphasis_spans,
                 theme_volume=(job["_theme"].music.get("volume")
                               if job.get("_theme") is not None else None))
+        # Both author paths converge here — one number for "the LLM authored the cut",
+        # whichever author was in charge (plan vs legacy is an env flag, and the timing
+        # line is exactly where you'd want to see their real-world cost side by side).
+        _mark_timing(job, "author", _t_author)
 
         # Ownership check after the authoring awaits: a watchdog kill + retry may
         # have started a NEWER pipeline while the LLM was thinking. Bail before
@@ -5765,8 +5827,9 @@ async def _run_edit(job_id: str, words: list[dict]):
             # _calibrate's try) and fail the whole edit. Coerce by type.
             _hk = (script or {}).get("hook")
             _topic = _hk if isinstance(_hk, str) else (_hk.get("text", "") if isinstance(_hk, dict) else "")
-            retention_hints["hook_text"] = await _calibrate_hook_concreteness(
-                retention_hints["hook_text"], topic=_topic)
+            with _timed(job, "hook_calibrate"):
+                retention_hints["hook_text"] = await _calibrate_hook_concreteness(
+                    retention_hints["hook_text"], topic=_topic)
         # Build 56: detect the speaker face ONCE, before the retention passes, so the
         # face-aware hook-title slot (place_hook_overlay) and the smart-inset placement
         # further down share a single YuNet run. Gated to face styles with a consumer
@@ -5776,8 +5839,9 @@ async def _run_edit(job_id: str, words: list[dict]):
                 or any(b.get("mode") == "smart" for b in (edl_data.get("broll") or []))):
             try:
                 from app import faces as faces_mod
-                _early_fbox = await asyncio.to_thread(
-                    faces_mod.detect_face_box, job.get("source_url") or "")
+                with _timed(job, "face_detect"):
+                    _early_fbox = await asyncio.to_thread(
+                        faces_mod.detect_face_box, job.get("source_url") or "")
             except Exception:
                 _early_fbox = None
             if _early_fbox:
@@ -5786,12 +5850,15 @@ async def _run_edit(job_id: str, words: list[dict]):
         # WS3: the selected music track's offline beat grid (None until the catalog
         # carries grids — beat_snap is then a guaranteed no-op even when its token is on).
         _beat_grid, _beat_conf = _music_beat_meta(edl_data)
-        edl_data = retention_mod.apply_retention_passes(
-            edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
-            dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
-            sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"),
-            genre_density=genre_density or prefs.get("knob_interrupt_density", ""),
-            beat_grid=_beat_grid, beat_conf=_beat_conf)
+        # Timed even though it's pure CPU: it's the one non-network step big enough to
+        # matter, and a timing line that only covers I/O can't tell you that.
+        with _timed(job, "retention"):
+            edl_data = retention_mod.apply_retention_passes(
+                edl_data, words, style=style, prefs=prefs, emphasis_spans=emphasis_spans,
+                dossier=job.get("dossier"), hints=retention_hints, script=script, level=trim_level,
+                sfx_assets=SFX_ASSETS, job_seed=job_id, theme=job.get("_theme"),
+                genre_density=genre_density or prefs.get("knob_interrupt_density", ""),
+                beat_grid=_beat_grid, beat_conf=_beat_conf)
         # A1: deterministic pre-render lint — a live scoreboard of "amateur tells"
         # (dead stretches, glitch cuts, metronomic pacing, off-anchor effects, mixed
         # caption/transition grammars) on WHATEVER the two author paths + retention
@@ -5843,10 +5910,14 @@ async def _run_edit(job_id: str, words: list[dict]):
             _force_broll = (job.get("config") or {}).get("broll_coverage") == "full"
             # Part 5.2: rewrite queries to be specific/contemporary BEFORE resolving (so the URL
             # cache keys on the rewritten query). Fail-soft; skips on tweak re-renders.
-            edl_data = await _culturalize_broll_queries(edl_data, job)
-            edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
-                                            corpus=job.get("broll_corpus"),
-                                            force_broll=_force_broll)
+            with _timed(job, "broll_queries"):
+                edl_data = await _culturalize_broll_queries(edl_data, job)
+            # The stage that produced the "editing is taking unusually long" report. It is
+            # now the FIRST thing the timing line will tell you about if it regresses again.
+            with _timed(job, "broll_resolve"):
+                edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
+                                                corpus=job.get("broll_corpus"),
+                                                force_broll=_force_broll)
             # v3 SMART PLACEMENT: when any kept insert is mode "smart", detect the speaker
             # face (YuNet on sampled frames — app/faces.py, fail-soft) and compute each
             # smart item's OTS inset rect (opposite the face, safe-zone/caption-band
@@ -5859,8 +5930,9 @@ async def _run_edit(job_id: str, words: list[dict]):
                 # pass per job); detect here only if that gate skipped it.
                 _fbox = (edl_data.get("layout") or {}).get("face_box")
                 if not _fbox:
-                    _fbox = await asyncio.to_thread(
-                        faces_mod.detect_face_box, job.get("source_url") or "")
+                    with _timed(job, "face_detect"):
+                        _fbox = await asyncio.to_thread(
+                            faces_mod.detect_face_box, job.get("source_url") or "")
                     if _fbox:
                         edl_data.setdefault("layout", {})["face_box"] = _fbox
                 _copts = edl_data.get("caption_options") or {}
@@ -6008,7 +6080,8 @@ async def _run_edit(job_id: str, words: list[dict]):
 
         # P5b: optional self-review — preview render → vision score vs rubric → one
         # revision if below threshold — BEFORE the final render. Flag-gated + fail-soft.
-        await _self_review_edl(job_id)
+        with _timed(job, "self_review"):
+            await _self_review_edl(job_id)
 
         # Build 57 (Craft Engine): the craft report — every judgment WITH its reason
         # (Vizard-style explanations; a bare score is not a judgment). Aggregates the
@@ -6028,7 +6101,8 @@ async def _run_edit(job_id: str, words: list[dict]):
         if not _owns_pipeline(job, my_pgen):   # self-review awaited too
             return
         _mark_stage(job, "rendering")
-        await _render_all_clips(job_id)
+        with _timed(job, "render"):
+            await _render_all_clips(job_id)
 
         if not _owns_pipeline(job, my_pgen):
             return                             # newer owner's state stands
@@ -6055,6 +6129,9 @@ async def _run_edit(job_id: str, words: list[dict]):
         if _owns_pipeline(job, my_pgen):
             _fail_job(job, "internal_error", str(e))
     finally:
+        # Unconditional (before the ownership gate): a job that was usurped or failed
+        # mid-stage is precisely the one whose time budget you want to see.
+        _log_stage_timings(job_id, job)
         if _owns_pipeline(job, my_pgen):
             _spawn(_persist_clip_job(job_id))   # F15: durable at terminal state
 
@@ -6881,8 +6958,12 @@ async def _poll_transcription(transcript_id: str, max_wait_s: int | None = None)
         return {"words": [], "auto_highlights": []}
     budget = max_wait_s if max_wait_s is not None else TRANSCRIBE_MAX_S
     transient = 0
-    for _ in range(max(1, budget // 5)):
-        await asyncio.sleep(5)
+    for _attempt in range(max(1, budget // 5)):
+        # Poll FIRST, sleep between attempts — the leading sleep charged every single job a
+        # flat 5s for nothing (a short take is often already transcribed by the time we get
+        # here). Same 5s interval, same attempt budget, 5s less wall clock per job.
+        if _attempt:
+            await asyncio.sleep(5)
         # A transient blip mid-poll (network reset, a 5xx that returns HTML → r.json() raises)
         # used to CRASH the whole poll and hard-fail the clip. Tolerate a burst of consecutive
         # transient failures — the transcript is still being processed server-side; just keep
@@ -8847,12 +8928,18 @@ async def _rerank_broll(cue: str, candidates: list[dict], dossier: dict | None =
     thumbs: list[bytes] = []
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            for c in candidates[:BROLL_CANDIDATES]:
+            # Latency: these are up to BROLL_CANDIDATES (10) independent CDN GETs at a 10s
+            # timeout EACH — serially that alone was a 100s worst case per cue, per query
+            # round, and it happens before every vision judge. Concurrent, the whole batch
+            # costs one timeout. gather preserves order, which matters: _broll_vision_pick
+            # returns an INDEX into this list and the caller indexes `candidates` with it.
+            async def _thumb(c: dict) -> bytes:
                 if not c.get("thumb"):
-                    thumbs.append(b"")
-                    continue
+                    return b""
                 tr = await client.get(c["thumb"])
-                thumbs.append(tr.content if tr.status_code == 200 else b"")
+                return tr.content if tr.status_code == 200 else b""
+            thumbs = list(await asyncio.gather(
+                *(_thumb(c) for c in candidates[:BROLL_CANDIDATES])))
     except httpx.HTTPError:
         return None                             # can't judge relevance → reject (caller retries/degrades)
     if not any(thumbs):
@@ -9123,6 +9210,16 @@ def _promote_hero_inserts(edl: dict, max_heroes: int = 2) -> None:
 _BROLL_FALLBACK_CARDS = False
 
 
+# Beta report "editing is taking unusually long" root cause: cue resolution used to run
+# ONE CUE AT A TIME, and each cue is a chain of network round-trips (Pexels fetch →
+# vision re-rank → maybe a second query round → maybe Wikimedia → maybe a generated
+# still → maybe a Higgsfield clip). At ~8 cues that serialized into 2-5 minutes of pure
+# wall clock on the interactive path. Cues are independent, so they now fan out — but
+# BOUNDED, because the two things this loop spends are vendor QPS (Pexels/Anthropic
+# vision) and money, and an unbounded gather on a 20-cue take would burst both.
+_BROLL_RESOLVE_CONCURRENCY = int(os.environ.get("BROLL_RESOLVE_CONCURRENCY", "5"))
+
+
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
                          allow_generation: bool = True,
                          corpus: list[dict] | None = None,
@@ -9132,7 +9229,14 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     own_media hit — then fall back to Pexels stock, then Higgsfield generation. The vision
     judge may REJECT all stock (returns None) → retry once with a simplified literal query,
     then leave unresolved (the tier pass degrades action/concept to a punch-in). Cached by
-    query so re-renders don't re-hit Pexels/vision."""
+    query so re-renders don't re-hit Pexels/vision.
+
+    Cues resolve CONCURRENTLY (bounded by _BROLL_RESOLVE_CONCURRENCY). Everything the old
+    serial loop got for free from being serial is re-established explicitly below: the
+    per-job generation budget (lock-guarded reservation), same-query single-flight (so two
+    cues never double-spend on — or disagree about — the same words), and cue ORDER, which
+    survives because each task mutates its own cue dict in place and the tier pass below
+    still walks `broll` in its original order."""
     broll = edl.get("broll") or []
     if not broll:
         return edl
@@ -9140,15 +9244,37 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
     has_meme = BROLL_MEMES and (KLIPY_KEY or GIPHY_KEY)      # v2 cultural ladder (KLIPY→GIPHY)
     can_resolve = has_stock or corpus or has_meme
     generated_count = 0
-    for b in broll if can_resolve else []:
+    # The Higgsfield budget is real money and real latency, so its check-and-take must be
+    # atomic: N cues arriving at the generation tier at the same instant would otherwise
+    # all read `generated_count == 0` and all generate.
+    gen_lock = asyncio.Lock()
+    # Job-local single-flight on the URL-cache key. Serially, the second cue with the same
+    # query hit _broll_url_cache and reused the first cue's asset — one fetch + one vision
+    # judge per DISTINCT query, and identical words always resolving to an identical asset.
+    # Concurrently every same-query cue would miss the still-empty cache and race, doubling
+    # the spend and letting the same words land on two different clips. Waiters park on the
+    # first cue's event and then read its result out of the cache, which reproduces the
+    # serial contract exactly.
+    inflight: dict[str, asyncio.Event] = {}
+
+    async def _await_inflight(key: str) -> bool:
+        """True when another cue was already resolving `key` and we waited for it."""
+        ev = inflight.get(key)
+        if ev is None:
+            return False
+        await ev.wait()
+        return True
+
+    async def _resolve_one(b: dict) -> None:
+        nonlocal generated_count
         if b.get("resolved_url"):
-            continue
+            return
         # own_media cues normally resolve ONLY via a corpus match (below). But when b-roll is
         # FORCED (creator explicitly opted in) and there's no corpus / no match, an own_media
         # cue with no real asset would render NOTHING — so let it fall back to stock. Without
         # force_broll, keep v1: own_media cues are the creator's own footage, left as-is.
         if b.get("source") == "own_media" and not force_broll:
-            continue
+            return
         # Round-20 deterministic backstop: an emotional-STATE cue ('Numb — ice
         # or frost imagery') can never resolve to honest stock — the library
         # answers with dark abstract noise (8 double-confirmed wrong-subject
@@ -9161,10 +9287,10 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         # garbage observed in prod): CONCEPT cues never search stock — they become
         # designed text cards in the tier pass below. Skip resolution entirely.
         if b.get("need") == "concept":
-            continue
+            return
         query = (b.get("broll_query") or b.get("cue_text") or "").strip()
         if not query:
-            continue
+            return
         # Memes (Part 5.2): the `meme` need resolves ONLY from the licensed GIF ladder
         # (GIPHY → Tenor), never own_media/Pexels/Higgsfield — a stock clip standing in for a
         # joke is worse than staying on the face. If nothing resolves, leave it unresolved (the
@@ -9173,55 +9299,63 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
         _vmeta: dict = {}          # judge verdict -> broll_log (all tiers)
         if b.get("need") == "meme":
             if not has_meme:
-                continue
+                return
             mkey = f"meme::{query}"
+            await _await_inflight(mkey)     # a same-query cue is resolving → take its answer
             if mkey in _broll_url_cache:
                 b["resolved_url"] = _broll_url_cache[mkey]
                 # Provenance restored from the paired cache so tweak re-renders keep
                 # the correct attribution badge (klipy vs giphy).
                 b["source"] = _meme_source_cache.get(mkey, "giphy")
-                continue
-            mcands = await _fetch_meme_candidates(query, BROLL_CANDIDATES)
-            # Round-21: the blind top-1 shipped random keyword-matched KLIPY
-            # footage straight past every gate. Memes get their own judged pick
-            # via _judge_meme_candidate (template recognizability, not literal
-            # depiction). Keyless keeps the old top-1.
-            murl = None
-            if mcands and ANTHROPIC_KEY:
-                _mthumbs: list[bytes] = []
-                try:
-                    async with httpx.AsyncClient(timeout=10) as _mc:
-                        for _cand in mcands[:4]:
-                            if not _cand.get("thumb"):
-                                _mthumbs.append(b"")
-                                continue
-                            _tr = await _mc.get(_cand["thumb"])
-                            _mthumbs.append(_tr.content if _tr.status_code == 200 else b"")
-                except httpx.HTTPError:
-                    _mthumbs = []
-                _pairs = [(c, th) for c, th in zip(mcands[:4], _mthumbs) if th]
-                _mscores = await asyncio.gather(
-                    *(_judge_meme_candidate(b.get("cue_text") or query, th)
-                      for _, th in _pairs)) if _pairs else []
-                _best, _best_s = None, -1
-                for (_cand, _), _s in zip(_pairs, _mscores):
-                    if _s and _s.get("subject_match") and _s.get("score", 0) >= 60 \
-                            and _s["score"] > _best_s:
-                        _best, _best_s = _cand, _s["score"]
-                        _vmeta["shows"], _vmeta["score"] = _s.get("shows", ""), _s["score"]
-                murl = _best["link"] if _best else None
-            elif mcands:
-                murl = mcands[0]["link"]
-            if murl:
-                prov = next((c.get("provider", "giphy") for c in mcands
-                             if c.get("link") == murl), "giphy")
-                _broll_url_cache[mkey] = murl
-                _meme_source_cache[mkey] = prov
-                _cap_evict(_broll_url_cache, 10_000)
-                _cap_evict(_meme_source_cache, 10_000)
-                b["resolved_url"] = murl
-                b["source"] = prov
-            continue
+                return
+            _mev = inflight[mkey] = asyncio.Event()
+            try:
+                mcands = await _fetch_meme_candidates(query, BROLL_CANDIDATES)
+                # Round-21: the blind top-1 shipped random keyword-matched KLIPY
+                # footage straight past every gate. Memes get their own judged pick
+                # via _judge_meme_candidate (template recognizability, not literal
+                # depiction). Keyless keeps the old top-1.
+                murl = None
+                if mcands and ANTHROPIC_KEY:
+                    _mthumbs: list[bytes] = []
+                    try:
+                        async with httpx.AsyncClient(timeout=10) as _mc:
+                            # Thumbnails are independent GETs at a 10s timeout each — fetched
+                            # in parallel, four slow CDNs cost one timeout, not four.
+                            async def _mthumb(_cand: dict) -> bytes:
+                                if not _cand.get("thumb"):
+                                    return b""
+                                _tr = await _mc.get(_cand["thumb"])
+                                return _tr.content if _tr.status_code == 200 else b""
+                            _mthumbs = list(await asyncio.gather(
+                                *(_mthumb(_c) for _c in mcands[:4])))
+                    except httpx.HTTPError:
+                        _mthumbs = []
+                    _pairs = [(c, th) for c, th in zip(mcands[:4], _mthumbs) if th]
+                    _mscores = await asyncio.gather(
+                        *(_judge_meme_candidate(b.get("cue_text") or query, th)
+                          for _, th in _pairs)) if _pairs else []
+                    _best, _best_s = None, -1
+                    for (_cand, _), _s in zip(_pairs, _mscores):
+                        if _s and _s.get("subject_match") and _s.get("score", 0) >= 60 \
+                                and _s["score"] > _best_s:
+                            _best, _best_s = _cand, _s["score"]
+                            _vmeta["shows"], _vmeta["score"] = _s.get("shows", ""), _s["score"]
+                    murl = _best["link"] if _best else None
+                elif mcands:
+                    murl = mcands[0]["link"]
+                if murl:
+                    prov = next((c.get("provider", "giphy") for c in mcands
+                                 if c.get("link") == murl), "giphy")
+                    _broll_url_cache[mkey] = murl
+                    _meme_source_cache[mkey] = prov
+                    _cap_evict(_broll_url_cache, 10_000)
+                    _cap_evict(_meme_source_cache, 10_000)
+                    b["resolved_url"] = murl
+                    b["source"] = prov
+            finally:
+                _mev.set()                  # waiters run even if this cue raised
+            return
         # Own media first — the creator's real footage beats stock when it matches.
         if corpus:
             asset, score = _score_broll_corpus(b.get("cue_text") or query, corpus)
@@ -9230,88 +9364,123 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                 b["source"] = "own_media"
                 b["resolved_url"] = url
                 b["asset_id"] = asset.get("asset_id", "")
-                continue
+                return
         if not has_stock:
-            continue
+            return
         if query in _broll_url_cache:
             b["resolved_url"] = _broll_url_cache[query]
-            continue
-        candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
-        # Ralph round-1: judge against the words the viewer HEARS during the window,
-        # not just the cue ('sugar into a glass' passed a cue-only judge while the
-        # speech was about sugar in a pan). Captions carry source-frame word timing.
-        _spoken = " ".join(c.get("word", "") for c in (edl.get("captions") or [])
-                           if int(b.get("src_in", 0)) - 8 <= int(c.get("frame", 0))
-                           <= int(b.get("src_out", 0)) + 8)[:240]
-        url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
-                                  spoken=_spoken, meta_out=_vmeta)
-        # Vision REJECTED all stock (or found none). Retry ONCE with a short literal query — a
-        # rewritten/cinematic phrase often matches worse than the concrete nouns of the cue.
-        if not url and query not in _broll_rejected:
-            simple = _simplify_broll_query(b.get("cue_text") or query)
-            if simple and simple.lower() != query.lower():
-                candidates = await _fetch_pexels_candidates(simple, BROLL_CANDIDATES)
-                url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
-                                          spoken=_spoken, meta_out=_vmeta)
-            if not url:
-                _broll_rejected.add(query)
-                if len(_broll_rejected) > 5000:
-                    _broll_rejected.clear()       # bounded; a rare full reset is fine
-                b["reject_reason"] = "vision_reject" if candidates else "no_candidates"
-        # v7 P2 tier: Wikimedia Commons stills — real niche closeups Pexels lacks,
-        # rendered as Ken Burns stills. Same pointwise vision gate as stock.
-        if not url and b.get("need") in ("entity", "data", "evidence"):
-            ccands = await _fetch_commons_candidates(b.get("cue_text") or query)
-            if ccands:
-                url = await _rerank_broll(b.get("cue_text") or query, ccands, dossier,
-                                          spoken=_spoken, meta_out=_vmeta)
-                if url:
-                    b["source"] = "commons"
-        # v7 P2 tier: generated still (Higgsfield Soul, or fal.ai Flux) — gated
-        # through the SAME pointwise scorer before use; a failed gate negative-
-        # caches the query. Armed by EITHER vendor being configured.
-        if not url and (higgsfield_mod.CONFIGURED or FAL_KEY) \
-                and b.get("need") in ("entity", "data", "evidence") \
-                and allow_generation and query not in _broll_gen_failed:
-            still = await _generate_broll_still(b.get("cue_text") or query)
-            passed = False
-            if still:
-                try:
-                    async with httpx.AsyncClient(timeout=15) as _sc_client:
-                        _tr = await _sc_client.get(still)
-                    _sc = await _broll_vision_score_one(
-                        b.get("cue_text") or query, _tr.content) if _tr.status_code == 200 else None
-                except httpx.HTTPError:
-                    _sc = None
-                if _sc and _sc.get("subject_match") and _sc.get("score", 0) >= _BROLL_SCORE_FLOOR:
-                    url, passed = still, True
-                    b["source"] = "generated"
-            if not passed:
-                _broll_gen_failed.add(query)
-        # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
-        # of silently dropping the cutaway. Runs ONLY on the initial edit pipeline
-        # (allow_generation=False on tweak re-renders — generation inside the render
-        # watchdog window falsely failed succeeding renders, and re-tweaks re-burned
-        # credits), capped per pass, negative-cached per query. Fail-soft.
-        if not url and allow_generation and higgsfield_mod.CONFIGURED \
-                and generated_count < _HIGGSFIELD_MAX_PER_JOB \
-                and query not in _broll_gen_failed:
-            generated_count += 1
-            url = await higgsfield_mod.generate_broll(b.get("cue_text") or query)
-            if not url:
-                _broll_gen_failed.add(query)
-                if len(_broll_gen_failed) > 5000:
-                    _broll_gen_failed.clear()     # bounded; a rare full reset is fine
-        if url:
-            _broll_url_cache[query] = url
-            _cap_evict(_broll_url_cache, 10_000)
-            b["resolved_url"] = url
-            if _vmeta:
-                b["_vision"] = dict(_vmeta)     # judge verdict → broll_log observability
-            # A forced own_media cue that fell back to stock is now honestly a stock clip
-            # (so the tier pass keeps it as a real cutaway rather than a "no real asset" card).
-            if b.get("source") == "own_media":
-                b["source"] = "stock"
+            return
+        if await _await_inflight(query):
+            if query in _broll_url_cache:
+                b["resolved_url"] = _broll_url_cache[query]   # share the winner's asset
+            # Nothing cached ⇒ the in-flight cue came back empty and has already negative-
+            # cached this query (_broll_rejected / _broll_gen_failed), so a second run would
+            # buy the same "no" at full price. Leave the cue unresolved — the tier pass
+            # below degrades it exactly as it did when the serial loop re-ran and re-failed.
+            return
+        _ev = inflight[query] = asyncio.Event()
+        try:
+            candidates = await _fetch_pexels_candidates(query, BROLL_CANDIDATES)
+            # Ralph round-1: judge against the words the viewer HEARS during the window,
+            # not just the cue ('sugar into a glass' passed a cue-only judge while the
+            # speech was about sugar in a pan). Captions carry source-frame word timing.
+            _spoken = " ".join(c.get("word", "") for c in (edl.get("captions") or [])
+                               if int(b.get("src_in", 0)) - 8 <= int(c.get("frame", 0))
+                               <= int(b.get("src_out", 0)) + 8)[:240]
+            url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
+                                      spoken=_spoken, meta_out=_vmeta)
+            # Vision REJECTED all stock (or found none). Retry ONCE with a short literal query — a
+            # rewritten/cinematic phrase often matches worse than the concrete nouns of the cue.
+            if not url and query not in _broll_rejected:
+                simple = _simplify_broll_query(b.get("cue_text") or query)
+                if simple and simple.lower() != query.lower():
+                    candidates = await _fetch_pexels_candidates(simple, BROLL_CANDIDATES)
+                    url = await _rerank_broll(b.get("cue_text") or query, candidates, dossier,
+                                              spoken=_spoken, meta_out=_vmeta)
+                if not url:
+                    _broll_rejected.add(query)
+                    if len(_broll_rejected) > 5000:
+                        _broll_rejected.clear()       # bounded; a rare full reset is fine
+                    b["reject_reason"] = "vision_reject" if candidates else "no_candidates"
+            # v7 P2 tier: Wikimedia Commons stills — real niche closeups Pexels lacks,
+            # rendered as Ken Burns stills. Same pointwise vision gate as stock.
+            if not url and b.get("need") in ("entity", "data", "evidence"):
+                ccands = await _fetch_commons_candidates(b.get("cue_text") or query)
+                if ccands:
+                    url = await _rerank_broll(b.get("cue_text") or query, ccands, dossier,
+                                              spoken=_spoken, meta_out=_vmeta)
+                    if url:
+                        b["source"] = "commons"
+            # v7 P2 tier: generated still (Higgsfield Soul, or fal.ai Flux) — gated
+            # through the SAME pointwise scorer before use; a failed gate negative-
+            # caches the query. Armed by EITHER vendor being configured.
+            if not url and (higgsfield_mod.CONFIGURED or FAL_KEY) \
+                    and b.get("need") in ("entity", "data", "evidence") \
+                    and allow_generation and query not in _broll_gen_failed:
+                still = await _generate_broll_still(b.get("cue_text") or query)
+                passed = False
+                if still:
+                    try:
+                        async with httpx.AsyncClient(timeout=15) as _sc_client:
+                            _tr = await _sc_client.get(still)
+                        _sc = await _broll_vision_score_one(
+                            b.get("cue_text") or query, _tr.content) if _tr.status_code == 200 else None
+                    except httpx.HTTPError:
+                        _sc = None
+                    if _sc and _sc.get("subject_match") and _sc.get("score", 0) >= _BROLL_SCORE_FLOOR:
+                        url, passed = still, True
+                        b["source"] = "generated"
+                if not passed:
+                    _broll_gen_failed.add(query)
+            # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
+            # of silently dropping the cutaway. Runs ONLY on the initial edit pipeline
+            # (allow_generation=False on tweak re-renders — generation inside the render
+            # watchdog window falsely failed succeeding renders, and re-tweaks re-burned
+            # credits), capped per pass, negative-cached per query. Fail-soft.
+            if not url and allow_generation and higgsfield_mod.CONFIGURED \
+                    and query not in _broll_gen_failed:
+                # Take the budget slot BEFORE awaiting the generator: concurrent cues must
+                # not all pass a stale `generated_count < cap` read. Reserving (rather than
+                # counting on the way out) also keeps the old semantics — the cap bounds
+                # ATTEMPTS, so two failed generations still close the door.
+                async with gen_lock:
+                    _may_generate = generated_count < _HIGGSFIELD_MAX_PER_JOB
+                    if _may_generate:
+                        generated_count += 1
+                if _may_generate:
+                    url = await higgsfield_mod.generate_broll(b.get("cue_text") or query)
+                    if not url:
+                        _broll_gen_failed.add(query)
+                        if len(_broll_gen_failed) > 5000:
+                            _broll_gen_failed.clear()     # bounded; a rare full reset is fine
+            if url:
+                _broll_url_cache[query] = url
+                _cap_evict(_broll_url_cache, 10_000)
+                b["resolved_url"] = url
+                if _vmeta:
+                    b["_vision"] = dict(_vmeta)     # judge verdict → broll_log observability
+                # A forced own_media cue that fell back to stock is now honestly a stock clip
+                # (so the tier pass keeps it as a real cutaway rather than a "no real asset" card).
+                if b.get("source") == "own_media":
+                    b["source"] = "stock"
+        finally:
+            _ev.set()                       # waiters run even if this cue raised
+
+    if can_resolve:
+        _sem = asyncio.Semaphore(max(1, _BROLL_RESOLVE_CONCURRENCY))
+
+        async def _bounded(b: dict) -> None:
+            async with _sem:
+                await _resolve_one(b)
+
+        # return_exceptions: b-roll is a NICETY (the callers already wrap this whole call in
+        # a fail-soft try). One cue blowing up must cost that cue its cutaway, not cancel the
+        # other seven and lose their already-paid-for resolutions.
+        for _b, _res in zip(broll, await asyncio.gather(
+                *(_bounded(b) for b in broll), return_exceptions=True)):
+            if isinstance(_res, BaseException):
+                logging.warning("b-roll cue resolve failed (%s): %s",
+                                (_b.get("broll_query") or _b.get("cue_text") or "")[:60], _res)
 
     # --- Addendum Part 4A: tier rule + no-repeat + decision log ---
     # entity/data/evidence needs must show the REAL thing (own_media = T1). If the only
@@ -9505,7 +9674,7 @@ def _attach_react_source(edl: dict, job: dict) -> dict:
 async def register_post(req: PostRegisterRequest):
     """Register a scheduled post as a learning experiment."""
     if req.niche:
-        _creator_niche[req.creator_id] = req.niche      # remember for cold-arm Beta seeding
+        _remember_niche(req.creator_id, req.niche)      # remember for cold-arm Beta seeding
         await _persist_creator(req.creator_id, niche=req.niche)
     if req.handle:
         # Palo port: opportunistically persist the creator's social handle so the metrics
@@ -9638,7 +9807,7 @@ async def ingest_metrics(req: MetricsIngestRequest):
     raw = _compute_raw(m, goal)                  # the un-squashed composite for honest lift
     creator_id = req.creator_id
     if req.niche:
-        _creator_niche[creator_id] = req.niche
+        _remember_niche(creator_id, req.niche)
     niche = req.niche or _creator_niche.get(creator_id, "")
 
     # In-memory latch FIRST, synchronously, before any await: on a single instance
@@ -9772,7 +9941,7 @@ async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
     the honest niche-prior recommendations."""
     await _ensure_arms_loaded(creator_id)
     if niche:
-        _creator_niche[creator_id] = niche              # remember for cold-arm Beta seeding
+        _remember_niche(creator_id, niche)              # remember for cold-arm Beta seeding
     stats = _arm_stats.get(creator_id, {})
     if not stats:
         return _cold_recommendations(niche)
@@ -9960,9 +10129,17 @@ def mock_converse(req: ConverseRequest) -> dict:
         reply = ("That perspective is exactly the kind of thing your audience can't get anywhere else — "
                  "I've noted it. Say it on camera the way you just said it to me.")
     elif any(k in low for k in ("what should i post", "post today", "content today")):
-        reply = (f"Lead with your strongest lane: one contrarian take on {niche} — hook in the first sentence, "
-                 "one specific number, one clear takeaway. Check today's picks on your home screen; "
-                 "the top script is ranked for you.")
+        # Was hardcoded "one contrarian take on {niche}" — which is how a photographer
+        # beta tester got told to make "a contrarian beauty take". Contrarian is the
+        # right lead for finance and business; it is the wrong register for a craft
+        # niche, where showing the work IS the hook. Take the angle from the niche's
+        # own prior instead of asserting the same engagement-bait shape for everyone.
+        _prior = prompts.niche_priors_for(niche)
+        _signal = (_prior.get("signals") or ["specific"])[0]
+        _format = (_prior.get("formats") or ["myth-buster"])[0].replace("-", " ")
+        reply = (f"Lead with your strongest lane: one {_signal} {_format} on {niche} — hook in the first "
+                 "sentence, one concrete detail, one clear takeaway. Check today's picks on your home "
+                 "screen; the top script is ranked for you.")
         chips = ["Write it for me", "Show me the trend", "Build my day"]
     elif not last:
         reply = ("Morning. Tell me what's on your mind — an idea, a frustration, an angle you're chewing on. "
@@ -11189,14 +11366,20 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
         # niche-trending. No fabricated filler — an empty list (cold cache) is
         # honest; iOS shows a "finding real reels" state and pull-to-refresh fills.
         corpus, seen = [], set()
+        off_niche = False
         for r in _watched_real_reels(parsed) + _niche_real_reels(niche):
             if r["id"] not in seen:
                 seen.add(r["id"])
                 corpus.append(r)
         # Tier 2: this niche has nothing cached (cold scrape in flight) — serve the
         # cross-niche aggregate rather than a blank feed while the scrape fills.
+        # It is flagged, though: the client labels this row "Proven reels from YOUR
+        # niche", and silently filling it with whatever other creators happen to be
+        # cached is how a photographer got shown beauty reels under that promise
+        # (beta feedback 2026-08-18). Serving them is fine; claiming them isn't.
         if not corpus:
             corpus = _any_cached_reels()
+            off_niche = bool(corpus)
         # PLAYABILITY (owner, 2026-08-12 "some reels aren't playing"): a raw IG/TikTok
         # CDN video link EXPIRES — hours to a day or two after the scrape — and a
         # cycled/hydrated row far past its scrape time serves a video URL that 403s
@@ -11244,6 +11427,7 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
     else:
         corpus = _mock_reels(niche, [h for _, h in parsed])
         mode = "mock"
+        off_niche = False
     # Infinite scroll (TikTok/IG-style). With ≥2 reels the feed is ENDLESS: the first
     # page(s) show every unique reel (never padded with dupes), then it CYCLES — a proven
     # reel resurfacing beats a hard stop, and the background re-scrape kicked above keeps
@@ -11264,7 +11448,8 @@ async def reels(niche: str = "", creator_id: str = "default", watched: str = "",
         next_cursor = None
     # _cache_ts is serve-side bookkeeping (CDN freshness), not payload.
     page = [{k: v for k, v in r.items() if k != "_cache_ts"} for r in page]
-    return {"mode": mode, "reels": page, "next_cursor": next_cursor}
+    return {"mode": mode, "reels": page, "next_cursor": next_cursor,
+            "off_niche": off_niche}
 
 
 # ---------------------------------------------------------------------------
@@ -11362,9 +11547,16 @@ _CREATOR_POSTS_TTL_S = 3600
 _creator_posts_cache: dict[str, tuple[list, float]] = {}        # creator_id -> (posts, ts)
 
 
+# ⚠️ SHARED-BUCKET RULE: every one of these four functions fails closed on a
+# non-real creator_id (palo_flags.real_creator). Onboarding runs BEFORE sign-in, so
+# creator_id is the literal string "default" for EVERY user through the quiz, the
+# brand scan, the first feed and the first chat. Without this gate the four calls
+# below read and write ONE shared row: the last signed-out creator's brand snapshot
+# and scraped captions became the next user's prompt grounding. A photographer beta
+# tester was served a Beauty brand + Beauty voice exemplars this way (2026-08-18).
 async def _hydrate_creator_profile(creator_id: str) -> dict:
     """The stored brand snapshot for a creator, or {} if none / keyless. TTL-cached."""
-    if not creator_id or not _supabase_client:
+    if not creator_id or not _supabase_client or not palo_flags.real_creator(creator_id):
         return {}
     cached = _creator_profile_cache.get(creator_id)
     if cached and (time.time() - cached[1]) < _CREATOR_PROFILE_TTL_S:
@@ -11382,7 +11574,8 @@ async def _hydrate_creator_profile(creator_id: str) -> dict:
 async def _persist_creator_profile(creator_id: str, brand: dict) -> None:
     """Fire-and-forget: write the brand snapshot when it's actually changed (dedup via
     the in-memory last-hash map so an unchanged brand doesn't write every request)."""
-    if not creator_id or not _supabase_client or not brand:
+    if not creator_id or not _supabase_client or not brand \
+            or not palo_flags.real_creator(creator_id):
         return
     h = _brand_hash(brand)
     if not h or _last_persisted_brand_hash.get(creator_id) == h:
@@ -11403,7 +11596,7 @@ async def _persist_creator_profile(creator_id: str, brand: dict) -> None:
 async def _creator_posts(creator_id: str) -> list[dict]:
     """Stored scraped posts for prompt grounding (_voice_exemplars). [] keyless/absent/
     on any failure — never raises. TTL-cached (1h — posts change slowly)."""
-    if not creator_id or not _supabase_client:
+    if not creator_id or not _supabase_client or not palo_flags.real_creator(creator_id):
         return []
     cached = _creator_posts_cache.get(creator_id)
     if cached and (time.time() - cached[1]) < _CREATOR_POSTS_TTL_S:
@@ -11421,7 +11614,8 @@ async def _creator_posts(creator_id: str) -> list[dict]:
 async def _persist_creator_posts(creator_id: str, posts: list[dict]) -> None:
     """Fire-and-forget. Caps at 10 posts, strips media URLs — this is prompt grounding
     (caption/transcript/hashtags/engagement), not a data lake."""
-    if not creator_id or not _supabase_client or not posts:
+    if not creator_id or not _supabase_client or not posts \
+            or not palo_flags.real_creator(creator_id):
         return
     trimmed = [
         {"caption": p.get("caption", ""), "transcript": p.get("transcript", ""),
@@ -12223,6 +12417,30 @@ def _post_effective_date(post: dict) -> str | None:
     return post.get("settled_at") or post.get("scheduled_at")
 
 
+def _parse_query_ts(raw: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp that arrived in a QUERY STRING.
+
+    `+` is the query-string encoding of a space, so a client sending
+    `?now=2026-07-07T00:00:00+00:00` unencoded reaches us as
+    `2026-07-07T00:00:00 00:00` and `fromisoformat` raises — which silently
+    fell back to wall-clock now and quietly ignored the caller's window.
+    Restore the offset, and accept a trailing `Z` while we're here.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return None
+    if " " in s and "T" in s:
+        head, _, tail = s.rpartition(" ")
+        if tail.replace(":", "").isdigit():
+            s = f"{head}+{tail}"
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(s)
+    except (ValueError, TypeError):
+        return None
+
+
 def _within_window(post: dict, cutoff: datetime) -> bool:
     """True if the post's effective date is on/after the cutoff. No effective date → excluded."""
     eff = _post_effective_date(post)
@@ -12237,10 +12455,7 @@ def _within_window(post: dict, cutoff: datetime) -> bool:
 @app.get("/v1/performance/summary")
 async def performance_summary(creator_id: str = "default", days: int = 30, now: str = ""):
     days = max(7, min(90, days))
-    try:
-        now_dt = datetime.fromisoformat(now) if now else datetime.now(timezone.utc)
-    except ValueError:
-        now_dt = datetime.now(timezone.utc)
+    now_dt = _parse_query_ts(now) or datetime.now(timezone.utc)
     from datetime import timedelta
     cutoff = now_dt - timedelta(days=days)
     settled = [(pid, p) for pid, p in _post_registry.items()

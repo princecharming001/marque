@@ -102,14 +102,12 @@ appId: com.getmarque.app
     timeout: 5
     condition:
       visible:
-        id: home.voiceBubble
+        id: chat.composer
 
 # Take screenshot of Home (to see chat BG consistency, trends carousel, center + button)
 - takeScreenshot: /Users/home/Marque/.shots/DESIGN-01-home.png
 
 # Go to Chat
-- tapOn:
-    text: "Chat"
 
 
 # Screenshot Chat with new background color and mic removal

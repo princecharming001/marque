@@ -27,6 +27,13 @@ def test_select_edit_knobs_respects_explicit_creator_choice(monkeypatch):
 
 def test_select_edit_knobs_bandit_draw_uses_posteriors(monkeypatch):
     monkeypatch.setattr(main, "EDIT_BANDIT", True)
+    # Thompson sampling is genuinely random: a rival Beta(1,1) arm beats a
+    # Beta(500,1) draw a fraction of a percent of the time, which made this
+    # assertion flake in full-suite runs. Seed the module RNG so the draw AND
+    # the Monte-Carlo propensity estimate below are reproducible — the
+    # randomness under test is the production code's, not the test's.
+    import random
+    random.seed(1729)
     # Heavily favor arm "2": alpha huge, beta tiny → the draw must pick it.
     main._arm_stats["cr-bandit"] = {
         "edit_meme_intensity:2": {"alpha": 500.0, "beta": 1.0},

@@ -247,8 +247,16 @@ final class ChatStore {
 
         // 3) Upload the source.
         updateCard(cardId, in: convoId, store: store) { $0.stage = .uploading }
-        guard let sourceURL = await LiveClipEngine.mintAndUpload(uploadId: UUID().uuidString, footagePath: footagePath) else {
-            return fail("Couldn't upload your clips — check your connection and try again.")
+        // Build 78: keep the uploadId so the failure branch can read WHY it failed. An
+        // over-cap source is a permanent condition ("check your connection" is a lie that
+        // sends the creator round the same doomed loop) — the journal carries the reason.
+        let chatUploadId = UUID().uuidString
+        guard let sourceURL = await LiveClipEngine.mintAndUpload(uploadId: chatUploadId, footagePath: footagePath) else {
+            let tooLarge = UploadJournal.shared.entry(uploadId: chatUploadId)?.lastErrorCode
+                == MediaCompressor.tooLargeErrorCode
+            return fail(tooLarge
+                        ? "That video is too large to upload — try a shorter take or trim it first."
+                        : "Couldn't upload your clips — check your connection and try again.")
         }
         guard !Task.isCancelled else { return }
 

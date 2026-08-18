@@ -1,10 +1,14 @@
 import SwiftUI
 import Observation
 
-// V3 tab set: Home (voice AI + daily feed) · Chat · [center Film] · Library · Performance.
+// Tab set: Home (chat + daily feed) · [center Film] · Library · Performance.
 // Profile is pushed from Home's top-right avatar, not a tab.
+//
+// `chat` was its own tab until beta feedback (2026-08-18) asked for Home and Chat to
+// be consolidated; the chat now lives on Home, so anything that used to select the
+// Chat tab selects `.home` and sets `pendingChatPrompt`.
 enum AppTab: Hashable {
-    case home, chat, library, performance
+    case home, library, performance
 }
 
 @MainActor

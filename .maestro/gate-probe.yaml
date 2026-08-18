@@ -8,7 +8,7 @@ appId: com.getmarque.app
     permissions:
       all: allow
 - extendedWaitUntil:
-    visible: { id: home.voiceBubble }
+    visible: { id: chat.composer }
     timeout: 8000
 - takeScreenshot: /Users/home/Marque/.shots/probe-t0.png
 # Idle ~5s with no taps, then screenshot the state (this wait intentionally times out).

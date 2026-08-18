@@ -17,6 +17,7 @@ enum UploadRetryPolicy {
         case retry(after: TimeInterval)   // transient — back off and try again
         case remintThenRetry              // signed URL is dead (403/expired) — mint a fresh one
         case waitForNetwork               // parked; resume when NWPathMonitor reports satisfied
+        case restartStalled(after: TimeInterval)  // OUR watchdog cancelled it — restart, don't bill an attempt
         case fail                         // permanent — surface a retryable failed card
     }
 
@@ -33,11 +34,30 @@ enum UploadRetryPolicy {
     /// `lifetimeAttempt` is the journal-persisted count across launches — build 53 (A5) makes
     /// `maxLifetimeAttempts` actually bite (it was declared-but-dead), so a clip that exhausts
     /// its per-session budget every cold start can't retry forever via the reconcile sweep.
+    /// `watchdogStalled` (build 78) marks a failure the APP caused: BackgroundUploader's
+    /// foreground stall watchdog cancelled a transfer whose bytes had gone quiet.
     static func decide(status: Int, attempt: Int, retryAfter: TimeInterval? = nil,
                        networkSatisfied: Bool = true, nsError: Error? = nil,
-                       lifetimeAttempt: Int = 0) -> Decision {
+                       lifetimeAttempt: Int = 0, watchdogStalled: Bool = false) -> Decision {
         if attempt + 1 >= maxAttemptsPerSession { return .fail }
         if lifetimeAttempt + 1 >= maxLifetimeAttempts { return .fail }
+
+        // Build 78 — a watchdog cancel is OUR abort of a transfer that may be perfectly
+        // healthy (a background-session body file that nsurlsessiond is still copying emits
+        // no didSendBodyData for tens of seconds on a large take). It surfaces as status 0 +
+        // NSURLErrorCancelled, which fell through to the unconditional "one more jittered
+        // try" below and BILLED an attempt every time — six self-inflicted stalls and the
+        // upload was dead with no transport failure anywhere in the log, each one restarting
+        // a several-hundred-MB PUT from byte 0. Restart it, but tell the caller not to spend
+        // budget on it; the caller bounds stall restarts separately, exactly like network
+        // parks. Ordering matters: this sits AFTER the exhaustion checks (a genuinely
+        // exhausted upload still fails) and BEFORE status classification, and it only fires
+        // on status 0 so a real HTTP verdict — including the 400/404/409/413 fail-fast set —
+        // is always classified on its own merits below.
+        if watchdogStalled, status == 0 {
+            if !networkSatisfied { return .waitForNetwork }
+            return .restartStalled(after: backoff(attempt: min(attempt, 2)))
+        }
 
         // Signed-URL death — the object store rejects the token; a fresh mint is required.
         // 403 = expired/invalid token; 409/400 "already exists" is handled by the caller's

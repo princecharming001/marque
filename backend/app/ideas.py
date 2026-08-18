@@ -350,6 +350,10 @@ async def run_ideate_for(store, creator_id: str, brand: dict, tier: str,
     new dossier) triggers. Returns #briefs written (0 when not due / off / no store)."""
     if not palo_flags.enabled(palo_flags.IDEA_BANK) or store is None or not creator_id:
         return 0
+    # …and never WRITE into it either: a shared row that keeps accumulating briefs is
+    # what made the pool worth reading in the first place.
+    if not palo_flags.real_creator(creator_id):
+        return 0
     try:
         last = await store.get_watermark(creator_id, "ideate_last_run") or 0
         if not is_ideate_due(tier, float(last), now_epoch):
@@ -395,6 +399,12 @@ async def brief_feed_items(store, creator_id: str, limit: int = 6,
     min-score threshold (pulse-judge-lite). Flag-gated + keyless => empty (the feed then
     shows only its script items, unchanged)."""
     if not palo_flags.enabled(palo_flags.IDEA_BANK) or store is None or not creator_id:
+        return []
+    # Fail closed on the shared bucket (see strategy_compiler.strategy_block for the
+    # full story): onboarding is pre-auth, so creator_id is "default" for everyone,
+    # and serving that row's briefs handed one creator's idea bank to the next. The
+    # feed degrades to its script items — honest, and niche-correct.
+    if not palo_flags.real_creator(creator_id):
         return []
     briefs = await store.load_briefs(creator_id, status="new", limit=limit * 2)
     # Palo's promotion split: judge-promoted bangers surface FIRST (they're the ones

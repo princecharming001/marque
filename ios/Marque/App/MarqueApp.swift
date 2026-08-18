@@ -9,6 +9,10 @@ struct MarqueApp: App {
     // UX-F1: the feed survives tab switches + relaunches (RootTabView is a ViewBuilder
     // switch, so HomeView is torn down per tab — a view-owned FeedStore lost everything).
     @State private var feed = FeedStore()
+    // Same reasoning as FeedStore: Home now hosts the chat (the Chat tab was folded in),
+    // and RootTabView tears each tab's view down on switch — a view-owned ChatStore lost
+    // the open thread every time the creator visited Library and came back.
+    @State private var chat = ChatStore()
     // UX-B2b: APNs registration + notification-tap routing.
     @UIApplicationDelegateAdaptor(PushManager.self) private var pushManager
 
@@ -23,7 +27,7 @@ struct MarqueApp: App {
             // Without these, a run killed mid-quiz "resumes" mid-quiz — and a run
             // that chose the free tier skips the paywall — on the next supposedly
             // fresh -reset launch (the keys survived the wipe).
-            UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
+            UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v3")
             UserDefaults.standard.removeObject(forKey: "paywall.freeTier")
             FeedStore.clearSnapshot()   // the disk feed snapshot lives in Documents, not UserDefaults
         }
@@ -31,8 +35,8 @@ struct MarqueApp: App {
         // which the hardware ring/silent switch silences — reel previews (Home,
         // Library) played fine on screen but made no sound whenever the phone was on
         // silent. .playback matches TikTok/Instagram: audio plays regardless of the
-        // switch. Voice dictation/TTS still borrow the session temporarily and
-        // restore this baseline when they're done (SpeechRecognizer, VoicePlayback).
+        // switch. (Nothing borrows the session any more — speech dictation and TTS
+        // went out with the voice orb.)
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
     }
@@ -53,6 +57,7 @@ struct MarqueApp: App {
             .environment(router)
             .environment(tour)
             .environment(feed)
+            .environment(chat)
             // UX-B2b: push-tap deeplinks route through the shared router; onOpenURL
             // covers marque:// opens from outside (OAuth callbacks never reach here —
             // ASWebAuthenticationSession consumes its own marque://auth-callback).
@@ -169,7 +174,7 @@ private struct DevJumpMenu: View {
     /// gate re-armed (unsubscribed, signed out) and all local state wiped — so the full
     /// path is onboarding → payment → sign-in → home, same as the App Store download.
     private func jumpToFirstLaunch() {
-        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
+        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v3")
         UserDefaults.standard.removeObject(forKey: "marque.digest.jobId")
         FeedStore.clearSnapshot()
         store.resetToFirstRun()
@@ -192,7 +197,7 @@ private struct DevJumpMenu: View {
     private func jumpToOnboarding() {
         // Build 71: onboarding remembers where you were — a REPLAY has to start over,
         // or the dev jump lands mid-quiz.
-        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v2")
+        UserDefaults.standard.removeObject(forKey: "onboarding.resumeStep.v3")
         store.hasOnboarded = false
         store.save()
     }

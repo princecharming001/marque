@@ -138,3 +138,43 @@ def test_source_probe_fails_fast_on_404(monkeypatch):
     with pytest.raises(main.PipelineError) as ei:
         _run(main._validate_source_url("https://cdn/gone.mp4"))
     assert ei.value.code == "source_unreachable" and calls["n"] == 1   # real 404 → no retries
+
+
+def test_transcription_poll_checks_immediately(monkeypatch):
+    """Latency: the poll loop used to sleep 5s BEFORE its first check, charging every
+    single job a flat 5s for a transcript that is often already done. Poll first, then
+    interval."""
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    sleeps: list[float] = []
+
+    async def _record_sleep(s, *_a, **_k):
+        sleeps.append(s)
+    monkeypatch.setattr(main.asyncio, "sleep", _record_sleep)
+    monkeypatch.setattr(main.httpx, "AsyncClient", _client_factory([
+        _Resp(200, {"status": "completed",
+                    "words": [{"text": "hi", "start": 0, "end": 300, "confidence": 1.0}],
+                    "auto_highlights_result": {"results": []}}),
+    ]))
+    out = _run(main._poll_transcription("tid", max_wait_s=60))
+    assert out["words"][0]["word"] == "hi"
+    assert sleeps == []                         # completed on the FIRST check, zero waiting
+
+
+def test_transcription_poll_still_paces_later_attempts(monkeypatch):
+    """...but the 5s interval between attempts is unchanged — this must not become a
+    hot loop against AssemblyAI."""
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "k")
+    sleeps: list[float] = []
+
+    async def _record_sleep(s, *_a, **_k):
+        sleeps.append(s)
+    monkeypatch.setattr(main.asyncio, "sleep", _record_sleep)
+    monkeypatch.setattr(main.httpx, "AsyncClient", _client_factory([
+        _Resp(200, {"status": "processing"}),
+        _Resp(200, {"status": "processing"}),
+        _Resp(200, {"status": "completed",
+                    "words": [{"text": "hi", "start": 0, "end": 300, "confidence": 1.0}],
+                    "auto_highlights_result": {"results": []}}),
+    ]))
+    _run(main._poll_transcription("tid", max_wait_s=60))
+    assert sleeps == [5, 5]                     # one interval between each pair of checks

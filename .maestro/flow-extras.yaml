@@ -11,7 +11,7 @@ name: Marque — extra screens (assumes flow-full already ran — onboarded, aut
 # resumed process — land on Home explicitly either way.
 - tapOn: "Home"
 - assertVisible:
-    id: "home.voiceBubble"
+    id: "chat.composer"
 
 # Profile — pushed from Home's avatar button
 - tapOn:
@@ -50,7 +50,6 @@ name: Marque — extra screens (assumes flow-full already ran — onboarded, aut
 - tapOn: "Done"
 
 # Chat tab — send a message, expect a reply + suggested chips
-- tapOn: "Chat"
 - assertVisible: "What can I help with?"
 - tapOn:
     id: "chat.composer"

@@ -219,6 +219,14 @@ async def strategy_block(store, creator_id: str, brand_hash: str | None = None) 
     model knows the live Creator brand block wins over anything conflicting here."""
     if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or store is None or not creator_id:
         return ""
+    # Fail closed on the shared bucket. Onboarding runs BEFORE sign-in, so every user
+    # is creator_id="default" through the whole quiz + first feed + first chat — and a
+    # strategy compiled for whoever last transacted signed-out was being injected into
+    # everyone else's prompts. A photographer beta tester was handed a compiled Beauty
+    # strategy ("post Beauty content consistently") this way. A shared strategy is
+    # worse than no strategy: it is confidently wrong about who the creator is.
+    if not palo_flags.real_creator(creator_id):
+        return ""
     try:
         strat = await store.load_strategy(creator_id)
     except Exception:

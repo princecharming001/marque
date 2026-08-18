@@ -14,7 +14,7 @@ appId: com.getmarque.app
 # Use the sanctioned dev hook to jump straight to a seeded Home.
 - tapOn: { id: dev.jump }
 - tapOn: "Home"
-- assertVisible: { id: home.voiceBubble }
+- assertVisible: { id: chat.composer }
 
 # Tour should auto-start ~900ms after Home appears.
 - extendedWaitUntil:

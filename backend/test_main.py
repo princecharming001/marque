@@ -6537,3 +6537,86 @@ def test_aggregate_strips_foreign_watched_flag(monkeypatch):
     rows = main._any_cached_reels()
     assert [r["id"] for r in rows] == ["w2"], "montage dropped even when watched-foreign"
     assert rows[0]["from_watched"] is False
+
+
+# ---------------------------------------------------------------------------
+# Off-niche leak (beta feedback 2026-08-18): a photographer was served beauty
+# ideas, a beauty teleprompter script and "a contrarian beauty take". Two causes,
+# both regression-guarded here: a taxonomy with no photography prior, and a
+# shared pre-auth "default" creator bucket every user read and wrote.
+# ---------------------------------------------------------------------------
+
+import asyncio as _a
+from app import palo_flags
+from main import ConverseRequest
+
+
+def test_visual_niches_have_their_own_priors_not_beauty():
+    # Every one of these resolved to the generic "default" prior before the fix,
+    # which is what let beauty's before/after formats fill the vacuum.
+    for niche, slug in [("Photography", "photography"), ("Filmmaking", "photography"),
+                        ("Art & design", "design"), ("Interior design", "design"),
+                        ("Gaming", "gaming"), ("Music", "music"), ("Sports", "sports"),
+                        ("Golf", "sports"), ("Pets & dogs", "pets"), ("Cars", "auto"),
+                        ("Home & DIY", "home"), ("Outdoors", "outdoors")]:
+        assert prompts.match_niche(niche) == slug, f"{niche} -> {prompts.match_niche(niche)}"
+
+
+def test_photographer_never_slugs_as_beauty():
+    # The exact failure: a portrait/wedding photographer's self-description contains
+    # beauty-adjacent words, and greedy prefixes ("hair", "derm") caught them.
+    for text in ["photography", "portrait photography", "wedding photography",
+                 "beauty & portrait photography", "hair and portrait shoots"]:
+        assert prompts.match_niche(text) == "photography", text
+    # …while actual beauty creators still resolve to beauty.
+    for text in ["skincare routine", "makeup artist", "beauty"]:
+        assert prompts.match_niche(text) == "beauty", text
+
+
+def test_post_today_suggestion_takes_its_angle_from_the_niche():
+    # Was hardcoded "one contrarian take on {niche}" for every creator alive.
+    req = ConverseRequest(messages=[{"role": "user", "content": "What should I post today?"}],
+                          brand={"niche": "photography"})
+    reply = main.mock_converse(req)["reply"].lower()
+    assert "contrarian" not in reply, "craft niches must not be handed an engagement-bait shape"
+    assert "photography" in reply
+
+
+def test_shared_default_bucket_is_never_read_or_written():
+    # Onboarding runs pre-auth, so creator_id is literally "default" for EVERY user.
+    # A live probe found /v1/strategy?creator_id=default serving a compiled *Beauty*
+    # strategy to everyone. These four mirrors must fail closed on that id.
+    assert palo_flags.real_creator("default") is False
+    assert palo_flags.real_creator("demo-abc") is False
+    assert palo_flags.real_creator("user-real-123") is True
+
+    _run = _a.new_event_loop().run_until_complete
+    assert _run(main._hydrate_creator_profile("default")) == {}
+    assert _run(main._creator_posts("default")) == []
+    # …and the write side, so the pool can't refill.
+    main._last_persisted_brand_hash.pop("default", None)
+    _run(main._persist_creator_profile("default", {"niche": "beauty"}))
+    assert "default" not in main._last_persisted_brand_hash
+
+
+def test_default_bucket_never_remembers_a_niche():
+    # _creator_niche survived redeploys via _load_learning_state, so one signed-out
+    # beauty creator set the cold-arm niche prior for every later signed-out user.
+    main._creator_niche.pop("default", None)
+    main._remember_niche("default", "beauty")
+    assert "default" not in main._creator_niche
+    main._remember_niche("real-creator-9", "photography")
+    assert main._creator_niche.get("real-creator-9") == "photography"
+    main._creator_niche.pop("real-creator-9", None)
+
+
+def test_cross_niche_reel_fallback_is_flagged_off_niche(monkeypatch):
+    # Serving foreign-niche reels under "Proven reels from YOUR niche" is the
+    # presentation half of the same bug. Serving them is fine; claiming them isn't.
+    monkeypatch.setattr(main, "APIFY_KEY", "apify-test-key")   # live reel path
+    monkeypatch.setattr(main, "_niche_reels_cache",
+                        {"beauty": {"reels": [_ladder_reel("b1", ef="talking_head")],
+                                    "ts": main.time.time()}})
+    monkeypatch.setattr(main, "_watched_reels_cache", {})
+    body = client.get("/v1/reels", params={"niche": "photography"}).json()
+    assert body.get("off_niche") is True, "a cold niche served from the aggregate must say so"

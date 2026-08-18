@@ -361,3 +361,162 @@ def test_unresolved_action_degrades_to_punch_in(monkeypatch):
     punch = [o for o in out.get("overlays", []) if o["type"] == "punch_in"]
     assert len(punch) == 1 and punch[0]["src_in"] == 200  # degraded to a punch-in at the cue
     assert any(e["action"] == "punch_in" for e in out["_broll_log"])
+
+
+# --- concurrent resolve (latency fix) -------------------------------------------------
+# _resolve_broll used to walk cues ONE AT A TIME — ~8 cues x (fetch + vision + maybe a
+# retry round + maybe generation) = the 2-5 minute "editing is taking unusually long"
+# beta report. It now fans out, bounded. These lock in the three things the serial loop
+# gave us for free and that a naive gather would have silently broken.
+
+def test_resolve_broll_fans_out_across_cues(monkeypatch):
+    """Cues resolve concurrently, but never more than _BROLL_RESOLVE_CONCURRENCY at once."""
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")        # keyless rerank → top-1
+    monkeypatch.setattr(main, "_BROLL_RESOLVE_CONCURRENCY", 3)
+    main._broll_url_cache.clear(); main._broll_rejected.clear()
+
+    inflight, peak = [0], [0]
+
+    async def slow_cands(q, n):
+        inflight[0] += 1
+        peak[0] = max(peak[0], inflight[0])
+        try:
+            await asyncio.sleep(0.02)
+            return [{"link": f"https://cdn/{q}.mp4", "thumb": None}]
+        finally:
+            inflight[0] -= 1
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", slow_cands)
+
+    edl = {"broll": [{"broll_query": f"q{i}", "cue_text": f"c{i}", "source": "stock",
+                      "src_in": i * 600, "src_out": i * 600 + 60} for i in range(9)]}
+    out = _run(main._resolve_broll(edl))
+    assert peak[0] > 1                                    # actually concurrent
+    assert peak[0] <= 3                                   # ...and bounded by the semaphore
+    # order preserved + every cue resolved to ITS OWN query's asset
+    assert [b["resolved_url"] for b in out["broll"]] == [
+        f"https://cdn/q{i}.mp4" for i in range(9)]
+    main._broll_url_cache.clear()
+
+
+def test_concurrent_resolve_respects_higgsfield_cap(monkeypatch):
+    """The per-job generation budget is money + tail latency: concurrent cues must not
+    all read a stale `generated_count == 0` and all generate."""
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main.higgsfield_mod, "CONFIGURED", True)
+    monkeypatch.setattr(main, "_HIGGSFIELD_MAX_PER_JOB", 2)
+    monkeypatch.setattr(main, "FAL_KEY", "")
+    main._broll_url_cache.clear(); main._broll_gen_failed.clear(); main._broll_rejected.clear()
+
+    gen_calls = []
+
+    async def no_candidates(query, n):
+        await asyncio.sleep(0)                            # yield: let every cue reach the tier
+        return []
+
+    async def slow_generate(cue, duration_s=5):
+        gen_calls.append(cue)
+        await asyncio.sleep(0.02)                         # the await the naive version raced
+        return f"https://hf/{len(gen_calls)}.mp4"
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", no_candidates)
+    monkeypatch.setattr(main.higgsfield_mod, "generate_broll", slow_generate)
+
+    edl = {"broll": [{"broll_query": f"g{i}", "cue_text": f"c{i}", "source": "stock",
+                      "src_in": i * 600, "src_out": i * 600 + 60} for i in range(6)]}
+    out = _run(main._resolve_broll(edl))
+    assert len(gen_calls) == 2                            # cap holds under concurrency
+    assert len([b for b in out["broll"] if b.get("resolved_url")]) == 2
+    main._broll_url_cache.clear(); main._broll_gen_failed.clear()
+
+
+def test_concurrent_resolve_dedupes_asset_across_cues(monkeypatch):
+    """Two cues with the SAME query resolve ONCE and share the winner (serial got this
+    from the URL cache; concurrently both would miss the empty cache, double-spend, and
+    could land the same words on two different clips)."""
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    main._broll_url_cache.clear(); main._broll_rejected.clear()
+
+    fetches, picks = [], [0]
+
+    async def slow_cands(q, n):
+        fetches.append(q)
+        await asyncio.sleep(0.02)                         # long enough for every cue to overlap
+        return [{"link": f"https://cdn/{q}-{len(fetches)}.mp4", "thumb": "t"}]
+
+    async def fake_rerank(cue, cands, dossier, **kw):
+        picks[0] += 1
+        return cands[0]["link"]
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", slow_cands)
+    monkeypatch.setattr(main, "_rerank_broll", fake_rerank)
+
+    # 4 cues, 2 distinct queries, spaced >450f apart so the tier pass's no-repeat dedup
+    # doesn't hide a duplicate resolution behind a skipped_repeat.
+    edl = {"broll": [{"broll_query": q, "cue_text": q, "source": "stock",
+                      "src_in": i * 600, "src_out": i * 600 + 60}
+                     for i, q in enumerate(["barbell", "sunrise", "barbell", "sunrise"])]}
+    out = _run(main._resolve_broll(edl))
+    assert sorted(fetches) == ["barbell", "sunrise"]      # one fetch per DISTINCT query
+    assert picks[0] == 2                                  # ...and one vision judge each
+    urls = [b["resolved_url"] for b in out["broll"]]
+    assert urls[0] == urls[2] and urls[1] == urls[3]      # same words → same asset
+    assert urls[0] != urls[1]
+    main._broll_url_cache.clear()
+
+
+def test_concurrent_resolve_still_skips_repeated_asset(monkeypatch):
+    """Cross-cue asset dedup (Addendum 4A no-repeat) survives the fan-out: the same URL
+    landing twice within 15s keeps ONE cutaway and logs skipped_repeat."""
+    monkeypatch.setattr(main, "PEXELS_KEY", "px")
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    main._broll_url_cache.clear(); main._broll_rejected.clear()
+
+    async def same_clip(q, n):
+        await asyncio.sleep(0.01)
+        return [{"link": "https://cdn/only.mp4", "thumb": None}]   # every query → one asset
+    monkeypatch.setattr(main, "_fetch_pexels_candidates", same_clip)
+
+    edl = {"broll": [{"broll_query": "barbell", "cue_text": "barbell", "source": "stock",
+                      "src_in": 0, "src_out": 60},
+                     {"broll_query": "kettlebell", "cue_text": "kettlebell", "source": "stock",
+                      "src_in": 120, "src_out": 180}]}
+    out = _run(main._resolve_broll(edl))
+    assert len(out["broll"]) == 1                          # the repeat was dropped
+    assert any(e["action"] == "skipped_repeat" for e in out["_broll_log"])
+    main._broll_url_cache.clear()
+
+
+def test_rerank_fetches_thumbnails_in_parallel(monkeypatch):
+    """10 candidate thumbnails at a 10s timeout each were a 100s serial worst case per
+    cue. They now overlap — and gather's ORDER must hold, because the vision pick returns
+    an index into this list."""
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk")
+    inflight, peak = [0], [0]
+
+    class _Resp:
+        def __init__(self, body): self.status_code, self.content = 200, body
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url):
+            inflight[0] += 1
+            peak[0] = max(peak[0], inflight[0])
+            try:
+                await asyncio.sleep(0.01)
+                return _Resp(url.encode())
+            finally:
+                inflight[0] -= 1
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda *a, **k: _Client())
+
+    seen = {}
+
+    async def fake_pick(cue, thumbs, dossier, **kw):
+        seen["thumbs"] = list(thumbs)
+        return 2
+    monkeypatch.setattr(main, "_broll_vision_pick", fake_pick)
+
+    cands = [{"link": f"{i}.mp4", "thumb": f"t{i}"} for i in range(4)]
+    assert _run(main._rerank_broll("cue", cands)) == "2.mp4"
+    assert peak[0] == 4                                    # all four in flight together
+    assert seen["thumbs"] == [b"t0", b"t1", b"t2", b"t3"]  # order preserved

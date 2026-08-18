@@ -807,19 +807,6 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
 
     /// ElevenLabs TTS via the backend. Returns mp3 bytes, or nil → caller uses AVSpeechSynthesizer.
-    func tts(text: String) async -> Data? {
-        guard let url = URL(string: AppConfig.backendBaseURL + "/v1/tts") else { return nil }
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.timeoutInterval = 30
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse, http.statusCode == 200,
-              http.value(forHTTPHeaderField: "Content-Type")?.contains("audio") == true else { return nil }
-        return data
-    }
-
     // MARK: - V3: Daily feed + reels + mimic
 
     enum FeedEntry {
@@ -861,7 +848,8 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let summary: String?
     }
     private struct FeedResp: Decodable { let mode: String?; let items: [FeedItemDTO]; let next_cursor: Int? }
-    private struct ReelsResp: Decodable { let mode: String?; let reels: [ReelDTO]; let next_cursor: Int? }
+    private struct ReelsResp: Decodable { let mode: String?; let reels: [ReelDTO]; let next_cursor: Int?
+                                          let off_niche: Bool? }
 
     private func reel(_ d: ReelDTO) -> ReelItem {
         ReelItem(id: d.id, creatorHandle: d.creator_handle, platform: d.platform,
@@ -1060,12 +1048,15 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         return FeedPage(entries: entries, nextCursor: r.next_cursor, mode: r.mode)
     }
 
-    func fetchReels(brand: BrandGraph, cursor: Int) async -> (reels: [ReelItem], nextCursor: Int?)? {
+    /// `offNiche` is true when the server had nothing cached for this creator's niche
+    /// yet and served the cross-niche aggregate — the row must not then claim to be
+    /// "from your niche" (beta feedback: a photographer shown beauty reels).
+    func fetchReels(brand: BrandGraph, cursor: Int) async -> (reels: [ReelItem], nextCursor: Int?, offNiche: Bool)? {
         let niche = brand.niche.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         let watched = watchedParam(brand).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
         guard let data = await get("/v1/reels?niche=\(niche)&creator_id=\(creatorId)&watched=\(watched)&cursor=\(cursor)"),
               let r = try? JSONDecoder().decode(ReelsResp.self, from: data) else { return nil }
-        return (r.reels.map(reel), r.next_cursor)
+        return (r.reels.map(reel), r.next_cursor, r.off_niche ?? false)
     }
 
     private struct MimicResp: Decodable {
