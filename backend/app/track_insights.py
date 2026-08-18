@@ -296,7 +296,11 @@ async def run_insights_cron(store, now_epoch: float, settle_hook=None) -> int:
     delivered = 0
     for c in await store.load_all_creators():
         cid = c.get("creator_id")
-        if not cid:
+        # real_creator: a 'default'/demo row in this table IS the shared pre-auth bucket
+        # (pre-2026-08-18 writes left one behind). Sweeping it would poll a pooled handle,
+        # write insights from pooled metrics and — via deliver_insights → APNs — push that
+        # copy to EVERY signed-out device registered under the same id.
+        if not cid or not palo_flags.real_creator(cid):
             continue
         tier = await tiers.tier_for(cid, store)
         await metrics_pollers.poll_creator(store, cid, tier, c.get("handle", ""))

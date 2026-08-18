@@ -251,7 +251,10 @@ async def run_compile_cron(store, now_epoch: float) -> int:
     compiled = 0
     for c in await store.load_all_creators():
         cid = c.get("creator_id")
-        if not cid:
+        # Never compile the shared pre-auth bucket: strategy_block already refuses to READ
+        # that row, so compiling it only burns Opus to build the pooled doc that leaked in
+        # the first place (the live /v1/strategy?creator_id=default Beauty probe).
+        if not cid or not palo_flags.real_creator(cid):
             continue
         if not ai_usage.compile_allowed(cid, True):            # allowlist gate (cheap, first)
             continue

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import os
 
+from app import palo_flags
+
 # Ordered floor -> ceiling. Rank is used for ">= this tier?" gates.
 STARTER, GROWTH, STUDIO = "starter", "growth", "studio"
 ORDER = (STARTER, GROWTH, STUDIO)
@@ -128,7 +130,11 @@ async def tier_for(creator_id: str, store=None) -> str:
     IAP/RevenueCat entitlements into later — every gate calls through here. Never raises."""
     if creator_id in _OVERRIDE:
         return _OVERRIDE[creator_id]
-    if store is not None:
+    # The durable half is `creators.tier`, ONE row for the shared 'default'/demo bucket
+    # every signed-out user resolves to — reading it would let whatever tier last landed
+    # there hand paid entitlements to arbitrary pre-auth sessions. The in-process dev
+    # override above still works, so the DEBUG switcher is unaffected.
+    if store is not None and palo_flags.real_creator(creator_id):
         try:
             t = await store.load_creator_tier(creator_id)
             if t in RANK:

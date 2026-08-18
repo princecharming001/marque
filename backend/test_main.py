@@ -6610,6 +6610,308 @@ def test_default_bucket_never_remembers_a_niche():
     main._creator_niche.pop("real-creator-9", None)
 
 
+# --- round 2 of the shared-bucket sweep: the bandit, the post registry, the brief/
+# insight banks, the tier row and the feed dismissals were all still pooled on
+# creator_id="default". Each test below pins one of those mirrors closed. ------------
+
+def _seed_default_arm(**over):
+    """A rich, GROUNDED arm filed under the shared bucket — i.e. the fleet's data."""
+    stat = {"n": 9, "sum_y": 7.0, "n_raw": 9, "sum_raw": 90.0, "alpha": 8.0, "beta": 3.0,
+            "effect": 0.8, "confidence": "confirmed"}
+    stat.update(over)
+    main._arm_stats["default"] = {"style:talking_head": stat,
+                                  "pillar:Hot takes": dict(stat)}
+
+
+def _seed_default_post(pid="pooled-post-1", **over):
+    entry = {"post_id": pid, "creator_id": "default", "settled": True, "outcome_raw": 10.0,
+             "outcome_y": 0.9, "pillar": "Hot takes", "style": "talking_head",
+             "format_id": "listicle", "platform": "instagram",
+             "settled_at": main.datetime.now(main.timezone.utc).isoformat(),
+             "metrics": {"views": 90210, "likes": 4242, "comments": 77, "shares": 12,
+                         "follows_gained": 30}}
+    entry.update(over)
+    main._post_registry[pid] = entry
+    return pid
+
+
+def test_default_bucket_never_reads_the_pooled_bandit():
+    # _arm_stats["default"] is the WHOLE FLEET's settled posts (onboarding is pre-auth),
+    # so every surface that quotes it — "your winning formula", the recommendation
+    # reasons, learning_block inside the script/converse prompt, predictedScore
+    # calibration — was stating a stranger's numbers as the reader's own.
+    _seed_default_arm()
+    main._creator_mean_raw_cache.pop("default", None)
+    try:
+        assert main._learned_arms("default") == {}
+        assert main._learned_arms("demo-xyz") == {}
+
+        _run = _a.new_event_loop().run_until_complete
+        assert _run(main._arms_for_prompt("default")) == []
+        assert _run(main._coach_insight("default")) is None
+        # predictedScore must fall back to the uncalibrated base, not the pool's.
+        assert main._calibration_signal(
+            "default", {"style": "talking_head", "formatId": "listicle"}) == (None, 0)
+
+        learned = client.get("/v1/insights/learned", params={"creator_id": "default"}).json()
+        assert learned["insights"] == [] and learned["posts_learned"] == 0
+        assert learned["winning_formula"] is None
+
+        recs = client.get("/v1/recommendations", params={"creator_id": "default"}).json()
+        assert recs["mode"] == "mock", "pooled arms must not promote the response to live"
+        assert not any("%" in a.get("reason", "") for a in recs["arms"]), \
+            "a cold signed-out creator can never be told a lift percentage"
+
+        # …while a real creator still gets the full learning loop.
+        main._arm_stats["real-bandit-1"] = main._arm_stats["default"]
+        assert main._learned_arms("real-bandit-1") != {}
+        assert _run(main._arms_for_prompt("real-bandit-1")) != []
+    finally:
+        main._arm_stats.pop("default", None)
+        main._arm_stats.pop("real-bandit-1", None)
+        main._creator_mean_raw_cache.pop("default", None)
+
+
+def test_default_bucket_never_writes_the_pooled_bandit():
+    # The write side, so the pool can't refill: a signed-out settle or feed tap must not
+    # move the arms every OTHER signed-out user is then ranked from.
+    main._arm_stats.pop("default", None)
+    _run = _a.new_event_loop().run_until_complete
+    _run(main._update_arm("default", "style:talking_head", 1.0, 10.0, "beauty"))
+    _run(main._update_arm_feedback("default", "style:talking_head", 0.65, "beauty"))
+    assert not main._arm_stats.get("default"), "the shared bucket must stay empty"
+    # …and the edit-knob settle reports honestly that it wrote nothing.
+    entry = {"edit_knobs": {"knobs": {"meme_intensity": {"chosen_by": "bandit", "value": "2"}}}}
+    assert _run(main._settle_edit_knob_arms("default", entry, 1.0, 10.0, "")) == []
+    assert _run(main._settle_edit_knob_arms("real-knob-1", entry, 1.0, 10.0, "")) == \
+        ["edit_meme_intensity:2"]
+    main._arm_stats.pop("real-knob-1", None)
+
+
+def test_default_bucket_never_scans_the_post_registry(monkeypatch):
+    # Registry rows are keyed by post_id (a lookup by id is fine — the clip → register →
+    # ingest pipeline needs it); it is the creator_id SCAN that pools, because every
+    # signed-out creator's posts land under "default".
+    pid = _seed_default_post()
+    main._creator_mean_raw_cache.pop("default", None)
+    # A CONFIGURED backend, so /v1/performance/summary takes the honest-zeros branch
+    # instead of the keyless dev/demo placeholder series.
+    monkeypatch.setattr(main, "_supabase_client", object())
+    try:
+        assert main._creator_post_rows("default") == []
+        assert main._creator_mean_raw("default") is None
+        assert main._post_registry.get(pid) is not None, "the row itself still exists by id"
+
+        synced = client.get("/v1/posts/synced-metrics", params={"creator_id": "default"}).json()
+        assert synced["posts"] == [], "90k pooled views must not surface as a stranger's"
+
+        perf = client.get("/v1/performance/summary", params={"creator_id": "default"}).json()
+        assert perf["totals"]["views"] == 0 and perf["totals"]["posts"] == 0
+
+        # A real creator's identical row still reports.
+        main._post_registry[pid] = {**main._post_registry[pid], "creator_id": "real-posts-1"}
+        main._creator_mean_raw_cache.pop("real-posts-1", None)
+        assert len(main._creator_post_rows("real-posts-1")) == 1
+        real = client.get("/v1/posts/synced-metrics",
+                          params={"creator_id": "real-posts-1"}).json()
+        assert [p["post_id"] for p in real["posts"]] == [pid]
+    finally:
+        main._post_registry.pop(pid, None)
+        main._creator_mean_raw_cache.pop("default", None)
+        main._creator_mean_raw_cache.pop("real-posts-1", None)
+
+
+def test_default_bucket_converse_stays_in_identity_only_mode():
+    # The FIRST chat is signed-out. Pooled settles were letting the strategist talk about
+    # "your videos" to a user whose own account had never posted anything.
+    pid = _seed_default_post("pooled-post-converse")
+    try:
+        assert sum(1 for _p, p in main._creator_post_rows("default") if p.get("settled")) == 0
+    finally:
+        main._post_registry.pop(pid, None)
+
+
+def test_default_bucket_never_persists_a_creator_row():
+    # ONE `creators` row backs every signed-out user, and _load_learning_state rehydrates
+    # it fleet-wide on the next boot.
+    class _Spy:
+        def __init__(self):
+            self.calls = []
+
+        async def upsert_creator(self, creator_id, fields):
+            self.calls.append((creator_id, fields))
+            return True
+
+    spy = _Spy()
+    _run = _a.new_event_loop().run_until_complete
+    real_client = main._supabase_client
+    main._supabase_client = spy
+    try:
+        _run(main._persist_creator("default", niche="beauty", goal="grow"))
+        _run(main._persist_creator("demo-abc", niche="beauty"))
+        assert spy.calls == [], "the shared bucket must never reach the creators table"
+        _run(main._persist_creator("real-persist-1", niche="photography"))
+        assert spy.calls == [("real-persist-1", {"niche": "photography"})]
+    finally:
+        main._supabase_client = real_client
+
+
+def test_default_bucket_feed_dismissals_are_not_pooled():
+    # One signed-out user's dislike would otherwise censor that pick out of EVERY other
+    # signed-out user's feed, and "default" is never a session that ends and drains.
+    fp = main._script_fingerprint({"title": "Pooled pick", "hook": "Pooled hook"})
+    main._feed_dismissed.pop("default", None)
+    main._feed_dismissed.pop("real-dismiss-1", None)
+    try:
+        main._record_dismissal("default", fp)
+        assert "default" not in main._feed_dismissed
+        main._record_dismissal("real-dismiss-1", fp)
+        assert fp in main._feed_dismissed["real-dismiss-1"]
+    finally:
+        main._feed_dismissed.pop("default", None)
+        main._feed_dismissed.pop("real-dismiss-1", None)
+
+
+class _BankSpy:
+    """Minimal PaloStore stand-in that records which creator_id was asked for."""
+
+    def __init__(self, briefs=None, insights=None, strategy=None, tier=None):
+        self.briefs, self.insights = briefs or [], insights or []
+        self.strategy, self.tier = strategy, tier
+        self.asked: list[tuple[str, str]] = []
+
+    async def load_briefs(self, creator_id, status="", limit=30):
+        self.asked.append(("briefs", creator_id))
+        return self.briefs
+
+    async def load_insights(self, creator_id, limit=50):
+        self.asked.append(("insights", creator_id))
+        return self.insights
+
+    async def load_strategy(self, creator_id):
+        self.asked.append(("strategy", creator_id))
+        return self.strategy
+
+    async def load_creator_tier(self, creator_id):
+        self.asked.append(("tier", creator_id))
+        return self.tier
+
+
+def test_default_bucket_never_reads_the_brief_or_insight_banks(monkeypatch):
+    # Briefs and insights are per-creator learned state whose COPY is reused verbatim —
+    # another creator's idea titles and insight headlines rendered into a signed-out
+    # user's mix block, morning card, Today briefing and insight inbox.
+    spy = _BankSpy(briefs=[{"title": "Someone else's idea", "pillar": "Hot takes",
+                            "promoted": True, "pitch": "not yours"}],
+                   insights=[{"title": "Someone else's insight"}])
+    monkeypatch.setattr(main, "_palo_store", spy)
+    monkeypatch.setattr(main.palo_flags, "PALO_PORT", True)
+    monkeypatch.setattr(main.palo_flags, "TRACK_INSIGHTS", True)
+
+    _run = _a.new_event_loop().run_until_complete
+    assert _run(main._mix_for("default")) == ""
+
+    assert client.get("/v1/morning-brief", params={"creator_id": "default"}).json()["body"] == ""
+    assert client.get("/v1/today", params={"creator_id": "default"}).json()["mode"] == "quiet"
+    assert client.get("/v1/insights", params={"creator_id": "default"}).json()["insights"] == []
+    assert spy.asked == [], "not one brief/insight fetch may run for the shared bucket"
+
+    # A real creator still reaches the banks.
+    assert client.get("/v1/insights",
+                      params={"creator_id": "real-bank-1"}).json()["insights"] == spy.insights
+    assert ("insights", "real-bank-1") in spy.asked
+
+
+def test_default_bucket_never_reads_the_exemplar_bank(monkeypatch):
+    # write_agent._context_blocks calls exemplar_block directly — it never had the gate
+    # that _inject_brain and /v1/converse already carried.
+    from app import exemplar
+    spy = _BankSpy(strategy={"exemplar_bank": {"hook": [
+        {"id": "h1", "mechanism": "someone else's proven hook", "lift": 3.0}]}})
+    monkeypatch.setattr(exemplar.palo_flags, "PALO_PORT", True)
+    monkeypatch.setattr(exemplar.palo_flags, "EXEMPLAR_BANK", True)
+
+    _run = _a.new_event_loop().run_until_complete
+    assert _run(exemplar.exemplar_block(spy, "default")) == ""
+    assert _run(exemplar.load_index(spy, "demo-abc")) == []
+    assert _run(exemplar.build_bank(spy, "default", [])) is None
+    assert spy.asked == [], "the shared bucket must not touch the strategy row"
+    assert "someone else's proven hook" in _run(exemplar.exemplar_block(spy, "real-ex-1"))
+
+
+def test_default_bucket_never_reads_the_durable_tier(monkeypatch):
+    # `creators.tier` is one row for every signed-out user — reading it would hand
+    # whatever tier last landed there to arbitrary pre-auth sessions.
+    from app import tiers
+    spy = _BankSpy(tier="studio")
+    tiers.clear_override("default")
+    _run = _a.new_event_loop().run_until_complete
+    assert _run(tiers.tier_for("default", spy)) == tiers.DEFAULT_TIER
+    assert _run(tiers.tier_for("demo-abc", spy)) == tiers.DEFAULT_TIER
+    assert spy.asked == []
+    assert _run(tiers.tier_for("real-tier-1", spy)) == "studio"
+
+
+def test_default_bucket_is_skipped_by_every_fleet_cron(monkeypatch):
+    # The crons walk load_all_creators(). Any legacy 'default' row there is the shared
+    # pre-auth bucket, and sweeping it re-compiles / re-ideates / re-pushes the very pool
+    # the read gates now refuse to serve.
+    from app import ai_usage, exemplar, ideas, strategy_compiler, track_insights
+
+    class _FleetSpy:
+        def __init__(self):
+            self.touched: list[str] = []
+
+        async def load_all_creators(self):
+            return [{"creator_id": "default"}, {"creator_id": "demo-abc"},
+                    {"creator_id": "real-cron-1"}]
+
+        async def load_creator_tier(self, creator_id):
+            self.touched.append(creator_id)
+            return None
+
+        async def load_strategy(self, creator_id):
+            self.touched.append(creator_id)
+            return None
+
+        async def get_watermark(self, creator_id, key):
+            self.touched.append(creator_id)
+            return None
+
+    # The Opus allowlist would otherwise short-circuit two of these loops before they
+    # touch the store at all, which would make the assertions below vacuous.
+    monkeypatch.setattr(ai_usage, "compile_allowed", lambda cid, paying=True: True)
+
+    _run = _a.new_event_loop().run_until_complete
+    for mod, flag, fn in ((strategy_compiler, "STRATEGY_COMPILER", "run_compile_cron"),
+                          (exemplar, "EXEMPLAR_BANK", "run_exemplar_cron"),
+                          (ideas, "IDEA_BANK", "run_ideate_cron"),
+                          (track_insights, "TRACK_INSIGHTS", "run_insights_cron")):
+        spy = _FleetSpy()
+        monkeypatch.setattr(mod.palo_flags, "PALO_PORT", True)
+        monkeypatch.setattr(mod.palo_flags, flag, True)
+        try:
+            _run(getattr(mod, fn)(spy, 1_700_000_000.0))
+        except Exception:
+            pass                       # the sweep may bail later; we only assert the skip
+        assert "default" not in spy.touched, f"{fn} swept the shared pre-auth bucket"
+        assert "demo-abc" not in spy.touched, f"{fn} swept a demo bucket"
+        assert "real-cron-1" in spy.touched, \
+            f"{fn} never reached a real creator — the assertions above would be vacuous"
+
+
+def test_default_bucket_never_receives_an_insight_push(monkeypatch):
+    # Every signed-out device registers under the SAME 'default' creator_id, so an insight
+    # push there fans one creator's measured performance out to unrelated devices.
+    from app import push as push_mod
+    monkeypatch.setattr(push_mod, "PUSH_CONFIGURED", True)
+    monkeypatch.setattr(push_mod, "_provider_jwt", lambda: (_ for _ in ()).throw(
+        AssertionError("the shared bucket must not even mint an APNs JWT")))
+    _run = _a.new_event_loop().run_until_complete
+    assert _run(push_mod.send_insight("default", "Your views doubled", "…")) == 0
+    assert _run(push_mod.send_insight("demo-abc", "Your views doubled", "…")) == 0
+
+
 def test_cross_niche_reel_fallback_is_flagged_off_niche(monkeypatch):
     # Serving foreign-niche reels under "Proven reels from YOUR niche" is the
     # presentation half of the same bug. Serving them is fine; claiming them isn't.

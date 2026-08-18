@@ -449,7 +449,9 @@ async def run_ideate_cron(store, now_epoch: float) -> int:
     total = 0
     for c in await store.load_all_creators():
         cid = c.get("creator_id")
-        if not cid:
+        # Shared pre-auth bucket: run_ideate_for already fails closed on it, so skip here
+        # too rather than pay a tier lookup per cron for a creator that can never ideate.
+        if not cid or not palo_flags.real_creator(cid):
             continue
         tier = await tiers.tier_for(cid, store)
         brand = {"niche": c.get("niche", ""), "goal": c.get("goal", "")}

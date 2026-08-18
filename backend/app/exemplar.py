@@ -36,7 +36,11 @@ _REFRESH_INTERVAL_DAYS = 30.0
 
 
 async def _bank(store, creator_id: str) -> dict:
-    if store is None or not creator_id:
+    # real_creator: the bank lives on the creator's strategy row, so reading it for the
+    # shared 'default'/demo bucket hands one creator's proven craft patterns to every
+    # signed-out user. main._inject_brain and /v1/converse already gate their own call
+    # sites; this closes write_agent's (_context_blocks → exemplar_block), which does not.
+    if store is None or not creator_id or not palo_flags.real_creator(creator_id):
         return {}
     try:
         strat = await store.load_strategy(creator_id)
@@ -126,7 +130,12 @@ async def build_bank(store, creator_id: str, videos: list[dict],
     """Extract golden patterns from the creator's videos (via the dossier adapter) with
     Opus, and persist to channel_strategies.exemplar_bank (revision+1). Gated by flag AND
     compile_allowed (Opus cost). Keyless / thin catalog ⇒ template bank. None when gated off."""
-    if not palo_flags.enabled(palo_flags.EXEMPLAR_BANK) or store is None or not creator_id:
+    # real_creator on the WRITE side too, so the pool _bank now refuses to read can't
+    # refill: run_exemplar_cron walks load_all_creators(), which will contain a 'default'
+    # row for as long as one exists, and building there would burn Opus to compile the
+    # fleet's pooled catalog into a bank every signed-out user would then inherit.
+    if not palo_flags.enabled(palo_flags.EXEMPLAR_BANK) or store is None or not creator_id \
+            or not palo_flags.real_creator(creator_id):
         return None
     if not ai_usage.compile_allowed(creator_id, True):        # Opus cost gate (allowlist)
         return None
@@ -176,7 +185,9 @@ async def run_exemplar_cron(store, now_epoch: float) -> int:
     built = 0
     for c in await store.load_all_creators():
         cid = c.get("creator_id")
-        if not cid or not ai_usage.compile_allowed(cid, True):
+        # Shared pre-auth bucket: build_bank refuses it anyway, skip before should_rebuild
+        # so the sweep doesn't spend a strategy read per cron on a row it can never build.
+        if not cid or not palo_flags.real_creator(cid) or not ai_usage.compile_allowed(cid, True):
             continue
         if not await should_rebuild(store, cid, now_epoch):
             continue

@@ -16,6 +16,8 @@ import logging
 import os
 import time
 
+from app import palo_flags
+
 log = logging.getLogger("push")
 
 APNS_KEY_ID = os.environ.get("APNS_KEY_ID", "")
@@ -169,7 +171,11 @@ async def send_insight(creator_id: str, title: str, body: str, insight_id: str =
                        seed: dict | None = None) -> int:
     """Palo port: a proactive insight push. The deeplink + seed open the chat pre-seeded
     from the tapped insight (the insight→converse bridge). Keyless / no tokens → 0."""
-    if not PUSH_CONFIGURED or not creator_id:
+    # real_creator: an insight's title/body is one creator's measured performance in plain
+    # English, and every signed-out device registers under the SAME 'default' creator_id —
+    # so a push here would fan another creator's numbers out to unrelated devices. Belt to
+    # run_insights_cron's braces (it already skips the shared bucket).
+    if not PUSH_CONFIGURED or not creator_id or not palo_flags.real_creator(creator_id):
         return 0
     jwt_token = _provider_jwt()
     if not jwt_token:

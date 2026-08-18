@@ -174,6 +174,32 @@ _post_registry: dict[str, dict] = {}
 _creator_niche: dict[str, str] = {}
 
 
+def _learned_arms(creator_id: str) -> dict:
+    """READ side of the bandit — {} for the shared pre-auth bucket. Onboarding runs
+    BEFORE sign-in, so creator_id is literally "default" for every user: the arms filed
+    there are the whole fleet's settled posts and feed taps, and handing them back states
+    a stranger's numbers as yours ("talking head runs +23% over 9 settled posts"). Same
+    leak class as the pooled /v1/strategy row (2026-08-18). {} is exactly the cold-start
+    value every caller already handles, so a signed-out user still gets the honest
+    niche-prior behaviour rather than an error or a fabricated read."""
+    if not palo_flags.real_creator(creator_id):
+        return {}
+    return _arm_stats.get(creator_id, {})
+
+
+def _creator_post_rows(creator_id: str) -> list[tuple[str, dict]]:
+    """Every registry row belonging to this creator, as (post_id, entry) — [] for the
+    shared pre-auth bucket, for the same reason as _learned_arms. A lookup BY post_id
+    stays open (the clip → register → ingest pipeline needs it, and a post id is not
+    guessable); it is the creator_id SCAN that pools, because every signed-out creator's
+    posts land under "default" and the scans behind them are performance summaries,
+    settled counts and synced metrics."""
+    if not palo_flags.real_creator(creator_id):
+        return []
+    return [(pid, p) for pid, p in _post_registry.items()
+            if p.get("creator_id") == creator_id]
+
+
 def _remember_niche(creator_id: str, niche: str) -> None:
     """Record a creator's niche for cold-arm Beta seeding — but NEVER for the shared
     'default'/demo bucket. Onboarding is pre-auth, so every user's niche used to land
@@ -221,7 +247,11 @@ async def dev_set_tier(req: _DevTierRequest):
         raise HTTPException(status_code=403, detail="dev tier override disabled")
     if req.tier:
         t = tiers.set_override(req.creator_id, req.tier)
-        if _palo_store:
+        # In-process override always applies (that's the demo switcher); the DURABLE
+        # write is refused for the shared 'default'/demo bucket, which every signed-out
+        # user resolves to — persisting a tier there would outlive this process and be
+        # read back by tiers.tier_for for unrelated pre-auth sessions.
+        if _palo_store and palo_flags.real_creator(req.creator_id):
             try:
                 await _palo_store.set_creator_tier(req.creator_id, t)
             except Exception as e:
@@ -444,9 +474,14 @@ async def _inject_brain(system: str, creator_id: str, query: str = "") -> str:
 
 async def _persist_creator(creator_id: str, **fields):
     """Best-effort durable write of per-creator brand facts (niche/goal). Absent
-    `creators` table or any error is swallowed — this is opportunistic."""
+    `creators` table or any error is swallowed — this is opportunistic.
+
+    Never writes the shared 'default'/demo bucket: that row is ONE row for every
+    signed-out user, so a pre-auth niche/goal/handle here is both a cross-user
+    overwrite and the seed `_load_learning_state` rehydrates fleet-wide on the next
+    boot (the in-memory half of this is already closed in _remember_niche)."""
     fields = {k: v for k, v in fields.items() if v}
-    if not (_supabase_client and fields):
+    if not (_supabase_client and fields and palo_flags.real_creator(creator_id)):
         return
     try:
         await _supabase_client.upsert_creator(creator_id, fields)
@@ -515,7 +550,7 @@ def _knob_propensities(creator_id: str, knob: str, values: list[str],
     the logged propensity that makes offline replay (IPS/DR) possible later. Uniform when
     the creator has no arm data yet."""
     import random as _rnd
-    stats = _arm_stats.get(creator_id, {})
+    stats = _learned_arms(creator_id)      # {} on the shared pre-auth bucket → uniform
     posts = []
     for v in values:
         s = stats.get(f"edit_{knob}:{v}", {})
@@ -537,6 +572,8 @@ async def _settle_edit_knob_arms(creator_id: str, entry: dict, y: float,
     re-implemented this inline and couldn't catch a regression). Returns the arm keys it
     updated (for tests/observability)."""
     updated: list[str] = []
+    if not palo_flags.real_creator(creator_id):
+        return updated          # _update_arm no-ops here; don't claim arms we didn't write
     for knob, meta in ((entry.get("edit_knobs") or {}).get("knobs") or {}).items():
         if isinstance(meta, dict) and meta.get("chosen_by") in ("bandit", "default") \
                 and meta.get("value") is not None:
@@ -605,7 +642,9 @@ def _select_edit_knobs(creator_id: str, config: dict | None, niche: str = "") ->
         props = _knob_propensities(creator_id, knob, values, niche)
         if EDIT_BANDIT:
             # One true Thompson draw decides; its logged propensity is the MC estimate.
-            stats = _arm_stats.get(creator_id, {})
+            # _learned_arms, not _arm_stats: the pre-auth bucket must not steer another
+            # creator's edit knobs (meme intensity / interrupt density) onto this video.
+            stats = _learned_arms(creator_id)
             best_v, best_d = values[0], -1.0
             for v in values:
                 s = stats.get(f"edit_{knob}:{v}", {})
@@ -693,9 +732,8 @@ def _creator_mean_raw(creator_id: str) -> float | None:
     or None if they have none yet. Cached; invalidated on each settle."""
     if creator_id in _creator_mean_raw_cache:
         return _creator_mean_raw_cache[creator_id]
-    vals = [p["outcome_raw"] for p in _post_registry.values()
-            if p.get("creator_id") == creator_id and p.get("settled")
-            and isinstance(p.get("outcome_raw"), (int, float))]
+    vals = [p["outcome_raw"] for _pid, p in _creator_post_rows(creator_id)
+            if p.get("settled") and isinstance(p.get("outcome_raw"), (int, float))]
     mean = (sum(vals) / len(vals)) if vals else None
     _creator_mean_raw_cache[creator_id] = mean
     return mean
@@ -725,6 +763,12 @@ def _arm_lift(stat: dict, mean_raw: float | None) -> tuple[int, bool]:
 
 async def _update_arm(creator_id: str, dim_value: str, y: float,
                       raw: float | None = None, niche: str = ""):
+    # WRITE side of the bandit: never land in the shared pre-auth bucket. Onboarding is
+    # signed-out, so a settle under "default" both mixes one creator's outcome into every
+    # other signed-out creator's arms and (via upsert_arm_stat) makes that pooling durable
+    # across redeploys. Silent no-op — the caller has no honest per-creator arm to update.
+    if not palo_flags.real_creator(creator_id):
+        return
     # Merge this creator's durable arm history in BEFORE we create-on-miss, so a fresh
     # Render instance increments the real DB counts instead of resetting them to n=1
     # and then overwriting the row (audit A-04).
@@ -772,7 +816,11 @@ FEEDBACK_WEIGHT = float(os.environ.get("FEEDBACK_WEIGHT", "0.25"))
 async def _update_arm_feedback(creator_id: str, dim_value: str, y: float, niche: str = ""):
     """B-7: fold a feed like/dislike into an arm's Thompson α/β via SEPARATE fb_n / fb_sum_y
     accumulators (weighted), leaving n / sum_raw / n_raw / confidence untouched so honest
-    performance claims stay grounded in real settled posts. Mirrors _update_arm's arm setup."""
+    performance claims stay grounded in real settled posts. Mirrors _update_arm's arm setup —
+    including its shared-bucket gate: a pre-auth like/dislike must not retune the Thompson
+    posterior every other signed-out creator's feed is ranked from."""
+    if not palo_flags.real_creator(creator_id):
+        return
     await _ensure_arms_loaded(creator_id)
     stats = _arm_stats.setdefault(creator_id, {})
     if dim_value not in stats:
@@ -873,8 +921,7 @@ async def _coach_insight(creator_id: str) -> dict | None:
     """The single strongest GROUNDED, non-noise arm for the Today coach — or None (the
     NO-INSIGHT gate). Deterministic: Python finds the insight from the honest per-creator
     bands (Loop A); the LLM later only phrases it. Silence is a valid, common output."""
-    settled = sum(1 for p in _post_registry.values()
-                  if p.get("creator_id") == creator_id and p.get("settled"))
+    settled = sum(1 for _pid, p in _creator_post_rows(creator_id) if p.get("settled"))
     if settled < COACH_MIN_SETTLED:
         return None
     for a in await _arms_for_prompt(creator_id):        # already sorted by |lift|, grounded flagged
@@ -967,8 +1014,7 @@ async def coach_today(creator_id: str = "default"):
 
     insight = await _coach_insight(creator_id)
     if insight is None:
-        settled = sum(1 for p in _post_registry.values()
-                      if p.get("creator_id") == creator_id and p.get("settled"))
+        settled = sum(1 for _pid, p in _creator_post_rows(creator_id) if p.get("settled"))
         if settled == 0:
             await _coach_mark_shown(creator_id)
             return {"card": {"kind": "setup", "mode": "mock",
@@ -1001,12 +1047,16 @@ async def _mix_for(creator_id: str) -> str:
     """THE MIX (Palo rotation prior, code-computed): per-pillar recent-post counts from
     the registry + queued unconsumed idea titles from the brief bank, rendered by
     prompts.mix_block. Empty string whenever there's no rotation signal — the prompt
-    simply omits the section. Never raises."""
+    simply omits the section. Never raises.
+
+    Both inputs are per-creator learned state, so the shared pre-auth bucket gets "" —
+    otherwise the rotation prior injected into a signed-out user's script prompt is the
+    fleet's pillar mix and, worse, other creators' queued idea TITLES verbatim."""
+    if not palo_flags.real_creator(creator_id):
+        return ""
     try:
         counts: dict[str, int] = {}
-        for p in _post_registry.values():
-            if p.get("creator_id") != creator_id:
-                continue
+        for _pid, p in _creator_post_rows(creator_id):
             pillar = (p.get("pillar") or "").strip()
             if pillar:
                 counts[pillar] = counts.get(pillar, 0) + 1
@@ -1075,7 +1125,10 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
     _dim_word = {"style": "style", "format_id": "format",
                  "hook_signal": "hook", "pillar": "pillar"}
     out = []
-    for key, s in _arm_stats.get(creator_id, {}).items():
+    # _learned_arms: this list becomes prompts.learning_block(), i.e. literal
+    # "+23% vs your average" lines in the script/hook/converse system prompt. On the
+    # shared pre-auth bucket that would be another creator's performance, so it's [].
+    for key, s in _learned_arms(creator_id).items():
         if s.get("n", 0) < 4 or ":" not in key:
             continue
         dim, val = key.split(":", 1)
@@ -1095,7 +1148,10 @@ async def _arms_for_prompt(creator_id: str) -> list[dict]:
 
 def _thompson_sample(creator_id: str, candidates: list, niche: str = "") -> list:
     import random
-    stats = _arm_stats.get(creator_id, {})
+    # _learned_arms: {} on the shared pre-auth bucket, so every candidate falls through
+    # to the niche-seeded/neutral prior below — exactly the cold-start ranking a
+    # signed-out creator should get, instead of the fleet's pooled posterior.
+    stats = _learned_arms(creator_id)
     niche = niche or _creator_niche.get(creator_id, "")
     scored = []
     for c in candidates:
@@ -1894,8 +1950,12 @@ def _calibration_signal(creator_id: str, script: dict) -> tuple[int | None, floa
     """Outcome calibration from the learning loop: what the creator's REAL posts
     in this script's style / format / hook-signal actually earned. Returns
     (score_0_100, weight_0_1); weight scales with accumulated evidence and is 0
-    until at least one arm has an early read (n>=4). No data → (None, 0)."""
-    stats = _arm_stats.get(creator_id, {})
+    until at least one arm has an early read (n>=4). No data → (None, 0).
+
+    _learned_arms, not _arm_stats: "what the creator's REAL posts earned" is a lie on the
+    shared pre-auth bucket, and it would drag every signed-out user's predictedScore
+    toward the fleet's average. {} → (None, 0), the uncalibrated base score."""
+    stats = _learned_arms(creator_id)
     keys = []
     if script.get("style"):
         keys.append(f"style:{script['style']}")
@@ -7940,7 +8000,11 @@ async def morning_brief_route(creator_id: str = "default"):
     (the client shows no card). Flag-gated + keyless → honest empty."""
     from app import comms
     artifacts: dict = {"promoted_ideas": [], "overnight_scripts": [], "insights": []}
-    if _palo_store is not None:
+    # The brief bank and the insight feed are per-creator learned state, and this route
+    # reuses their copy VERBATIM — on the shared pre-auth bucket that would read another
+    # creator's idea titles and insight headlines into a signed-out user's morning card.
+    # No artifacts → comms.morning_brief returns an empty body, which the client hides.
+    if _palo_store is not None and palo_flags.real_creator(creator_id):
         try:
             briefs = await _palo_store.load_briefs(creator_id, status="new", limit=10)
             artifacts["promoted_ideas"] = [
@@ -7969,9 +8033,7 @@ async def today_briefing(creator_id: str = "default"):
     arms = await _arms_for_prompt(creator_id)
     now = datetime.now(timezone.utc)
     posts = []
-    for p in _post_registry.values():
-        if p.get("creator_id") != creator_id:
-            continue
+    for _pid, p in _creator_post_rows(creator_id):
         entry = dict(p)
         ts = str(p.get("settled_at") or p.get("registered_at") or p.get("created_at") or "")
         try:                                     # age_days is required by the pure sensors
@@ -7981,7 +8043,11 @@ async def today_briefing(creator_id: str = "default"):
             pass                                 # sensors needing age just won't fire
         posts.append(entry)
     briefs = []
-    if _palo_store is not None:
+    # Every input to this briefing is per-creator learned state (arms, settled posts,
+    # queued briefs) and each decision card quotes it back with provenance. On the shared
+    # pre-auth bucket the arms/posts are already empty by _learned_arms/_creator_post_rows;
+    # the brief bank is the third pool, so skip it too and let the day come out silent.
+    if _palo_store is not None and palo_flags.real_creator(creator_id):
         try:
             briefs = await _palo_store.load_briefs(creator_id, status="new", limit=10)
         except Exception:
@@ -9757,11 +9823,13 @@ async def synced_post_metrics(creator_id: str = "default"):
     """Build 68: the read-back half of metrics auto-sync. The insights cron scrapes the
     creator's connected account and settles views/likes/comments into _post_registry —
     this hands those settled numbers to the app so a post's results appear WITHOUT the
-    creator ever typing them (manual logging is gone). Registry-only read; never raises."""
+    creator ever typing them (manual logging is gone). Registry-only read; never raises.
+
+    _creator_post_rows: a creator_id SCAN of the registry pools on the shared pre-auth
+    bucket, and this route hands back post ids + view/like/comment counts — i.e. it would
+    show a signed-out user another creator's post performance verbatim. Empty list there."""
     out = []
-    for pid, entry in _post_registry.items():
-        if entry.get("creator_id") != creator_id:
-            continue
+    for pid, entry in _creator_post_rows(creator_id):
         m = entry.get("metrics")
         if not m:
             continue
@@ -9901,8 +9969,11 @@ async def _settle_from_scrape(creator_id: str, rows: list[dict]) -> int:
         try:
             if palo_flags.enabled(palo_flags.OUTCOME_RANKER):
                 from app import outcome_ranker
-                settled_posts = [p for p in _post_registry.values()
-                                 if p.get("creator_id") == creator_id and p.get("settled")]
+                # _creator_post_rows → [] on the shared pre-auth bucket, so the ranker is
+                # never trained on the pooled fleet (outcome_ranker.train_for also gates,
+                # belt-and-suspenders — but the training SET must be clean either way).
+                settled_posts = [p for _pid, p in _creator_post_rows(creator_id)
+                                 if p.get("settled")]
                 if settled_posts:
                     _spawn(outcome_ranker.train_for(_palo_store, creator_id, settled_posts))
         except Exception as e:
@@ -9942,7 +10013,11 @@ async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
     await _ensure_arms_loaded(creator_id)
     if niche:
         _remember_niche(creator_id, niche)              # remember for cold-arm Beta seeding
-    stats = _arm_stats.get(creator_id, {})
+    # _learned_arms: the shared pre-auth bucket reads as {} and therefore takes the
+    # cold-start branch. That matters twice over — the arms steer the feed AND their
+    # `reason` strings quote lift percentages, so pooling would print a stranger's
+    # "talking head outperforms your average by 23%" on a signed-out user's home.
+    stats = _learned_arms(creator_id)
     if not stats:
         return _cold_recommendations(niche)
 
@@ -9979,7 +10054,7 @@ async def _top_arms(creator_id: str, niche: str = "") -> list[dict]:
 async def get_recommendations(niche: str = "", creator_id: str = "default"):
     """Return top 3 Thompson-sampled arms for the creator's home feed."""
     arms = await _top_arms(creator_id, niche)
-    if not _arm_stats.get(creator_id):
+    if not _learned_arms(creator_id):     # incl. the shared pre-auth bucket → honest "mock"
         return {"mode": "mock", "arms": arms}
     return {"mode": "live" if _supabase_client else "mock", "arms": arms}
 
@@ -9988,7 +10063,10 @@ async def get_recommendations(niche: str = "", creator_id: str = "default"):
 async def get_learned_insights(creator_id: str = "default"):
     """Return the creator's winning formula derived from arm_stats."""
     await _ensure_arms_loaded(creator_id)
-    stats = _arm_stats.get(creator_id, {})
+    # This whole surface IS the leak in its purest form — "your winning formula" and
+    # "posts_learned" straight off the arm table. _learned_arms makes the shared pre-auth
+    # bucket read as no data at all, which is the truth for a creator who hasn't signed in.
+    stats = _learned_arms(creator_id)
     if not stats:
         return {"mode": "mock", "insights": [], "posts_learned": 0,
                 "winning_formula": None, "learning_progress": 0}
@@ -10268,8 +10346,11 @@ async def converse(req: ConverseRequest):
     # posts. Two failure classes this kills: helpless deflection ("tell me more about
     # what you make" when the identity already answers it) and fabricated performance
     # talk ("your videos are doing great"). Injected only when no settled posts exist.
-    _settled_n = sum(1 for p in _post_registry.values()
-                     if p.get("creator_id") == req.creator_id and p.get("settled"))
+    # _creator_post_rows → [] on the shared pre-auth bucket, so the FIRST chat (which is
+    # signed-out) reliably enters identity-only mode. That is both the honest state and
+    # the fix: pooled settles were letting the strategist talk about "your videos" to a
+    # user whose account had never posted anything.
+    _settled_n = sum(1 for _pid, p in _creator_post_rows(req.creator_id) if p.get("settled"))
     if _settled_n == 0:
         system += (
             "\n\nIDENTITY-ONLY MODE (no analyzed posts yet): USE the creator brand/memory context "
@@ -11480,6 +11561,11 @@ def _script_fingerprint(script: dict) -> str:
 
 
 def _record_dismissal(creator_id: str, fingerprint: str) -> None:
+    # Per-creator taste, so never the shared pre-auth bucket: one signed-out user's
+    # dislike would otherwise censor that pick out of EVERY other signed-out user's feed
+    # (and the pool never drains, since "default" is never a real session that ends).
+    if not palo_flags.real_creator(creator_id):
+        return
     import collections
     dq = _feed_dismissed.get(creator_id)
     if dq is None:
@@ -11794,7 +11880,10 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
     """Shared item-composition body — the fast path, the cached path, and the
     background full-quality refresh all emit byte-identical FeedResp shapes.
     B-7: scripts whose fingerprint the creator dismissed are dropped here (serve-time)."""
-    dismissed = _feed_dismissed.get(creator_id)
+    # Read side of the same pool _record_dismissal refuses to write — None on the shared
+    # pre-auth bucket means no filtering, i.e. the pre-B-7 behaviour, never a stranger's
+    # dislikes silently thinning a signed-out user's picks.
+    dismissed = _feed_dismissed.get(creator_id) if palo_flags.real_creator(creator_id) else None
     items = []
     for s in script_result.get("scripts", [])[:3]:
         if isinstance(s, dict) and dismissed and _script_fingerprint(s) in dismissed:
@@ -12149,6 +12238,12 @@ async def get_insights(creator_id: str = "default", limit: int = 50):
     """Palo port (flag TRACK_INSIGHTS): the creator's insight feed (P7.3 inbox). Off/keyless => empty."""
     if not palo_flags.enabled(palo_flags.TRACK_INSIGHTS):
         return {"mode": "off", "insights": []}
+    # Same shape of hole as /v1/strategy: gating the prompt injection isn't enough because
+    # this route reads the creator's insight rows DIRECTLY and the inbox renders them
+    # verbatim. Fail closed on the shared pre-auth bucket, which every signed-out user
+    # shares — an empty inbox is exactly what a creator with no analyzed posts should see.
+    if not palo_flags.real_creator(creator_id):
+        return {"mode": "live" if _palo_store else "mock", "insights": []}
     limit = max(1, min(limit, 100))
     rows = await _palo_store.load_insights(creator_id, limit=limit) if _palo_store else []
     return {"mode": "live" if _palo_store else "mock", "insights": rows}
@@ -12161,6 +12256,12 @@ async def get_strategy(creator_id: str = "default"):
     if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) or not _palo_store:
         return {"mode": "off" if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER) else "mock",
                 "strategy": None, "updates": []}
+    # Fail closed on the shared bucket, same as strategy_compiler.strategy_block. Gating
+    # the prompt INJECTION was not enough: this route reads the row directly, so a live
+    # probe still returned the pooled Beauty strategy for creator_id="default" — which
+    # the "Your Strategy" screen renders verbatim to any pre-auth user.
+    if not palo_flags.real_creator(creator_id):
+        return {"mode": "live", "strategy": None, "updates": []}
     strat = await _palo_store.load_strategy(creator_id)
     updates = await _palo_store.load_strategy_updates(creator_id)
     # is_template: the doc is the deterministic placeholder (no real analyzed videos yet),
@@ -12202,7 +12303,10 @@ async def feed_feedback(req: FeedFeedbackRequest):
         val = dim_values.get(dim)
         if val:
             await _update_arm_feedback(req.creator_id, f"{dim}:{val}", y, niche)
-            updated += 1
+            # Count only what was actually written: _update_arm_feedback no-ops on the
+            # shared pre-auth bucket, and reporting arms_updated>0 there would claim a
+            # learning write that never happened (same honesty rule as the coach card).
+            updated += 1 if palo_flags.real_creator(req.creator_id) else 0
     if verdict == "dislike":
         _record_dismissal(req.creator_id, fp)
     return {"mode": "live" if _supabase_client else "mock", "status": "recorded",
@@ -12458,9 +12562,11 @@ async def performance_summary(creator_id: str = "default", days: int = 30, now: 
     now_dt = _parse_query_ts(now) or datetime.now(timezone.utc)
     from datetime import timedelta
     cutoff = now_dt - timedelta(days=days)
-    settled = [(pid, p) for pid, p in _post_registry.items()
-               if p.get("creator_id") == creator_id and p.get("settled") and p.get("metrics")
-               and _within_window(p, cutoff)]
+    # _creator_post_rows: this route charts views/likes/follows and names a best post, so
+    # a creator_id scan of the shared pre-auth bucket would render the fleet's analytics as
+    # a signed-out user's own dashboard. [] there → the honest zeros/no_data branch below.
+    settled = [(pid, p) for pid, p in _creator_post_rows(creator_id)
+               if p.get("settled") and p.get("metrics") and _within_window(p, cutoff)]
     # B-1: a CONFIGURED backend (AI key or a real DB) NEVER fabricates — with zero settled
     # posts it returns honest zeros + no_data. Only a truly keyless dev/demo build charts
     # the seeded placeholder series below.
