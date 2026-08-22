@@ -9561,7 +9561,10 @@ _BROLL_FALLBACK_CARDS = False
 # wall clock on the interactive path. Cues are independent, so they now fan out — but
 # BOUNDED, because the two things this loop spends are vendor QPS (Pexels/Anthropic
 # vision) and money, and an unbounded gather on a 20-cue take would burst both.
-_BROLL_RESOLVE_CONCURRENCY = int(os.environ.get("BROLL_RESOLVE_CONCURRENCY", "5"))
+# 3 (was 5, OOM audit 2026-08-22): each concurrent cue holds candidate thumbnails +
+# a vision payload in RAM; on the 512MiB instance the wider fan-out contributed to the
+# OOM kills that were stranding long-footage edits. 3 keeps ~90% of the wall-clock win.
+_BROLL_RESOLVE_CONCURRENCY = int(os.environ.get("BROLL_RESOLVE_CONCURRENCY", "3"))
 
 
 async def _resolve_broll(edl: dict, dossier: dict | None = None,
@@ -11316,22 +11319,40 @@ async def _rehost_media(url: str, key: str, content_type: str, max_bytes: int,
         return None
     base = SUPABASE_URL.rstrip("/")
     try:
+        # Stream to DISK, not RAM (OOM audit 2026-08-22): the old bytearray buffer held
+        # up to max_bytes (25MB for video) and then COPIED it again for the upload body —
+        # ~50MB of transient RAM per rehost, × REEL_REHOST_CONCURRENCY = ~200MB spikes on
+        # a 512MiB instance. Render's kernel answered with OOM kills (4 observed on
+        # 2026-08-22 alone), and every kill stranded every in-flight edit — which is how
+        # "past 1min footage" kept dying. Peak RAM is now one 64KB chunk per transfer.
+        import tempfile
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as c:
-            async with c.stream("GET", url) as r:
-                if r.status_code != 200:
-                    return None
-                buf = bytearray()
-                async for chunk in r.aiter_bytes():
-                    buf.extend(chunk)
-                    if len(buf) > max_bytes:
+            with tempfile.TemporaryFile() as tf:
+                total = 0
+                async with c.stream("GET", url) as r:
+                    if r.status_code != 200:
                         return None
-            if len(buf) < min_bytes:
-                return None
-            up = await c.post(
-                f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
-                headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
-                         "Content-Type": content_type, "x-upsert": "true"},
-                content=bytes(buf))
+                    async for chunk in r.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            return None
+                        tf.write(chunk)
+                if total < min_bytes:
+                    return None
+                tf.seek(0)
+
+                def _chunks(fh=tf, size=1 << 16):
+                    while True:
+                        b = fh.read(size)
+                        if not b:
+                            break
+                        yield b
+                up = await c.post(
+                    f"{base}/storage/v1/object/{SUPABASE_STORAGE_BUCKET}/{key}",
+                    headers={"Authorization": f"Bearer {SUPABASE_KEY}", "apikey": SUPABASE_KEY,
+                             "Content-Type": content_type, "Content-Length": str(total),
+                             "x-upsert": "true"},
+                    content=_chunks())
             if 200 <= up.status_code < 300:
                 return f"{base}/storage/v1/object/public/{SUPABASE_STORAGE_BUCKET}/{key}"
     except Exception as e:
@@ -11413,7 +11434,9 @@ async def _rehost_reel_media(posts: list[dict]) -> None:
     sb_base = SUPABASE_URL.rstrip("/") if SUPABASE_URL else None
     def _durable(u: str) -> bool:
         return bool(sb_base and u and u.startswith(sb_base))
-    sem = asyncio.Semaphore(int(os.environ.get("REEL_REHOST_CONCURRENCY", "4")))
+    # 2 (was 4, OOM audit 2026-08-22): rehosts stream via disk now, but each transfer
+    # still holds an httpx connection + TLS buffers; 2 keeps enrichment off the OOM cliff.
+    sem = asyncio.Semaphore(int(os.environ.get("REEL_REHOST_CONCURRENCY", "2")))
 
     async def _one(i: int, p: dict) -> None:
         async with sem:
