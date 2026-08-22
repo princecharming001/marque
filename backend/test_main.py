@@ -6218,14 +6218,134 @@ def test_sweep_persists_watchdog_terminal(monkeypatch):
 
     async def run():
         old = time.time() - 100000
+        # resume_count exhausted: with the 2026-08-22 orphan-resume in place, a fresh
+        # orphan gets RESUMED (see the tests below) — the pipeline_interrupted fail is
+        # now the backstop for a job that already burned its self-heal budget.
         jobs = {"jw": {"job_id": "jw", "status": "editing", "created_at": old,
-                       "stage_started_at": old, "clips": [], "pipeline_gen": 0}}
+                       "stage_started_at": old, "clips": [], "pipeline_gen": 0,
+                       "resume_count": main._RESUME_MAX}}
         main._sweep_stuck_renders(jobs, max_render_s=1)
         await asyncio.sleep(0)
         return jobs["jw"]
     job = asyncio.run(run())
     assert job["status"] == "failed" and job.get("error") == "pipeline_interrupted"
     assert "jw" in persisted
+
+
+# ---------------------------------------------------------------------------
+# Orphan resume + liveness sweeper (beta 2026-08-22: ">1min footage stuck").
+# Three real prod rows sat non-terminal for hours-to-days: the owning coroutine
+# died with a deploy restart, the poll-path sweep never saw them (nobody was
+# polling), and the only resume path covered mid-render clips.
+# ---------------------------------------------------------------------------
+
+def test_sweep_resumes_orphaned_job_instead_of_failing(monkeypatch):
+    calls = []
+
+    async def fake_auto(jid):
+        calls.append(jid)
+    monkeypatch.setattr(main, "_run_auto_pipeline", fake_auto)
+
+    async def fake_persist(jid):
+        pass
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+
+    async def run():
+        old = time.time() - 3600
+        jobs = {"jo": {"job_id": "jo", "status": "transcribing", "created_at": old,
+                       "stage_started_at": old, "clips": [], "pipeline_gen": 0,
+                       "auto_confirm": True}}
+        main._sweep_stuck_renders(jobs, max_render_s=1)
+        await asyncio.sleep(0.01)
+        return jobs["jo"]
+    job = asyncio.run(run())
+    assert calls == ["jo"], "orphan must be resumed, not failed"
+    assert job["status"] == "processing"          # auto pipeline re-entry stage
+    assert job["resume_count"] == 1
+    assert job["pipeline_gen"] == 1               # ownership taken from the dead run
+
+
+def test_sweep_leaves_owned_jobs_alone(monkeypatch):
+    # A job whose task is ALIVE is legitimately slow (long footage) — never resumed.
+    async def fake_persist(jid):
+        pass
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+
+    async def run():
+        async def sleeper():
+            await asyncio.sleep(30)
+        t = main._spawn(sleeper())
+        main._pipeline_tasks["jalive"] = t
+        old = time.time() - 3600
+        jobs = {"jalive": {"job_id": "jalive", "status": "editing", "created_at": old,
+                           "stage_started_at": old, "clips": [], "pipeline_gen": 0,
+                           "words": [{"word": "hi", "end_ms": 500}]}}
+        main._sweep_stuck_renders(jobs, max_render_s=10_000)   # inside 2x budget → no fail either
+        t.cancel()
+        main._pipeline_tasks.pop("jalive", None)
+        return jobs["jalive"]
+    job = asyncio.run(run())
+    assert job["status"] == "editing" and "resume_count" not in job
+
+
+def test_resume_editing_job_reuses_transcript(monkeypatch):
+    # Mid-edit orphan with words already paid for resumes at the EDIT, not a re-transcribe.
+    calls = []
+
+    async def fake_edit(jid, words):
+        calls.append((jid, len(words)))
+    monkeypatch.setattr(main, "_run_edit", fake_edit)
+
+    async def fake_persist(jid):
+        pass
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+
+    async def run():
+        old = time.time() - 3600
+        jobs = {"je": {"job_id": "je", "status": "editing", "created_at": old,
+                       "stage_started_at": old, "clips": [], "pipeline_gen": 0,
+                       "auto_confirm": True,
+                       "words": [{"word": "a", "end_ms": 100}, {"word": "b", "end_ms": 300}]}}
+        main._sweep_stuck_renders(jobs, max_render_s=1)
+        await asyncio.sleep(0.01)
+        return jobs["je"]
+    job = asyncio.run(run())
+    assert calls == [("je", 2)]
+    assert job["status"] == "editing"
+
+
+def test_spawn_pipeline_registry_lifecycle():
+    async def run():
+        async def quick():
+            return 1
+        t = main._spawn_pipeline("jreg", quick())
+        assert main._pipeline_alive("jreg") is True
+        await t
+        await asyncio.sleep(0)
+        return main._pipeline_alive("jreg")
+    assert asyncio.run(run()) is False
+
+
+def test_load_stale_clip_sessions_filters_terminal():
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return [{"job_id": "stuck-1", "status": "transcribing"},
+                    {"job_id": "done-1", "status": "ready"},
+                    {"job_id": "stuck-2", "status": "processing"},
+                    {"job_id": "parked", "status": "brief_ready"},   # parked on user — not an orphan
+                    {"job_id": "failed-1", "status": "failed"}]
+
+    import supabase_persistence as _sp
+
+    class FakeClient(_sp.SupabaseClient):
+        def __init__(self):
+            pass
+        async def _request(self, *a, **k):
+            return FakeResp()
+
+    out = asyncio.run(FakeClient().load_stale_clip_sessions())
+    assert out == ["stuck-1", "stuck-2"]
 
 
 def test_restore_reattaches_in_flight_render(monkeypatch):

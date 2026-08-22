@@ -534,6 +534,9 @@ def test_watchdog_fails_ancient_inflight_job():
         "job_id": job_id, "status": "transcribing", "created_at": time.time() - 999999,
         "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "transcribing"}],
         "edl": None, "words": [], "edl_history": [], "tweaks": [],
+        # 2026-08-22: orphans are RESUMED first now (see test_main's orphan-resume
+        # suite); this test pins the terminal BACKSTOP once the self-heal budget is spent.
+        "resume_count": main._RESUME_MAX,
     }
     # sweep_ttl would evict a >24h job first; use a fresh-enough timestamp instead
     main._clip_jobs[job_id]["created_at"] = time.time() - (main.RENDER_WATCHDOG_S * 2 + 60)
@@ -554,6 +557,7 @@ def test_watchdog_covers_analyzing_and_processing():
             "created_at": time.time() - (main.RENDER_WATCHDOG_S * 2 + 60),
             "clips": [{"clip_id": "c1", "format": "myth-buster", "status": status}],
             "edl": None, "words": [], "edl_history": [], "tweaks": [],
+            "resume_count": main._RESUME_MAX,   # backstop path (resume budget spent)
         }
         body = client.get(f"/v1/clips/{job_id}").json()
         assert body["status"] == "failed", status

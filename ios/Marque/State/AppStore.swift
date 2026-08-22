@@ -1044,17 +1044,20 @@ final class AppStore {
                                               idempotencyKey: idempotencyKey, corpus: corpus)
     }
 
-    /// Poll until the edit brief lands (live path analyzes async). 2s cadence, ~2min
-    /// cap. Returns the response carrying the brief, a failed status, or nil on timeout.
+    /// Poll until the edit brief lands (live path analyzes async). Returns the response
+    /// carrying the brief, a failed status, or nil on timeout.
+    /// Long-footage fix (beta 2026-08-22): the old 60×2s = 2min cap was tuned for short
+    /// takes — a 2-3min take spends 60-90s in transcription alone before the brief LLM
+    /// even starts, so longer footage timed out here every single time. Time-based ~6min
+    /// window, 3s pace.
     func pollForBrief(jobId: String) async -> AnalyzeJobResponse? {
-        var attempts = 0
-        while attempts < 60 && !Task.isCancelled {
+        let deadline = Date().addingTimeInterval(360)
+        while Date() < deadline && !Task.isCancelled {
             if let r = await backend.getBrief(jobId: jobId) {
                 if r.editBrief != nil { return r }
                 if r.status == "failed" { return r }
             }
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
-            attempts += 1
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
         }
         return nil
     }
@@ -1199,7 +1202,18 @@ final class AppStore {
                         editFormat: editFormat, referenceReel: referenceReel, themeId: themeId,
                         config: config, autoConfirm: true, toggles: toggles, idempotencyKey: uploadId)
                 }
-                group.addTask { try? await Task.sleep(nanoseconds: 420 * 1_000_000_000); return nil }
+                // Size-aware ceiling (beta 2026-08-22, ">1min footage"): the flat 420s
+                // assumed the OLD 90-230s compression window. compressionBudget alone can
+                // now legitimately spend 300s on a big 4K import, and a 100-200MB PUT on
+                // LTE needs minutes more — a fixed 420s abandoned exactly the takes the
+                // tester complained about, surfacing a failed card while the transfer was
+                // still finishing fine in the background.
+                let srcBytes = (footagePath.flatMap {
+                    try? FileManager.default.attributesOfItem(
+                        atPath: MediaStore.url(for: $0).path)[.size] as? Int
+                }) ?? 0
+                let ceiling = UInt64(min(900, 480 + MediaCompressor.compressionBudget(bytes: srcBytes)))
+                group.addTask { try? await Task.sleep(nanoseconds: ceiling * 1_000_000_000); return nil }
                 let first = await group.next() ?? nil
                 group.cancelAll()
                 return first
@@ -1263,19 +1277,37 @@ final class AppStore {
                              stubs: [(id: String, format: String, ready: Bool)],
                              etaSeconds: Int? = nil, celebrate: Bool = true) {
         let tagged = stubs.map { stub -> Clip in
-            let clipId = UUID(uuidString: stub.id) ?? UUID()
+            // A clip_id that doesn't parse as a UUID can NEVER be reconciled: every poll
+            // loop matches responses on UUID(uuidString: clip_id) == clip.id, so the old
+            // random-UUID fallback minted a local id no server response would ever address
+            // — a permanent spinner, forever, across launches. Land it as .failed
+            // retryable instead. jobId is deliberately nil: that job's responses can't
+            // name this clip anyway, and a nil jobId routes retryClipJob straight to
+            // resubmitFailedClip (fresh upload from the local take → fresh job →
+            // server-minted id), the only path that can actually heal it.
+            let parsedId = UUID(uuidString: stub.id)
             let formatId = stub.format.isEmpty ? script.formatId : stub.format
-            var c = Clip(id: clipId, scriptId: script.id, formatId: formatId,
+            var c = Clip(id: parsedId ?? UUID(), scriptId: script.id, formatId: formatId,
                          formatName: Catalog.format(formatId).name,
                          title: script.title.isEmpty ? script.hook.text : script.title,
                          caption: script.cta,
                          predictedScore: script.predictedScore,
-                         status: stub.ready ? .ready : .rendering,
+                         status: parsedId == nil ? .failed : (stub.ready ? .ready : .rendering),
                          seconds: Catalog.format(formatId).targetSeconds,
-                         jobId: jobId)
+                         jobId: parsedId == nil ? nil : jobId)
             c.localVideoPath = footagePath
-            if !stub.ready { c.etaSeconds = etaSeconds; c.etaSetAt = Date() }
+            if parsedId == nil {
+                c.lastError = "internal_error"
+                c.lastErrorDetail = "unreadable clip id from the server"
+            }
+            if !stub.ready && parsedId != nil { c.etaSeconds = etaSeconds; c.etaSetAt = Date() }
             return c
+        }
+        // Breadcrumb → Render logs: a malformed clip_id is a backend contract break we
+        // want to hear about, not silently absorb.
+        if let bad = stubs.first(where: { UUID(uuidString: $0.id) == nil }) {
+            backend.reportClientEvent("clip_id_unparseable",
+                                      detail: "job=\(jobId) | id=\(bad.id.prefix(36))")
         }
         clips.insert(contentsOf: tagged, at: 0)
         upgradeSocialCaption(for: script)
@@ -1312,6 +1344,27 @@ final class AppStore {
     /// spins forever locally while the backend finished long ago.
     func repollRenderingClips() {
         reconcileTransientState()
+
+        // Invisible-spinner sweep (beta 2026-08-22): a clip at .rendering with NO jobId
+        // and NO upload in flight matches NEITHER recovery path — the jobId-keyed re-poll
+        // below skips it and reconcileUploads only owns `uploading == true` — so it spun
+        // forever, across launches. It's the residue of a submit that died between
+        // placeholder-insert and job-create (a crash mid-reconcile, or an older build's
+        // gap). 30min of grace on createdAt: any LIVE submit either holds uploading=true
+        // or a backgroundSubmits task, and every honest in-process state resolves well
+        // inside that — anything older here is provably orphaned. Same retryable code as
+        // the upload sweep's other strandings, so the card copy and Try-again path
+        // (resubmitFailedClip from the local take) already exist.
+        var strandedChanged = false
+        for idx in clips.indices where clips[idx].status == .rendering
+            && clips[idx].jobId == nil && !clips[idx].uploading
+            && backgroundSubmits[clips[idx].id] == nil
+            && Date().timeIntervalSince(clips[idx].createdAt) > 30 * 60 {
+            clips[idx].status = .failed
+            clips[idx].lastError = "upload_interrupted"
+            strandedChanged = true
+        }
+        if strandedChanged { save() }
 
         let stuck = clips.filter { $0.status == .rendering && $0.jobId != nil }
         for (jobId, group) in Dictionary(grouping: stuck, by: { $0.jobId! })
@@ -1586,7 +1639,10 @@ final class AppStore {
     /// Per-CLIP poll loop: exits when every tracked clip left .rendering (job-level
     /// status can't be trusted here — it stays "ready" during a tweak re-render).
     func pollClipStatuses(jobId: String, clipIds: [UUID]) async {
-        for _ in 0..<60 {
+        // Same long-footage deadline discipline as pollJob (see jobPollCeiling): the
+        // old 60-iteration cap abandoned tweak re-renders of longer takes mid-spinner.
+        let started = Date()
+        while Date().timeIntervalSince(started) < Self.jobPollCeiling {
             if Task.isCancelled { return }
             let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
             if httpStatus == 404 || httpStatus == 410 {
@@ -1636,20 +1692,51 @@ final class AppStore {
                     return                              // every tracked clip resolved
                 }
             }
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await Task.sleep(nanoseconds: pollInterval(elapsed: Date().timeIntervalSince(started)))
         }
+        if !Task.isCancelled {
+            timeOutPolledClips(clipIds)     // ceiling hit — terminal + retryable, never a frozen spinner
+        }
+    }
+
+    /// Hard ceiling for job/clip polling. Long-footage fix (beta 2026-08-22): the flat
+    /// 60×5s = 5min ceilings silently ABANDONED any job still legitimately working —
+    /// a 2min take routinely spends >5min in transcribe+edit+render, so the card froze
+    /// mid-"editing" with the server still going, and only a background/foreground
+    /// cycle (repollRenderingClips) ever picked it back up. 20min covers every honest
+    /// pipeline (the server's own watchdog fails a stuck job at ~16min, so the server
+    /// verdict arrives first); past it the clips are marked failed-retryable — never
+    /// abandoned in a spinner.
+    static let jobPollCeiling: TimeInterval = 20 * 60
+    /// 5s while fresh, 10s once the job has been going >5min — long renders don't need
+    /// a tight poll, and the slower pace halves the request load exactly when the
+    /// backend is busiest.
+    private func pollInterval(elapsed: TimeInterval) -> UInt64 {
+        elapsed < 300 ? 5_000_000_000 : 10_000_000_000
+    }
+
+    /// Local terminal verdict when polling exhausts its ceiling: the clips get a real,
+    /// retryable failed state instead of an eternal spinner (the pre-2026-08-22 loops
+    /// just `return`ed and left whatever was on screen frozen there).
+    private func timeOutPolledClips(_ clipIds: [UUID]) {
+        for id in clipIds {
+            guard let idx = clips.firstIndex(where: { $0.id == id }),
+                  clips[idx].status == .rendering else { continue }
+            clips[idx].status = .failed
+            clips[idx].lastError = "edit_timeout"
+        }
+        save()
     }
 
     func pollJob(jobId: String, clipIds: [UUID]) async {
         var done = false
-        var attempts = 0
+        let started = Date()
         // H1: without the cancellation check, a cancelled caller Task doesn't stop
         // this loop — it busy-spins instead (Task.sleep throws immediately once
         // cancelled, and the `try?` below swallows that), hammering the backend
-        // until `done` or the 60-attempt ceiling instead of actually stopping.
-        while !done && attempts < 60 && !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 5_000_000_000)  // 5s
-            attempts += 1
+        // until `done` or the ceiling instead of actually stopping.
+        while !done && Date().timeIntervalSince(started) < Self.jobPollCeiling && !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: pollInterval(elapsed: Date().timeIntervalSince(started)))
             let (maybeResult, httpStatus) = await backend.pollClipJobWithStatus(jobId: jobId)
             if httpStatus == 404 || httpStatus == 410 {
                 failClipsForDeadJob(clipIds)                   // AF-I4: gone for good
@@ -1709,6 +1796,9 @@ final class AppStore {
                 notifyClipsReady(count: readyCount, jobId: jobId)
             }
         }
+        if !done && !Task.isCancelled {
+            timeOutPolledClips(clipIds)     // ceiling hit — terminal + retryable, never a frozen spinner
+        }
     }
 
     /// Plain-English copy for a structured backend render-error code, so a failed
@@ -1725,6 +1815,10 @@ final class AppStore {
             return "We couldn't read the audio in your take. Re-record with clearer sound, or try again."
         case "render_stalled", "render_timeout":
             return "The edit took too long and timed out. Tap to try again."
+        case "edit_timeout":
+            // Client-side poll ceiling (20min) — by then the server watchdog has almost
+            // always produced its own verdict; this is the belt-and-braces copy.
+            return "This edit is taking much longer than it should. Tap to try again."
         case "pipeline_interrupted":
             return "The edit was interrupted mid-flight (a brief server restart). Tap to restart it."
         case "render_fatal", "render_no_output", "render_submit_failed", "bridge_error":

@@ -173,24 +173,59 @@ final class ChatStore {
             updateCard(cardId, in: convoId, store: store) { $0.stage = .failed; $0.detail = why }
         }
 
-        // 1) Import the picked videos into the app container.
-        let assets = await importPickedMedia(items).filter { $0.isVideo }
-        guard !assets.isEmpty else { return fail("Those didn't come through as videos.") }
-        guard !Task.isCancelled else { return }
+        // Liveness: own the card from the very first await. liveEditCardIds was only
+        // registered in runEditFromFootage, so during a slow import the orphan sweep
+        // (_reconcileChatCards) saw a transient-stage card with no live owner and flipped
+        // a perfectly-alive card to .failed mid-pick. Removing twice (here + the inner
+        // defer in runEditFromFootage) is harmless — it's a Set.
+        ChatStore.liveEditCardIds.insert(cardId)
+        defer { ChatStore.liveEditCardIds.remove(cardId) }
 
-        // 2) Stitch multiple takes into one source (single take → use as-is).
-        var footagePath = assets[0].localPath
-        if assets.count > 1 {
-            let urls = assets.map { MediaStore.url(for: $0.localPath) }
-            // saveFile streams the stitched output into the container — the old
-            // Data(contentsOf:) loaded the WHOLE stitched video into RAM and
-            // memory-killed the app on real multi-minute takes.
-            if let stitched = await VideoStitcher.stitch(urls),
-               let saved = MediaStore.saveFile(from: stitched, ext: "mov") {
-                footagePath = saved
-            }   // stitch failure → fall back to the first clip rather than stranding the turn
+        // 1) + 2) Import the picked videos + stitch multiple takes into one source —
+        // BOUNDED. This phase used to run outside ANY watchdog (the 10-min guard lives in
+        // runEditFromFootage, which we haven't reached yet), and PhotosPicker's
+        // loadTransferable can hang indefinitely on an iCloud-only original with no
+        // connectivity — wedging the card AND isStreaming for the whole session. 120s
+        // comfortably covers real multi-clip imports (streamed to disk, no transcode);
+        // past it the card lands on .failed. There's no footagePath yet at this point, so
+        // the retry is a re-pick — the detail copy says exactly that.
+        enum ImportOutcome { case ready(String); case noVideos; case timedOut }
+        let picked = items
+        let outcome: ImportOutcome = await withTaskGroup(of: ImportOutcome.self) { group in
+            group.addTask {
+                let assets = await importPickedMedia(picked).filter { $0.isVideo }
+                guard !assets.isEmpty else { return .noVideos }
+                var path = assets[0].localPath
+                if assets.count > 1 {
+                    let urls = assets.map { MediaStore.url(for: $0.localPath) }
+                    // saveFile streams the stitched output into the container — the old
+                    // Data(contentsOf:) loaded the WHOLE stitched video into RAM and
+                    // memory-killed the app on real multi-minute takes.
+                    if let stitched = await VideoStitcher.stitch(urls),
+                       let saved = MediaStore.saveFile(from: stitched, ext: "mov") {
+                        path = saved
+                    }   // stitch failure → fall back to the first clip rather than stranding the turn
+                }
+                return .ready(path)
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 120 * 1_000_000_000)
+                return .timedOut
+            }
+            let first = await group.next() ?? .timedOut
+            group.cancelAll()
+            return first
         }
         guard !Task.isCancelled else { return }
+        let footagePath: String
+        switch outcome {
+        case .ready(let path):
+            footagePath = path
+        case .noVideos:
+            return fail("Those didn't come through as videos.")
+        case .timedOut:
+            return fail("Importing those videos took too long — please pick them again.")
+        }
 
         // Stash the recovery payload on the card the moment the footage exists, so a failed
         // edit is retryable WITHOUT re-picking the videos (the picked items are gone by then).
@@ -227,12 +262,18 @@ final class ChatStore {
             }
         }
         guard !Task.isCancelled else { return bail() }
-        // Liveness v2: register as live (blocks the orphan sweep) + a 10-min hard
-        // watchdog — the record path has a 480s ceiling but this path had NONE, so a
-        // wedged poll could spin the card forever even with the app foregrounded.
+        // Liveness v2: register as live (blocks the orphan sweep) + a hard watchdog —
+        // the record path has a submit ceiling but this path had NONE, so a wedged poll
+        // could spin the card forever even with the app foregrounded. Sized to the new
+        // long-footage windows (beta 2026-08-22): the brief wait alone can honestly run
+        // 6min (AppStore.pollForBrief) and the upload ahead of it several more on a big
+        // take, so the old 10-min guard fired mid-pipeline on edits that were still fine.
+        // Every stage inside is individually bounded now (compress budget ≤420s, stalled
+        // PUTs restart, brief 360s, render polling is detached) — this only catches a
+        // wedge none of them saw, so jobPollCeiling (20min) is the right belt-and-braces.
         ChatStore.liveEditCardIds.insert(cardId)
         let watchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 600 * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(AppStore.jobPollCeiling) * 1_000_000_000)
             guard !Task.isCancelled else { return }
             self?.updateCard(cardId, in: convoId, store: store) {
                 guard $0.stage != .ready && $0.stage != .failed else { return }
@@ -282,9 +323,21 @@ final class ChatStore {
               !job.jobId.isEmpty else {
             return fail("Couldn't start the edit — try again in a moment.")
         }
+        // pollForBrief spans the full long-footage analyze window (360s, AppStore) — the
+        // chat path shares it rather than running its own shorter cap, so a 2-3min take
+        // gets the same patience here as on the record path.
         let brief = await store.pollForBrief(jobId: job.jobId)
         guard !Task.isCancelled else { return }
         if brief?.status == "failed" { return fail("The edit couldn't be planned from that footage.") }
+        // nil = the analyze genuinely timed out. This used to FALL THROUGH to confirm,
+        // which the backend rejects (no brief yet) — and confirmClips' transport fallback
+        // then forked a DUPLICATE local mock job, so the card "succeeded" with the wrong
+        // output while the real job was still (or never) finishing. A timeout is a
+        // failure: land the card retryably and let "Try again" re-run from the stored
+        // footage instead of quietly shipping a counterfeit result.
+        guard brief != nil else {
+            return fail("The edit took too long to analyze — tap Try again.")
+        }
 
         // 6) Confirm → render (confirmClips inserts the tracked clip + polls + streak).
         // Creator-chosen toggles win over the server-inferred ones.

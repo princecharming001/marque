@@ -198,10 +198,17 @@ def _render_fixture(fx: dict, source_url: str) -> tuple[bool, str]:
     props_path = OUT_DIR / f"{fx['id']}.props.json"
     out_path = OUT_DIR / f"{fx['id']}.mp4"
     props_path.write_text(json.dumps(props))
+    # Frame-scaled timeout (2026-08-22): the flat 180s was tuned on ~90-150-frame
+    # fixtures and quietly became the gate's tightest budget for adv-long-take-phrase
+    # (3000 frames ≈ 20-30× the work) — the exact flat-budget-vs-scaled-work bug class
+    # the production pipeline was fixed for the same day. 0.12s/frame ≈ 2× the observed
+    # local render rate, floored at the old 180s so short fixtures fail as fast as ever.
+    frames = int(fx["edl"].get("total_frames") or 0)
     result = subprocess.run(
         ["npx", "remotion", "render", "src/index.ts", comp_id, str(out_path),
          f"--props={props_path}", "--scale=0.5", "--concurrency=2"],
-        cwd=str(RENDER_DIR), capture_output=True, text=True, timeout=180,
+        cwd=str(RENDER_DIR), capture_output=True, text=True,
+        timeout=max(180, int(frames * 0.12)),
     )
     if result.returncode != 0:
         tail = (result.stderr or result.stdout)[-500:]

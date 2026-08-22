@@ -353,6 +353,38 @@ class SupabaseClient:
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
 
+    # Terminal statuses a stored session can hold — anything else that's gone quiet is
+    # a restart orphan the liveness sweeper should pull back into memory.
+    _CLIP_TERMINAL = ("ready", "failed", "mock_ready", "brief_ready")
+
+    async def load_stale_clip_sessions(self, older_than_s: float = 300,
+                                       limit: int = 5,
+                                       max_age_s: float = 7 * 86400) -> list[str]:
+        """job_ids of NON-TERMINAL sessions whose row hasn't been written in
+        `older_than_s` (an in-flight pipeline persists on every stage transition, so a
+        quiet non-terminal row means nobody owns it). Capped at `max_age_s` so ancient
+        pre-liveness history isn't endlessly resurrected. Newest first, bounded."""
+        import datetime as _dt
+        now = _dt.datetime.now(_dt.timezone.utc)
+        cutoff = (now - _dt.timedelta(seconds=older_than_s)).isoformat()
+        floor = (now - _dt.timedelta(seconds=max_age_s)).isoformat()
+        r = await self._request(
+            "GET", "/clip_edit_sessions",
+            params={"select": "job_id,status:state->>status",
+                    "updated_at": f"lt.{cutoff}",
+                    "and": f"(updated_at.gt.{floor})",
+                    "order": "updated_at.desc",
+                    "limit": str(limit * 6)})     # over-fetch; most rows are terminal
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            rows = r.json()
+        except Exception:
+            return []
+        out = [row.get("job_id") for row in rows
+               if row.get("job_id") and (row.get("status") or "") not in self._CLIP_TERMINAL]
+        return out[:limit]
+
     async def load_clip_job(self, job_id: str) -> dict | None:
         """None = the DB answered and no session exists. UNAVAILABLE = the DB
         couldn't answer (transport dead after retries, non-200, bad body) — the

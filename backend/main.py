@@ -74,6 +74,10 @@ async def _lifespan(app: FastAPI):
     _spawn(_warm_reels_on_boot())      # B-11: pre-warm known niches' reels (non-blocking)
     if palo_flags.PALO_PORT:           # Palo port: run the sweep jobs in-process (no cron services)
         _spawn(_palo_scheduler())
+    # Liveness (beta 2026-08-22): sweep stuck jobs on a CLOCK, not just on polls, and
+    # pull orphaned non-terminal sessions back out of Supabase — a deploy restart used
+    # to strand any in-flight edit whose creator wasn't actively polling, forever.
+    _spawn(_liveness_sweeper())
     yield
     if _anthropic_client is not None:
         await _anthropic_client.aclose()
@@ -129,7 +133,13 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 # The client compresses each take to fit under this cap before upload. Server-driven
 # (returned in every mint response) so raising the Supabase storage tier is a
 # backend-only change — the iOS upload ladder reads it and targets a bitrate to fit.
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "48000000"))
+# 150MB (was 48MB): the marque-clips bucket's real file_size_limit is 256MB (verified
+# against the live Supabase project 2026-08-22), so 48MB was purely self-imposed — and
+# it created a hard duration wall at ~167s of footage (iOS refuses to upload what it
+# can't compress under the cap, so ">1min takes" simply died client-side). 150MB keeps
+# ~100MB of headroom under the bucket limit and lets a typical 60-90s 1080p capture
+# upload with NO on-device transcode at all (faster submit, no quality loss).
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_BYTES", "150000000"))
 # Inference-time quality gate (generate -> judge -> targeted self-repair). On by
 # default; set AI_QUALITY=0 to fall back to raw single-shot generation.
 AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
@@ -3074,6 +3084,12 @@ def _reattach_in_flight_renders(job: dict) -> None:
     for clip in job.get("clips", []):
         if clip.get("status") == "rendering" and clip.get("render_id") and clip.get("bucket_name"):
             clip["render_started_at"] = time.time()      # fresh watchdog lease for the re-attached poll
+            # Re-stamp the scaled budget from the persisted frame count too — the
+            # re-attached poll runs under the SAME scaled window as the original, so
+            # the sweep must keep honoring it (a restored 4min render otherwise gets
+            # the flat 480s watchdog against a ~1100s legitimate poll).
+            clip["render_budget_s"] = _scaled_render_budgets(
+                clip.get("render_total_frames"))[0]
             my_gen = _bump_render_gen(clip)
             try:
                 _spawn(_reattach_one_render(job, clip, my_gen))
@@ -3085,6 +3101,16 @@ async def _reattach_one_render(job: dict, clip: dict, my_gen: int) -> None:
     """Await the still-running Lambda for a restored clip and apply its result, mirroring
     _render_all_clips' completion path (respecting the render-generation guard so a
     concurrent retry still wins)."""
+    # Finalize the JOB once no clip is still rendering (mirrors _run_edit's terminal
+    # write) — the restored render's OUTCOME, success or failure, must flip the job out
+    # of the non-terminal `rendering` status. The failure branches used to skip this:
+    # a PipelineError on the LAST rendering clip failed the clip but left the job
+    # 'rendering' forever (non-terminal in Supabase, spinner in the app, until the
+    # job-level watchdog eventually mislabeled it pipeline_interrupted).
+    def _finalize_job() -> None:
+        if not any(c.get("status") == "rendering" for c in job.get("clips", [])):
+            job["status"] = "ready" if any(c.get("status") == "ready"
+                                           for c in job["clips"]) else "failed"
     try:
         render_url = await _poll_remotion_render(
             clip["render_id"], clip["bucket_name"],
@@ -3092,18 +3118,15 @@ async def _reattach_one_render(job: dict, clip: dict, my_gen: int) -> None:
         if _is_current_render(clip, my_gen):
             clip["render_url"] = render_url
             clip["status"] = "ready"
-            # Finalize the JOB once no clip is still rendering (mirrors _run_edit's
-            # terminal write) — a restored render's completion must flip the job out
-            # of the non-terminal `rendering` status or the watchdog eventually trips it.
-            if not any(c.get("status") == "rendering" for c in job.get("clips", [])):
-                job["status"] = "ready" if any(c.get("status") == "ready"
-                                               for c in job["clips"]) else "failed"
+            _finalize_job()
     except PipelineError as e:
         if _is_current_render(clip, my_gen):
             _fail_clip(clip, e.code, e.detail)
+            _finalize_job()
     except Exception as e:
         if _is_current_render(clip, my_gen):
             _fail_clip(clip, "internal_error", str(e))
+            _finalize_job()
     if job.get("job_id"):
         _spawn(_persist_clip_job(job["job_id"]))
 
@@ -3608,7 +3631,7 @@ async def _create_clip_job_impl(req: ClipJobRequest):
             job["knowledge_version"] = knowledge_mod.knowledge_version()
             return {"mode": "mock", "job_id": job_id, "status": "mock_ready", "clips": job["clips"]}
         _mark_stage(job, "processing")
-        _spawn(_run_auto_pipeline(job_id))
+        _spawn_pipeline(job_id, _run_auto_pipeline(job_id))
         _spawn(_persist_clip_job(job_id))
         return {"mode": "live", "job_id": job_id, "status": "processing", "clips": job["clips"],
                 "eta_seconds": _job_eta_seconds(job)}
@@ -3627,7 +3650,7 @@ async def _create_clip_job_impl(req: ClipJobRequest):
                     "edit_brief": job["edit_brief"],
                     "toggles": _default_toggles(job["edit_brief"], edit_format)}
     job["status"] = "analyzing"
-    _spawn(_run_analysis(job_id))
+    _spawn_pipeline(job_id, _run_analysis(job_id))
     _spawn(_persist_clip_job(job_id))
     return {"mode": "live", "job_id": job_id, "status": "analyzing"}
 
@@ -3786,7 +3809,7 @@ async def confirm_clip_job(job_id: str, req: ConfirmRequest):
     # _mark_stage re-stamp a tick later is a harmless refresh of the same stage.
     _mark_stage(job, "editing")
     _bump_pipeline_gen(job)   # this confirm owns the pipeline; zombies stand down
-    _spawn(_run_edit(job_id, job.get("words") or []))
+    _spawn_pipeline(job_id, _run_edit(job_id, job.get("words") or []))
     _spawn(_persist_clip_job(job_id))
     return {"mode": "live", "job_id": job_id, "status": "editing", "clips": job["clips"]}
 
@@ -3820,6 +3843,14 @@ async def retry_clip_job(job_id: str):
     # retrying any job older than the watchdog window (RENDER_WATCHDOG_S*2) instantly
     # re-failed as "job exceeded the pipeline watchdog" before the render even ran.
     job["created_at"] = time.time()
+    # restored_at hygiene: resetting created_at without clearing the (persisted)
+    # restore stamp fossilizes restored_at < created_at — an impossible ordering that
+    # breaks forensics on the durable row ("restored before it was created"). The TTL
+    # sweep anchors on max(created_at, ...) so dropping the stamp costs nothing here.
+    job.pop("restored_at", None)
+    # A user-initiated retry also resets the self-heal budget: resume_count guards
+    # against an infinite auto-resume loop, not against the human asking again.
+    job.pop("resume_count", None)
     # ...and take ownership: any zombie task from the failed run (asyncio never
     # cancelled it) must not overwrite this fresh attempt's state when it wakes.
     _bump_pipeline_gen(job)
@@ -3829,16 +3860,16 @@ async def retry_clip_job(job_id: str):
         # read stage_started_at, and the stale stamp from the FAILED run would
         # otherwise make this fresh attempt look hours old.
         _mark_stage(job, "rendering")
-        _spawn(_retry_render(job_id))
+        _spawn_pipeline(job_id, _retry_render(job_id))
     elif job.get("auto_confirm"):
         # One-tap jobs restart through the auto pipeline so the toggle ladder +
         # auto-applied confirm run again — the legacy pipeline would silently
         # drop them when the original failure predated confirm-application.
         _mark_stage(job, "processing")
-        _spawn(_run_auto_pipeline(job_id))
+        _spawn_pipeline(job_id, _run_auto_pipeline(job_id))
     else:
         _mark_stage(job, "transcribing")
-        _spawn(_run_pipeline(job_id))
+        _spawn_pipeline(job_id, _run_pipeline(job_id))
     return {"mode": "live", "job_id": job_id, "status": job["status"], "clips": job["clips"]}
 
 
@@ -4252,6 +4283,10 @@ async def _rerender_clip(job_id: str, clip_id: str, my_gen: int, resolve_broll: 
             clip["render_id"] = submission["render_id"]
             clip["bucket_name"] = submission["bucket_name"]
             clip["render_total_frames"] = submission.get("total_frames")
+            # Same watchdog/poller budget agreement as _render_all_clips: the sweep must
+            # honor the scaled window this render's poll actually runs under.
+            clip["render_budget_s"] = _scaled_render_budgets(
+                submission.get("total_frames"))[0]
             if job.get("job_id"):
                 _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
             render_url = await _poll_remotion_render(
@@ -4537,6 +4572,43 @@ def _default_toggles(brief: dict, edit_format: str = "") -> dict:
     }
 
 
+# --- transcript-scaled LLM output budgets (long-take audit 2026-08-22) ---------------
+# All three editing calls had FLAT max_tokens sized for ~60s takes. On a long take the
+# response is truncated mid-JSON, the parse fails, and the caller silently degrades —
+# brief → mock analysis, plan → untailored safe-default cut, legacy EDL → safe default.
+# The user never sees an error; they just get a generic edit. Each budget below is
+# calibrated to what that call's response ACTUALLY echoes back, so the formula scales
+# with the only thing that grows: the transcript word count. Structured outputs stop at
+# the closing brace, so generous headroom costs nothing on short takes.
+
+def _brief_max_tokens(n_words: int) -> int:
+    """Edit-brief budget. The brief's variable-size parts (cut_regions, hook_candidates,
+    broll/punch_in moments) each echo a short transcript quote (~15-30 tokens per region,
+    roughly one region per 8-12 words of raw take) ⇒ ~2.5 output tokens per transcript
+    word on top of the fixed sections (through_line, pacing, inferred). Old flat 1600
+    truncated around ~600 words (~4min) and the WHOLE analysis fell back to the mock."""
+    return min(6000, 1600 + int(n_words * 2.5))
+
+
+def _plan_max_tokens(n_words: int) -> int:
+    """Plan-author budget. The typed plan echoes quotes on every cut (~30 tokens each,
+    a cut per ~20-30 words on a rambly take), b-roll cues+queries+card text (~40 tokens,
+    one per ~40 words), keeps/order ranges, highlight_words and text_cards ⇒ ~4 tokens
+    per word on top of the fixed understanding/pacing/music sections. Old flat 3000
+    meant EVERY long take got truncated → invalid JSON → the untailored safe default."""
+    return min(16000, 3000 + int(n_words * 4))
+
+
+def _edl_max_tokens(n_words: int) -> int:
+    """Legacy-EDL budget (EDL_AUTHOR=legacy — what prod runs, so this one matters most).
+    The legacy schema makes the model echo the FULL caption array: one {"word","frame"}
+    object per transcript word ≈ 12 output tokens per word, ON TOP of segments/drops/
+    overlays/broll/layout (~4000 base — the old short-take budget). The previous flat
+    8000 truncated at ~650 words (~4-5min take): 8000 - base ≈ 650×12. Cap 32000 covers
+    ~2300 words (~15min) — anything longer is already rejected upstream."""
+    return min(32000, 4000 + n_words * 12)
+
+
 async def _generate_edit_brief(words: list[dict], transcript: str = "",
                                custom_instructions: str = "", brand: dict | None = None,
                                edit_format: str = "", reference: dict | None = None,
@@ -4554,7 +4626,11 @@ async def _generate_edit_brief(words: list[dict], transcript: str = "",
         sys, usr = prompts.edit_brief_prompt(words, custom_instructions, brand or {},
                                              edit_format=edit_format, reference=reference,
                                              dossier=dossier)
-        data = await anthropic_json(sys, usr, prompts.EDIT_BRIEF_SCHEMA, SONNET, 1600)
+        # Scaled, not flat (see _brief_max_tokens): a truncated brief response isn't a
+        # partial brief — it's a JSON parse failure, and the entire analysis silently
+        # falls back to the deterministic mock below.
+        data = await anthropic_json(sys, usr, prompts.EDIT_BRIEF_SCHEMA, SONNET,
+                                    _brief_max_tokens(len(words)))
     except HTTPException:
         return mock
     if not isinstance(data, dict) or not data.get("inferred"):
@@ -4749,7 +4825,10 @@ RENDER_WATCHDOG_S = int(os.environ.get("RENDER_WATCHDOG_S", "480"))
 # 240s/75s. Scale both by the render's output frame count (Lambda parallelizes
 # chunks, so wall-clock grows sublinearly — a gentle linear term is enough).
 RENDER_POLL_PER_FRAME_S = float(os.environ.get("RENDER_POLL_PER_FRAME_S", "0.12"))
-RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "900"))
+# 1200 (was 900): with uploads unlocked to 150MB a 4-5min output is a legitimate render,
+# and at 0.12s/frame its scaled budget WANTS ~1100s+ — the 900 ceiling was killing those
+# renders at the cap while Lambda was still making progress (long-take audit 2026-08-22).
+RENDER_POLL_CEIL_S = int(os.environ.get("RENDER_POLL_CEIL_S", "1200"))
 # #18: renderMediaOnLambda DISPATCHES the render as part of the submit call, so a
 # killed-and-retried submit starts a SECOND, orphaned render. Give the submit a
 # generous cold-start-covering budget and never auto-retry it (_submit_remotion_render).
@@ -4859,13 +4938,106 @@ def _log_stage_timings(job_id: str, job: dict) -> None:
 
 def _job_eta_seconds(job: dict) -> int | None:
     """Remaining-time estimate for a non-terminal job, or None once terminal or
-    parked on user action. Stage baseline minus elapsed-IN-STAGE, floored at 20s."""
+    parked on user action. Stage baseline minus elapsed-IN-STAGE, floored at 20s.
+    Long-footage honesty (beta 2026-08-22): the flat baselines were tuned on ~20-30s
+    takes — for a 2-3min take the editing/rendering stages genuinely take 2-3× longer
+    (EDL over more words, more cuts, more render frames), and a countdown that hits
+    "20s left" and sits there for four minutes reads as 'stuck' even when the pipeline
+    is fine. Scale those two stages by known footage duration once words exist."""
     base = _STAGE_ETA_S.get(job.get("status") or "")
     if base is None:
         return None
+    if job.get("status") in ("editing", "rendering"):
+        words = job.get("words") or []
+        dur_s = (words[-1].get("end_ms", 0) / 1000.0) if words else 0.0
+        if dur_s > 60:
+            base = int(base * min(3.0, dur_s / 60.0))
     anchor = float(job.get("stage_started_at") or job.get("created_at") or time.time())
     elapsed = max(0.0, time.time() - anchor)
     return max(20, int(base - min(elapsed, base - 20)))
+
+
+# --- pipeline ownership + orphan resume (beta 2026-08-22: ">1min footage stuck") -----
+# Three real prod rows proved the stranding chain: a job's owning coroutine dies (deploy
+# restart, OOM, unhandled cancel) → the poll-path sweep below can only see jobs SOMEONE
+# is polling → the client gives up polling after ~5 minutes → the job sits non-terminal
+# in Supabase forever, and the app shows "editing" for eternity. Three pieces close it:
+#   1. _spawn_pipeline registers the OWNING task per job, so the sweep can tell
+#      "alive and legitimately slow" (leave it alone) from "orphaned" (nobody will
+#      ever move it again — this process has no task for it).
+#   2. _try_resume_pipeline restarts an orphaned job from its persisted stage —
+#      words already transcribed aren't re-bought, a brief already built is kept.
+#   3. _liveness_sweeper() (startup task) sweeps every 60s WITHOUT needing a poll,
+#      and pulls stranded non-terminal sessions back out of Supabase, so even a
+#      job whose creator closed the app heals while they're away.
+# Single-instance assumption (Render runs one): "no task in this process" == orphaned.
+_pipeline_tasks: dict[str, asyncio.Task] = {}
+
+
+def _spawn_pipeline(job_id: str, coro) -> asyncio.Task:
+    """_spawn + ownership registry (see block comment above)."""
+    t = _spawn(coro)
+    _pipeline_tasks[job_id] = t
+
+    def _done(task, jid=job_id):
+        if _pipeline_tasks.get(jid) is task:
+            _pipeline_tasks.pop(jid, None)
+    t.add_done_callback(_done)
+    return t
+
+
+def _pipeline_alive(job_id: str) -> bool:
+    t = _pipeline_tasks.get(job_id)
+    return bool(t and not t.done())
+
+
+# Two resumes, then the fail path takes over — a job that dies twice mid-flight has a
+# real problem (bad media, poisoned stage) and needs a terminal state + user retry, not
+# an infinite self-heal loop.
+_RESUME_MAX = 2
+# Don't resume a stage younger than this: the submit route sets the status a tick
+# before _spawn_pipeline registers the owner, and the background sweeper must never
+# race that window into a duplicate pipeline.
+_ORPHAN_GRACE_S = 30.0
+
+
+def _try_resume_pipeline(job: dict) -> bool:
+    """Resume an ORPHANED non-terminal job from its persisted stage. Returns True when
+    a resume was actually spawned. brief_ready is parked on the user (never resumed);
+    rendering is owned by the per-clip re-attach/sweep pair."""
+    jid = job.get("job_id")
+    status = job.get("status") or ""
+    if not jid or _pipeline_alive(jid):
+        return False
+    if status not in ("processing", "transcribing", "analyzing", "editing"):
+        return False
+    if int(job.get("resume_count") or 0) >= _RESUME_MAX:
+        return False
+    job["resume_count"] = int(job.get("resume_count") or 0) + 1
+    # Take ownership + a fresh watchdog window, same discipline as the retry route:
+    # a zombie from the dead run must not overwrite the resumed run's state, and the
+    # stale created_at must not make the fresh attempt look hours old.
+    _bump_pipeline_gen(job)
+    job["created_at"] = time.time()
+    # Same restored_at hygiene as the retry route: a resumed job resets created_at, so
+    # a lingering restore stamp would persist restored_at < created_at (broken forensics).
+    job.pop("restored_at", None)
+    if status == "editing" and job.get("words"):
+        # Transcript already paid for — resume at the edit.
+        _mark_stage(job, "editing")
+        _spawn_pipeline(jid, _run_edit(jid, job.get("words") or []))
+    elif job.get("auto_confirm"):
+        _mark_stage(job, "processing")
+        _spawn_pipeline(jid, _run_auto_pipeline(jid))
+    elif status == "analyzing":
+        _mark_stage(job, "analyzing")
+        _spawn_pipeline(jid, _run_analysis(jid))
+    else:
+        _mark_stage(job, "transcribing")
+        _spawn_pipeline(jid, _run_pipeline(jid))
+    logging.info("[liveness] resumed orphaned job %s from '%s' (resume %s/%s)",
+                 jid, status, job.get("resume_count"), _RESUME_MAX)
+    return True
 
 
 def _fail_job(job: dict, code: str, detail: str = "", stage: str = "") -> None:
@@ -4950,14 +5122,34 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     budget = max_render_s if max_render_s is not None else RENDER_WATCHDOG_S
     now = time.time()
     _touched: set[str] = set()          # jobs whose terminal state must be persisted (below)
+
+    def _clip_budget(c: dict) -> float:
+        # Long-take audit 2026-08-22: the flat RENDER_WATCHDOG_S (480s) was KILLING
+        # renders that _scaled_render_budgets was still legitimately polling (the scaled
+        # poll budget reaches RENDER_POLL_CEIL_S). Each render stamps its own scaled
+        # budget at submit (render_budget_s, from the SAME _scaled_render_budgets call
+        # the poller uses) — the sweep honors whichever is larger, so a long render gets
+        # its earned window while short/unstamped clips keep the tight flat default.
+        return max(budget, float(c.get("render_budget_s") or 0.0))
+
+    def _render_anchor(c: dict, job: dict) -> float:
+        # Anchor-hole fix (same audit): `c.get("render_started_at", now)` made a
+        # 'rendering' clip with a MISSING stamp (restored from a row persisted before
+        # the stamp existed, or restored without a durable render_id so re-attach never
+        # re-stamped it) read as age-0 on every pass — never swept, spinning forever.
+        # Fall back to the job's own progress markers instead; `now` stays only as the
+        # absolute last resort (a job with no clocks at all must not insta-fail).
+        return float(c.get("render_started_at") or job.get("stage_started_at")
+                     or job.get("created_at") or now)
+
     for job in jobs.values():
         for c in job.get("clips", []):
-            if c.get("status") == "rendering" and now - c.get("render_started_at", now) > budget:
+            if c.get("status") == "rendering" and now - _render_anchor(c, job) > _clip_budget(c):
                 # Bump the render generation so the still-running task's late write is
                 # discarded (_is_current_render fails) — else it could flip the clip back
                 # to ready with contradictory state (audit D8).
                 _bump_render_gen(c)
-                _fail_clip(c, "render_stalled", f"render exceeded {int(budget)}s watchdog")
+                _fail_clip(c, "render_stalled", f"render exceeded {int(_clip_budget(c))}s watchdog")
                 if job.get("job_id"): _touched.add(job["job_id"])
             if c.get("preview_status") == "rendering" \
                     and now - c.get("preview_started_at", now) > budget:
@@ -4978,13 +5170,33 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
         if job.get("status") in ("transcribing", "analyzing", "processing", "editing", "rendering"):
             anchor = max(float(job.get("created_at") or now),
                          float(job.get("stage_started_at") or 0.0))
+            # ORPHAN RESUME (beta 2026-08-22, ">1min footage stuck"): a job with no
+            # owning task in this process will never move again no matter how long we
+            # wait — the old code still waited the full 2×budget and then FAILED it,
+            # so a deploy restart cost every in-flight creator a manual retry (and a
+            # creator who wasn't polling never even got the failure). Resume it from
+            # its persisted stage instead; the 2×budget fail below stays as the
+            # backstop once resumes are exhausted.
+            if job.get("status") != "rendering" and now - anchor > _ORPHAN_GRACE_S \
+                    and not _pipeline_alive(job.get("job_id") or ""):
+                resumed = False
+                try:
+                    resumed = _try_resume_pipeline(job)
+                except RuntimeError:
+                    pass                       # no running loop (sync test caller)
+                if resumed:
+                    if job.get("job_id"): _touched.add(job["job_id"])
+                    continue
             # While any clip is actively rendering inside ITS OWN watchdog window, the
             # per-clip sweep above owns termination — a multi-clip job legitimately
             # spends > budget*2 in "rendering" (clips render sequentially), and killing
             # it here would fail renders that are progressing fine.
             clip_actively_rendering = any(
                 c.get("status") == "rendering"
-                and now - c.get("render_started_at", now) <= budget
+                # Same per-clip scaled budget + anchor fallback as the clip sweep above:
+                # a long render inside ITS OWN earned window must keep sparing the job,
+                # and a stamp-less clip must not read as "actively rendering" forever.
+                and now - _render_anchor(c, job) <= _clip_budget(c)
                 for c in job.get("clips", []))
             if now - anchor > budget * 2 and not clip_actively_rendering:
                 # Take ownership before failing: the stalled task (if it's alive at
@@ -5003,6 +5215,54 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 _spawn(_persist_clip_job(_jid))
         except RuntimeError:
             pass
+
+
+# --- background liveness loop (beta 2026-08-22: ">1min footage stuck") ---------------
+_LIVENESS_SWEEP_INTERVAL_S = int(os.environ.get("LIVENESS_SWEEP_INTERVAL_S", "60"))
+
+
+async def _liveness_sweeper() -> None:
+    """The poll-path sweeps (_sweep_ttl_jobs/_sweep_stuck_renders on every GET) only
+    help jobs SOMEONE is polling — the client gives up after a few minutes, so a job
+    orphaned by a restart with the app closed sat non-terminal in Supabase forever
+    (observed: 3 prod rows, one 4 days old). This loop needs no poll: every minute it
+    sweeps in-memory jobs (resuming orphans, failing exhausted ones) and restores
+    stranded sessions from Supabase so THEY get swept too. First pass runs ~15s after
+    boot, which is what heals the backlog right after a deploy."""
+    await asyncio.sleep(15)
+    while True:
+        try:
+            _sweep_ttl_jobs(_clip_jobs)
+            _sweep_stuck_renders(_clip_jobs)
+            await _restore_orphaned_sessions()
+        except Exception as e:
+            logging.warning("[liveness] sweep pass failed: %s", e)
+        await asyncio.sleep(_LIVENESS_SWEEP_INTERVAL_S)
+
+
+async def _restore_orphaned_sessions() -> None:
+    """Pull non-terminal sessions whose durable row has gone quiet back into memory.
+    Restoring is all that's needed: the very next _sweep_stuck_renders pass sees an
+    in-memory job with no owning task and resumes or fails it. Bounded (few rows per
+    pass) so a large backlog drains gradually instead of stampeding the LLM budget."""
+    if not _supabase_client:
+        return
+    try:
+        stale = await _supabase_client.load_stale_clip_sessions(
+            older_than_s=_ORPHAN_GRACE_S * 10, limit=5)
+    except Exception as e:
+        logging.warning("[liveness] stale-session scan failed: %s", e)
+        return
+    for jid in stale:
+        if jid in _clip_jobs:
+            continue                          # already in memory — sweep owns it
+        try:
+            job = await _restore_clip_job(jid)
+        except HTTPException:
+            continue                          # storage blip — next pass retries
+        if job is not None:
+            logging.info("[liveness] restored orphaned session %s (status=%s)",
+                         jid, job.get("status"))
 
 
 # Opt-in (default OFF — prod behavior unchanged): cache transcripts by source_url
@@ -5295,7 +5555,11 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
                 # Only offer memes to the LLM when they can actually resolve (flag ON + a GIF key
                 # configured) — otherwise it emits meme cues that drop at resolve, wasting the beat.
                 memes_enabled=BROLL_MEMES and bool(KLIPY_KEY or GIPHY_KEY))
-            plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET, 3000, temperature=0.0)
+            # Scaled with the transcript (see _plan_max_tokens): the old flat 3000 cap
+            # truncated the plan on long takes → invalid JSON → llm_contributed=False →
+            # an untailored safe-default cut for EVERY long take, silently.
+            plan = await anthropic_json(sys, usr, prompts.EDIT_PLAN_JSON_SCHEMA, SONNET,
+                                        _plan_max_tokens(len(words)), temperature=0.0)
         except HTTPException as e:
             # NEVER swallow silently: a swallowed HTTPException here (e.g. a schema the
             # structured-outputs API rejects with a 400) degrades EVERY edit to the
@@ -5654,14 +5918,15 @@ async def _run_edit(job_id: str, words: list[dict]):
                 # P0.9: author the EDL via structured outputs on Sonnet at temperature 0 —
                 # deterministic, no free-form JSON-parse failures, a real editing model instead
                 # of Haiku at temp 1.0. Falls back to the safe-default edit on LLM failure.
-                # 8000 tokens (was 4000): the legacy schema has the model echo captions,
-                # so a long take's EDL routinely blew the 4000 cap — truncated JSON parsed
-                # as a failure and EVERY long take silently got the untailored safe
-                # default. Scale with the transcript; structured outputs stop at the
-                # closing brace, so the extra headroom costs nothing on short takes.
-                _edl_max_tokens = 8000 if len(words) > 400 else 4000
+                # Budget scales linearly with the transcript (see _edl_max_tokens): the
+                # legacy schema has the model echo the FULL caption array (~12 tokens per
+                # word), so the previous step function (8000 past 400 words) still
+                # truncated at ~650 words — truncated JSON parsed as a failure and EVERY
+                # long take silently got the untailored safe default. Structured outputs
+                # stop at the closing brace, so headroom costs nothing on short takes.
                 edl_data = await anthropic_json(system, user, prompts.EDL_JSON_SCHEMA,
-                                                SONNET, _edl_max_tokens, temperature=0.0)
+                                                SONNET, _edl_max_tokens(len(words)),
+                                                temperature=0.0)
             except HTTPException:
                 # LLM down ≠ pipeline dead: the safe default edit (full footage +
                 # caption timing + deterministic filler cuts) still renders fine.
@@ -6874,6 +7139,11 @@ async def _render_all_clips(job_id: str) -> None:
                 clip["render_id"] = submission["render_id"]
                 clip["bucket_name"] = submission["bucket_name"]
                 clip["render_total_frames"] = submission.get("total_frames")
+                # Stamp the SAME scaled budget the poller below runs under, so the sweep
+                # watchdog (_sweep_stuck_renders) can't kill a long render the poll is
+                # still legitimately inside of (flat 480s vs scaled up to the poll ceiling).
+                clip["render_budget_s"] = _scaled_render_budgets(
+                    submission.get("total_frames"))[0]
                 if job.get("job_id"):
                     _spawn(_persist_clip_job(job["job_id"]))   # durable render_id -> restart re-attach
                 render_url = await _poll_remotion_render(
@@ -8788,17 +9058,20 @@ def _parse_commons_pages(pages: dict) -> list[dict]:
     return out
 
 
-async def _generate_broll_still(query: str) -> str | None:
+async def _generate_broll_still(query: str):
     """v7 P2 still tier: generate one 9:16 photoreal still for `query`. Prefers
     HIGGSFIELD (Soul text→image, the key we already run) and falls back to fal.ai
     Flux only if FAL_KEY is set — so ONE vendor suffices. The caller MUST gate the
     result through _broll_vision_score_one before use (generation misses too —
-    melted food, wrong subject). Returns a hosted image URL or None."""
+    melted food, wrong subject). Returns a hosted image URL, None, or (when the only
+    vendor's chain ran out of budget) higgsfield's falsy TIMED_OUT sentinel so the
+    caller knows not to negative-cache the query."""
+    hf_result = None
     # Tier A: Higgsfield Soul (same key that powers the video-hero fallback).
     if higgsfield_mod.CONFIGURED:
-        url = await higgsfield_mod.generate_still(query)
-        if url:
-            return url
+        hf_result = await higgsfield_mod.generate_still(query)
+        if hf_result:
+            return hf_result
     # Tier B: fal.ai Flux 1.1 Pro (optional second vendor).
     if FAL_KEY:
         prompt = (f"{query}, extreme closeup macro shot, warm natural side lighting, "
@@ -8815,6 +9088,11 @@ async def _generate_broll_still(query: str) -> str | None:
                 return (imgs[0] or {}).get("url") if imgs else None
         except (httpx.HTTPError, ValueError):
             return None
+    # No image from any vendor. If Higgsfield merely TIMED OUT (and Flux wasn't there
+    # to save it), propagate the sentinel — the caller must not poison its negative
+    # cache over a budget miss.
+    if hf_result is higgsfield_mod.TIMED_OUT:
+        return higgsfield_mod.TIMED_OUT
     return None
 
 
@@ -9496,7 +9774,10 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                     if _sc and _sc.get("subject_match") and _sc.get("score", 0) >= _BROLL_SCORE_FLOOR:
                         url, passed = still, True
                         b["source"] = "generated"
-                if not passed:
+                # TIMED_OUT is a budget miss, not a verdict on the query — caching it
+                # would block every future (possibly faster) attempt. A definitive
+                # failure (no image / vision reject) still earns the cache entry.
+                if not passed and still is not higgsfield_mod.TIMED_OUT:
                     _broll_gen_failed.add(query)
             # Higgsfield fallback: stock had NOTHING for this cue → generate a clip instead
             # of silently dropping the cutaway. Runs ONLY on the initial edit pipeline
@@ -9516,9 +9797,16 @@ async def _resolve_broll(edl: dict, dossier: dict | None = None,
                 if _may_generate:
                     url = await higgsfield_mod.generate_broll(b.get("cue_text") or query)
                     if not url:
-                        _broll_gen_failed.add(query)
-                        if len(_broll_gen_failed) > 5000:
-                            _broll_gen_failed.clear()     # bounded; a rare full reset is fine
+                        # Timeout ≠ bad query: with the tight 40s interactive budget a
+                        # TIMED_OUT chain says the CLOCK ran out, not that the query is
+                        # hopeless — negative-caching it poisoned every future attempt
+                        # of that query for the process lifetime. Only a definitive
+                        # generation "no" (None) earns a cache entry.
+                        if url is not higgsfield_mod.TIMED_OUT:
+                            _broll_gen_failed.add(query)
+                            if len(_broll_gen_failed) > 5000:
+                                _broll_gen_failed.clear()     # bounded; a rare full reset is fine
+                        url = None                        # normalize the falsy sentinel
             if url:
                 _broll_url_cache[query] = url
                 _cap_evict(_broll_url_cache, 10_000)

@@ -427,13 +427,19 @@ enum MediaCompressor {
     /// 90s deadline guillotined the HEVC pass shortly before it would have finished, and we
     /// then paid the export ladder on top (~230s worst case) to redo the same work. Scale
     /// with source BYTES (the quantity that actually predicts decode+encode time — HDR 10-bit
-    /// `copyNextSampleBuffer` is the bottleneck, and it's per-sample, not per-second), floor
-    /// at the old combined budget so nothing that used to work gets slower to fail, and keep
-    /// a hard ceiling so a pathological import still resolves well inside the caller's 420s
-    /// submit window (AppStore.submitTakeInstant) with room left for the PUT itself.
+    /// `copyNextSampleBuffer` is the bottleneck, and it's per-sample, not per-second), and
+    /// clamp to [240s, 420s]. The floor is 240s, NOT the 150s this budget first shipped with:
+    /// 150s is BELOW the old effective window (90s HEVC deadline + 140s ladder ≈ 230s), so
+    /// the "size-aware" budget quietly SHRANK the window for mid-size takes — footage that
+    /// used to compress fine started coming back .tooLarge with "trim it" copy for a take
+    /// nothing was wrong with. ≥240s guarantees no source ever gets less wall clock than the
+    /// old fixed pair gave it. The 420s ceiling keeps a pathological import bounded, and the
+    /// caller's submit ceiling is sized for it: AppStore.submitTakeInstant waits 480s + this
+    /// budget (capped at 900s total), so a full 420s compress still leaves the whole 480s
+    /// base for the PUT itself.
     static func compressionBudget(bytes: Int) -> TimeInterval {
         let perMB = 0.55                    // ≈2MB of SOURCE per second, worst case (A-series, 10-bit HDR)
-        return min(300, max(150, Double(bytes) / 1_000_000 * perMB))
+        return min(420, max(240, Double(bytes) / 1_000_000 * perMB))
     }
 
     /// `maxBytes` comes from the mint response so raising the storage tier is backend-only.
@@ -507,13 +513,19 @@ enum MediaCompressor {
             if let size = fileSize(out), size <= maxBytes { return .compressed(out) }
             try? FileManager.default.removeItem(at: out)   // too big — drop and try a smaller preset
         }
-        // Every path failed or overshot. Emphatically NOT `.original`: the source is by
-        // definition over the cap here (we returned `.original` above when it fit — and a
-        // source whose size can't even be read is unreadable, so it has no business on the
-        // wire either), so
-        // uploading it is a guaranteed 413 → a permanently-fatal classification → a dead
-        // card the creator can't retry. Tell the caller to fail LOUDLY and retryably instead.
-        return .tooLarge
+        // Every path failed or overshot. When the source size is KNOWN it is by definition
+        // over the cap here (we returned `.original` above when it fit), so uploading it is
+        // a guaranteed 413 → a permanently-fatal classification → a dead card the creator
+        // can't retry. Tell the caller to fail LOUDLY and retryably instead.
+        //
+        // But an UNKNOWN size (the stat failed — some file-provider/security-scoped URLs
+        // won't `attributesOfItem` while reading just fine) must NOT be branded .tooLarge:
+        // that shows a take that might be 20MB the "too large — trim it" verdict on pure
+        // guesswork, and no amount of retrying-verbatim can ever clear it. Attempt the
+        // upload and let the server/storage answer be authoritative — a genuinely over-cap
+        // body 413s (one wasted transfer), while anything else proves the local refusal
+        // would have been wrong.
+        return srcSize == nil ? .original : .tooLarge
     }
 
     private static func fileSize(_ url: URL) -> Int? {

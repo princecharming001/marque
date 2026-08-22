@@ -880,9 +880,16 @@ def tweak_prompt(edl: dict, transcript_words: list[dict], instruction: str,
     if history:
         hist_lines = [f'- "{h.get("instruction", "")}" -> {h.get("summary", "")}' for h in history[-5:]]
         hist = "\nPrevious tweaks this session:\n" + "\n".join(hist_lines) + "\n"
+    # 800 words (was 250): the slice is the model's ONLY content→frame map, so a 250
+    # cap meant conversational edits ("cut the part about X") couldn't reference
+    # anything said after ~100s of speech — on long takes the model just couldn't
+    # find the words, and the tweak degraded to a clarifying question or a no-op.
+    # 800 words ≈ 5min+ of speech (covers everything the 150MB upload cap admits)
+    # at ~10 input tokens/word — a few thousand extra prompt tokens, well inside
+    # Sonnet's window and cheap next to a wrong edit.
     words_slice = [
         {"word": w.get("word", ""), "frame": ms_to_frame(w.get("start_ms", 0))}
-        for w in (transcript_words or [])[:250]
+        for w in (transcript_words or [])[:800]
     ]
     user = (
         f"EDIT STATE:\n{_edl_summary(edl)}\n"

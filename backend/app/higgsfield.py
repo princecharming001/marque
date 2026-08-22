@@ -41,6 +41,27 @@ _T2I_MODEL = os.environ.get("HIGGSFIELD_T2I_MODEL", "higgsfield-ai/soul/standard
 _I2V_MODEL = os.environ.get("HIGGSFIELD_I2V_MODEL", "higgsfield-ai/dop/standard")
 
 
+class _Timeout:
+    """FALSY sentinel: the generation chain ran out of the whole-chain budget
+    (HIGGSFIELD_TIMEOUT_S). With the tight 40s interactive budget this says nothing
+    about the QUERY — the request was healthy, the clock ran out — so callers must
+    NOT negative-cache it the way they cache a definitive API 'no' (failed/nsfw/4xx).
+    Before this existed, one slow generation poisoned every future attempt of that
+    query for the process lifetime via _broll_gen_failed. Falsy so every existing
+    `if not url` / `if url` fail-soft check keeps working unchanged; identity-compare
+    (`is TIMED_OUT`) to tell it apart from the definitive-failure None."""
+    __slots__ = ()
+
+    def __bool__(self) -> bool:
+        return False
+
+    def __repr__(self) -> str:
+        return "<higgsfield TIMED_OUT>"
+
+
+TIMED_OUT = _Timeout()
+
+
 def _auth_headers() -> dict:
     return {"Authorization": f"Key {_KEY_ID}:{_KEY_SECRET}", "Content-Type": "application/json"}
 
@@ -57,8 +78,11 @@ async def _submit(model_id: str, body: dict) -> str | None:
     return data.get("request_id") or data.get("id")
 
 
-async def _poll_request(request_id: str, deadline: float) -> dict | None:
-    """Poll a request to completion within `deadline` (monotonic). Monkeypatched in tests."""
+async def _poll_request(request_id: str, deadline: float) -> dict | None | _Timeout:
+    """Poll a request to completion within `deadline` (monotonic). Monkeypatched in tests.
+    Returns the payload on success, None on a DEFINITIVE end (4xx/failed/nsfw/canceled —
+    the query itself is a dead end), or TIMED_OUT when the deadline expired first (the
+    query may be fine; only the budget wasn't)."""
     import httpx
     loop = asyncio.get_event_loop()
     async with httpx.AsyncClient(timeout=30) as client:
@@ -79,7 +103,7 @@ async def _poll_request(request_id: str, deadline: float) -> dict | None:
                 return None
             await asyncio.sleep(4)
     log.info("higgsfield request %s timed out", request_id[:12])
-    return None
+    return TIMED_OUT
 
 
 def _first_image_url(payload: dict) -> str | None:
@@ -99,12 +123,13 @@ def _video_url(payload: dict) -> str | None:
     return None
 
 
-async def generate_still(cue: str) -> str | None:
+async def generate_still(cue: str) -> str | None | _Timeout:
     """v7 P2 still tier: Soul text→image ONLY (no DoP i2v step) — a 9:16 photoreal
     frame the render then Ken-Burns'es. This is the cheap default generated tier
     (one image call, no video generation): equivalent job to fal.ai Flux, on the
-    Higgsfield key we already have. Returns an image URL or None; never raises.
-    Caller MUST vision-gate the result before use (generation can miss too)."""
+    Higgsfield key we already have. Returns an image URL, None (definitive failure),
+    or the falsy TIMED_OUT sentinel (budget ran out — retryable, never negative-cache);
+    never raises. Caller MUST vision-gate the result before use (generation can miss too)."""
     if not CONFIGURED or not (cue or "").strip():
         return None
     loop = asyncio.get_event_loop()
@@ -117,15 +142,19 @@ async def generate_still(cue: str) -> str | None:
         if not img_req:
             return None
         img_done = await _poll_request(img_req, deadline)
+        if img_done is TIMED_OUT:
+            return TIMED_OUT
         return _first_image_url(img_done or {})
     except Exception as e:
         log.warning("higgsfield generate_still failed: %s", e)
         return None
 
 
-async def generate_broll(cue: str, duration_s: int = 5) -> str | None:
+async def generate_broll(cue: str, duration_s: int = 5) -> str | None | _Timeout:
     """Generate one 9:16 b-roll clip for `cue`: Soul t2i → DoP i2v. Returns a playable
-    mp4 URL or None (keyless / disabled / any failure / timeout). Never raises."""
+    mp4 URL, None (keyless / disabled / definitive failure), or the falsy TIMED_OUT
+    sentinel when the whole-chain budget expired mid-flight — callers negative-cache
+    None but must retry-later on TIMED_OUT. Never raises."""
     if not CONFIGURED or not (cue or "").strip():
         return None
     loop = asyncio.get_event_loop()
@@ -138,14 +167,17 @@ async def generate_broll(cue: str, duration_s: int = 5) -> str | None:
         if not img_req:
             return None
         img_done = await _poll_request(img_req, deadline)
+        if img_done is TIMED_OUT:
+            return TIMED_OUT
         image_url = _first_image_url(img_done or {})
         if not image_url:
             return None
         # 2) animate it — but never SUBMIT (and get billed) into a deadline that can't
-        # possibly finish; ~30s is the floor for any DoP job to come back.
+        # possibly finish; ~30s is the floor for any DoP job to come back. This is a
+        # budget exhaustion, not a verdict on the cue → TIMED_OUT, not None.
         if loop.time() > deadline - 30:
             log.info("higgsfield: deadline nearly exhausted after t2i — skipping i2v")
-            return None
+            return TIMED_OUT
         vid_req = await _submit(_I2V_MODEL, {
             "image_url": image_url,
             "prompt": f"subtle cinematic motion, {cue.strip()}",
@@ -153,6 +185,8 @@ async def generate_broll(cue: str, duration_s: int = 5) -> str | None:
         if not vid_req:
             return None
         vid_done = await _poll_request(vid_req, deadline)
+        if vid_done is TIMED_OUT:
+            return TIMED_OUT
         return _video_url(vid_done or {})
     except Exception as e:                       # transport / parse / anything — b-roll is a nicety
         log.warning("higgsfield generate_broll failed: %s", e)
