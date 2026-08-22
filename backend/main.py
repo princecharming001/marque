@@ -5192,7 +5192,12 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 # Stagger the backlog: past the per-pass cap the orphan is simply left
                 # for the NEXT pass (60s) — untouched, not failed — so a post-deploy
                 # backlog drains at a pace the instance survives (see _RESUME_PER_SWEEP).
-                if resumed_this_pass < _RESUME_PER_SWEEP:
+                # Only a CAP-deferred orphan is skipped below; an orphan whose resume
+                # was ATTEMPTED and didn't take (budget exhausted, or a sync caller
+                # with no loop) falls through to the 2×budget fail — the pre-stagger
+                # semantics every existing watchdog test pins.
+                attempted = resumed_this_pass < _RESUME_PER_SWEEP
+                if attempted:
                     try:
                         resumed = _try_resume_pipeline(job)
                     except RuntimeError:
@@ -5201,8 +5206,8 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                     resumed_this_pass += 1
                     if job.get("job_id"): _touched.add(job["job_id"])
                     continue
-                if not resumed and int(job.get("resume_count") or 0) < _RESUME_MAX:
-                    continue                   # deferred to a later pass — never fail early
+                if not attempted:
+                    continue                   # deferred by the cap — never fail early
             # While any clip is actively rendering inside ITS OWN watchdog window, the
             # per-clip sweep above owns termination — a multi-clip job legitimately
             # spends > budget*2 in "rendering" (clips render sequentially), and killing
