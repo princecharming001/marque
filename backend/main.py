@@ -5114,6 +5114,14 @@ async def _validate_source_url(url: str) -> None:
     raise PipelineError("source_unreachable", last or "unreachable", "transcribe")
 
 
+# Max orphan RESUMES per sweep pass (2026-08-22 post-mortem): the first liveness deploy
+# resumed all 3 stranded jobs + 1 live job simultaneously on the 512MiB instance — the
+# stampede OOM'd the box, which killed the resumed runs, which burned everyone's resume
+# budget on self-inflicted crashes. The sweeper runs every 60s, so capping resumes per
+# pass staggers the backlog (2/min) at zero cost to the common one-orphan case.
+_RESUME_PER_SWEEP = int(os.environ.get("RESUME_PER_SWEEP", "2"))
+
+
 def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     """Watchdog, swept on every GET poll (same zero-background-task pattern as
     _sweep_ttl_jobs): any clip stuck in 'rendering' past the watchdog budget is
@@ -5121,6 +5129,7 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     task death, pre-finally crash) that used to leave clips spinning forever."""
     budget = max_render_s if max_render_s is not None else RENDER_WATCHDOG_S
     now = time.time()
+    resumed_this_pass = 0               # orphan-resume stampede cap (see _RESUME_PER_SWEEP)
     _touched: set[str] = set()          # jobs whose terminal state must be persisted (below)
 
     def _clip_budget(c: dict) -> float:
@@ -5180,13 +5189,20 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
             if job.get("status") != "rendering" and now - anchor > _ORPHAN_GRACE_S \
                     and not _pipeline_alive(job.get("job_id") or ""):
                 resumed = False
-                try:
-                    resumed = _try_resume_pipeline(job)
-                except RuntimeError:
-                    pass                       # no running loop (sync test caller)
+                # Stagger the backlog: past the per-pass cap the orphan is simply left
+                # for the NEXT pass (60s) — untouched, not failed — so a post-deploy
+                # backlog drains at a pace the instance survives (see _RESUME_PER_SWEEP).
+                if resumed_this_pass < _RESUME_PER_SWEEP:
+                    try:
+                        resumed = _try_resume_pipeline(job)
+                    except RuntimeError:
+                        pass                   # no running loop (sync test caller)
                 if resumed:
+                    resumed_this_pass += 1
                     if job.get("job_id"): _touched.add(job["job_id"])
                     continue
+                if not resumed and int(job.get("resume_count") or 0) < _RESUME_MAX:
+                    continue                   # deferred to a later pass — never fail early
             # While any clip is actively rendering inside ITS OWN watchdog window, the
             # per-clip sweep above owns termination — a multi-clip job legitimately
             # spends > budget*2 in "rendering" (clips render sequentially), and killing
