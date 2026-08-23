@@ -251,7 +251,7 @@ struct RecordView: View {
 
     @ViewBuilder private var background: some View {
         if camera.status == .ready || camera.status == .recording {
-            CameraPreview(session: camera.session).ignoresSafeArea()
+            CameraPreview(camera: camera).ignoresSafeArea()
             Color.black.opacity(0.45).ignoresSafeArea()   // legibility for the teleprompter
         } else {
             Palette.night.ignoresSafeArea()
@@ -310,6 +310,7 @@ struct RecordView: View {
                     .accessibilityIdentifier("record.openSettings")
                 }
                 speedControl
+                if camera.hasCamera && camera.status == .ready { retouchControl }
                 recordButton { startRecording() }
                 PhotosPicker(selection: $pickedItems, maxSelectionCount: 10, matching: .videos) {
                     Label("Upload existing video", systemImage: "square.and.arrow.up")
@@ -991,6 +992,46 @@ struct RecordView: View {
             }
         }
         }
+    }
+
+    // TikTok-style Retouch (owner, 2026-08-22): live skin smoothing, applied to the
+    // preview AND baked into the recording (CameraModel's filtered pipeline). Toggle +
+    // strength, persisted across sessions. Shown pre-record only — flipping the look
+    // mid-take would put a visible seam inside a single segment.
+    private var retouchControl: some View {
+        VStack(spacing: Space.sm) {
+            Button {
+                camera.retouchEnabled.toggle()
+            } label: {
+                // Same selected/unselected treatment as speedControl's pills: solid
+                // when active, liquid glass when idle.
+                let label = HStack(spacing: 6) {
+                    Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold))
+                    Text(camera.retouchEnabled ? "Retouch on" : "Retouch")
+                        .font(AppFont.caption)
+                }
+                if camera.retouchEnabled {
+                    label.foregroundStyle(Palette.ink)
+                        .padding(.horizontal, Space.md).padding(.vertical, 7)
+                        .background(Palette.onInk).clipShape(Capsule())
+                } else {
+                    label.foregroundStyle(.white)
+                        .padding(.horizontal, Space.md)
+                        .marqueGlassCapsule(height: 30)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("record.retouch")
+
+            if camera.retouchEnabled {
+                Slider(value: $camera.retouchStrength, in: 0.1...1.0)
+                    .tint(.white)
+                    .frame(width: 170)
+                    .accessibilityIdentifier("record.retouchStrength")
+                    .transition(.opacity)
+            }
+        }
+        .animation(Motion.quick, value: camera.retouchEnabled)
     }
 
     // MARK: actions
