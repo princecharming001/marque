@@ -19,11 +19,9 @@ struct MarqueTabBar: View {
 
     private let filmSize: CGFloat = 48
 
-    // Chat folded into Home (beta feedback 2026-08-18), so the left side carries one
-    // tab against the right's two. The center Film button stays optically centered
-    // because both sides are `.frame(maxWidth: .infinity)` distributed.
     private let leftItems: [(tab: AppTab, label: String, icon: String)] = [
         (.home, "Home", "sun.max"),
+        (.chat, "Chat", "bubble.left.and.text.bubble.right"),
     ]
 
     private let rightItems: [(tab: AppTab, label: String, icon: String)] = [
@@ -32,11 +30,12 @@ struct MarqueTabBar: View {
     ]
 
     /// Tour anchor id for each tab, keyed by AppTab — matches TourManager.Step.id.
-    /// Home has no anchor here: its tour step points at the chat composer inside
+    /// Home has no anchor here: its tour step points at the voice bubble inside
     /// HomeView's own content, not at this tab-bar icon.
     private func tourAnchorId(for tab: AppTab) -> String? {
         switch tab {
         case .home: return nil
+        case .chat: return "tour.chat"
         case .library: return "tour.library"
         case .performance: return "tour.performance"
         }

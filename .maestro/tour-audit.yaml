@@ -7,7 +7,7 @@ appId: com.getmarque.app
     permissions:
       all: allow
 - extendedWaitUntil:
-    visible: { id: chat.composer }
+    visible: { id: home.voiceBubble }
     timeout: 8000
 - extendedWaitUntil:
     visible: { id: tour.next }

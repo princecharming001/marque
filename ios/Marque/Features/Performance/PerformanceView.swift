@@ -134,7 +134,7 @@ struct PerformanceView: View {
                         ForEach(Array(aiInsights.prefix(5).enumerated()), id: \.element.id) { i, ins in
                             Button {
                                 router.pendingChatPrompt = ins.seedPrompt
-                                router.selectedTab = .home   // chat lives on Home now
+                                router.selectedTab = .chat
                             } label: {
                                 HStack(alignment: .top, spacing: Space.md) {
                                     VStack(alignment: .leading, spacing: 3) {

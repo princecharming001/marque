@@ -26,7 +26,7 @@ struct RootTabView: View {
             .sheet(isPresented: $store.showCelebration) { CelebrationView() }
             .fullScreenCover(isPresented: $router.showFilm) { NavigationStack { FilmView() } }
             // Sits above the tab bar + all tab content — resolves every `.tourAnchor`
-            // tagged below (tab bar buttons, Home's chat composer) into real screen rects.
+            // tagged below (tab bar buttons, Home's voice bubble) into real screen rects.
             .tourOverlay { rects in
                 TourOverlay(tour: tour, router: router, anchors: rects)
             }
@@ -37,6 +37,7 @@ struct RootTabView: View {
         @Bindable var router = router
         switch tab {
         case .home: NavigationStack(path: $router.homePath) { HomeView() }
+        case .chat: NavigationStack { ChatView() }
         case .library: NavigationStack { LibraryView() }
         case .performance: NavigationStack { PerformanceView() }
         }

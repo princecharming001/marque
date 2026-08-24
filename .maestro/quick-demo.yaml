@@ -14,10 +14,12 @@ appId: com.getmarque.app
     timeout: 8
     condition:
       visible:
-        id: chat.composer
+        id: home.voiceBubble
 
 - takeScreenshot: /Users/home/Marque/.shots/demo-home.png
 
+- tapOn:
+    text: "Chat"
 
 - extendedWaitUntil:
     timeout: 5

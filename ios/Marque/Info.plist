@@ -32,7 +32,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>81</string>
+	<string>82</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>MARQUE_BACKEND_URL</key>
@@ -48,6 +48,8 @@
 	<string>Yunicorn records audio with your video so your clips have sound.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Yunicorn imports existing videos to repurpose into clips.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Yunicorn transcribes what you say to the voice assistant so it can build your content.</string>
 	<key>SUPABASE_ANON_KEY</key>
 	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im54aWJlaXlrY2d4cGJta2VhZHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU1MjA4MDcsImV4cCI6MjA4MTA5NjgwN30.0ViO1YkTQ2CEVjf1VoBun6cgVodu2u3DrcDipeWnr28</string>
 	<key>SUPABASE_URL</key>

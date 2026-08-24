@@ -807,6 +807,19 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
     }
 
     /// ElevenLabs TTS via the backend. Returns mp3 bytes, or nil → caller uses AVSpeechSynthesizer.
+    func tts(text: String) async -> Data? {
+        guard let url = URL(string: AppConfig.backendBaseURL + "/v1/tts") else { return nil }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 30
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text])
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
+              http.value(forHTTPHeaderField: "Content-Type")?.contains("audio") == true else { return nil }
+        return data
+    }
+
     // MARK: - V3: Daily feed + reels + mimic
 
     enum FeedEntry {

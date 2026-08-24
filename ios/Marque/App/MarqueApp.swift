@@ -9,10 +9,6 @@ struct MarqueApp: App {
     // UX-F1: the feed survives tab switches + relaunches (RootTabView is a ViewBuilder
     // switch, so HomeView is torn down per tab — a view-owned FeedStore lost everything).
     @State private var feed = FeedStore()
-    // Same reasoning as FeedStore: Home now hosts the chat (the Chat tab was folded in),
-    // and RootTabView tears each tab's view down on switch — a view-owned ChatStore lost
-    // the open thread every time the creator visited Library and came back.
-    @State private var chat = ChatStore()
     // UX-B2b: APNs registration + notification-tap routing.
     @UIApplicationDelegateAdaptor(PushManager.self) private var pushManager
 
@@ -35,8 +31,8 @@ struct MarqueApp: App {
         // which the hardware ring/silent switch silences — reel previews (Home,
         // Library) played fine on screen but made no sound whenever the phone was on
         // silent. .playback matches TikTok/Instagram: audio plays regardless of the
-        // switch. (Nothing borrows the session any more — speech dictation and TTS
-        // went out with the voice orb.)
+        // switch. Voice dictation/TTS still borrow the session temporarily and
+        // restore this baseline when they're done (SpeechRecognizer, VoicePlayback).
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
     }
@@ -57,7 +53,6 @@ struct MarqueApp: App {
             .environment(router)
             .environment(tour)
             .environment(feed)
-            .environment(chat)
             // UX-B2b: push-tap deeplinks route through the shared router; onOpenURL
             // covers marque:// opens from outside (OAuth callbacks never reach here —
             // ASWebAuthenticationSession consumes its own marque://auth-callback).

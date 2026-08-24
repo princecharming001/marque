@@ -9,7 +9,7 @@ name: Design-polish verification screenshots
     optional: true
 - extendedWaitUntil:
     visible:
-      id: "chat.composer"
+      id: "home.voiceBubble"
     timeout: 15000
 - extendedWaitUntil:
     visible:

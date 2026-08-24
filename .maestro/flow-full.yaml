@@ -97,7 +97,7 @@ name: Marque — full core loop
 # Into the app — Home with the voice bubble
 - extendedWaitUntil:
     visible:
-      id: "chat.composer"
+      id: "home.voiceBubble"
     timeout: 6000
 - takeScreenshot: /Users/home/Marque/.shots/v3-home
 
@@ -172,6 +172,7 @@ name: Marque — full core loop
 - takeScreenshot: /Users/home/Marque/.shots/v3-performance
 
 # Chat tab reachable
+- tapOn: "Chat"
 - extendedWaitUntil:
     visible: "What can I help with?"
     timeout: 6000

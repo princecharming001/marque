@@ -11,6 +11,7 @@ name: "Build 66 — chat attach: Photos / Your library toggle"
 - tapOn:
     id: "tour.skip"
     optional: true
+- tapOn: "Chat"
 - extendedWaitUntil:
     visible:
       id: "chat.composer"

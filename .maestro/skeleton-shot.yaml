@@ -10,6 +10,6 @@ name: Capture Home loading skeletons (hanging backend keeps isLoading true)
     optional: true
 - extendedWaitUntil:
     visible:
-      id: "chat.composer"
+      id: "home.voiceBubble"
     timeout: 8000
 - takeScreenshot: /tmp/r5-skeleton-home

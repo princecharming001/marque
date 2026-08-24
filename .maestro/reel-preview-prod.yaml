@@ -9,7 +9,7 @@ name: Steal-these reel preview plays against PROD (no backend override)
     optional: true
 - extendedWaitUntil:
     visible:
-      id: "chat.composer"
+      id: "home.voiceBubble"
     timeout: 15000
 - scrollUntilVisible:
     element:
