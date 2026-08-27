@@ -28,7 +28,7 @@ struct StyleTasteSwiper: View {
             if let deck, !deck.reels.isEmpty {
                 SwiperStepShell(
                     cards: deck.reels,
-                    payoff: "Every swipe teaches your editor — liked looks show up in your cuts.",
+                    payoff: "Every swipe teaches your editor, liked looks show up in your cuts.",
                     videoURL: { URL(string: $0.videoURL) },
                     onLike: { liked.append($0.vector) },
                     onPass: { disliked.append($0.vector) },
@@ -57,7 +57,7 @@ struct StyleTasteSwiper: View {
                 .font(.system(size: 22, weight: .light)).foregroundStyle(Palette.textTertiary)
             Text("Couldn't load the deck right now.")
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-            Text("Your editor starts on the proven defaults — you can teach it later in Profile.")
+            Text("Your editor starts on the proven defaults, you can teach it later in Profile.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .multilineTextAlignment(.center)
         }
@@ -175,7 +175,7 @@ struct CTAPickSwiper: View {
                 .font(.system(size: 22, weight: .light)).foregroundStyle(Palette.textTertiary)
             Text("Couldn't load the endings right now.")
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-            Text("Your videos will end clean — you can build a CTA library later.")
+            Text("Your videos will end clean, you can build a CTA library later.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .multilineTextAlignment(.center)
         }

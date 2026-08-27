@@ -25,7 +25,7 @@ struct LibraryView: View {
                 // Editorial inline header — kicker + Fraunces title (maxapp signature)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("YOUR CREATIVE VAULT").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                    Text("Library").font(Typeface.display(40)).tracking(-1).foregroundStyle(Palette.textPrimary)
+                    Text("Library").font(Typeface.sans(40, .bold)).tracking(-1).foregroundStyle(Palette.textPrimary)
                 }
                 UnderlineTabBar(tabs: tabs, index: $tabIndex)
                 switch tabIndex {
@@ -154,7 +154,7 @@ struct ClipsSection: View {
         VStack(alignment: .leading, spacing: Space.lg) {
             if store.clips.isEmpty {
                 EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
-                               message: "Tap Film below to record your first script — drafts and edited clips land here.",
+                               message: "Tap Film below to record your first script. Drafts and edited clips land here.",
                                graphic: "ClipsIcon")
                 Button { router.showFilm = true } label: {
                     Label("Create your first clip", systemImage: "video.badge.plus")
@@ -323,7 +323,7 @@ struct ClipsSection: View {
     /// falls back to the generic line when no estimate exists (old backend).
     private func renderingEtaLine(_ group: [Clip]) -> String {
         if group.contains(where: { $0.uploading }) {
-            return "Uploading your take — the AI starts editing the moment it lands."
+            return "Uploading your take. The AI starts editing the moment it lands."
         }
         let remaining = group.compactMap { c -> Int? in
             guard let eta = c.etaSeconds else { return nil }
@@ -333,10 +333,10 @@ struct ClipsSection: View {
             return max(0, eta - Int(Date().timeIntervalSince(anchor)))
         }.max()
         guard let remaining else {
-            return "The AI is on it — you'll get a notification when it's done."
+            return "The AI is on it. You'll get a notification when it's done."
         }
         let mins = max(1, Int((Double(remaining) / 60.0).rounded(.up)))
-        return "The AI is editing — ready in about \(mins) min. We'll notify you."
+        return "The AI is editing. Ready in about \(mins) min, and we'll notify you."
     }
 
     private func openPending(_ id: UUID?) {
@@ -720,7 +720,7 @@ struct ClipDetailSheet: View {
                         } ?? false
                         Text(hasFootage
                              ? "Your take is saved here. Send it to the editor whenever you're ready."
-                             : "Saved mid-take. Pick up right where you left off — your script is queued in Film.")
+                             : "Saved mid-take. Pick up right where you left off; your script is queued in Film.")
                             .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     } else {
                         // Editable caption — creators tweak the copy before it goes out.
@@ -874,7 +874,7 @@ struct PostNowSheet: View {
                 Text("POST NOW").font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(Palette.textTertiary)
                 Text("Where should this go?")
-                    .font(Typeface.display(24)).foregroundStyle(Palette.textPrimary)
+                    .font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
             }
             VStack(spacing: 0) {
                 ForEach(SocialPlatform.allCases) { p in
@@ -925,7 +925,7 @@ struct PostNowSheet: View {
                         if outcome == .posted {
                             dismiss(); onPosted()
                         } else {
-                            note = "Couldn't post right now — it's saved in your queue instead. Check your connected accounts in Profile."
+                            note = "Couldn't post right now, so it's saved in your queue instead. Check your connected accounts in Profile."
                         }
                     }
                 }
@@ -975,8 +975,8 @@ struct VersionTimelineSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("EDIT HISTORY").font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(Palette.textTertiary)
-                Text("Versions").font(Typeface.display(24)).foregroundStyle(Palette.textPrimary)
-                Text("Every edit is kept. Restore any version — your video re-renders exactly as it was.")
+                Text("Versions").font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
+                Text("Every edit is kept. Restore any version and your video re-renders exactly as it was.")
                     .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             }
             ScrollView {
@@ -1265,7 +1265,7 @@ struct MediaEditSheet: View {
                     } else {
                         // .none / .failed — offer a manual analyze (retry on failed).
                         Button { store.ensureMediaAnalyzed(live) } label: {
-                            Label(live.analysisStatus == .failed ? "Analysis failed — retry" : "Analyze with AI",
+                            Label(live.analysisStatus == .failed ? "Analysis failed, retry" : "Analyze with AI",
                                   systemImage: "sparkles")
                                 .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
                                 .frame(maxWidth: .infinity).frame(height: 44)
@@ -1336,7 +1336,7 @@ extension ClipStatus {
     }
     var whyLine: String {
         switch self {
-        case .draft:     return "Saved mid-take — finish it in Film"
+        case .draft:     return "Saved mid-take. Finish it in Film"
         case .ready:     return "Ready to schedule"
         case .rendering: return "The AI is editing your clip…"
         case .scheduled: return "Scheduled to post"
@@ -1416,7 +1416,7 @@ struct BulkScheduleSheet: View {
                         Button { showConnect = true } label: {
                             HStack(spacing: Space.sm) {
                                 Image(systemName: "link").font(.system(size: 13, weight: .semibold))
-                                Text("Connect an account to actually post — otherwise this just saves reminders.")
+                                Text("Connect an account to actually post. Otherwise this just saves reminders.")
                                     .font(AppFont.caption)
                             }.foregroundStyle(Palette.warning)
                         }.buttonStyle(.plain)

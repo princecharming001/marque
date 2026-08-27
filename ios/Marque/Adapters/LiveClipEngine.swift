@@ -893,18 +893,18 @@ extension BackendClient {
     func rethemeClip(jobId: String, themeId: String, clipId: String = "") async -> [String: Any] {
         let body: [String: Any] = ["theme_id": themeId, "clip_id": clipId]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/retheme", body)
-        if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
+        if status == 404 { return ["error": true, "reply": "This edit session has expired, re-submit the take."] }
         if status == 422 { return ["error": true, "reply": "That theme isn't available right now."] }
         if status == 409 {
             return ["error": true, "transient": true,
-                    "reply": "Still rendering your last change — try again in a minute."]
+                    "reply": "Still rendering your last change, try again in a minute."]
         }
         if status == 503 {
             return ["error": true, "transient": true,
-                    "reply": "Couldn't reach the studio just now — try again in a moment."]
+                    "reply": "Couldn't reach the studio just now, try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ["error": true, "reply": "Couldn't reach the editor — check your connection."]
+            return ["error": true, "reply": "Couldn't reach the editor, check your connection."]
         }
         return dict
     }
@@ -966,7 +966,7 @@ extension BackendClient {
         let path = "/v1/clips/\(jobId)/tweak"
             + (preview ? "?preview=1" : (deferRender ? "?defer_render=1" : ""))
         let (data, status) = await postWithStatus(path, body)
-        if status == 404 { return ["error": true, "reply": "This edit session has expired — re-submit the take."] }
+        if status == 404 { return ["error": true, "reply": "This edit session has expired, re-submit the take."] }
         // H5: F9 added a structured 410 (a job that genuinely existed but was
         // TTL-swept) distinct from 404 (never existed) — this was previously
         // unrecognized entirely and fell through to the JSON-parse guard
@@ -979,14 +979,14 @@ extension BackendClient {
         // all staged local edits) instead of treating it as terminal.
         if status == 409 {
             return ["error": true, "transient": true,
-                    "reply": "Still rendering your last change — try again in a minute."]
+                    "reply": "Still rendering your last change, try again in a minute."]
         }
         if status == 503 {
             return ["error": true, "transient": true,
-                    "reply": "Couldn't reach the studio just now — try again in a moment."]
+                    "reply": "Couldn't reach the studio just now, try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ["error": true, "reply": "Couldn't reach the editor — check your connection."]
+            return ["error": true, "reply": "Couldn't reach the editor, check your connection."]
         }
         return dict
     }
@@ -999,16 +999,16 @@ extension BackendClient {
         let body: [String: Any] = ["clip_id": clipId, "instruction": instruction]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak", body)
         if status == 404 {
-            return ["error": true, "reply": "This edit session has expired — re-submit the take to tweak it."]
+            return ["error": true, "reply": "This edit session has expired, re-submit the take to tweak it."]
         }
         if status == 409 {
-            return ["error": true, "reply": "Hold on — I'm still rendering your last tweak. Try again in a minute."]
+            return ["error": true, "reply": "Hold on. I'm still rendering your last tweak. Try again in a minute."]
         }
         if status == 503 {
-            return ["error": true, "reply": "Couldn't reach the studio just now — try again in a moment."]
+            return ["error": true, "reply": "Couldn't reach the studio just now, try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ["error": true, "reply": "I couldn't reach the editor — check your connection and try again."]
+            return ["error": true, "reply": "I couldn't reach the editor, check your connection and try again."]
         }
         return dict
     }
@@ -1021,16 +1021,16 @@ extension BackendClient {
         let body: [String: Any] = ["clip_id": clipId, "instruction": instruction]
         let (data, status) = await postWithStatus("/v1/clips/\(jobId)/tweak?preview=1", body)
         if status == 404 {
-            return ["error": true, "reply": "This edit session has expired — re-submit the take to tweak it."]
+            return ["error": true, "reply": "This edit session has expired, re-submit the take to tweak it."]
         }
         if status == 409 {
-            return ["error": true, "reply": "Hold on — I'm still rendering your last tweak. Try again in a minute."]
+            return ["error": true, "reply": "Hold on. I'm still rendering your last tweak. Try again in a minute."]
         }
         if status == 503 {
-            return ["error": true, "reply": "Couldn't reach the studio just now — try again in a moment."]
+            return ["error": true, "reply": "Couldn't reach the studio just now, try again in a moment."]
         }
         guard let data, let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return ["error": true, "reply": "I couldn't reach the editor — check your connection and try again."]
+            return ["error": true, "reply": "I couldn't reach the editor, check your connection and try again."]
         }
         return dict
     }

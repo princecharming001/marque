@@ -18,6 +18,7 @@ name: "Funnel events fire through onboarding"
     visible: { id: "onboard.niche.fitness" }
     timeout: 8000
 - tapOn: { id: "onboard.niche.fitness" }
+- tapOn: { id: "onboard.niche.continue" }
 - extendedWaitUntil:
     visible: { id: "onboard.connect.skip" }
     timeout: 8000

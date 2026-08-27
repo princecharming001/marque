@@ -22,7 +22,7 @@ struct CTALibrarySheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.md) {
-                    Text("Your endings. The first one is the default on every new take — the rest are one tap away.")
+                    Text("Your endings. The first one is the default on every new take, and the rest are one tap away.")
                         .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -36,7 +36,7 @@ struct CTALibrarySheet: View {
                     }
 
                     if draft.isEmpty {
-                        Text("Nothing saved yet — your videos end clean.")
+                        Text("Nothing saved yet, so your videos end clean.")
                             .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, Space.lg)
@@ -211,7 +211,7 @@ private struct CTAEditRow: View {
                 .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
             }
             .accessibilityIdentifier("cta.logo")
-            Text(logoFailed ? "Couldn't add that logo — try another image."
+            Text(logoFailed ? "Couldn't add that logo. Try another image."
                             : (cta.logoURL.isEmpty ? "Add a logo (optional)" : "Logo added"))
                 .font(AppFont.caption)
                 .foregroundStyle(logoFailed ? Palette.critical : Palette.textTertiary)

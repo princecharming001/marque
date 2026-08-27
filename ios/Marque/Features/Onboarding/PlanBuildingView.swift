@@ -49,13 +49,13 @@ struct PlanBuildingView: View {
                 Button {
                     store.retryStarterScripts()
                 } label: {
-                    Text("Something hiccuped — tap to retry")
+                    Text("Something hiccuped, tap to retry")
                         .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                         .underline()
                 }
                 .accessibilityIdentifier("onboard.buildRetry")
             } else {
-                Text("Feel free to close the app — I'll notify you when it's ready.")
+                Text("Feel free to close the app. I'll notify you when it's ready.")
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     .multilineTextAlignment(.center)
             }

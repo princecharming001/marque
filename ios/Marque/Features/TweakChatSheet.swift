@@ -91,7 +91,7 @@ struct TweakChatSheet: View {
     // MARK: rows
 
     private var intro: some View {
-        Text("Tell me what to change — captions, cuts, zooms, b-roll. I'll re-edit just this clip.")
+        Text("Tell me what to change: captions, cuts, zooms, b-roll. I'll re-edit just this clip.")
             .font(AppFont.body).foregroundStyle(Palette.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -205,13 +205,13 @@ struct TweakChatSheet: View {
                                                             clipId: clip.id.uuidString,
                                                             instruction: text)
             guard !Task.isCancelled else { return }
-            let reply = resp["reply"] as? String ?? "Something went sideways — try that again."
+            let reply = resp["reply"] as? String ?? "Something went sideways. Try that again."
             if resp["preview_requested"] as? Bool == true {
                 sending = false
                 messages.append(Msg(role: .assistant, text: reply))
                 pendingOps = (resp["ops"] as? [[String: Any]]) ?? []
                 rendering = true
-                messages.append(Msg(role: .status, text: "Rendering a quick preview — nothing is committed yet."))
+                messages.append(Msg(role: .status, text: "Rendering a quick preview. Nothing's committed yet."))
                 startPreviewPolling(jobId: jobId)
                 return
             }
@@ -226,12 +226,12 @@ struct TweakChatSheet: View {
                                                        instruction: text)
             guard !Task.isCancelled else { return }
             sending = false
-            let directReply = direct["reply"] as? String ?? "Something went sideways — try that again."
+            let directReply = direct["reply"] as? String ?? "Something went sideways. Try that again."
             messages.append(Msg(role: .assistant, text: directReply))
             if direct["needs_render"] as? Bool == true {
                 rendering = true
                 store.setClipRendering(clip.id)
-                messages.append(Msg(role: .status, text: "Re-editing your clip — this usually takes a minute or two."))
+                messages.append(Msg(role: .status, text: "Re-editing your clip. This usually takes a minute or two."))
                 startPolling(jobId: jobId)
             }
         }
@@ -253,7 +253,7 @@ struct TweakChatSheet: View {
             sending = false
             if resp["error"] as? Bool == true {
                 messages.append(Msg(role: .assistant,
-                                    text: resp["reply"] as? String ?? "Couldn't apply that — try again."))
+                                    text: resp["reply"] as? String ?? "Couldn't apply that. Try again."))
                 return
             }
             messages.append(Msg(role: .status, text: "Applying it for real now."))
@@ -263,7 +263,7 @@ struct TweakChatSheet: View {
                 startPolling(jobId: jobId)
             } else {
                 rendering = false
-                messages.append(Msg(role: .status, text: "Done — the change is saved."))
+                messages.append(Msg(role: .status, text: "Done. The change is saved."))
             }
         }
     }
@@ -276,7 +276,7 @@ struct TweakChatSheet: View {
         rendering = false
         pollTask?.cancel(); pollTask = nil
         store.clearClipPreview(clip.id)
-        if !quiet { messages.append(Msg(role: .status, text: "Discarded — your clip is untouched.")) }
+        if !quiet { messages.append(Msg(role: .status, text: "Discarded. Your clip is untouched.")) }
     }
 
     /// UX-D2: watch MY clip's preview_status/preview_url (3s cadence) until the
@@ -299,14 +299,14 @@ struct TweakChatSheet: View {
                     previewLive = true
                     rendering = false
                     messages.append(Msg(role: .status,
-                                        text: "Preview is up — check the player, then apply or discard."))
+                                        text: "Preview is up. Check the player, then apply or discard."))
                     pollTask = nil
                     return
                 }
                 if status == "failed" {
                     rendering = false
                     messages.append(Msg(role: .status,
-                                        text: "Preview didn't render — you can still apply the change directly."))
+                                        text: "Preview didn't render, but you can still apply the change directly."))
                     previewLive = true          // apply/discard remain available
                     pollTask = nil
                     return
@@ -314,7 +314,7 @@ struct TweakChatSheet: View {
             }
             rendering = false
             previewLive = !pendingOps.isEmpty   // let Apply/Discard resolve a slow preview
-            messages.append(Msg(role: .status, text: "Preview is taking a while — you can apply or discard anyway."))
+            messages.append(Msg(role: .status, text: "Preview is taking a while. You can apply or discard anyway."))
             pollTask = nil
         }
     }
@@ -345,9 +345,9 @@ struct TweakChatSheet: View {
                     rendering = false
                     if mine["last_render_failed"] as? Bool == true {
                         messages.append(Msg(role: .status,
-                                            text: "That re-render didn't take — your previous cut is untouched. Try rewording the change."))
+                                            text: "That re-render didn't take. Your previous cut is untouched, so try rewording the change."))
                     } else {
-                        messages.append(Msg(role: .status, text: "Done — the new cut is live."))
+                        messages.append(Msg(role: .status, text: "Done. The new cut is live."))
                     }
                     pollTask = nil
                     return
@@ -363,7 +363,7 @@ struct TweakChatSheet: View {
             }
             // Timed out politely; the Library keeps polling state honest on next open.
             rendering = false
-            messages.append(Msg(role: .status, text: "Still working — check back in the Library in a bit."))
+            messages.append(Msg(role: .status, text: "Still working. Check back in the Library in a bit."))
             pollTask = nil
         }
     }

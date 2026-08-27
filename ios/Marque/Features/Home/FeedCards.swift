@@ -64,7 +64,7 @@ struct ScriptFeedCard: View {
             // fits the whole thing — never an ellipsis mid-word. Lowercase for the
             // editorial look — the classification above carries the caps.
             Text((script.title.isEmpty ? script.hook.text : script.title).lowercased())
-                .font(AppFont.serifM).tracking(Track.title)
+                .font(Typeface.sans(22, .semibold)).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             // UX-G2: WHY this pick is here — the bandit's honest reason, micro type.
@@ -234,7 +234,7 @@ struct ReelCard: View {
             // top just fights it (the idea lives in the detail sheet).
             if !overImage {
                 Text(reel.hookText)
-                    .font(Typeface.display(17))
+                    .font(Typeface.sans(17, .semibold))
                     .tracking(Track.tight)
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(4)

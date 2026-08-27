@@ -17,7 +17,7 @@ final class NetworkMonitor: ObservableObject {
 // Calm, single-line offline banner — neutral hairline bar, never alarming.
 struct OfflineBanner: View {
     var body: some View {
-        Text("You're offline — we'll sync when you're back.")
+        Text("You're offline. We'll sync when you're back.")
             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, Space.sm)

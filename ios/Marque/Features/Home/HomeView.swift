@@ -113,7 +113,7 @@ struct HomeView: View {
 
     private var initial: some View {
         Text(String((store.primaryAccount?.handle ?? store.brand.niche).prefix(1)).uppercased())
-            .font(Typeface.display(15, .semibold)).foregroundStyle(Palette.accent)
+            .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.accent)
     }
 
     private var greeting: String {
@@ -125,7 +125,7 @@ struct HomeView: View {
 
     private var greetingBlock: some View {
         Text(greeting)
-            .font(Typeface.display(34)).tracking(-0.8)
+            .font(Typeface.sans(34, .bold)).tracking(-0.8)
             .foregroundStyle(Palette.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -248,8 +248,8 @@ struct HomeView: View {
                 // and claiming those are "from your niche" is how a photographer tester
                 // concluded the app had no idea what their account was about.
                 Text(feed.reelsAreOffNiche
-                     ? "Still scanning your niche — here's what's working elsewhere meanwhile."
-                     : "Proven reels from your niche — mimic them in your voice.")
+                     ? "Still scanning your niche, here's what's working elsewhere meanwhile."
+                     : "Proven reels from your niche, mimic them in your voice.")
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
             }
             if feed.reelItems.isEmpty && feed.isLoading {
@@ -260,7 +260,7 @@ struct HomeView: View {
             } else if feed.reelItems.isEmpty {
                 EmptyStateView(icon: "rectangle.stack.badge.play",
                                title: "Finding real reels…",
-                               message: "We're scanning your niche and the creators you watch for reels that are actually performing. Pull to refresh in a moment — or add creators to watch in your profile.")
+                               message: "We're scanning your niche and the creators you watch for reels that are actually performing. Pull to refresh in a moment, or add creators to watch in your profile.")
             } else {
                 LazyVGrid(columns: reelColumns, spacing: Space.md) {
                     ForEach(feed.reelItems) { r in

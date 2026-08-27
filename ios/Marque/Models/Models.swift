@@ -99,8 +99,8 @@ enum CreatorBlocker: String, CaseIterable, Codable, Identifiable {
 }
 
 enum CameraComfort: String, CaseIterable, Codable, Identifiable {
-    case natural = "Natural — I'm comfortable on camera"
-    case gettingThere = "Getting there — still working on it"
+    case natural = "Natural, I'm comfortable on camera"
+    case gettingThere = "Getting there, still working on it"
     case preferOff = "Prefer off-camera or voiceover"
     var id: String { rawValue }
     var label: String { rawValue }
@@ -150,6 +150,22 @@ struct BrandGraph: Codable, Hashable {
     // offered as one-tap tiles on the record screen. The FIRST entry is the default.
     // Optional-with-default so a Snapshot written by any older build still decodes.
     var savedCTAs: [SavedCTA]? = nil
+    // Build 83: niche/audience became MULTI-select in onboarding. The singular
+    // `niche`/`audience` above stay the source of truth for every existing
+    // consumer (prompts, backend body, Profile) and always mirror element 0 of
+    // these arrays. Optional-with-default so a Snapshot written by any older
+    // build still decodes (same precedent as watchedCreators/savedCTAs above).
+    // INVARIANT: niche == niches?.first ?? "" and audience == audiences?.first ?? ""
+    var niches: [String]? = nil
+    var audiences: [String]? = nil
+}
+
+extension BrandGraph {
+    /// Every niche the creator picked, newest schema first, falling back to the
+    /// single legacy value so pre-multi-select installs read as a 1-element list.
+    var allNiches: [String] { niches ?? (niche.isEmpty ? [] : [niche]) }
+    /// Every audience the creator picked (same fallback as `allNiches`).
+    var allAudiences: [String] { audiences ?? (audience.isEmpty ? [] : [audience]) }
 }
 
 /// A creator whose style the AI should study (preset or a custom linked page).
@@ -265,9 +281,9 @@ enum VideoStyle: String, CaseIterable, Codable, Identifiable {
         case .talkingHead: return "You, to camera, with captions."
         case .greenScreen: return "You reacting over a post or screenshot."
         case .brollCutaway: return "You to camera, with b-roll cutting in on your key words."
-        case .splitThree: return "3 panels — a different point in each, one after another."
+        case .splitThree: return "3 panels, a different point in each, one after another."
         case .duetSplit: return "React to another clip, split above your talking head."
-        case .faceless: return "Voiceover over b-roll — no on-camera."
+        case .faceless: return "Voiceover over b-roll, no on-camera."
         case .fastCuts: return "Rapid one-line cuts, high energy."
         }
     }
@@ -1171,7 +1187,7 @@ enum ChatPersona: String, CaseIterable, Codable, Identifiable {
     var tagline: String {
         switch self {
         case .machine: return "calm, data-first game plans"
-        case .closer: return "all gas — momentum and wins"
+        case .closer: return "all gas, momentum and wins"
         case .sergeant: return "the blunt truth, zero fluff"
         }
     }
@@ -1238,9 +1254,9 @@ enum Catalog {
         .init(id: "myth-buster", name: "Myth-Buster", blurb: "“Everyone thinks X… but.” Cognitive-dissonance payoff at 6–8s.", faceMode: .face, targetSeconds: 24, bestHooks: [.contrarian, .curiosity]),
         .init(id: "listicle", name: "3-Step Listicle", blurb: "Numbered breakdown, B-roll switch every ~2.5s.", faceMode: .face, targetSeconds: 30, bestHooks: [.specificity, .authority]),
         .init(id: "do-this-not-that", name: "Do This, Not That", blurb: "Side-by-side wrong vs. right.", faceMode: .split, targetSeconds: 22, bestHooks: [.contrarian, .callOut]),
-        .init(id: "before-after", name: "Before / After", blurb: "Transformation reveal — drives rewatches.", faceMode: .split, targetSeconds: 26, bestHooks: [.specificity, .narrative]),
+        .init(id: "before-after", name: "Before / After", blurb: "Transformation reveal that drives rewatches.", faceMode: .split, targetSeconds: 26, bestHooks: [.specificity, .narrative]),
         .init(id: "green-screen", name: "Green-Screen", blurb: "You in front of a post, chart, or screenshot.", faceMode: .greenScreen, targetSeconds: 28, bestHooks: [.curiosity, .authority]),
-        .init(id: "faceless", name: "Faceless AI-Visual", blurb: "Voiceover over generated visuals — no camera.", faceMode: .faceless, targetSeconds: 30, bestHooks: [.curiosity, .narrative]),
+        .init(id: "faceless", name: "Faceless AI-Visual", blurb: "Voiceover over generated visuals, no camera.", faceMode: .faceless, targetSeconds: 30, bestHooks: [.curiosity, .narrative]),
         .init(id: "pov-story", name: "POV / Story", blurb: "“POV:” or mid-action open, loop-friendly ending.", faceMode: .face, targetSeconds: 28, bestHooks: [.narrative, .stakes]),
         .init(id: "broll-hook", name: "B-roll + Caption Hook", blurb: "5–8s of B-roll with a provocative one-liner.", faceMode: .faceless, targetSeconds: 12, bestHooks: [.patternInterrupt, .contrarian]),
     ]

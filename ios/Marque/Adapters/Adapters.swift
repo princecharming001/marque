@@ -80,10 +80,10 @@ struct MockLLMRouter: LLMRouting {
         switch signal {
         case .contrarian:   return "Stop optimizing your \(topic). Here's what actually moves the needle."
         case .specificity:  return "The 3 \(topic) mistakes quietly costing you followers."
-        case .curiosity:    return "Nobody talks about this part of \(topic) — but it changes everything."
+        case .curiosity:    return "Nobody talks about this part of \(topic), but it changes everything."
         case .authority:    return "I've spent years on \(topic). Here's the one thing I'd tell my younger self."
         case .stakes:       return "If you're serious about \(topic), the first 3 seconds decide everything."
-        case .patternInterrupt: return "Wait — your \(topic) isn't broken. Your hook is."
+        case .patternInterrupt: return "Wait. Your \(topic) isn't broken. Your hook is."
         case .narrative:    return "A year ago my \(topic) was invisible. Then I changed one thing."
         case .callOut:      return "\(aud.capitalized): you're doing \(topic) on hard mode."
         }
@@ -131,17 +131,33 @@ struct MockLLMRouter: LLMRouting {
             let body = scriptBody(brand: brand, pillar: pillar, format: fmt, topic: top)
             let cta = ctaLine(for: brand.goal)
             var shots = shotPlan(for: fmt)
-            if !mediaContext.isEmpty { shots.append("Reuse your reference footage — \(mediaContext)") }
+            if !mediaContext.isEmpty { shots.append("Reuse your reference footage: \(mediaContext)") }
             let score = min(96, (hooks.first?.strength ?? 70) - 4 + Int(seed("score\(i)") % 7))
             let title = pillar.exampleTopics.isEmpty
-                ? "\(fmt.name): \(top)"
+                ? Self.spokenTitle(formatId: fmt.id, topic: top)
                 : pillar.exampleTopics[i % pillar.exampleTopics.count]
-            let summary = "A \(fmt.targetSeconds)s \(fmt.name.lowercased()) — \(pillar.summary.isEmpty ? "on \(top)" : pillar.summary.lowercased())"
+            let summary = "A \(fmt.targetSeconds)s \(fmt.name.lowercased()), \(pillar.summary.isEmpty ? "on \(top)" : pillar.summary.lowercased())"
 
             return Script(pillarName: pillar.name, title: title, summary: summary, style: style.rawValue, formatId: fmt.id,
                           hook: hooks[0], altHooks: Array(hooks.dropFirst()),
                           body: body, cta: cta, shotPlan: shots,
                           targetSeconds: fmt.targetSeconds, predictedScore: score)
+        }
+    }
+
+    // Fallback titles when a pillar has no example topics. Same register the backend
+    // enforces: plain spoken sentence case, no format-name colon constructions.
+    private static func spokenTitle(formatId: String, topic: String) -> String {
+        let t = topic.lowercased()
+        switch formatId {
+        case "myth-buster":      return "the biggest myth about \(t)"
+        case "listicle":         return "3 things nobody tells you about \(t)"
+        case "do-this-not-that": return "stop doing this with \(t)"
+        case "before-after":     return "how \(t) actually changed for me"
+        case "green-screen":     return "let's talk about this \(t) take"
+        case "pov-story":        return "the day \(t) finally clicked"
+        case "broll-hook":       return "an honest take on \(t)"
+        default:                 return "what actually works in \(t)"
         }
     }
 
@@ -151,11 +167,11 @@ struct MockLLMRouter: LLMRouting {
         // a local fallback after a network miss, and read as "this isn't a script."
         switch format.faceMode {
         case .split:
-            return "Here's the mistake almost everyone makes with \(topic).\n\nThey do the obvious thing — and it quietly works against them.\n\nHere's what I do instead, and the one difference that actually changes the result."
+            return "Here's the mistake almost everyone makes with \(topic).\n\nThey do the obvious thing, and it quietly works against them.\n\nHere's what I do instead, and the one difference that actually changes the result."
         case .faceless:
-            return "Most of what you've heard about \(topic) is surface-level.\n\nHere's the part that actually moves the needle — and why almost nobody talks about it.\n\nDo this one thing and you'll feel the difference within a week."
+            return "Most of what you've heard about \(topic) is surface-level.\n\nHere's the part that actually moves the needle, and why almost nobody talks about it.\n\nDo this one thing and you'll feel the difference within a week."
         case .greenScreen:
-            return "Everyone's looking at the wrong part of this.\n\nWhen it comes to \(topic), the thing that matters isn't what you think — it's this.\n\nFix that, and the rest gets a lot easier."
+            return "Everyone's looking at the wrong part of this.\n\nWhen it comes to \(topic), the thing that matters isn't what you think. It's this.\n\nFix that, and the rest gets a lot easier."
         default:
             return "Here's something nobody tells you about \(topic).\n\nI learned it the slow way, so you don't have to: the real lever isn't effort, it's focus.\n\nPick the one thing that matters and go all in on it this week."
         }
@@ -163,7 +179,7 @@ struct MockLLMRouter: LLMRouting {
 
     private func ctaLine(for goal: Goal) -> String {
         switch goal {
-        case .audience: return "Follow for more — I post this stuff every week."
+        case .audience: return "Follow for more. I post this stuff every week."
         case .clients: return "If this is you, my link's in bio."
         case .authority: return "Save this for the next time you forget it."
         case .monetize: return "Comment ‘guide’ and I'll send it over."
@@ -211,19 +227,19 @@ struct MockLLMRouter: LLMRouting {
         var seeds: [(name: String, summary: String, angle: String, topics: [String])] = [
             ("Teach the fundamentals",
              "Bite-size lessons that make \(aud) better at \(niche).",
-             "You break \(known) into steps \(aud) can copy today — no fluff, no gatekeeping.",
+             "You break \(known) into steps \(aud) can copy today. No fluff, no gatekeeping.",
              ["The \(niche) mistake most beginners make",
               "A 60-second framework for \(known.lowercased())",
               "What I wish I knew about \(niche) on day one"]),
             ("Myth-busting",
              "Contrarian takes that fix what \(aud) get wrong about \(niche).",
-             "You call out popular \(niche) advice that quietly backfires — and show what works instead.",
+             "You call out popular \(niche) advice that quietly backfires, and show what works instead.",
              ["The \(niche) advice hurting \(aud) most",
-              "“Everyone says this about \(niche)” — why it's wrong",
+              "“Everyone says this about \(niche)”: why it's wrong",
               "Stop doing this one thing in \(niche)"]),
             ("Behind the scenes",
              "The real, unpolished story of \(what).",
-             "You let \(aud) watch how the work actually happens — the messy middle, not the highlight reel.",
+             "You let \(aud) watch how the work actually happens: the messy middle, not the highlight reel.",
              ["A day in the life of \(what)",
               "The part of \(niche) nobody shows you",
               "How I actually \(known.lowercased())"]),
@@ -292,12 +308,12 @@ struct MockLLMRouter: LLMRouting {
             intent = "day_plan"
             plan = DayPlan(blocks: [
                 DayPlanBlock(time: "Morning", action: "Film", detail: "Record today's script while your energy's fresh."),
-                DayPlanBlock(time: "Afternoon", action: "Edit", detail: "Submit for AI editing — captions and trim happen automatically."),
+                DayPlanBlock(time: "Afternoon", action: "Edit", detail: "Submit for AI editing. Captions and trim happen automatically."),
                 DayPlanBlock(time: "Evening", action: "Post", detail: "Schedule for your best posting window."),
             ])
             reply = mode == "voice"
                 ? "Here's your day: film this morning while you're fresh, submit for editing this afternoon, and schedule tonight."
-                : "Here's a simple shape for today:\n\n1. **Film** this morning while you're fresh.\n2. **Submit for editing** — captions and trim happen automatically.\n3. **Schedule** for your best posting window."
+                : "Here's a simple shape for today:\n\n1. **Film** this morning while you're fresh.\n2. **Submit for editing**. Captions and trim happen automatically.\n3. **Schedule** for your best posting window."
             chips = ["Show me a script", "Change the plan", "What's my best time to post?"]
         } else if lower.contains("script") || lower.contains("write") || lower.contains("idea") || lower.contains("post today") {
             intent = "generate_scripts"
@@ -307,13 +323,13 @@ struct MockLLMRouter: LLMRouting {
             scripts = await generateScripts(brand: brand, pillar: pillar, count: 1, mediaContext: "", style: style)
             let top = topic(brand, pillar)
             reply = mode == "voice"
-                ? "Wrote you one on \(top) — check your queue when you're ready to film."
+                ? "Wrote you one on \(top). Check your queue when you're ready to film."
                 : "Wrote you a script on \(top). It's saved to your Film queue whenever you're ready."
             chips = ["Give me another", "Make it shorter", "Build my day"]
         } else {
             reply = mode == "voice"
-                ? "Got it — noted. Tell me more whenever something's on your mind, and I'll fold it into your scripts."
-                : "Got it — noted. The more you tell me like this, the sharper your scripts get. Anything you want me to turn into a post?"
+                ? "Got it, noted. Tell me more whenever something's on your mind, and I'll fold it into your scripts."
+                : "Got it, noted. The more you tell me like this, the sharper your scripts get. Anything you want me to turn into a post?"
             if !lastUser.isEmpty {
                 let trimmed = lastUser.count > 140 ? String(lastUser.prefix(140)) + "…" : lastUser
                 updates.append(MemoryUpdate(op: "add", field: "ideas", value: trimmed))
@@ -330,9 +346,9 @@ struct MockLLMRouter: LLMRouting {
         let style = VideoStyle(rawValue: reelItem.style) ?? .talkingHead
         let fmt = Catalog.format(reelItem.formatId)
         let salt = seed(reelItem.id + "mimic")
-        let hook = Hook(text: "Everyone in \(niche) gets this wrong — here's the fix.",
+        let hook = Hook(text: "Everyone in \(niche) gets this wrong. Here's the fix.",
                         signal: .contrarian, strength: strength(.contrarian, brand: brand, salt: salt))
-        let body = "Same skeleton as @\(reelItem.creatorHandle)'s take, your substance: open on the boldest claim you can defend about \(niche). Walk the same beats — but every example, number, and story is yours."
+        let body = "Same skeleton as @\(reelItem.creatorHandle)'s take, your substance: open on the boldest claim you can defend about \(niche). Walk the same beats, but every example, number, and story is yours."
         let s = Script(pillarName: "Mimic: @\(reelItem.creatorHandle)",
                        title: "Your version of @\(reelItem.creatorHandle)'s hit",
                        summary: "Same structure, your \(niche) substance.",
@@ -353,16 +369,16 @@ struct MockLLMRouter: LLMRouting {
         let (version, _) = await mimic(reelItem: placeholder, brand: brand, memory: memory)
         return VideoAnalysis(
             url: url, platform: platform,
-            transcript: "Hook: a bold claim delivered in the first second, mirrored in on-screen text. Beat 2: the creator stakes credibility with one specific number. Beat 3: quick visual proof — the pattern is shown, not described. Beat 4: the reframe — why everyone reads this wrong. Close: a single takeaway line and a one-word comment prompt.",
-            hookAnalysis: "The hook lands a bold claim inside the first second and mirrors it in on-screen text — a double pattern-interrupt that stops both sound-on and sound-off scrollers.",
+            transcript: "Hook: a bold claim delivered in the first second, mirrored in on-screen text. Beat 2: the creator stakes credibility with one specific number. Beat 3: quick visual proof: the pattern is shown, not described. Beat 4: the reframe, why everyone reads this wrong. Close: a single takeaway line and a one-word comment prompt.",
+            hookAnalysis: "The hook lands a bold claim inside the first second and mirrors it in on-screen text, a double pattern-interrupt that stops both sound-on and sound-off scrollers.",
             structureBeats: [
                 "Bold claim + on-screen text (0–1s)",
                 "One specific number for credibility",
                 "Visual proof, not narration",
-                "The reframe — why everyone reads this wrong",
+                "The reframe: why everyone reads this wrong",
                 "One-line takeaway + comment prompt",
             ],
-            whyItWorks: "Every beat earns the next second: specificity builds trust, the proof is shown rather than told, and the loop opened in the hook only closes on the final line — which is what holds retention to the end.",
+            whyItWorks: "Every beat earns the next second: specificity builds trust, the proof is shown rather than told, and the loop opened in the hook only closes on the final line, which is what holds retention to the end.",
             suggestions: [
                 "Reuse this skeleton for your next \(niche) post",
                 "Mirror your hook in on-screen text",

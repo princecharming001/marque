@@ -62,12 +62,12 @@ struct VoiceSessionView: View {
                                 .padding(.horizontal, Space.xl)
                         }
                         if !speech.isAvailable {
-                            Text("Mic unavailable — type below")
+                            Text("Mic unavailable, type below")
                                 .font(AppFont.caption)
                                 .foregroundStyle(Palette.textTertiary)
                         }
                         if exchanges.isEmpty {
-                            Text("Tell me what's on your mind — an idea, an angle, a question about your content. I remember what matters.")
+                            Text("Tell me what's on your mind, an idea, an angle, a question about your content. I remember what matters.")
                                 .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, Space.xl)
@@ -257,7 +257,7 @@ struct VoiceSessionView: View {
                                                       responseLength: store.chatResponseLength ?? .medium)
             thinking = false
             guard let result else {
-                let apology = "I couldn't reach the studio just now — try that again in a moment."
+                let apology = "I couldn't reach the studio just now, try that again in a moment."
                 exchanges.append(ChatMessage(role: .assistant, content: apology))
                 if sessionLive { Task { await playback.speak(apology) } }
                 return
@@ -282,7 +282,7 @@ struct VoiceSessionView: View {
     /// Fire-and-forget, 404-tolerant, and a no-op for short sessions.
     private func distillSessionMemory() {
         let userTurns = exchanges.filter { $0.role == .user }
-        guard userTurns.count >= 4 else { return }
+        guard userTurns.count >= 2 else { return }
         let transcript = exchanges.map { ["role": $0.role == .user ? "user" : "assistant", "text": $0.content] }
         let mem = store.memory, brand = store.brand
         Task {
@@ -344,7 +344,7 @@ struct VoiceScriptRow: View {
                 Spacer()
             }
             Text(script.title.isEmpty ? script.hook.text : script.title)
-                .font(AppFont.serifM).foregroundStyle(Palette.textPrimary)
+                .font(Typeface.sans(22, .semibold)).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("\u{201C}\(script.hook.text)\u{201D}")
                 .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(2)

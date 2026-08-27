@@ -29,7 +29,7 @@ struct ProfileView: View {
                     avatarHero
                     VStack(spacing: 4) {
                         Text(displayName)
-                            .font(Typeface.display(24, .semibold)).tracking(-0.5)
+                            .font(Typeface.sans(24, .semibold)).tracking(-0.5)
                             .foregroundStyle(Palette.textPrimary)
                         Text(metaLine)
                             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
@@ -65,7 +65,7 @@ struct ProfileView: View {
                     } else {
                         // Build 67: pillars are never invented. Cold start says so plainly
                         // instead of showing five generic buckets as if they were yours.
-                        Text("No pillars yet — connect your Instagram or TikTok and they're built from your real posts, or write your own.")
+                        Text("No pillars yet, connect your Instagram or TikTok and they're built from your real posts, or write your own.")
                             .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.bottom, Space.md)
@@ -179,7 +179,7 @@ struct ProfileView: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             SectionLabel(text: "Creators to watch")
                 .padding(.top, Space.lg)
-            Text("Two creators you love — Yunicorn studies their reels and feeds you mimicable ones.")
+            Text("Two creators you love. Yunicorn studies their reels and feeds you mimicable ones.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, Space.xs)
@@ -209,7 +209,7 @@ struct ProfileView: View {
 
     private var monogram: some View {
         Text(String(displayName.prefix(1)).uppercased())
-            .font(Typeface.display(32, .semibold))
+            .font(Typeface.sans(32, .bold))
             .foregroundStyle(Palette.accent)
     }
 
@@ -225,7 +225,7 @@ struct ProfileView: View {
         Button(action: action) {
             HStack {
                 Text(label)
-                    .font(Typeface.display(18, .medium)).tracking(Track.title)
+                    .font(Typeface.sans(18, .semibold)).tracking(Track.title)
                     .foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Image(systemName: "arrow.up.right")
@@ -401,7 +401,7 @@ private struct WatchedCreatorSlot: View {
                     .strokeBorder(Palette.ink.opacity(0.25), lineWidth: 1))
                 .accessibilityIdentifier("profile.creatorPreview\(index)")
             } else if lookupFailed {
-                Text("Couldn't find that account — check the handle and platform.")
+                Text("Couldn't find that account, check the handle and platform.")
                     .font(AppFont.caption).foregroundStyle(Palette.critical)
             }
 
@@ -559,9 +559,25 @@ struct BrandEditorSheet: View {
     private func save() {
         var b = store.brand
         b.niche = niche; b.whatYouDo = whatYouDo; b.audience = audience; b.knownFor = knownFor
+        // Multi-select (build 83): editing the singular field rewrites the PRIMARY
+        // entry of the array — the rest of the picks the creator made in onboarding
+        // survive, and the invariant (niche == niches?.first) holds.
+        Self.replacePrimary(niche, in: &b.niches)
+        Self.replacePrimary(audience, in: &b.audiences)
         store.brand = b
         store.brandSummary = nil    // stale — Profile refetches on next open
         store.save(); dismiss()
+    }
+
+    /// Swap element 0 of a multi-select list (append when the list is empty).
+    /// Leaves an un-migrated (nil) list alone — `allNiches` derives it from the
+    /// singular field there.
+    private static func replacePrimary(_ value: String, in list: inout [String]?) {
+        guard var arr = list else { return }
+        let v = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !v.isEmpty else { return }
+        if arr.isEmpty { arr.append(v) } else { arr[0] = v }
+        list = arr
     }
 }
 
@@ -633,7 +649,7 @@ struct PillarsEditorSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.md) {
-                    Text("Rename, retune the mix, add or remove — these shape every script Yunicorn writes.")
+                    Text("Rename, retune the mix, add or remove, these shape every script Yunicorn writes.")
                         .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
 
                     ForEach($draft) { $p in
@@ -767,7 +783,7 @@ private struct PillarEditRow: View {
             }
             TextField("One-line summary", text: $pillar.summary, axis: .vertical)
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...2)
-            TextField("Your angle — why it's yours", text: $pillar.angle, axis: .vertical)
+            TextField("Your angle, why it's yours", text: $pillar.angle, axis: .vertical)
                 .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...3)
             HStack(spacing: Space.sm) {
                 Text("Mix").font(AppFont.caption).foregroundStyle(Palette.textTertiary)

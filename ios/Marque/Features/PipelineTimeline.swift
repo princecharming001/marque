@@ -33,8 +33,8 @@ enum PipelinePhase: Int, CaseIterable {
     /// The "…ing" why-line shown under the bar for the ACTIVE phase.
     var activeLine: String {
         switch self {
-        case .upload:  return "Uploading your take — it resumes automatically if you leave."
-        case .analyze: return "Reading your take — transcript, hook, and pacing."
+        case .upload:  return "Uploading your take. It resumes automatically if you leave."
+        case .analyze: return "Reading your take: transcript, hook, and pacing."
         case .edit:    return "Cutting, captions, and b-roll."
         case .render:  return "Rendering the final video."
         }
@@ -103,7 +103,7 @@ struct PipelineTimeline: View {
                         .font(.system(size: compact ? 9 : 10, weight: .semibold))
                         .foregroundStyle(accent)
                         .opacity(progress.isFailed ? 1 : (pulse ? 1 : 0.5))
-                    Text(progress.isFailed ? "Interrupted — tap to retry." : progress.active.activeLine)
+                    Text(progress.isFailed ? "Interrupted. Tap to retry." : progress.active.activeLine)
                         .font(.system(size: compact ? 9.5 : 11))
                         .foregroundStyle(Palette.textSecondary)
                         .lineLimit(1)

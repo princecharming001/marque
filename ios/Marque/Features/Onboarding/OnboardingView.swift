@@ -74,7 +74,6 @@ struct OnboardingView: View {
     // Defaulted enums render unselected until touched (so every MCQ auto-advances
     // on a real choice, never on a default).
     @State private var goalTouched = false
-    @State private var audienceTouched = false
     // Scan hold: connected users wait on branded theater while the real page scan
     // runs (owner-decided over confirm-later), capped at ~12s so a slow or dead
     // backend can never strand anyone — the identity screen just falls back to
@@ -169,17 +168,20 @@ struct OnboardingView: View {
     }
 
     private func scaffold<C: View>(_ headline: String, _ subtitle: String? = nil,
+                                   scrollable: Bool = false,
                                    @ViewBuilder content: @escaping () -> C) -> some View {
         OnboardingScaffold(headline: headline, subtitle: subtitle,
                            showsProgress: step.quizIndex != nil,
                            progressIndex: (step.quizIndex ?? 0) + 1,
                            progressTotal: Step.quizTotal,
+                           scrollable: scrollable,
                            onBack: { retreat() },
                            content: content)
     }
 
     private func scaffold<C: View, T: View>(_ headline: String, _ subtitle: String? = nil,
                                             topAligned: Bool = false,
+                                            scrollable: Bool = false,
                                             @ViewBuilder content: @escaping () -> C,
                                             @ViewBuilder cta: @escaping () -> T) -> some View {
         OnboardingScaffold(headline: headline, subtitle: subtitle,
@@ -187,6 +189,7 @@ struct OnboardingView: View {
                            progressIndex: (step.quizIndex ?? 0) + 1,
                            progressTotal: Step.quizTotal,
                            topAligned: topAligned,
+                           scrollable: scrollable,
                            onBack: { retreat() },
                            content: content, cta: cta)
     }
@@ -220,48 +223,56 @@ struct OnboardingView: View {
     ]
     private static let nicheCatColors: [Color] = [Palette.accent, Palette.positive, Palette.warning]
 
-    /// Deal the flat list into `rows` horizontal bands, round-robin, so every band
-    /// mixes families like the reference.
-    private static func cloudRows(_ items: [(title: String, cat: Int)], rows: Int) -> [[(title: String, cat: Int)]] {
-        var out = Array(repeating: [(title: String, cat: Int)](), count: rows)
-        for (i, item) in items.enumerated() { out[i % rows].append(item) }
-        return out
-    }
-
+    /// MULTI-select (build 83): most creators are not one niche, and the old
+    /// one-tap-then-auto-advance chip made them pick a lie. Every tap adds or
+    /// removes; the FIRST pick stays the primary (`brand.niche`) that the
+    /// prompts, the feed query and the backend body all still read.
     private var nicheStep: some View {
-        @Bindable var store = store
-        return scaffold("What do you make videos about?",
-                        "One tap — this seeds everything I write for you.",
-                        topAligned: true) {
+        scaffold("What do you make videos about?",
+                 "Tap everything that fits. Your first pick leads.",
+                 scrollable: true) {
             VStack(spacing: Space.md) {
-                // Category legend, Gymshark-style.
+                // Category legend, Gymshark-style — inside the scroll, above the
+                // cloud, and gutter-padded (the cloud itself runs full-bleed).
                 HStack(spacing: Space.md) {
                     legendDot(Self.nicheCatColors[0], "Money")
                     legendDot(Self.nicheCatColors[1], "Lifestyle")
                     legendDot(Self.nicheCatColors[2], "Create")
                 }
                 .frame(maxWidth: .infinity)
+                .padding(.horizontal, Space.screenH)
 
-                // The staggered cloud: horizontal bands that bleed off both edges
-                // and slide independently.
-                VStack(spacing: Space.md) {
-                    ForEach(Array(Self.cloudRows(Self.nicheCloud, rows: 8).enumerated()),
-                            id: \.offset) { i, row in
-                        ChipCloudRow(phase: i) {
-                            ForEach(row, id: \.title) { item in
-                                CloudChip(title: item.title,
-                                          dot: Self.nicheCatColors[item.cat],
-                                          selected: store.brand.niche == item.title) {
-                                    selectAndAdvance { store.brand.niche = item.title }
-                                }
-                                .accessibilityIdentifier("onboard.niche.\(item.title.lowercased())")
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, -Space.screenH)   // full-bleed past the scaffold gutter
+                ChipCloud(items: Self.nicheCloud.map { ChipCloud.Item(title: $0.title, cat: $0.cat) },
+                          catColors: Self.nicheCatColors,
+                          idPrefix: "onboard.niche.",
+                          isSelected: { store.brand.allNiches.contains($0) },
+                          isPrimary: { store.brand.allNiches.first == $0 },
+                          toggle: { toggleNiche($0) })
             }
-        } cta: {}
+        } cta: {
+            // `allNiches`, not `niches`, so a resumed session whose only stored
+            // pick is the legacy singular field isn't dead-ended on a disabled CTA.
+            OnbPill(title: "Continue",
+                    enabled: !store.brand.allNiches.isEmpty) {
+                // Start filling the reel cache for the primary niche now, so the
+                // niche feed isn't cold when Home first opens. Fire-and-forget.
+                let primary = store.brand.niche
+                Task { await store.backend.warmReels(niche: primary) }
+                advance()
+            }
+            .accessibilityIdentifier("onboard.niche.continue")
+        }
+    }
+
+    /// Add/remove a niche, keeping the singular primary mirrored to element 0.
+    private func toggleNiche(_ title: String) {
+        withAnimation(Motion.spring) {
+            var list = store.brand.niches ?? store.brand.allNiches
+            if let i = list.firstIndex(of: title) { list.remove(at: i) } else { list.append(title) }
+            store.brand.niches = list
+            store.brand.niche = list.first ?? ""
+        }
+        selectionTick += 1
     }
 
     private func legendDot(_ color: Color, _ label: String) -> some View {
@@ -275,7 +286,7 @@ struct OnboardingView: View {
 
     private var connectStep: some View {
         scaffold("Let me study your page",
-                 "Connect one account and I'll read your recent posts — your niche, your audience, and how you actually talk. No typing.") {
+                 "Connect one account and I'll read your recent posts, your niche, your audience, and how you actually talk. No typing.") {
             VStack(spacing: Space.lg) {
                 ConnectAccountsView()
                 // Named-provider AI consent (Apple 5.1.2(i)) — page content reaches
@@ -374,43 +385,47 @@ struct OnboardingView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines) : ""
         let prefilled = !derived.isEmpty
         return scaffold("Who's it for?",
-                        prefilled ? "Pulled from your posts — or pick a better fit."
-                                  : "The people on the other side of the camera.",
-                        topAligned: true) {
+                        prefilled ? "Pulled from your posts. Add or swap as you like."
+                                  : "Pick everyone you're talking to. First pick leads.",
+                        scrollable: true) {
             VStack(spacing: Space.md) {
                 if prefilled {
+                    // The honor-the-scan card, now a toggle like every other pick.
                     OptionCard(icon: "OnbIcon-identity", sfFallback: "sparkles",
                                title: derived,
                                subtitle: "From your posts",
-                               selected: audienceTouched && store.brand.audience == derived) {
-                        selectAndAdvance {
-                            store.brand.audience = derived
-                            audienceTouched = true
-                        }
+                               selected: store.brand.allAudiences.contains(derived)) {
+                        toggleAudience(derived)
                     }
                     .accessibilityIdentifier("onboard.audience.derived")
+                    .padding(.horizontal, Space.screenH)
                 }
-                VStack(spacing: Space.md) {
-                    ForEach(Array(Self.cloudRows(Self.audienceChips.map { ($0, 0) },
-                                                 rows: 7).enumerated()),
-                            id: \.offset) { i, row in
-                        ChipCloudRow(phase: i) {
-                            ForEach(row, id: \.title) { item in
-                                CloudChip(title: item.title, dot: nil,
-                                          selected: audienceTouched && store.brand.audience == item.title) {
-                                    selectAndAdvance {
-                                        store.brand.audience = item.title
-                                        audienceTouched = true
-                                    }
-                                }
-                                .accessibilityIdentifier("onboard.audience.\(item.title.prefix(8).lowercased())")
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, -Space.screenH)
+
+                ChipCloud(items: Self.audienceChips.map { ChipCloud.Item(title: $0, cat: nil) },
+                          catColors: [],
+                          idPrefix: "onboard.audience.",
+                          isSelected: { store.brand.allAudiences.contains($0) },
+                          isPrimary: { store.brand.allAudiences.first == $0 },
+                          toggle: { toggleAudience($0) })
             }
-        } cta: {}
+        } cta: {
+            // `allAudiences` so a scan-derived audience (which lands on the singular
+            // field before the arrays exist) already counts as a pick.
+            OnbPill(title: "Continue",
+                    enabled: !store.brand.allAudiences.isEmpty) { advance() }
+                .accessibilityIdentifier("onboard.audience.continue")
+        }
+    }
+
+    /// Add/remove an audience, keeping the singular primary mirrored to element 0.
+    private func toggleAudience(_ title: String) {
+        withAnimation(Motion.spring) {
+            var list = store.brand.audiences ?? store.brand.allAudiences
+            if let i = list.firstIndex(of: title) { list.remove(at: i) } else { list.append(title) }
+            store.brand.audiences = list
+            store.brand.audience = list.first ?? ""
+        }
+        selectionTick += 1
     }
 
     // MARK: - Goal — kept because it personalizes the paywall headline
@@ -482,7 +497,7 @@ struct OnboardingView: View {
             switch store.starterScriptsState {
             case .ready:
                 OnboardingScaffold(headline: "Your first 3 scripts are ready",
-                                   subtitle: "Record when you've got a few minutes — I'll do the editing.",
+                                   subtitle: "Record when you've got a few minutes. I'll do the editing.",
                                    showsBack: false) {
                     // The aha lands, then ONE more page: the notification primer
                     // (permission is asked right after demonstrated value, never
@@ -520,24 +535,22 @@ struct OnboardingView: View {
     // one-shot system prompt, and no other surface in the app cold-prompts.
 
     private var notificationsStep: some View {
-        OnboardingScaffold(headline: "Know the moment it's ready",
-                          subtitle: "Editing takes a couple of minutes — I'll ping you when your clip lands, and nudge you on filming days so the plan actually happens.",
+        OnboardingScaffold(headline: "Want a ping when it's ready?",
+                          subtitle: "One ping when your clip lands. That's it.",
                           showsBack: false) {
-            VStack(spacing: Space.xl) {
-                Spacer(minLength: 0)
-                Image(systemName: "bell.badge")
-                    .font(.system(size: 44, weight: .medium))
-                    .foregroundStyle(Palette.accent)
-                Spacer(minLength: 0)
-                VStack(spacing: Space.md) {
-                    OnbPill(title: "Turn on notifications") { finishWithNotifications() }
-                        .accessibilityIdentifier("onboard.notifications.enable")
-                    Button { completeAll() } label: {
-                        Text("Not now")
-                            .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                    }
-                    .accessibilityIdentifier("onboard.notifications.skip")
+            // One quiet mark, nothing else — the page is the ask, not a poster.
+            Image(systemName: "bell.badge")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(Palette.textTertiary)
+        } cta: {
+            VStack(spacing: Space.md) {
+                OnbPill(title: "Turn on notifications") { finishWithNotifications() }
+                    .accessibilityIdentifier("onboard.notifications.enable")
+                Button { completeAll() } label: {
+                    Text("Not now")
+                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 }
+                .accessibilityIdentifier("onboard.notifications.skip")
             }
         }
     }
@@ -563,86 +576,8 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Niche chip
-
-/// Capsule chip for the one framing question — tap-not-type. OptionCard rows with
-/// icons would make eight niches a full screen of scrolling; a 2-up capsule grid
-/// keeps every choice above the fold.
-// MARK: - Chip cloud (Gymshark-style staggered horizontal bands)
-
-/// One horizontal band of the cloud. `phase` staggers where each row's content
-/// starts so chips never align into columns, and the default scroll anchor
-/// offsets rows differently so pills are cut off at BOTH screen edges — the
-/// visual cue that there's more to slide to.
-private struct ChipCloudRow<Content: View>: View {
-    let phase: Int
-    @ViewBuilder let content: () -> Content
-
-    private var anchor: UnitPoint {
-        [UnitPoint(x: 0.30, y: 0), UnitPoint(x: 0.62, y: 0),
-         UnitPoint(x: 0.45, y: 0), UnitPoint(x: 0.70, y: 0),
-         UnitPoint(x: 0.38, y: 0)][phase % 5]
-    }
-
-    var body: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: Space.sm, content: content)
-                .padding(.horizontal, Space.lg)
-        }
-        .scrollIndicators(.hidden)
-        .defaultScrollAnchor(anchor)
-    }
-}
-
-/// A content-hugging capsule chip for the cloud (NicheChip stretches to fill a
-/// grid column; these must size to their label like the reference).
-private struct CloudChip: View {
-    let title: String
-    let dot: Color?
-    let selected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                if let dot {
-                    Circle().fill(dot).frame(width: 7, height: 7)
-                }
-                Text(title)
-                    .font(Typeface.sans(16, selected ? .semibold : .regular))
-                    .lineLimit(1).fixedSize()
-            }
-            .foregroundStyle(selected ? Palette.canvas : Palette.textPrimary)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 15)
-            .background(selected ? Palette.ink : Palette.surfaceRaised, in: Capsule())
-            .overlay(Capsule().strokeBorder(selected ? .clear : Palette.hairline, lineWidth: 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-private struct NicheChip: View {
-    let title: String
-    let selected: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(Typeface.sans(16, selected ? .semibold : .regular))
-                .foregroundStyle(selected ? Palette.canvas : Palette.textPrimary)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(selected ? Palette.ink : Palette.surfaceRaised)
-                .clipShape(Capsule())
-                .overlay(Capsule().strokeBorder(selected ? .clear : Palette.hairline, lineWidth: 1))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
+// The chip cloud (CloudChip + the packed, infinitely-looping rows) lives in
+// ChipCloud.swift — both multi-select steps render it.
 
 // MARK: - Scan theater
 
@@ -700,10 +635,10 @@ private struct PaceSlider: View {
 
     private var meaning: String {
         switch weekly {
-        case ...2:  return "A gentle start — one filming session covers a month."
-        case 3...4: return "A strong start — one filming session covers the week."
+        case ...2:  return "A gentle start, one filming session covers a month."
+        case 3...4: return "A strong start, one filming session covers the week."
         case 5...6: return "The growth sweet spot for most niches."
-        case 7:     return "Daily presence — maximum compounding."
+        case 7:     return "Daily presence, maximum compounding."
         case 8...14: return "A serious posting operation."
         default:    return "Full content-machine volume."
         }
@@ -754,7 +689,7 @@ private struct PaceSlider: View {
                     .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 // The answer visibly changing the output is the contract that earns
                 // the question (the cut brand-mirror screen carried this math before).
-                Text("\(weekly * 52) posts a year — every one in your voice.")
+                Text("\(weekly * 52) posts a year, every one in your voice.")
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
             }
             .multilineTextAlignment(.center)

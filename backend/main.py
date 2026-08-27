@@ -1030,7 +1030,7 @@ async def coach_today(creator_id: str = "default"):
             return {"card": {"kind": "setup", "mode": "mock",
                              "headline": "Post one to start learning",
                              "body": "Once your first posts settle I can tell you what's "
-                                     "actually moving your numbers — no guesses until then.",
+                                     "actually moving your numbers. No guesses until then.",
                              "cta": "Record your first clip"}}
         _release_claim()                         # silence spends no daily slot
         return {"card": None}                    # data exists but no honest claim → silence
@@ -1044,8 +1044,9 @@ async def coach_today(creator_id: str = "default"):
             # drifted or invented number falls back to the deterministic template.
             if (data.get("headline") and data.get("body")
                     and f"{insight['lift_pct']:+d}%" in str(data.get("body"))):
-                card = {"headline": str(data["headline"])[:80], "body": str(data["body"])[:280],
-                        "cta": str(data.get("cta", card["cta"]))[:80]}
+                card = _scrub_voice({"headline": str(data["headline"])[:80],
+                                     "body": str(data["body"])[:280],
+                                     "cta": str(data.get("cta", card["cta"]))[:80]})
                 mode = "live"
         except HTTPException:
             pass
@@ -1107,7 +1108,7 @@ async def next_idea(creator_id: str = "default", niche: str = ""):
     arms = await _top_arms(creator_id, niche)
     pillar = (arms[0].get("pillar") or "") if arms else ""
     arm_reason = (arms[0].get("reason") or "") if arms else ""
-    idea = prompts.mock_next_idea(niche, insight, pillar=pillar, arm_reason=arm_reason)
+    idea = _scrub_voice(prompts.mock_next_idea(niche, insight, pillar=pillar, arm_reason=arm_reason))
     mode = "mock"
     if ANTHROPIC_KEY and AI_QUALITY:
         try:
@@ -1116,8 +1117,9 @@ async def next_idea(creator_id: str = "default", niche: str = ""):
             data = extract_json(await anthropic(sys, usr, HAIKU, 700), array=False) or {}
             beats = [str(b)[:200] for b in (data.get("beats") or []) if str(b).strip()][:5]
             if data.get("title") and data.get("hook") and len(beats) >= 3:
-                idea = {"title": str(data["title"])[:120], "hook": str(data["hook"])[:200],
-                        "beats": beats, "grounding": idea["grounding"]}
+                idea = _scrub_voice({"title": str(data["title"])[:120],
+                                     "hook": str(data["hook"])[:200],
+                                     "beats": beats, "grounding": idea["grounding"]})
                 mode = "live"
         except HTTPException:
             pass
@@ -1636,6 +1638,10 @@ class MediaAnalyzeRequest(BaseModel):
     kind: str = "photo"        # photo | video | screen
     storage_key: str = ""      # R2 key (for signed URL generation)
     public_url: str = ""       # direct URL for vision model
+    # Phase 3: analyzed media is now DURABLE and per-creator. The cache key is scoped by
+    # this so one creator's analysis can never be served for another's upload (the pooled
+    # 'default' bucket leak class), and so later edits can pull a creator's own corpus.
+    creator_id: str = "default"
 
 
 class BRollMatchRequest(BaseModel):
@@ -1803,16 +1809,16 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
         ("contrarian",
          f"Most {niche} advice is backwards. Here's what the top 1% actually do.",
          f"Everyone tells you to do more.\n\n"
-         f"The people winning at {niche} do the opposite — they cut the noise and go deep on one thing.\n\n"
+         f"The people winning at {niche} do the opposite. They cut the noise and go deep on one thing.\n\n"
          f"Here's the one move to start this week."),
         ("specificity",
-         f"One number decides most of your progress in {niche} — and you're probably not tracking it.",
+         f"One number decides most of your progress in {niche}, and you're probably not tracking it.",
          f"Pick the single metric that actually reflects progress in {niche}, and log it once a day for a week.\n\n"
          f"The thing most people obsess over barely moves it. This other habit does.\n\n"
          f"Here's how to run the test yourself."),
         ("authority",
          f"The part of {niche} nobody warns beginners about.",
-         f"Almost everyone's first months in {niche} stall for the same reason — chasing the wrong signal.\n\n"
+         f"Almost everyone's first months in {niche} stall for the same reason: chasing the wrong signal.\n\n"
          f"Here's how to spot it early.\n\n"
          f"And the fix that costs nothing but attention."),
     ]
@@ -1822,16 +1828,19 @@ def mock_scripts(req: ScriptRequest) -> list[dict]:
         signal, hook, body = angles[i % len(angles)]
         topic = (req.example_topics[i % len(req.example_topics)] if req.example_topics
                  else None)
-        title = (topic or hook)[:48]
-        title = title[:1].upper() + title[1:] if title else title
+        # Titles are plain spoken sentence case now (TITLE_DOCTRINE): no force-capitalize,
+        # and the dash scrub runs so a template/topic dash never reaches a card.
+        title = prompts.scrub_em_dashes((topic or hook)[:48])
         entry = {
             "title": title,
             "summary": f"A {s['label'].lower()} on {niche}.",
             "hook": hook,
             "hookSignal": signal, "formatId": fmt,
             "body": body,
-            "cta": "Follow for more — I break this down every week.",
-            "shotPlan": s["exemplar"] and ["Hook on frame 1", "One punch-in on the key number", "Direct CTA"],
+            "cta": "Follow for more, I break this down every week.",
+            "shotPlan": s["exemplar"] and ["hold on face for the hook, no overlays",
+                                          "punch in on the key number",
+                                          "stay on face for the CTA"],
             "targetSeconds": 26,
             "altHooks": [], "style": req.style,
         }
@@ -1851,11 +1860,11 @@ def mock_trends(niche: str) -> list[dict]:
     n = niche or "your niche"
     return [
         {"title": f"Myth-busting is spiking in {n}", "why": "Contrarian hooks are over-indexing on shares this week.", "formatId": "myth-buster"},
-        {"title": "“I did X for 30 days” experiments", "why": f"Receipt-driven {n} experiments are pulling huge saves — proof beats opinion right now.", "formatId": "before-after"},
+        {"title": "“I did X for 30 days” experiments", "why": f"Receipt-driven {n} experiments are pulling huge saves. Proof beats opinion right now.", "formatId": "before-after"},
         {"title": "“Do this, not that” splits", "why": "Side-by-side comparisons are getting high rewatch.", "formatId": "do-this-not-that"},
         {"title": "Faceless explainers", "why": "AI-visual voiceovers are cheap to test and trending.", "formatId": "faceless"},
         {"title": f"Green-screen reacts to bad {n} advice", "why": "Reacting to viral misinformation is an easy authority play with built-in stakes.", "formatId": "green-screen"},
-        {"title": "Rapid-fire listicles under 25s", "why": "Sub-25-second fast-cut lists are looping — completion rate is the whole game.", "formatId": "listicle"},
+        {"title": "Rapid-fire listicles under 25s", "why": "Sub-25-second fast-cut lists are looping. Completion rate is the whole game.", "formatId": "listicle"},
     ]
 
 
@@ -2190,7 +2199,14 @@ def readyz():
             # fetched by the pipeline. "mock" here means every real upload is doomed
             # (source unreachable) — the exact prod failure this makes visible.
             "storage": "live" if STORAGE_CONFIGURED else "mock",
-            "tts": _tts_provider()}
+            "tts": _tts_provider(),
+            # The Palo port ships dark behind env flags, so "is memory actually on in
+            # this deploy?" was unanswerable without shell access. Flag STATE only —
+            # never a key value; `embeddings` is presence, since MEMORY_V2 silently
+            # degrades to keyword recall without an embedding key.
+            "palo": {"port": palo_flags.PALO_PORT,
+                     "memory_v2": palo_flags.enabled(palo_flags.MEMORY_V2),
+                     "embeddings": bool(os.environ.get("OPENAI_API_KEY"))}}
 
 
 @app.get("/v1/editor/capabilities")
@@ -2342,7 +2358,11 @@ async def captions(req: CaptionRequest):
             sys, usr = prompts.captions_prompt(req.hook, req.body)
             out = extract_json(await anthropic(sys, usr, HAIKU, 800), array=True)
             if out:
-                return {"mode": "live", "lines": out}
+                # On-screen caption LINES are model-authored prose (never transcript
+                # words), so the dash scrub is safe and required here.
+                return {"mode": "live",
+                        "lines": [prompts.scrub_em_dashes(x) if isinstance(x, str) else x
+                                  for x in out]}
         except HTTPException:
             pass
     sentences = [req.hook] + [s.strip() for s in req.body.replace("!", ".").replace("?", ".").split(".") if s.strip()]
@@ -2458,7 +2478,7 @@ async def social_caption(req: SocialCaptionRequest):
             out = (await anthropic(sys, usr, HAIKU, 500) or "").strip().strip('"')
             if out:
                 out = _sanitize_caption_hashtags(out[:2000], req.niche, req.audience, req.body)
-                return {"mode": "live", "caption": out}
+                return {"mode": "live", "caption": prompts.scrub_em_dashes(out)}
         except HTTPException:
             pass
     return {"mode": "mock", "caption": _mock_social_caption(req)}
@@ -2471,7 +2491,7 @@ async def teardown(req: TeardownRequest):
         # No real per-post baseline exists → never fabricate a "beat N%" lift. Speak to
         # the CONTENT; liftPercent stays null unless there are real metrics to ground it.
         return {"mode": "mock",
-                "headline": "Solid clip — here's the read" if not has_metrics else "Strong performer",
+                "headline": "Solid clip, here's the read" if not has_metrics else "Strong performer",
                 "detail": "The hook lands in the first 2 seconds and the format keeps a visual change every few seconds.",
                 "liftPercent": None}
     try:
@@ -2480,11 +2500,11 @@ async def teardown(req: TeardownRequest):
         lift = out.get("liftPercent")
         if not has_metrics:
             lift = None                        # discard any number the model invented without data
-        return {"mode": "live", "headline": out.get("headline", ""), "detail": out.get("detail", ""),
-                "liftPercent": lift}
+        return _scrub_voice({"mode": "live", "headline": out.get("headline", ""),
+                             "detail": out.get("detail", ""), "liftPercent": lift})
     except HTTPException:
         return {"mode": "mock",
-                "headline": "Solid clip — here's the read" if not has_metrics else "Strong performer",
+                "headline": "Solid clip, here's the read" if not has_metrics else "Strong performer",
                 "detail": "The hook lands in the first 2 seconds and the format keeps a visual change every few seconds.",
                 "liftPercent": None}
 
@@ -2498,7 +2518,7 @@ async def insights(req: InsightsRequest):
         return {"mode": "mock", "coaching": _MOCK_COACHING}
     try:
         sys, usr = prompts.insights_prompt(req.d(), req.summary, persona=req.persona)
-        txt = (await anthropic(sys, usr, HAIKU, 250)).strip()
+        txt = prompts.scrub_em_dashes((await anthropic(sys, usr, HAIKU, 250)).strip())
         return {"mode": "live", "coaching": txt or _MOCK_COACHING}
     except HTTPException:
         return {"mode": "mock", "coaching": _MOCK_COACHING}
@@ -2539,7 +2559,7 @@ def _mock_score_script(hook: str, body: str) -> dict:
     sat_r = "High" if (has_cta and 20 <= words <= 120) else "Mid" if words >= 15 else "Low"
     weakest = ("fluff" if fluff_r == "High" else "hook" if hook_r == "Low"
                else "payoff" if sat_r != "High" else "none")
-    fix = ("Tighten the body — cut any line that doesn't move the story." if fluff_r == "High"
+    fix = ("Tighten the body, cut any line that doesn't move the story." if fluff_r == "High"
            else "Open on a more specific, contrarian first line." if hook_r != "High"
            else "Land a clearer, more surprising payoff before the CTA.")
     return {"hook": hook_r, "fluff": fluff_r, "satisfaction": sat_r,
@@ -3525,7 +3545,7 @@ async def _create_clip_job_impl(req: ClipJobRequest):
     if not req.analyze_first:
         raise HTTPException(status_code=426, detail={
             "error": "update_required",
-            "message": "Please update Yunicorn — the editor now analyzes your video first."})
+            "message": "Please update Yunicorn. The editor now analyzes your video first."})
     job_id = str(uuid.uuid4())
     # UX-B1a: one-tap submits render ONCE (same as confirm's no-fan-out rule), and the
     # clip id must be minted NOW — the create response returns it for tracking, so the
@@ -6258,11 +6278,17 @@ async def _run_edit(job_id: str, words: list[dict]):
             # cache keys on the rewritten query). Fail-soft; skips on tweak re-renders.
             with _timed(job, "broll_queries"):
                 edl_data = await _culturalize_broll_queries(edl_data, job)
+            # Back-fill the creator's OWN analyzed media from the server store when the
+            # client sent a thin corpus. Imported media was only ever reusable inside the
+            # session that uploaded it (the client holds the corpus, the analysis lived in
+            # RAM) — so a creator's footage library never actually compounded.
+            _corpus = await _merged_broll_corpus(job.get("creator_id") or "default",
+                                                 job.get("broll_corpus") or [])
             # The stage that produced the "editing is taking unusually long" report. It is
             # now the FIRST thing the timing line will tell you about if it regresses again.
             with _timed(job, "broll_resolve"):
                 edl_data = await _resolve_broll(edl_data, dossier=job.get("dossier"),
-                                                corpus=job.get("broll_corpus"),
+                                                corpus=_corpus,
                                                 force_broll=_force_broll)
             # v3 SMART PLACEMENT: when any kept insert is mode "smart", detect the speaker
             # face (YuNet on sampled frames — app/faces.py, fail-soft) and compute each
@@ -7762,10 +7788,13 @@ async def scrape_niche_posts(niche: str, limit: int = 20) -> list[dict]:
     return posts
 
 
-async def _transcribe_top_posts(posts: list[dict], top_n: int = 4) -> list[dict]:
+async def _transcribe_top_posts(posts: list[dict], top_n: int = 4,
+                                max_wait_s: int = 180) -> list[dict]:
     """Transcribe the creator's strongest recent reels (by views, then likes) so the
     derive step can weigh how they actually SPEAK, not just how they caption.
-    Per-post failures are non-fatal (CDN URLs 403/expire); keyless is a no-op."""
+    Per-post failures are non-fatal (CDN URLs 403/expire); keyless is a no-op.
+    `max_wait_s` bounds each poll — a short budget is what makes a first-content
+    wave (a handful of reels, back fast) possible ahead of the full pass."""
     if not ASSEMBLY_KEY or not posts:
         return posts
     # Skip posts that already carry a transcript (merged from a previous cycle) —
@@ -7779,7 +7808,7 @@ async def _transcribe_top_posts(posts: list[dict], top_n: int = 4) -> list[dict]
         tid = await _submit_transcription(post["video_url"])
         if not tid:
             return
-        result = await _poll_transcription(tid, max_wait_s=180)
+        result = await _poll_transcription(tid, max_wait_s=max_wait_s)
         words = result.get("words") or []
         if words:
             post["transcript"] = " ".join(w.get("word", "") for w in words)[:1500]
@@ -7968,6 +7997,16 @@ async def create_digest_job(req: DigestRequest):
            "mode": "live", "req": req, "result": None, "error": None,
            "created_at": time.time()}
     _digest_jobs[job_id] = job
+    # Niche reels warm. Onboarding completion is the EARLIEST moment the niche is known,
+    # and the niche scrape+transcribe pass is minutes long — kicking it here means the
+    # feed is filling while the digest runs, instead of starting cold on the first Home
+    # paint. This is the guaranteed hook even if the client's POST /v1/reels/warm call
+    # never ships. Before the keyless return so demo/mock traffic warms too (the warm
+    # itself is APIFY_KEY-gated and SWR-latched, so it is a no-op when it should be).
+    if req.niche and req.niche.strip():
+        if palo_flags.real_creator(req.creator_id):
+            _remember_niche(req.creator_id, req.niche)
+        _warm_niche_reels(req.niche.strip(), req.creator_id)
     if not ANTHROPIC_KEY:
         # Keyless: complete synchronously with the mock derive + scripts so demo
         # mode and tests stay deterministic and instant.
@@ -8773,11 +8812,159 @@ async def publish(req: PublishRequest):
 # Phase 3: Media analysis + auto B-roll
 # ---------------------------------------------------------------------------
 
+# Columns of creator_media that ride ALONGSIDE the vision analysis blob. Kept here so
+# the persist, the read-through hydrate, and the response body can't drift apart.
+_MEDIA_STAT_KEYS = ("duration_s", "width", "height", "fps", "loudness_lufs")
+
+
+async def _ffprobe_media_stats(url: str) -> dict:
+    """{duration_s, width, height, fps} for a video/screen asset, or {} when unmeasurable.
+    Fail-soft by design: these are enrichment fields for b-roll fit (is this clip long
+    enough for the beat? is it vertical?), never a precondition for the analysis. Mirrors
+    the async-subprocess + wait_for shape of _ffprobe_duration_s (no event-loop stall)."""
+    if not url or shutil.which("ffprobe") is None:
+        return {}
+    cmd = ["ffprobe", "-v", "error",
+           "-show_entries", "stream=width,height,avg_frame_rate:format=duration",
+           "-of", "json", url]
+    proc = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        data = json.loads(stdout.decode("utf-8", "ignore") or "{}")
+    except Exception:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return {}
+    out: dict = {}
+    try:
+        dur = ((data.get("format") or {}).get("duration"))
+        if dur is not None:
+            out["duration_s"] = round(float(dur), 2)
+    except (TypeError, ValueError):
+        pass
+    # First stream that actually carries dimensions — an audio stream is listed first
+    # on plenty of muxes and would otherwise blank the video geometry.
+    for st in (data.get("streams") or []):
+        if not (st.get("width") and st.get("height")):
+            continue
+        out["width"] = int(st["width"])
+        out["height"] = int(st["height"])
+        raw = str(st.get("avg_frame_rate") or "")
+        if "/" in raw:
+            try:
+                num, den = raw.split("/", 1)
+                if float(den):
+                    out["fps"] = round(float(num) / float(den), 3)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+        break
+    return out
+
+
+async def _analyze_video_multiframe(url: str, duration_s: float, system: str,
+                                    user_text: str) -> dict | None:
+    """Analyze a VIDEO by looking at three moments (15/50/85% of runtime) in ONE vision
+    call, instead of judging a whole clip from its first frame. Two things a single frame
+    cannot answer: whether the shot actually MOVES (a static frame from a moving clip
+    reads as 'none'), and whether the clip stays usable throughout (a clean opener that
+    whip-pans into a blur is not b-roll). Returns the merged analysis, or None so the
+    caller can fall back to the existing single-image path."""
+    if not (ANTHROPIC_KEY and url and duration_s and duration_s > 0):
+        return None
+    times = [round(duration_s * f, 2) for f in (0.15, 0.50, 0.85)]
+    frames = await _sample_frames_at_times(url, times)
+    if not frames:
+        return None
+    import base64
+    content: list[dict] = [{"type": "text", "text":
+        f"{user_text}\n\nYou are shown {len(frames)} frames sampled across the clip "
+        f"(~{int(duration_s)}s), in order: early, middle, late. Judge the CLIP as a whole "
+        f"— return ONE merged analysis object in the schema above, describing what the "
+        f"footage shows across all frames rather than any single frame. `motion` is a "
+        f"judgement ACROSS the frames: 'none' when the framing and subject barely change, "
+        f"'slow' for gentle drift, 'medium' for clear movement, 'fast' for whip-pans or "
+        f"rapid action. If the clip degrades (goes blurry, subject leaves frame, becomes "
+        f"a talking-head take), say so in broll_suitability_reason and score it down."}]
+    for f in frames[:3]:
+        content.append({"type": "image", "source": {
+            "type": "base64", "media_type": "image/jpeg",
+            "data": base64.b64encode(f).decode("ascii")}})
+    try:
+        client = _get_anthropic_client()
+        r = await client.post(
+            ANTHROPIC_URL,
+            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": HAIKU, "max_tokens": 1000, "system": system,
+                  "messages": [{"role": "user", "content": content}]})
+        if r.status_code != 200:
+            return None
+        out = extract_json("".join(b.get("text", "") for b in r.json().get("content", [])),
+                           array=False)
+        return out if isinstance(out, dict) and "broll_suitability" in out else None
+    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+        logging.warning("media multiframe vision failed: %s", e)
+        return None
+
+
+async def _hydrate_media_from_store(creator_id: str, content_hash: str) -> dict | None:
+    """Read-through: a previously analyzed asset survives deploys in creator_media, so a
+    re-upload (or a cold process) must not pay for the vision call again. Fail-soft."""
+    if not (_supabase_client and content_hash):
+        return None
+    try:
+        rows = await _supabase_client.load_creator_media(creator_id)
+    except Exception as e:
+        logging.warning("creator_media load failed: %s", e)
+        return None
+    row = next((r for r in rows or [] if r.get("content_hash") == content_hash), None)
+    if not row:
+        return None
+    analysis = row.get("analysis")
+    if not (isinstance(analysis, dict) and "broll_suitability" in analysis):
+        return None
+    stats = {k: row[k] for k in _MEDIA_STAT_KEYS if row.get(k) is not None}
+    return {**analysis, **stats}
+
+
+async def _transcribe_media_row(creator_id: str, content_hash: str, url: str) -> None:
+    """Background: transcribe an imported video and PATCH its stored transcript. NEVER
+    awaited by the request — the spoken content of a b-roll clip is a nice-to-have signal
+    for later matching, not something an upload should wait minutes for."""
+    if not (_supabase_client and ASSEMBLY_KEY and url):
+        return
+    try:
+        tid = await _submit_transcription(url)
+        if not tid:
+            return
+        result = await _poll_transcription(tid, max_wait_s=180)
+        words = result.get("words") or []
+        text = " ".join(w.get("word", "") for w in words)[:4000]
+        if text:
+            await _supabase_client.upsert_creator_media(
+                {"creator_id": creator_id, "content_hash": content_hash, "transcript": text})
+    except Exception as e:
+        logging.warning("media transcription failed (%s): %s", content_hash[:12], e)
+
+
 @app.post("/v1/media/analyze")
 async def analyze_media(req: MediaAnalyzeRequest):
-    """Analyze a media asset for B-roll suitability. Idempotent via content_hash cache."""
-    if req.content_hash in _media_cache:
-        return {"mode": "cached", **_media_cache[req.content_hash]}
+    """Analyze a media asset for B-roll suitability. Idempotent via a creator-scoped
+    content_hash: RAM cache → durable creator_media → vision. Videos get a multi-frame
+    look plus ffprobe geometry/loudness, and an async transcript backfill."""
+    ck = f"{req.creator_id}:{req.content_hash}"
+    if ck in _media_cache:
+        return {"mode": "cached", **_media_cache[ck]}
+    stored = await _hydrate_media_from_store(req.creator_id, req.content_hash)
+    if stored:
+        _media_cache[ck] = stored
+        _cap_evict(_media_cache, 256)
+        return {"mode": "cached", **stored}
 
     mock = {
         "description": f"A {req.kind} asset suitable for B-roll use.",
@@ -8789,36 +8976,65 @@ async def analyze_media(req: MediaAnalyzeRequest):
         "tags": [req.kind, "interior", "natural light", "close-up", "lifestyle"],
     }
     if not ANTHROPIC_KEY or not req.public_url:
-        _media_cache[req.content_hash] = mock
+        _media_cache[ck] = mock
         _cap_evict(_media_cache, 256)
         return {"mode": "mock", **mock}
 
     system, user_text = prompts.media_analyze_prompt(req.filename, req.kind)
-    try:
-        async with httpx.AsyncClient(timeout=60) as vclient:
-            r = await vclient.post(
-                ANTHROPIC_URL,
-                headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
-                         "content-type": "application/json"},
-                json={"model": HAIKU, "max_tokens": 1000, "system": system,
-                      "messages": [{"role": "user", "content": [
-                          {"type": "image", "source": {"type": "url", "url": req.public_url}},
-                          {"type": "text", "text": user_text},
-                      ]}]},
-            )
-        result = extract_json("".join(b.get("text", "") for b in r.json().get("content", [])),
-                              array=False) if r.status_code == 200 else None
-    except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
-        logging.warning("media vision failed: %s", e)
-        result = None
+    is_video = req.kind in ("video", "screen")
+    # ffprobe first for videos: the sampling timestamps for the multi-frame pass are a
+    # function of the real duration, so this measurement is an INPUT, not just metadata.
+    stats = await _ffprobe_media_stats(req.public_url) if is_video else {}
+    result = None
+    if is_video and stats.get("duration_s"):
+        result = await _analyze_video_multiframe(req.public_url, float(stats["duration_s"]),
+                                                 system, user_text)
+    if result is None:
+        try:
+            async with httpx.AsyncClient(timeout=60) as vclient:
+                r = await vclient.post(
+                    ANTHROPIC_URL,
+                    headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
+                             "content-type": "application/json"},
+                    json={"model": HAIKU, "max_tokens": 1000, "system": system,
+                          "messages": [{"role": "user", "content": [
+                              {"type": "image", "source": {"type": "url", "url": req.public_url}},
+                              {"type": "text", "text": user_text},
+                          ]}]},
+                )
+            result = extract_json("".join(b.get("text", "") for b in r.json().get("content", [])),
+                                  array=False) if r.status_code == 200 else None
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            logging.warning("media vision failed: %s", e)
+            result = None
     # Only cache a REAL analysis (has the shape fields). A transport error, non-200, or
     # malformed reply degrades to the full mock and is NOT cached — so a transient blip
     # can't poison this content_hash forever (audit B-03/F2/F15).
     if not (result and "broll_suitability" in result):
         return {"mode": "mock", **mock}
-    _media_cache[req.content_hash] = result
+    if is_video:
+        try:
+            lufs = await audio_mod.probe_loudness(req.public_url)
+        except Exception:
+            lufs = None
+        if lufs is not None:
+            stats["loudness_lufs"] = lufs
+    payload = {**result, **{k: v for k, v in stats.items() if v is not None}}
+    _media_cache[ck] = payload
     _cap_evict(_media_cache, 256)
-    return {"mode": "live", **result}
+    # Persist only a REAL analysis (same don't-cache-the-mock rule, one layer down: a
+    # mock row in creator_media would be served forever by the read-through above).
+    if _supabase_client:
+        _spawn(_supabase_client.upsert_creator_media({
+            "creator_id": req.creator_id, "content_hash": req.content_hash,
+            "kind": req.kind, "public_url": req.public_url, "analysis": result,
+            **{k: stats[k] for k in _MEDIA_STAT_KEYS if stats.get(k) is not None},
+        }))
+    # Spoken content of an imported clip is useful for later matching but is minutes of
+    # wall-clock — it backfills into the row and must never hold up this response.
+    if req.kind == "video" and ASSEMBLY_KEY and 0 < float(stats.get("duration_s") or 0) <= 180:
+        _spawn(_transcribe_media_row(req.creator_id, req.content_hash, req.public_url))
+    return {"mode": "live", **payload}
 
 
 @app.post("/v1/broll/match")
@@ -9340,6 +9556,54 @@ def _score_broll_corpus(cue_text: str, corpus: list[dict]) -> tuple[dict | None,
         if score > best_score:
             best, best_score = asset, score
     return best, best_score
+
+
+def _corpus_entry_from_media_row(row: dict) -> dict | None:
+    """Map one stored creator_media row onto the corpus shape _resolve_broll/
+    _score_broll_corpus already speak. None when the row carries no usable analysis."""
+    analysis = row.get("analysis")
+    if not isinstance(analysis, dict) or not analysis.get("description"):
+        return None
+    tags = [str(t) for t in (analysis.get("tags") or []) if t]
+    return {
+        "asset_id": row.get("content_hash") or "",
+        "description": str(analysis.get("description") or ""),
+        "tags": tags,
+        "broll_suitability": analysis.get("broll_suitability", 50),
+        "duration_s": row.get("duration_s"),
+        "remote_url": row.get("public_url") or "",
+    }
+
+
+# Below this many client-supplied assets the corpus is treated as "thin" and back-filled
+# from the server store. Not zero: a client that DID send its library is authoritative,
+# and a round-trip to Supabase on every edit would be pure latency.
+_THIN_CORPUS_N = 3
+
+
+async def _merged_broll_corpus(creator_id: str, client_corpus: list[dict]) -> list[dict]:
+    """Union the client's corpus with the creator's stored analyzed media when the client
+    sent almost nothing. The client holds the corpus, so a creator who imported footage on
+    a previous device/session/deploy silently had NO own-media b-roll available — the
+    analysis was already paid for and simply unreachable. Deduped by asset_id/content_hash,
+    client entries win. Fail-soft: any store problem returns the client corpus unchanged."""
+    corpus = list(client_corpus or [])
+    if len(corpus) >= _THIN_CORPUS_N or not _supabase_client \
+            or not palo_flags.real_creator(creator_id):
+        return corpus
+    try:
+        rows = await _supabase_client.load_creator_media(creator_id)
+    except Exception as e:
+        logging.warning("broll corpus backfill failed: %s", e)
+        return corpus
+    seen = {str(a.get("asset_id") or a.get("content_hash") or "") for a in corpus}
+    for row in rows or []:
+        entry = _corpus_entry_from_media_row(row)
+        if not entry or not entry["asset_id"] or entry["asset_id"] in seen:
+            continue
+        seen.add(entry["asset_id"])
+        corpus.append(entry)
+    return corpus
 
 
 _OWN_MEDIA_FLOOR = float(os.environ.get("OWN_MEDIA_BROLL_FLOOR", "0.45"))
@@ -10461,7 +10725,7 @@ def _mock_day_plan(brand: dict, memory: dict) -> dict:
         {"time": "9:30", "action": "Batch-film two scripts", "detail": f"Film \"{idea1}\" and \"{idea2}\" back-to-back while energy is high."},
         {"time": "12:30", "action": "Submit edits", "detail": "Send both takes for AI editing and review yesterday's finished clip."},
         {"time": "17:00", "action": "Post + engage", "detail": "Publish at peak hours, then reply to every comment for 15 minutes."},
-        {"time": "20:00", "action": "Log a win", "detail": "Note one thing that worked today — it feeds your learning loop."},
+        {"time": "20:00", "action": "Log a win", "detail": "Note one thing that worked today, it feeds your learning loop."},
     ]}
 
 
@@ -10483,13 +10747,13 @@ def mock_converse(req: ConverseRequest) -> dict:
     if (req.attachments and any(k in low for k in ("edit", "stitch", "cut", "trim", "combine", "clip"))):
         intent = "edit_video"
         intent_args = {"instructions": last}
-        reply = ("On it — I'll stitch your clips, cut the dead air, and tighten the pacing per your notes. "
+        reply = ("On it. I'll stitch your clips, cut the dead air, and tighten the pacing per your notes. "
                  "You'll see it building in your Library.")
         chips = ["Add captions", "Make it punchier", "Show me when it's done"]
     elif any(k in low for k in ("build my day", "build my content", "plan my day", "day plan", "build out my day")):
         intent = "day_plan"
         intent_args = {"plan": _mock_day_plan(req.brand, req.memory)}
-        reply = ("Here's your day — front-load the filming while you're fresh, then let the edits run while "
+        reply = ("Here's your day. Front-load the filming while you're fresh, then let the edits run while "
                  "you live your life. Two takes before noon and today compounds.")
         chips = ["Adjust the plan", "Write the first script", "What's trending?"]
     elif "script" in low and any(k in low for k in ("write", "make", "give", "create", "draft", "need")):
@@ -10500,23 +10764,23 @@ def mock_converse(req: ConverseRequest) -> dict:
                 topic = last[low.index(marker) + len(marker):].strip().rstrip("?.!") or niche
                 break
         intent_args = {"topic": topic, "style": "", "count": 1}
-        reply = (f"On it — one script on {topic}, in your voice, hook-first. "
+        reply = (f"On it. One script on {topic}, in your voice, hook-first. "
                  "It's attached below; save it to your film queue when it feels right.")
         chips = ["Make it punchier", "Give me two more angles", "Add it to my queue"]
     elif any(k in low for k in ("my angle", "brand angle", "direction", "positioning", "reposition")):
         intent = "update_brand_angle"
         updates.append({"op": "set", "field": "angle", "value": last[:280]})
-        reply = ("Locked that sharper lane into your brand memory — everything I write from here leans that way.")
+        reply = ("Locked that sharper lane into your brand memory. Everything I write from here leans that way.")
         chips = ["Write the flag-planting script", "What does this change?", "Build my day"]
     elif any(k in low for k in ("idea", "thinking about", "what if i", "i want to make")):
         intent = "save_idea"
         updates.append({"op": "add", "field": "ideas", "value": last[:280]})
-        reply = ("Saved to your idea bank. The specific version of that idea beats the general one — "
+        reply = ("Saved to your idea bank. The specific version of that idea beats the general one, so "
                  "sharpen it to one concrete moment and it films itself.")
         chips = ["Script this idea", "Poke holes in it", "Save and move on"]
     elif any(k in low for k in ("i think", "i believe", "my take", "honestly")):
         updates.append({"op": "add", "field": "perspective", "value": last[:280]})
-        reply = ("That perspective is exactly the kind of thing your audience can't get anywhere else — "
+        reply = ("That perspective is exactly the kind of thing your audience can't get anywhere else, and "
                  "I've noted it. Say it on camera the way you just said it to me.")
     elif any(k in low for k in ("what should i post", "post today", "content today")):
         # Was hardcoded "one contrarian take on {niche}" — which is how a photographer
@@ -10527,17 +10791,17 @@ def mock_converse(req: ConverseRequest) -> dict:
         _prior = prompts.niche_priors_for(niche)
         _signal = (_prior.get("signals") or ["specific"])[0]
         _format = (_prior.get("formats") or ["myth-buster"])[0].replace("-", " ")
-        reply = (f"Lead with your strongest lane: one {_signal} {_format} on {niche} — hook in the first "
+        reply = (f"Lead with your strongest lane: one {_signal} {_format} on {niche}. Hook in the first "
                  "sentence, one concrete detail, one clear takeaway. Check today's picks on your home "
                  "screen; the top script is ranked for you.")
         chips = ["Write it for me", "Show me the trend", "Build my day"]
     elif not last:
-        reply = ("Morning. Tell me what's on your mind — an idea, a frustration, an angle you're chewing on. "
+        reply = ("Morning. Tell me what's on your mind: an idea, a frustration, an angle you're chewing on. "
                  "I'll remember what matters and turn the good stuff into content.")
     else:
         updates.append({"op": "add", "field": "facts", "value": last[:280]})
-        reply = ("Noted. The more you tell me like this, the sharper your scripts get — "
-                 "the details you just gave me are exactly what makes a post sound like you.")
+        reply = ("Noted. The more you tell me like this, the sharper your scripts get. "
+                 "The details you just gave me are exactly what makes a post sound like you.")
 
     if voice:
         reply = reply.split("\n")[0]
@@ -10555,13 +10819,13 @@ def mock_converse(req: ConverseRequest) -> dict:
 # Shooter (blunt). Mock-only flavor so the coach picker is visibly real offline.
 _PERSONA_OPENERS = {
     "machine": [
-        "Here's the play — ", "The move that matters: ", "",
+        "Here's the play: ", "The move that matters: ", "",
     ],
     "closer": [
-        "Big one — ", "This is the rep: ", "",
+        "Big one. ", "This is the rep: ", "",
     ],
     "sergeant": [
-        "Straight up — ", "No fluff: ", "",
+        "Straight up: ", "No fluff: ", "",
     ],
 }
 
@@ -10586,7 +10850,7 @@ async def _chain_scripts(req: ConverseRequest, intent_args: dict) -> list[dict]:
     try:
         topic = (intent_args.get("topic") or req.brand.get("niche") or "your next post").strip()
         style = intent_args.get("style") or "talking_head"
-        if style not in STYLES:
+        if style not in prompts.ACTIVE_STYLES:      # retired styles never generate
             style = "talking_head"
         try:
             count = max(1, min(3, int(intent_args.get("count") or 1)))
@@ -10736,7 +11000,12 @@ async def converse(req: ConverseRequest):
         # W5: the app owns the upload + edit; the backend just relays the instructions.
         payload = {"edit_instructions": (intent_args.get("instructions") or "").strip()}
 
-    chips = [c for c in (envelope.get("chips") or []) if isinstance(c, str) and c.strip()][:3]
+    # Voice doctrine backstop on the two creator-visible fields of the live envelope.
+    # Only reply/chips — memory_updates and payload carry their own shapes (payload
+    # scripts already went through _ensure_speakable inside _chain_scripts).
+    chips = [prompts.scrub_em_dashes(c)
+             for c in (envelope.get("chips") or []) if isinstance(c, str) and c.strip()][:3]
+    envelope["reply"] = prompts.scrub_em_dashes(envelope["reply"])
     # Palo port (flag MEMORY_V2, default OFF): fire-and-forget learn from this turn —
     # extract stable memories + record what was proposed (never re-pitch). Off the hot path.
     if palo_flags.enabled(palo_flags.MEMORY_V2):
@@ -10754,7 +11023,10 @@ async def memory_distill(req: MemoryDistillRequest):
     a 404/empty response as "nothing to add"."""
     user_turns = [m for m in req.transcript if (m.get("role") or "user") == "user"
                   and (m.get("text") or m.get("content"))]
-    if not ANTHROPIC_KEY or len(user_turns) < 4:
+    # 2 (was 4): the gate was tuned as "is this a real session", but short sessions are
+    # where the durable facts land — a creator who says their niche and their constraint
+    # in two turns and closes the app was producing exactly zero memory.
+    if not ANTHROPIC_KEY or len(user_turns) < 2:
         return {"mode": "mock", "memory_updates": []}
     try:
         sys_p, usr_p = prompts.memory_distill_prompt(req.transcript, req.memory, req.brand)
@@ -10883,24 +11155,24 @@ class BrandSummaryRequest(BaseModel):
 _REEL_TEMPLATES = [
     # (handle_stub, platform, title, hook, transcript_skeleton, why_trending, format_id, style, views, likes)
     ("daily{slug}", "tiktok", "I did {niche} wrong for 3 years",
-     "I wasted 3 years on {niche} — these 20 seconds save you the trouble.",
+     "I wasted 3 years on {niche}. These 20 seconds save you the trouble.",
      "Bold confession of the mistake. The moment it clicked. The one change that fixed it. Direct takeaway to copy today.",
      "Confession hooks + a redemption arc are pulling massive completion rates this week.",
      "pov-story", "talking_head", 2_400_000, 310_000),
     ("the{slug}guy", "instagram", "3 {niche} rules I'd tattoo on my arm",
-     "Three {niche} rules — the third one nobody says out loud.",
+     "Three {niche} rules, and the third one nobody says out loud.",
      "Rule one, quick and obvious. Rule two, sharper. Rule three, the contrarian one that reframes the first two.",
      "Numbered rules with a withheld payoff are driving rewatch loops.",
      "listicle", "fast_cuts", 1_800_000, 220_000),
     ("honest{slug}", "tiktok", "Stop doing this in {niche}",
      "If you're doing this in {niche}, stop. It's costing you every week.",
      "Call out the common practice. Show why it backfires with one specific number. Give the replacement behavior.",
-     "Direct call-out hooks are over-indexing on shares — people tag friends who do the thing.",
+     "Direct call-out hooks are over-indexing on shares. People tag friends who do the thing.",
      "do-this-not-that", "talking_head", 3_100_000, 405_000),
     ("{slug}lab", "instagram", "The {niche} myth that won't die",
      "This {niche} myth has two million believers. Here's the receipt it's wrong.",
      "State the myth respectfully. Bring one piece of hard evidence. Land the correct model in one sentence.",
-     "Myth-busting with receipts converts skeptics into followers — saves are spiking.",
+     "Myth-busting with receipts converts skeptics into followers, and saves are spiking.",
      "myth-buster", "green_screen", 1_500_000, 190_000),
     ("quiet{slug}", "tiktok", "A day of {niche} in 25 seconds",
      "Nobody shows you the boring part of {niche}. Watch this.",
@@ -10908,14 +11180,14 @@ _REEL_TEMPLATES = [
      "Anti-highlight-reel content reads as authentic and is out-performing polished edits.",
      "broll-hook", "faceless", 950_000, 140_000),
     ("{slug}decoded", "instagram", "Before/after: 30 days of {niche}",
-     "Day 1 vs day 30 of doing {niche} right — the difference is stupid.",
+     "Day 1 vs day 30 of doing {niche} right. The difference is stupid.",
      "Show the before state with a number. The exact protocol in three beats. The after state with the same number.",
      "30-day receipt experiments are the highest-save format in the niche right now.",
      "before-after", "split_three", 2_700_000, 350_000),
     ("real{slug}talk", "tiktok", "The uncomfortable {niche} truth",
      "Nobody in {niche} wants to say this, so I will.",
      "The uncomfortable claim. Why everyone avoids saying it. The evidence. What to do about it in one line.",
-     "Hot takes with evidence are driving comment wars — the algorithm is eating it up.",
+     "Hot takes with evidence are driving comment wars, and the algorithm is eating it up.",
      "myth-buster", "talking_head", 4_200_000, 520_000),
 ]
 
@@ -11325,6 +11597,10 @@ async def _refresh_watched_creator(platform: str, handle: str) -> None:
 # talking-head candidates, and `_transcribe_top_posts` skips reels that already
 # carry a transcript — so coverage compounds across refresh cycles.
 _REEL_TRANSCRIBE_TOP_N = int(os.environ.get("REEL_TRANSCRIBE_TOP_N", "12"))
+# How many reels get transcribed in the FIRST wave (see _refresh_niche_reels). The
+# serve gate requires a real transcript, so the feed stays empty until at least one
+# reel comes back transcribed — this is the size of that first, fast batch.
+_REEL_TRANSCRIBE_FIRST_WAVE = int(os.environ.get("REEL_TRANSCRIBE_FIRST_WAVE", "4"))
 _REEL_REHOST_TOP_N = int(os.environ.get("REEL_REHOST_TOP_N", "6"))
 
 
@@ -11508,7 +11784,25 @@ async def _refresh_niche_reels(niche: str) -> None:
         if posts:
             await _write_niche_reels(key, posts, partial=True)
 
-        # PHASE 2 — enrich: real spoken transcript for the top reels, then durable media.
+        # PHASE 2 — enrich in TWO WAVES.
+        #
+        # WHY: the PHASE 1 write above is honest but unservable — the serve gate in
+        # /v1/reels requires `transcribed` (owner mandate: real speech is the only
+        # proof a human is talking to camera), and nothing written before a
+        # transcription round can carry one. So the feed stayed empty until the FULL
+        # 12-reel transcription pass AND the rehost pass had both finished (minutes).
+        # Wave 1 transcribes just the top few with a short poll budget and writes
+        # immediately: the first servable reels now appear after scrape + ONE
+        # transcription round instead of 12 + rehost. Wave 2 then does the full pass;
+        # `_transcribe_top_posts` skips posts that already carry a transcript, so the
+        # wave-1 work is never redone and coverage still reaches _REEL_TRANSCRIBE_TOP_N.
+        wave1 = posts[:_REEL_TRANSCRIBE_FIRST_WAVE]
+        await _transcribe_top_posts(wave1, top_n=_REEL_TRANSCRIBE_FIRST_WAVE, max_wait_s=120)
+        if any(p.get("transcript") for p in wave1):
+            await _write_niche_reels(key, posts, partial=True)
+            await _rehost_reel_media(posts[:_REEL_TRANSCRIBE_FIRST_WAVE])
+
+        # WAVE 2 — the full transcription budget, then durable media for everything.
         posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
         await _rehost_reel_media(posts)
         # UX-A1 tier 2: classify the top-K by WATCHING (dossier adapter, fail-soft).
@@ -11656,8 +11950,9 @@ async def _refresh_niche_trends(niche: str) -> None:
             try:
                 sysp, usr = prompts.niche_trends_prompt(niche, posts[:12])
                 named = extract_json(await anthropic(sysp, usr, HAIKU, 800), array=True) or []
-                clean = [{"title": str(t.get("title", ""))[:80], "why": str(t.get("why", ""))[:160],
-                          "formatId": t.get("formatId") if t.get("formatId") in FORMAT_IDS else "pov-story"}
+                clean = [_scrub_voice({"title": str(t.get("title", ""))[:80],
+                                       "why": str(t.get("why", ""))[:160],
+                                       "formatId": t.get("formatId") if t.get("formatId") in FORMAT_IDS else "pov-story"})
                          for t in named if isinstance(t, dict) and t.get("title")][:6]
                 if clean:
                     trends = clean
@@ -11687,22 +11982,85 @@ def _niche_live_trends(niche: str) -> list[dict] | None:
 class ReelsWarmRequest(BaseModel):
     handle: str = ""
     platform: str = "instagram"
+    # Niche warm (additive — handle-only callers are unaffected): the app can kick the
+    # niche scrape the moment onboarding knows the niche, instead of on the first Home
+    # paint. The niche refresh is the slow one (scrape + transcribe), so starting it a
+    # few screens earlier is the difference between a full feed and an empty one.
+    niche: str = ""
+    creator_id: str = ""
+
+
+def _warm_niche_reels(niche: str, creator_id: str = "") -> bool:
+    """Kick the background niche refresh if it's missing/stale and not already in flight.
+    Same SWR pattern the /v1/reels GET route and /v1/reels/examples use. Returns whether
+    the entry was already cached (so callers can report it)."""
+    key = _niche_cache_key(niche)
+    entry = _niche_reels_cache.get(key)
+    stale = not entry or (time.time() - entry.get("ts", 0)) > _NICHE_REELS_TTL_S
+    if APIFY_KEY and stale and key not in _reels_refreshing:
+        _reels_refreshing.add(key)
+        _spawn(_refresh_niche_reels(niche))
+    return bool(entry)
 
 
 @app.post("/v1/reels/warm")
 async def reels_warm(req: ReelsWarmRequest):
-    """Fire-and-forget: pre-scrape a newly-added watched creator so their real
-    reels are cached before the user reaches the Home feed. Never blocks."""
+    """Fire-and-forget: pre-scrape a newly-added watched creator (handle) and/or the
+    creator's niche feed so their real reels are cached before the user reaches the
+    Home feed. Never blocks."""
     handle = req.handle.lstrip("@").lower()
-    if not handle:
+    niche = (req.niche or "").strip()
+    if not (handle or niche):
         raise HTTPException(status_code=422, detail="handle required")
-    platform = req.platform if req.platform in ("instagram", "tiktok") else "instagram"
-    key = f"{platform}:{handle}"
-    cached = key in _watched_reels_cache
-    if APIFY_KEY and key not in _reels_refreshing:
-        _reels_refreshing.add(key)
-        _spawn(_refresh_watched_creator(platform, handle))
+    cached = False
+    if handle:
+        platform = req.platform if req.platform in ("instagram", "tiktok") else "instagram"
+        key = f"{platform}:{handle}"
+        cached = key in _watched_reels_cache
+        if APIFY_KEY and key not in _reels_refreshing:
+            _reels_refreshing.add(key)
+            _spawn(_refresh_watched_creator(platform, handle))
+    if niche:
+        if palo_flags.real_creator(req.creator_id):
+            _remember_niche(req.creator_id, niche)   # durable: boot warm reads this
+        cached = _warm_niche_reels(niche, req.creator_id) or cached
     return {"ok": True, "mode": "live" if APIFY_KEY else "mock", "cached": cached}
+
+
+@app.post("/internal/reels/health")
+async def reels_health(req: _CronRequest, niche: str = ""):
+    """Operator probe: why is a niche's "Steal these" row empty? The feed is the product
+    of a long chain (scrape → transcribe → rehost → talking-head gate), and the only
+    number that matters is how many rows actually clear the SERVE gate — which is what
+    this reports, alongside the inputs that gate depends on. Token-guarded (same
+    constant-time check as /internal/cron/*) since it exposes cache internals."""
+    _cron_auth(req)
+    niche = (niche or "").strip() or REELS_DEFAULT_NICHE
+    key = _niche_cache_key(niche)
+    entry = _niche_reels_cache.get(key)
+    source = "memory"
+    if not entry and _supabase_client:
+        # Cold process (post-deploy): the durable copy is the honest answer, not "empty".
+        try:
+            durable = await _supabase_client.load_reels_cache(key)
+        except Exception:
+            durable = None
+        if durable and isinstance(durable.get("reels"), list):
+            entry, source = durable, "supabase"
+    reels = (entry or {}).get("reels") or []
+    ts = float((entry or {}).get("ts") or 0)
+    servable = [r for r in reels
+                if r.get("video_url") and r.get("transcribed") and _is_talking_head_reel(r)]
+    return {
+        "niche": niche, "key": key, "cached": bool(entry), "source": source,
+        "partial": bool((entry or {}).get("partial")),
+        "age_s": round(time.time() - ts, 1) if ts else None,
+        "refreshing": key in _reels_refreshing,
+        "n": len(reels),
+        "transcribed": sum(1 for r in reels if r.get("transcribed")),
+        "servable": len(servable),
+        "apify": bool(APIFY_KEY), "assembly": bool(ASSEMBLY_KEY),
+    }
 
 
 async def _hydrate_reels_caches(niche: str, parsed: list[tuple[str, str]]) -> None:
@@ -12100,6 +12458,11 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
                 s["durationSeconds"] = max(5, min(600, d)) if d else s.get("targetSeconds", 0)
             except (TypeError, ValueError):
                 s["durationSeconds"] = s.get("targetSeconds", 0)
+            # Global voice doctrine backstop. _ensure_speakable is the ONE hook every
+            # script-generation path flows through (/v1/scripts, steer, fast feed,
+            # write-turn, from-brief), so the dash scrub lives here. Whitelisted prose
+            # fields only — nothing here is transcript-derived.
+            s = _scrub_voice(s)
         body = s.get("body") or ""
         style = s.get("style", "")
         reason = prompts.flag_stage_direction(body, style)
@@ -12117,7 +12480,7 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
                 fixed = None   # the repair itself still reads as a description
         if fixed and fixed.strip():
             logging.info("[speakable] i=%d outcome=repaired reason=%s", i, reason)
-            out.append({**s, "body": fixed.strip()})
+            out.append({**s, "body": prompts.scrub_em_dashes(fixed.strip())})
             continue
         if policy == "repair_or_drop":
             logging.info("[speakable] i=%d outcome=dropped reason=%s", i, reason)
@@ -12192,12 +12555,50 @@ async def _fast_feed_scripts(sreq: "ScriptRequest") -> dict:
         return {"mode": "mock", "scripts": mock_scripts(sreq)}
 
 
+# --- voice scrub (deterministic em/en dash backstop) ------------------------
+# prompts.VOICE_DOCTRINE tells every writer never to emit a dash; models still do.
+# This is the enforcement, applied to model output on its way to the client.
+#
+# WHITELIST, not a blanket walk: only keys that hold model-AUTHORED PROSE are
+# scrubbed. Transcript words, EDL dicts, caption-word arrays and anything else
+# derived from AssemblyAI are NEVER touched — app/edl.py reads a TRAILING em dash
+# as the aborted-sentence marker, so scrubbing that data would silently wreck the
+# cut. Add a key here only if a human reads it as a sentence.
+_VOICE_SCRUB_FIELDS = frozenset({
+    "title", "hook", "body", "cta", "summary", "reply", "headline", "detail",
+    "caption", "why", "text", "fix", "grounding", "why_picked", "content",
+    "beats", "chips", "altHooks", "coaching", "action",
+})
+
+
+def _scrub_voice(obj):
+    """Recursively rewrite em/en dashes out of whitelisted prose fields.
+
+    Walks dicts/lists; a string is rewritten ONLY when it was reached through a
+    key in _VOICE_SCRUB_FIELDS (a bare string at the root is returned untouched,
+    since we cannot tell what it is). Safe to call on any response payload.
+    """
+    return _scrub_voice_inner(obj, False)
+
+
+def _scrub_voice_inner(obj, allowed: bool):
+    if isinstance(obj, str):
+        return prompts.scrub_em_dashes(obj) if allowed else obj
+    if isinstance(obj, dict):
+        return {k: _scrub_voice_inner(v, allowed or (isinstance(k, str) and k in _VOICE_SCRUB_FIELDS))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_voice_inner(v, allowed) for v in obj]
+    return obj
+
+
 def _clamp_title(title: str, limit: int = 42) -> str:
     """Display-safe pick-card title: ≤limit chars, cut at a word boundary, no
-    dangling punctuation. The prompts ask for ≤6 words but LLM/cached/mock paths
+    dangling punctuation. The prompts ask for ≤8 words but LLM/cached/mock paths
     can all exceed it — this is the enforcement so the card never truncates
-    mid-word with an ellipsis."""
-    t = (title or "").strip()
+    mid-word with an ellipsis. Also runs the deterministic dash scrub, so a
+    dashed title can never reach a pick card."""
+    t = prompts.scrub_em_dashes((title or "").strip())
     if len(t) <= limit:
         return t
     cut = t[:limit + 1]
@@ -12259,7 +12660,10 @@ def _feed_sreq(brand: dict, styles: str, cursor: int, creator_id: str, memory: d
     niche = brand.get("niche", "")
     known_for = brand.get("known_for", "")
     what_you_do = brand.get("what_you_do", "")
-    allowed = [s for s in styles.split(",") if s in STYLES] or list(STYLES.keys())
+    # ACTIVE_STYLES only: a retired style key from a legacy client (or an empty
+    # `styles` param) must never put the feed on a style we no longer generate.
+    allowed = ([s for s in styles.split(",") if s in prompts.ACTIVE_STYLES]
+               or list(prompts.ACTIVE_STYLES))
     arm = arms[cursor] if arms and cursor < len(arms) else None
     if arm and arm.get("pillar"):
         pillar = arm["pillar"]
@@ -12658,17 +13062,18 @@ def _mock_mimic(reel: dict, brand: dict) -> dict:
     for other in ("fitness", "finance", "cooking", "your niche"):
         my_hook = my_hook.replace(other, niche)
     return {
-        "title": f"{niche}: {reel.get('title','their idea')[:40]}",
+        "title": prompts.scrub_em_dashes(f"your take on {reel.get('title','their idea')[:40]}".lower()),
         "summary": f"Your take on @{reel.get('creator_handle','them')}'s structure, rebuilt for {niche}.",
-        "hook": my_hook or f"Everyone in {niche} gets this wrong — here's the fix.",
+        "hook": prompts.scrub_em_dashes(my_hook) or f"Everyone in {niche} gets this wrong. Here's the fix.",
         "hookSignal": "contrarian",
         "formatId": fmt,
         "body": (f"Here's the thing most people in {niche} get completely backwards.\n\n"
                  f"They chase the obvious move and wonder why nothing changes. The real lever is the "
-                 f"one nobody talks about — and once you see it, you can't unsee it.\n\n"
+                 f"one nobody talks about, and once you see it, you can't unsee it.\n\n"
                  f"Do this one thing differently this week and watch what happens."),
         "cta": "Follow for the next one.",
-        "shotPlan": ["Hook on frame 1, direct eye contact", "One punch-in on the key beat", "CTA to camera"],
+        "shotPlan": ["hold on face for the hook, no overlays", "punch in on the key beat",
+                     "stay on face for the CTA"],
         "targetSeconds": 26, "predictedScore": 82,
         "altHooks": [], "style": style,
     }
@@ -12792,6 +13197,15 @@ async def analyze_video(req: AnalyzeVideoRequest):
                     [out["your_version"]], policy="repair_or_fallback",
                     fallback=lambda i: _mock_mimic(mock_reel_for_fallback, req.brand))
                 out["your_version"] = yv
+                # Teardown prose fields are model-authored; the transcript is NOT
+                # (it comes from AssemblyAI) and is deliberately excluded from the scrub.
+                for _k in ("hook_analysis", "why_it_works"):
+                    if isinstance(out.get(_k), str):
+                        out[_k] = prompts.scrub_em_dashes(out[_k])
+                for _k in ("structure_beats", "suggestions"):
+                    if isinstance(out.get(_k), list):
+                        out[_k] = [prompts.scrub_em_dashes(x) if isinstance(x, str) else x
+                                   for x in out[_k]]
                 return {"mode": "live" if is_real else "live_structure", "platform": platform,
                         "transcript": transcript, **out}
         except HTTPException:
@@ -12801,10 +13215,10 @@ async def analyze_video(req: AnalyzeVideoRequest):
                  "transcript": transcript, "format_id": "myth-buster", "style": "talking_head"}
     return {
         "mode": "mock", "platform": platform, "transcript": transcript,
-        "hook_analysis": "The hook lands a bold claim inside the first second and mirrors it in on-screen text — a double pattern-interrupt that stops both sound-on and sound-off scrollers.",
+        "hook_analysis": "The hook lands a bold claim inside the first second and mirrors it in on-screen text, a double pattern-interrupt that stops both sound-on and sound-off scrollers.",
         "structure_beats": ["Bold claim (0-1.5s)", "Credibility number", "Visual proof", "The reframe", "Single takeaway + comment prompt"],
-        "why_it_works": "Every beat earns the next second: specificity builds trust, the proof is shown rather than told, and the loop opened in the hook only closes on the final line — which is what holds retention to the end.",
-        "suggestions": [f"Steal the claim→number→proof skeleton for your next {niche} post",
+        "why_it_works": "Every beat earns the next second: specificity builds trust, the proof is shown rather than told, and the loop opened in the hook only closes on the final line, which is what holds retention to the end.",
+        "suggestions": [f"Steal the claim, number, proof skeleton for your next {niche} post",
                         "Mirror your hook as on-screen text in the first frame",
                         "End with a one-word comment prompt to feed the algorithm early signals"],
         "your_version": _mock_mimic(mock_reel, req.brand),

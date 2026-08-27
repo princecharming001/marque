@@ -206,7 +206,7 @@ struct ChatScriptCardContent: View {
                 }
             }
             Text(script.title.isEmpty ? script.hook.text : script.title)
-                .font(AppFont.serifM)
+                .font(Typeface.sans(22, .semibold))
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("\u{201C}\(script.hook.text)\u{201D}")
@@ -467,7 +467,7 @@ struct ChatSuggestedChips: View {
                 .accessibilityIdentifier("chat.chip.other")
             }
             if onEdit != nil {
-                Text("Tap to send — hold to edit, or just type")
+                Text("Tap to send, hold to edit, or just type")
                     .font(AppFont.micro)
                     .foregroundStyle(Palette.textTertiary)
             }
@@ -564,7 +564,7 @@ struct ConversationsDrawer: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("Yunicorn")
-                    .font(Typeface.display(20, .semibold)).tracking(-0.3)
+                    .font(Typeface.sans(20, .semibold)).tracking(-0.3)
                     .foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Button { close() } label: {

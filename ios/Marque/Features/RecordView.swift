@@ -128,7 +128,7 @@ struct RecordView: View {
                     if isFreestyle {
                         VStack(spacing: Space.sm) {
                             Image(systemName: "mic.fill").font(.system(size: 22)).foregroundStyle(.white.opacity(0.7))
-                            Text("No script — just talk.")
+                            Text("No script. Just talk.")
                                 .font(AppFont.title).foregroundStyle(.white)
                             Text("Film it your way; the editor finds the cut after.")
                                 .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
@@ -170,7 +170,7 @@ struct RecordView: View {
                 Text(importTotal > 1 ? "Importing \(min(importDone + 1, importTotal)) of \(importTotal)…"
                                      : "Importing video…")
                     .font(AppFont.headline).foregroundStyle(.white)
-                Text("Keep the app open — larger videos take a moment.")
+                Text("Keep the app open. Larger videos take a moment.")
                     .font(AppFont.caption).foregroundStyle(.white.opacity(0.65))
             }
             .padding(Space.xl)
@@ -219,7 +219,7 @@ struct RecordView: View {
                 beginUpload()          // start the upload while the creator reviews
             } else {
                 importDone = 1
-                importError = "Couldn't load that video — try a different one."
+                importError = "Couldn't load that video. Try a different one."
                 phase = .ready
             }
             return
@@ -320,7 +320,7 @@ struct RecordView: View {
             case .recording:
                 takeTimer
                 if camera.hasCamera && !camera.hasAudio {
-                    Text("Microphone is off — your clip will have no sound. Enable mic access in Settings.")
+                    Text("Microphone is off, so your clip will have no sound. Enable mic access in Settings.")
                         .font(AppFont.caption).foregroundStyle(Palette.critical).multilineTextAlignment(.center)
                 }
                 takeSegmentsBar(liveTake: true)
@@ -350,7 +350,7 @@ struct RecordView: View {
             case .paused:
                 takeTimer
                 takeSegmentsBar(liveTake: false)
-                Text("Paused — flip the camera for a new angle, then resume. Your takes stitch into one clip.")
+                Text("Paused. Flip the camera for a new angle, then resume. Your takes stitch into one clip.")
                     .font(AppFont.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
                 HStack(spacing: Space.xl) {
                     if segments.isEmpty {
@@ -472,7 +472,7 @@ struct RecordView: View {
                 .accessibilityIdentifier("record.makeClips")
             case .analyzing:
                 ProgressView().tint(Palette.accent)
-                Text("Studying your take — cuts, hook, pacing…")
+                Text("Studying your take: cuts, hook, pacing…")
                     .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
             case .brief:
                 briefReview
@@ -654,7 +654,7 @@ struct RecordView: View {
                         memeSliderRow
                     }
                     captionStyleSection
-                    Text("Changes apply to this video only — your defaults live in Profile → Editing style.")
+                    Text("Changes apply to this video only. Your defaults live in Profile → Editing style.")
                         .font(AppFont.micro).foregroundStyle(.white.opacity(0.45))
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
@@ -686,7 +686,7 @@ struct RecordView: View {
         // has no b-roll, so the "what kind of b-roll" choice would be meaningless there.
         if editFormat == .talkingHeadBroll, !brollStyles.isEmpty {
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text("B-ROLL STYLE — PICK A LOOK")
+                Text("B-ROLL STYLE · PICK A LOOK")
                     .font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(.white.opacity(0.5))
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -1318,7 +1318,7 @@ struct RecordView: View {
             if let uid = hoistedUploadId { UploadJournal.shared.remove(uploadId: uid) }
             hoistedUploadId = nil
             phase = .recorded
-            submitFailedMessage = "Couldn't reach the editor — your take is saved. Tap Submit to try again."
+            submitFailedMessage = "Couldn't reach the editor, but your take is saved. Tap Submit to try again."
             return
         }
         await store.makeClips(from: liveScript, formats: [liveScript.formatId],
@@ -1463,7 +1463,7 @@ struct Teleprompter: View {
             let maxScroll = max(0, contentH - viewport * 0.5)
             ZStack(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: Space.lg) {
-                    teleprompterLine(script.hook.text, font: Typeface.display(28, .semibold), field: .hook)
+                    teleprompterLine(script.hook.text, font: Typeface.sans(28, .bold), field: .hook)
                     teleprompterLine(script.body, font: Typeface.body(23), field: .body)
                     teleprompterLine(script.cta, font: Typeface.body(23, .semibold), field: .cta, color: Palette.accent)
                 }

@@ -45,26 +45,17 @@ struct ScriptReaderView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
-                // Hook hero — big Fraunces serif, the editorial centerpiece
+                // Hook hero — the editorial centerpiece, now the FIRST and only
+                // thing above the script body.
                 hookSection
 
                 MarqueHairline()
 
-                // Format chip (H-05: no swap — the server infers style from the take)
-                HStack {
-                    FormatTag(formatId: live.formatId)
-                    Spacer()
-                }
+                // DECLUTTER (2026-08): the format chip, the hook-signal chip and the
+                // whyPicked rationale all went. They explained the machine's taxonomy
+                // to a user whose only job here is to read the script and hit record —
+                // three rows of classification between the hook and the body.
 
-                // UX-G2: WHY the feed picked this script — the bandit's honest reason.
-                if !live.whyPicked.isEmpty {
-                    Text(live.whyPicked)
-                        .font(AppFont.micro).tracking(0.2)
-                        .foregroundStyle(Palette.textTertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                // Body + shot plan
                 bodySection
 
                 // Refine
@@ -114,7 +105,6 @@ struct ScriptReaderView: View {
     private var hookSection: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack {
-                SectionLabel(text: editingHook ? "Hook" : "Hook · tap to explore", accent: Palette.accent)
                 Spacer()
                 Button(editingHook ? "Done" : "Edit") {
                     if editingHook { commitHookEdit() } else { hookDraft = live.hook.text; editingHook = true }
@@ -124,24 +114,28 @@ struct ScriptReaderView: View {
             }
             if editingHook {
                 TextField("Hook", text: $hookDraft, axis: .vertical)
-                    .font(Typeface.display(32, .semibold)).foregroundStyle(Palette.textPrimary)
+                    .font(Typeface.sans(30, .bold)).foregroundStyle(Palette.textPrimary)
                     .padding(Space.md)
                     .background(Palette.surfaceRaised)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                     .accessibilityIdentifier("script.hookEditor")
             } else {
                 Button { showHookLab = true } label: {
-                    Text(live.hook.text)
-                        .font(Typeface.display(32, .semibold)).tracking(-0.5)
-                        .foregroundStyle(Palette.textPrimary)
+                    // "tap to explore" is gone with the section label, so the
+                    // affordance rides inline: a small arrow glyph trailing the
+                    // last word, which keeps the hook the only thing you read.
+                    (Text(live.hook.text)
+                     + Text("  ")
+                     + Text(Image(systemName: "arrow.up.right"))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Palette.textTertiary))
+                        .font(Typeface.sans(30, .bold)).tracking(-0.5)
+                        .foregroundColor(Palette.textPrimary)
                         .multilineTextAlignment(.leading)
                         .fixedSize(horizontal: false, vertical: true)
                         .lineSpacing(3)
                 }.buttonStyle(.plain)
                 .accessibilityIdentifier("script.hookButton")
-            }
-            HStack(spacing: Space.sm) {
-                Chip(text: live.hook.signal.label)
             }
         }
     }
@@ -189,14 +183,9 @@ struct ScriptReaderView: View {
                 Text(live.cta).font(AppFont.bodyL).foregroundStyle(Palette.goldDeep)
                     .onTapGesture { ctaDraft = live.cta; editingCTA = true }
             }
-            Divider().background(Palette.hairline)
-            SectionTitle(text: "Shot plan")
-            ForEach(Array(live.shotPlan.enumerated()), id: \.offset) { _, s in
-                HStack(alignment: .top, spacing: Space.sm) {
-                    Circle().fill(Palette.gold).frame(width: 5, height: 5).padding(.top, 7)
-                    Text(s).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                }
-            }
+            // DECLUTTER (2026-08): the "Shot plan" bullets are no longer DISPLAYED —
+            // they were direction for a shoot nobody blocks out from this screen.
+            // Script.shotPlan itself stays populated: the editor pipeline consumes it.
         }
         .marqueCard()
     }
@@ -303,8 +292,8 @@ struct HookLabSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
-                    Text("Pick your hook").font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
-                    Text("Different angles on the same idea — pick the one that sounds most like you.")
+                    Text("Pick your hook").font(Typeface.sans(28, .bold)).foregroundStyle(Palette.textPrimary)
+                    Text("Different angles on the same idea. Pick the one that sounds most like you.")
                         .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     if loading {
                         ProgressView().tint(Palette.gold).frame(maxWidth: .infinity).padding()

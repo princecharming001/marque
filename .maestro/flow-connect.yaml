@@ -14,6 +14,7 @@ name: Marque — connected onboarding path (scan theater → prefilled confirm)
 # One framing question, then connect is immediately next (the hero step).
 - tapOn:
     id: "onboard.niche.fitness"
+- tapOn: { id: "onboard.niche.continue" }
 - extendedWaitUntil:
     visible: "Let me study your page"
     timeout: 4000

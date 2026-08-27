@@ -171,13 +171,13 @@ struct SectionTitle: View {
 }
 
 /// Big editorial screen title. Case is left to the caller so it matches the
-/// hand-rolled serif titles on Film/Library ("Film", "Library" — capitalized).
+/// hand-rolled titles on Film/Library ("Film", "Library" — capitalized).
 struct ScreenTitle: View {
     let text: String
     var size: CGFloat = 30
     var body: some View {
         Text(text)
-            .font(Typeface.display(size, .semibold))
+            .font(Typeface.sans(size, size >= 28 ? .bold : .semibold))
             .tracking(Track.title)
             .foregroundStyle(Palette.textPrimary)
     }
@@ -292,7 +292,7 @@ struct PillarNode: View {
                 Circle().fill(Color(hex: pillar.colorHex).opacity(0.12))
                 Circle().strokeBorder(Color(hex: pillar.colorHex), lineWidth: 1.5)
                 Text(String(pillar.name.prefix(1)))
-                    .font(Typeface.display(22, .semibold))
+                    .font(Typeface.sans(22, .semibold))
                     .foregroundStyle(Palette.textPrimary)
             }
             .frame(width: 64, height: 64)
@@ -304,7 +304,7 @@ struct PillarNode: View {
     }
 }
 
-// Editorial empty state: a hairline-weight glyph, serif display title, quiet
+// Editorial empty state: a hairline-weight glyph, sans display title, quiet
 // capped-width message. (The old 72pt 3D-render graphics read as clip-art —
 // the `graphic` param is kept for call-site compatibility but intentionally
 // ignored; restraint over ornament.)
@@ -320,7 +320,7 @@ struct EmptyStateView: View {
                 .foregroundStyle(Palette.textTertiary)
                 .padding(.bottom, Space.xs)
             Text(title)
-                .font(Typeface.display(21, .semibold)).tracking(Track.title)
+                .font(Typeface.sans(21, .semibold)).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.center)
             Text(message)

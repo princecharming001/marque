@@ -261,9 +261,9 @@ struct InsightsSection: View {
             // Stat tiles — real numbers only. I-3: never show fabricated totals when the
             // series is placeholder (no_data); dashes read honestly instead.
             HStack(spacing: Space.md) {
-                statTile(hasRealData ? compactNumber(views(summary!)) : "—", "Views")
-                statTile(hasRealData ? compactNumber(likes(summary!)) : "—", "Likes")
-                statTile(hasRealData ? "+\(follows(summary!))" : "—", "Follows")
+                statTile(hasRealData ? compactNumber(views(summary!)) : "", "Views")
+                statTile(hasRealData ? compactNumber(likes(summary!)) : "", "Likes")
+                statTile(hasRealData ? "+\(follows(summary!))" : "", "Follows")
             }
 
             // I-3: interactive, dated graph — only for real data (a fabricated series is as

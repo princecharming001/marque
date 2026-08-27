@@ -127,7 +127,7 @@ struct ReelDetailSheet: View {
             if let ago = postedAgo {
                 Text("Posted \(ago)").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
             }
-            Text("Watch-time/retention isn't public for other creators' posts — engagement rate is the honest proxy.")
+            Text("Watch-time/retention isn't public for other creators' posts, engagement rate is the honest proxy.")
                 .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -232,7 +232,7 @@ struct ReelDetailSheet: View {
                 .foregroundStyle(.white.opacity(0.85))
                 Spacer(minLength: 0)
                 Text(reel.hookText)
-                    .font(Typeface.display(22))
+                    .font(Typeface.sans(22, .semibold))
                     .tracking(Track.title)
                     .foregroundStyle(.white)
                     .multilineTextAlignment(.leading)
@@ -261,7 +261,7 @@ struct ReelDetailSheet: View {
             Spacer(minLength: 0)
 
             Text(reel.hookText)
-                .font(Typeface.display(24))
+                .font(Typeface.sans(24, .semibold))
                 .tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.leading)
@@ -305,7 +305,7 @@ struct ReelDetailSheet: View {
                     Spacer()
                 }
                 Text(script.title.isEmpty ? script.hook.text : script.title)
-                    .font(AppFont.serifM).tracking(Track.title)
+                    .font(Typeface.sans(22, .semibold)).tracking(Track.title)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("\u{201C}\(script.hook.text)\u{201D}")
@@ -319,7 +319,7 @@ struct ReelDetailSheet: View {
             }
             .marqueCard()
 
-            Text("Structure from \(from) — substance is all yours")
+            Text("Structure from \(from), substance is all yours")
                 .font(AppFont.micro)
                 .foregroundStyle(Palette.textTertiary)
                 .padding(.leading, Space.xs)
@@ -349,7 +349,7 @@ struct ReelDetailSheet: View {
                         Image(systemName: "wifi.exclamationmark")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(Palette.warning)
-                        Text("Couldn't reach the studio just now — give it another try.")
+                        Text("Couldn't reach the studio just now, give it another try.")
                             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         Spacer(minLength: 0)
                     }

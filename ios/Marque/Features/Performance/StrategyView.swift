@@ -80,7 +80,7 @@ struct StrategyView: View {
                     } else {
                         EmptyStateView(icon: "brain",
                                        title: "Not ready yet",
-                                       message: "Film and analyze a few clips — your strategy builds from them.")
+                                       message: "Film and analyze a few clips, your strategy builds from them.")
                             .padding(.top, 60)
                     }
                 }
@@ -128,7 +128,7 @@ struct StrategyView: View {
                         .font(AppFont.micro).tracking(Track.label)
                         .foregroundStyle(Palette.onInk.opacity(0.55))
                     Text(plan.lever)
-                        .font(Typeface.display(21, .semibold))
+                        .font(Typeface.sans(21, .semibold))
                         .foregroundStyle(Palette.onInk)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -393,7 +393,7 @@ struct StrategyModel {
                     if let r = lower.range(of: name) {
                         plan.regimeIndex = i
                         plan.regimeNote = String(value[value.index(value.startIndex, offsetBy: lower.distance(from: lower.startIndex, to: r.upperBound))...])
-                            .trimmingCharacters(in: CharacterSet(charactersIn: " -–—:().")).trimmingCharacters(in: .whitespaces)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: " -–, :().")).trimmingCharacters(in: .whitespaces)
                         break
                     }
                 }

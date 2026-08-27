@@ -8,7 +8,7 @@ extension ProEditorView {
 
     func load() async {
         guard let jobId = clip.jobId else {
-            phase = .failed("Couldn't load this clip's edit — the session may have expired.")
+            phase = .failed("Couldn't load this clip's edit, the session may have expired.")
             return
         }
         // Use the status-aware poll (restart-fragility audit): pollClipJob swallowed the
@@ -16,7 +16,7 @@ extension ProEditorView {
         // (no EDL) both mis-reported "session may have expired." Distinguish them.
         let (result, http) = await store.backend.pollClipJobWithStatus(jobId: jobId, includeWords: true)
         if http == 503 {
-            phase = .failed("Couldn't reach the studio just now — pull to try again.")
+            phase = .failed("Couldn't reach the studio just now, pull to try again.")
             return
         }
         guard let result, let edlDict = result["edl"] as? [String: Any] else {
@@ -26,7 +26,7 @@ extension ProEditorView {
             editorRecoverable = (clip.localVideoPath != nil)
             phase = .failed(editorRecoverable
                 ? "This edit session expired. Re-create it from your footage to keep editing."
-                : "Couldn't load this clip's edit — the session may have expired.")
+                : "Couldn't load this clip's edit, the session may have expired.")
             return
         }
         let doc = EditorDocument(edl: edlDict)
@@ -80,7 +80,7 @@ extension ProEditorView {
             if resp["error"] as? Bool == true {
                 if resp["transient"] as? Bool == true {
                     phase = .editing; rethemeTask = nil
-                    flash(resp["reply"] as? String ?? "Still busy — try again."); return
+                    flash(resp["reply"] as? String ?? "Still busy, try again."); return
                 }
                 phase = .editing; rethemeTask = nil
                 flash(resp["reply"] as? String ?? "Couldn't switch themes."); return
@@ -147,7 +147,7 @@ extension ProEditorView {
         guard seg.frames >= 90 else { flash("That clip is too short to split."); return }
         // #10: if the playhead isn't inside this clip, tell the user the cut used its center.
         if !(playheadSourceFrame > seg.srcIn + 30 && playheadSourceFrame < seg.srcOut - 30) {
-            flash("Cut at the clip's middle — scrub onto a clip to cut there.")
+            flash("Cut at the clip's middle, scrub onto a clip to cut there.")
         }
         let lo: Int = seg.srcIn + 30
         let hi: Int = seg.srcOut - 30
@@ -484,7 +484,7 @@ extension ProEditorView {
         uploadingMedia = true
         defer { uploadingMedia = false; mediaPickerItem = nil }
         guard var data = try? await item.loadTransferable(type: Data.self) else {
-            flashPublic("Couldn't load that media — try another.")
+            flashPublic("Couldn't load that media, try another.")
             return
         }
         let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
@@ -498,7 +498,7 @@ extension ProEditorView {
         }
         let path = MediaStore.save(data, ext: ext)
         guard let url = await LiveClipEngine.uploadMedia(path: path, filename: "roll.\(ext)") else {
-            flashPublic("Couldn't upload that media — check your connection.")
+            flashPublic("Couldn't upload that media, check your connection.")
             return
         }
         // Replace flow: swap the source in the existing roll's window.
@@ -595,7 +595,7 @@ extension ProEditorView {
         // Build 55 audit: a window landing entirely inside DROPPED footage has no output
         // span — the strip would vanish the moment the drag commits (looks like deletion).
         guard session?.draft.outputSpan(srcIn: a, srcOut: b) != nil else {
-            flashPublic("That lands in cut footage — drop it on kept video.")
+            flashPublic("That lands in cut footage, drop it on kept video.")
             return
         }
         readdRoll(r, a: a, b: b)
@@ -778,7 +778,7 @@ extension ProEditorView {
         guard !keep.isEmpty else { withAnimation { showCleanup = false }; return }
         let secs = Double(keep.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
         mutate(keep.map { WireOp.cut($0.srcIn, $0.srcOut) },
-               rejectMsg: "Couldn't remove those — too little footage would remain.")
+               rejectMsg: "Couldn't remove those, too little footage would remain.")
         withAnimation { showCleanup = false }
         showToast(String(format: "Removed %d · %.1fs", keep.count, secs))
     }
@@ -804,7 +804,7 @@ extension ProEditorView {
 
             if targets.isEmpty {
                 Spacer()
-                Text("Nothing to clean up — no filler words or long pauses found.")
+                Text("Nothing to clean up, no filler words or long pauses found.")
                     .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center).padding(Space.xl)
                 Spacer()
@@ -898,7 +898,7 @@ extension ProEditorView {
         applyTask = Task {
             let resp = await store.backend.tweakClipOps(jobId: jobId, clipId: clip.id.uuidString, ops: ops, deferRender: structural)
             if resp["error"] as? Bool == true {
-                if resp["transient"] as? Bool == true { phase = .editing; applyTask = nil; flash(resp["reply"] as? String ?? "Still busy — try again."); return }
+                if resp["transient"] as? Bool == true { phase = .editing; applyTask = nil; flash(resp["reply"] as? String ?? "Still busy, try again."); return }
                 phase = .failed(resp["reply"] as? String ?? "Couldn't apply your edits."); return
             }
             let needsRender = resp["needs_render"] as? Bool ?? false
@@ -922,18 +922,18 @@ extension ProEditorView {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             if Task.isCancelled { return (false, nil) }
             let (maybe, http) = await store.backend.pollClipJobWithStatus(jobId: jobId)
-            if http == 404 || http == 410 { return (false, "This edit session expired — re-record to keep editing.") }
+            if http == 404 || http == 410 { return (false, "This edit session expired, re-record to keep editing.") }
             guard let result = maybe, let jobClips = result["clips"] as? [[String: Any]],
                   let mine = jobClips.first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clip.id }) else { continue }
             let status = mine["status"] as? String ?? ""
             if status == "ready" {
                 store.applyTweakResult(clip.id, remoteURL: mine["render_url"] as? String, label: "Manual edit")
-                if mine["last_render_failed"] as? Bool == true { return (false, "That edit's render failed — your previous cut is untouched.") }
+                if mine["last_render_failed"] as? Bool == true { return (false, "That edit's render failed, your previous cut is untouched.") }
                 return (true, nil)
             }
             if status == "failed" { return (false, store.friendlyRenderError(mine["error"] as? String, detail: mine["error_detail"] as? String)) }
         }
-        return (false, "Still working — check back in the Library shortly.")
+        return (false, "Still working, check back in the Library shortly.")
     }
 
     // MARK: rendering / failed / transient views
@@ -1137,7 +1137,7 @@ extension ProEditorView {
 
             if drops.isEmpty {
                 Spacer()
-                Text("Nothing was cut — the whole take is on the timeline.")
+                Text("Nothing was cut, the whole take is on the timeline.")
                     .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
                     .multilineTextAlignment(.center).padding(Space.xl)
                 Spacer()
@@ -1155,7 +1155,7 @@ extension ProEditorView {
                                     Image(systemName: on ? "checkmark.circle.fill" : "circle")
                                         .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
                                     VStack(alignment: .leading, spacing: 1) {
-                                        Text(String(format: "%.1fs — %@", dur, restoreReasonLabel(d.reason)))
+                                        Text(String(format: "%.1fs, %@", dur, restoreReasonLabel(d.reason)))
                                             .font(AppFont.callout).foregroundStyle(.white)
                                         Text(String(format: "at %d:%02d in your take",
                                                     d.srcIn / 1800, (d.srcIn / 30) % 60))

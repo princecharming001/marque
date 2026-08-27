@@ -1280,7 +1280,7 @@ struct ProEditorView: View {
                     withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
                     editDraft = ""; showStockInput = true
                 } label: {
-                    mediaRow("Stock clip", "film.stack", "Describe it — we find the footage")
+                    mediaRow("Stock clip", "film.stack", "Describe it, we find the footage")
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("editorPro.media.stock")

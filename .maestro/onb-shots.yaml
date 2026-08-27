@@ -16,6 +16,7 @@ name: Marque — onboarding per-step screenshot walk (visual QA)
 - takeScreenshot: /Users/home/Marque/.shots/onb-01-niche
 - tapOn:
     id: "onboard.niche.fitness"
+- tapOn: { id: "onboard.niche.continue" }
 
 - extendedWaitUntil:
     visible: "Let me study your page"
@@ -26,19 +27,9 @@ name: Marque — onboarding per-step screenshot walk (visual QA)
 
 - assertVisible: "Who's it for?"
 - takeScreenshot: /Users/home/Marque/.shots/onb-03-identity
-- tapOn:
-    id: "onboard.audience"
-- inputText: "busy professionals"
+- tapOn: { id: "onboard.audience.busy professionals" }
 - takeScreenshot: /Users/home/Marque/.shots/onb-03b-identity-filled
-- tapOn:
-    id: "onboard.identityContinue"
-
-- extendedWaitUntil:
-    visible: "Who do you want to sound like?"
-    timeout: 4000
-- takeScreenshot: /Users/home/Marque/.shots/onb-04-emulate
-- tapOn:
-    id: "onboard.emulate.skip"
+- tapOn: { id: "onboard.audience.continue" }
 
 - extendedWaitUntil:
     visible: "What are you here to do?"

@@ -33,7 +33,7 @@ struct MarqueDialogCard: View {
                 .onTapGesture { if actions.contains(where: { $0.kind == .cancel }) { dismiss() } }
             VStack(alignment: .leading, spacing: Space.md) {
                 Text(title)
-                    .font(Typeface.display(22, .semibold)).tracking(Track.title)
+                    .font(Typeface.sans(22, .semibold)).tracking(Track.title)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let message {
@@ -245,7 +245,7 @@ struct MarqueWheel<T: Hashable>: View {
             VStack(spacing: 0) {
                 ForEach(items, id: \.self) { item in
                     Text(label(item))
-                        .font(item == selection ? Typeface.display(22, .semibold) : AppFont.bodyL)
+                        .font(item == selection ? Typeface.sans(22, .semibold) : AppFont.bodyL)
                         .foregroundStyle(item == selection ? Palette.textPrimary : Palette.textTertiary)
                         .frame(width: width, height: rowH)
                         .id(item)

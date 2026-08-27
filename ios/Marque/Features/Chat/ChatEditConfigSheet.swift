@@ -35,7 +35,7 @@ struct ChatEditConfigSheet: View {
 
                     if !styles.isEmpty {
                         VStack(alignment: .leading, spacing: Space.xs) {
-                            SectionLabel(text: "B-roll style — pick a look")
+                            SectionLabel(text: "B-roll style, pick a look")
                             ScrollView(.horizontal, showsIndicators: false) {
                                 HStack(spacing: Space.sm) {
                                     ForEach(Array(styles.enumerated()), id: \.element.id) { i, s in

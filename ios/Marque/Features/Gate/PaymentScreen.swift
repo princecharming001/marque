@@ -63,9 +63,9 @@ struct PaymentScreen: View {
         case .monetize:  goalPhrase = "Turn content into income"
         }
         if let pace = store.brand.weeklyTarget {
-            return "\(goalPhrase) — \(pace) posts a week is \(pace * 52) videos this year, every one in your voice."
+            return "\(goalPhrase), \(pace) posts a week is \(pace * 52) videos this year, every one in your voice."
         }
-        return "\(goalPhrase) — every video in your voice."
+        return "\(goalPhrase), every video in your voice."
     }
 
     var body: some View {
@@ -77,7 +77,11 @@ struct PaymentScreen: View {
             // clipped: an unclipped scaledToFill sizes the whole ZStack to the
             // image's intrinsic width, which shoved every sibling off both edges.
             GeometryReader { geo in
-                Image("UnicornHero")
+                // PaywallDust, not UnicornHero: the unicorn is a centered product
+                // shot on a flat white field, so the scrim had nothing to bite on
+                // and the body copy sat on a washed-out glare. A full-bleed
+                // portrait plate survives a scrim.
+                Image("PaywallDust")
                     .resizable().scaledToFill()
                     .frame(width: geo.size.width, height: geo.size.height)
                     .scaleEffect(bgScale)

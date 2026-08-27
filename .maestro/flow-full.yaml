@@ -18,6 +18,7 @@ name: Marque — full core loop
 - assertVisible: "What do you make videos about?"
 - tapOn:
     id: "onboard.niche.fitness"
+- tapOn: { id: "onboard.niche.continue" }
 
 # Connect (hero) — fast path = skip. The cut steps must be GONE:
 # no blocker/whyNow/method/name/stage/platform/interview/sliders/comfort.
@@ -28,20 +29,10 @@ name: Marque — full core loop
 - tapOn:
     id: "onboard.connect.skip"
 
-# Identity — one question: audience (niche already covered the topic).
+# Identity — audience chips (multi-select + Continue)
 - assertVisible: "Who's it for?"
-- tapOn:
-    id: "onboard.audience"
-- inputText: "busy professionals"
-- tapOn:
-    id: "onboard.identityContinue"
-
-# Emulate creators (multi-select; fast path = skip)
-- extendedWaitUntil:
-    visible: "Who do you want to sound like?"
-    timeout: 4000
-- tapOn:
-    id: "onboard.emulate.skip"
+- tapOn: { id: "onboard.audience.busy professionals" }
+- tapOn: { id: "onboard.audience.continue" }
 
 # Goal (auto-advance) — kept because it personalizes the paywall headline.
 - extendedWaitUntil:

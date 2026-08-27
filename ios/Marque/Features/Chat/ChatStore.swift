@@ -224,7 +224,7 @@ final class ChatStore {
         case .noVideos:
             return fail("Those didn't come through as videos.")
         case .timedOut:
-            return fail("Importing those videos took too long — please pick them again.")
+            return fail("Importing those videos took too long, please pick them again.")
         }
 
         // Stash the recovery payload on the card the moment the footage exists, so a failed
@@ -258,7 +258,7 @@ final class ChatStore {
             updateCard(cardId, in: convoId, store: store) {
                 guard $0.stage != .ready else { return }
                 $0.stage = .failed
-                $0.detail = "Stopped — tap Try again."
+                $0.detail = "Stopped. Tap Try again."
             }
         }
         guard !Task.isCancelled else { return bail() }
@@ -278,7 +278,7 @@ final class ChatStore {
             self?.updateCard(cardId, in: convoId, store: store) {
                 guard $0.stage != .ready && $0.stage != .failed else { return }
                 $0.stage = .failed
-                $0.detail = "This edit took too long — tap Try again."
+                $0.detail = "This edit took too long. Tap Try again."
             }
         }
         defer {
@@ -296,8 +296,8 @@ final class ChatStore {
             let tooLarge = UploadJournal.shared.entry(uploadId: chatUploadId)?.lastErrorCode
                 == MediaCompressor.tooLargeErrorCode
             return fail(tooLarge
-                        ? "That video is too large to upload — try a shorter take or trim it first."
-                        : "Couldn't upload your clips — check your connection and try again.")
+                        ? "That video is too large to upload, try a shorter take or trim it first."
+                        : "Couldn't upload your clips, check your connection and try again.")
         }
         guard !Task.isCancelled else { return }
 
@@ -321,7 +321,7 @@ final class ChatStore {
                 reactSourceURL: reactSourceURL, editFormat: editFormat,
                 config: config, toggles: chosenToggles),
               !job.jobId.isEmpty else {
-            return fail("Couldn't start the edit — try again in a moment.")
+            return fail("Couldn't start the edit, try again in a moment.")
         }
         // pollForBrief spans the full long-footage analyze window (360s, AppStore) — the
         // chat path shares it rather than running its own shorter cap, so a 2-3min take
@@ -336,7 +336,7 @@ final class ChatStore {
         // failure: land the card retryably and let "Try again" re-run from the stored
         // footage instead of quietly shipping a counterfeit result.
         guard brief != nil else {
-            return fail("The edit took too long to analyze — tap Try again.")
+            return fail("The edit took too long to analyze. Tap Try again.")
         }
 
         // 6) Confirm → render (confirmClips inserts the tracked clip + polls + streak).
@@ -396,7 +396,7 @@ final class ChatStore {
 
         guard let result else {
             appendAssistant(ChatMessage(role: .assistant,
-                                        content: "Hit a snag — tap to try again."),
+                                        content: "Hit a snag, tap to try again."),
                             to: convoId, in: store)
             return
         }
@@ -427,13 +427,13 @@ final class ChatStore {
 
         guard let analysis else {
             appendAssistant(ChatMessage(role: .assistant,
-                                        content: "Hit a snag — tap to try again."),
+                                        content: "Hit a snag, tap to try again."),
                             to: convoId, in: store)
             return
         }
 
         var reply = ChatMessage(role: .assistant,
-                                content: "Broke it down — here's what's working and your version:")
+                                content: "Broke it down, here's what's working and your version:")
         reply.kind = .videoAnalysis
         reply.analysis = analysis
         appendAssistant(reply, to: convoId, in: store)

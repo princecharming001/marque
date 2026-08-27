@@ -378,7 +378,7 @@ private struct ReelPagerMedia: View {
             VStack {
                 Spacer()
                 Text(reel.hookText.isEmpty ? "@\(reel.creatorHandle)" : reel.hookText)
-                    .font(Typeface.display(26)).foregroundStyle(.white)
+                    .font(Typeface.sans(26, .semibold)).foregroundStyle(.white)
                     .multilineTextAlignment(.center).padding(Space.xl)
                 Spacer()
             }

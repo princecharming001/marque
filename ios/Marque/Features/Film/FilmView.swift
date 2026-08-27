@@ -22,7 +22,7 @@ struct FilmView: View {
             VStack(alignment: .leading, spacing: Space.xl) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("READY TO FILM").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                    Text("Film").font(Typeface.display(40)).tracking(-1).foregroundStyle(Palette.textPrimary)
+                    Text("Film").font(Typeface.sans(40, .bold)).tracking(-1).foregroundStyle(Palette.textPrimary)
                 }
                 .padding(.top, Space.md)
 
@@ -35,7 +35,7 @@ struct FilmView: View {
                             .background(Circle().fill(Palette.ink))
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Freestyle").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                            Text("No script. Just talk — the editor finds the cut.")
+                            Text("No script. Just talk, the editor finds the cut.")
                                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                         }
                         Spacer()
@@ -90,7 +90,7 @@ struct FilmView: View {
                     }
                     if store.queuedScripts.isEmpty {
                         EmptyStateView(icon: "bookmark", title: "Nothing queued yet",
-                                       message: "Save scripts from your Home picks, a mimic, or chat — they land here ready to film.")
+                                       message: "Save scripts from your Home picks, a mimic, or chat, they land here ready to film.")
                     } else {
                         ForEach(store.queuedScripts) { saved in
                             NavigationLink(value: saved.script) { readiedRow(saved) }
@@ -201,7 +201,7 @@ struct FilmView: View {
     /// The edit-prefs summary with "Settings" styled as a tappable link — the whole
     /// line is one Button, this just makes the destination visually obvious.
     private var editPrefsCaption: AttributedString {
-        let prefix = "Edits follow your style — captions \(store.editPrefs.autoCaptions ? "on" : "off"), " +
+        let prefix = "Edits follow your style, captions \(store.editPrefs.autoCaptions ? "on" : "off"), " +
             "\(store.editPrefs.captionStyle?.label ?? "Auto") captions, \(store.editPrefs.fillerTrim.label.lowercased()) filler trim. Change in "
         var result = AttributedString(prefix)
         result.foregroundColor = Palette.textTertiary
@@ -284,7 +284,7 @@ struct FilmView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(d.title.isEmpty ? d.caption : d.title)
                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                Text("Draft — pick up where you left off")
+                Text("Draft, pick up where you left off")
                     .font(AppFont.caption).foregroundStyle(Palette.warning)
             }
             Spacer()

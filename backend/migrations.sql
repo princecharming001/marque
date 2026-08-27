@@ -358,3 +358,29 @@ CREATE TABLE IF NOT EXISTS quality_scorecards (
 );
 ALTER TABLE quality_scorecards ENABLE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS quality_scorecards_day_idx ON quality_scorecards (day);
+
+-- Phase 3 (media memory): durable per-creator analyzed media. The vision analysis for an
+-- imported photo/video is expensive and was held ONLY in an in-process dict — wiped on
+-- every deploy, and invisible to later edits, so the creator's own footage could never be
+-- reused as b-roll beyond the session that uploaded it. content_hash is the dedup key
+-- (SHA-256 of the file bytes), scoped per creator so one creator's media never resolves
+-- for another (the pooled-'default' leak class).
+CREATE TABLE IF NOT EXISTS creator_media (
+    id             BIGSERIAL PRIMARY KEY,
+    creator_id     TEXT NOT NULL,
+    content_hash   TEXT NOT NULL,             -- SHA-256 of the file bytes (dedup key)
+    kind           TEXT DEFAULT 'photo',      -- photo | video | screen
+    public_url     TEXT DEFAULT '',
+    analysis       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    transcript     TEXT DEFAULT '',           -- backfilled async for videos (never blocks analyze)
+    duration_s     NUMERIC,
+    width          INT,
+    height         INT,
+    fps            NUMERIC,
+    loudness_lufs  NUMERIC,
+    created_at     TIMESTAMPTZ DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (creator_id, content_hash)         -- upsert target (on_conflict=creator_id,content_hash)
+);
+ALTER TABLE creator_media ENABLE ROW LEVEL SECURITY;
+CREATE INDEX IF NOT EXISTS creator_media_creator_idx ON creator_media (creator_id, created_at DESC);

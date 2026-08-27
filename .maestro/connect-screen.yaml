@@ -9,6 +9,7 @@ appId: com.getmarque.app
 - assertVisible: "Get started"
 - tapOn: { id: onboard.start }
 - tapOn: { id: onboard.niche.fitness }
+- tapOn: { id: "onboard.niche.continue" }
 - extendedWaitUntil:
     visible: "Let me study your page"
     timeout: 4000

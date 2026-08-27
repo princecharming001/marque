@@ -98,9 +98,9 @@ struct EditingStyleSheet: View {
                 .font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(Palette.textTertiary)
             Text("Editing style")
-                .font(Typeface.display(34)).tracking(-1)
+                .font(Typeface.sans(34, .bold)).tracking(-1)
                 .foregroundStyle(Palette.textPrimary)
-            Text("Set it once — every edit Yunicorn cuts for you starts here.")
+            Text("Set it once, every edit Yunicorn cuts for you starts here.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                 .padding(.top, 2)
         }
@@ -139,7 +139,7 @@ struct EditingStyleSheet: View {
                     .foregroundStyle(Palette.textTertiary)
                 if let match {
                     Text(match.archetype.name)
-                        .font(Typeface.display(20, .semibold)).tracking(Track.title)
+                        .font(Typeface.sans(20, .semibold)).tracking(Track.title)
                         .foregroundStyle(Palette.textPrimary)
                 }
             }
@@ -389,7 +389,7 @@ struct EditingStyleSheet: View {
 
         return group("What gets sent",
                      caption: store.editPrefs.styleProfile == nil
-                        ? "You haven't taken the taste quiz — these are the proven defaults."
+                        ? "You haven't taken the taste quiz, these are the proven defaults."
                         : "Your taste, resolved into the settings your editor actually receives. A dial you set by hand always wins.") {
             FlowWrap(spacing: 6) {
                 ForEach(keys, id: \.self) { k in
@@ -425,7 +425,7 @@ struct EditingStyleSheet: View {
             .accessibilityIdentifier("editingStyle.retake")
             if store.editPrefs.styleProfile?.handTuned == true {
                 // Never silently overwrite hand-tuned work — say what a retake costs.
-                Text("You've tuned these by hand — a retake replaces the learned part of your profile.")
+                Text("You've tuned these by hand, a retake replaces the learned part of your profile.")
                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }

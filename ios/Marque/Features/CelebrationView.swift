@@ -25,7 +25,7 @@ struct CelebrationView: View {
         VStack(spacing: Space.lg) {
             Spacer()
             Image("FlameIcon").resizable().scaledToFit().frame(width: 96, height: 96)
-            Text("That's a wrap").font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
+            Text("That's a wrap").font(Typeface.sans(28, .bold)).foregroundStyle(Palette.textPrimary)
             Text("You showed up. That's \(store.reelsShot) \(store.reelsShot == 1 ? "reel" : "reels") shot.")
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)
@@ -41,7 +41,7 @@ struct CelebrationView: View {
             RankSeal(level: rank.level, size: 92)
             Text("New rank").font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(Palette.gold)
-            Text(rank.title).font(AppFont.displayM).foregroundStyle(Palette.textPrimary)
+            Text(rank.title).font(Typeface.sans(28, .bold)).foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.center)
             Text(rank.subtitle)
                 .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)

@@ -119,6 +119,13 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
                 return d
             }
         }
+        // Multi-select (build 83): only send the plural keys when there is genuinely
+        // more than one pick — the singular "niche"/"audience" above stay the
+        // primary and every other consumer keeps reading them unchanged.
+        let niches = b.allNiches
+        if niches.count > 1 { body["topics"] = niches }
+        let audiences = b.allAudiences
+        if audiences.count > 1 { body["audiences"] = audiences }
         return body
     }
 
@@ -1070,6 +1077,16 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         guard let data = await get("/v1/reels?niche=\(niche)&creator_id=\(creatorId)&watched=\(watched)&cursor=\(cursor)"),
               let r = try? JSONDecoder().decode(ReelsResp.self, from: data) else { return nil }
         return (r.reels.map(reel), r.next_cursor, r.off_niche ?? false)
+    }
+
+    /// Ask the backend to start filling the reel cache for a niche the moment the
+    /// creator picks it in onboarding, so the niche feed isn't cold when they first
+    /// open Home. Fire-and-forget: failures (including a 404/422 from a backend that
+    /// hasn't shipped the route yet) are ignored by design.
+    func warmReels(niche: String) async {
+        let n = niche.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !n.isEmpty else { return }
+        _ = await post("/v1/reels/warm", ["niche": n, "creator_id": creatorId])
     }
 
     private struct MimicResp: Decodable {

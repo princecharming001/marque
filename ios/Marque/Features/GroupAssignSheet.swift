@@ -128,7 +128,7 @@ struct GroupAssignSheet: View {
         VStack(alignment: .leading, spacing: Space.xs) {
             Text("No groups yet")
                 .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-            Text("Groups are just folders for your library — a client, a campaign, a month. Name one below and these clips go straight in.")
+            Text("Groups are just folders for your library, a client, a campaign, a month. Name one below and these clips go straight in.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

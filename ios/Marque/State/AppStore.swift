@@ -464,6 +464,22 @@ final class AppStore {
         fill(\.niche, result.nicheGuess)
         fill(\.audience, result.audienceGuess)
         fill(\.knownFor, result.knownForGuess)
+        // Multi-select (build 83): the singular field is the PRIMARY, so whatever
+        // the scan just wrote has to lead the array too, or the two disagree.
+        promote(brand.niche, into: &brand.niches)
+        promote(brand.audience, into: &brand.audiences)
+    }
+
+    /// Make `value` element 0 of an existing multi-select array, de-duped
+    /// case-insensitively. No-op when the array was never populated (an older
+    /// install that has only ever used the singular field).
+    private func promote(_ value: String, into list: inout [String]?) {
+        guard var arr = list else { return }
+        let v = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !v.isEmpty else { return }
+        arr.removeAll { $0.caseInsensitiveCompare(v) == .orderedSame }
+        arr.insert(v, at: 0)
+        list = arr
     }
 
     /// Apply a voice-onboarding finalize result (called after the conversational session).
@@ -566,7 +582,7 @@ final class AppStore {
             .map { "\($0.value.count) \($0.key.label.lowercased())" }
             .joined(separator: ", ")
         let notes = media.compactMap { $0.note.isEmpty ? nil : $0.note }.prefix(6)
-        return notes.isEmpty ? counts : "\(counts) — tagged: \(notes.joined(separator: ", "))"
+        return notes.isEmpty ? counts : "\(counts), tagged: \(notes.joined(separator: ", "))"
     }
 
     // Style is chosen BEFORE generation — it determines the script structure.
@@ -1612,8 +1628,8 @@ final class AppStore {
                     else { continue }                      // a live task owns this card
                     s.stage = .failed
                     s.detail = s.footagePath.isEmpty
-                        ? "Interrupted — please pick your videos again."
-                        : "Interrupted — tap Try again to resume."
+                        ? "Interrupted. Please pick your videos again."
+                        : "Interrupted. Tap Try again to resume."
                     conversations[ci].messages[mi].clipEdit = s
                     changed = true
                 default:
@@ -1833,12 +1849,12 @@ final class AppStore {
         case "upload_interrupted":
             return "The upload was interrupted before it finished. Tap Try again to resume."
         case "upload_failed":
-            return "Your take couldn't be uploaded — check your connection and tap Try again."
+            return "Your take couldn't be uploaded, check your connection and tap Try again."
         case MediaCompressor.tooLargeErrorCode:
             // Build 78: the one upload failure where "check your connection" is actively
             // wrong — no network on earth fixes a body that can't be squeezed under the
             // storage cap. Give the creator the action that actually works.
-            return "That video is too large to upload — try a shorter take or trim it first."
+            return "That video is too large to upload. Try a shorter take or trim it first."
         default:
             if let detail, !detail.isEmpty {
                 return "This clip didn't finish (\(detail)). Tap to try again."
@@ -1875,7 +1891,7 @@ final class AppStore {
             for id in siblings {
                 if let idx = clips.firstIndex(where: { $0.id == id }) {
                     clips[idx].status = .failed
-                    clips[idx].lastError = "Couldn't restart the edit — tap Try again."
+                    clips[idx].lastError = "Couldn't restart the edit. Tap Try again."
                 }
             }
             if !siblings.isEmpty { save() }
@@ -1883,7 +1899,7 @@ final class AppStore {
                 // No local footage to recover THIS clip from either — put it back to .failed too.
                 if let idx = clips.firstIndex(where: { $0.id == clip.id }) {
                     clips[idx].status = .failed
-                    clips[idx].lastError = "Couldn't restart the edit — tap Try again."
+                    clips[idx].lastError = "Couldn't restart the edit. Tap Try again."
                 }
                 save()
             }
@@ -1956,7 +1972,7 @@ final class AppStore {
                                                autoConfirm: true, toggles: toggles,
                                                idempotencyKey: uploadId),
               !resp.jobId.isEmpty else {
-            fail("Couldn't restart the edit — tap Try again."); return true
+            fail("Couldn't restart the edit. Tap Try again."); return true
         }
         if let i = clips.firstIndex(where: { $0.id == clip.id }) {
             clips[i].jobId = resp.jobId
@@ -2250,7 +2266,7 @@ final class AppStore {
                                           clipId: clipId, jobId: jobId)
                     } else {
                         notifyTweakRender("Your new cut is ready",
-                                          "The re-edit finished — it's waiting in your Library.",
+                                          "The re-edit finished, it's waiting in your Library.",
                                           clipId: clipId, jobId: jobId)
                     }
                     return
@@ -2575,7 +2591,7 @@ final class AppStore {
     private nonisolated static func postClipsReadyNotification(jobId: String? = nil) {
         let content = UNMutableNotificationContent()
         content.title = "Your clip is ready 🎬"
-        content.body = "The AI finished editing — review it in your Library and schedule it."
+        content.body = "The AI finished editing, review it in your Library and schedule it."
         content.sound = .default
         // Tag the category so PushManager.willPresent suppresses the banner in-foreground
         // (same treatment as the remote push) — the Library reflects readiness live.
@@ -2636,7 +2652,7 @@ final class AppStore {
     private nonisolated static func postScriptsReadyNotification() {
         let content = UNMutableNotificationContent()
         content.title = "Your first scripts are ready ✍️"
-        content.body = "Your content plan is built — come see what Yunicorn wrote for you."
+        content.body = "Your content plan is built, come see what Yunicorn wrote for you."
         content.sound = .default
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "marque.scriptsReady.\(UUID().uuidString)",

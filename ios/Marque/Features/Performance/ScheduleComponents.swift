@@ -179,7 +179,7 @@ struct PostRow: View {
         switch p.outcome {
         case .posted:                   return ("Posted", "checkmark.circle.fill", Palette.positive)
         case .queuedTransportFailure:   return ("Will retry", "arrow.clockwise.circle", Palette.warning)
-        case .savedLocalNoAccounts:     return ("Saved — connect account", "link.circle", Palette.textSecondary)
+        case .savedLocalNoAccounts:     return ("Saved, connect account", "link.circle", Palette.textSecondary)
         case .failed:                   return ("Failed", "exclamationmark.circle", Palette.critical)
         case nil:                       return (p.posted ? "Posted" : "Scheduled",
                                                 p.posted ? "checkmark.circle.fill" : "chevron.right",
@@ -244,7 +244,7 @@ struct SchedulePickerSheet: View {
                         Button { showConnect = true } label: {
                             HStack(spacing: Space.sm) {
                                 Image(systemName: "link").font(.system(size: 13, weight: .semibold))
-                                Text("Connect an account to actually post — otherwise this just saves to your calendar.")
+                                Text("Connect an account to actually post, otherwise this just saves to your calendar.")
                                     .font(AppFont.caption).multilineTextAlignment(.leading)
                                 Spacer(minLength: 0)
                                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
@@ -313,7 +313,7 @@ struct SchedulePickerSheet: View {
                 Button("Save to calendar") { if let c = pendingClip { pendingClip = nil; commitSchedule(c) } }
                 Button("Cancel", role: .cancel) { pendingClip = nil }
             } message: {
-                Text("Connect Instagram or TikTok to actually post this. Without one, it's only saved to your calendar as a reminder — nothing gets published.")
+                Text("Connect Instagram or TikTok to actually post this. Without one, it's only saved to your calendar as a reminder, nothing gets published.")
             }
         }
     }
@@ -401,7 +401,7 @@ struct PostEditorSheet: View {
                     if let m = post.metrics {
                         HStack(spacing: Space.sm) {
                             Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
-                            Text("\(compactNumber(m.views)) views · \(compactNumber(m.likes)) likes — synced from your account")
+                            Text("\(compactNumber(m.views)) views · \(compactNumber(m.likes)) likes, synced from your account")
                                 .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                             Spacer()
                         }

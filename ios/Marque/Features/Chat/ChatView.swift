@@ -190,7 +190,7 @@ struct ChatView: View {
             .frame(height: 52)
             .overlay(
                 Text("Yunicorn")
-                    .font(Typeface.display(17, .semibold))
+                    .font(Typeface.sans(17, .semibold))
                     .tracking(-0.2)
                     .foregroundStyle(Palette.textPrimary)
             )
@@ -411,7 +411,7 @@ struct ChatAttachSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("ADD TO CHAT").font(AppFont.micro).tracking(Track.label)
                     .foregroundStyle(Palette.textTertiary)
-                Text("Attach a video").font(Typeface.display(24)).foregroundStyle(Palette.textPrimary)
+                Text("Attach a video").font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
             }
             MarqueSegmented(options: ["Photos", "Your library"], index: $source)
                 .accessibilityIdentifier("chat.attachSource")
@@ -420,7 +420,7 @@ struct ChatAttachSheet: View {
                     Image(systemName: "photo.on.rectangle")
                         .font(.system(size: 26, weight: .ultraLight))
                         .foregroundStyle(Palette.textTertiary)
-                    Text("Pick up to 4 videos from your camera roll — Yunicorn stitches and edits them.")
+                    Text("Pick up to 4 videos from your camera roll. Yunicorn stitches and edits them.")
                         .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         .multilineTextAlignment(.center)
                     PrimaryButton(title: "Choose from Photos", systemImage: "photo") { onPhotos() }
@@ -433,7 +433,7 @@ struct ChatAttachSheet: View {
                     Image(systemName: "rectangle.stack")
                         .font(.system(size: 26, weight: .ultraLight))
                         .foregroundStyle(Palette.textTertiary)
-                    Text("Nothing in your library yet — film or upload a clip first.")
+                    Text("Nothing in your library yet, film or upload a clip first.")
                         .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         .multilineTextAlignment(.center)
                 }

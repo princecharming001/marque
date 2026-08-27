@@ -35,7 +35,7 @@ struct SettingsView: View {
                             .font(AppFont.micro).tracking(Track.label)
                             .foregroundStyle(Palette.textTertiary)
                         Text("Settings")
-                            .font(Typeface.display(34)).tracking(-1)
+                            .font(Typeface.sans(34, .bold)).tracking(-1)
                             .foregroundStyle(Palette.textPrimary)
                     }
                     .padding(.bottom, Space.xs)
@@ -73,7 +73,7 @@ struct SettingsView: View {
                         HStack(spacing: Space.md) {
                             iconTile("crown", tint: Palette.accent)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("Yunicorn Pro — \(monthlyPrice)")
+                                Text("Yunicorn Pro, \(monthlyPrice)")
                                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                 Text("Billed monthly. Cancel anytime.")
                                     .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
@@ -95,7 +95,7 @@ struct SettingsView: View {
                             HStack(spacing: Space.md) {
                                 iconTile("sparkles", tint: Palette.accent)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(entitlements.isPro ? "Yunicorn Plus — active"
+                                    Text(entitlements.isPro ? "Yunicorn Plus, active"
                                                             : "Go Plus")
                                         .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                     Text(entitlements.isPro ? "Clean exports, every look, priority renders."
@@ -196,7 +196,7 @@ struct SettingsView: View {
                                        let ents = info["entitlements"] as? [String: Any] {
                                         let on = ents.filter { ($0.value as? Bool) == true }
                                             .keys.sorted().joined(separator: ", ")
-                                        demoTierInfo = "Active: \(newValue)" + (on.isEmpty ? "" : " — \(on)")
+                                        demoTierInfo = "Active: \(newValue)" + (on.isEmpty ? "" : ", \(on)")
                                     } else {
                                         demoTierInfo = "Backend override off (set ALLOW_DEV_TIER=1)"
                                     }

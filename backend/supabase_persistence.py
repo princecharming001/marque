@@ -342,6 +342,34 @@ class SupabaseClient:
             return None
         return rows[0]["posts"] if rows and rows[0].get("posts") is not None else None
 
+    # --- creator_media (Phase 3: durable analyzed media) ----------------------
+    # The vision analysis of an imported photo/video used to live only in an in-process
+    # dict, so it died on every deploy and later edits could never reuse the creator's
+    # OWN footage as b-roll. One row per (creator_id, content_hash).
+
+    async def upsert_creator_media(self, row: dict) -> bool:
+        r = await self._request(
+            "POST", "/creator_media",
+            params={"on_conflict": "creator_id,content_hash"}, json=row,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_creator_media(self, creator_id: str, limit: int = 200) -> list[dict]:
+        r = await self._request("GET", "/creator_media",
+                                params={"creator_id": f"eq.{creator_id}",
+                                        "select": "content_hash,kind,public_url,analysis,"
+                                                  "transcript,duration_s,width,height,fps,"
+                                                  "loudness_lufs,created_at",
+                                        "order": "created_at.desc",
+                                        "limit": str(limit)})
+        if not (r and r.status_code == 200):
+            return []
+        try:
+            rows = r.json()
+        except Exception:
+            return []
+        return rows if isinstance(rows, list) else []
+
     # --- clip_edit_sessions (F15: durable manual-editor state) ----------------
     # The whole in-memory job dict, stored as one JSONB blob — see migrations.sql
     # for why this is a blob rather than a column-per-field table.

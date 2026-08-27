@@ -201,9 +201,9 @@ def test_reels_progressive_serve_writes_before_enrichment(monkeypatch):
         return posts
 
     seen = {}
-    async def fake_transcribe(ps, top_n=4):
-        seen["cache_ready_at_enrich"] = key in main._niche_reels_cache
-        seen["partial_at_enrich"] = main._niche_reels_cache.get(key, {}).get("partial")
+    async def fake_transcribe(ps, top_n=4, max_wait_s=180):
+        seen.setdefault("cache_ready_at_enrich", key in main._niche_reels_cache)
+        seen.setdefault("partial_at_enrich", main._niche_reels_cache.get(key, {}).get("partial"))
         return ps
 
     async def fake_rehost(ps):
@@ -227,7 +227,7 @@ def test_warm_reels_on_boot_keyless_noop():
 
 
 def test_memory_distill_keyless_and_short_session_noop():
-    # B-8: keyless (or <4 user turns) → deterministic empty, no model call.
+    # B-8: keyless (or <2 user turns) → deterministic empty, no model call.
     r = client.post("/v1/memory/distill", json={
         "creator_id": "c_distill", "transcript": [
             {"role": "user", "text": "hey"}, {"role": "assistant", "text": "hi"}]}).json()
@@ -445,8 +445,8 @@ def test_refresh_niche_reels_transcribes_before_mapping(monkeypatch):
         return [{"author": "c", "platform": "instagram", "views": 50000, "likes": 100,
                  "caption": "cap", "video_url": "https://cdn/v.mp4", "timestamp": "t"}]
     captured = {}
-    async def fake_transcribe(posts, top_n=4):
-        captured["top_n"] = top_n
+    async def fake_transcribe(posts, top_n=4, max_wait_s=180):
+        captured["top_n"] = top_n     # last wave wins → the FULL budget
         for p in posts: p["transcript"] = "the real spoken words"
         return posts
     monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
@@ -5151,7 +5151,7 @@ def test_insights_live_degrade_is_populated(monkeypatch):
 def test_media_analyze_vision_error_degrades_to_full_mock(monkeypatch):
     import httpx
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
-    main._media_cache.pop("h_err", None)
+    main._media_cache.pop("default:h_err", None)     # cache key is creator-scoped
 
     class _C:
         async def __aenter__(self): return self
@@ -5161,13 +5161,13 @@ def test_media_analyze_vision_error_degrades_to_full_mock(monkeypatch):
     r = client.post("/v1/media/analyze",
                     json={"content_hash": "h_err", "public_url": "http://x", "kind": "image"}).json()
     assert r["mode"] == "mock" and r.get("broll_suitability")   # full analysis shape
-    assert "h_err" not in main._media_cache                     # failure NOT cached
+    assert "default:h_err" not in main._media_cache             # failure NOT cached
 
 
 def test_media_analyze_malformed_not_cached(monkeypatch):
     import httpx
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
-    main._media_cache.pop("h_bad", None)
+    main._media_cache.pop("default:h_bad", None)     # cache key is creator-scoped
 
     class _Resp:
         status_code = 200
@@ -5180,7 +5180,7 @@ def test_media_analyze_malformed_not_cached(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _C())
     r = client.post("/v1/media/analyze",
                     json={"content_hash": "h_bad", "public_url": "http://x", "kind": "image"}).json()
-    assert r["mode"] == "mock" and "h_bad" not in main._media_cache
+    assert r["mode"] == "mock" and "default:h_bad" not in main._media_cache
 
 
 # ---------------------------------------------------------------------------
@@ -7085,3 +7085,530 @@ def test_sweep_staggers_orphan_resumes(monkeypatch):
     d = deferred_first[0]
     assert first_states[d][0] == "processing", "deferred orphan must be untouched, never failed"
     assert d in all_calls, "the deferred orphan is resumed on the NEXT pass"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2/3: reels first-content-fast, niche warm, media memory, readyz
+# ---------------------------------------------------------------------------
+
+def _stub_niche_refresh(monkeypatch):
+    """Replace the background niche refresh with a recorder, so warm paths can be
+    asserted without a scrape. Returns the list of niches a refresh was kicked for."""
+    import asyncio as _a
+    kicked: list[str] = []
+
+    def fake_refresh(niche):
+        kicked.append(niche)
+
+        async def _noop():
+            main._reels_refreshing.discard(main._niche_cache_key(niche))
+        return _noop()
+
+    monkeypatch.setattr(main, "_refresh_niche_reels", fake_refresh)
+    return kicked
+
+
+def test_reels_warm_accepts_a_niche_and_spawns_refresh(monkeypatch):
+    kicked = _stub_niche_refresh(monkeypatch)
+    monkeypatch.setattr(main, "APIFY_KEY", "k")
+    niche = "warm-test-niche"
+    main._niche_reels_cache.pop(main._niche_cache_key(niche), None)
+    main._reels_refreshing.discard(main._niche_cache_key(niche))
+    r = client.post("/v1/reels/warm", json={"niche": niche, "creator_id": "c_warm"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert kicked == [niche]
+    # And the niche is remembered for the real creator (boot warm reads this).
+    assert main._creator_niche.get("c_warm") == niche
+
+
+def test_reels_warm_requires_handle_or_niche():
+    assert client.post("/v1/reels/warm", json={}).status_code == 422
+
+
+def test_reels_warm_handle_only_still_works(monkeypatch):
+    """Additive change: the existing handle caller must be untouched."""
+    import asyncio as _a
+    kicked: list[str] = []
+
+    def fake_watched(platform, handle):
+        kicked.append(handle)
+
+        async def _noop():
+            main._reels_refreshing.discard(f"{platform}:{handle}")
+        return _noop()
+
+    monkeypatch.setattr(main, "_refresh_watched_creator", fake_watched)
+    monkeypatch.setattr(main, "APIFY_KEY", "k")
+    main._reels_refreshing.discard("instagram:warmhandle")
+    r = client.post("/v1/reels/warm", json={"handle": "@warmhandle"})
+    assert r.status_code == 200 and kicked == ["warmhandle"]
+
+
+def test_niche_refresh_wave1_writes_partial_once_transcripts_land(monkeypatch):
+    """Phase 2a: the serve gate needs `transcribed`, so the first write that can
+    actually be served is the one AFTER wave 1 — not the pre-transcription phase-1
+    write. Expect an extra partial write, carrying transcripts, before the full pass."""
+    import asyncio as _a
+    niche = "wave-niche"
+    key = main._niche_cache_key(niche)
+    main._niche_reels_cache.pop(key, None)
+    posts = [{"author": "a", "platform": "instagram", "views": 90000 - i, "likes": 10,
+              "caption": "tip", "video_url": f"https://cdn/{i}.mp4",
+              "thumbnail_url": f"https://cdn/{i}.jpg", "id": f"w{i}"} for i in range(8)]
+
+    async def fake_scrape(n, limit=20):
+        return posts
+
+    waves: list[dict] = []
+
+    async def fake_transcribe(ps, top_n=4, max_wait_s=180):
+        waves.append({"n": len(ps), "top_n": top_n, "max_wait_s": max_wait_s})
+        for p in ps[:top_n]:
+            p["transcript"] = "real spoken words here"
+        return ps
+
+    writes: list[dict] = []
+    real_write = main._write_niche_reels
+
+    async def spy_write(k, ps, partial):
+        writes.append({"partial": partial,
+                       "transcribed": sum(1 for p in ps if p.get("transcript"))})
+        await real_write(k, ps, partial)
+
+    async def fake_rehost(ps):
+        return None
+
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", fake_transcribe)
+    monkeypatch.setattr(main, "_write_niche_reels", spy_write)
+    monkeypatch.setattr(main, "_rehost_reel_media", fake_rehost)
+    _a.run(main._refresh_niche_reels(niche))
+
+    # 3 writes now: pre-transcription partial, wave-1 partial (SERVABLE), final.
+    assert [w["partial"] for w in writes] == [True, True, False]
+    assert writes[0]["transcribed"] == 0        # the old first write can never be served
+    assert writes[1]["transcribed"] > 0         # the new one can
+    # Wave 1 is the small/short one; wave 2 gets the full budget.
+    assert waves[0]["top_n"] == main._REEL_TRANSCRIBE_FIRST_WAVE
+    assert waves[0]["max_wait_s"] == 120
+    assert waves[1]["top_n"] == main._REEL_TRANSCRIBE_TOP_N
+
+
+def test_niche_refresh_skips_wave1_write_when_nothing_transcribed(monkeypatch):
+    """No transcript = nothing servable gained: don't pay for an extra write/rehost."""
+    import asyncio as _a
+    niche = "wave-niche-empty"
+    main._niche_reels_cache.pop(main._niche_cache_key(niche), None)
+
+    async def fake_scrape(n, limit=20):
+        return [{"author": "a", "platform": "instagram", "views": 50000, "likes": 1,
+                 "caption": "c", "video_url": "https://cdn/x.mp4", "id": "e1"}]
+
+    async def fake_transcribe(ps, top_n=4, max_wait_s=180):
+        return ps                      # keyless/timeout: nothing lands
+
+    writes: list[bool] = []
+    real_write = main._write_niche_reels
+
+    async def spy_write(k, ps, partial):
+        writes.append(partial)
+        await real_write(k, ps, partial)
+
+    async def fake_rehost(ps):
+        return None
+
+    monkeypatch.setattr(main, "scrape_niche_posts", fake_scrape)
+    monkeypatch.setattr(main, "_transcribe_top_posts", fake_transcribe)
+    monkeypatch.setattr(main, "_write_niche_reels", spy_write)
+    monkeypatch.setattr(main, "_rehost_reel_media", fake_rehost)
+    _a.run(main._refresh_niche_reels(niche))
+    assert writes == [True, False]
+
+
+def test_digest_warms_the_niche(monkeypatch):
+    """The guaranteed hook: onboarding completion kicks the niche scrape even if the
+    client never calls /v1/reels/warm."""
+    kicked = _stub_niche_refresh(monkeypatch)
+    monkeypatch.setattr(main, "APIFY_KEY", "k")
+    niche = "digest-warm-niche"
+    main._niche_reels_cache.pop(main._niche_cache_key(niche), None)
+    main._reels_refreshing.discard(main._niche_cache_key(niche))
+    r = client.post("/v1/onboarding/digest",
+                    json={"niche": niche, "creator_id": "c_digest_warm", "posts": []})
+    assert r.status_code == 200
+    assert kicked == [niche]
+
+
+def test_reels_health_requires_the_cron_token(monkeypatch):
+    monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
+    assert client.post("/internal/reels/health", json={"token": "nope"}).status_code == 403
+    assert client.post("/internal/reels/health", json={}).status_code == 403
+
+
+def test_reels_health_reports_the_serve_gate(monkeypatch):
+    monkeypatch.setattr(main, "INTERNAL_CRON_TOKEN", "secret")
+    monkeypatch.setattr(main, "_supabase_client", None)
+    niche = "health-niche"
+    key = main._niche_cache_key(niche)
+    main._niche_reels_cache[key] = {"ts": time.time(), "partial": True, "reels": [
+        # servable: playable + transcribed + reads as a talking head
+        {"id": "r1", "video_url": "https://cdn/a.mp4", "transcribed": True,
+         "edit_format": "talking_head", "duration_s": 30,
+         "transcript": " ".join(["word"] * 90)},
+        # transcribed but no video -> not servable
+        {"id": "r2", "video_url": "", "transcribed": True,
+         "edit_format": "talking_head", "duration_s": 30,
+         "transcript": " ".join(["word"] * 90)},
+        # never transcribed -> not servable
+        {"id": "r3", "video_url": "https://cdn/c.mp4", "transcribed": False},
+    ]}
+    r = client.post("/internal/reels/health", params={"niche": niche},
+                    json={"token": "secret"}).json()
+    assert r["key"] == key and r["cached"] is True and r["partial"] is True
+    assert r["n"] == 3 and r["transcribed"] == 2 and r["servable"] == 1
+    assert r["source"] == "memory" and isinstance(r["apify"], bool) and isinstance(r["assembly"], bool)
+    main._niche_reels_cache.pop(key, None)
+
+
+def test_ffprobe_media_stats_failsoft_without_ffprobe(monkeypatch):
+    import asyncio as _a
+    monkeypatch.setattr(main.shutil, "which", lambda _n: None)
+    assert _a.run(main._ffprobe_media_stats("https://x/y.mp4")) == {}
+    # ...and an empty url never even looks for the binary.
+    assert _a.run(main._ffprobe_media_stats("")) == {}
+
+
+def test_media_cache_is_creator_scoped(monkeypatch):
+    """Two creators uploading the SAME bytes must not read each other's analysis."""
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")      # deterministic mock path
+    monkeypatch.setattr(main, "_supabase_client", None)
+    h = "hash-scoped-1"
+    main._media_cache.pop(f"a:{h}", None)
+    main._media_cache.pop(f"b:{h}", None)
+    first = client.post("/v1/media/analyze",
+                        json={"content_hash": h, "creator_id": "a", "kind": "photo"}).json()
+    assert first["mode"] == "mock"
+    assert f"a:{h}" in main._media_cache and f"b:{h}" not in main._media_cache
+    again = client.post("/v1/media/analyze",
+                        json={"content_hash": h, "creator_id": "a", "kind": "photo"}).json()
+    assert again["mode"] == "cached"
+    other = client.post("/v1/media/analyze",
+                        json={"content_hash": h, "creator_id": "b", "kind": "photo"}).json()
+    assert other["mode"] == "mock"          # NOT "cached" — no cross-creator read
+    main._media_cache.pop(f"a:{h}", None)
+    main._media_cache.pop(f"b:{h}", None)
+
+
+def test_merged_broll_corpus_backfills_a_thin_client_corpus(monkeypatch):
+    import asyncio as _a
+
+    class _Store:
+        async def load_creator_media(self, creator_id, limit=200):
+            return [
+                {"content_hash": "h1", "public_url": "https://s/1.mp4", "duration_s": 4.5,
+                 "analysis": {"description": "hands kneading dough", "tags": ["dough", "hands"],
+                              "broll_suitability": 88}},
+                {"content_hash": "h2", "public_url": "https://s/2.mp4", "duration_s": 9.0,
+                 "analysis": {"description": "oven door opening", "tags": ["oven"],
+                              "broll_suitability": 71}},
+                {"content_hash": "h3", "analysis": {}},       # unusable → skipped
+            ]
+
+    monkeypatch.setattr(main, "_supabase_client", _Store())
+    out = _a.run(main._merged_broll_corpus("c_real", [{"asset_id": "h1", "description": "client copy"}]))
+    ids = [a["asset_id"] for a in out]
+    assert ids == ["h1", "h2"]                     # deduped by asset_id, client entry wins
+    assert out[0]["description"] == "client copy"
+    backfilled = out[1]
+    assert backfilled["duration_s"] == 9.0 and backfilled["remote_url"] == "https://s/2.mp4"
+    assert backfilled["broll_suitability"] == 71 and backfilled["tags"] == ["oven"]
+
+
+def test_merged_broll_corpus_leaves_a_full_client_corpus_alone(monkeypatch):
+    import asyncio as _a
+
+    class _Boom:
+        async def load_creator_media(self, creator_id, limit=200):
+            raise AssertionError("must not hit the store when the client sent a real corpus")
+
+    monkeypatch.setattr(main, "_supabase_client", _Boom())
+    thick = [{"asset_id": f"a{i}", "description": "d"} for i in range(3)]
+    assert _a.run(main._merged_broll_corpus("c_real", thick)) == thick
+    # ...and the shared 'default' bucket never reads a pooled library.
+    assert _a.run(main._merged_broll_corpus("default", [])) == []
+
+
+def test_readyz_reports_the_palo_block():
+    r = client.get("/readyz").json()
+    palo = r["palo"]
+    assert set(palo) == {"port", "memory_v2", "embeddings"}
+    assert all(isinstance(v, bool) for v in palo.values())
+    # non-secret: flag state only, never a key value
+    assert "sk-" not in json.dumps(r)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 · global human-voice doctrine: zero em dashes, human titles,
+# talking-head-only shot plans. The dash ban is enforced in THREE places and
+# each is covered here: the doctrine text in every writer prompt (instruction),
+# the exemplars those prompts carry (few-shot), and scrub_em_dashes (backstop).
+# ---------------------------------------------------------------------------
+
+_DASHES = ("—", "–")          # em dash, en dash
+
+
+def _has_dash(s: str) -> bool:
+    return any(d in s for d in _DASHES)
+
+
+def test_scrub_em_dashes_heuristics():
+    scrub = prompts.scrub_em_dashes
+    # spaced dash -> period when the next visible char is uppercase, else comma
+    assert scrub("a — B c") == "a. B c"
+    assert scrub("a — b c") == "a, b c"
+    # tight word-dash-word -> comma
+    assert scrub("word—word") == "word, word"
+    # a line-leading dash becomes a plain bullet marker
+    assert scrub("one\n— two\nthree") == "one\n- two\nthree"
+    # a trailing dash is dropped entirely
+    assert scrub("ends here —") == "ends here"
+    # en dashes get the same treatment
+    assert scrub("a – b") == "a, b"
+    # no dash -> byte-identical passthrough (and non-str is returned untouched)
+    assert scrub("no dash here") == "no dash here"
+    assert scrub("") == ""
+    assert prompts.scrub_em_dashes(None) is None
+    # collapse artifacts
+    assert "  " not in scrub("x — y — z")
+    assert " ," not in scrub("x — y")
+
+
+def test_scrub_em_dashes_is_total():
+    """Whatever the input, the output carries no em or en dash. This is the
+    invariant the response sweep below leans on."""
+    for src in ("a—b", " — ", "—", "–—–",
+                "one — Two — three—four —",
+                "— leading", "trailing –", "a——b"):
+        assert not _has_dash(prompts.scrub_em_dashes(src)), src
+
+
+def test_voice_scrub_walker_only_touches_whitelisted_prose():
+    obj = {
+        "title": "a — B",
+        "words": [{"word": "so—", "start_ms": 0}],       # transcript-shaped: NEVER scrubbed
+        "edl": {"segments": [{"cue_text": "keep — me"}]},
+        "beats": ["one — two"],
+        "altHooks": [{"text": "hook — here", "signal": "contrarian"}],
+    }
+    out = main._scrub_voice(obj)
+    assert not _has_dash(out["title"])
+    assert not _has_dash(out["beats"][0])
+    assert not _has_dash(out["altHooks"][0]["text"])
+    # transcript / EDL data is untouched, byte for byte
+    assert out["words"] == obj["words"]
+    assert out["edl"] == obj["edl"]
+
+
+def test_edl_module_still_uses_em_dash_markers():
+    """app/edl.py reads a TRAILING em dash as AssemblyAI's aborted-sentence marker.
+    The voice doctrine must never have been applied to that file."""
+    with open("app/edl.py", encoding="utf-8") as f:
+        src = f.read()
+    assert "—" in src, "edl.py aborted-sentence markers were scrubbed away"
+
+
+def test_voice_doctrine_in_every_writer_prompt():
+    """VOICE_DOCTRINE is the instruction half of the dash ban. Every surface that
+    writes creator-visible prose must carry it verbatim."""
+    d = prompts.VOICE_DOCTRINE
+    assert "NEVER use an em dash or en dash anywhere" in d
+    brand = {"niche": "fitness", "audience": "lifters"}
+    script = {"hook": "h", "body": "b", "cta": "c", "style": "talking_head"}
+    pillar = {"name": "Myths", "summary": "s", "angle": "a", "exampleTopics": ["t"]}
+    reel = {"creator_handle": "x", "hook_text": "h", "transcript": "t"}
+    insight = {"value": "contrarian", "dimension": "hook_signal", "lift_pct": 12,
+               "n": 9, "band": "strong", "confidence": "early_read", "label": "L"}
+    systems = {
+        "scripts": prompts.scripts_prompt(brand, pillar, "talking_head", 2)[0],
+        "hooks": prompts.hooks_prompt(brand, "squats")[0],
+        "steer": prompts.steer_prompt(brand, script, "shorter")[0],
+        "social_caption": prompts.SOCIAL_CAPTION_SYSTEM,
+        "captions": prompts.captions_prompt("h", "b")[0],
+        "teardown": prompts.teardown_prompt({"formatName": "f"})[0],
+        "insights": prompts.insights_prompt(brand, "summary")[0],
+        "voice_agent": prompts.VOICE_AGENT_SYSTEM,
+        "media_analyze": prompts.media_analyze_prompt("a.jpg")[0],
+        "next_idea": prompts.next_idea_prompt("fitness", None)[0],
+        "niche_trends": prompts.niche_trends_prompt("fitness", [])[0],
+        "coach_card": prompts.coach_card_prompt(insight)[0],
+        "tweak": prompts.tweak_prompt({}, [], "shorter")[0],
+        "converse": prompts.converse_system("chat"),
+        "mimic": prompts.mimic_prompt(reel, brand)[0],
+        "analyze_video": prompts.analyze_video_prompt("u", "t", brand)[0],
+        "brand_summary": prompts.brand_summary_prompt(brand)[0],
+    }
+    for name, sysp in systems.items():
+        assert d in sysp, f"VOICE_DOCTRINE missing from {name}"
+
+
+def test_talking_head_and_shotplan_rules_ride_the_idea_writers():
+    brand = {"niche": "fitness"}
+    pillar = {"name": "Myths", "summary": "s", "angle": "a", "exampleTopics": ["t"]}
+    reel = {"creator_handle": "x", "hook_text": "h", "transcript": "t"}
+    for sysp in (prompts.scripts_prompt(brand, pillar, "talking_head", 1)[0],
+                 prompts.mimic_prompt(reel, brand)[0]):
+        assert prompts.TALKING_HEAD_MANDATE in sysp
+        assert prompts.SHOTPLAN_RULE in sysp
+    assert prompts.TALKING_HEAD_MANDATE in prompts.next_idea_prompt("fitness", None)[0]
+    # the rule is an EDITOR note, and says so
+    assert "NOTE TO THE AI EDITOR" in prompts.SHOTPLAN_RULE
+    assert "The creator never sees the shotPlan." in prompts.SHOTPLAN_RULE
+
+
+def test_title_doctrine_rides_every_title_writer():
+    brand = {"niche": "fitness"}
+    pillar = {"name": "Myths", "summary": "s", "angle": "a", "exampleTopics": ["t"]}
+    reel = {"creator_handle": "x", "hook_text": "h", "transcript": "t"}
+    t = prompts.TITLE_DOCTRINE
+    assert "8 words max" in t and "Never Title Case" not in t  # phrasing lives in VOICE_DOCTRINE
+    for sysp in (prompts.scripts_prompt(brand, pillar, "talking_head", 1)[0],
+                 prompts.mimic_prompt(reel, brand)[0],
+                 prompts.next_idea_prompt("fitness", None)[0],
+                 prompts.niche_trends_prompt("fitness", [])[0]):
+        assert t in sysp
+    assert "plain spoken sentence case" in prompts.SCRIPT_SCHEMA
+
+
+def test_prompt_exemplars_carry_no_em_dash():
+    """Few-shot beats instruction: an exemplar containing a dash TEACHES the dash.
+    Every exemplar the writers see must be clean."""
+    exemplars = {
+        "converse_envelope": prompts.CONVERSE_ENVELOPE_EXEMPLAR,
+        "craft_examples": prompts.CRAFT_EXAMPLES_BLOCK,
+        "hooks_prompt": prompts.hooks_prompt({"niche": "fitness"}, "protein")[0],
+        "mimic_prompt": prompts.mimic_prompt(
+            {"creator_handle": "x", "hook_text": "h", "transcript": "t"}, {"niche": "fitness"})[0],
+        "signal_hook_templates": json.dumps(prompts._SIGNAL_HOOK_TEMPLATES),
+        "mock_next_idea": json.dumps(prompts.mock_next_idea("fitness", None)),
+        "niche_prior_block": prompts.niche_prior_block("fitness"),
+        "script_schema": prompts.SCRIPT_SCHEMA,
+    }
+    for name, text in exemplars.items():
+        assert not _has_dash(text), f"em/en dash in {name} exemplar"
+    # every ACTIVE style's rubric AND exemplar
+    for style in prompts.ACTIVE_STYLES:
+        s = prompts.STYLES[style]
+        assert not _has_dash(s["exemplar"]), f"em dash in {style} exemplar"
+        assert not _has_dash(s["rubric"]), f"em dash in {style} rubric"
+    # every niche prior's rendered "why" line
+    for slug in prompts.NICHE_PRIORS:
+        assert not _has_dash(prompts.niche_prior_block(slug)), slug
+
+
+def test_palo_voice_rules_match_prompts_doctrine_and_are_wired():
+    from app import palo_prompts as pp
+    # duplicated on purpose (circular import), so assert they never drift
+    assert pp._VOICE_RULES == prompts.VOICE_DOCTRINE
+    for name in ("IDEA_GENERATION_SYSTEM", "WRITE_AGENT_SYSTEM", "INSIGHT_DISCOVERY_SYSTEM",
+                 "DIRECTION_OPTIONS_SYSTEM", "SCRIPT_FROM_BRIEF_SYSTEM",
+                 "_STRATEGY_SYNTH_INSTRUCTIONS"):
+        assert pp._VOICE_RULES in getattr(pp, name), f"_VOICE_RULES missing from {name}"
+    assert pp._VOICE_RULES in pp.spitfire_generator_prompt("analysis", "exemplar")[0]
+    # the bare "No em dashes." lines were replaced by the doctrine, not stacked on top
+    assert "No em dashes." not in pp.IDEA_GENERATION_SYSTEM
+
+
+def test_palo_title_exemplars_are_spoken_register():
+    from app import palo_prompts as pp
+    sysp = pp.IDEA_GENERATION_SYSTEM
+    assert not _has_dash(sysp.split("<idea_quality>")[1].split("</idea_quality>")[0])
+    # the old Title Case exemplars are gone, named explicitly as anti-examples instead
+    assert "My Neighbor Pressure Washed My Driveway Without Asking — Here's What I Did" not in sysp
+    assert "the client who fired me on a Tuesday" in sysp
+    assert "no Title Case" in sysp
+
+
+def test_mock_ideas_titles_are_spoken_not_title_case():
+    from app import ideas as _ideas
+    for idea in _ideas.mock_ideas({"niche": "fitness"}):
+        t = idea["title"]
+        assert not t.istitle(), f"Title Case mock idea: {t!r}"
+        assert ":" not in t and not _has_dash(t), f"bad title register: {t!r}"
+        assert len(t.split()) <= 9, t
+
+
+def test_active_styles_only_generate():
+    """Retired styles are kept for legacy decode but must never be generated."""
+    retired = [k for k, v in prompts.STYLES.items() if v.get("retired")]
+    assert retired and not any(k in prompts.ACTIVE_STYLES for k in retired)
+    # scripts_prompt coerces a retired style back to talking_head
+    brand, pillar = {"niche": "fitness"}, {"name": "p", "summary": "s", "angle": "a"}
+    sysp = prompts.scripts_prompt(brand, pillar, "fast_cuts", 1)[0]
+    assert prompts.STYLES["talking_head"]["exemplar"] in sysp
+    # converse's generate_scripts enum offers only active styles
+    conv = prompts.converse_system("chat")
+    assert f"[{', '.join(prompts.ACTIVE_STYLES)}]" in conv
+    for k in retired:
+        assert k not in conv, f"retired style {k} still offered in converse_system"
+
+
+def test_feed_sreq_falls_back_to_active_styles():
+    brand = {"niche": "fitness"}
+    # empty styles param -> ACTIVE_STYLES, never the full STYLES table
+    for cursor in range(6):
+        sreq, _ = main._feed_sreq(brand, "", cursor, "c_styles", None, None)
+        assert sreq.style in prompts.ACTIVE_STYLES
+    # a retired style asked for explicitly is filtered out
+    sreq, _ = main._feed_sreq(brand, "fast_cuts,split_three", 0, "c_styles", None, None)
+    assert sreq.style in prompts.ACTIVE_STYLES
+
+
+def test_brand_block_renders_multi_topics_and_audiences():
+    brand = {"niche": "fitness", "audience": "lifters",
+             "topics": ["fitness", "nutrition", "recovery"],
+             "audiences": ["lifters", "new parents"]}
+    block = prompts.brand_block(brand)
+    # the singular lines match_niche depends on are untouched
+    assert "- niche: fitness" in block and "- audience: lifters" in block
+    assert "- also covers: fitness, nutrition, recovery" in block
+    assert "- also talking to: lifters, new parents" in block
+    # a single-entry list adds no extra line (nothing to say)
+    solo = prompts.brand_block({"niche": "fitness", "topics": ["fitness"], "audiences": ["lifters"]})
+    assert "also covers" not in solo and "also talking to" not in solo
+
+
+def test_keyless_responses_carry_no_em_dash():
+    """End-to-end sweep: every creator-visible keyless response, serialized whole."""
+    payloads = {
+        "scripts": client.post("/v1/scripts", json={
+            "niche": "fitness", "style": "talking_head", "count": 3,
+            "pillar": "Myth-busting", "example_topics": ["protein timing"]}).json(),
+        "converse": client.post("/v1/converse", json={
+            "messages": [{"role": "user", "content": "write me a script about squats"}],
+            "brand": {"niche": "fitness"}}).json(),
+        "converse_day": client.post("/v1/converse", json={
+            "messages": [{"role": "user", "content": "build my day"}],
+            "brand": {"niche": "fitness"}}).json(),
+        "converse_idea": client.post("/v1/converse", json={
+            "messages": [{"role": "user", "content": "i have an idea about deadlifts"}],
+            "brand": {"niche": "fitness"}}).json(),
+        "teardown": client.post("/v1/teardown", json={"clip": {"predictedScore": 88}}).json(),
+        "next_idea": client.get("/v1/suggestions/next-idea",
+                                params={"creator_id": "c_dash", "niche": "fitness"}).json(),
+        "trends": client.get("/v1/trends", params={"niche": "fitness"}).json(),
+        "score": client.post("/v1/score", json={
+            "hook": "x " * 90, "body": "y " * 200}).json(),
+        "mimic": client.post("/v1/mimic", json={
+            "reel": {"creator_handle": "a", "hook_text": "h", "title": "t"},
+            "brand": {"niche": "fitness"}}).json(),
+    }
+    for name, body in payloads.items():
+        blob = json.dumps(body, ensure_ascii=False)
+        assert not _has_dash(blob), f"em/en dash in /{name} response: {blob[:400]}"
+
+
+def test_clamp_title_scrubs_dashes():
+    assert not _has_dash(main._clamp_title("protein timing — the real rule"))
+    # still clamps length at a word boundary
+    long = main._clamp_title("a" + " word" * 30)
+    assert len(long) <= 42 and not long.endswith(" ")
