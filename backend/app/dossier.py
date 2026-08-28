@@ -230,9 +230,7 @@ def _coerce_json(v):
 # Claude-frames fallback
 # ---------------------------------------------------------------------------
 
-async def _extract_keyframes(source_url: str, duration_ms: int) -> list[tuple[int, bytes]]:
-    """ffmpeg ~0.5fps keyframes + a full-res first frame → [(ms, jpeg_bytes)]. Fails soft
-    to [] (no ffmpeg / unreadable). Boundary is monkeypatched in tests."""
+def _extract_keyframes_blocking(source_url: str) -> list[tuple[int, bytes]]:
     import shutil, tempfile, subprocess, glob
     if not shutil.which("ffmpeg"):
         return []
@@ -262,6 +260,15 @@ async def _extract_keyframes(source_url: str, duration_ms: int) -> list[tuple[in
             except OSError:
                 continue
     return frames
+
+
+async def _extract_keyframes(source_url: str, duration_ms: int) -> list[tuple[int, bytes]]:
+    """ffmpeg ~0.5fps keyframes + a full-res first frame → [(ms, jpeg_bytes)]. Fails soft
+    to [] (no ffmpeg / unreadable). Boundary is monkeypatched in tests.
+
+    to_thread: the two ffmpeg runs can take 60+120s; run directly on the event loop
+    they stalled every other coroutine — same class _extract_sparse_frames already fixed."""
+    return await asyncio.to_thread(_extract_keyframes_blocking, source_url)
 
 
 async def _vision_json(system: str, user: str, images: list[bytes], schema: dict) -> dict | None:

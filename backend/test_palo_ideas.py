@@ -24,6 +24,10 @@ class FakeStore:
         self.upserts.append(b)
         return True
 
+    async def upsert_briefs(self, briefs):
+        self.upserts.extend(briefs)
+        return True
+
     async def record_ai_usage(self, row):
         return True
 

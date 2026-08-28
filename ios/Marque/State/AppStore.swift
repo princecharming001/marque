@@ -284,19 +284,38 @@ final class AppStore {
     /// link time (and its CDN URLs expire), so the server re-derives one from the
     /// public profile — this pulls the healed value in. Silent no-op when nothing
     /// is linked or the call fails.
+    /// Persisted stamp of the last successful avatar refresh — this fires on every
+    /// launch, and the server-side heal it pulls in moves on a scrape cadence, not
+    /// per-session, so once a day is plenty.
+    private static let avatarRefreshKey = "marque.avatars.refreshedAt"
+
     func refreshAccountAvatars() async {
         let accounts = brand.connectedAccounts.filter { !$0.handle.isEmpty }
         guard !accounts.isEmpty else { return }
-        for platform in Set(accounts.map(\.platform)) {
-            let fresh = await backend.socialAccounts(platform: platform)
-            for f in fresh where !f.avatarUrl.isEmpty {
-                guard let i = brand.connectedAccounts.firstIndex(where: {
-                    $0.platform == f.platform && $0.handle.lowercased() == f.handle.lowercased()
-                }) else { continue }
-                brand.connectedAccounts[i].avatarUrl = f.avatarUrl
+        let last = UserDefaults.standard.double(forKey: Self.avatarRefreshKey)
+        guard Date().timeIntervalSince1970 - last > 24 * 3600 else { return }
+        // Platforms are independent — fetch them concurrently instead of serially.
+        var sawAny = false
+        await withTaskGroup(of: [ConnectedAccount].self) { group in
+            for platform in Set(accounts.map(\.platform)) {
+                group.addTask { [backend] in await backend.socialAccounts(platform: platform) }
+            }
+            for await fresh in group {
+                if !fresh.isEmpty { sawAny = true }
+                for f in fresh where !f.avatarUrl.isEmpty {
+                    guard let i = brand.connectedAccounts.firstIndex(where: {
+                        $0.platform == f.platform && $0.handle.lowercased() == f.handle.lowercased()
+                    }) else { continue }
+                    brand.connectedAccounts[i].avatarUrl = f.avatarUrl
+                }
             }
         }
-        save()
+        // Stamp only when the backend actually answered — a network miss keeps the
+        // next launch eligible instead of going silent for a day.
+        if sawAny {
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.avatarRefreshKey)
+            save()
+        }
     }
 
     func connectPreview(handle: String, platform: String) async -> ConnectedAccount? {
@@ -1330,7 +1349,17 @@ final class AppStore {
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
         if tagged.contains(where: { $0.status == .rendering }) {
-            Task { await pollJob(jobId: jobId, clipIds: tagged.map { $0.id }) }
+            // Register in the job-keyed registry: without it, repollRenderingClips
+            // (cold start / foreground / Library appear) stacked a SECOND 5s loop on
+            // a job this submit-time poller was already watching.
+            if !activeRepolls.contains(jobId) {
+                activeRepolls.insert(jobId)
+                let ids = tagged.map { $0.id }
+                Task {
+                    await pollJob(jobId: jobId, clipIds: ids)
+                    activeRepolls.remove(jobId)
+                }
+            }
         } else {
             notifyClipsReady(count: tagged.filter { $0.status == .ready }.count, jobId: jobId)
         }
@@ -1345,8 +1374,9 @@ final class AppStore {
         }
     }
 
-    // H-07: jobIds with a re-poll loop already in flight — Library appears often;
-    // never stack duplicate pollers on the same job.
+    // H-07: jobIds with ANY poll loop already in flight (submit-time pollJob,
+    // Library re-poll, or a tweak watcher) — Library appears often and foregrounds
+    // re-sweep; never stack duplicate pollers on the same job.
     private var activeRepolls: Set<String> = []
     // Restart-fragility audit: a `pipeline_interrupted` clip (a server-restart casualty
     // whose backend job is now restored + resumable) auto-retries ONCE before the user
@@ -1408,7 +1438,9 @@ final class AppStore {
     /// ALONE — the clip stays ready and simply keeps its placeholder; this must never
     /// re-enter the poll loop's dead-job handling for finished clips.
     /// Real duration of a media asset, in whole seconds (0 on any failure).
-    static func assetDurationSeconds(_ url: URL) async -> Int {
+    /// nonisolated: touches no store state, and the backfill/caching paths probe
+    /// from off the main actor.
+    nonisolated static func assetDurationSeconds(_ url: URL) async -> Int {
         let asset = AVURLAsset(url: url)
         guard let d = try? await asset.load(.duration).seconds, d.isFinite, d > 0 else { return 0 }
         return max(1, Int(d.rounded()))
@@ -1421,14 +1453,28 @@ final class AppStore {
         let stale = clips.filter { $0.status == .ready && $0.isServerRendered && $0.durationMeasured != true }
         guard !stale.isEmpty else { return }
         Task {
-            for clip in stale.prefix(12) {
+            let targets: [(id: UUID, url: URL)] = stale.prefix(12).compactMap { clip in
                 let url: URL? = clip.renderLocalPath.map { MediaStore.url(for: $0) }
                     ?? clip.remoteURL.flatMap { URL(string: $0) }
-                guard let url else { continue }
-                let dur = await Self.assetDurationSeconds(url)
-                guard let i = clips.firstIndex(where: { $0.id == clip.id }) else { continue }
-                if dur > 0 { clips[i].seconds = dur }
-                clips[i].durationMeasured = true      // measured (or probed and failed) — don't loop
+                return url.map { (clip.id, $0) }
+            }
+            guard !targets.isEmpty else { return }
+            // Remote probes dominate this sweep — run them concurrently, but no more
+            // than 3 in flight so a big library doesn't open 12 range requests at once.
+            await withTaskGroup(of: (UUID, Int).self) { group in
+                var iterator = targets.makeIterator()
+                for _ in 0..<3 {
+                    guard let t = iterator.next() else { break }
+                    group.addTask { (t.id, await Self.assetDurationSeconds(t.url)) }
+                }
+                for await (id, dur) in group {
+                    if let t = iterator.next() {
+                        group.addTask { (t.id, await Self.assetDurationSeconds(t.url)) }
+                    }
+                    guard let i = clips.firstIndex(where: { $0.id == id }) else { continue }
+                    if dur > 0 { clips[i].seconds = dur }
+                    clips[i].durationMeasured = true  // measured (or probed and failed) — don't loop
+                }
             }
             save()
         }
@@ -2247,9 +2293,16 @@ final class AppStore {
 
     func watchTweakRender(jobId: String, clipId: UUID, label: String? = nil) {
         guard !tweakWatchInFlight.contains(clipId) else { return }
+        // Job-keyed registry check: a live pollJob/pollClipStatuses loop on this job
+        // already flips the clip when it resolves — don't stack a third 5s loop.
+        guard !activeRepolls.contains(jobId) else { return }
         tweakWatchInFlight.insert(clipId)
+        activeRepolls.insert(jobId)
         Task {
-            defer { tweakWatchInFlight.remove(clipId) }
+            defer {
+                tweakWatchInFlight.remove(clipId)
+                activeRepolls.remove(jobId)
+            }
             for _ in 0..<120 {                                   // ~10 min at 5s
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 let (maybe, http) = await backend.pollClipJobWithStatus(jobId: jobId)
@@ -2395,18 +2448,26 @@ final class AppStore {
         guard let idx = clips.firstIndex(where: { $0.id == clipId }) else { return nil }
         if let p = clips[idx].playbackLocalPath { return MediaStore.url(for: p) }
         guard let remote = clips[idx].playbackRemoteURL, let url = URL(string: remote) else { return nil }
-        do {
-            let (tmp, resp) = try await URLSession.shared.download(from: url)
-            guard (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-                  let data = try? Data(contentsOf: tmp) else { return nil }
-            let path = MediaStore.save(data, ext: "mp4")
-            if let i = clips.firstIndex(where: { $0.id == clipId }), clips[i].isServerRendered,
-               clips[i].remoteURL == remote {
-                clips[i].renderLocalPath = path                  // warm the cache while we're here
-                save()
-            }
-            return MediaStore.url(for: path)
-        } catch { return nil }
+        // Download + adopt off the main actor; the move replaces the old
+        // read-whole-file-then-re-write round trip (a render can be ~200MB).
+        let path: String? = await Task.detached(priority: .userInitiated) { () async -> String? in
+            do {
+                let (tmp, resp) = try await URLSession.shared.download(from: url)
+                guard (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                      let path = MediaStore.adopt(fileAt: tmp, ext: "mp4") else {
+                    try? FileManager.default.removeItem(at: tmp)
+                    return nil
+                }
+                return path
+            } catch { return nil }
+        }.value
+        guard let path else { return nil }
+        if let i = clips.firstIndex(where: { $0.id == clipId }), clips[i].isServerRendered,
+           clips[i].remoteURL == remote {
+            clips[i].renderLocalPath = path                  // warm the cache while we're here
+            save()
+        }
+        return MediaStore.url(for: path)
     }
 
     // MARK: UX-D2 — transient tweak-preview state (never persisted: no save() calls)
@@ -2437,46 +2498,52 @@ final class AppStore {
         renderCacheInFlight.insert(clipId)
         Task { [weak self] in
             defer { self?.renderCacheInFlight.remove(clipId) }
-            guard let self else { return }
-            do {
-                let (tmp, response) = try await URLSession.shared.download(from: url)
-                var size = response.expectedContentLength          // -1 when unknown
-                if size < 0 {
-                    let attrs = try? FileManager.default.attributesOfItem(atPath: tmp.path)
-                    size = (attrs?[.size] as? Int64) ?? 0
-                }
-                guard size <= Self.renderCacheMaxBytes,
-                      (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
-                      let data = try? Data(contentsOf: tmp) else {
-                    try? FileManager.default.removeItem(at: tmp)
-                    return                              // too big / bad response → keep streaming
-                }
-                try? FileManager.default.removeItem(at: tmp)
-                let path = MediaStore.save(data, ext: "mp4")
-                // Poster from the actual render, off the main actor.
-                let posterData: Data? = await Task.detached(priority: .utility) {
-                    MediaStore.poster(for: MediaStore.url(for: path))?.jpegData(compressionQuality: 0.7)
+            // The whole download → adopt → poster → duration tail runs off the main
+            // actor: this fires exactly when a clip lands (poll tick), and the old
+            // Data(contentsOf:) + re-write put the entire render through RAM on main.
+            let landed: (path: String, thumbPath: String?, seconds: Int)? =
+                await Task.detached(priority: .utility) { () async -> (path: String, thumbPath: String?, seconds: Int)? in
+                    do {
+                        let (tmp, response) = try await URLSession.shared.download(from: url)
+                        var size = response.expectedContentLength          // -1 when unknown
+                        if size < 0 {
+                            let attrs = try? FileManager.default.attributesOfItem(atPath: tmp.path)
+                            size = (attrs?[.size] as? Int64) ?? 0
+                        }
+                        guard size <= Self.renderCacheMaxBytes,
+                              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,
+                              let path = MediaStore.adopt(fileAt: tmp, ext: "mp4") else {
+                            try? FileManager.default.removeItem(at: tmp)
+                            return nil                  // too big / bad response → keep streaming
+                        }
+                        // Poster from the actual render.
+                        let thumbPath = MediaStore.poster(for: MediaStore.url(for: path))
+                            .flatMap { $0.jpegData(compressionQuality: 0.7) }
+                            .map { MediaStore.save($0, ext: "jpg") }
+                        // Build 68: the badge shows the RENDER's real length, not the
+                        // script's target estimate (owner: everything said 24s).
+                        let dur = await Self.assetDurationSeconds(MediaStore.url(for: path))
+                        return (path, thumbPath, dur)
+                    } catch {
+                        return nil                      // fail-soft: streaming continues
+                    }
                 }.value
-                // Re-locate the clip (it may have moved) and confirm the URL didn't
-                // change mid-download (a tweak landing during the fetch wins).
-                guard let i = self.clips.firstIndex(where: { $0.id == clipId }),
-                      self.clips[i].remoteURL == urlStr else {
-                    try? FileManager.default.removeItem(at: MediaStore.url(for: path))
-                    return
-                }
-                self.clips[i].renderLocalPath = path
-                if let posterData { self.clips[i].thumbnailPath = MediaStore.save(posterData, ext: "jpg") }
-                // Build 68: the badge shows the RENDER's real length, not the script's
-                // target estimate (owner: everything said 24s).
-                let dur = await Self.assetDurationSeconds(MediaStore.url(for: path))
-                if dur > 0, let k = self.clips.firstIndex(where: { $0.id == clipId }) {
-                    self.clips[k].seconds = dur
-                    self.clips[k].durationMeasured = true
-                }
-                self.save()
-            } catch {
-                // fail-soft: streaming continues from remoteURL
+            guard let self, let landed else { return }
+            // Re-locate the clip (it may have moved) and confirm the URL didn't
+            // change mid-download (a tweak landing during the fetch wins).
+            guard let i = self.clips.firstIndex(where: { $0.id == clipId }),
+                  self.clips[i].remoteURL == urlStr else {
+                try? FileManager.default.removeItem(at: MediaStore.url(for: landed.path))
+                if let t = landed.thumbPath { try? FileManager.default.removeItem(at: MediaStore.url(for: t)) }
+                return
             }
+            self.clips[i].renderLocalPath = landed.path
+            if let t = landed.thumbPath { self.clips[i].thumbnailPath = t }
+            if landed.seconds > 0 {
+                self.clips[i].seconds = landed.seconds
+                self.clips[i].durationMeasured = true
+            }
+            self.save()
         }
     }
 
@@ -2673,6 +2740,7 @@ final class AppStore {
         if outcome == .posted, let ci = clips.firstIndex(where: { $0.id == post.clipId }) {
             clips[ci].status = .posted
         }
+        if outcome == .posted { invalidatePerformanceCache() }   // a settled post outdates the tab
         save()
     }
 
@@ -2691,6 +2759,7 @@ final class AppStore {
             if let idx = schedule.firstIndex(where: { $0.id == p.id }) { schedule[idx] = p }
             if outcome == .posted {
                 notifyPostPublished(p)
+                invalidatePerformanceCache()     // a settled post outdates the tab
                 if let ci = clips.firstIndex(where: { $0.id == p.clipId }) {
                     clips[ci].status = .posted
                     let registered = p, clip = clips[ci]
@@ -2755,6 +2824,68 @@ final class AppStore {
         }
         coaching = await llm.interpretInsights(brand: brand, summary: summary,
                                                persona: (coachPersona ?? .closer).rawValue)   // C-09
+    }
+
+    // MARK: Performance tab cache
+
+    // Hoisted from PerformanceView's per-view @State: the guards there died with the
+    // view, so every tab switch refetched 4 endpoints — including an LLM coaching
+    // call. Store-owned, a revisit inside the staleness window repaints instantly.
+    var aiInsights: [BackendClient.InsightItem] = []
+    var perfSummaries: [Int: BackendClient.PerformanceSummary] = [:]   // keyed by window (7/30/90)
+    var perfLoading = false
+    /// True once any Performance fetch completed — gates the honest "no posts yet"
+    /// note so it never flashes before the first answer.
+    var perfLoadedOnce = false
+    private var perfSummaryLoadedAt: [Int: Date] = [:]
+    private var perfAuxLoadedAt: Date? = nil     // insight inbox + metrics sync + coaching
+    private static let perfStaleAfter: TimeInterval = 15 * 60
+
+    /// A post just settled as truly posted — the next Performance visit refetches.
+    func invalidatePerformanceCache() {
+        perfSummaryLoadedAt = [:]
+        perfAuxLoadedAt = nil
+    }
+
+    /// Everything the Performance tab shows, fetched at most once per staleness
+    /// window (or after invalidatePerformanceCache). The independent fetches run
+    /// concurrently; coaching runs after the metrics sync it reads from.
+    func refreshPerformance(days: Int) async {
+        guard !perfLoading else { return }
+        let now = Date()
+        let summaryStale = perfSummaryLoadedAt[days]
+            .map { now.timeIntervalSince($0) > Self.perfStaleAfter } ?? true
+        let auxStale = perfAuxLoadedAt
+            .map { now.timeIntervalSince($0) > Self.perfStaleAfter } ?? true
+        guard summaryStale || auxStale else { return }
+        perfLoading = true
+        defer { perfLoading = false; perfLoadedOnce = true }
+        if summaryStale, auxStale {
+            async let summary = backend.fetchPerformanceSummary(days: days)
+            async let insightItems = backend.fetchInsights()
+            async let synced: Void = syncPostMetrics()
+            let (s, items, _) = await (summary, insightItems, synced)
+            applyPerformanceSummary(s, days: days)
+            aiInsights = items
+            await loadInsights()                 // coaching reads the just-synced metrics
+            perfAuxLoadedAt = Date()
+        } else if summaryStale {
+            applyPerformanceSummary(await backend.fetchPerformanceSummary(days: days), days: days)
+        } else {
+            async let insightItems = backend.fetchInsights()
+            async let synced: Void = syncPostMetrics()
+            let (items, _) = await (insightItems, synced)
+            aiInsights = items
+            await loadInsights()
+            perfAuxLoadedAt = Date()
+        }
+    }
+
+    private func applyPerformanceSummary(_ s: BackendClient.PerformanceSummary?, days: Int) {
+        perfSummaries[days] = s
+        learnedBestHour = s?.best_hour           // C-12
+        // A miss stays unstamped so the next visit retries instead of caching nil.
+        perfSummaryLoadedAt[days] = s == nil ? nil : Date()
     }
 
     // MARK: Today directive + weekly metrics
@@ -2832,24 +2963,79 @@ final class AppStore {
         var pillarsUserEdited: Bool? = nil             // hand-edited pillars survive scans
     }
 
+    /// Debounce task for save() — the FeedStore.scheduleSave pattern. ~60 call sites
+    /// (including every 5s poll tick) each triggered a synchronous full-Snapshot
+    /// JSONEncode on the main actor; now they coalesce into one flush per burst.
+    private var saveTask: Task<Void, Never>? = nil
+    /// Trailing-edge throttle for the Supabase mirror — it re-uploads the WHOLE
+    /// snapshot, so at most one push per window; the latest data always wins.
+    private var remotePushTask: Task<Void, Never>? = nil
+    private var pendingRemotePush: Data? = nil
+    private var lastRemotePushAt: Date = .distantPast
+    private static let remotePushMinInterval: TimeInterval = 10
+
+    /// Value-copy of the current model state (main-actor: reads live state; the copy
+    /// is what crosses to the background encoder, so mutation can continue freely).
+    private func currentSnapshot() -> Snapshot {
+        Snapshot(brand: brand, pillars: pillars, scripts: scripts, clips: clips,
+                 footage: footage, media: media, schedule: schedule, teardowns: teardowns,
+                 hasOnboarded: hasOnboarded, streak: streak,
+                 memory: memory, readiedScripts: readiedScripts,
+                 conversations: conversations, editPrefs: editPrefs,
+                 brandSummary: brandSummary, chatPersona: chatPersona,
+                 chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes,
+                 lastStreakDate: lastStreakDate,
+                 likedPicks: likedPicks, dismissedPicks: dismissedPicks,
+                 reelsShot: reelsShot,
+                 rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey),
+                 clipGroups: clipGroups,
+                 pillarsUserEdited: pillarsUserEdited)
+    }
+
     func save() {
-        let snap = Snapshot(brand: brand, pillars: pillars, scripts: scripts, clips: clips,
-                            footage: footage, media: media, schedule: schedule, teardowns: teardowns,
-                            hasOnboarded: hasOnboarded, streak: streak,
-                            memory: memory, readiedScripts: readiedScripts,
-                            conversations: conversations, editPrefs: editPrefs,
-                            brandSummary: brandSummary, chatPersona: chatPersona,
-                            chatResponseLength: chatResponseLength, pendingPublishes: pendingPublishes,
-                            lastStreakDate: lastStreakDate,
-                            likedPicks: likedPicks, dismissedPicks: dismissedPicks,
-                            reelsShot: reelsShot,
-                            rankFloorLevel: UserDefaults.standard.integer(forKey: Self.rankFloorKey),
-                            clipGroups: clipGroups,
-                            pillarsUserEdited: pillarsUserEdited)
-        if let data = try? JSONEncoder().encode(snap) {
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            let snap = self.currentSnapshot()
+            let key = self.saveKey
+            // Encode + persist off the main actor — the snapshot is a value copy.
+            let data = await Task.detached(priority: .utility) { () -> Data? in
+                guard let data = try? JSONEncoder().encode(snap) else { return nil }
+                UserDefaults.standard.set(data, forKey: key)
+                return data
+            }.value
+            if let data { self.scheduleRemotePush(data) }
+        }
+    }
+
+    /// Synchronous flush for moments the process may not get another tick (scene →
+    /// background / termination) — the debounce must never lose the last second of state.
+    func saveNow() {
+        saveTask?.cancel()
+        saveTask = nil
+        if let data = try? JSONEncoder().encode(currentSnapshot()) {
             UserDefaults.standard.set(data, forKey: saveKey)
-            // Best-effort mirror to Supabase when configured (no-op otherwise).
-            if !AppConfig.supabaseAnonKey.isEmpty { Task { await remote.push(data) } }
+            scheduleRemotePush(data)
+        }
+    }
+
+    /// Best-effort mirror to Supabase when configured (no-op otherwise). Trailing edge:
+    /// a push inside the throttle window arms one deferred task that sends whatever
+    /// data is newest when the window opens — never dropped, never more than one per window.
+    private func scheduleRemotePush(_ data: Data) {
+        guard !AppConfig.supabaseAnonKey.isEmpty else { return }
+        pendingRemotePush = data
+        guard remotePushTask == nil else { return }     // the armed task sends the latest
+        let wait = max(0, Self.remotePushMinInterval - Date().timeIntervalSince(lastRemotePushAt))
+        remotePushTask = Task { [weak self] in
+            if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            guard let self else { return }
+            self.remotePushTask = nil
+            self.lastRemotePushAt = Date()
+            guard let payload = self.pendingRemotePush else { return }
+            self.pendingRemotePush = nil
+            await self.remote.push(payload)
         }
     }
 
@@ -2927,6 +3113,9 @@ final class AppStore {
 
     /// For Maestro/dev: wipe everything back to first-run.
     func resetAll() {
+        // A pending debounced flush would re-write the wiped key ~1s later.
+        saveTask?.cancel()
+        saveTask = nil
         UserDefaults.standard.removeObject(forKey: saveKey)
         // Audit (build 53): these live OUTSIDE the Snapshot in their own stores, so a
         // wipe-to-first-run must clear them too — otherwise reelsShot/XP reset to 0 while
@@ -3007,11 +3196,18 @@ final class AppStore {
 
     @discardableResult
     func importExternalClip(data: Data, title: String) async -> Clip {
-        let path = MediaStore.save(data, ext: "mov")
-        let url = MediaStore.url(for: path)
-        let poster = MediaStore.poster(for: url)
-        let thumbPath = poster.flatMap { $0.jpegData(compressionQuality: 0.7) }.map { MediaStore.save($0, ext: "jpg") }
-        let seconds = Int(CMTimeGetSeconds(AVURLAsset(url: url).duration).rounded())
+        // File write, poster generation and the duration probe all run off the main
+        // actor — none of them touch model state, and the old inline
+        // AVURLAsset.duration was a deprecated BLOCKING load on main.
+        let (path, thumbPath, seconds) = await Task.detached(priority: .userInitiated) { () async -> (String, String?, Int) in
+            let path = MediaStore.save(data, ext: "mov")
+            let url = MediaStore.url(for: path)
+            let thumbPath = MediaStore.poster(for: url)
+                .flatMap { $0.jpegData(compressionQuality: 0.7) }
+                .map { MediaStore.save($0, ext: "jpg") }
+            let seconds = await Self.assetDurationSeconds(url)
+            return (path, thumbPath, seconds)
+        }.value
         let style = brand.preferredStyles.first ?? .talkingHead
         var clip = Clip(scriptId: UUID(), formatId: style.formats.first ?? "myth-buster",
                         formatName: "Imported", caption: "",

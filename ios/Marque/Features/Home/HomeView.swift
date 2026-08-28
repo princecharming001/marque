@@ -14,6 +14,9 @@ struct HomeView: View {
     @Environment(FeedStore.self) private var feed
     @State private var selectedReel: ReelItem?
     @State private var peekedScript: Script?    // tapped pick card → full script sheet
+    // Single-player grid: the one "Steal these" cell allowed to stream right now
+    // (most-recently-appeared wins; see ReelCard).
+    @State private var activeReelId: String?
 
     var body: some View {
         ScrollView {
@@ -264,7 +267,7 @@ struct HomeView: View {
             } else {
                 LazyVGrid(columns: reelColumns, spacing: Space.md) {
                     ForEach(feed.reelItems) { r in
-                        ReelCard(reel: r) { selectedReel = r }
+                        ReelCard(reel: r, activeReelId: $activeReelId) { selectedReel = r }
                             // Infinite scroll: nearing the end auto-loads the next page, so
                             // the grid keeps growing as you scroll (no manual "Load more").
                             .onAppear { autoLoadMoreReels(near: r) }

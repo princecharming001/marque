@@ -7,9 +7,12 @@ struct PerformanceView: View {
     @Environment(AppRouter.self) private var router
     @State private var sheet: CalSheet?
     @State private var mode: CalMode = .week
-    // P7.3/P7.4: the Palo brain surfaces — insight inbox + the compiled strategy.
-    @State private var aiInsights: [BackendClient.InsightItem] = []
     @State private var showStrategy = false
+
+    // P7.3/P7.4: the Palo brain surfaces — insight inbox + the compiled strategy.
+    // The data itself is store-cached (AppStore.aiInsights) so a tab switch inside
+    // the staleness window repaints without refetching.
+    private var aiInsights: [BackendClient.InsightItem] { store.aiInsights }
 
 
     /// Small inline glass segmented control — the row-height replacement for the old
@@ -185,10 +188,6 @@ struct PerformanceView: View {
         }
         .onAppear { consumePendingSchedule() }
         .sheet(isPresented: $showStrategy) { StrategyView() }
-        .task {
-            aiInsights = await store.backend.fetchInsights()
-            await store.syncPostMetrics()        // build 68: results arrive on their own
-        }
         .onChange(of: router.pendingScheduleClipId) { _, _ in consumePendingSchedule() }
     }
 
@@ -205,14 +204,17 @@ struct PerformanceView: View {
 struct InsightsSection: View {
     @Environment(AppStore.self) private var store
     @Environment(AppRouter.self) private var router
-    @State private var summary: BackendClient.PerformanceSummary?
     @State private var platform = 0   // 0 all · 1 instagram · 2 tiktok
     @State private var period = 1     // 0 = 7d · 1 = 30d · 2 = 90d
-    @State private var loaded = false
-    @State private var loading = false
 
     private let periodDays = [7, 30, 90]
     private let periodLabels = ["7 days", "30 days", "90 days"]
+
+    // Store-cached per window (AppStore.refreshPerformance): a tab revisit or a
+    // period flip inside the staleness window paints from cache, no refetch.
+    private var summary: BackendClient.PerformanceSummary? { store.perfSummaries[periodDays[period]] }
+    private var loading: Bool { store.perfLoading }
+    private var loaded: Bool { store.perfLoadedOnce }
 
     /// Real, measured data — as opposed to a seeded/placeholder series the backend
     /// flags with no_data:true or mode:"mock". When false we still show the tracker,
@@ -236,7 +238,9 @@ struct InsightsSection: View {
             HStack {
                 PerformanceView.compactToggleView(options: ["7d", "30d", "90d"], index: $period)
                     .accessibilityIdentifier("performance.periodToggle")
-                    .onChange(of: period) { _, _ in Task { await reload() } }
+                    .onChange(of: period) { _, _ in
+                        Task { await store.refreshPerformance(days: periodDays[period]) }
+                    }
                 Spacer()
                 Menu {
                     Picker("Platform", selection: $platform) {
@@ -296,16 +300,8 @@ struct InsightsSection: View {
             }
         }
         .task {
-            if !loaded { await reload(); loaded = true }
+            await store.refreshPerformance(days: periodDays[period])
         }
-    }
-
-    private func reload() async {
-        loading = true
-        summary = await store.backend.fetchPerformanceSummary(days: periodDays[period])
-        store.learnedBestHour = summary?.best_hour          // C-12
-        await store.loadInsights()
-        loading = false
     }
 
 

@@ -21,6 +21,7 @@ golden cases so they can never drift.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 from typing import Iterable
@@ -140,7 +141,10 @@ def distance(a: dict[str, float], b: dict[str, float]) -> float:
 _ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 
 
+@functools.lru_cache(maxsize=8)
 def _load(name: str) -> dict:
+    """Deploy-static asset JSON, parsed once per process (was a disk read + parse per
+    request on /v1/style-deck). Callers treat the result as read-only."""
     try:
         with open(os.path.join(_ASSETS, name)) as f:
             return json.load(f)

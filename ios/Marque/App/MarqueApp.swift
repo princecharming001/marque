@@ -113,6 +113,10 @@ struct RootView: View {
                 // orphaned chat cards) — previously ONLY the Library tab did this, so a
                 // clip could show "UPLOADING" forever from any other screen.
                 store.repollRenderingClips()
+            } else if phase == .background {
+                // save() is debounced (~1s); a suspend inside that window would lose
+                // the last mutations, so backgrounding flushes synchronously.
+                store.saveNow()
             }
         }
         // Liveness v2: same sweep once per cold start, regardless of which screen the

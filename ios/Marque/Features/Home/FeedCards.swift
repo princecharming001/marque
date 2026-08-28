@@ -20,20 +20,6 @@ struct ScriptFeedCard: View {
     var onLike: () -> Void = {}
     var onDismiss: () -> Void = {}
 
-    /// The bandit's "why" is often a long phrase with a repetitive "(niche baseline — …)"
-    /// tail that truncated mid-word and left the card looking broken. Drop the parenthetical
-    /// and cap at a word boundary so it reads as a clean 1–2 lines, never an ellipsis mid-word.
-    private var shortWhy: String {
-        var s = script.whyPicked
-        if let r = s.range(of: " (") { s = String(s[..<r.lowerBound]) }
-        s = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.count > 64 {
-            let cut = s.prefix(64)
-            s = (cut.lastIndex(of: " ").map { String(cut[..<$0]) } ?? String(cut)) + "…"
-        }
-        return s
-    }
-
     var body: some View {
         // spacing sm (not md) + height 260 (not 190): the old fixed 190pt frame was
         // SHORTER than the card's own minimum content (tag row + 2-3 line title +
@@ -67,13 +53,10 @@ struct ScriptFeedCard: View {
                 .font(Typeface.sans(22, .semibold)).tracking(Track.title)
                 .foregroundStyle(Palette.textPrimary)
                 .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-            // UX-G2: WHY this pick is here — the bandit's honest reason, micro type.
-            if !shortWhy.isEmpty {
-                Text(shortWhy)
-                    .font(AppFont.micro).tracking(0.2)
-                    .foregroundStyle(Palette.textTertiary)
-                    .lineLimit(2)
-            }
+            // v15 fluff mandate: the bandit's why-picked line ("contrarian hooks +
+            // myth-buster tend to over-index...") is exactly the explainer class the
+            // owner cut from the script popup — the card is title + Film this, nothing
+            // to justify. whyPicked stays on the model for the editor/insights surfaces.
             Spacer(minLength: 0)
             HStack(spacing: Space.sm) {
                 Button(action: onFilm) {
@@ -116,6 +99,10 @@ struct ScriptFeedCard: View {
 
 struct ReelCard: View {
     let reel: ReelItem
+    /// Home-owned: the ONE reel currently allowed to stream. Every visible cell used
+    /// to autoplay its remote MP4, so 4-6 AVPlayers streamed at once; now the
+    /// most-recently-appeared cell claims this and everyone else shows their poster.
+    @Binding var activeReelId: String?
     var onTap: () -> Void
 
     private var thumbURL: URL? {
@@ -128,12 +115,17 @@ struct ReelCard: View {
     @State private var imageLoaded = false
     private var overImage: Bool { imageLoaded }
     // WS4: loop-play the reel right in the grid so the creator can see what it's about
-    // without tapping in (owner: "I'm unable to play the reels"). Only the on-screen cell
-    // plays (visibleReel), and only when it has a durable video URL; a failed/absent URL
-    // falls back to the blur-fill thumbnail (already aspect-safe).
+    // without tapping in (owner: "I'm unable to play the reels"). Only the cell holding
+    // the active claim plays, and only when it has a durable video URL; a failed/absent
+    // URL falls back to the blur-fill thumbnail (already aspect-safe).
     @State private var onScreen = false
     @State private var videoFailed = false
-    private var canPlay: Bool { onScreen && !videoFailed && !reel.videoURL.isEmpty }
+    /// Downsampled + cached poster (ThumbnailCache) — AsyncImage decoded the scraped
+    /// cover at full resolution, per appearance.
+    @State private var poster: UIImage?
+    private var canPlay: Bool {
+        onScreen && activeReelId == reel.id && !videoFailed && !reel.videoURL.isEmpty
+    }
 
     var body: some View {
         Button(action: onTap) {
@@ -147,64 +139,75 @@ struct ReelCard: View {
                 .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         }
         .buttonStyle(PressableStyle())
-        .onAppear { onScreen = true }
-        .onDisappear { onScreen = false }
+        .onAppear {
+            onScreen = true
+            // Most-recently-appeared visible cell wins the single player slot.
+            if !reel.videoURL.isEmpty && !videoFailed { activeReelId = reel.id }
+        }
+        .onDisappear {
+            onScreen = false
+            if activeReelId == reel.id { activeReelId = nil }
+        }
+        .task(id: reel.thumbnailURL) {
+            guard poster == nil, let url = thumbURL else { return }
+            if let img = await ThumbnailCache.remote(url, maxPixel: 800) {
+                poster = img
+                imageLoaded = true
+            }
+        }
         .accessibilityLabel("Reel by @\(reel.creatorHandle): \(reel.hookText)")
         .accessibilityIdentifier("feed.reel")
     }
 
     // Background: subtle Palette-derived vertical gradient; thumbnail (when present)
-    // fills behind a darkening gradient so the white text stays legible.
+    // fills behind a darkening gradient so the white text stays legible. Poster-first:
+    // the playing cell keeps its poster underneath while the stream warms up.
     @ViewBuilder private var backdrop: some View {
         if canPlay, let vurl = URL(string: reel.videoURL) {
             // Muted looping preview — the shared player autoplays, loops, guards junk
             // streams, and flips its own gravity to fit non-portrait footage.
             ZStack {
-                typographicGround
+                posterLayer
                 FailableVideoPlayer(url: vurl, muted: true, showsControls: false,
-                                    isActive: onScreen,   // pause the grid preview when it scrolls off
+                                    isActive: canPlay,   // pause when another cell claims the slot
                                     onFailure: { videoFailed = true })
-                LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
-                                       .init(color: .clear, location: 0.22),
-                                       .init(color: .clear, location: 0.72),
-                                       .init(color: .black.opacity(0.45), location: 1)],
-                               startPoint: .top, endPoint: .bottom)
+                scrim
             }
             .onAppear { imageLoaded = true }   // text stays white over the video
-        } else if let url = thumbURL {
+        } else if poster != nil {
             ZStack {
-                typographicGround          // visible while the image loads (and if it never does)
-                AsyncImage(url: url) { phase in
-                    if case .success(let img) = phase {
-                        // Blur-fill + fit (aspect-safe): a landscape/square scraped cover
-                        // used to `scaledToFill` into the 9:16 cell as a ~3x center-crop
-                        // ("overblown proportions"). Now the sharp copy `scaledToFit`s
-                        // (portrait fills exactly; non-portrait letterboxes) over a blurred
-                        // fill of itself, so the whole frame shows without a zoom-crop.
-                        ZStack {
-                            img.resizable().scaledToFill()
-                                .blur(radius: 16).opacity(0.55)
-                                .overlay(Palette.ink.opacity(0.18))
-                            img.resizable().scaledToFit()
-                        }
-                        .onAppear { imageLoaded = true }
-                    } else {
-                        Color.clear
-                    }
-                }
-                if imageLoaded {
-                    // With no text overlay the thumbnail can breathe — just enough
-                    // scrim at the edges for the handle (top) and views (bottom).
-                    LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
-                                           .init(color: .clear, location: 0.22),
-                                           .init(color: .clear, location: 0.72),
-                                           .init(color: .black.opacity(0.45), location: 1)],
-                                   startPoint: .top, endPoint: .bottom)
-                }
+                posterLayer
+                scrim
             }
         } else {
             typographicGround
         }
+    }
+
+    /// Blur-fill + fit (aspect-safe): a landscape/square scraped cover used to
+    /// `scaledToFill` into the 9:16 cell as a ~3x center-crop ("overblown
+    /// proportions"). The sharp copy `scaledToFit`s (portrait fills exactly;
+    /// non-portrait letterboxes) over a blurred fill of itself, so the whole frame
+    /// shows without a zoom-crop.
+    @ViewBuilder private var posterLayer: some View {
+        typographicGround              // visible until the poster lands (and if it never does)
+        if let poster {
+            ZStack {
+                Image(uiImage: poster).resizable().scaledToFill()
+                    .blur(radius: 16).opacity(0.55)
+                    .overlay(Palette.ink.opacity(0.18))
+                Image(uiImage: poster).resizable().scaledToFit()
+            }
+        }
+    }
+
+    /// Just enough scrim at the edges for the handle (top) and views (bottom).
+    private var scrim: some View {
+        LinearGradient(stops: [.init(color: .black.opacity(0.35), location: 0),
+                               .init(color: .clear, location: 0.22),
+                               .init(color: .clear, location: 0.72),
+                               .init(color: .black.opacity(0.45), location: 1)],
+                       startPoint: .top, endPoint: .bottom)
     }
 
     private var typographicGround: some View {

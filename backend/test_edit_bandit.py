@@ -52,7 +52,7 @@ def test_settle_updates_edit_knob_arms(monkeypatch):
     # Build 53 audit: drive the REAL production settle helper (was re-implemented inline here,
     # so it could never catch a regression in main._settle_edit_knob_arms).
     updated = []
-    async def fake_update(creator_id, dim_value, y, raw=None, niche=""):
+    async def fake_update(creator_id, dim_value, y, raw=None, niche="", persist=True):
         updated.append((creator_id, dim_value, y, raw, niche))
     monkeypatch.setattr(main, "_update_arm", fake_update)
     entry = {"pillar": "p", "style": "talking_head", "format_id": "", "hook_signal": "",

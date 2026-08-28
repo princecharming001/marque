@@ -381,11 +381,10 @@ async def run_ideate_for(store, creator_id: str, brand: dict, tier: str,
                 logging.warning("[ideas] bake_ideas failed, spitfire fallback: %s", e)
         if not briefs:
             briefs = await spitfire(store, creator_id, brand, exemplar)
-        for b in briefs:
-            try:
-                await store.upsert_brief(b)
-            except Exception as e:
-                logging.warning("[ideas] cron upsert_brief failed: %s", e)
+        try:
+            await store.upsert_briefs(briefs)             # one array POST, not one per brief
+        except Exception as e:
+            logging.warning("[ideas] cron upsert_briefs failed: %s", e)
         await store.set_watermark(creator_id, "ideate_last_run", float(now_epoch))
         return len(briefs)
     except Exception as e:
@@ -486,11 +485,10 @@ async def suggest_ideas(store, creator_id: str, brand: dict, source: str = "onbo
                 b["promoted"] = js >= PROMOTE_THRESHOLD   # banger: worth proactive surfacing
         briefs.sort(key=lambda b: float(b.get("score", 0) or 0), reverse=True)
         if store is not None:
-            for b in briefs:
-                try:
-                    await store.upsert_brief(b)
-                except Exception as e:
-                    logging.warning("[ideas] upsert_brief failed: %s", e)
+            try:
+                await store.upsert_briefs(briefs)         # one array POST, not one per brief
+            except Exception as e:
+                logging.warning("[ideas] upsert_briefs failed: %s", e)
         return briefs
     except Exception as e:
         logging.warning("[ideas] suggest_ideas failed: %s", e)

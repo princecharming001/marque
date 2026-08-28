@@ -193,7 +193,9 @@ struct ClipsSection: View {
                                     }
                                     .buttonStyle(.plain)
                                     .accessibilityIdentifier("library.clip")
-                                    .staggerReveal(i)
+                                    // Capped: an uncapped index made deep cells wait
+                                    // out the whole cascade (seconds) before appearing.
+                                    .staggerReveal(min(i, 8))
                                 }
                             }
                         }

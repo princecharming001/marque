@@ -49,6 +49,8 @@ class SupabaseClientStub:
     async def upsert_creator(self, *a, **k): return True
     async def load_creator(self, *a, **k): return None
     async def load_all_creators(self, *a, **k): return []
+    async def upsert_arm_stats(self, *a, **k): return True
+    async def load_all_arm_stats(self, *a, **k): return {}
 
 
 def test_healthz():
@@ -2288,6 +2290,126 @@ def test_update_arm_write_through(monkeypatch):
     fake.upsert_arm_stat.assert_awaited_once()
     cid, arm, stat = fake.upsert_arm_stat.await_args[0]
     assert cid == "c_wt" and arm == "style:talking_head" and stat["n"] == 1
+
+
+def test_settle_batches_arm_writes(monkeypatch):
+    """A settle mutates 4 dimension arms (+ knobs) — the write-through must be ONE
+    batched upsert_arm_stats call, never per-arm upsert_arm_stat round trips."""
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.upsert_arm_stat = AsyncMock(return_value=True)
+    fake.upsert_arm_stats = AsyncMock(return_value=True)
+    fake.settle_post_conditional = AsyncMock(return_value=True)
+    fake.load_post = AsyncMock(return_value=None)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    cid = "c_batch_settle"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    client.post("/v1/posts/register", json={
+        "post_id": "p_batch", "creator_id": cid, "pillar": "Training",
+        "style": "talking_head", "format_id": "myth-buster", "hook_signal": "contrarian",
+        "predicted_score": 75})
+    r = client.post("/v1/metrics/ingest", json={
+        "post_id": "p_batch", "creator_id": cid, "reach": 900, "likes": 80,
+        "comments": 9, "saves": 12, "shares": 4, "avg_watch_pct": 0.6, "follows_gained": 2})
+    assert r.json()["status"] == "ingested"
+    fake.upsert_arm_stat.assert_not_awaited()
+    assert fake.upsert_arm_stats.await_count == 1
+    _, rows = fake.upsert_arm_stats.await_args[0]
+    assert set(rows) >= {"pillar:Training", "style:talking_head",
+                         "format_id:myth-buster", "hook_signal:contrarian"}
+
+
+def test_feedback_batches_arm_writes(monkeypatch):
+    """A feed like touches 4 arms inline before the response — one batched write."""
+    from unittest.mock import AsyncMock
+    fake = SupabaseClientStub()
+    fake.upsert_arm_stat = AsyncMock(return_value=True)
+    fake.upsert_arm_stats = AsyncMock(return_value=True)
+    monkeypatch.setattr(main, "_supabase_client", fake)
+    cid = "c_batch_fb"
+    main._arm_stats.pop(cid, None)
+    main._arms_loaded.add(cid)
+    r = client.post("/v1/feed/feedback", json={
+        "creator_id": cid, "verdict": "like",
+        "script": {"pillar": "Training", "style": "talking_head",
+                   "format_id": "listicle", "hook_signal": "specificity"}})
+    assert r.json()["arms_updated"] == 4
+    fake.upsert_arm_stat.assert_not_awaited()
+    assert fake.upsert_arm_stats.await_count == 1
+    _, rows = fake.upsert_arm_stats.await_args[0]
+    assert len(rows) == 4
+
+
+def test_upsert_arm_stats_posts_one_array_body():
+    import supabase_persistence as sp
+    calls = []
+
+    class C(sp.SupabaseClient):
+        async def _request(self, method, path, *, params=None, json=None, headers=None):
+            calls.append((method, path, params, json, headers))
+            class R:  # minimal httpx.Response stand-in
+                status_code = 201
+            return R()
+    c = C("https://x.supabase.co", "k")
+    ok = asyncio.run(c.upsert_arm_stats("c1", {
+        "style:a": {"n": 1, "sum_y": 0.7, "lift_pct": 12},   # stray key must be filtered
+        "style:b": {"n": 2, "sum_y": 1.1},
+    }))
+    assert ok and len(calls) == 1
+    method, path, params, body, headers = calls[0]
+    assert method == "POST" and path == "/arm_stats"
+    assert params == {"on_conflict": "creator_id,arm_key"}
+    assert isinstance(body, list) and len(body) == 2
+    assert all(r["creator_id"] == "c1" for r in body)
+    assert "lift_pct" not in body[0] and "resolution=merge-duplicates" in headers["Prefer"]
+
+
+def test_load_all_arm_stats_groups_by_creator():
+    import supabase_persistence as sp
+
+    class C(sp.SupabaseClient):
+        async def _request(self, method, path, *, params=None, json=None, headers=None):
+            class R:
+                status_code = 200
+                def json(self):
+                    return [
+                        {"creator_id": "a", "arm_key": "style:x", "n": 3, "sum_y": 2.0},
+                        {"creator_id": "b", "arm_key": "style:y", "n": 1, "sum_y": 0.5},
+                    ]
+            return R()
+    out = asyncio.run(C("https://x.supabase.co", "k").load_all_arm_stats())
+    assert out["a"]["style:x"]["n"] == 3 and out["b"]["style:y"]["n"] == 1
+
+
+def test_pfm_pool_cache_and_bust(monkeypatch):
+    from unittest.mock import AsyncMock
+    pool = [{"id": "acc1", "platform": "instagram", "status": "connected"}]
+    fake_raw = AsyncMock(return_value=pool)
+    monkeypatch.setattr(main, "_pfm_pool", fake_raw)
+    main._pfm_pool_cache.clear()
+    assert asyncio.run(main._pfm_pool_cached("instagram")) == pool
+    assert asyncio.run(main._pfm_pool_cached("instagram")) == pool
+    assert fake_raw.await_count == 1                       # second read served from cache
+    main._bust_pfm_pool_cache()
+    asyncio.run(main._pfm_pool_cached("instagram"))
+    assert fake_raw.await_count == 2                       # bust forces a live read
+
+
+def test_insights_cached_for_identical_inputs(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "sk-test-key")
+    fake = AsyncMock(return_value="post more, guess less")
+    monkeypatch.setattr(main, "anthropic", fake)
+    main._insights_cache.clear()
+    body = {"niche": "fitness", "summary": "3 posts, 2 settled", "persona": "closer"}
+    a = client.post("/v1/insights", json=body).json()
+    b = client.post("/v1/insights", json=body).json()
+    assert a["coaching"] == b["coaching"] == "post more, guess less"
+    assert fake.await_count == 1 and b.get("cached") is True
+    # any input change is a natural miss
+    client.post("/v1/insights", json={**body, "summary": "4 posts, 3 settled"})
+    assert fake.await_count == 2
 
 
 def test_arms_lazy_load_from_supabase(monkeypatch):

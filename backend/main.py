@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import functools
 import json
 import math
 import re
@@ -24,7 +25,7 @@ import tempfile
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Response
 from pydantic import BaseModel
 
 import prompts
@@ -433,52 +434,66 @@ async def _inject_brain(system: str, creator_id: str, query: str = "") -> str:
     ledger (and, when a query is given, self-learned memory) — into a generation system
     prompt, so every script/steer/mimic/hook path is as brain-aware as converse (audit
     G1-G5). Each block is flag-gated + best-effort; off/keyless => unchanged."""
-    system = await _inject_strategy(system, creator_id)
+    # The five brain sources are independent stores — fetched serially they added
+    # up to 5 round trips of pure latency to every generation call. Gathered here;
+    # block order in the prompt is unchanged (strategy, exemplar, ledger, memory,
+    # identity, anchors).
+    async def _strategy_src() -> str:
+        return (await _inject_strategy("", creator_id)).lstrip("\n")
+
+    async def _exemplar_src() -> str:
+        try:
+            if palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
+                return await exemplar.exemplar_block(_palo_store, creator_id) or ""
+        except Exception as e:
+            logging.warning("[brain] exemplar inject failed: %s", e)
+        return ""
+
+    async def _memory_src() -> str:
+        try:
+            if palo_flags.enabled(palo_flags.MEMORY_V2):
+                led, mem = await asyncio.gather(
+                    recall_ledger.ledger_block(_palo_store, creator_id),
+                    memory_v2.retrieve(_palo_store, creator_id, query) if query
+                    else asyncio.sleep(0, result=[]))
+                mem_block = memory_v2.memory_block(mem) if query else ""
+                return "\n\n".join(b for b in (led, mem_block) if b)
+        except Exception as e:
+            logging.warning("[brain] memory inject failed: %s", e)
+        return ""
+
+    async def _identity_src() -> str:
+        try:
+            # R3: the channel identity DOC (macro dials + voice anchors + data_confidence)
+            # — the substrate every Palo generation consumes. Load-only on the hot path;
+            # building happens at onboarding completion / account connect.
+            if palo_flags.enabled(palo_flags.CHANNEL_IDENTITY):
+                from app import channel_identity
+                return channel_identity.identity_block(
+                    await channel_identity.load_identity(_palo_store, creator_id)) or ""
+        except Exception as e:
+            logging.warning("[brain] identity inject failed: %s", e)
+        return ""
+
+    async def _anchor_src() -> str:
+        try:
+            # R3: trained outcome anchors — "hooks that win here / lose here" from the
+            # measured pairwise model. Only exists with a real trained model.
+            if palo_flags.enabled(palo_flags.OUTCOME_RANKER):
+                from app import outcome_ranker
+                model = await outcome_ranker.load_model(_palo_store, creator_id)
+                return (outcome_ranker.anchor_brief(model) if model else "") or ""
+        except Exception as e:
+            logging.warning("[brain] anchor inject failed: %s", e)
+        return ""
+
     if not palo_flags.real_creator(creator_id):
-        return system
-    blocks: list[str] = []
-    try:
-        if palo_flags.enabled(palo_flags.EXEMPLAR_BANK):
-            ex = await exemplar.exemplar_block(_palo_store, creator_id)
-            if ex:
-                blocks.append(ex)
-    except Exception as e:
-        logging.warning("[brain] exemplar inject failed: %s", e)
-    try:
-        if palo_flags.enabled(palo_flags.MEMORY_V2):
-            led = await recall_ledger.ledger_block(_palo_store, creator_id)
-            if led:
-                blocks.append(led)
-            if query:
-                mem = memory_v2.memory_block(
-                    await memory_v2.retrieve(_palo_store, creator_id, query))
-                if mem:
-                    blocks.append(mem)
-    except Exception as e:
-        logging.warning("[brain] memory inject failed: %s", e)
-    try:
-        # R3: the channel identity DOC (macro dials + voice anchors + data_confidence)
-        # — the substrate every Palo generation consumes. Load-only on the hot path;
-        # building happens at onboarding completion / account connect.
-        if palo_flags.enabled(palo_flags.CHANNEL_IDENTITY):
-            from app import channel_identity
-            ident = channel_identity.identity_block(
-                await channel_identity.load_identity(_palo_store, creator_id))
-            if ident:
-                blocks.append(ident)
-    except Exception as e:
-        logging.warning("[brain] identity inject failed: %s", e)
-    try:
-        # R3: trained outcome anchors — "hooks that win here / lose here" from the
-        # measured pairwise model. Only exists with a real trained model.
-        if palo_flags.enabled(palo_flags.OUTCOME_RANKER):
-            from app import outcome_ranker
-            model = await outcome_ranker.load_model(_palo_store, creator_id)
-            anch = outcome_ranker.anchor_brief(model) if model else ""
-            if anch:
-                blocks.append(anch)
-    except Exception as e:
-        logging.warning("[brain] anchor inject failed: %s", e)
+        return await _inject_strategy(system, creator_id)
+    strat, *rest = await asyncio.gather(
+        _strategy_src(), _exemplar_src(), _memory_src(), _identity_src(), _anchor_src())
+    blocks = [b for b in rest if b]
+    if strat:
+        system = f"{system}\n\n{strat}"
     return system + ("\n\n" + "\n\n".join(blocks) if blocks else "")
 
 
@@ -517,15 +532,12 @@ async def _load_learning_state():
             pid = p.get("post_id")
             if pid:
                 _post_registry[pid] = p
-        async def _boot_arms(cid: str) -> None:
-            arms = await _supabase_client.load_arm_stats(cid)
+        # One paginated sweep for EVERY creator's arms (was one GET per creator —
+        # N+1 against PostgREST at every deploy, behind live traffic).
+        for cid, arms in (await _supabase_client.load_all_arm_stats()).items():
             if arms:
                 _arm_stats[cid] = arms
             _arms_loaded.add(cid)                          # booted → don't re-load on first update
-        # Parallel (was a serial per-creator loop): fleet startup time is one roundtrip,
-        # not N — matters because this now runs behind live traffic, not before it.
-        await asyncio.gather(*(_boot_arms(cid) for cid in
-                               {p.get("creator_id") for p in posts if p.get("creator_id")}))
         logging.info("learning state loaded: %d posts, %d creators", len(_post_registry), len(_arm_stats))
     except Exception as e:
         logging.warning("startup learning-state load failed: %s", e)
@@ -574,7 +586,8 @@ def _knob_propensities(creator_id: str, knob: str, values: list[str],
 
 
 async def _settle_edit_knob_arms(creator_id: str, entry: dict, y: float,
-                                 raw: float | None, niche: str) -> list[str]:
+                                 raw: float | None, niche: str,
+                                 persist: bool = True) -> list[str]:
     """Settle the edit-knob arms for a just-resolved post. Only knobs the BANDIT or DEFAULT
     chose update arms — an explicit creator choice isn't an experiment (propensity 1.0;
     updating would echo the creator's taste back). Extracted from ingest_metrics so the
@@ -588,7 +601,7 @@ async def _settle_edit_knob_arms(creator_id: str, entry: dict, y: float,
         if isinstance(meta, dict) and meta.get("chosen_by") in ("bandit", "default") \
                 and meta.get("value") is not None:
             arm = f"edit_{knob}:{meta['value']}"
-            await _update_arm(creator_id, arm, y, raw, niche)
+            await _update_arm(creator_id, arm, y, raw, niche, persist=persist)
             updated.append(arm)
     return updated
 
@@ -772,7 +785,7 @@ def _arm_lift(stat: dict, mean_raw: float | None) -> tuple[int, bool]:
 
 
 async def _update_arm(creator_id: str, dim_value: str, y: float,
-                      raw: float | None = None, niche: str = ""):
+                      raw: float | None = None, niche: str = "", persist: bool = True):
     # WRITE side of the bandit: never land in the shared pre-auth bucket. Onboarding is
     # signed-out, so a settle under "default" both mixes one creator's outcome into every
     # other signed-out creator's arms and (via upsert_arm_stat) makes that pooling durable
@@ -807,7 +820,7 @@ async def _update_arm(creator_id: str, dim_value: str, y: float,
     s["alpha"] = pa + s["sum_y"] + s.get("fb_sum_y", 0.0)
     s["beta"] = pb + (s["n"] - s["sum_y"]) + (s.get("fb_n", 0.0) - s.get("fb_sum_y", 0.0))
     s["confidence"] = "confirmed" if s["n"] >= 8 else ("early_read" if s["n"] >= 4 else "insufficient")
-    if _supabase_client:                                  # write-through (best-effort)
+    if persist and _supabase_client:                      # write-through (best-effort)
         try:
             if not await _supabase_client.upsert_arm_stat(creator_id, dim_value, s):
                 logging.warning("supabase upsert_arm_stat wrote nothing: %s %s", creator_id, dim_value)
@@ -823,7 +836,8 @@ FEEDBACK_DISLIKE_Y = float(os.environ.get("FEEDBACK_DISLIKE_Y", "0.10"))
 FEEDBACK_WEIGHT = float(os.environ.get("FEEDBACK_WEIGHT", "0.25"))
 
 
-async def _update_arm_feedback(creator_id: str, dim_value: str, y: float, niche: str = ""):
+async def _update_arm_feedback(creator_id: str, dim_value: str, y: float, niche: str = "",
+                               persist: bool = True):
     """B-7: fold a feed like/dislike into an arm's Thompson α/β via SEPARATE fb_n / fb_sum_y
     accumulators (weighted), leaving n / sum_raw / n_raw / confidence untouched so honest
     performance claims stay grounded in real settled posts. Mirrors _update_arm's arm setup —
@@ -843,11 +857,28 @@ async def _update_arm_feedback(creator_id: str, dim_value: str, y: float, niche:
     s["fb_sum_y"] = s.get("fb_sum_y", 0.0) + FEEDBACK_WEIGHT * y
     s["alpha"] = pa + s.get("sum_y", 0.0) + s["fb_sum_y"]
     s["beta"] = pb + (s.get("n", 0) - s.get("sum_y", 0.0)) + (s["fb_n"] - s["fb_sum_y"])
-    if _supabase_client:
+    if persist and _supabase_client:
         try:
             await _supabase_client.upsert_arm_stat(creator_id, dim_value, s)
         except Exception as e:
             logging.warning("supabase upsert_arm_stat (feedback) failed: %s", e)
+
+
+async def _flush_arms(creator_id: str, keys: list[str]) -> None:
+    """Batch write-through for a set of just-mutated arms — ONE array upsert instead
+    of one HTTP round trip per arm. A settle touches 4 dimension arms + up to 6 edit
+    knobs and a feed tap touches 4; each used to pay its own TLS+RTT inline on the
+    request path. Callers mutate with persist=False, then flush once."""
+    if not (_supabase_client and keys):
+        return
+    stats = _arm_stats.get(creator_id) or {}
+    rows = {k: stats[k] for k in dict.fromkeys(keys) if k in stats}
+    try:
+        if rows and not await _supabase_client.upsert_arm_stats(creator_id, rows):
+            logging.warning("supabase upsert_arm_stats wrote nothing: %s (%d arms)",
+                            creator_id, len(rows))
+    except Exception as e:
+        logging.warning("supabase upsert_arm_stats failed: %s", e)
 
 
 async def _ensure_arms_loaded(creator_id: str):
@@ -2209,19 +2240,38 @@ def readyz():
                      "embeddings": bool(os.environ.get("OPENAI_API_KEY"))}}
 
 
+# These catalogs are deploy-static (code + env only), yet each was rebuilt per
+# request and shipped with no HTTP caching, so the iOS client re-downloaded them
+# every screen visit. Payloads are memoized per process; the Cache-Control hour
+# lets the client's URLCache skip the round trip entirely.
+_STATIC_CATALOG_CACHE = "public, max-age=3600"
+
+
 @app.get("/v1/editor/capabilities")
-def editor_capabilities():
+def editor_capabilities(response: Response):
     """Per-style edit-op capability map so the iOS editor hides toggles that would be
     silent no-ops in the current style (audit D4)."""
+    response.headers["Cache-Control"] = _STATIC_CATALOG_CACHE
+    return _editor_capabilities_payload()
+
+
+@functools.lru_cache(maxsize=1)
+def _editor_capabilities_payload() -> dict:
     from app.edl import style_capabilities
     return {"mode": "live", "capabilities": {s: style_capabilities(s) for s in STYLES}}
 
 
 @app.get("/v1/themes")
-def themes_catalog():
+def themes_catalog(response: Response):
     """A7: the style-bundle catalog the editor picks from. `default_for_formats`
     lets the client pre-select the right theme chip when the creator has
     already chosen an edit format, without hardcoding the mapping client-side."""
+    response.headers["Cache-Control"] = _STATIC_CATALOG_CACHE
+    return _themes_payload()
+
+
+@functools.lru_cache(maxsize=1)
+def _themes_payload() -> dict:
     default_for: dict[str, list[str]] = {}
     for fmt, spec in prompts.EDIT_FORMATS.items():
         dt = spec.get("default_theme", "")
@@ -2235,11 +2285,12 @@ def themes_catalog():
 
 
 @app.get("/v1/music")
-def music_catalog():
+def music_catalog(response: Response):
     """The music-bed catalog the editor picks from, so iOS shows the SAME tracks the
     render uses (no more client-only fallback drifting from the backend). Every URL is an
     AVPlayer-native, range-served bed; tags drive tone matching. Swap-able via the
     MUSIC_CATALOG env with zero code change."""
+    response.headers["Cache-Control"] = _STATIC_CATALOG_CACHE
     return {"mode": "live", "tracks": [
         {"name": t.get("name", ""), "url": t.get("url", ""), "vibe": t.get("vibe", ""),
          "tone": t.get("tone", ""), "bpm": t.get("bpm", 0), "energy": t.get("energy", "")}
@@ -2271,19 +2322,35 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
     pillar = {"name": req.pillar, "summary": req.pillar_summary,
               "angle": req.pillar_angle, "exampleTopics": req.example_topics}
     try:
-        stats = await _arms_for_prompt(req.creator_id)
-        emulation = await _resolve_emulation_profiles(req.emulation_targets)
+        _laps: dict[str, float] = {}
+        _t0 = time.monotonic()
+
+        def _lap(stage: str) -> None:
+            nonlocal _t0
+            _laps[stage] = round(time.monotonic() - _t0, 2)
+            _t0 = time.monotonic()
+        # Arms + emulation are independent fetches, and the brain suffix (strategy +
+        # exemplar + ledger, G4) only APPENDS to the system prompt — so all three run
+        # concurrently with each other and the brain overlaps best_hooks too, instead
+        # of the old four serial awaits before the write call.
+        brain_task = asyncio.ensure_future(_inject_brain("", req.creator_id))
+        stats, emulation = await asyncio.gather(
+            _arms_for_prompt(req.creator_id),
+            _resolve_emulation_profiles(req.emulation_targets))
+        _lap("context")
         # Best-of-N: pre-select the strongest openers, then write bodies around them.
         topic = req.pillar or req.niche or "your next post"
         mandated = await best_hooks(req.d(), topic, req.style, req.creator_id, n=min(2, req.count),
                                     memory=req.memory or None, emulation=emulation or None)
+        _lap("hooks")
         sys, usr = prompts.scripts_prompt(req.d(), pillar, req.style, req.count,
                                           req.media_context, req.posts or None,
                                           arm_stats=stats, memory=req.memory or None,
                                           mandated_hooks=mandated or None, emulation=emulation or None)
-        sys = await _inject_brain(sys, req.creator_id)   # Palo port: strategy + exemplar + ledger (G4)
+        sys += await brain_task
         out = await anthropic_json(sys, usr, _array_schema("scripts", prompts.SCRIPT_JSON_ELEMENT),
                                    OPUS, 3800, array_key="scripts")
+        _lap("write")
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(req)}
         out = await quality_scripts(req.d(), req.style, out, req.posts or None,
@@ -2293,11 +2360,14 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         # shares the old lint's blind spots, so a deterministic drop is the real guard.
         # Never ship fewer than requested — backfill any drop from the mock templates.
         out = await _ensure_speakable(out, policy="repair_or_drop")
+        _lap("judge_repair")
         if len(out) < req.count:
             out = out + mock_scripts(req)[len(out):req.count]
         for s in out:
             if isinstance(s, dict) and s.get("title"):
                 s["title"] = _clamp_title(str(s["title"]))
+        logging.info("[timing] scripts creator=%s total=%.1fs %s", req.creator_id,
+                     sum(_laps.values()), " ".join(f"{k}={v}s" for k, v in _laps.items()))
         return {"mode": "live", "scripts": out}
     except HTTPException:
         return {"mode": "mock", "scripts": mock_scripts(req)}
@@ -2512,13 +2582,30 @@ async def teardown(req: TeardownRequest):
 _MOCK_COACHING = "Your contrarian hooks are outperforming. Make two more in whichever format spiked."
 
 
+# /v1/insights fires on every Performance-tab visit, but its inputs (brand + the
+# metrics summary string + persona) only change when a post settles — identical
+# inputs were paying a fresh HAIKU call per glance. Keyed by the full input hash so
+# any metric change is a natural miss; 1h TTL bounds staleness for same-input drift.
+_insights_cache: dict[str, tuple[str, float]] = {}
+_INSIGHTS_TTL = float(os.environ.get("INSIGHTS_CACHE_TTL_S", "3600"))
+
+
 @app.post("/v1/insights")
 async def insights(req: InsightsRequest):
     if not ANTHROPIC_KEY:
         return {"mode": "mock", "coaching": _MOCK_COACHING}
+    cache_key = hashlib.sha256(
+        json.dumps([req.d(), req.summary, req.persona], sort_keys=True, default=str)
+        .encode()).hexdigest()
+    hit = _insights_cache.get(cache_key)
+    if hit and time.time() - hit[1] < _INSIGHTS_TTL:
+        return {"mode": "live", "coaching": hit[0], "cached": True}
     try:
         sys, usr = prompts.insights_prompt(req.d(), req.summary, persona=req.persona)
         txt = prompts.scrub_em_dashes((await anthropic(sys, usr, HAIKU, 250)).strip())
+        if txt:
+            _insights_cache[cache_key] = (txt, time.time())
+            _cap_evict(_insights_cache, 500)
         return {"mode": "live", "coaching": txt or _MOCK_COACHING}
     except HTTPException:
         return {"mode": "mock", "coaching": _MOCK_COACHING}
@@ -2819,7 +2906,7 @@ async def _persist_client_event(req: _ClientEventRequest) -> None:
 
 
 @app.get("/v1/broll-styles")
-async def broll_styles(niche: str = ""):
+async def broll_styles(response: Response, niche: str = ""):
     """The record flow's B-ROLL STYLE picker: WHICH composition treatment the creator
     wants (cutaway / panel / floating card / green screen / split screen), each option
     illustrated by a real clip self-rendered through this exact composition (not a
@@ -2828,6 +2915,7 @@ async def broll_styles(niche: str = ""):
     the creator actually gets). The picked id returns to POST /v1/clips as
     config.broll_mode (cutaway/panel/card) or config.composition_style (green_screen/
     split_screen) and actually drives the edit."""
+    response.headers["Cache-Control"] = _STATIC_CATALOG_CACHE
     return {"mode": "live", "styles": [
         {"id": opt["id"], "label": opt["label"], "blurb": opt["blurb"],
          "video_url": f"{_DEMO_BASE}/{opt['id']}.mp4", "thumbnail_url": "",
@@ -2840,13 +2928,14 @@ _CTA_DEMO_BASE = _DEMO_BASE.rsplit("/", 1)[0] + "/cta-styles" if _DEMO_BASE else
 
 
 @app.get("/v1/cta-styles")
-async def cta_styles_route():
+async def cta_styles_route(response: Response):
     """The CTA picker's deck: 20 pre-rendered animated endings plus a first-class
     "No CTA" card. Ordering is deliberate — "none" leads because 86% of the measured
     winner corpus ends with no visual CTA at all, and the restrained templates follow
     before the energetic ones. Each entry plays a real 5s render of that template, so
     what the creator swipes IS what they get. The picked id returns as
     config.cta_style_id."""
+    response.headers["Cache-Control"] = _STATIC_CATALOG_CACHE
     styles = [{
         "id": cta_styles_mod.NONE_STYLE, "label": "No CTA",
         "blurb": "Ends clean. Most reels that perform do exactly this.",
@@ -2865,28 +2954,35 @@ async def cta_styles_route():
     # rather than 20 template variations of "Follow for more". `deck` carries the cards;
     # the full `styles` list above still backs the Manage/library sheet. A backend
     # without the manifest simply omits `deck` and old clients ignore it.
-    deck = []
+    return {"mode": "live", "styles": styles, "deck": _cta_deck_v2()}
+
+
+@functools.lru_cache(maxsize=1)
+def _cta_deck_v2() -> tuple:
+    """Deploy-static manifest, read+parsed once per process (was per request).
+    Tuple-of-dicts so the lru_cache result is safely shareable."""
     try:
         _m = json.loads((pathlib.Path(__file__).parent / "assets" / "cta_deck_v2.json").read_text())
-        deck = [{
+        return tuple({
             "id": e["style_id"], "label": e["label"], "text": e.get("text", ""),
             "blurb": e.get("blurb", ""), "video_url": e.get("video_url", ""),
-        } for e in _m.get("entries", []) if e.get("video_url")]
+        } for e in _m.get("entries", []) if e.get("video_url"))
     except FileNotFoundError:
-        pass
+        return ()
     except Exception as e:
         logging.warning("[cta] deck v2 manifest unreadable: %s", e)
-    return {"mode": "live", "styles": styles, "deck": deck}
+        return ()
 
 
 @app.get("/v1/style-deck")
-async def style_deck_route():
+async def style_deck_route(response: Response):
     """The editing-taste swiper: a spread of real talking-head reels whose editing we
     have already MEASURED, so each swipe is a labelled observation of attributes (pace,
     caption weight, b-roll density...) rather than an opinion about an opaque item.
     The client folds the session into a style vector (Rocchio) and maps it onto the
     pipeline knobs. Also carries the archetype list + pre-rendered samples the settings
     page uses to show "this is how your edits look"."""
+    response.headers["Cache-Control"] = _STATIC_CATALOG_CACHE
     deck = style_deck_mod_load()
     return {
         "deck_version": deck.get("deck_version", 0),
@@ -5387,16 +5483,20 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
     # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
     # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
     # gain. transcribe raising propagates to the caller; probe never raises.
-    words, lufs, dossier = await asyncio.gather(
+    # P2.3's reference-reel measurement rides the same gather: it reads only the
+    # reference URL (independent of the take's transcript/loudness/dossier) and a
+    # first-use dossier there can take minutes — serial, it added all of that after
+    # the transcribe wait for nothing.
+    words, lufs, dossier, _ = await asyncio.gather(
         _transcribe_job(job_id),
         audio_mod.probe_loudness(job.get("source_url") or ""),
-        _dossier_job(job_id))
+        _dossier_job(job_id),
+        _resolve_reference_patterns(job))
     job["loudness_lufs"] = lufs
     job["dossier"] = dossier
     _mark_stage(job, "analyzing")
     for c in job["clips"]:
         c["status"] = "analyzing"
-    await _resolve_reference_patterns(job)   # P2.3: measure the reference reel (cached)
     transcript_text = " ".join(w.get("word", "") for w in words)
     try:
         brief = await _generate_edit_brief(words, transcript_text,
@@ -8073,15 +8173,27 @@ async def _run_digest(job_id: str) -> None:
     job = _digest_jobs[job_id]
     req: DigestRequest = job["req"]
     brand = req.d()
+    # Per-stage elapsed times, logged at completion. The digest is the onboarding
+    # wait; without this a slow stage (scrape vs transcribe vs derive vs scripts)
+    # was indistinguishable in prod — the middleware only times the spawn POST.
+    timings: dict[str, float] = {}
+    _t0 = time.monotonic()
+
+    def _lap(stage: str) -> None:
+        nonlocal _t0
+        timings[stage] = round(time.monotonic() - _t0, 2)
+        _t0 = time.monotonic()
     try:
         # 1) Evidence: caller-supplied posts (tests) or a real scrape.
         posts = req.posts
         if not posts and req.handle:
             posts = await scrape_posts(req.handle, req.scan_platform)
+        _lap("scrape")
 
         # 2) Speech: transcribe the creator's strongest reels.
         job["stage"] = "transcribing"
         posts = await _transcribe_top_posts(posts)
+        _lap("transcribe")
         transcribed = sum(1 for p in posts if p.get("transcript"))
         if posts:
             # B3: persist (with real transcripts) so later prompts get verbatim voice
@@ -8094,14 +8206,20 @@ async def _run_digest(job_id: str) -> None:
         # the digest job is already a background task, so absorbing that scrape
         # here costs nothing the UI is waiting on.
         job["stage"] = "deriving"
-        for t in req.emulation_targets:
+
+        async def _absorb_emulation(t: dict) -> None:
             handle = (t.get("handle") or "").lstrip("@").lower()
             if t.get("source") == "custom" and handle and handle not in _emulation_cache:
                 try:
                     await emulate_analyze(EmulateAnalyzeRequest(handle=handle, platform=t.get("platform", "instagram")),
-                                          _budget_s=None)   # background: run unbounded, nothing waits
+                                          _budget_s=None)   # unbounded: only the join below waits
                 except Exception:
                     pass
+        # Run the emulation scrapes CONCURRENTLY with derive+judge instead of before
+        # them: each is a full scrape+transcribe (minutes), and only _generate_scripts
+        # consumes the cache — so join right before stage 4, not at the top. Serial,
+        # this loop added its whole duration to the onboarding wait for nothing.
+        emulation_join = asyncio.gather(*(_absorb_emulation(t) for t in req.emulation_targets))
         # Each derive stage degrades independently: a transient Anthropic 5xx here must
         # NOT throw away a successful scrape+transcription (the onboarding centerpiece).
         # scan → mock_derive, judge → keep unjudged pillars; scripts degrade inside
@@ -8124,7 +8242,11 @@ async def _run_digest(job_id: str) -> None:
             except HTTPException:
                 pass                           # keep the unjudged pillars rather than fail the digest
 
-        # 4) Starter scripts through the full quality gate.
+        _lap("derive")
+        # 4) Starter scripts through the full quality gate. Emulation profiles must be
+        # resolved first — _generate_scripts reads _emulation_cache.
+        await emulation_join
+        _lap("emulation_join")
         job["stage"] = "writing_scripts"
         sreq = _digest_script_request(req, scan)
         sreq.posts = posts
@@ -8135,6 +8257,11 @@ async def _run_digest(job_id: str) -> None:
                          "transcribed": transcribed}
         job["status"] = "ready"
         job["stage"] = "ready"
+        _lap("scripts")
+        job["timings"] = timings
+        logging.info("[timing] digest job=%s total=%.1fs %s", job_id,
+                     sum(timings.values()),
+                     " ".join(f"{k}={v}s" for k, v in timings.items()))
     except Exception as e:  # never leave a job stuck in "running"
         job["status"] = "failed"
         job["error"] = str(e)
@@ -8537,7 +8664,10 @@ _SOCIAL_ATTEMPT_TTL = 900.0
 
 
 async def _pfm_pool(platform: str) -> list[dict]:
-    """Raw Post for Me account rows for one platform (empty on any failure)."""
+    """Raw Post for Me account rows for one platform (empty on any failure).
+    NEVER cached: the link/finish claim protocol diffs live pool snapshots, and a
+    stale row there mis-attributes an OAuth. Read paths that can tolerate minutes
+    of staleness go through _pfm_pool_cached below."""
     try:
         code, data = await _pfm_request("GET", "/social-accounts",
                                         params={"platform": platform} if platform else None)
@@ -8546,6 +8676,29 @@ async def _pfm_pool(platform: str) -> list[dict]:
     if not (200 <= code < 300):
         return []
     return [a for a in (data.get("data") or []) if isinstance(a, dict)]
+
+
+_pfm_pool_cache: dict[str, tuple[list[dict], float]] = {}
+_PFM_POOL_TTL = float(os.environ.get("PFM_POOL_TTL_S", "300"))
+
+
+async def _pfm_pool_cached(platform: str) -> list[dict]:
+    """TTL-cached pool for the LISTING path only (/v1/social/accounts — hit once per
+    linked platform on every app launch for avatars). The workspace pool changes only
+    on link/unlink, and both of those bust this cache, so 5 min of staleness can only
+    ever be seen by a different device than the one that made the change."""
+    hit = _pfm_pool_cache.get(platform)
+    if hit and time.time() - hit[1] < _PFM_POOL_TTL:
+        return hit[0]
+    pool = await _pfm_pool(platform)
+    if pool:                                   # never cache a failure as "no accounts"
+        _pfm_pool_cache[platform] = (pool, time.time())
+        _cap_evict(_pfm_pool_cache, 16)
+    return pool
+
+
+def _bust_pfm_pool_cache() -> None:
+    _pfm_pool_cache.clear()
 
 
 def _norm_social_account(a: dict) -> dict:
@@ -8710,6 +8863,8 @@ async def social_finish(req: SocialFinishRequest):
         else:
             logging.warning("social_finish: no claim store — link for %s not persisted",
                             req.claimant_id)
+    if linked:
+        _bust_pfm_pool_cache()                 # the listing path must see the new account now
     return {"linked": await _with_avatar([_norm_social_account(a) for a in linked]),
             "mode": "live"}
 
@@ -8724,7 +8879,7 @@ async def social_accounts(claimant_id: str = "", external_id: str = "", platform
     claimed = await _claimed_account_ids(claimant_id)
     if not claimed:
         return {"accounts": [], "mode": "live"}
-    pool = await _pfm_pool(platform)
+    pool = await _pfm_pool_cached(platform)
     accounts = [_norm_social_account(a) for a in pool if a.get("id", "") in claimed]
     return {"accounts": await _with_avatar(accounts), "mode": "live"}
 
@@ -8756,6 +8911,7 @@ async def social_disconnect(req: SocialDisconnectRequest):
         code, _ = await _pfm_request("POST", f"/social-accounts/{req.account_id}/disconnect")
     except httpx.HTTPError:
         return {"ok": False, "mode": "live", "error": "network"}
+    _bust_pfm_pool_cache()                     # the listing path must drop it now
     return {"ok": 200 <= code < 300, "mode": "live"}
 
 
@@ -10487,13 +10643,18 @@ async def ingest_metrics(req: MetricsIngestRequest):
 
     await _persist_creator(creator_id, niche=req.niche, goal=goal)   # durable niche/goal (A-10)
     _invalidate_creator_mean(creator_id)          # this settle shifts the personal baseline
+    settled_arms: list[str] = []
     for dim in DIMENSIONS:
         val = entry.get(dim, "")
         if val:
-            await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche)
+            await _update_arm(creator_id, f"{dim}:{val}", y, raw, niche, persist=False)
+            settled_arms.append(f"{dim}:{val}")
 
     # WS6 (build 49): edit-knob arms settle through the SAME machinery.
-    await _settle_edit_knob_arms(creator_id, entry, y, raw, niche)
+    settled_arms += await _settle_edit_knob_arms(creator_id, entry, y, raw, niche, persist=False)
+    # One batched write-through for everything this settle mutated (was ~5-11
+    # sequential single-row upserts inline on the request path).
+    await _flush_arms(creator_id, settled_arms)
 
     # Attribute the just-settled post to ITS OWN driving dimension (not the creator's
     # globally strongest arm). Honest by construction — only driver/error bands it can
@@ -10915,7 +11076,50 @@ async def converse(req: ConverseRequest):
         return {"mode": "mock", "reply": out["reply"], "memory_updates": out["memory_updates"],
                 "intent": out["intent"], "payload": out.get("payload"), "suggested_chips": out["chips"]}
 
-    stats = await _arms_for_prompt(req.creator_id)
+    # Context assembly: arms + memory/ledger + exemplars + strategy are four
+    # independent store fetches that ran SERIALLY before the LLM call — on the
+    # chattiest endpoint in the app, that was pure additive latency per turn.
+    # Gathered here; the blocks are appended below in the exact same order.
+    _last_user = next((m.get("content", "") for m in reversed(req.messages)
+                       if m.get("role") == "user"), "")
+
+    async def _mem_led_fetch() -> str:
+        # Palo port (flag MEMORY_V2, default OFF): compounding memory + the never-
+        # re-pitch ledger. Defense-in-depth: never 500 converse on a store hiccup.
+        if not palo_flags.enabled(palo_flags.MEMORY_V2):
+            return ""
+        try:
+            _mem, _led = await asyncio.gather(
+                memory_v2.retrieve(_palo_store, req.creator_id, _last_user),
+                recall_ledger.ledger_block(_palo_store, req.creator_id))
+            return "\n\n".join(b for b in (memory_v2.memory_block(_mem), _led) if b)
+        except Exception as e:
+            logging.warning("[converse] memory/ledger injection failed: %s", e)
+            return ""
+
+    async def _exemplar_fetch() -> str:
+        # Audit fix: converse was the ONLY brain surface without the exemplar bank.
+        if not (palo_flags.enabled(palo_flags.EXEMPLAR_BANK)
+                and palo_flags.real_creator(req.creator_id)):
+            return ""
+        try:
+            return await exemplar.exemplar_block(_palo_store, req.creator_id) or ""
+        except Exception as e:
+            logging.warning("[converse] exemplar injection failed: %s", e)
+            return ""
+
+    async def _strategy_fetch() -> str:
+        # Palo port (flag STRATEGY_COMPILER, OFF): brain shapes converse.
+        if not palo_flags.enabled(palo_flags.STRATEGY_COMPILER):
+            return ""
+        try:
+            return await strategy_compiler.strategy_block(_palo_store, req.creator_id) or ""
+        except Exception as e:
+            logging.warning("[strategy] inject failed: %s", e)
+            return ""
+
+    stats, _mem_led_block, _exemplar_block, _strategy_block = await asyncio.gather(
+        _arms_for_prompt(req.creator_id), _mem_led_fetch(), _exemplar_fetch(), _strategy_fetch())
     system = prompts.converse_system(req.mode, persona=req.persona, response_length=req.response_length)
     # Palo port (interaction-agent identity-only mode + the mobile bouncer's epistemic-
     # boundary rules): a pre-connection user has a brand identity but ZERO analyzed
@@ -10939,32 +11143,11 @@ async def converse(req: ConverseRequest):
             "their content isn't analyzed yet because no account is connected; connecting one "
             "starts it. Never imply analysis is happening in the background when it isn't."
         )
-    # Palo port (flag MEMORY_V2, default OFF): inject compounding memory + the never-
-    # re-pitch ledger into the strategist's system prompt. Defined unconditionally so the
-    # write-side hooks below can reuse it; zero added work/latency when the flag is off.
-    _last_user = next((m.get("content", "") for m in reversed(req.messages)
-                       if m.get("role") == "user"), "")
-    if palo_flags.enabled(palo_flags.MEMORY_V2):
-        try:                                 # defense-in-depth: never 500 converse on a store hiccup
-            _mem_block = memory_v2.memory_block(
-                await memory_v2.retrieve(_palo_store, req.creator_id, _last_user))
-            _led_block = await recall_ledger.ledger_block(_palo_store, req.creator_id)
-            _inject = "\n\n".join(b for b in (_mem_block, _led_block) if b)
-            if _inject:
-                system = f"{system}\n\n{_inject}"
-        except Exception as e:
-            logging.warning("[converse] memory/ledger injection failed: %s", e)
-    # Audit fix: converse was the ONLY brain surface without the exemplar bank (scripts/
-    # mimic/hooks all get it via _inject_brain) — the strategist should cite the creator's
-    # own proven patterns too.
-    if palo_flags.enabled(palo_flags.EXEMPLAR_BANK) and palo_flags.real_creator(req.creator_id):
-        try:
-            _ex_block = await exemplar.exemplar_block(_palo_store, req.creator_id)
-            if _ex_block:
-                system = f"{system}\n\n{_ex_block}"
-        except Exception as e:
-            logging.warning("[converse] exemplar injection failed: %s", e)
-    system = await _inject_strategy(system, req.creator_id)   # Palo port: brain shapes converse
+    # Append the pre-fetched brain blocks in the same order the serial code used:
+    # memory/ledger → exemplars → strategy.
+    for _blk in (_mem_led_block, _exemplar_block, _strategy_block):
+        if _blk:
+            system = f"{system}\n\n{_blk}"
     # No trends passed: mock_trends is hand-authored filler, and injecting it as
     # "Trending right now" into a LIVE strategist makes the model relay invented trend
     # claims as fact. Omit until a real trend source exists (audit B-10/F16).
@@ -11800,10 +11983,24 @@ async def _refresh_niche_reels(niche: str) -> None:
         # `_transcribe_top_posts` skips posts that already carry a transcript, so the
         # wave-1 work is never redone and coverage still reaches _REEL_TRANSCRIBE_TOP_N.
         wave1 = posts[:_REEL_TRANSCRIBE_FIRST_WAVE]
-        await _transcribe_top_posts(wave1, top_n=_REEL_TRANSCRIBE_FIRST_WAVE, max_wait_s=120)
+        # Transcription and rehost both consume the RAW CDN url (transcribe submits it
+        # to AssemblyAI up front; rehost swaps video_url to the durable copy after) —
+        # independent, so overlap them instead of paying rehost after the transcribe
+        # wait. Rehost is no longer gated on a transcript landing: wave 2 would rehost
+        # these same posts anyway, and durable URLs a wave earlier means the serve
+        # window never rides an expiring CDN link longer than it must.
+        _w1_t0 = time.monotonic()
+        await asyncio.gather(
+            _transcribe_top_posts(wave1, top_n=_REEL_TRANSCRIBE_FIRST_WAVE, max_wait_s=120),
+            _rehost_reel_media(posts[:_REEL_TRANSCRIBE_FIRST_WAVE]),
+        )
         if any(p.get("transcript") for p in wave1):
+            # Written AFTER rehost so the first servable entries already carry durable
+            # URLs (the old order served CDN links for the whole wave-2 window).
             await _write_niche_reels(key, posts, partial=True)
-            await _rehost_reel_media(posts[:_REEL_TRANSCRIBE_FIRST_WAVE])
+            logging.info("[timing] reels wave1 niche=%s %.1fs servable_candidates=%d",
+                         key, time.monotonic() - _w1_t0,
+                         sum(1 for p in wave1 if p.get("transcript")))
 
         # WAVE 2 — the full transcription budget, then durable media for everything.
         posts = await _transcribe_top_posts(posts, top_n=_REEL_TRANSCRIBE_TOP_N)
@@ -12066,6 +12263,10 @@ async def reels_health(req: _CronRequest, niche: str = ""):
     }
 
 
+_reels_durable_miss: dict[str, float] = {}     # key -> when the durable copy last missed
+_REELS_NEG_TTL = float(os.environ.get("REELS_NEG_CACHE_TTL_S", "120"))
+
+
 async def _hydrate_reels_caches(niche: str, parsed: list[tuple[str, str]]) -> None:
     """Cold-miss hydration: after a deploy the in-memory caches are empty but the
     durable Supabase copies (with transcripts + re-hosted media) are not — load
@@ -12074,14 +12275,15 @@ async def _hydrate_reels_caches(niche: str, parsed: list[tuple[str, str]]) -> No
     to a few seconds; on any failure the SWR path behaves exactly as before."""
     if not _supabase_client:
         return
+    now = time.time()
     wanted: list[tuple[dict, str]] = []
     if niche.strip():
         k = _niche_cache_key(niche)
-        if k not in _niche_reels_cache:
+        if k not in _niche_reels_cache and now - _reels_durable_miss.get(k, 0) > _REELS_NEG_TTL:
             wanted.append((_niche_reels_cache, k))
     for platform, handle in parsed:
         k = f"{platform}:{handle}"
-        if k not in _watched_reels_cache:
+        if k not in _watched_reels_cache and now - _reels_durable_miss.get(k, 0) > _REELS_NEG_TTL:
             wanted.append((_watched_reels_cache, k))
     if not wanted:
         return
@@ -12090,6 +12292,13 @@ async def _hydrate_reels_caches(niche: str, parsed: list[tuple[str, str]]) -> No
         entry = await _supabase_client.load_reels_cache(k)
         if entry and isinstance(entry.get("reels"), list) and entry["reels"]:
             cache[k] = {"reels": entry["reels"], "ts": float(entry.get("ts") or 0)}
+        else:
+            # Negative-cache the durable MISS: a brand-new key mid-scrape otherwise
+            # re-issued this Supabase read on EVERY feed request for the 2-4 min the
+            # scrape takes. TTL-bounded; the scrape's own cache write makes the key
+            # a memory hit, so this can never mask fresh data.
+            _reels_durable_miss[k] = time.time()
+            _cap_evict(_reels_durable_miss, 500)
 
     try:
         await asyncio.wait_for(
@@ -12448,8 +12657,9 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
     the write-turn route to know "convert this action to an answer" rather than ship a
     reconstructed script dict). Every non-clean outcome is logged. Runs even keyless —
     the policy still applies (fail-CLOSED, not fail-open)."""
-    out: list[dict] = []
-    for i, s in enumerate(scripts):
+    prepped: list[dict] = []
+    reasons: list[str | None] = []
+    for s in scripts:
         # a5 port: "plan" is the model's internal structure pass (schema-ordered FIRST so
         # planning happens before writing) — it never ships. This is the one hook every
         # script path flows through, so the strip lives here. durationSeconds ships but
@@ -12466,21 +12676,37 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
             # write-turn, from-brief), so the dash scrub lives here. Whitelisted prose
             # fields only — nothing here is transcript-derived.
             s = _scrub_voice(s)
-        body = s.get("body") or ""
-        style = s.get("style", "")
-        reason = prompts.flag_stage_direction(body, style)
+        prepped.append(s)
+        reasons.append(prompts.flag_stage_direction(s.get("body") or "", s.get("style", "")))
+
+    async def _repair(body: str, style: str) -> str | None:
+        if not ANTHROPIC_KEY:
+            return None
+        try:
+            fixed = await asyncio.wait_for(
+                anthropic(_SPEAKABLE_REPAIR_SYS, body, HAIKU, 600), timeout=timeout_s)
+        except (HTTPException, asyncio.TimeoutError):
+            return None
+        if fixed and prompts.flag_stage_direction(fixed, style):
+            return None        # the repair itself still reads as a description
+        return fixed
+
+    # Repairs are independent per script — gathered, a 3-dirty batch costs one
+    # timeout_s budget instead of three back-to-back (they ran serially before).
+    dirty = [i for i, r in enumerate(reasons) if r]
+    fixes: dict[int, str | None] = {}
+    if dirty:
+        repaired = await asyncio.gather(*(
+            _repair(prepped[i].get("body") or "", prepped[i].get("style", "")) for i in dirty))
+        fixes = dict(zip(dirty, repaired))
+
+    out: list[dict] = []
+    for i, s in enumerate(prepped):
+        reason = reasons[i]
         if not reason:
             out.append(s)
             continue
-        fixed = None
-        if ANTHROPIC_KEY:
-            try:
-                fixed = await asyncio.wait_for(
-                    anthropic(_SPEAKABLE_REPAIR_SYS, body, HAIKU, 600), timeout=timeout_s)
-            except (HTTPException, asyncio.TimeoutError):
-                fixed = None
-            if fixed and prompts.flag_stage_direction(fixed, style):
-                fixed = None   # the repair itself still reads as a description
+        fixed = fixes.get(i)
         if fixed and fixed.strip():
             logging.info("[speakable] i=%d outcome=repaired reason=%s", i, reason)
             out.append({**s, "body": prompts.scrub_em_dashes(fixed.strip())})
@@ -13041,14 +13267,20 @@ async def feed_feedback(req: FeedFeedbackRequest):
         "hook_signal": sc.get("hook_signal") or sc.get("hookSignal"),
     }
     updated = 0
+    tapped_arms: list[str] = []
     for dim in DIMENSIONS:
         val = dim_values.get(dim)
         if val:
-            await _update_arm_feedback(req.creator_id, f"{dim}:{val}", y, niche)
+            await _update_arm_feedback(req.creator_id, f"{dim}:{val}", y, niche, persist=False)
+            tapped_arms.append(f"{dim}:{val}")
             # Count only what was actually written: _update_arm_feedback no-ops on the
             # shared pre-auth bucket, and reporting arms_updated>0 there would claim a
             # learning write that never happened (same honesty rule as the coach card).
             updated += 1 if palo_flags.real_creator(req.creator_id) else 0
+    if palo_flags.real_creator(req.creator_id):
+        # One batched write-through for the tap (was 4 sequential upserts inline
+        # before the response to a like/dislike).
+        await _flush_arms(req.creator_id, tapped_arms)
     if verdict == "dislike":
         _record_dismissal(req.creator_id, fp)
     return {"mode": "live" if _supabase_client else "mock", "status": "recorded",

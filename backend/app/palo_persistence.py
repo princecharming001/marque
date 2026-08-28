@@ -195,6 +195,18 @@ class PaloStore(SupabaseClient):
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
 
+    async def upsert_briefs(self, briefs: list[dict]) -> bool:
+        """Batch variant: an ideate pass lands ~5-10 briefs — one array POST instead
+        of one round trip per brief. Same on_conflict/Prefer contract."""
+        rows = [{k: b[k] for k in _BRIEF_COLS if k in b} for b in briefs]
+        rows = [r for r in rows if r.get("id")]
+        if not rows:
+            return True
+        r = await self._request(
+            "POST", "/briefs", params={"on_conflict": "id"}, json=rows,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
     async def load_briefs(self, creator_id: str, status: str = "", limit: int = 30) -> list[dict]:
         params = {"creator_id": f"eq.{creator_id}", "select": ",".join(_BRIEF_COLS),
                   "order": "score.desc,created_at.desc", "limit": str(limit)}

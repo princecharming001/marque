@@ -5,6 +5,62 @@ import AVFoundation
 import PhotosUI
 import UniformTypeIdentifiers
 import CryptoKit
+import ImageIO
+
+/// Small shared cache of DECODED thumbnails keyed by URL/path — scroll-back must not
+/// re-fetch or re-decode, and remote covers arrive full-resolution when a cell needs a
+/// fraction of that. Downsampling happens at decode time (ImageIO thumbnail API), so
+/// the full-size bitmap never materializes in memory.
+enum ThumbnailCache {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 120
+        return c
+    }()
+
+    static func cached(_ key: String) -> UIImage? {
+        cache.object(forKey: key as NSString)
+    }
+
+    static func store(_ image: UIImage, key: String) {
+        cache.setObject(image, forKey: key as NSString)
+    }
+
+    private static func thumbnail(from src: CGImageSource, maxPixel: CGFloat) -> UIImage? {
+        let opts = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel
+        ] as CFDictionary
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts) else { return nil }
+        return UIImage(cgImage: cg)
+    }
+
+    /// Decode `data` at no more than `maxPixel` on the long side.
+    static func downsample(_ data: Data, maxPixel: CGFloat) -> UIImage? {
+        let opts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithData(data as CFData, opts) else { return nil }
+        return thumbnail(from: src, maxPixel: maxPixel)
+    }
+
+    /// Decode a local image file at no more than `maxPixel` on the long side.
+    static func downsampleFile(_ url: URL, maxPixel: CGFloat) -> UIImage? {
+        let opts = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, opts) else { return nil }
+        return thumbnail(from: src, maxPixel: maxPixel)
+    }
+
+    /// Fetch + downsample + cache a remote poster; a cache hit costs nothing.
+    static func remote(_ url: URL, maxPixel: CGFloat) async -> UIImage? {
+        let key = url.absoluteString
+        if let hit = cached(key) { return hit }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let img = downsample(data, maxPixel: maxPixel) else { return nil }
+        store(img, key: key)
+        return img
+    }
+}
 
 // MARK: - Local media helpers (thumbnails, playback, bulk import to the app container)
 
@@ -38,6 +94,22 @@ enum MediaStore {
         let name = "media/\(UUID().uuidString).\(ext)"
         do {
             try FileManager.default.copyItem(at: src, to: documents.appendingPathComponent(name))
+            return name
+        } catch {
+            return nil
+        }
+    }
+
+    /// Adopt an already-downloaded temp file into media/<uuid>.<ext> by MOVING it —
+    /// no Data round-trip (reading a render back just to re-write it put the whole
+    /// file through RAM; a rename costs nothing). Returns the Documents-relative
+    /// path, or nil (the caller still owns the source file on failure).
+    static func adopt(fileAt src: URL, ext: String) -> String? {
+        let dir = documents.appendingPathComponent("media", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let name = "media/\(UUID().uuidString).\(ext)"
+        do {
+            try FileManager.default.moveItem(at: src, to: documents.appendingPathComponent(name))
             return name
         } catch {
             return nil
@@ -141,22 +213,34 @@ struct LocalThumbnail: View {
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .task(id: (remoteImageURL ?? "") + (path ?? "")) { await load() }
     }
+    /// Grid cells are small (a 3-column Library cell is ~640px at 3x); decoding past
+    /// this just burns memory on pixels the cell can't show.
+    private static let maxPixel: CGFloat = 640
+
     private func load() async {
         guard image == nil else { return }
-        // 1) server poster image (jpg over http) — the primary path for rendered clips
+        // 1) server poster image (jpg over http) — the primary path for rendered
+        //    clips. Downsampled at decode + cached, so scroll-back re-decodes nothing.
         if let remoteImageURL, let u = URL(string: remoteImageURL) {
-            if let (data, _) = try? await URLSession.shared.data(from: u), let img = UIImage(data: data) {
+            if let img = await ThumbnailCache.remote(u, maxPixel: Self.maxPixel) {
                 image = img
                 return
             }
         }
-        // 2) local file (raw take poster / imported still)
+        // 2) local file (raw take poster / imported still) — same cache, keyed by path.
         guard let path, !path.isEmpty else { return }
+        if let hit = ThumbnailCache.cached(path) {
+            image = hit
+            return
+        }
         let url = MediaStore.url(for: path)
-        if isVideo {
-            let img = await Task.detached(priority: .utility) { MediaStore.poster(for: url) }.value
-            image = img
-        } else if let data = try? Data(contentsOf: url), let img = UIImage(data: data) {
+        let wantVideo = isVideo
+        let img = await Task.detached(priority: .utility) {
+            wantVideo ? MediaStore.poster(for: url)
+                      : ThumbnailCache.downsampleFile(url, maxPixel: Self.maxPixel)
+        }.value
+        if let img {
+            ThumbnailCache.store(img, key: path)
             image = img
         }
     }

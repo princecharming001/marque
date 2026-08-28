@@ -55,6 +55,8 @@ class SupabaseClient:
     def __init__(self, url: str, key: str):
         self.base = url.rstrip("/") + "/rest/v1"
         self.key = key
+        self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
         self._headers = {
             "apikey": key,
             "Authorization": f"Bearer {key}",
@@ -65,6 +67,18 @@ class SupabaseClient:
     def enabled(self) -> bool:
         return bool(self.key and self.base.startswith("http"))
 
+    def _pooled(self) -> httpx.AsyncClient:
+        """One shared connection-pooled client per event loop. The old per-call
+        `async with AsyncClient()` paid a fresh TCP+TLS handshake on EVERY REST
+        call — the dominant cost of a single-row write. Keyed to the running loop
+        so a test suite that spins a new loop per test gets a fresh client instead
+        of a cross-loop crash; a stale client from a dead loop is just dropped."""
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client_loop is not loop:
+            self._client = httpx.AsyncClient(timeout=15)
+            self._client_loop = loop
+        return self._client
+
     async def _request(self, method: str, path: str, *, params=None, json=None, headers=None) -> httpx.Response | None:
         """One REST call with the same retry/backoff shape as anthropic()."""
         if not self.enabled:
@@ -72,9 +86,8 @@ class SupabaseClient:
         merged = {**self._headers, **(headers or {})}
         for attempt, delay in enumerate(list(_BACKOFF) + [None]):
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    r = await client.request(method, f"{self.base}{path}",
-                                             params=params, json=json, headers=merged)
+                r = await self._pooled().request(method, f"{self.base}{path}",
+                                                 params=params, json=json, headers=merged)
                 if r.status_code < 500:
                     if r.status_code >= 300:
                         # A 4xx never retries (not our to fix) but MUST be visible — a
@@ -110,6 +123,50 @@ class SupabaseClient:
             "POST", "/arm_stats", params={"on_conflict": "creator_id,arm_key"}, json=row,
             headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
         return bool(r and r.status_code < 300)
+
+    async def upsert_arm_stats(self, creator_id: str, stats: dict[str, dict]) -> bool:
+        """Batch write-through: ONE array POST for a whole set of mutated arms.
+        A settle touches 4 dimension arms + up to 6 edit knobs, and a feed tap
+        touches 4 — each was its own HTTP round trip. Same on_conflict/Prefer
+        contract as the single-row upsert, so semantics are identical."""
+        rows = [{"creator_id": creator_id, "arm_key": key,
+                 **{k: stat[k] for k in _ARM_COLS if k in stat}}
+                for key, stat in stats.items()]
+        if not rows:
+            return True
+        r = await self._request(
+            "POST", "/arm_stats", params={"on_conflict": "creator_id,arm_key"}, json=rows,
+            headers={"Prefer": "resolution=merge-duplicates,return=minimal"})
+        return bool(r and r.status_code < 300)
+
+    async def load_all_arm_stats(self) -> dict[str, dict[str, dict]]:
+        """All creators' arms in one paginated sweep, grouped by creator_id — the
+        boot path used to issue one GET per creator (N+1 against PostgREST at
+        every deploy, behind live traffic). Same stop-on-short-page contract as
+        load_all_posts: boot must never block on this."""
+        out: dict[str, dict[str, dict]] = {}
+        offset = 0
+        while True:
+            r = await self._request(
+                "GET", "/arm_stats",
+                params={"select": "creator_id,arm_key," + ",".join(_ARM_COLS),
+                        "order": "creator_id.asc",
+                        "limit": str(_PAGE_SIZE), "offset": str(offset)})
+            if not (r and r.status_code == 200):
+                break
+            try:
+                rows = r.json()
+            except Exception:
+                break
+            for row in rows:
+                cid, key = row.pop("creator_id", None), row.pop("arm_key", None)
+                if cid and key:
+                    out.setdefault(cid, {})[key] = {k: row[k] for k in _ARM_COLS
+                                                    if row.get(k) is not None}
+            if len(rows) < _PAGE_SIZE:
+                break
+            offset += _PAGE_SIZE
+        return out
 
     async def load_arm_stats(self, creator_id: str) -> dict[str, dict]:
         r = await self._request(
