@@ -84,7 +84,7 @@ struct StrategyView: View {
                             .padding(.top, 60)
                     }
                 }
-                .padding(Space.xl)
+                .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Your Strategy")

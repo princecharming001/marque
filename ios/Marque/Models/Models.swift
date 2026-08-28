@@ -390,6 +390,27 @@ struct Script: Codable, Hashable, Identifiable {
     // Optional-with-default → Snapshot-safe both directions.
     var whyPicked: String = ""
     var createdAt: Date = Date()
+    // Every refine / manual edit / hook swap snapshots the version it's REPLACING here
+    // first (most recent first), so nothing is ever destructive — the creator can always
+    // go back. Optional-with-default → decodes fine for scripts saved before this existed.
+    var versionHistory: [ScriptVersion] = []
+}
+
+/// A prior snapshot of a script's content, kept so a refine/edit/hook-swap can be undone.
+/// Deliberately narrow — only the fields a creator would recognize as "the content":
+/// title/hook/body/cta. Structural fields (format, duration, shot plan) aren't versioned;
+/// reverting is about "I liked what it SAID before," not the technical wrapper.
+struct ScriptVersion: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var savedAt: Date = Date()
+    /// What produced this snapshot — a refine instruction ("Shorter"), "Manual edit",
+    /// "Hook swapped", or "Original" for the very first version. Shown as-is in the
+    /// history list, so keep it short and human.
+    var label: String
+    var title: String
+    var hook: Hook
+    var body: String
+    var cta: String
 }
 
 enum ClipStatus: String, Codable { case draft, rendering, ready, scheduled, posted, failed }

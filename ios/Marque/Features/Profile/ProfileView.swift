@@ -79,6 +79,7 @@ struct ProfileView: View {
                     // per take now; there is no preferred-styles knob to set.
                 }
                 .padding(.horizontal, Space.screenH)
+                .padding(.bottom, Space.lg)
 
                 MarqueHairline()
 
@@ -298,7 +299,7 @@ private struct WatchedCreatorSlot: View {
             .buttonStyle(.plain)
             .accessibilityIdentifier("profile.clearCreator\(index)")
         }
-        .padding(.horizontal, Space.md).padding(.vertical, 10)
+        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
         .background(Palette.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
@@ -874,7 +875,7 @@ struct CreatorProfileSheet: View {
                             .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                             .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                         if !card.traits.isEmpty {
-                            FlowWrap(spacing: 6) {
+                            FlowWrap(spacing: Space.sm) {
                                 ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
                                     Text(trait)
                                         .font(Typeface.sans(11, .medium)).tracking(0.2)

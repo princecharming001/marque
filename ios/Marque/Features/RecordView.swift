@@ -622,7 +622,7 @@ struct RecordView: View {
                 withAnimation(Motion.quick) { adjustExpanded.toggle() }
             } label: {
                 HStack(spacing: Space.sm) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
                         Text("YOUR STYLE, APPLIED")
                             .font(AppFont.micro).tracking(Track.label)
                             .foregroundStyle(.white.opacity(0.5))
@@ -848,7 +848,7 @@ struct RecordView: View {
         } label: {
             VStack(spacing: 4) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                         .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.black.opacity(0.55)],
                                              startPoint: .top, endPoint: .bottom))
                     // faint speaker silhouette — reads as "your video", never as content
@@ -861,7 +861,7 @@ struct RecordView: View {
                         .offset(y: 18)
                 }
                 .frame(width: 62, height: 96)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                     .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
                                   lineWidth: active ? 2 : 1))
                 Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
@@ -1361,7 +1361,7 @@ struct RecordView: View {
                 }
                 if segments.count > 0 {
                     Text(liveTake ? "Take \(segments.count + 1)" : "\(segments.count) take\(segments.count == 1 ? "" : "s")")
-                        .font(AppFont.micro).tracking(0.4)
+                        .font(AppFont.micro).tracking(Track.label)
                         .foregroundStyle(.white.opacity(0.7))
                         .padding(.leading, 4)
                 }

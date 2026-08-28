@@ -262,7 +262,7 @@ struct PaymentScreen: View {
         VStack(spacing: 0) {
             ForEach(Array(features.enumerated()), id: \.offset) { i, f in
                 if i > 0 { Rectangle().fill(.white.opacity(0.08)).frame(height: 0.5) }
-                HStack(spacing: 13) {
+                HStack(spacing: 16) {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.white)
@@ -293,19 +293,19 @@ struct PaymentScreen: View {
     private func planBox(selected: Bool, title: String, price: String, sub: String,
                          _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title).font(Typeface.sans(12.5, .medium)).tracking(0.1)
                     .foregroundStyle(.white.opacity(0.58))
                 Text(price).font(Typeface.sans(19, .semibold)).tracking(-0.3)
-                    .foregroundStyle(.white).padding(.top, 5)
+                    .foregroundStyle(.white)
                 Text(sub).font(Typeface.sans(11.5, .regular))
-                    .foregroundStyle(.white.opacity(0.42)).padding(.top, 2)
+                    .foregroundStyle(.white.opacity(0.42))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(14)
-            .background(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(.white.opacity(selected ? 0.09 : 0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .strokeBorder(.white.opacity(selected ? 0.55 : 0.08), lineWidth: 1))
             .overlay(alignment: .topTrailing) {
                 if selected {
@@ -314,7 +314,7 @@ struct PaymentScreen: View {
                         .foregroundStyle(Palette.night)
                         .frame(width: 20, height: 20)
                         .background(Circle().fill(.white))
-                        .padding(10)
+                        .padding(8)
                 }
             }
             .contentShape(Rectangle())

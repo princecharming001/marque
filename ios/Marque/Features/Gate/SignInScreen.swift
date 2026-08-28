@@ -107,7 +107,7 @@ struct SignInScreen: View {
                 GeometryReader { proxy in
                     ScrollView {
                         formColumn
-                            .padding(.horizontal, 24)
+                            .padding(.horizontal, 20)
                             .padding(.vertical, 40)
                             .frame(maxWidth: .infinity)
                             .frame(minHeight: proxy.size.height)   // centers like maxapp's flex

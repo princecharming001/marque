@@ -30,7 +30,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: Space.lg) {
 
                     // Editorial inline header — kicker + Fraunces title (Library's signature)
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
                         Text("YOUR ACCOUNT & APP")
                             .font(AppFont.micro).tracking(Track.label)
                             .foregroundStyle(Palette.textTertiary)
@@ -38,7 +38,32 @@ struct SettingsView: View {
                             .font(Typeface.sans(34, .bold)).tracking(-1)
                             .foregroundStyle(Palette.textPrimary)
                     }
-                    .padding(.bottom, Space.xs)
+
+                    // Identity card — leads with WHO before what/toggles, the way an
+                    // Apple-ID-style settings screen does. Was a flat list starting
+                    // straight into "Notifications"; this gives the screen a face.
+                    HStack(spacing: Space.md) {
+                        AccountAvatarMark(label: displayName, size: 52)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(displayName).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                .lineLimit(1)
+                            if !store.brand.niche.isEmpty {
+                                Text(store.brand.niche.capitalized)
+                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            }
+                        }
+                        Spacer()
+                        if store.subscription.isSubscribed {
+                            Chip(text: "Pro", tint: Palette.positive)
+                        }
+                    }
+                    .padding(Space.md)
+                    .background(Palette.surfaceRaised)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1))
+                    .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 14, x: 0, y: 6)
+                    .accessibilityIdentifier("settings.identityCard")
 
                     // Build 61: the "Editing" group moved WHOLESALE to Profile → Editing
                     // style. It was a partial duplicate of the record screen's per-take
@@ -71,8 +96,8 @@ struct SettingsView: View {
                     // MARK: Subscription
                     settingsGroup("Subscription") {
                         HStack(spacing: Space.md) {
-                            iconTile("crown", tint: Palette.accent)
-                            VStack(alignment: .leading, spacing: 2) {
+                            ProMark()
+                            VStack(alignment: .leading, spacing: Space.xxs) {
                                 Text("Yunicorn Pro, \(monthlyPrice)")
                                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                 Text("Billed monthly. Cancel anytime.")
@@ -93,8 +118,8 @@ struct SettingsView: View {
                         // Mock entitlement until StoreKit lands.
                         Button { showProPaywall = true } label: {
                             HStack(spacing: Space.md) {
-                                iconTile("sparkles", tint: Palette.accent)
-                                VStack(alignment: .leading, spacing: 2) {
+                                PlusMark()
+                                VStack(alignment: .leading, spacing: Space.xxs) {
                                     Text(entitlements.isPro ? "Yunicorn Plus, active"
                                                             : "Go Plus")
                                         .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
@@ -138,8 +163,8 @@ struct SettingsView: View {
                     // MARK: Account
                     settingsGroup("Account") {
                         HStack(spacing: Space.md) {
-                            iconTile("person")
-                            VStack(alignment: .leading, spacing: 2) {
+                            AccountAvatarMark(label: displayName)
+                            VStack(alignment: .leading, spacing: Space.xxs) {
                                 Text(store.auth.state?.email ?? "Demo account")
                                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                                     .lineLimit(1)
@@ -218,7 +243,7 @@ struct SettingsView: View {
                             ShareLink(item: str,
                                       subject: Text("Yunicorn Brand Data"),
                                       message: Text("My Yunicorn brand export")) {
-                                row("Export my data", "square.and.arrow.up")
+                                row("Export my data", "square.and.arrow.up", mark: AnyView(PrivacyMark()))
                             }
                             .accessibilityIdentifier("settings.exportData")
 
@@ -226,13 +251,13 @@ struct SettingsView: View {
                         }
 
                         Link(destination: LegalURLs.privacy) {
-                            row("Privacy Policy", "hand.raised")
+                            row("Privacy Policy", "hand.raised", tint: Palette.textSecondary)
                         }
 
                         insetDivider
 
                         Link(destination: LegalURLs.terms) {
-                            row("Terms of Use", "doc.text")
+                            row("Terms of Use", "doc.text", tint: Palette.textSecondary)
                         }
                     }
 
@@ -242,7 +267,7 @@ struct SettingsView: View {
                             dismiss()
                             tour.start(router: router)
                         } label: {
-                            row("Replay walkthrough", "sparkles")
+                            row("Replay walkthrough", "arrow.triangle.2.circlepath", tint: Palette.accent)
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("settings.replayTour")
@@ -250,7 +275,7 @@ struct SettingsView: View {
                         insetDivider
 
                         Link(destination: LegalURLs.support) {
-                            row("Support", "questionmark.circle")
+                            row("Support", "questionmark.circle", mark: AnyView(SupportMark()))
                         }
 
                         insetDivider
@@ -301,11 +326,21 @@ struct SettingsView: View {
         store.subscription.monthly.map { "\($0.displayPrice)/mo" } ?? "$14.99/mo"
     }
 
-    /// Hairline divider inset to the text column (past the 34pt icon tile + gutters),
+    /// The name shown on the identity card and the account-row avatar's initial —
+    /// creator's own name first (collected at onboarding), then email, then a plain
+    /// fallback for a fresh demo account with neither.
+    private var displayName: String {
+        let n = (store.brand.creatorName ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !n.isEmpty { return n }
+        if let email = store.auth.state?.email, !email.isEmpty { return email }
+        return "Your account"
+    }
+
+    /// Hairline divider inset to the text column (past the 36pt icon tile + gutters),
     /// so the icon rail reads as one continuous column.
     private var insetDivider: some View {
         Divider().overlay(Palette.hairline)
-            .padding(.leading, Space.md + 34 + Space.md)
+            .padding(.leading, Space.md + 36 + Space.md)
     }
 
     /// Hairline divider for icon-less rows (toggles) — inset to the card's text margin.
@@ -314,20 +349,21 @@ struct SettingsView: View {
             .padding(.leading, Space.md)
     }
 
-    private func iconTile(_ icon: String, tint: Color = Palette.textPrimary) -> some View {
-        Image(systemName: icon).font(.system(size: 16)).foregroundStyle(tint)
-            .frame(width: 34, height: 34)
-            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.08)))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(tint.opacity(0.10), lineWidth: 1))
-    }
-
     /// A standard tappable row: icon tile + title + trailing chevron, on the shared
     /// 13pt-vertical / Space.md-horizontal grid (padding lives HERE so every call site
-    /// lands on the same rhythm).
+    /// lands on the same rhythm). `mark` overrides the default tinted-glyph tile with a
+    /// custom one (ProMark, PrivacyMark, ...) when the row deserves its own identity.
     @ViewBuilder
-    private func row(_ title: String, _ icon: String, tint: Color = Palette.textPrimary) -> some View {
+    private func row(_ title: String, _ icon: String, tint: Color = Palette.textSecondary,
+                     mark: AnyView? = nil) -> some View {
         HStack(spacing: Space.md) {
-            iconTile(icon, tint: tint)
+            if let mark {
+                mark
+            } else if tint == Palette.critical {
+                DestructiveMark(systemImage: icon)
+            } else {
+                UtilityMark(systemImage: icon, tint: tint)
+            }
             Text(title).font(AppFont.headline)
                 .foregroundStyle(tint == Palette.critical ? Palette.critical : Palette.textPrimary)
             Spacer()

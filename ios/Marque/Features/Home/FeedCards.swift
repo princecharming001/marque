@@ -221,7 +221,7 @@ struct ReelCard: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             // Platform + handle
-            HStack(spacing: 5) {
+            HStack(spacing: Space.xs) {
                 Image(systemName: reel.platform == "instagram" ? "camera.fill" : "music.note")
                     .font(.system(size: 9, weight: .semibold))
                 Text("@\(reel.creatorHandle)")
@@ -248,7 +248,7 @@ struct ReelCard: View {
             Spacer(minLength: 0)
 
             // Views + provenance
-            HStack(spacing: 4) {
+            HStack(spacing: Space.xs) {
                 Image(systemName: "eye").font(.system(size: 10))
                 Text(compactNumber(reel.views)).font(AppFont.caption)
                 Spacer(minLength: 0)
@@ -264,6 +264,13 @@ struct ReelCard: View {
 
 // MARK: Trend carousel — infinite scroll through trends with timed pauses
 
+/// Measures a view's rendered width via its background — used to size the marquee's
+/// single-copy width so the seamless-loop offset is exact, not guessed.
+private struct TickerWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct TrendTicker: View {
     let trend: TrendItem
     var all: [TrendItem] = []          // W1: the full niche-trend list (rotates the ticker)
@@ -272,6 +279,14 @@ struct TrendTicker: View {
     @State private var expanded = false
     @State private var pulse = false
     @State private var slideFromTrailing = true    // last advance direction → transition edges
+    // Owner spec: idle state is a continuously-scrolling marquee (never static, no
+    // discrete jumps) — it reads as ambient/alive rather than "wait for it to switch."
+    // The FIRST tap is a one-way ratchet into the discrete, readable interval mode
+    // (today's 30s auto-advance + swipe + expand-to-read-why) — engaged never resets.
+    @State private var engaged = false
+    @State private var marqueeOffset: CGFloat = 0
+    @State private var marqueeCopyWidth: CGFloat = 0
+    private static let marqueePointsPerSecond: Double = 34
 
     private var displayTrend: TrendItem { allTrends.isEmpty ? trend : allTrends[currentIndex % max(1, allTrends.count)] }
 
@@ -287,6 +302,9 @@ struct TrendTicker: View {
         VStack(alignment: .leading, spacing: 0) {
             MarqueHairline()
             Button {
+                // First tap is the ratchet: stop the ambient scroll, settle into the
+                // readable interval mode — and, same as always, toggle the why-detail.
+                engaged = true
                 withAnimation(Motion.quick) { expanded.toggle() }
             } label: {
                 HStack(spacing: Space.sm) {
@@ -297,13 +315,19 @@ struct TrendTicker: View {
                     Text("TRENDING")
                         .font(AppFont.micro).tracking(Track.label)
                         .foregroundStyle(Palette.textTertiary)
-                    ZStack(alignment: .leading) {
-                        Text(displayTrend.title)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Palette.textPrimary)
-                            .lineLimit(1)
-                            .id("trend-title-\(currentIndex)")
-                            .transition(slide)
+                    Group {
+                        if engaged {
+                            ZStack(alignment: .leading) {
+                                Text(displayTrend.title)
+                                    .font(AppFont.callout)
+                                    .foregroundStyle(Palette.textPrimary)
+                                    .lineLimit(1)
+                                    .id("trend-title-\(currentIndex)")
+                                    .transition(slide)
+                            }
+                        } else {
+                            marquee
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .clipped()
@@ -339,7 +363,10 @@ struct TrendTicker: View {
         // keeps plain taps flowing through to the button (a sub-24pt touch fails
         // the drag and falls back to the tap).
         .highPriorityGesture(DragGesture(minimumDistance: 24).onEnded { v in
+            // Swipe is part of the engaged/interval experience — the same tap-in ratchet
+            // as the button, so a swipe before any tap also settles the ticker in place.
             guard allTrends.count > 1, abs(v.translation.width) > abs(v.translation.height) else { return }
+            engaged = true
             if v.translation.width < 0 { advance(1) } else { advance(-1) }
         })
         .onAppear {
@@ -350,16 +377,69 @@ struct TrendTicker: View {
             allTrends = new.count > 1 ? new : [trend]
             currentIndex = 0
         }
-        // Auto-advance every 30s while collapsed; reading an expanded trend never
-        // yanks it away — the cycle resumes on collapse. Task cancels itself on
-        // expand/list change, so there are no stray timers.
-        .task(id: "\(expanded)-\(allTrends.count)") {
-            guard !expanded, allTrends.count > 1 else { return }
+        // Auto-advance every 30s once engaged AND collapsed; reading an expanded trend
+        // never yanks it away — the cycle resumes on collapse. Task cancels itself on
+        // expand/engage/list change, so there are no stray timers. Before the first
+        // tap this never fires — the marquee owns the motion instead.
+        .task(id: "\(engaged)-\(expanded)-\(allTrends.count)") {
+            guard engaged, !expanded, allTrends.count > 1 else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
                 guard !Task.isCancelled else { return }
                 advance(1)
             }
+        }
+    }
+
+    // MARK: Ambient marquee (pre-engagement idle state)
+
+    /// A seamless, continuously-scrolling ticker tape of every trend title — the "always
+    /// moving, never switching at intervals" idle state. Two identical copies laid side by
+    /// side; animating the offset by exactly one copy's width and snapping back the instant
+    /// it lands makes the loop invisible (the second copy is already sitting where the
+    /// first one's continuation would be).
+    private var marqueeText: String {
+        (allTrends.isEmpty ? [trend] : allTrends).map(\.title).joined(separator: "      •      ")
+            + "      •      "
+    }
+
+    /// The scrolling copies are `.fixedSize()` — deliberately far wider than their slot,
+    /// that's what makes the loop work. But a `.fixedSize()` view still reports that huge
+    /// WIDTH upward during layout even once it's clipped, so parked directly inside the
+    /// row's HStack it silently ate the row's own layout math and pushed the leading dot +
+    /// "TRENDING" label off past the left edge. Wrapping in GeometryReader breaks that
+    /// upward leak: a GeometryReader reports exactly the size ITS parent offers it, never
+    /// its children's — so the row sees a normal flexible slot, and the oversized scrolling
+    /// content only exists (and gets clipped) INSIDE that already-fixed window.
+    private var marquee: some View {
+        GeometryReader { windowGeo in
+            HStack(spacing: 0) {
+                Text(marqueeText).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                    .fixedSize()
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: TickerWidthKey.self, value: g.size.width)
+                    })
+                Text(marqueeText).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                    .fixedSize()
+            }
+            .offset(x: marqueeOffset)
+            .frame(width: windowGeo.size.width, alignment: .leading)
+        }
+        .frame(height: 20)
+        .clipped()
+        .onPreferenceChange(TickerWidthKey.self) { w in
+            guard w > 0, w != marqueeCopyWidth else { return }
+            marqueeCopyWidth = w
+            startMarquee()
+        }
+    }
+
+    private func startMarquee() {
+        guard marqueeCopyWidth > 0, !engaged else { return }
+        marqueeOffset = 0
+        withAnimation(.linear(duration: marqueeCopyWidth / Self.marqueePointsPerSecond)
+            .repeatForever(autoreverses: false)) {
+            marqueeOffset = -marqueeCopyWidth
         }
     }
 
@@ -441,7 +521,7 @@ struct ReelSkeletonCard: View {
         SkeletonBlock(cornerRadius: Radius.lg)
             .aspectRatio(9.0 / 16.0, contentMode: .fit)
             .overlay(alignment: .bottomLeading) {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: Space.sm) {
                     SkeletonBlock(cornerRadius: Radius.sm).frame(width: 90, height: 10)
                     SkeletonBlock(cornerRadius: Radius.sm).frame(width: 60, height: 10)
                 }

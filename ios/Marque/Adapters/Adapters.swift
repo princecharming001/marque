@@ -199,10 +199,25 @@ struct MockLLMRouter: LLMRouting {
         try? await Task.sleep(nanoseconds: 600_000_000)
         var s = script
         let i = instruction.lowercased()
-        if i.contains("short") { s.body = String(s.body.prefix(120)); s.targetSeconds = max(10, s.targetSeconds - 6) }
-        if i.contains("contrarian") { s.hook = Hook(text: hookText(.contrarian, topic: script.pillarName.lowercased(), brand: brand), signal: .contrarian, strength: min(97, script.hook.strength + 3)) }
-        if i.contains("funny") { s.body = "Lean into the joke: " + s.body }
-        if i.contains("vulnerable") || i.contains("personal") { s.body = "Open with a real moment you're a little embarrassed by. " + s.body }
+        var matched = false
+        if i.contains("short") {
+            s.body = String(s.body.prefix(120)); s.targetSeconds = max(10, s.targetSeconds - 6); matched = true
+        }
+        if i.contains("contrarian") {
+            s.hook = Hook(text: hookText(.contrarian, topic: script.pillarName.lowercased(), brand: brand), signal: .contrarian, strength: min(97, script.hook.strength + 3)); matched = true
+        }
+        // "funny" alone missed the "Funnier" chip (funnier never contains funny) — the
+        // whole refine feature read as dead for anyone who tapped that exact chip.
+        if i.contains("funny") || i.contains("funnier") { s.body = "Lean into the joke: " + s.body; matched = true }
+        if i.contains("vulnerable") || i.contains("personal") {
+            s.body = "Open with a real moment you're a little embarrassed by. " + s.body; matched = true
+        }
+        // A typed instruction that hits none of the keywords above used to fall straight
+        // through as a silent no-op (only +2 to predictedScore, nothing visible changed) —
+        // this is the offline/degraded path, so it must never look like refine is broken.
+        if !matched {
+            s.body = "Per your note (\"\(instruction)\"): " + s.body
+        }
         s.predictedScore = min(97, s.predictedScore + 2)
         return s
     }

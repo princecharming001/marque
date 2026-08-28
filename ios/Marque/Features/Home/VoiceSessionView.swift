@@ -76,7 +76,7 @@ struct VoiceSessionView: View {
                             exchangeRow(m).id(m.id)
                         }
                         if thinking {
-                            HStack(spacing: 6) {
+                            HStack(spacing: Space.sm) {
                                 ProgressView().tint(Palette.accent)
                                 Text("Yunicorn is thinking…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
                             }

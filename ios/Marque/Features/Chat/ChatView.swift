@@ -283,13 +283,13 @@ struct ChatView: View {
                 .font(Typeface.sans(24, .semibold))
                 .tracking(Track.tight)
                 .foregroundStyle(Palette.textPrimary)
-            VStack(spacing: 10) {
+            VStack(spacing: Space.sm) {
                 ForEach(Self.starters, id: \.self) { starter in
                     Button { chat.send(starter, store: store) } label: {
                         Text(starter)
                             .font(AppFont.callout)
                             .foregroundStyle(Palette.textPrimary)
-                            .padding(.horizontal, 15)
+                            .padding(.horizontal, 14)
                             .padding(.vertical, 10)
                             .background(Palette.surface)
                             .clipShape(Capsule())

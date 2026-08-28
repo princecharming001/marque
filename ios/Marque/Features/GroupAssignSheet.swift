@@ -55,7 +55,7 @@ struct GroupAssignSheet: View {
                             ForEach(store.clipGroups) { g in
                                 groupRow(g)
                                 if g.id != store.clipGroups.last?.id {
-                                    Divider().overlay(Palette.hairline).padding(.leading, 40)
+                                    Divider().overlay(Palette.hairline).padding(.leading, Space.md)
                                 }
                             }
                         }
@@ -106,7 +106,7 @@ struct GroupAssignSheet: View {
                     .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(1)
                 Spacer()
                 Image(systemName: glyph(state))
-                    .font(.system(size: 19, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(state == .none ? Palette.textTertiary : Palette.accent)
             }
             .padding(.horizontal, Space.md).padding(.vertical, 13)

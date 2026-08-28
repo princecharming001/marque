@@ -379,7 +379,7 @@ private struct FlowChips: View {
                 Button { onTap(chip) } label: {
                     Text(chip)
                         .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                        .padding(.horizontal, Space.md).padding(.vertical, 8)
+                        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
                         .background(Palette.surfaceRaised)
                         .clipShape(Capsule())
                         .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))

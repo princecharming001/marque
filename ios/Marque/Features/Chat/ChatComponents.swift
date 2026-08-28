@@ -29,10 +29,10 @@ struct ChatUserBubble: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 11)
                 .background(Palette.surfaceSunken)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
                 .frame(maxWidth: maxWidth, alignment: .trailing)
         }
-        .padding(.bottom, 10)
+        .padding(.bottom, Space.sm)
     }
 }
 
@@ -63,7 +63,7 @@ struct ChatAssistantMessage: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 4)
                 .padding(.top, 6)
-                .padding(.bottom, 8)
+                .padding(.bottom, (showCards && hasCards) ? 0 : 8)
             if showCards, hasCards {
                 cards
                     .padding(.bottom, Space.md)
@@ -173,7 +173,7 @@ struct ChatScriptCard: View {
     var body: some View {
         ChatScriptCardContent(script: script, saveLabel: saveLabel, saveId: saveId, showChevron: onOpen != nil)
             .marqueCard(padding: Space.md)
-            .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
             .onTapGesture { onOpen?() }     // inner Film/Save buttons keep their own hit areas
             // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
             // without .accessibilityElement(children: .contain), this card's own identifier
@@ -339,8 +339,8 @@ struct ClipEditCard: View {
         .padding(Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
         // Same fix as cleanupPanel: without this, the card's own identifier clobbers the
         // conditional "View in Library" button's own "chat.clipEdit.viewInLibrary" identifier.
@@ -751,7 +751,7 @@ private struct LengthPicker: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             Text("LENGTH")
                 .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-            HStack(spacing: 6) {
+            HStack(spacing: Space.sm) {
                 ForEach(ChatResponseLength.allCases) { opt in
                     let active = opt == current
                     Button {

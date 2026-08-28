@@ -43,7 +43,7 @@ struct ConnectAccountsView: View {
         return Button { Task { await linkViaOAuth(platform) } } label: {
             HStack(spacing: Space.md) {
                 PlatformBadge(platform: platform)
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(busy ? "Connecting…" : label)
                         .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                     Text(benefit)

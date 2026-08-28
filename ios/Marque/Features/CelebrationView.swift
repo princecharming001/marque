@@ -38,7 +38,7 @@ struct CelebrationView: View {
     private func rankUp(_ rank: CreatorRank) -> some View {
         VStack(spacing: Space.md) {
             Spacer()
-            RankSeal(level: rank.level, size: 92)
+            RankSeal(level: rank.level, size: 96)
             Text("New rank").font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(Palette.gold)
             Text(rank.title).font(Typeface.sans(28, .bold)).foregroundStyle(Palette.textPrimary)
@@ -48,7 +48,7 @@ struct CelebrationView: View {
                 .multilineTextAlignment(.center)
             if !rank.isMax {
                 Text("Level \(rank.level) of \(RankSystem.maxLevel)")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary).padding(.top, 2)
+                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
             }
             Spacer()
             PrimaryButton(title: "Keep building") { dismiss() }

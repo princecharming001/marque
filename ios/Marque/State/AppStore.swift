@@ -825,18 +825,61 @@ final class AppStore {
         beginStarterScripts()
     }
 
+    /// Snapshot a script's CURRENT content before it's about to be overwritten, so every
+    /// refine/edit/hook-swap is undoable. Capped at 20 — this is a safety net for "I liked
+    /// the last one better," not a full edit log; unbounded growth would bloat the snapshot
+    /// blob every save() re-encodes.
+    private func snapshotVersion(of script: Script, label: String) -> ScriptVersion {
+        ScriptVersion(label: label, title: script.title, hook: script.hook, body: script.body, cta: script.cta)
+    }
+
+    private func withHistory(_ next: Script, replacing prior: Script, label: String) -> Script {
+        var next = next
+        next.versionHistory = ([snapshotVersion(of: prior, label: label)] + prior.versionHistory)
+            .prefix(20).map { $0 }
+        return next
+    }
+
     func steer(_ script: Script, instruction: String) async {
         let updated = await llm.steer(script: script, brand: brand, instruction: instruction)
+        let versioned = withHistory(updated, replacing: script, label: instruction)
         // Upsert, not update-if-present: a feed pick opened straight from Home
         // isn't in `scripts` yet — refining it must not silently no-op.
-        if let idx = scripts.firstIndex(where: { $0.id == script.id }) { scripts[idx] = updated }
-        else { scripts.insert(updated, at: 0) }
+        if let idx = scripts.firstIndex(where: { $0.id == script.id }) { scripts[idx] = versioned }
+        else { scripts.insert(versioned, at: 0) }
         save()
     }
 
     func setHook(_ hook: Hook, for scriptId: UUID) {
         guard let idx = scripts.firstIndex(where: { $0.id == scriptId }) else { return }
-        scripts[idx].hook = hook
+        var next = scripts[idx]
+        next.hook = hook
+        scripts[idx] = withHistory(next, replacing: scripts[idx], label: "Hook swapped")
+        save()
+    }
+
+    /// Unified path for the reader's inline title/hook/body/CTA edits — same snapshot
+    /// contract as steer/setHook, so a manual tweak is just as undoable as an AI refine.
+    func commitScriptEdit(scriptId: UUID, title: String? = nil, hookText: String? = nil,
+                          body: String? = nil, cta: String? = nil) {
+        guard let idx = scripts.firstIndex(where: { $0.id == scriptId }) else { return }
+        var next = scripts[idx]
+        if let title { next.title = title }
+        if let hookText { next.hook.text = hookText }
+        if let body { next.body = body }
+        if let cta { next.cta = cta }
+        scripts[idx] = withHistory(next, replacing: scripts[idx], label: "Manual edit")
+        save()
+    }
+
+    /// Roll a script back to an earlier snapshot. The version being LEFT is itself snapshotted
+    /// first — reverting is never a one-way trip, the creator can revert the revert.
+    func revertScript(_ scriptId: UUID, to version: ScriptVersion) {
+        guard let idx = scripts.firstIndex(where: { $0.id == scriptId }) else { return }
+        var next = scripts[idx]
+        next.title = version.title; next.hook = version.hook; next.body = version.body; next.cta = version.cta
+        let versioned = withHistory(next, replacing: scripts[idx], label: "Before reverting")
+        scripts[idx] = versioned
         save()
     }
 

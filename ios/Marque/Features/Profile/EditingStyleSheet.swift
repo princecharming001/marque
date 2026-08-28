@@ -93,7 +93,7 @@ struct EditingStyleSheet: View {
     // MARK: - Header (Library's kicker + serif title treatment)
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Space.xs) {
             Text("YOUR SIGNATURE CUT")
                 .font(AppFont.micro).tracking(Track.label)
                 .foregroundStyle(Palette.textTertiary)
@@ -102,7 +102,7 @@ struct EditingStyleSheet: View {
                 .foregroundStyle(Palette.textPrimary)
             Text("Set it once, every edit Yunicorn cuts for you starts here.")
                 .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                .padding(.top, 2)
+                .padding(.top, Space.xxs)
         }
     }
 
@@ -249,9 +249,9 @@ struct EditingStyleSheet: View {
         Button {
             withAnimation(.easeOut(duration: 0.12)) { store.editPrefs.captionStyle = style }
         } label: {
-            VStack(spacing: 4) {
+            VStack(spacing: Space.xs) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                         .fill(LinearGradient(colors: [Color.white.opacity(0.22), Palette.ink],
                                              startPoint: .top, endPoint: .bottom))
                     Circle().fill(Color.white.opacity(0.10))
@@ -263,7 +263,7 @@ struct EditingStyleSheet: View {
                         .offset(y: 18)
                 }
                 .frame(width: 62, height: 96)
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                     .strokeBorder(active ? Palette.accent : Palette.hairline,
                                   lineWidth: active ? 2 : 1))
                 Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
@@ -312,7 +312,7 @@ struct EditingStyleSheet: View {
         return Button {
             withAnimation(.easeOut(duration: 0.15)) { store.editPrefs.brollStyle = s.id }
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Space.xs) {
                 ZStack(alignment: .topTrailing) {
                     AsyncImage(url: URL(string: s.thumbnailURL)) { img in
                         ZStack {
@@ -341,7 +341,7 @@ struct EditingStyleSheet: View {
                     .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
             }
             .frame(width: 110)
-            .padding(4)
+            .padding(Space.xs)
             .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                 .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
         }
@@ -403,7 +403,7 @@ struct EditingStyleSheet: View {
     }
 
     private func resolvedChip(key: String, value: String, byHand: Bool) -> some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Space.xs) {
             Text(key.replacingOccurrences(of: "_", with: " "))
                 .font(Typeface.sans(10, .regular)).foregroundStyle(Palette.textTertiary)
             Text(value)
@@ -430,7 +430,6 @@ struct EditingStyleSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.top, Space.xs)
     }
 
     private var retakeSheet: some View {
@@ -473,7 +472,7 @@ struct EditingStyleSheet: View {
     private func group<Content: View>(_ title: String, caption: String? = nil,
                                       @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Space.xs) {
                 SectionLabel(text: title)
                 if let caption {
                     Text(caption)

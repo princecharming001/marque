@@ -19,6 +19,7 @@ struct OfflineBanner: View {
     var body: some View {
         Text("You're offline. We'll sync when you're back.")
             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            .padding(.horizontal, Space.screenH)
             .frame(maxWidth: .infinity)
             .padding(.vertical, Space.sm)
             .background(Palette.surfaceSunken)

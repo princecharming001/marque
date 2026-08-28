@@ -72,7 +72,7 @@ struct PerformanceView: View {
                         store.schedule.contains { Calendar.current.isDate($0.date, inSameDayAs: day) }
                     }) {
                         VStack(spacing: Space.md) {
-                            VStack(spacing: 6) {
+                            VStack(spacing: Space.sm) {
                                 Text("Nothing scheduled this week")
                                     .font(Typeface.sans(16, .semibold)).foregroundStyle(Palette.textPrimary)
                                 Text("Queue a ready clip and it shows up here with its posting time.")
@@ -87,7 +87,7 @@ struct PerformanceView: View {
                             .accessibilityIdentifier("performance.addClip")
                         }
                     } else {
-                        VStack(spacing: 12) {
+                        VStack(spacing: Space.sm) {
                             ForEach(Array(week.enumerated()), id: \.element) { _, day in
                                 DayRow(day: day,
                                        posts: store.schedule

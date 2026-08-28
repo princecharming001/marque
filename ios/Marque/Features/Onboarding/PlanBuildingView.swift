@@ -29,6 +29,7 @@ struct PlanBuildingView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 20))
                                 .foregroundStyle(Palette.textPrimary)
+                                .frame(width: 20, height: 20)
                         } else if i == currentStage {
                             ProgressView().tint(Palette.ink)
                                 .frame(width: 20, height: 20)
@@ -92,6 +93,7 @@ struct PlanReadyView: View {
                         Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 20))
                             .foregroundStyle(Palette.textPrimary)
+                            .frame(width: 20, height: 20)
                         VStack(alignment: .leading, spacing: 2) {
                             // Concise heading (script.title is the ≤6-word label); fall back to
                             // the hook only if the model didn't supply one, capped to one line.

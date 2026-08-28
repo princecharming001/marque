@@ -90,14 +90,14 @@ struct PipelineTimeline: View {
     private var accent: Color { progress.isFailed ? Palette.critical : Palette.accent }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: compact ? 5 : 8) {
+        VStack(alignment: .leading, spacing: compact ? 4 : 8) {
             HStack(spacing: compact ? 4 : 6) {
                 ForEach(PipelinePhase.allCases, id: \.rawValue) { phase in
                     rail(for: phase)
                 }
             }
             if showLine {
-                HStack(spacing: 5) {
+                HStack(spacing: 4) {
                     Image(systemName: progress.isFailed ? "exclamationmark.triangle.fill"
                                                         : progress.active.icon)
                         .font(.system(size: compact ? 9 : 10, weight: .semibold))

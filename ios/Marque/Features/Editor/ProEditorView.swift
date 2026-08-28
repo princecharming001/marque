@@ -469,7 +469,7 @@ struct ProEditorView: View {
                         Text(label)
                             .font(.system(size: 11, weight: lookTab == i ? .bold : .medium))
                             .foregroundStyle(lookTab == i ? Palette.ink : .white)
-                            .padding(.horizontal, 12).frame(height: 26)
+                            .padding(.horizontal, 10).frame(height: 28)
                             .background(lookTab == i ? Palette.onInk : Color.white.opacity(0.12))
                             .clipShape(Capsule())
                     }
@@ -586,13 +586,13 @@ struct ProEditorView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.sticker.color.\(hex)")
                 }
-                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 22)
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 20)
                 let hasBg = (o?.bg ?? "none") != "none" && !(o?.bg ?? "").isEmpty
                 optChip("Background", active: hasBg) {
                     mutate([.editSticker(index: i, bg: hasBg ? "none" : "111111")]); bumpHaptic()
                 }
                 .accessibilityIdentifier("editorPro.sticker.bg")
-                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 22)
+                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 20)
                 ForEach(["inter", "archivo", "serif"], id: \.self) { f in
                     optChip(f.capitalized, active: (o?.font ?? "inter") == f) {
                         mutate([.editSticker(index: i, font: f)]); bumpHaptic()
@@ -1268,7 +1268,7 @@ struct ProEditorView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("editorPro.mediaPanel.cancel")
             }
-            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.horizontal, Space.lg).padding(.top, Space.lg).padding(.bottom, Space.sm)
 
             VStack(spacing: Space.sm) {
                 PhotosPicker(selection: $mediaPickerItem, matching: .any(of: [.images, .videos])) {
@@ -2223,7 +2223,7 @@ struct ProEditorView: View {
                 Button { setTransition(after: b, style: v); bumpHaptic() } label: {
                     Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
                         .foregroundStyle(active ? Palette.ink : .white)
-                        .padding(.horizontal, 12).frame(height: 30)
+                        .padding(.horizontal, 10).frame(height: 28)
                         .background(active ? Palette.onInk : Color.white.opacity(0.12))
                         .clipShape(Capsule())
                 }
@@ -2339,7 +2339,7 @@ struct ProEditorView: View {
                         Text(v == 1.5 ? "1.5x" : String(format: "%.0fx", v))
                             .font(.system(size: 11, weight: active ? .bold : .medium))
                             .foregroundStyle(active ? Palette.ink : .white)
-                            .padding(.horizontal, 9).frame(height: 28)
+                            .padding(.horizontal, 10).frame(height: 28)
                             .background(active ? Palette.onInk : Color.white.opacity(0.12))
                             .clipShape(Capsule())
                     }

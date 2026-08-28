@@ -24,7 +24,6 @@ struct FilmView: View {
                     Text("READY TO FILM").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
                     Text("Film").font(Typeface.sans(40, .bold)).tracking(-1).foregroundStyle(Palette.textPrimary)
                 }
-                .padding(.top, Space.md)
 
                 // I-4: film without a script — just talk, the editor finds the cut.
                 Button { showFreestyle = true } label: {
@@ -281,7 +280,7 @@ struct FilmView: View {
             LocalThumbnail(path: d.thumbnailPath ?? d.localVideoPath, isVideo: true)
                 .frame(width: 44, height: 58)
                 .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(d.title.isEmpty ? d.caption : d.title)
                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
                 Text("Draft, pick up where you left off")

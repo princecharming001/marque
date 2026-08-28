@@ -159,8 +159,8 @@ struct CloudChip: View {
                     .lineLimit(1).fixedSize()
             }
             .foregroundStyle(selected ? Palette.canvas : Palette.textPrimary)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 15)
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, Space.md)
             .background(selected ? Palette.ink : Palette.surfaceRaised, in: Capsule())
             .overlay(Capsule().strokeBorder(selected ? .clear : Palette.hairline, lineWidth: 1))
             .contentShape(Capsule())

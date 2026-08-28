@@ -17,29 +17,29 @@ struct ScriptReaderView: View {
     @State private var editingCTA = false
     @State private var ctaDraft = ""
     @FocusState private var bodyFocused: Bool
+    @State private var showVersionHistory = false
 
     private var live: Script { store.scripts.first { $0.id == script.id } ?? script }
 
     private func commitBodyEdit() {
         let trimmed = bodyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != live.body else { editingBody = false; return }
-        if let idx = store.scripts.firstIndex(where: { $0.id == live.id }) {
-            store.scripts[idx].body = trimmed
-            store.save()
-        }
+        store.commitScriptEdit(scriptId: live.id, body: trimmed)
         editingBody = false
     }
 
     private func commitHookEdit() {
         let t = hookDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, let idx = store.scripts.firstIndex(where: { $0.id == live.id }) else { editingHook = false; return }
-        store.scripts[idx].hook.text = t; store.save(); editingHook = false
+        guard !t.isEmpty else { editingHook = false; return }
+        store.commitScriptEdit(scriptId: live.id, hookText: t)
+        editingHook = false
     }
 
     private func commitCTAEdit() {
         let t = ctaDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, let idx = store.scripts.firstIndex(where: { $0.id == live.id }) else { editingCTA = false; return }
-        store.scripts[idx].cta = t; store.save(); editingCTA = false
+        guard !t.isEmpty else { editingCTA = false; return }
+        store.commitScriptEdit(scriptId: live.id, cta: t)
+        editingCTA = false
     }
 
     var body: some View {
@@ -78,6 +78,18 @@ struct ScriptReaderView: View {
         // exactly when you decide you want it, so the action can't live only on Home.
         // Same source of truth (store.readiedScripts), so the two stay in sync.
         .toolbar {
+            // Only appears once there's somewhere to go back TO — no history yet means
+            // no button, rather than a permanently-disabled one cluttering the bar.
+            if !live.versionHistory.isEmpty {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showVersionHistory = true } label: {
+                        Image(systemName: "clock.arrow.circlepath")
+                    }
+                    .tint(Palette.textSecondary)
+                    .accessibilityLabel("Version history")
+                    .accessibilityIdentifier("script.versionHistory")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     if let saved = store.readiedScripts.first(where: { $0.script.id == live.id }) {
@@ -97,6 +109,7 @@ struct ScriptReaderView: View {
         .onAppear { router.hideTabBar = true }
         .onDisappear { router.hideTabBar = false }
         .sheet(isPresented: $showHookLab) { HookLabSheet(script: live) }
+        .sheet(isPresented: $showVersionHistory) { ScriptVersionHistorySheet(scriptId: live.id) }
         .fullScreenCover(isPresented: $showRecord) { RecordView(script: live) }
     }
 
@@ -215,8 +228,8 @@ struct ScriptReaderView: View {
                     .focused($refineFocused)
                     .padding(.horizontal, Space.md).padding(.vertical, 11)
                     .background(Palette.surfaceRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
                         .strokeBorder(Palette.hairline, lineWidth: 1))
                     .onSubmit { sendRefine() }
                     .accessibilityIdentifier("script.refineField")
@@ -231,7 +244,6 @@ struct ScriptReaderView: View {
                 .disabled(!canSendRefine)
                 .accessibilityIdentifier("script.refineSend")
             }
-            .padding(.top, Space.xs)
 
             if steering {
                 HStack(spacing: Space.sm) {
@@ -296,7 +308,7 @@ struct HookLabSheet: View {
                     Text("Different angles on the same idea. Pick the one that sounds most like you.")
                         .font(AppFont.body).foregroundStyle(Palette.textSecondary)
                     if loading {
-                        ProgressView().tint(Palette.gold).frame(maxWidth: .infinity).padding()
+                        ProgressView().tint(Palette.gold).frame(maxWidth: .infinity).padding(Space.md)
                     } else {
                         ForEach(hooks) { h in
                             Button {

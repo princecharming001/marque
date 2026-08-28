@@ -197,7 +197,7 @@ struct ReelFeedPager: View {
         let prof = profiles[reel.creatorHandle.lowercased()]
         HStack(spacing: Space.sm) {
             avatar(reel, pfp: prof?.pfp ?? "")
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Space.xxs) {
                 Button { openProfile(reel) } label: {
                     HStack(spacing: 5) {
                         Text("@\(reel.creatorHandle)")
@@ -272,7 +272,7 @@ struct ReelFeedPager: View {
     private func actionRow(_ reel: ReelItem) -> some View {
         HStack(spacing: Space.sm) {
             Button { runMimic(reel) } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: Space.sm) {
                     if mimicking == reel.id {
                         ProgressView().tint(Palette.ink).controlSize(.small)
                         Text("Rewriting…").font(AppFont.headline)

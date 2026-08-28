@@ -93,7 +93,7 @@ struct ReelStatsSheet: View {
     }
 
     private func tile(_ value: String, _ label: String, strong: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: Space.xxs) {
             Text(value).font(strong ? AppFont.title : AppFont.headline)
                 .foregroundStyle(strong ? Palette.accent : Palette.textPrimary)
                 .lineLimit(1).minimumScaleFactor(0.7)   // 15.6M never truncates
@@ -108,8 +108,8 @@ struct ReelStatsSheet: View {
         .padding(.horizontal, Space.sm).padding(.vertical, Space.sm)
         // Card, not a flat gray block: white over the canvas with a hairline rim, so
         // the tiles read as one set with the rest of the app's surfaces.
-        .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+        .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 

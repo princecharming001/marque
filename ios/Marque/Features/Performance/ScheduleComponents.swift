@@ -250,7 +250,7 @@ struct SchedulePickerSheet: View {
                                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
                             }
                             .foregroundStyle(Palette.textSecondary)
-                            .padding(Space.sm)
+                            .padding(Space.md)
                             .background(Palette.warning.opacity(0.12))
                             .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                         }
