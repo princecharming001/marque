@@ -7409,6 +7409,21 @@ def test_voice_scrub_walker_only_touches_whitelisted_prose():
     assert out["edl"] == obj["edl"]
 
 
+def test_voice_scrub_covers_memory_updates_and_day_plan():
+    """First prod sweep caught a dash riding out via memory_updates.value (orb-written
+    ideas that resurface in the app's idea lists). The live converse envelope is now
+    scrubbed whole, so value + day-plan block copy must be covered."""
+    out = main._scrub_voice({
+        "memory_updates": [{"op": "add", "field": "ideas",
+                            "value": "Film a myth-buster — open with the twist"}],
+        "payload": {"plan": {"blocks": [{"time": "9:00", "action": "Film — fast",
+                                         "detail": "two takes — back to back"}]}},
+    })
+    assert not _has_dash(out["memory_updates"][0]["value"])
+    blk = out["payload"]["plan"]["blocks"][0]
+    assert not _has_dash(blk["action"]) and not _has_dash(blk["detail"])
+
+
 def test_edl_module_still_uses_em_dash_markers():
     """app/edl.py reads a TRAILING em dash as AssemblyAI's aborted-sentence marker.
     The voice doctrine must never have been applied to that file."""

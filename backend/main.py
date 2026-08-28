@@ -11011,9 +11011,12 @@ async def converse(req: ConverseRequest):
     if palo_flags.enabled(palo_flags.MEMORY_V2):
         _spawn(memory_v2.remember(_palo_store, req.creator_id, _last_user, envelope["reply"]))
         _spawn(recall_ledger.record(_palo_store, req.creator_id, _last_user, envelope["reply"]))
-    return {"mode": "live", "reply": envelope["reply"],
-            "memory_updates": _sanitize_memory_updates(envelope.get("memory_updates")),
-            "intent": intent, "payload": payload, "suggested_chips": chips}
+    # Whole-envelope scrub (not just reply/chips): memory_updates values resurface in
+    # the app's idea lists and a live day_plan payload is LLM-authored — the first prod
+    # sweep caught a dash riding out through memory_updates.value.
+    return _scrub_voice({"mode": "live", "reply": envelope["reply"],
+                         "memory_updates": _sanitize_memory_updates(envelope.get("memory_updates")),
+                         "intent": intent, "payload": payload, "suggested_chips": chips})
 
 
 @app.post("/v1/memory/distill")
@@ -11035,7 +11038,7 @@ async def memory_distill(req: MemoryDistillRequest):
             HAIKU, 900, array_key="memory_updates")
     except HTTPException:
         out = None
-    return {"mode": "live", "memory_updates": _sanitize_memory_updates(out, limit=10)}
+    return _scrub_voice({"mode": "live", "memory_updates": _sanitize_memory_updates(out, limit=10)})
 
 
 # ---------------------------------------------------------------------------
@@ -12568,6 +12571,9 @@ _VOICE_SCRUB_FIELDS = frozenset({
     "title", "hook", "body", "cta", "summary", "reply", "headline", "detail",
     "caption", "why", "text", "fix", "grounding", "why_picked", "content",
     "beats", "chips", "altHooks", "coaching", "action",
+    # "value" = memory_updates op values (orb-written ideas/facts that resurface in
+    # the app's idea lists — the field the first prod sweep caught leaking a dash).
+    "value",
 })
 
 
