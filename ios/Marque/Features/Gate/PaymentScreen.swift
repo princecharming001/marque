@@ -3,11 +3,21 @@ import SwiftUI
 // The payment-plan screen, ported from maxapp's PaymentScreen.tsx structure
 // beat-for-beat: full-bleed hero art with a slow Ken Burns drift under a 4-stop
 // scrim, a pulsing dot ring, a serif headline with one italic word, a PREMIUM
-// pill, a glass feature checklist that absorbs the leftover height, two
-// side-by-side plan boxes (trial preselected), a solid white CTA pill, a
-// reassurance line, and a Terms/Privacy footer. Restore lives top-right because
-// App Review Guideline 3.1.1 requires a working restore control on any screen
-// that sells a subscription.
+// pill, a glass feature checklist that absorbs the leftover height, ONE price
+// card, a solid white CTA pill, a reassurance line, and a Terms/Privacy footer.
+// Restore lives top-right because App Review Guideline 3.1.1 requires a working
+// restore control on any screen that sells a subscription.
+//
+// PRICING HIERARCHY IS A REVIEW REQUIREMENT, not a taste call. App Review rejected
+// 1.0 (build 82) under 3.1.2(c): the old layout made "Free" the 19pt hero of a
+// "7-day trial" box and tucked the billed amount underneath at 11.5pt/42%, with a
+// "Start my 7-day free trial" CTA. The billed amount must be the most conspicuous
+// pricing element (font, size, color, position); trial/intro copy must sit below
+// it in a subordinate size. So: the price card leads with the monthly amount at
+// display size, the trial is one small line under it, and the CTA itself carries
+// the billed amount. The two "trial vs subscribe now" boxes are gone as well —
+// both paths bought the SAME product and StoreKit applies the intro offer purely
+// by eligibility, so "start today" was a choice that didn't exist.
 //
 // Yunicorn differences from maxapp, all deliberate: our own hero art + copy, our
 // font stack (Fraunces is shared; maxapp's Matter isn't bundled here), and the
@@ -21,7 +31,6 @@ struct PaymentScreen: View {
     /// watermark" escape into the free tier. nil keeps the sheet/dismiss behavior.
     var onContinueFree: (() -> Void)? = nil
 
-    @State private var payNow = false          // false = the 7-day trial box (preselected)
     @State private var busy = false
     @State private var restoring = false
     @State private var bgScale: CGFloat = 1.0
@@ -37,18 +46,21 @@ struct PaymentScreen: View {
         .init(title: "No watermark", sub: "Your clips ship clean"),
     ]
 
-    /// Localized price straight from StoreKit when products are loaded; maxapp's
-    /// same hardcoded-fallback pattern otherwise (theirs is $5.99/wk).
+    /// Localized price straight from StoreKit when products are loaded; the fallback
+    /// matches the live ASC price ($19.99/mo USD, set 2026-08-25) so a slow product
+    /// fetch never shows a number the sheet won't charge.
     private var price: String {
         (store.subscription.monthly ?? store.subscription.products.first)?
-            .displayPrice ?? "$14.99"
+            .displayPrice ?? "$19.99"
     }
     // 7-day, NOT 3: the ASC intro offer was configured as 1 week, so 3-day copy was
     // under-selling what StoreKit will actually grant — and RevenueCat 2026 puts
     // ≤4-day trials in the worst-converting bucket (25.5% vs 42.5% for longer).
     // A week spans at least one full film → edit → post → see-results cycle.
+    /// The CTA carries the billed amount itself — the single most conspicuous element
+    /// on the screen now states what the subscription costs (3.1.2(c)).
     private var ctaLabel: String {
-        busy ? "Processing…" : (payNow ? "Subscribe now" : "Start my 7-day free trial")
+        busy ? "Processing…" : "Subscribe for \(price)/month"
     }
 
     /// The two onboarding answers we kept exist to be honored HERE — a paywall that
@@ -127,12 +139,7 @@ struct PaymentScreen: View {
 
                 featureCard
 
-                HStack(spacing: 10) {
-                    planBox(selected: !payNow, title: "7-day trial",
-                            price: "Free", sub: "then \(price)/mo") { payNow = false }
-                    planBox(selected: payNow, title: "Subscribe now",
-                            price: "\(price)/mo", sub: "start today") { payNow = true }
-                }
+                priceCard
 
                 Button { Task { await subscribe() } } label: {
                     Group {
@@ -150,8 +157,9 @@ struct PaymentScreen: View {
                 .padding(.top, 4)
                 .accessibilityIdentifier("payment.cta")
 
-                Text(payNow ? "Cancel anytime in Settings"
-                            : "No payment due today · cancel anytime")
+                // Terms live in the price card directly above; keep this to one line so the
+                // Restore control and the free-tier escape stay on-screen on iPhone.
+                Text("Cancel anytime")
                     .font(Typeface.sans(13, .medium)).tracking(0.1)
                     .foregroundStyle(.white.opacity(0.58))
                     .padding(.top, 2)
@@ -194,7 +202,7 @@ struct PaymentScreen: View {
                 }
             }
             .padding(.horizontal, 20)
-            .padding(.top, 100).padding(.bottom, 36)
+            .padding(.top, 72).padding(.bottom, 36)
 
             // Top bar: close (only when dismissible) · Restore (always — 3.1.1).
             VStack {
@@ -278,7 +286,7 @@ struct PaymentScreen: View {
                     Spacer(minLength: 0)
                 }
                 .frame(maxHeight: .infinity)
-                .padding(.vertical, 6)
+                .padding(.vertical, 4)
             }
         }
         .padding(.horizontal, 18).padding(.vertical, 6)
@@ -290,37 +298,29 @@ struct PaymentScreen: View {
         .shadow(color: .black.opacity(0.36), radius: 26, y: 14)
     }
 
-    private func planBox(selected: Bool, title: String, price: String, sub: String,
-                         _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(Typeface.sans(12.5, .medium)).tracking(0.1)
-                    .foregroundStyle(.white.opacity(0.58))
-                Text(price).font(Typeface.sans(19, .semibold)).tracking(-0.3)
+    /// The one pricing surface. The monthly amount is the largest text on the whole
+    /// screen after the headline; the trial is a single subordinate line beneath it.
+    private var priceCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(price).font(Typeface.sans(30, .semibold)).tracking(-0.8)
                     .foregroundStyle(.white)
-                Text(sub).font(Typeface.sans(11.5, .regular))
-                    .foregroundStyle(.white.opacity(0.42))
+                Text("/ month").font(Typeface.sans(15, .medium)).tracking(0.1)
+                    .foregroundStyle(.white.opacity(0.72))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(.white.opacity(selected ? 0.09 : 0.05)))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(.white.opacity(selected ? 0.55 : 0.08), lineWidth: 1))
-            .overlay(alignment: .topTrailing) {
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Palette.night)
-                        .frame(width: 20, height: 20)
-                        .background(Circle().fill(.white))
-                        .padding(8)
-                }
-            }
-            .contentShape(Rectangle())
+            .accessibilityIdentifier("payment.price")
+            Text("Billed \(price) monthly after a 7-day free trial. Cancel anytime.")
+                .font(Typeface.sans(12.5, .regular))
+                .foregroundStyle(.white.opacity(0.58))
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("payment.plan.\(selected ? "selected" : "other")")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(.white.opacity(0.09)))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(.white.opacity(0.55), lineWidth: 1))
+        .accessibilityIdentifier("payment.plan.selected")
     }
 
     // MARK: actions
@@ -332,10 +332,9 @@ struct PaymentScreen: View {
     // failed purchase stays here with the error shown.
     private func subscribe() async {
         guard !busy else { return }
-        // FUNNEL: which plan box was live when they committed — the trial-vs-pay-now split
-        // is what tells us whether the trial length is doing any work.
-        store.backend.reportClientEvent(
-            "paywall_action", detail: payNow ? "subscribe_now" : "start_trial")
+        // FUNNEL: one path now — the old trial-vs-pay-now split never measured anything
+        // real (both boxes bought the same product; StoreKit decides trial eligibility).
+        store.backend.reportClientEvent("paywall_action", detail: "subscribe")
         busy = true
         await store.subscription.purchase()
         busy = false

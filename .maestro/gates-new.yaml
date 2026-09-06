@@ -15,10 +15,9 @@ name: "Gates - payment then sign-in (Google only)"
     timeout: 8000
 - assertVisible: { id: "payment.restore" }
 - takeScreenshot: /Users/home/Marque/.shots/gates-1-payment
-# plan toggle switches the CTA copy (trial preselected -> subscribe now)
-- tapOn: { id: "payment.plan.other" }
-- assertVisible: "Subscribe now"
-- takeScreenshot: /Users/home/Marque/.shots/gates-1-payment-paynow
+# 3.1.2(c): one price card, billed amount leads, CTA carries the price.
+- assertVisible: { id: "payment.price" }
+- assertVisible: "Subscribe for .*/month"
 # click-through: no StoreKit purchase, unlocks locally
 - tapOn: { id: "payment.cta" }
 

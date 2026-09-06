@@ -323,7 +323,7 @@ struct SettingsView: View {
     }
 
     private var monthlyPrice: String {
-        store.subscription.monthly.map { "\($0.displayPrice)/mo" } ?? "$14.99/mo"
+        store.subscription.monthly.map { "\($0.displayPrice)/mo" } ?? "$19.99/mo"
     }
 
     /// The name shown on the identity card and the account-row avatar's initial —

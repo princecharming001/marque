@@ -15,15 +15,14 @@ struct YunicornProPaywall: View {
     @Environment(AppStore.self) private var store
     @State private var entitlements = Entitlements.shared
     @State private var working = false
-    @State private var selectedPlan = 0     // 0 = trial, 1 = pay now
 
-    // The ONE real product (com.marque.pro.monthly, $14.99/mo, 7-day free trial).
+    // The ONE real product (com.marque.pro.monthly, $19.99/mo, 7-day free trial).
     // This sheet used to advertise a $6.99 WEEKLY plan that never existed in ASC
     // while purchase() bought the monthly — a price-mismatch rejection waiting to
     // happen. Price now comes from StoreKit itself, hardcoded only as fallback.
     private var monthlyPrice: String {
         (store.subscription.monthly ?? store.subscription.products.first)?
-            .displayPrice ?? "$14.99"
+            .displayPrice ?? "$19.99"
     }
 
     var body: some View {
@@ -87,17 +86,14 @@ struct YunicornProPaywall: View {
 
                     featureCard
 
-                    HStack(spacing: 10) {
-                        planCard(idx: 0, title: "7-day trial", price: "Free",
-                                 sub: "then \(monthlyPrice)/mo")
-                        planCard(idx: 1, title: "Go Plus now", price: "\(monthlyPrice)/mo",
-                                 sub: "start today")
-                    }
+                    // 3.1.2(c) (App Review, build 82): the billed amount is the hero of the
+                    // pricing surface and of the CTA; the trial is one subordinate line.
+                    // Same product as PaymentScreen, same hierarchy — see its header comment.
+                    priceCard
 
                     VStack(spacing: Space.sm) {
                         Button { Task { await purchase() } } label: {
-                            Text(working ? "Processing…"
-                                 : selectedPlan == 0 ? "Start my 7-day free trial" : "Go Plus now")
+                            Text(working ? "Processing…" : "Subscribe for \(monthlyPrice)/month")
                                 .font(AppFont.headline).foregroundStyle(Palette.ink)
                                 .frame(maxWidth: .infinity).frame(height: 56)
                                 .background(Color.white).clipShape(Capsule())
@@ -107,9 +103,9 @@ struct YunicornProPaywall: View {
                         .disabled(working)
                         .accessibilityIdentifier("proPaywall.cta")
 
-                        Text(selectedPlan == 0 ? "No payment due today · cancel anytime"
-                                               : "Cancel anytime in Settings")
+                        Text("\(monthlyPrice)/month after a 7-day free trial · cancel anytime")
                             .font(AppFont.caption).foregroundStyle(.white.opacity(0.58))
+                            .multilineTextAlignment(.center)
                     }
 
                     HStack(spacing: Space.sm) {
@@ -179,32 +175,29 @@ struct YunicornProPaywall: View {
             .strokeBorder(.white.opacity(0.08), lineWidth: 1))
     }
 
-    private func planCard(idx: Int, title: String, price: String, sub: String) -> some View {
-        let selected = selectedPlan == idx
-        return Button { selectedPlan = idx } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.58))
-                Text(price).font(.system(size: 19, weight: .semibold)).foregroundStyle(.white)
-                Text(sub).font(.system(size: 11.5)).foregroundStyle(.white.opacity(0.42))
+    private var priceCard: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("YUNICORN PLUS")
+                .font(.system(size: 11, weight: .semibold)).tracking(1.4)
+                .foregroundStyle(.white.opacity(0.58))
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(monthlyPrice).font(.system(size: 32, weight: .semibold)).tracking(-0.8)
+                    .foregroundStyle(.white)
+                Text("/ month").font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.72))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(14)
-            .background(.white.opacity(selected ? 0.09 : 0.05))
-            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(.white.opacity(selected ? 0.55 : 0.08), lineWidth: selected ? 1.5 : 1))
-            .overlay(alignment: .topTrailing) {
-                if selected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.ink)
-                        .frame(width: 18, height: 18)
-                        .background(Circle().fill(.white))
-                        .padding(8)
-                }
-            }
+            .accessibilityIdentifier("proPaywall.price")
+            Text("Billed \(monthlyPrice) monthly after a 7-day free trial. Cancel anytime.")
+                .font(.system(size: 12.5)).foregroundStyle(.white.opacity(0.58))
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("proPaywall.plan.\(idx)")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16).padding(.vertical, 14)
+        .background(.white.opacity(0.09))
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .strokeBorder(.white.opacity(0.55), lineWidth: 1.5))
+        .accessibilityIdentifier("proPaywall.plan.0")
     }
 
     // MARK: paid — "You're Pro"

@@ -31,8 +31,8 @@ name: Marque — soft paywall (personalized headline, 7-day trial, free-tier esc
 - extendedWaitUntil:
     visible: { id: "payment.personalLine" }
     timeout: 8000
-- assertVisible: "Land clients from your content — 5 posts a week is 260 videos this year, every one in your voice."
-- assertVisible: "Start my 7-day free trial"
+- assertVisible: "Land clients from your content, 5 posts a week is 260 videos this year, every one in your voice."
+- assertVisible: "Subscribe for .*/month"
 - assertVisible: { id: "payment.continueFree" }
 - takeScreenshot: /Users/home/Marque/.shots/paywall-soft
 
