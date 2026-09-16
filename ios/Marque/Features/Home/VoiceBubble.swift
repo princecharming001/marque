@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The Home centerpiece — the Siri-style orb you tap to talk to Marque.
+// The Home centerpiece — the Yunicorn voice orb you tap to talk to Yuni.
 struct VoiceBubble: View {
     let onTap: () -> Void
     @State private var taps = 0

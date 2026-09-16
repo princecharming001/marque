@@ -41,7 +41,7 @@ struct VoiceSessionView: View {
                 ScrollView {
                     VStack(spacing: Space.lg) {
                         // The orb IS the mic — tap it to talk, tap again to stop.
-                        // (No separate mic button; the Siri visualization already
+                        // (No separate mic button; the orb visualization already
                         // conveys idle/listening/thinking/speaking state.)
                         Button(action: micTapped) { orb }
                             .buttonStyle(.plain)
@@ -117,7 +117,7 @@ struct VoiceSessionView: View {
         }
     }
 
-    // MARK: Orb (mode: idle / listening / thinking / speaking) — shared Siri-style orb,
+    // MARK: Orb (mode: idle / listening / thinking / speaking) — the shared Yunicorn orb,
     // volume-reactive off live mic input (listening) or TTS output (speaking) levels.
 
     private var orbMode: VoiceOrb.Mode {
