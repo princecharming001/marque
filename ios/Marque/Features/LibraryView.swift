@@ -1482,64 +1482,95 @@ struct BulkScheduleSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
+                VStack(alignment: .leading, spacing: Space.xl) {
                     Text("^[\(readyCount) clip](inflect: true) will be scheduled to the same time and platforms.")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     // Build 60: preview strip — see exactly what's about to go out.
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Space.sm) {
                             ForEach(store.clips.filter { clipIDs.contains($0.id) && $0.status == .ready }) { c in
-                                VStack(spacing: 4) {
+                                VStack(spacing: 6) {
                                     LocalThumbnail(path: c.thumbnailPath ?? c.playbackLocalPath,
-                                                   isVideo: true, remoteImageURL: c.thumbnailURL)
+                                                   isVideo: true, remoteImageURL: c.thumbnailURL,
+                                                   cornerRadius: Radius.group)
                                         .aspectRatio(9/16, contentMode: .fill)
                                         .frame(width: 72, height: 128)
-                                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                        .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
                                             .strokeBorder(Palette.hairline, lineWidth: 0.5))
                                     Text(c.title.isEmpty ? c.formatName : c.title)
-                                        .font(.system(size: 9, weight: .medium)).lineLimit(1)
-                                        .foregroundStyle(Palette.textTertiary).frame(width: 72)
+                                        .font(AppFont.caption).lineLimit(1)
+                                        .foregroundStyle(Palette.textSecondary).frame(width: 72)
                                 }
                             }
                         }
                     }
 
-                    SectionLabel(text: "When")
-                    MarqueTimePicker(time: $date)
+                    // Native-style pickers inside a surface card (Stoic time-picker card).
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "When")
+                            .padding(.horizontal, Space.rowPad)
+                        MarqueTimePicker(time: $date)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
+                    }
 
-                    SectionLabel(text: "Platforms")
-                    HStack(spacing: Space.sm) {
-                        ForEach(SocialPlatform.allCases) { p in
-                            Button {
-                                if platforms.contains(p) { platforms.remove(p) } else { platforms.insert(p) }
-                            } label: { Chip(text: p.label, selected: platforms.contains(p)) }
-                                .buttonStyle(.plain)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "Platforms")
+                            .padding(.horizontal, Space.rowPad)
+                        HStack(spacing: Space.sm) {
+                            ForEach(SocialPlatform.allCases) { p in
+                                DSChip(title: p.label, isSelected: platforms.contains(p), action: {
+                                    if platforms.contains(p) { platforms.remove(p) } else { platforms.insert(p) }
+                                })
+                            }
                         }
                     }
 
-                    Toggle(isOn: $autoCaptions) {
-                        Text("Auto-caption").font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                    }.tint(Palette.accent)
+                    DSGroup {
+                        DSToggleRow(title: "Auto-caption", systemImage: "captions.bubble",
+                                    isOn: $autoCaptions)
+                    }
 
                     if !hasPostableAccount {
+                        // Warning = black glyph + wording (no amber).
                         Button { showConnect = true } label: {
-                            HStack(spacing: Space.sm) {
-                                Image(systemName: "link").font(.system(size: 13, weight: .semibold))
+                            HStack(alignment: .top, spacing: Space.md) {
+                                Image(systemName: "link").font(.system(size: 17, weight: .regular))
+                                    .frame(width: 24)
                                 Text("Connect an account to actually post. Otherwise this just saves reminders.")
-                                    .font(AppFont.caption)
-                            }.foregroundStyle(Palette.warning)
-                        }.buttonStyle(.plain)
+                                    .font(AppFont.supporting)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: Space.sm)
+                                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                                    .padding(.top, 2)
+                            }
+                            .foregroundStyle(Palette.textPrimary)
+                            .padding(Space.rowPad)
+                            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                            .contentShape(Rectangle())
+                        }.buttonStyle(PressableStyle(dim: 0.7))
                     }
                 }
-                .padding(Space.lg)
+                .padding(.horizontal, Space.screenH).padding(.vertical, Space.md)
             }
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Schedule \(readyCount)")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Schedule \(readyCount)"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(posting ? "Scheduling…" : "Schedule") {
@@ -1554,6 +1585,7 @@ struct BulkScheduleSheet: View {
                             posting = false; onDone(); dismiss()
                         }
                     }.disabled(posting || platforms.isEmpty || readyCount == 0)
+                    .font(AppFont.headline).tint(Palette.textPrimary)
                 }
             }
             .sheet(isPresented: $showConnect) { ConnectAccountsView() }
