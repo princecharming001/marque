@@ -5,6 +5,7 @@ name: Redesign QA — clip detail -> pro editor (demo clip)
     stopApp: true
     arguments:
       demoClip: 1
+      backend.url: "http://127.0.0.1:8001"
     permissions:
       all: allow
 - tapOn: { id: "tour.skip", optional: true }
@@ -14,6 +15,8 @@ name: Redesign QA — clip detail -> pro editor (demo clip)
 - tapOn: { id: "library.clip" }
 - waitForAnimationToEnd: { timeout: 2500 }
 - takeScreenshot: ${OUT}/50-clip-ready
-- tapOn: { id: "clip.editManual", optional: true }
-- waitForAnimationToEnd: { timeout: 4000 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 20000 }
+- waitForAnimationToEnd: { timeout: 3000 }
 - takeScreenshot: ${OUT}/51-editor

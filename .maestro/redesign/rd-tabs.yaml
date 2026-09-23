@@ -11,6 +11,7 @@ name: Redesign QA — Chat, Library, clip detail, Performance, Strategy, Film (d
 - tapOn: { id: "tour.skip", optional: true }
 - extendedWaitUntil: { visible: "Chat", timeout: 20000 }
 - tapOn: "Chat"
+- extendedWaitUntil: { visible: { id: "chat.composer" }, timeout: 10000 }
 - waitForAnimationToEnd: { timeout: 2500 }
 - takeScreenshot: ${OUT}/30-chat
 - tapOn: { id: "chat.drawer", optional: true }
@@ -18,6 +19,7 @@ name: Redesign QA — Chat, Library, clip detail, Performance, Strategy, Film (d
 - takeScreenshot: ${OUT}/31-chat-drawer
 - tapOn: { id: "chat.drawerClose", optional: true }
 - tapOn: "Library"
+- extendedWaitUntil: { visible: { id: "library.clip" }, timeout: 10000 }
 - waitForAnimationToEnd: { timeout: 2500 }
 - takeScreenshot: ${OUT}/32-library
 - tapOn: { id: "library.clip", optional: true }
@@ -29,14 +31,17 @@ name: Redesign QA — Chat, Library, clip detail, Performance, Strategy, Film (d
 - waitForAnimationToEnd: { timeout: 1500 }
 - takeScreenshot: ${OUT}/34-library-media
 - tapOn: "Performance"
+- extendedWaitUntil: { visible: { id: "performance.yourStrategy" }, timeout: 10000 }
 - waitForAnimationToEnd: { timeout: 2500 }
 - takeScreenshot: ${OUT}/35-performance
-- tapOn: { id: "performance.yourStrategy", optional: true }
+- tapOn: { id: "performance.yourStrategy" }
+- extendedWaitUntil: { visible: { id: "strategy.hero" }, timeout: 10000 }
 - waitForAnimationToEnd: { timeout: 2500 }
 - takeScreenshot: ${OUT}/36-strategy
 - swipe: { direction: DOWN, duration: 400 }
 - waitForAnimationToEnd: { timeout: 1500 }
 - tapOn: { id: "film.open" }
+- extendedWaitUntil: { visible: { id: "film.freestyle" }, timeout: 10000 }
 - waitForAnimationToEnd: { timeout: 2500 }
 - takeScreenshot: ${OUT}/37-film
 - tapOn: { id: "film.customScript", optional: true }
