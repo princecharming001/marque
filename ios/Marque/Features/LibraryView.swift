@@ -948,47 +948,55 @@ struct PostNowSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("POST NOW").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Text("Where should this go?")
-                    .font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
+            // Stoic sheet header: eyebrow over a centered lowercase title. One line, scaled
+            // down if needed, so the .medium detent still fits on an SE.
+            VStack(spacing: Space.xs) {
+                DSEyebrow(text: "POST NOW")
+                Text(dsTitle("Where should this go?"))
+                    .font(AppFont.title1).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .accessibilityAddTraits(.isHeader)
             }
-            VStack(spacing: 0) {
+            .frame(maxWidth: .infinity)
+            .padding(.top, Space.sm)
+            DSGroup {
                 ForEach(SocialPlatform.allCases) { p in
                     let isLinked = linked(p)
                     Button {
                         if chosen.contains(p) { chosen.remove(p) } else { chosen.insert(p) }
                     } label: {
                         HStack(spacing: Space.md) {
-                            Text(p.label).font(AppFont.body)
-                                .foregroundStyle(isLinked ? Palette.textPrimary : Palette.textTertiary)
-                            if !isLinked {
-                                Text("not connected").font(AppFont.caption)
-                                    .foregroundStyle(Palette.textTertiary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(p.label).font(AppFont.bodyText)
+                                    .foregroundStyle(isLinked ? Palette.textPrimary : Palette.textTertiary)
+                                if !isLinked {
+                                    Label("not connected", systemImage: "link")
+                                        .font(AppFont.caption)
+                                        .foregroundStyle(Palette.textSecondary)
+                                }
                             }
-                            Spacer()
-                            Image(systemName: chosen.contains(p) ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 20, weight: .light))
-                                .foregroundStyle(chosen.contains(p) ? Palette.ink : Palette.textTertiary)
+                            Spacer(minLength: Space.sm)
+                            DSCheckmark(isOn: chosen.contains(p))
+                                .opacity(isLinked ? 1 : 0.4)
                         }
-                        .padding(Space.md).contentShape(Rectangle())
+                        .padding(.horizontal, Space.rowPad)
+                        .frame(minHeight: 52)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(DSRowPressStyle())
                     .disabled(!isLinked)
+                    .accessibilityAddTraits(chosen.contains(p) ? .isSelected : [])
                     .accessibilityIdentifier("postNow.\(p.rawValue)")
                     if p != SocialPlatform.allCases.last {
-                        Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+                        DSRowDivider()
                     }
                 }
             }
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
             if let note {
-                Text(note).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.rowPad)
             }
             Spacer(minLength: 0)
             if store.canPublish {
@@ -1019,8 +1027,8 @@ struct PostNowSheet: View {
                 .accessibilityIdentifier("postNow.upgrade")
             }
         }
-        .padding(Space.lg)
-        .background(Palette.canvas)
+        .padding(.horizontal, Space.screenH).padding(.top, Space.md).padding(.bottom, Space.sm)
+        .background(Palette.canvas.ignoresSafeArea())
         .sheet(isPresented: $showUpgrade) { PaymentScreen(dismissible: true) }
         .onAppear {
             chosen = Set(SocialPlatform.allCases.filter(linked))
