@@ -1,0 +1,14 @@
+appId: com.getmarque.app
+name: Redesign QA — hard paywall + sign-in (signed out, onboarded)
+---
+- launchApp:
+    clearState: true
+    arguments:
+      "-demoGates": true
+    permissions:
+      all: allow
+- extendedWaitUntil: { visible: { id: "payment.cta" }, timeout: 10000 }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/40-paywall-hard
+- assertVisible: { id: "payment.restore" }
+- assertVisible: "Subscribe for .*/month"

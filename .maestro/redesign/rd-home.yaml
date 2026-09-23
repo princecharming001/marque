@@ -1,0 +1,38 @@
+appId: com.getmarque.app
+name: Redesign QA — Home, voice session, reader, profile, settings (demo home)
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      demoHome: 1
+    permissions:
+      all: allow
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: { id: "home.voiceBubble" }, timeout: 20000 }
+- extendedWaitUntil: { visible: { id: "feed.pick" }, timeout: 30000, optional: true }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/20-home
+- scrollUntilVisible: { element: { id: "feed.trend" }, direction: DOWN, timeout: 10000, visibilityPercentage: 50, optional: true }
+- takeScreenshot: ${OUT}/21-home-scrolled
+- scrollUntilVisible: { element: { id: "home.voiceBubble" }, direction: UP, timeout: 10000 }
+- tapOn: { id: "home.voiceBubble" }
+- extendedWaitUntil: { visible: { id: "voice.mic" }, timeout: 8000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/22-voice-session
+- tapOn: { id: "voice.close", optional: true }
+- extendedWaitUntil: { visible: { id: "home.voiceBubble" }, timeout: 8000 }
+- tapOn: { id: "feed.pick", optional: true }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/23-pick-open
+- swipe: { start: "50%,12%", end: "50%,92%", duration: 350 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- scrollUntilVisible: { element: { id: "home.profile" }, direction: UP, timeout: 8000 }
+- tapOn: { id: "home.profile" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/24-profile
+- tapOn: { id: "profile.settings", optional: true }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/25-settings
+- scroll
+- scroll
+- takeScreenshot: ${OUT}/26-settings-bottom

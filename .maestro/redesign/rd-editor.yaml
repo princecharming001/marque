@@ -1,0 +1,19 @@
+appId: com.getmarque.app
+name: Redesign QA — clip detail -> pro editor (demo clip)
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      demoClip: 1
+    permissions:
+      all: allow
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Library", timeout: 20000 }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "library.clip" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/50-clip-ready
+- tapOn: { id: "clip.editManual", optional: true }
+- waitForAnimationToEnd: { timeout: 4000 }
+- takeScreenshot: ${OUT}/51-editor

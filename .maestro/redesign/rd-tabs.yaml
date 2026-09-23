@@ -1,0 +1,44 @@
+appId: com.getmarque.app
+name: Redesign QA — Chat, Library, clip detail, Performance, Strategy, Film (demo library)
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      demoLibrary: 1
+      demoStrategy: 1
+    permissions:
+      all: allow
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Chat", timeout: 20000 }
+- tapOn: "Chat"
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/30-chat
+- tapOn: { id: "chat.drawer", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/31-chat-drawer
+- tapOn: { id: "chat.drawerClose", optional: true }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/32-library
+- tapOn: { id: "library.clip", optional: true }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/33-clip-detail
+- swipe: { direction: DOWN, duration: 400 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "tab.Media", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/34-library-media
+- tapOn: "Performance"
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/35-performance
+- tapOn: { id: "performance.yourStrategy", optional: true }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/36-strategy
+- swipe: { direction: DOWN, duration: 400 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "film.open" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/37-film
+- tapOn: { id: "film.customScript", optional: true }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/38-custom-script

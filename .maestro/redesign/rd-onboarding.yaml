@@ -1,0 +1,56 @@
+appId: com.getmarque.app
+name: Redesign QA — onboarding, soft paywall, sign-in (fresh install)
+---
+- launchApp:
+    clearState: true
+    arguments:
+      reset: "true"
+    permissions:
+      all: allow
+- extendedWaitUntil: { visible: { id: "onboard.start" }, timeout: 15000 }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/01-landing
+- tapOn: { id: "onboard.start" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/02-niche-empty
+- tapOn: { id: "onboard.niche.fitness" }
+- tapOn: { id: "onboard.niche.finance" }
+- takeScreenshot: ${OUT}/03-niche-selected
+- tapOn: { id: "onboard.niche.continue" }
+- extendedWaitUntil: { visible: { id: "onboard.connect.skip" }, timeout: 6000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/04-connect
+- tapOn: { id: "onboard.connect.skip" }
+- extendedWaitUntil: { visible: { id: "onboard.audience.continue" }, timeout: 6000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/05-audience
+- tapOn: { id: "onboard.audience.busy professionals" }
+- tapOn: { id: "onboard.audience.continue" }
+- extendedWaitUntil: { visible: { id: "onboard.goal.clients" }, timeout: 6000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/06-goal
+- tapOn: { id: "onboard.goal.clients" }
+- extendedWaitUntil: { visible: { id: "onboard.continue" }, timeout: 6000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/07-pace
+- tapOn: { id: "onboard.continue" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/08-building
+- extendedWaitUntil: { visible: "Enter Yunicorn", timeout: 120000 }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/09-ready
+- tapOn: "Enter Yunicorn"
+- extendedWaitUntil: { visible: { id: "onboard.notifications.skip" }, timeout: 8000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/10-notifications
+- tapOn: { id: "onboard.notifications.skip" }
+- extendedWaitUntil: { visible: { id: "payment.cta" }, timeout: 10000 }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/11-paywall-soft
+- tapOn: { id: "payment.continueFree" }
+- extendedWaitUntil: { visible: { id: "auth.google" }, timeout: 10000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/12-signin
+- tapOn: { id: "auth.toggleMode" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/13-create-account
