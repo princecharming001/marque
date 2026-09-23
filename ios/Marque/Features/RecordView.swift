@@ -127,12 +127,17 @@ struct RecordView: View {
                 if showsPrompter {
                     if isFreestyle {
                         VStack(spacing: Space.sm) {
-                            Image(systemName: "mic.fill").font(.system(size: 22)).foregroundStyle(.white.opacity(0.7))
+                            Image(systemName: "mic").font(.system(size: 22, weight: .regular))
+                                .foregroundStyle(Palette.onNight)
+                                .frame(width: 52, height: 52)
+                                .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
                             Text("No script. Just talk.")
-                                .font(AppFont.title).foregroundStyle(.white)
-                            Text("Film it your way; the editor finds the cut after.")
-                                .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                                .font(AppFont.title2).tracking(-0.2).foregroundStyle(Palette.onNight)
                                 .multilineTextAlignment(.center)
+                            Text("Film it your way; the editor finds the cut after.")
+                                .font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.85))
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .frame(height: 300)
                     } else {
@@ -166,12 +171,13 @@ struct RecordView: View {
         ZStack {
             Color.black.opacity(0.72).ignoresSafeArea()
             VStack(spacing: Space.md) {
-                ProgressView().tint(.white).scaleEffect(1.3)
+                ProgressView().tint(Palette.onNight).scaleEffect(1.3)
                 Text(importTotal > 1 ? "Importing \(min(importDone + 1, importTotal)) of \(importTotal)…"
                                      : "Importing video…")
-                    .font(AppFont.headline).foregroundStyle(.white)
+                    .font(AppFont.headline).foregroundStyle(Palette.onNight)
                 Text("Keep the app open. Larger videos take a moment.")
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.65))
+                    .font(AppFont.supporting).foregroundStyle(Palette.onNight.opacity(0.85))
+                    .multilineTextAlignment(.center)
             }
             .padding(Space.xl)
         }
@@ -260,31 +266,20 @@ struct RecordView: View {
 
     private var topBar: some View {
         HStack {
-            // Close — LiquidGlass pill (glass reads on camera, marqueCard doesn't)
-            Button { dismiss() } label: {
-                ZStack {
-                    LiquidGlassFill(radius: 19, corners: false)
-                    Image(systemName: "xmark")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 38, height: 38)
-                .shadow(color: Palette.shadowCool.opacity(0.18), radius: 12, x: 0, y: 6)
-            }
-            .buttonStyle(.plain)
+            // Close — translucent circular control (DESIGN §5 circular control, onNight).
+            DSCircleButton(systemName: "xmark", kind: .onNight, size: 44) { dismiss() }
+                .accessibilityLabel("Close")
 
             Spacer()
 
             // Kicker — "TELEPROMPTER"
-            Text("TELEPROMPTER")
-                .font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(.white.opacity(0.7))
+            DSEyebrow(text: "TELEPROMPTER", color: Palette.onNight.opacity(0.75))
 
             Spacer()
 
-            // Balancer keeps the kicker optically centered against the 38pt close
-            // pill (the old format badge here read as an odd floating tab).
-            Color.clear.frame(width: 38, height: 38)
+            // Balancer keeps the kicker optically centered against the 44pt close
+            // control (the old format badge here read as an odd floating tab).
+            Color.clear.frame(width: 44, height: 44)
         }
     }
 
@@ -293,20 +288,26 @@ struct RecordView: View {
             switch phase {
             case .ready:
                 Text(camera.status == .unavailable ? "Camera access is off. Enable it in Settings, or upload a video below." : "Read it once. We'll cut the rest.")
-                    .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.85)).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let importError {
-                    Text(importError)
-                        .font(AppFont.caption).foregroundStyle(Palette.critical)
-                        .multilineTextAlignment(.center)
-                        .accessibilityIdentifier("record.importError")
+                    // Errors used to be red; the glyph + wording carry it now.
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle").font(.system(size: 12, weight: .semibold))
+                        Text(importError)
+                            .font(AppFont.caption).foregroundStyle(Palette.onNight)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("record.importError")
+                    }
+                    .foregroundStyle(Palette.onNight)
                 }
                 if camera.status == .unavailable {
                     Button {
                         if let url = URL(string: "app-settings:") { openURL(url) }
                     } label: {
                         Label("Enable camera access", systemImage: "gearshape")
-                            .font(AppFont.callout).foregroundStyle(.white)
                     }
+                    .buttonStyle(NightCapsuleStyle(kind: .outline, height: 44))
                     .accessibilityIdentifier("record.openSettings")
                 }
                 speedControl
@@ -314,25 +315,28 @@ struct RecordView: View {
                 recordButton { startRecording() }
                 PhotosPicker(selection: $pickedItems, maxSelectionCount: 10, matching: .videos) {
                     Label("Upload existing video", systemImage: "square.and.arrow.up")
-                        .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                        .font(AppFont.supporting.weight(.semibold)).foregroundStyle(Palette.onNight.opacity(0.9))
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("record.upload")
             case .recording:
                 takeTimer
                 if camera.hasCamera && !camera.hasAudio {
-                    Text("Microphone is off, so your clip will have no sound. Enable mic access in Settings.")
-                        .font(AppFont.caption).foregroundStyle(Palette.critical).multilineTextAlignment(.center)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "mic.slash").font(.system(size: 12, weight: .semibold))
+                        Text("Microphone is off, so your clip will have no sound. Enable mic access in Settings.")
+                            .font(AppFont.caption).multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(Palette.onNight)
                 }
                 takeSegmentsBar(liveTake: true)
                 speedControl
                 HStack(spacing: Space.xl) {
                     // Teleprompter scroll play/pause (does not stop recording).
-                    Button { promptRunning.toggle() } label: {
-                        Image(systemName: promptRunning ? "pause.fill" : "play.fill")
-                            .font(.system(size: 18)).foregroundStyle(.white)
-                            .marqueGlassCircle(diameter: 52)
-                    }
-                    .buttonStyle(.plain)
+                    DSCircleButton(systemName: promptRunning ? "pause.fill" : "play.fill", kind: .onNight, size: 52) { promptRunning.toggle() }
+                    .accessibilityLabel(promptRunning ? "Pause prompter" : "Play prompter")
                     .accessibilityIdentifier("record.pausePrompt")
                     // The record button TOGGLES the take: tap again to pause (ends this
                     // take, ready for the next angle). Finishing is always the separate
@@ -341,64 +345,57 @@ struct RecordView: View {
                     // which keeps the Maestro fast path (single record.capture tap) intact.
                     recordButton(active: true) { if camera.hasCamera { pauseTake() } else { finishTake() } }
                     Button { finishTake() } label: {
-                        Text("Done").font(AppFont.headline).foregroundStyle(.white)
-                            .frame(width: 52, height: 52).marqueGlassCircle(diameter: 52)
+                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.onNight)
+                            .nightCircle(52)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
                     .accessibilityIdentifier("record.finishTake")
                 }
             case .paused:
                 takeTimer
                 takeSegmentsBar(liveTake: false)
                 Text("Paused. Flip the camera for a new angle, then resume. Your takes stitch into one clip.")
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                    .font(AppFont.supporting).foregroundStyle(Palette.onNight.opacity(0.85)).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Space.xl) {
                     if segments.isEmpty {
-                        Button { camera.flip() } label: {
-                            Image(systemName: "arrow.triangle.2.circlepath.camera")
-                                .font(.system(size: 18)).foregroundStyle(.white)
-                                .marqueGlassCircle(diameter: 52)
-                        }
-                        .buttonStyle(.plain)
+                        DSCircleButton(systemName: "arrow.triangle.2.circlepath.camera", kind: .onNight, size: 52) { camera.flip() }
+                        .accessibilityLabel("Flip camera")
                         .accessibilityIdentifier("record.flipCamera")
                     } else {
                         // Delete the last take — pops the most recent segment (and its file)
                         // so a fumbled take can be redone without scrapping the whole clip.
-                        Button { deleteLastTake() } label: {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.system(size: 18)).foregroundStyle(.white)
-                                .marqueGlassCircle(diameter: 52)
-                        }
-                        .buttonStyle(.plain)
+                        DSCircleButton(systemName: "arrow.uturn.backward", kind: .onNight, size: 52) { deleteLastTake() }
+                        .accessibilityLabel("Delete last take")
                         .accessibilityIdentifier("record.deleteLastTake")
                     }
                     recordButton(active: false) { resumeTake() }
                     Button { finishTake() } label: {
-                        Text("Done").font(AppFont.headline).foregroundStyle(.white)
-                            .frame(width: 52, height: 52).marqueGlassCircle(diameter: 52)
+                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.onNight)
+                            .nightCircle(52)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
                     .accessibilityIdentifier("record.finishTake")
                 }
                 if !segments.isEmpty {
                     Button { camera.flip() } label: {
                         Label("Flip camera", systemImage: "arrow.triangle.2.circlepath.camera")
-                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                            .font(AppFont.supporting).foregroundStyle(Palette.onNight.opacity(0.9))
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableStyle(dim: 0.6))
                     .accessibilityIdentifier("record.flipCamera")
                 }
             case .stitching:
-                ProgressView().tint(Palette.accent)
-                Text("Stitching your takes…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
+                ProgressView().tint(Palette.onNight)
+                Text("Stitching your takes…").font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.85))
             case .recorded:
                 // The creator picks the CUT TREATMENT here (it pins the engine style
                 // server-side) and can optionally point at a reel to mimic the vibe of.
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: Space.md) {
-                        Text("HOW SHOULD WE CUT THIS?")
-                            .font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(.white.opacity(0.6))
+                        DSEyebrow(text: "HOW SHOULD WE CUT THIS?", color: Palette.onNight.opacity(0.75))
                             .frame(maxWidth: .infinity, alignment: .center)
                         formatGrid
                         if liveScript.style == VideoStyle.duetSplit.rawValue || selectedBrollStyle == "split_screen" {
@@ -414,13 +411,13 @@ struct RecordView: View {
                         // form renders it in system gray, unreadable on the dark overlay.
                         TextField("", text: $customInstructions,
                                   prompt: Text("Anything specific? (optional)")
-                                    .foregroundColor(.white.opacity(0.6)),
+                                    .foregroundColor(Palette.onNight.opacity(0.6)),
                                   axis: .vertical)
-                            .font(AppFont.callout).foregroundStyle(.white)
+                            .font(AppFont.bodyText).foregroundStyle(Palette.onNight)
+                            .tint(Palette.onNight)
                             .lineLimit(1...3)
                             .padding(Space.md)
-                            .background(Color.white.opacity(0.08))
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .nightPanel()
                             .accessibilityIdentifier("record.customInstructions")
                     }
                 }
@@ -438,47 +435,59 @@ struct RecordView: View {
                 }
                 .onAppear { seedPerVideoStyle() }
                 .task { await loadCapabilities() }
-                HStack(spacing: Space.lg) {
+                HStack(spacing: Space.xl) {
                     // Multi-take: keep everything filmed so far and add one more take.
                     // Device-only (the simulator path records no segments to extend).
                     if camera.hasCamera && !segments.isEmpty {
                         Button { addAnotherTake() } label: {
                             Label("Add a take", systemImage: "plus.circle")
-                                .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                                .font(AppFont.supporting).foregroundStyle(Palette.onNight.opacity(0.9))
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(PressableStyle(dim: 0.6))
                         .accessibilityIdentifier("record.addTake")
                     }
                     Button { reRecord() } label: {
                         Label("Re-record", systemImage: "arrow.counterclockwise")
-                            .font(AppFont.callout).foregroundStyle(.white.opacity(0.85))
+                            .font(AppFont.supporting).foregroundStyle(Palette.onNight.opacity(0.9))
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(PressableStyle(dim: 0.6))
                     .accessibilityIdentifier("record.reRecord")
-                    GhostButton(title: "Save as draft") { saveDraftAndClose() }
-                        .accessibilityIdentifier("record.saveDraft")
                 }
                 if let msg = submitFailedMessage {
-                    Text(msg)
-                        .font(AppFont.caption).foregroundStyle(Palette.critical)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .multilineTextAlignment(.center)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle").font(.system(size: 12, weight: .semibold))
+                        Text(msg)
+                            .font(AppFont.caption)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(Palette.onNight)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                Button { makeClips() } label: {
-                    Text("Submit for editing")
-                        .font(AppFont.headline).foregroundStyle(Palette.ink)
-                        .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
-                        .background(Palette.onInk).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                // Stoic CTA row: outline capsule (secondary) beside the primary capsule.
+                HStack(spacing: Space.stack) {
+                    Button("Save as draft") { saveDraftAndClose() }
+                        .buttonStyle(NightCapsuleStyle(kind: .outline, height: 56))
+                        .accessibilityIdentifier("record.saveDraft")
+                    Button { makeClips() } label: {
+                        Text("Submit for editing")
+                    }
+                    .buttonStyle(NightCapsuleStyle(kind: .solid, height: 56, fullWidth: true))
+                    .accessibilityIdentifier("record.makeClips")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("record.makeClips")
             case .analyzing:
-                ProgressView().tint(Palette.accent)
+                ProgressView().tint(Palette.onNight)
                 Text("Studying your take: cuts, hook, pacing…")
-                    .font(AppFont.body).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.85)).multilineTextAlignment(.center)
             case .brief:
                 briefReview
             case .making:
-                ProgressView().tint(Palette.accent)
-                Text("Sending to your editor…").font(AppFont.body).foregroundStyle(.white.opacity(0.7))
+                ProgressView().tint(Palette.onNight)
+                Text("Sending to your editor…").font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.85))
             }
         }
     }
@@ -494,8 +503,8 @@ struct RecordView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: Space.md) {
                 Text("YOUR EDIT PLAN")
-                    .font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(.white.opacity(0.6))
+                    .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .foregroundStyle(Palette.onNight.opacity(0.75))
                     .frame(maxWidth: .infinity, alignment: .center)
 
                 if let brief {
@@ -509,26 +518,27 @@ struct RecordView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     if let ref = referenceReel {
                         Text("Matching the vibe of @\(ref.creatorHandle)")
-                            .font(AppFont.caption).foregroundStyle(Palette.accent)
+                            .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.onNight)
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
 
                     if !brief.throughLine.isEmpty {
                         Text(brief.throughLine)
-                            .font(AppFont.callout).foregroundStyle(.white.opacity(0.9))
+                            .font(AppFont.supporting).foregroundStyle(Palette.onNight.opacity(0.9))
                             .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     if let hook = brief.hookCandidates.first, !hook.quote.isEmpty {
                         VStack(alignment: .leading, spacing: Space.xs) {
-                            Text("OPENING ON").font(AppFont.micro).tracking(Track.label)
-                                .foregroundStyle(.white.opacity(0.5))
+                            Text("OPENING ON").font(AppFont.eyebrow).tracking(Track.eyebrow)
+                                .foregroundStyle(Palette.onNight.opacity(0.7))
                             Text("“\(hook.quote)”")
-                                .font(AppFont.body).foregroundStyle(Palette.accent)
+                                .font(AppFont.bodyText.weight(.semibold)).foregroundStyle(Palette.onNight)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(Space.md)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .nightPanel()
                     }
                 }
 
@@ -553,12 +563,8 @@ struct RecordView: View {
 
         Button { confirmBrief() } label: {
             Text("Make my clip")
-                .font(AppFont.headline).foregroundStyle(Palette.ink)
-                .frame(maxWidth: .infinity).padding(.vertical, Space.lg)
-                .background(Palette.onInk)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(NightCapsuleStyle(kind: .solid, height: 56, fullWidth: true))
         .accessibilityIdentifier("record.makeMyClip")
         }
         .task { await loadCapabilities() }
@@ -566,10 +572,11 @@ struct RecordView: View {
 
     private func briefChip(_ text: String) -> some View {
         Text(text)
-            .font(AppFont.caption).foregroundStyle(.white)
-            .padding(.horizontal, Space.md).padding(.vertical, 6)
-            .background(Color.white.opacity(0.12))
-            .clipShape(Capsule())
+            .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.onNight)
+            .lineLimit(1).minimumScaleFactor(0.8)
+            .padding(.horizontal, 12).frame(height: 30)
+            .background(Capsule().fill(Color.white.opacity(0.12)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.2), lineWidth: 1))
     }
 
     // MARK: Edit-format picker + "match a vibe" (pre-submit)
@@ -580,22 +587,27 @@ struct RecordView: View {
             ForEach(EditFormat.allCases) { f in
                 let selected = editFormat == f
                 Button { selectFormat(f) } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Image(systemName: f.icon).font(.system(size: 15, weight: .semibold))
+                    // Selection = inversion (DESIGN §1): white tile + night text when picked.
+                    VStack(alignment: .leading, spacing: 4) {
+                        Image(systemName: f.icon).font(.system(size: 16, weight: .regular))
                         Text(f.label)
-                            .font(AppFont.caption.weight(.semibold))
+                            .font(AppFont.supporting.weight(.semibold))
                             .lineLimit(1).minimumScaleFactor(0.75)
                         Text(f.blurb)
-                            .font(.system(size: 10))
-                            .opacity(0.75)
+                            .font(AppFont.caption)
+                            .opacity(0.8)
                             .lineLimit(2, reservesSpace: true)
+                            .minimumScaleFactor(0.85)
                             .multilineTextAlignment(.leading)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(Space.sm + 2)
-                    .background(selected ? Color.white : Color.white.opacity(0.10))
-                    .foregroundStyle(selected ? Palette.ink : .white)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                    .padding(Space.md)
+                    .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                        .fill(selected ? Palette.onNight : Color.white.opacity(0.10)))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                        .strokeBorder(selected ? Color.clear : Color.white.opacity(0.16), lineWidth: 1))
+                    .foregroundStyle(selected ? Palette.night : Palette.onNight)
+                    .contentShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("record.format.\(f.rawValue)")
@@ -624,24 +636,23 @@ struct RecordView: View {
                 HStack(spacing: Space.sm) {
                     VStack(alignment: .leading, spacing: Space.xs) {
                         Text("YOUR STYLE, APPLIED")
-                            .font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(.white.opacity(0.5))
+                            .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                            .foregroundStyle(Palette.onNight.opacity(0.7))
                         Text(standingStyleSummary)
-                            .font(AppFont.callout).foregroundStyle(.white)
-                            .lineLimit(1)
+                            .font(AppFont.supporting).foregroundStyle(Palette.onNight)
+                            .lineLimit(1).minimumScaleFactor(0.85)
                     }
-                    Spacer()
+                    Spacer(minLength: Space.sm)
                     Text(adjustExpanded ? "Done" : "Adjust")
-                        .font(AppFont.caption.weight(.semibold))
-                        .foregroundStyle(Palette.accent)
+                        .font(AppFont.supporting.weight(.semibold))
+                        .foregroundStyle(Palette.onNight)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.5))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Palette.onNight.opacity(0.7))
                         .rotationEffect(.degrees(adjustExpanded ? 180 : 0))
                 }
                 .padding(Space.md)
-                .background(Color.white.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .nightPanel()
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -655,7 +666,8 @@ struct RecordView: View {
                     }
                     captionStyleSection
                     Text("Changes apply to this video only. Your defaults live in Profile → Editing style.")
-                        .font(AppFont.micro).foregroundStyle(.white.opacity(0.45))
+                        .font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.7))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
@@ -687,8 +699,8 @@ struct RecordView: View {
         if editFormat == .talkingHeadBroll, !brollStyles.isEmpty {
             VStack(alignment: .leading, spacing: Space.xs) {
                 Text("B-ROLL STYLE · PICK A LOOK")
-                    .font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(.white.opacity(0.5))
+                    .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .foregroundStyle(Palette.onNight.opacity(0.7))
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: Space.sm) {
                         ForEach(Array(brollStyles.enumerated()), id: \.element.id) { i, s in
@@ -730,33 +742,35 @@ struct RecordView: View {
                         } placeholder: {
                             Rectangle().fill(Color.white.opacity(0.08))
                                 .overlay(Image(systemName: "photo.on.rectangle.angled")
-                                    .foregroundStyle(.white.opacity(0.3)))
+                                    .foregroundStyle(Palette.onNight.opacity(0.4)))
                         }
                         .frame(width: 118, height: 148).clipped()
                     }
                     if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Palette.accent)
-                            .background(Circle().fill(.white).padding(2))
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(Palette.night)
+                            .frame(width: 22, height: 22)
+                            .background(Circle().fill(Palette.onNight))
                             .padding(5)
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.cell + 4, style: .continuous))
                 .onAppear { visibleMimicIds.insert(s.id) }
                 .onDisappear { visibleMimicIds.remove(s.id) }
                 Text(s.label)                            // the B-ROLL style — this is the choice
-                    .font(.system(size: 11, weight: .bold)).foregroundStyle(.white)
-                    .lineLimit(1)
+                    .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.onNight)
+                    .lineLimit(1).minimumScaleFactor(0.8)
                 Text(s.blurb)                            // what the style means for the cut
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.6))
+                    .font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.75))
                     .lineLimit(2, reservesSpace: true)
+                    .minimumScaleFactor(0.75)
                     .multilineTextAlignment(.leading)
             }
             .frame(width: 118)
             .padding(4)
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
+            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .strokeBorder(selected ? Palette.onNight : .clear, lineWidth: 2))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("record.brollStyle.\(index)")
@@ -777,36 +791,37 @@ struct RecordView: View {
     /// a pick here wins for THIS video only.
     private var captionStyleSection: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
-            Text("CAPTIONS").font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(.white.opacity(0.5))
+            Text("CAPTIONS").font(AppFont.eyebrow).tracking(Track.eyebrow)
+                .foregroundStyle(Palette.onNight.opacity(0.7))
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.sm) {
                     captionFrameCard(nil, label: "Auto") {
                         VStack(spacing: 2) {
                             Image(systemName: "wand.and.stars")
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.85))
-                            Text("AI picks").font(.system(size: 8, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.6))
+                                .foregroundStyle(Palette.onNight.opacity(0.85))
+                            Text("AI picks").font(Typeface.sans(8, .medium))
+                                .foregroundStyle(Palette.onNight.opacity(0.7))
                         }
                     }
                     captionFrameCard("clean", label: "Clean") {
-                        Text("your words").font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(.white)
+                        Text("your words").font(Typeface.sans(9, .semibold))
+                            .foregroundStyle(Palette.onNight)
                             .shadow(color: .black.opacity(0.7), radius: 1.5, y: 1)
                     }
                     captionFrameCard("bold-word", label: "Bold") {
                         VStack(spacing: 1) {
-                            Text("YOUR").font(.system(size: 10, weight: .black)).foregroundStyle(.white)
-                            Text("WORDS").font(.system(size: 10, weight: .black)).foregroundStyle(Palette.accent)
+                            Text("YOUR").font(Typeface.sans(10, .black)).foregroundStyle(Palette.onNight.opacity(0.7))
+                            Text("WORDS").font(Typeface.sans(10, .black)).foregroundStyle(Palette.onNight)
+                                .underline()
                         }
                     }
                     captionFrameCard("karaoke", label: "Karaoke") {
                         HStack(spacing: 2) {
-                            Text("your").font(.system(size: 9, weight: .bold)).foregroundStyle(Palette.ink)
+                            Text("your").font(Typeface.sans(9, .bold)).foregroundStyle(Palette.night)
                                 .padding(.horizontal, 3).padding(.vertical, 1)
-                                .background(Palette.accent).clipShape(RoundedRectangle(cornerRadius: 2))
-                            Text("words").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
+                                .background(Palette.onNight).clipShape(RoundedRectangle(cornerRadius: 2))
+                            Text("words").font(Typeface.sans(9, .semibold)).foregroundStyle(Palette.onNight)
                         }
                     }
                 }
@@ -814,7 +829,7 @@ struct RecordView: View {
             // Size = literal type scale: three "Aa" at their relative sizes, not S/M/L
             // circles disconnected from what they resize.
             HStack(spacing: Space.sm) {
-                Text("Size").font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                Text("Size").font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.75))
                 ForEach([(11.0, "small"), (14.0, "medium"), (17.0, "large")], id: \.1) { pt, v in
                     let active = captionSizeChoice == v
                     Button {
@@ -822,17 +837,19 @@ struct RecordView: View {
                             captionSizeChoice = active ? nil : v
                         }
                     } label: {
-                        Text("Aa").font(.system(size: pt, weight: active ? .bold : .medium))
-                            .foregroundStyle(active ? Palette.ink : .white)
-                            .frame(width: 40, height: 32)
-                            .background(active ? Palette.onInk : Color.white.opacity(0.10))
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        // Literal type-scale sample (the size IS the option), not body copy.
+                        Text("Aa").font(Typeface.sans(pt, active ? .bold : .medium))
+                            .foregroundStyle(active ? Palette.night : Palette.onNight)
+                            .frame(width: 44, height: 36)
+                            .background(Capsule().fill(active ? Palette.onNight : Color.white.opacity(0.10)))
+                            .overlay(Capsule().strokeBorder(active ? Color.clear : Color.white.opacity(0.16), lineWidth: 1))
+                            .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("record.capSize.\(v)")
                 }
                 if captionSizeChoice == nil {
-                    Text("Auto").font(AppFont.caption).foregroundStyle(.white.opacity(0.35))
+                    Text("Auto").font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.7))
                 }
             }
         }
@@ -848,7 +865,7 @@ struct RecordView: View {
         } label: {
             VStack(spacing: 4) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.cell + 2, style: .continuous)
                         .fill(LinearGradient(colors: [Color.white.opacity(0.14), Color.black.opacity(0.55)],
                                              startPoint: .top, endPoint: .bottom))
                     // faint speaker silhouette — reads as "your video", never as content
@@ -861,11 +878,11 @@ struct RecordView: View {
                         .offset(y: 18)
                 }
                 .frame(width: 62, height: 96)
-                .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.12),
+                .overlay(RoundedRectangle(cornerRadius: Radius.cell + 2, style: .continuous)
+                    .strokeBorder(active ? Palette.onNight : Color.white.opacity(0.16),
                                   lineWidth: active ? 2 : 1))
-                Text(label).font(.system(size: 10, weight: active ? .bold : .medium))
-                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.6))
+                Text(label).font(AppFont.caption.weight(active ? .bold : .regular))
+                    .foregroundStyle(active ? Palette.onNight : Palette.onNight.opacity(0.75))
             }
         }
         .buttonStyle(.plain)
@@ -926,32 +943,30 @@ struct RecordView: View {
     private var memeSliderRow: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             HStack {
-                Text("MEME ENERGY").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(.white.opacity(0.6))
+                Text("MEME ENERGY").font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .foregroundStyle(Palette.onNight.opacity(0.7))
                 Spacer(minLength: Space.md)
                 Text(MemeEnergy.names[Int(memeLevel)])
-                    .font(AppFont.caption).foregroundStyle(Palette.accent)
+                    .font(AppFont.supporting.weight(.semibold)).foregroundStyle(Palette.onNight)
             }
             Slider(value: $memeLevel, in: 0...3, step: 1)
-                .tint(Palette.accent)
+                .tint(Palette.onNight)
                 .accessibilityIdentifier("record.memeLevel")
         }
         .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-        .background(Color.white.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .nightPanel()
     }
 
     private func briefToggleRow(_ label: String, isOn: Binding<Bool>) -> some View {
         HStack {
-            Text(label).font(AppFont.callout).foregroundStyle(.white)
+            Text(label).font(AppFont.bodyText).foregroundStyle(Palette.onNight)
             Spacer(minLength: Space.md)
-            MarqueToggle(isOn: isOn, offTrack: Color.white.opacity(0.22))
+            NightSwitch(isOn: isOn)
         }
         .contentShape(Rectangle())
         .onTapGesture { isOn.wrappedValue.toggle() }
-        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-        .background(Color.white.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .padding(.horizontal, Space.md).frame(minHeight: 52)
+        .nightPanel()
     }
 
     /// Style-gated toggle visibility. Missing data (caps fetch failed / unknown
@@ -976,19 +991,10 @@ struct RecordView: View {
         HStack(spacing: Space.sm) {
             ForEach([("Slow", 0.6), ("Normal", 1.0), ("Fast", 1.5)], id: \.0) { label, val in
                 Button { speed = val } label: {
-                    Group {
-                        if speed == val {
-                            Text(label).font(AppFont.caption).foregroundStyle(Palette.ink)
-                                .padding(.horizontal, Space.md).padding(.vertical, 7)
-                                .background(Palette.onInk).clipShape(Capsule())
-                        } else {
-                            Text(label).font(AppFont.caption).foregroundStyle(.white)
-                                .padding(.horizontal, Space.md)
-                                .marqueGlassCapsule(height: 30)
-                        }
-                    }
+                    NightPillLabel(isOn: speed == val) { Text(label) }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(dim: 0.8))
+                .accessibilityAddTraits(speed == val ? .isSelected : [])
             }
         }
         }
@@ -1003,30 +1009,22 @@ struct RecordView: View {
             Button {
                 camera.retouchEnabled.toggle()
             } label: {
-                // Same selected/unselected treatment as speedControl's pills: solid
-                // when active, liquid glass when idle.
-                let label = HStack(spacing: 6) {
-                    Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold))
-                    Text(camera.retouchEnabled ? "Retouch on" : "Retouch")
-                        .font(AppFont.caption)
-                }
-                if camera.retouchEnabled {
-                    label.foregroundStyle(Palette.ink)
-                        .padding(.horizontal, Space.md).padding(.vertical, 7)
-                        .background(Palette.onInk).clipShape(Capsule())
-                } else {
-                    label.foregroundStyle(.white)
-                        .padding(.horizontal, Space.md)
-                        .marqueGlassCapsule(height: 30)
+                // Same selected/unselected treatment as speedControl's pills: inverted
+                // (white) when active, translucent outline when idle.
+                NightPillLabel(isOn: camera.retouchEnabled) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold))
+                        Text(camera.retouchEnabled ? "Retouch on" : "Retouch")
+                    }
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.8))
             .accessibilityIdentifier("record.retouch")
 
             if camera.retouchEnabled {
                 Slider(value: $camera.retouchStrength, in: 0.1...1.0)
-                    .tint(.white)
-                    .frame(width: 170)
+                    .tint(Palette.onNight)
+                    .frame(width: 200)
                     .accessibilityIdentifier("record.retouchStrength")
                     .transition(.opacity)
             }
@@ -1039,18 +1037,20 @@ struct RecordView: View {
     // Accumulated take time across finished segments + the live segment.
     private var takeTimer: some View {
         HStack(spacing: Space.sm) {
-            Circle().fill(phase == .paused ? Palette.textTertiary : Palette.critical)
-                .frame(width: 8, height: 8)
+            // Recording = solid dot, paused = hollow ring (was red / gray).
+            Circle().fill(phase == .paused ? Color.clear : Palette.onNight)
+                .overlay(Circle().strokeBorder(Palette.onNight.opacity(0.7), lineWidth: phase == .paused ? 1.5 : 0))
+                .frame(width: 9, height: 9)
             if phase == .recording, let start = recordStart {
                 TimelineView(.periodic(from: start, by: 1)) { ctx in
                     let secs = Int(takeElapsed + max(0, ctx.date.timeIntervalSince(start)))
                     Text(String(format: "%d:%02d / ~%ds", secs / 60, secs % 60, liveScript.targetSeconds))
-                        .font(AppFont.body).foregroundStyle(.white).monospacedDigit()
+                        .font(AppFont.bodyText).foregroundStyle(Palette.onNight).monospacedDigit()
                 }
             } else {
                 let secs = Int(takeElapsed)
                 Text(String(format: "%d:%02d / ~%ds", secs / 60, secs % 60, liveScript.targetSeconds))
-                    .font(AppFont.body).foregroundStyle(.white.opacity(0.85)).monospacedDigit()
+                    .font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.85)).monospacedDigit()
             }
         }
     }
@@ -1335,13 +1335,16 @@ struct RecordView: View {
     private var reactSourceField: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             Text("What are you reacting to?")
-                .font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
-            TextField("Paste a video link", text: $reactSourceURL)
-                .font(AppFont.callout).foregroundStyle(.white)
+                .font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.8))
+            TextField("Paste a video link", text: $reactSourceURL,
+                      prompt: Text("Paste a video link").foregroundColor(Palette.onNight.opacity(0.55)))
+                .font(AppFont.bodyText).foregroundStyle(Palette.onNight)
+                .tint(Palette.onNight)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-                .padding(.horizontal, Space.md).frame(height: 44)
-                .marqueGlassCapsule(height: 44)
+                .padding(.horizontal, Space.md).frame(height: 48)
+                .background(Capsule().fill(Color.white.opacity(0.10)))
+                .overlay(Capsule().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
                 .accessibilityIdentifier("record.reactSource")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1353,16 +1356,16 @@ struct RecordView: View {
         if !segments.isEmpty || liveTake {
             HStack(spacing: 5) {
                 ForEach(0..<segments.count, id: \.self) { _ in
-                    Capsule().fill(.white.opacity(0.9)).frame(width: 22, height: 5)
+                    Capsule().fill(Palette.onNight.opacity(0.9)).frame(width: 22, height: 5)
                 }
                 if liveTake {
-                    Capsule().fill(Palette.critical).frame(width: 22, height: 5)
-                        .opacity(0.9)
+                    // The live take reads as an open (outlined) segment, not a red one.
+                    Capsule().strokeBorder(Palette.onNight, lineWidth: 1.5).frame(width: 22, height: 5)
                 }
                 if segments.count > 0 {
                     Text(liveTake ? "Take \(segments.count + 1)" : "\(segments.count) take\(segments.count == 1 ? "" : "s")")
-                        .font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(.white.opacity(0.7))
+                        .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                        .foregroundStyle(Palette.onNight.opacity(0.8))
                         .padding(.leading, 4)
                 }
             }
@@ -1401,13 +1404,16 @@ struct RecordView: View {
     private func recordButton(active: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             ZStack {
-                Circle().strokeBorder(.white.opacity(0.5), lineWidth: 4).frame(width: 78, height: 78)
-                RoundedRectangle(cornerRadius: active ? 6 : 30, style: .continuous)
-                    .fill(Palette.critical)
-                    .frame(width: active ? 32 : 62, height: active ? 32 : 62)
+                // Monochrome shutter: white ring + white disc; the disc becomes a rounded
+                // square while recording (shape, not red, carries the state).
+                Circle().strokeBorder(Palette.onNight.opacity(0.6), lineWidth: 4).frame(width: 78, height: 78)
+                RoundedRectangle(cornerRadius: active ? 6 : 31, style: .continuous)
+                    .fill(Palette.onNight)
+                    .frame(width: active ? 30 : 62, height: active ? 30 : 62)
             }
+            .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.85, scale: 0.94))
         .accessibilityLabel(active ? "Stop recording" : "Start recording")
         .accessibilityIdentifier("record.capture")
     }
@@ -1463,9 +1469,9 @@ struct Teleprompter: View {
             let maxScroll = max(0, contentH - viewport * 0.5)
             ZStack(alignment: .topLeading) {
                 VStack(alignment: .leading, spacing: Space.lg) {
-                    teleprompterLine(script.hook.text, font: Typeface.sans(28, .bold), field: .hook)
-                    teleprompterLine(script.body, font: Typeface.body(23), field: .body)
-                    teleprompterLine(script.cta, font: Typeface.body(23, .semibold), field: .cta, color: Palette.accent)
+                    teleprompterLine(script.hook.text, font: AppFont.title1, field: .hook)
+                    teleprompterLine(script.body, font: AppFont.bodyLarge, field: .body)
+                    teleprompterLine(script.cta, font: AppFont.bodyLarge.weight(.semibold), field: .cta)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(GeometryReader { g in
@@ -1492,20 +1498,23 @@ struct Teleprompter: View {
                         .onTapGesture { commitEdit() }
                     VStack(spacing: Space.md) {
                         TextEditor(text: $draft)
-                            .font(Typeface.body(22))
-                            .foregroundStyle(.white)
+                            .font(AppFont.bodyLarge)
+                            .foregroundStyle(Palette.onNight)
+                            .tint(Palette.onNight)
                             .scrollContentBackground(.hidden)
                             .frame(minHeight: 120, maxHeight: 240)
                             .padding(Space.md)
-                            .background(Color.white.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .fill(Color.white.opacity(0.12)))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
                             .focused($editorFocused)
                         HStack(spacing: Space.md) {
                             Button("Cancel") { editingField = nil }
-                                .font(AppFont.callout).foregroundStyle(.white.opacity(0.7))
+                                .buttonStyle(NightCapsuleStyle(kind: .outline, height: 44))
                             Spacer()
                             Button("Done") { commitEdit() }
-                                .font(AppFont.headline).foregroundStyle(Palette.accent)
+                                .buttonStyle(NightCapsuleStyle(kind: .solid, height: 44))
                         }
                     }
                     .padding(Space.lg)
@@ -1525,7 +1534,7 @@ struct Teleprompter: View {
 
     @ViewBuilder
     private func teleprompterLine(_ text: String, font: Font, field: EditField,
-                                   color: Color = .white.opacity(0.94)) -> some View {
+                                   color: Color = Palette.onNight) -> some View {
         Text(text)
             .font(font)
             .foregroundStyle(color)
@@ -1535,7 +1544,7 @@ struct Teleprompter: View {
             .overlay(alignment: .topTrailing) {
                 Image(systemName: "pencil")
                     .font(.system(size: 11))
-                    .foregroundStyle(.white.opacity(0.4))
+                    .foregroundStyle(Palette.onNight.opacity(0.5))
                     .padding(4)
             }
     }
@@ -1544,4 +1553,100 @@ struct Teleprompter: View {
 private struct TeleHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+// MARK: - Camera-surface controls (private, presentation only)
+// The record screen is a media surface: it stays dark in BOTH color schemes, so its
+// controls use onNight / translucent white rather than ink (which inverts in dark mode).
+
+/// Capsule button on the dark camera surface. `.solid` = white fill + night label (the
+/// primary CTA), `.outline` = translucent fill + white hairline + white label.
+private struct NightCapsuleStyle: ButtonStyle {
+    enum Kind { case solid, outline }
+    var kind: Kind = .solid
+    var height: CGFloat = 56
+    var fullWidth: Bool = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        NightCapsuleBody(configuration: configuration, kind: kind, height: height, fullWidth: fullWidth)
+    }
+}
+
+private struct NightCapsuleBody: View {
+    let configuration: ButtonStyle.Configuration
+    let kind: NightCapsuleStyle.Kind
+    let height: CGFloat
+    let fullWidth: Bool
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        configuration.label
+            .font(height >= 52 ? AppFont.headline : AppFont.supporting.weight(.semibold))
+            .lineLimit(1).minimumScaleFactor(0.8)
+            .foregroundStyle(kind == .solid ? Palette.night : Palette.onNight)
+            .padding(.horizontal, height >= 52 ? 24 : 18)
+            .frame(maxWidth: fullWidth ? .infinity : nil)
+            .frame(height: height)
+            .background(Capsule().fill(kind == .solid ? Palette.onNight : Color.white.opacity(0.12)))
+            .overlay(Capsule().strokeBorder(kind == .outline ? Color.white.opacity(0.3) : .clear, lineWidth: 1))
+            .contentShape(Capsule())
+            .opacity(isEnabled ? (configuration.isPressed ? 0.85 : 1) : 0.5)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(Motion.quick, value: configuration.isPressed)
+    }
+}
+
+/// Selectable pill label on the camera surface (speed, retouch). Selected = inverted.
+private struct NightPillLabel<Content: View>: View {
+    let isOn: Bool
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        content()
+            .font(AppFont.caption.weight(.semibold))
+            .foregroundStyle(isOn ? Palette.night : Palette.onNight)
+            .padding(.horizontal, Space.md)
+            .frame(minWidth: 44)
+            .frame(height: 36)
+            .background(Capsule().fill(isOn ? Palette.onNight : Color.white.opacity(0.14)))
+            .overlay(Capsule().strokeBorder(isOn ? Color.clear : Color.white.opacity(0.28), lineWidth: 1))
+            .contentShape(Capsule())
+            .animation(Motion.quick, value: isOn)
+    }
+}
+
+/// Monochrome switch for the camera surface: white track when on (night knob), translucent
+/// when off. Same Button-toggles-binding behavior as MarqueToggle.
+private struct NightSwitch: View {
+    @Binding var isOn: Bool
+    var body: some View {
+        Button { withAnimation(Motion.quick) { isOn.toggle() } } label: {
+            Capsule()
+                .fill(isOn ? Palette.onNight : Color.white.opacity(0.22))
+                .frame(width: 51, height: 31)
+                .overlay(alignment: isOn ? .trailing : .leading) {
+                    Circle().fill(isOn ? Palette.night : Palette.onNight).frame(width: 27, height: 27)
+                        .padding(2)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn ? [.isSelected] : [])
+    }
+}
+
+private extension View {
+    /// Translucent rounded panel used for grouped content over the camera.
+    func nightPanel() -> some View {
+        self.background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .fill(Color.white.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+    }
+
+    /// 1:1 translucent circle behind a text label (the "Done" control).
+    func nightCircle(_ d: CGFloat) -> some View {
+        self.frame(width: d, height: d)
+            .background(Circle().fill(Color.white.opacity(0.14)))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
+            .contentShape(Circle())
+    }
 }
