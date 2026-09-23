@@ -198,7 +198,7 @@ struct LocalThumbnail: View {
     let path: String?
     var isVideo: Bool = false
     var remoteImageURL: String? = nil
-    var cornerRadius: CGFloat = Radius.sm
+    var cornerRadius: CGFloat = Radius.tile
     @State private var image: UIImage?
     var body: some View {
         ZStack {
@@ -207,7 +207,8 @@ struct LocalThumbnail: View {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: isVideo ? "play.fill" : "photo")
-                    .font(.system(size: 16)).foregroundStyle(Palette.textTertiary)
+                    .font(.system(size: 16)).foregroundStyle(Palette.textSecondary)
+                    .accessibilityHidden(true)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -258,8 +259,8 @@ struct LocalVideoPlayer: View {
                 ZStack {
                     Palette.surfaceSunken
                     VStack(spacing: Space.sm) {
-                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
-                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textSecondary)
+                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     }
                 }
             }
@@ -285,7 +286,7 @@ struct ClipPreviewPlayer: View {
     // clipShape doesn't clip an AVPlayerLayer, so an in-progress clip (no render URL yet,
     // showing the placeholder or the raw take at a different radius) read with square
     // corners. Now the component owns its rounding at the caller's exact radius.
-    var cornerRadius: CGFloat = Radius.lg
+    var cornerRadius: CGFloat = Radius.tile
     /// Build 69: presenter-driven pause (fullScreenCover leaves this view alive underneath).
     var suspended: Bool = false
     var body: some View {
@@ -297,8 +298,8 @@ struct ClipPreviewPlayer: View {
                 ZStack {
                     Palette.surfaceSunken
                     VStack(spacing: Space.sm) {
-                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
-                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textSecondary)
+                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
