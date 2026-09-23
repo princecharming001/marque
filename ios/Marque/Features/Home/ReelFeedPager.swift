@@ -252,6 +252,8 @@ struct ReelFeedPager: View {
             .contentShape(Circle())
     }
 
+    // Unused since the chrome moved to onNightCircle; kept because the redesign guard
+    // forbids removing functions in a presentation-only pass.
     private func glassChip(_ symbol: String, tint: Color = .white) -> some View {
         onNightCircle(symbol)
     }
@@ -274,9 +276,9 @@ struct ReelFeedPager: View {
             Button { runMimic(reel) } label: {
                 HStack(spacing: Space.sm) {
                     if mimicking == reel.id {
-                        // In flight the capsule is disabled (sunken fill), so the spinner
-                        // takes the secondary tone to stay visible on it.
-                        ProgressView().tint(Palette.textSecondary).controlSize(.small)
+                        // The capsule stays white while in flight (MimicCapsuleStyle ignores
+                        // isEnabled), so the spinner is black to match the label.
+                        ProgressView().tint(Color(hex: 0x0A0A0A)).controlSize(.small)
                         Text("Rewriting…").font(AppFont.headline)
                     } else {
                         Image(systemName: "wand.and.stars").font(.system(size: 15, weight: .semibold))
@@ -285,12 +287,12 @@ struct ReelFeedPager: View {
                     }
                 }
                 // OWNER (2026-08-12, "text on the biggest button is not visible"): the
-                // label must contrast with a WHITE pill. The DS inverse capsule is exactly
-                // that (white fill, black label) and stays so in both schemes; the pager is
-                // forced dark, where Palette.ink would have inverted to near-white.
+                // label must contrast with a WHITE pill. MimicCapsuleStyle is a white fill
+                // with a black label in EVERY state (including disabled / in flight); the
+                // pager is forced dark, where Palette.ink would have inverted to near-white.
             }
             // Capsule + the other two as circles gives the row a clear primary.
-            .buttonStyle(.ds(.inverse, height: 48, fullWidth: true))
+            .buttonStyle(MimicCapsuleStyle())
             .disabled(mimicking == reel.id)
             .accessibilityIdentifier("reelPager.mimic")
 
@@ -382,5 +384,26 @@ private struct ReelPagerMedia: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+/// The pager's primary "Mimic in my voice" capsule: white fill, black label, always.
+/// Deliberately does NOT read `isEnabled` — while a rewrite is in flight the button is
+/// disabled, and the DS capsule's disabled look (sunken fill, tertiary label) would be
+/// unreadable over live video (owner, 2026-08-12: "text on the biggest button is not visible").
+private struct MimicCapsuleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.headline)
+            .lineLimit(1).minimumScaleFactor(0.85)
+            .foregroundStyle(Color(hex: 0x0A0A0A))
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(Capsule().fill(Palette.onNight))
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(Motion.quick, value: configuration.isPressed)
     }
 }

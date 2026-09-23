@@ -65,7 +65,6 @@ struct ScriptFeedCard: View {
                 .foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.center)
                 .lineLimit(3).minimumScaleFactor(0.85)
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity)
             // v15 fluff mandate: the bandit's why-picked line ("contrarian hooks +
             // myth-buster tend to over-index...") is exactly the explainer class the
@@ -346,7 +345,7 @@ struct TrendTicker: View {
                             if engaged {
                                 ZStack(alignment: .leading) {
                                     Text(displayTrend.title)
-                                        .font(AppFont.supporting)
+                                        .font(AppFont.caption)
                                         .foregroundStyle(Palette.textPrimary)
                                         .lineLimit(1)
                                         .id("trend-title-\(currentIndex)")
@@ -446,12 +445,12 @@ struct TrendTicker: View {
     private var marquee: some View {
         GeometryReader { windowGeo in
             HStack(spacing: 0) {
-                Text(marqueeText).font(AppFont.supporting).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(marqueeText).font(AppFont.caption).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .fixedSize()
                     .background(GeometryReader { g in
                         Color.clear.preference(key: TickerWidthKey.self, value: g.size.width)
                     })
-                Text(marqueeText).font(AppFont.supporting).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(marqueeText).font(AppFont.caption).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .fixedSize()
             }
             .offset(x: marqueeOffset)
@@ -547,15 +546,20 @@ struct FeedSkeletonCard: View {
 /// Shimmering 9:16 placeholder for a reel grid cell, with a caption bar so it
 /// reads as a reel thumbnail loading.
 struct ReelSkeletonCard: View {
+    // A `surface` tile hosts the sunken shimmer blocks: a bare surfaceSunken block sits
+    // almost invisibly on the light canvas, so the tile gives the placeholder its shape.
     var body: some View {
-        SkeletonBlock(cornerRadius: Radius.tile)
+        RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+            .fill(Palette.surface)
             .aspectRatio(9.0 / 16.0, contentMode: .fit)
-            .overlay(alignment: .bottomLeading) {
+            .overlay {
                 VStack(alignment: .leading, spacing: Space.sm) {
+                    SkeletonBlock(cornerRadius: Radius.sm)                        // poster
                     SkeletonBlock(cornerRadius: Radius.sm).frame(width: 90, height: 10)
                     SkeletonBlock(cornerRadius: Radius.sm).frame(width: 60, height: 10)
                 }
-                .padding(Space.md)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(Space.sm)
             }
     }
 }

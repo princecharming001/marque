@@ -61,15 +61,14 @@ struct ReelDetailSheet: View {
     private var platformGlyph: String { reel.platform == "instagram" ? "camera.fill" : "music.note" }
 
     private var header: some View {
-        ZStack(alignment: .top) {
-            VStack(spacing: Space.xs) {
-                Text(platformLabel.uppercased())
-                    .font(AppFont.eyebrow).tracking(Track.eyebrow)
-                    .foregroundStyle(Palette.textSecondary)
+        HStack(alignment: .center, spacing: Space.md) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("@\(reel.creatorHandle)")
-                    .font(AppFont.title1).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+                    .font(AppFont.title1).foregroundStyle(Palette.textPrimary)
                     .lineLimit(1).minimumScaleFactor(0.7)
                 HStack(spacing: Space.md) {
+                    Text(platformLabel.uppercased())
+                        .font(AppFont.eyebrow).tracking(Track.eyebrow)
                     HStack(spacing: 3) {
                         Image(systemName: "eye").font(.system(size: 10))
                         Text(compactNumber(reel.views)).font(AppFont.caption)
@@ -81,21 +80,16 @@ struct ReelDetailSheet: View {
                 }
                 .foregroundStyle(Palette.textSecondary)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 44)
-            HStack {
-                Spacer()
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark").font(.system(size: 20, weight: .regular))
-                        .foregroundStyle(Palette.textPrimary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle(dim: 0.6))
-                .accessibilityLabel("Close")
-                .accessibilityIdentifier("reel.close")
+            Spacer(minLength: Space.sm)
+            Button { dismiss() } label: {
+                Image(systemName: "xmark").font(.system(size: 20, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            .padding(.trailing, -Space.md + Space.xs)
+            .buttonStyle(PressableStyle(dim: 0.6))
+            .accessibilityLabel("Close")
+            .accessibilityIdentifier("reel.close")
         }
     }
 
@@ -373,8 +367,8 @@ struct ReelDetailSheet: View {
         Button(action: runMimic) {
             HStack(spacing: Space.sm) {
                 if phase == .working {
-                    // In flight the capsule is disabled (sunken fill): secondary-tone spinner.
-                    ProgressView().tint(Palette.textSecondary)
+                    // MimicCTAStyle keeps the ink fill while disabled: onInk spinner.
+                    ProgressView().tint(Palette.onInk)
                     Text("Rewriting as you…").font(AppFont.headline)
                 } else {
                     Image(systemName: "wand.and.stars").font(.system(size: 16, weight: .semibold))
@@ -382,7 +376,7 @@ struct ReelDetailSheet: View {
                 }
             }
         }
-        .buttonStyle(.ds(.primary, fullWidth: true))
+        .buttonStyle(MimicCTAStyle())
         .disabled(phase == .working)
         .accessibilityIdentifier("reel.mimic")
     }
@@ -405,3 +399,24 @@ struct ReelDetailSheet: View {
 
 // UX-A3: FailableVideoPlayer moved to DesignSystem/FailableVideoPlayer.swift
 // (shared with the mimic cards; identical behavior, + muted/showsControls params).
+
+
+/// Ink capsule for the sheet's mimic CTA. Deliberately ignores `isEnabled`: while the
+/// rewrite is in flight the button is disabled, and the DS disabled look (sunken fill,
+/// tertiary label) would make "Rewriting as you…" unreadable.
+private struct MimicCTAStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.headline)
+            .lineLimit(1).minimumScaleFactor(0.85)
+            .foregroundStyle(Palette.onInk)
+            .padding(.horizontal, 32)
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .background(Capsule().fill(Palette.ink))
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(Motion.quick, value: configuration.isPressed)
+    }
+}

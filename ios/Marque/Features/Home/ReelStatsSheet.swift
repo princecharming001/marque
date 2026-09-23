@@ -84,17 +84,15 @@ struct ReelStatsSheet: View {
     // counts follow. Watch-time/retention isn't public for other creators'
     // posts, so nothing here is invented.
     private var tiles: some View {
-        VStack(alignment: .leading, spacing: Space.groupGap) {
-            HStack(spacing: Space.groupGap) {
-                tile(String(format: "%.1f%%", engagementRate * 100), "engagement", strong: true)
-                tile(compactNumber(reel.views), "views")
-                if reel.followerCount > 0 { tile(compactNumber(reel.followerCount), "followers") }
-            }
-            HStack(spacing: Space.groupGap) {
-                tile(compactNumber(reel.likes), "likes")
-                if reel.comments > 0 { tile(compactNumber(reel.comments), "comments") }
-                if reel.durationS > 0 { tile("\(reel.durationS)s", "length") }
-            }
+        // Stoic Stats: 2-up sunken tiles, same conditional tiles in the same order.
+        LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.groupGap), GridItem(.flexible())],
+                  alignment: .leading, spacing: Space.groupGap) {
+            tile(String(format: "%.1f%%", engagementRate * 100), "engagement", strong: true)
+            tile(compactNumber(reel.views), "views")
+            if reel.followerCount > 0 { tile(compactNumber(reel.followerCount), "followers") }
+            tile(compactNumber(reel.likes), "likes")
+            if reel.comments > 0 { tile(compactNumber(reel.comments), "comments") }
+            if reel.durationS > 0 { tile("\(reel.durationS)s", "length") }
         }
     }
 
