@@ -22,20 +22,33 @@ struct VoiceSessionView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Grabber-adjacent header
-            HStack {
-                Text("MORNING SESSION").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Spacer()
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+            // Sheet header (DESIGN.md §5): eyebrow + centered lowercase title, close trailing.
+            ZStack {
+                VStack(spacing: Space.xs) {
+                    Text("MORNING SESSION").font(AppFont.eyebrow).tracking(Track.eyebrow)
                         .foregroundStyle(Palette.textSecondary)
-                        .frame(width: 30, height: 30)
-                        .background(Palette.surfaceSunken).clipShape(Circle())
+                    Text("talk to yuni.")
+                        .font(AppFont.title1).tracking(-0.3)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1).minimumScaleFactor(0.8)
+                        .accessibilityAddTraits(.isHeader)
                 }
-                .accessibilityIdentifier("voice.close")
+                .padding(.horizontal, 52)
+                HStack {
+                    Spacer()
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark").font(.system(size: 20, weight: .regular))
+                            .foregroundStyle(Palette.textPrimary)
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PressableStyle(dim: 0.6))
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("voice.close")
+                }
+                .padding(.horizontal, Space.xs)
             }
-            .padding(.horizontal, Space.screenH).padding(.top, Space.lg)
+            .padding(.top, Space.xl)
 
             ScrollViewReader { proxy in
                 ScrollView {
@@ -50,26 +63,27 @@ struct VoiceSessionView: View {
                             .accessibilityIdentifier("voice.mic")
                             .accessibilityLabel(speech.isListening ? "Stop listening" : "Tap to talk")
                             .sensoryFeedback(.impact, trigger: micTaps)
-                            .padding(.top, Space.lg)
+                            .padding(.top, Space.xl)
                         Text(speech.isListening ? "Listening… tap the orb to stop" : "Tap the orb to talk")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                             .animation(Motion.quick, value: speech.isListening)
                         if speech.isListening, !speech.transcript.isEmpty {
                             Text(speech.transcript)
-                                .font(AppFont.body).italic()
+                                .font(AppFont.bodyText)
                                 .foregroundStyle(Palette.textSecondary)
                                 .multilineTextAlignment(.center)
                                 .padding(.horizontal, Space.xl)
                         }
                         if !speech.isAvailable {
-                            Text("Mic unavailable, type below")
+                            Label("Mic unavailable, type below", systemImage: "mic.slash")
                                 .font(AppFont.caption)
-                                .foregroundStyle(Palette.textTertiary)
+                                .foregroundStyle(Palette.textSecondary)
                         }
                         if exchanges.isEmpty {
                             Text("Tell me what's on your mind, an idea, an angle, a question about your content. I remember what matters.")
-                                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                                .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
                                 .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .padding(.horizontal, Space.xl)
                         }
                         ForEach(exchanges) { m in
@@ -77,8 +91,8 @@ struct VoiceSessionView: View {
                         }
                         if thinking {
                             HStack(spacing: Space.sm) {
-                                ProgressView().tint(Palette.accent)
-                                Text("Yunicorn is thinking…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                ProgressView().tint(Palette.textSecondary)
+                                Text("Yunicorn is thinking…").font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                             }
                         }
                         if !lastChips.isEmpty && !thinking {
@@ -145,15 +159,16 @@ struct VoiceSessionView: View {
             HStack {
                 Spacer(minLength: 40)
                 Text(m.content)
-                    .font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, Space.md).padding(.vertical, 10)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.md).padding(.vertical, 12)
                     .background(Palette.surfaceSunken)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             }
         } else {
             VStack(alignment: .leading, spacing: Space.sm) {
                 Text(m.content)
-                    .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                    .font(AppFont.bodyLarge).foregroundStyle(Palette.textPrimary)
                     .lineSpacing(4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
@@ -171,14 +186,7 @@ struct VoiceSessionView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
                 ForEach(lastChips, id: \.self) { chip in
-                    Button { send(chip) } label: {
-                        Text(chip).font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                            .padding(.horizontal, Space.md).frame(height: 36)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
+                    DSChip(title: chip) { send(chip) }
                 }
             }
             .padding(.horizontal, Space.screenH)
@@ -209,33 +217,42 @@ struct VoiceSessionView: View {
 
     private var composer: some View {
         HStack(spacing: Space.sm) {
+            // Search-capsule field (surfaceSunken); grows to 4 lines, so the corner radius is
+            // half the single-line height rather than a true capsule.
             TextField("Say it or type it…", text: $draft, axis: .vertical)
-                .font(AppFont.bodyL)
+                .font(AppFont.bodyText)
+                .foregroundStyle(Palette.textPrimary)
+                .tint(Palette.textPrimary)
                 .lineLimit(1...4)
                 .focused($inputFocused)
-                .padding(.horizontal, Space.md).padding(.vertical, 12)
-                .background(Palette.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                .padding(.horizontal, Space.lg).padding(.vertical, 14)
+                .frame(minHeight: 52)
+                .background(Palette.surfaceSunken)
+                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
                 .accessibilityIdentifier("voice.textInput")
             Button {
                 send(draft)
             } label: {
+                // Circular ink send; disabled = sunken fill + tertiary glyph (DESIGN.md §5).
+                let empty = draft.trimmingCharacters(in: .whitespaces).isEmpty
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Palette.onInk)
-                    .frame(width: 42, height: 42)
-                    .background(draft.trimmingCharacters(in: .whitespaces).isEmpty ? Palette.textTertiary : Palette.ink)
-                    .clipShape(Circle())
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(empty ? Palette.textTertiary : Palette.onInk)
+                    .frame(width: 48, height: 48)
+                    .background(Circle().fill(empty ? Palette.surfaceSunken : Palette.ink))
+                    .contentShape(Circle())
+                    .animation(Motion.quick, value: empty)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+            .accessibilityLabel("Send")
             .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || thinking)
             .accessibilityIdentifier("voice.send")
         }
         .padding(.horizontal, Space.screenH)
-        .padding(.vertical, Space.md)
-        .background(.ultraThinMaterial)
+        .padding(.top, Space.sm)
+        .padding(.bottom, Space.md)
+        .background(Palette.canvas)
+        .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1).opacity(0.6) }
     }
 
     // MARK: Send → converse → memory + voice-notes log
@@ -305,29 +322,39 @@ struct VoiceSessionView: View {
     }
 }
 
-// MARK: - Listening rings (expanding accent pulses behind the orb while the mic is live)
-
 // MARK: - Small cards used in the session transcript
 
+/// The day plan as Journey-style timeline rows: one surface group, a row per block
+/// (time leading, action as the headline, detail as secondary copy), inset dividers.
 struct DayPlanCard: View {
     let plan: DayPlan
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            SectionLabel(text: "Your day", accent: Palette.accent)
-            ForEach(plan.blocks) { b in
-                HStack(alignment: .top, spacing: Space.md) {
-                    Text(b.time)
-                        .font(AppFont.caption).foregroundStyle(Palette.accent)
-                        .frame(width: 46, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(b.action).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
-                        Text(b.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+            SectionLabel(text: "Your day")
+                .padding(.horizontal, Space.rowPad)
+            VStack(spacing: 0) {
+                ForEach(Array(plan.blocks.enumerated()), id: \.element.id) { i, b in
+                    if i > 0 { DSRowDivider(inset: Space.rowPad + 56 + Space.md) }
+                    HStack(alignment: .firstTextBaseline, spacing: Space.md) {
+                        Text(b.time)
+                            .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
+                            .frame(width: 56, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(b.action).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Text(b.detail).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 0)
                     }
+                    .padding(.horizontal, Space.rowPad)
+                    .padding(.vertical, 14)
+                    .accessibilityElement(children: .combine)
                 }
             }
+            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
         }
-        .marqueCard(padding: Space.md)
     }
 }
 
@@ -344,10 +371,10 @@ struct VoiceScriptRow: View {
                 Spacer()
             }
             Text(script.title.isEmpty ? script.hook.text : script.title)
-                .font(Typeface.sans(22, .semibold)).foregroundStyle(Palette.textPrimary)
+                .font(AppFont.title2).tracking(-0.2).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("\u{201C}\(script.hook.text)\u{201D}")
-                .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(2)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary).lineLimit(2)
             HStack(spacing: Space.sm) {
                 Button {
                     store.readyScript(script, source: .chat)
@@ -355,20 +382,19 @@ struct VoiceScriptRow: View {
                     dismiss()
                     router.showFilm = true
                 } label: {
-                    Text("Film this").font(AppFont.callout).foregroundStyle(Palette.onInk)
-                        .padding(.horizontal, Space.md).frame(height: 32)
-                        .background(Palette.ink).clipShape(Capsule())
+                    Text("Film this")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.ds(.primary, height: 44))
                 Button {
                     store.readyScript(script, source: .chat)
                 } label: {
                     Label("Save for later", systemImage: "bookmark")
-                        .font(AppFont.callout).foregroundStyle(Palette.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.ds(.outline, height: 44))
             }
+            .padding(.top, Space.xs)
         }
-        .marqueCard(padding: Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsCard(.surface)
     }
 }
