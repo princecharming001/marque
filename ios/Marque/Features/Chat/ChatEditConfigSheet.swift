@@ -110,7 +110,6 @@ struct ChatEditConfigSheet: View {
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
-            .scrollDismissesKeyboard(.interactively)
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("edit these clips.").navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Palette.canvas, for: .navigationBar)

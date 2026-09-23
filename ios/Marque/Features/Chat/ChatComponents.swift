@@ -385,7 +385,7 @@ struct ChatVideoAnalysisCard: View {
             if !analysis.whyItWorks.isEmpty {
                 Text(analysis.whyItWorks)
                     .font(AppFont.bodyText)
-                    .foregroundStyle(Palette.textSecondary)
+                    .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let version = analysis.yourVersion {
@@ -565,6 +565,7 @@ struct ConversationsDrawer: View {
             panel
                 .padding(.top, 54)
                 .padding(.leading, Space.sm)
+                .padding(.bottom, MarqueTabBar.clearance)
         }
         .opacity(isPresented ? 1 : 0)
         .offset(x: isPresented ? 0 : -(Self.panelWidth + 28))
@@ -672,7 +673,7 @@ struct ConversationsDrawer: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, Space.sm).padding(.horizontal, Space.sm)
+        .padding(.vertical, 6).padding(.horizontal, Space.sm)
         .frame(minHeight: 48)
         .background(convo.id == chat.currentConversationId ? Palette.surfaceSunken : .clear)
         .clipShape(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous))

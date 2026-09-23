@@ -436,17 +436,17 @@ struct ChatAttachSheet: View {
                                             .scaledToFill())
                                         .overlay(alignment: .bottom) {
                                             // Legibility scrim for the title over the (full-color) thumbnail.
-                                            LinearGradient(colors: [.clear, Color.black.opacity(0.55)],
+                                            LinearGradient(colors: [.clear, Palette.night.opacity(0.55)],
                                                            startPoint: .top, endPoint: .bottom)
                                                 .frame(height: 56)
                                         }
-                                        .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+                                        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
                                     Text(c.title.isEmpty ? c.formatName : c.title)
                                         .font(AppFont.caption.weight(.semibold)).lineLimit(1)
                                         .foregroundStyle(Palette.onNight)
                                         .padding(Space.sm)
                                 }
-                                .contentShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+                                .contentShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
                             }
                             .buttonStyle(PressableStyle(dim: 0.85))
                             .accessibilityIdentifier("chat.attachClip")

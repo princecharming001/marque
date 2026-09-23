@@ -62,7 +62,6 @@ struct TweakChatSheet: View {
                     }
                     .screenPadding().padding(.vertical, Space.lg)
                 }
-                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: messages.count) { _, _ in
                     if let last = messages.last {
                         withAnimation(Motion.quick) { proxy.scrollTo(last.id, anchor: .bottom) }
