@@ -15,26 +15,28 @@ struct PerformanceView: View {
     private var aiInsights: [BackendClient.InsightItem] { store.aiInsights }
 
 
-    /// Small inline glass segmented control — the row-height replacement for the old
-    /// full-width MarqueSegmented blocks (three of which stacked on this one screen).
+    /// Filter-pill segmented control (DESIGN.md Journey header: outline pills, the selected
+    /// one inverted to ink). Row-height, so the three windows/modes never stack as blocks.
     @ViewBuilder
     static func compactToggleView(options: [String], index: Binding<Int>) -> some View {
-        HStack(spacing: 2) {
+        HStack(spacing: Space.sm) {
             ForEach(Array(options.enumerated()), id: \.offset) { i, label in
+                let active = index.wrappedValue == i
                 Button { index.wrappedValue = i } label: {
                     Text(label)
-                        .font(Typeface.sans(12, index.wrappedValue == i ? .semibold : .regular))
-                        .foregroundStyle(index.wrappedValue == i ? Palette.onInk : Palette.textSecondary)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(index.wrappedValue == i ? Palette.ink : Color.clear))
+                        .font(AppFont.supporting.weight(active ? .semibold : .regular))
+                        .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 14).frame(height: 36)
+                        .background(Capsule().fill(active ? Palette.ink : Palette.surface))
+                        .overlay(Capsule().strokeBorder(active ? .clear : Palette.hairline, lineWidth: 1))
+                        .contentShape(Capsule())
+                        .animation(Motion.quick, value: active)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(dim: 0.8))
+                .accessibilityAddTraits(active ? .isSelected : [])
             }
         }
-        .padding(2)
-        .background(LiquidGlassFill(radius: 20, sheen: 0.35, corners: false))
-        .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
     }
 
     private func compactToggle(options: [String], index: Binding<Int>) -> some View {
@@ -47,136 +49,165 @@ struct PerformanceView: View {
         return (0..<7).compactMap { cal.date(byAdding: .day, value: $0, to: start) }
     }
 
+    /// Read-only counts for the insights card's stat row (display only).
+    private var weekPostCount: Int {
+        store.schedule.filter { post in
+            week.contains { Calendar.current.isDate(post.date, inSameDayAs: $0) }
+        }.count
+    }
+    private var readyClipCount: Int { store.clips.filter { $0.status == .ready }.count }
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.lg) {
-                ScreenTitle(text: "Performance")
+            VStack(alignment: .leading, spacing: Space.xl) {
+                DSPageTitle(title: "Performance")
 
-                // MARK: Upcoming queue — one quiet label, one compact control. The old
-                // stack (accent-bar eyebrow + full-width segmented pill) was two rows of
-                // chrome before any content.
-                HStack {
-                    Text("COMING UP").font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.textTertiary)
-                    Spacer()
-                    compactToggle(options: CalMode.allCases.map(\.rawValue),
-                                  index: Binding(get: { CalMode.allCases.firstIndex(of: mode) ?? 0 },
-                                                 set: { mode = CalMode.allCases[$0] }))
-                        .accessibilityIdentifier("calendar.modeToggle")
-                }
-
-                if mode == .week {
-                    // Seven identical "Nothing scheduled" cards read as a wall of holes —
-                    // when the whole week is empty, say it once with a way in instead.
-                    if !week.contains(where: { day in
-                        store.schedule.contains { Calendar.current.isDate($0.date, inSameDayAs: day) }
-                    }) {
-                        VStack(spacing: Space.md) {
-                            VStack(spacing: Space.sm) {
-                                Text("Nothing scheduled this week")
-                                    .font(Typeface.sans(16, .semibold)).foregroundStyle(Palette.textPrimary)
-                                Text("Queue a ready clip and it shows up here with its posting time.")
-                                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, Space.xl)
-                            GhostButton(title: "Schedule a clip", systemImage: "calendar") {
-                                sheet = .schedule(day: Calendar.current.startOfDay(for: Date()), clipId: nil)
-                            }
-                            .accessibilityIdentifier("performance.addClip")
-                        }
-                    } else {
-                        VStack(spacing: Space.sm) {
-                            ForEach(Array(week.enumerated()), id: \.element) { _, day in
-                                DayRow(day: day,
-                                       posts: store.schedule
-                                        .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
-                                        .sorted { $0.date < $1.date },
-                                       hasReady: store.clips.contains { $0.status == .ready },
-                                       clipFor: { id in store.clips.first { $0.id == id } },
-                                       onAdd: { sheet = .schedule(day: day, clipId: nil) },
-                                       onTapPost: { sheet = .edit($0) },
-                                       onDuplicate: { store.duplicatePost($0) })
-                            }
-                        }
-                    }
-                } else {
-                    MonthGrid(schedule: store.schedule) { day in sheet = .schedule(day: day, clipId: nil) }
-                }
-
-                // MARK: P7.3/P7.4 — the AI coach: strategy entry + post-performance insights
-                MarqueHairline().padding(.vertical, Space.sm)
-                Text("FROM YOUR AI").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Button { showStrategy = true } label: {
-                    HStack(spacing: Space.md) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Your Strategy").font(AppFont.headline)
-                                .foregroundStyle(Palette.textPrimary)
-                            Text("What Yunicorn has learned about your content")
-                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Palette.textTertiary)
-                    }
-                    .padding(Space.md)
-                    .background(LiquidGlassFill(radius: Radius.md, sheen: 0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.55), lineWidth: 1))
-                    .shadow(color: Palette.shadowCool.opacity(0.14), radius: 18, y: 8)
-                }
-                .buttonStyle(PressableStyle(dim: 0.7))
-                .accessibilityIdentifier("performance.yourStrategy")
-
-                if !aiInsights.isEmpty {
-                    VStack(spacing: 0) {
-                        ForEach(Array(aiInsights.prefix(5).enumerated()), id: \.element.id) { i, ins in
-                            Button {
-                                router.pendingChatPrompt = ins.seedPrompt
-                                router.selectedTab = .chat
-                            } label: {
+                // MARK: Journey insights card — the strategy door + a stat row, one night
+                // card at the top of the page (DESIGN.md §6 Journey).
+                VStack(alignment: .leading, spacing: Space.stack) {
+                    Button { showStrategy = true } label: {
+                        DSHeroCard(radius: Radius.card, padding: Space.cardPad) {
+                            VStack(alignment: .leading, spacing: Space.md) {
                                 HStack(alignment: .top, spacing: Space.md) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(ins.title).font(Typeface.sans(14, .semibold))
-                                            .foregroundStyle(Palette.textPrimary)
+                                    VStack(alignment: .leading, spacing: Space.xs) {
+                                        DSEyebrow(text: "From your AI", color: Palette.onNightSecondary)
+                                        Text("your strategy.")
+                                            .font(AppFont.title2).tracking(-0.2)
+                                            .foregroundStyle(Palette.onNight)
+                                        Text("What Yunicorn has learned about your content")
+                                            .font(AppFont.supporting)
+                                            .foregroundStyle(Palette.onNight.opacity(0.8))
+                                            .fixedSize(horizontal: false, vertical: true)
                                             .multilineTextAlignment(.leading)
-                                        if !ins.description.isEmpty {
-                                            Text(ins.description).font(AppFont.caption)
-                                                .foregroundStyle(Palette.textSecondary)
-                                                .multilineTextAlignment(.leading)
-                                                .lineLimit(2)
-                                        }
                                     }
                                     Spacer(minLength: 0)
                                     Image(systemName: "chevron.right")
-                                        .font(.system(size: 11, weight: .semibold))
-                                        .foregroundStyle(Palette.textTertiary)
-                                        .padding(.top, 4)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Palette.onNight)
+                                        .padding(.top, Space.lg)
                                 }
-                                .padding(Space.md)
-                                .contentShape(Rectangle())
+                                Rectangle().fill(Color.white.opacity(0.14)).frame(height: 1)
+                                HStack(spacing: 0) {
+                                    heroStat("\(weekPostCount)", "this week")
+                                    heroStat("\(readyClipCount)", "ready clips")
+                                    heroStat("\(aiInsights.count)", "insights")
+                                }
                             }
-                            .buttonStyle(.plain)
-                            if i < min(aiInsights.count, 5) - 1 {
-                                Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .contentShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    }
+                    .buttonStyle(PressableStyle(dim: 0.9))
+                    .accessibilityIdentifier("performance.yourStrategy")
+
+                    if !aiInsights.isEmpty {
+                        DSGroup {
+                            ForEach(Array(aiInsights.prefix(5).enumerated()), id: \.element.id) { i, ins in
+                                Button {
+                                    router.pendingChatPrompt = ins.seedPrompt
+                                    router.selectedTab = .chat
+                                } label: {
+                                    HStack(alignment: .top, spacing: Space.md) {
+                                        Image(systemName: "sparkle")
+                                            .font(.system(size: 15, weight: .regular))
+                                            .foregroundStyle(Palette.textPrimary)
+                                            .frame(width: 20)
+                                            .padding(.top, 2)
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(ins.title).font(AppFont.headline)
+                                                .foregroundStyle(Palette.textPrimary)
+                                                .multilineTextAlignment(.leading)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                            if !ins.description.isEmpty {
+                                                Text(ins.description).font(AppFont.supporting)
+                                                    .foregroundStyle(Palette.textSecondary)
+                                                    .multilineTextAlignment(.leading)
+                                                    .lineLimit(2)
+                                            }
+                                        }
+                                        Spacer(minLength: 0)
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundStyle(Palette.textPrimary)
+                                            .padding(.top, 3)
+                                    }
+                                    .padding(.horizontal, Space.rowPad).padding(.vertical, 14)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(DSRowPressStyle())
+                                if i < min(aiInsights.count, 5) - 1 {
+                                    DSRowDivider(inset: Space.rowPad + 20 + Space.md)
+                                }
                             }
                         }
                     }
-                    .background(Palette.surfaceRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                        .strokeBorder(Palette.hairline, lineWidth: 1))
                 }
 
-                // MARK: 30-day insights (Phase 9 completes: platform toggle, series, best post)
-                MarqueHairline().padding(.vertical, Space.sm)
+                // MARK: Upcoming queue — eyebrow + filter pills, then dated timeline.
+                VStack(alignment: .leading, spacing: Space.md) {
+                    HStack(alignment: .center) {
+                        DSEyebrow(text: "Coming up")
+                        Spacer(minLength: Space.sm)
+                        compactToggle(options: CalMode.allCases.map(\.rawValue),
+                                      index: Binding(get: { CalMode.allCases.firstIndex(of: mode) ?? 0 },
+                                                     set: { mode = CalMode.allCases[$0] }))
+                            .accessibilityIdentifier("calendar.modeToggle")
+                    }
+
+                    if mode == .week {
+                        // Seven identical "Nothing scheduled" cards read as a wall of holes —
+                        // when the whole week is empty, say it once with a way in instead.
+                        if !week.contains(where: { day in
+                            store.schedule.contains { Calendar.current.isDate($0.date, inSameDayAs: day) }
+                        }) {
+                            VStack(spacing: Space.md) {
+                                VStack(spacing: Space.sm) {
+                                    Image(systemName: "calendar")
+                                        .font(.system(size: 22, weight: .regular))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .padding(.bottom, Space.xs)
+                                    Text("Nothing scheduled this week")
+                                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                        .multilineTextAlignment(.center)
+                                    Text("Queue a ready clip and it shows up here with its posting time.")
+                                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                        .multilineTextAlignment(.center)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(maxWidth: .infinity)
+                                GhostButton(title: "Schedule a clip", systemImage: "calendar", fullWidth: false) {
+                                    sheet = .schedule(day: Calendar.current.startOfDay(for: Date()), clipId: nil)
+                                }
+                                .accessibilityIdentifier("performance.addClip")
+                            }
+                            .padding(.vertical, Space.sm)
+                            .frame(maxWidth: .infinity)
+                            .dsCard(.outline, radius: Radius.card)
+                        } else {
+                            VStack(alignment: .leading, spacing: Space.xl) {
+                                ForEach(Array(week.enumerated()), id: \.element) { _, day in
+                                    DayRow(day: day,
+                                           posts: store.schedule
+                                            .filter { Calendar.current.isDate($0.date, inSameDayAs: day) }
+                                            .sorted { $0.date < $1.date },
+                                           hasReady: store.clips.contains { $0.status == .ready },
+                                           clipFor: { id in store.clips.first { $0.id == id } },
+                                           onAdd: { sheet = .schedule(day: day, clipId: nil) },
+                                           onTapPost: { sheet = .edit($0) },
+                                           onDuplicate: { store.duplicatePost($0) })
+                                }
+                            }
+                        }
+                    } else {
+                        MonthGrid(schedule: store.schedule) { day in sheet = .schedule(day: day, clipId: nil) }
+                    }
+                }
+
+                // MARK: 7/30/90-day metrics (Stats pattern)
                 InsightsSection()
             }
-            .screenPadding().padding(.vertical, Space.lg).padding(.bottom, 120)
+            .screenPadding().padding(.top, Space.sm).padding(.bottom, MarqueTabBar.clearance + Space.xl)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -189,6 +220,18 @@ struct PerformanceView: View {
         .onAppear { consumePendingSchedule() }
         .sheet(isPresented: $showStrategy) { StrategyView() }
         .onChange(of: router.pendingScheduleClipId) { _, _ in consumePendingSchedule() }
+    }
+
+    private func heroStat(_ value: String, _ label: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value).font(AppFont.stat).tracking(-0.3)
+                .foregroundStyle(Palette.onNight)
+                .lineLimit(1).minimumScaleFactor(0.6)
+            Text(label).font(AppFont.caption).foregroundStyle(Palette.onNightSecondary)
+                .lineLimit(1).minimumScaleFactor(0.85)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     /// Library "Schedule this clip" deep-links here — open the scheduler for today, pre-filtered to that clip.
@@ -227,21 +270,20 @@ struct InsightsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack {
-                Text("PERFORMANCE").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
+                DSEyebrow(text: "Performance")
                 Spacer()
-                if loading { ProgressView().controlSize(.small).tint(Palette.textTertiary) }
+                if loading { ProgressView().controlSize(.small).tint(Palette.textSecondary) }
             }
 
-            // One control row instead of two stacked full-width segmented pills: the
-            // time window as a compact glass toggle, the platform as a quiet dropdown.
-            HStack {
+            // Journey filter-pill row: the window as pills, the platform as a "Days ▾"-style
+            // outline dropdown pill.
+            HStack(spacing: Space.sm) {
                 PerformanceView.compactToggleView(options: ["7d", "30d", "90d"], index: $period)
                     .accessibilityIdentifier("performance.periodToggle")
                     .onChange(of: period) { _, _ in
                         Task { await store.refreshPerformance(days: periodDays[period]) }
                     }
-                Spacer()
+                Spacer(minLength: 0)
                 Menu {
                     Picker("Platform", selection: $platform) {
                         Text("All platforms").tag(0)
@@ -249,54 +291,62 @@ struct InsightsSection: View {
                         Text("TikTok").tag(2)
                     }
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: 6) {
                         Text(platform == 0 ? "All" : platform == 1 ? "Instagram" : "TikTok")
-                            .font(Typeface.sans(12, .medium)).foregroundStyle(Palette.textSecondary)
+                            .font(AppFont.supporting.weight(.semibold))
+                            .foregroundStyle(Palette.textPrimary)
+                            .lineLimit(1).minimumScaleFactor(0.85)
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundStyle(Palette.textTertiary)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Palette.textPrimary)
                     }
-                    .padding(.vertical, 6)
-                    .contentShape(Rectangle())
+                    .padding(.horizontal, 14).frame(height: 36)
+                    .background(Capsule().fill(Palette.surface))
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    .contentShape(Capsule())
                 }
                 .accessibilityIdentifier("performance.platformToggle")
             }
 
-            // Stat tiles — real numbers only. I-3: never show fabricated totals when the
-            // series is placeholder (no_data); dashes read honestly instead.
-            HStack(spacing: Space.md) {
+            // Stat tiles (Stats pattern, 2×2) — real numbers only. I-3: never show
+            // fabricated totals when the series is placeholder (no_data).
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.sm),
+                                GridItem(.flexible(), spacing: Space.sm)], spacing: Space.sm) {
                 statTile(hasRealData ? compactNumber(views(summary!)) : "", "Views")
                 statTile(hasRealData ? compactNumber(likes(summary!)) : "", "Likes")
                 statTile(hasRealData ? "+\(follows(summary!))" : "", "Follows")
+                statTile("\(periodDays[period])", "Days")
             }
 
             // I-3: interactive, dated graph — only for real data (a fabricated series is as
             // dishonest as fabricated tiles).
             if let s = summary, hasRealData, platform == 0, s.daily.contains(where: { $0.views > 0 }) {
                 InteractiveSparkline(points: s.daily, windowDays: s.days)
-                    .padding(.vertical, Space.xs)
+                    .dsCard(.surface, radius: Radius.tile, padding: Space.md)
             }
 
             if loaded, !hasRealData {
                 // Honest, quiet note — not a locked feature.
                 Text("No posts in this window yet. Publish a clip and your views, likes, and follows show up here.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.xs)
             }
 
             // Coaching read-out (only when the loop has something real to say).
             if hasRealData, !store.coaching.isEmpty {
-                MarqueHairline().padding(.vertical, Space.xs)
                 VStack(alignment: .leading, spacing: Space.sm) {
                     HStack {
-                        Text("YOUR COACH").font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(Palette.textTertiary)
+                        DSEyebrow(text: "Your coach")
                         Spacer()
                     }
                     Text(store.coaching)
-                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                         .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .dsCard(.surface, radius: Radius.group)
+                .padding(.top, Space.sm)
             }
         }
         .task {
@@ -332,18 +382,6 @@ struct InsightsSection: View {
     }
 
     private func statTile(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            // Sans, not the serif display face — numbers are data, not headlines
-            // (owner: "uses the fancy font way too much").
-            Text(value).font(Typeface.sans(22, .semibold)).foregroundStyle(Palette.textPrimary)
-            Text(label.uppercased()).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Space.md)
-        .background(LiquidGlassFill(radius: Radius.md, sheen: 0.45))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.55), lineWidth: 1))
-        .shadow(color: Palette.shadowCool.opacity(0.12), radius: 14, y: 6)
+        DSStatTile(value: value, label: label)
     }
 }

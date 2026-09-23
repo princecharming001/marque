@@ -38,9 +38,9 @@ struct MonthGrid: View {
 
     var body: some View {
         VStack(spacing: Space.sm) {
-            HStack {
-                ForEach(["S","M","T","W","T","F","S"], id: \.self) { d in
-                    Text(d).font(AppFont.micro).foregroundStyle(Palette.textTertiary).frame(maxWidth: .infinity)
+            HStack(spacing: 6) {
+                ForEach(Array(["S","M","T","W","T","F","S"].enumerated()), id: \.offset) { _, d in
+                    Text(d).font(AppFont.caption).foregroundStyle(Palette.textSecondary).frame(maxWidth: .infinity)
                 }
             }
             LazyVGrid(columns: cols, spacing: 6) {
@@ -48,23 +48,30 @@ struct MonthGrid: View {
                     let cal = Calendar.current
                     let inMonth = cal.isDate(day, equalTo: Date(), toGranularity: .month)
                     let count = schedule.filter { cal.isDate($0.date, inSameDayAs: day) }.count
+                    let today = cal.isDateInToday(day)
                     Button { onPickDay(day) } label: {
+                        // Styled like a week-strip cell (DESIGN.md §5 Headers): number, a
+                        // monochrome post dot, today outlined with Radius.cell.
                         VStack(spacing: 3) {
                             Text("\(cal.component(.day, from: day))")
-                                .font(AppFont.caption)
+                                .font(AppFont.bodyText.weight(today ? .bold : .regular))
                                 .foregroundStyle(inMonth ? Palette.textPrimary : Palette.textTertiary)
-                            Circle().fill(count > 0 ? Palette.accent : Color.clear).frame(width: 5, height: 5)
+                                .lineLimit(1).minimumScaleFactor(0.7)
+                            Circle().fill(count > 0 ? (inMonth ? Palette.textPrimary : Palette.textTertiary) : Color.clear)
+                                .frame(width: 5, height: 5)
                         }
-                        .frame(maxWidth: .infinity).frame(height: 40)
-                        .background(cal.isDateInToday(day) ? Palette.surfaceRaised : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                        .frame(maxWidth: .infinity).frame(height: 44)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.cell, style: .continuous)
+                                .strokeBorder(today ? Palette.textPrimary.opacity(0.35) : .clear, lineWidth: 1.5))
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .opacity(inMonth ? 1 : 0.4)
+                    .buttonStyle(PressableStyle(dim: 0.6))
+                    .accessibilityLabel("\(day.formatted(.dateTime.month(.wide).day()))\(count > 0 ? ", \(count) scheduled" : "")")
                 }
             }
         }
-        .marqueCard(padding: Space.md)
+        .dsCard(.surface, radius: Radius.card, padding: Space.md)
     }
 }
 
@@ -83,60 +90,64 @@ struct DayRow: View {
     private var hasContent: Bool { !posts.isEmpty }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: Space.sm) {
-                HStack(spacing: Space.sm) {
-                    // Sans, not the serif display face — a weekday label is wayfinding,
-                    // not a headline (build 66 de-vibe pass).
-                    Text(day.formatted(.dateTime.weekday(.wide)))
-                        .font(Typeface.sans(15, .semibold))
-                        .foregroundStyle(Palette.textPrimary)
-                    if isToday {
-                        Text("TODAY").font(.system(size: 9, weight: .bold)).tracking(0.6)
-                            .foregroundStyle(Palette.onInk)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Palette.ink).clipShape(Capsule())
-                            .accessibilityHidden(true)
-                    }
-                    Spacer()
-                    Text(day.formatted(.dateTime.month().day()))
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+        // Journey date header (title2) above a grouped card of timeline rows.
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                Text(day.formatted(.dateTime.weekday(.wide)))
+                    .font(AppFont.title2).tracking(-0.2)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                if isToday {
+                    DSEyebrow(text: "Today", color: Palette.textPrimary)
+                        .accessibilityHidden(true)
                 }
-                if posts.isEmpty {
-                    Button(action: onAdd) {
-                        HStack {
-                            Image(systemName: "plus.circle").foregroundStyle(Palette.accent)
-                            Text(hasReady ? "Schedule a clip" : "Nothing scheduled")
-                                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                            Spacer()
-                            if hasReady {
-                                Text("best ~6 PM").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-                            }
+                Spacer(minLength: Space.sm)
+                Text(day.formatted(.dateTime.month().day()))
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            }
+            .padding(.horizontal, Space.xs)
+            if posts.isEmpty {
+                Button(action: onAdd) {
+                    HStack(spacing: Space.md) {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundStyle(hasReady ? Palette.textPrimary : Palette.textTertiary)
+                        Text(hasReady ? "Schedule a clip" : "Nothing scheduled")
+                            .font(AppFont.bodyText)
+                            .foregroundStyle(hasReady ? Palette.textPrimary : Palette.textSecondary)
+                        Spacer(minLength: Space.sm)
+                        if hasReady {
+                            Text("best ~6 PM").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         }
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain).disabled(!hasReady)
-                    .accessibilityIdentifier("calendar.addClip")
-                } else {
-                    ForEach(posts) { p in
+                    .padding(.horizontal, Space.rowPad)
+                    .frame(minHeight: 52)
+                    .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                        .fill(hasReady ? Palette.surface : Color.clear))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                        .strokeBorder(hasReady ? .clear : Palette.hairline, lineWidth: 1))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle(dim: 0.7))
+                .disabled(!hasReady)
+                .accessibilityIdentifier("calendar.addClip")
+            } else {
+                DSGroup {
+                    ForEach(Array(posts.enumerated()), id: \.element.id) { i, p in
                         Button { onTapPost(p) } label: { PostRow(post: p, clip: clipFor(p.clipId)) }
-                            .buttonStyle(.plain)
+                            .buttonStyle(DSRowPressStyle())
                             .accessibilityIdentifier("calendar.post")
                             .contextMenu {
                                 Button { onTapPost(p) } label: { Label("Edit", systemImage: "pencil") }
                                 Button { onDuplicate(p) } label: { Label("Duplicate to next day", systemImage: "plus.square.on.square") }
                             }
+                        if i < posts.count - 1 { DSRowDivider(inset: Space.rowPad + 44 + Space.md) }
                     }
                     // Build 68: "Add another" removed — queueing more clips happens
                     // from the Library (select → Post), not from the day row.
                 }
             }
-            .padding(Space.md)
         }
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 }
 
@@ -144,34 +155,40 @@ struct PostRow: View {
     let post: ScheduledPost
     let clip: Clip?
     var body: some View {
-        HStack(spacing: Space.sm) {
+        // Journey timeline row: status as the eyebrow, caption as the title, time +
+        // platform glyphs as the meta line; thumbnail (the only color) leading.
+        let s = postStatus(post)
+        HStack(alignment: .center, spacing: Space.md) {
             LocalThumbnail(path: clip.flatMap { $0.thumbnailPath ?? $0.localVideoPath }, isVideo: true)
-                .frame(width: 40, height: 54)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(post.caption).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                .frame(width: 44, height: 60)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous))
+            VStack(alignment: .leading, spacing: 3) {
+                // C-03: the status tells the TRUTH about what happened — never "Posted" for
+                // a local save. Meaning rides on the glyph + wording, not on color.
+                HStack(spacing: 5) {
+                    Image(systemName: s.icon).font(.system(size: 11, weight: .semibold))
+                    Text(s.label.uppercased()).font(AppFont.eyebrow).tracking(1.2)
+                        .lineLimit(1).minimumScaleFactor(0.75)
+                }
+                .foregroundStyle(s.color)
+                Text(post.caption).font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(1)
                 HStack(spacing: 6) {
                     Text(post.date.formatted(.dateTime.hour().minute()))
                         .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                    ForEach(post.platforms) { Image(systemName: icon($0)).font(.system(size: 11)).foregroundStyle(Palette.textTertiary) }
+                    ForEach(post.platforms) { Image(systemName: icon($0)).font(.system(size: 12)).foregroundStyle(Palette.textSecondary) }
                     if post.autoCaptions {
-                        Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
+                        Image(systemName: "captions.bubble").font(.system(size: 12)).foregroundStyle(Palette.textSecondary)
                     }
                 }
             }
-            Spacer()
-            // C-03: the badge tells the TRUTH about what happened — never "Posted" for a
-            // local save. Only a real upstream post is green.
-            let s = postStatus(post)
-            Text(s.label)
-                .font(.system(size: 9, weight: .bold)).tracking(0.4)
-                .foregroundStyle(s.color)
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(s.color.opacity(0.12))
-                .clipShape(Capsule())
-            Image(systemName: s.icon)
-                .font(.system(size: 13)).foregroundStyle(s.color)
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Palette.textPrimary)
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, Space.rowPad).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
     private func icon(_ p: SocialPlatform) -> String { p == .instagram ? "camera.circle" : "music.note" }
 
@@ -182,7 +199,7 @@ struct PostRow: View {
         case .savedLocalNoAccounts:     return ("Saved, connect account", "link.circle", Palette.textSecondary)
         case .failed:                   return ("Failed", "exclamationmark.circle", Palette.critical)
         case nil:                       return (p.posted ? "Posted" : "Scheduled",
-                                                p.posted ? "checkmark.circle.fill" : "chevron.right",
+                                                p.posted ? "checkmark.circle.fill" : "clock",
                                                 p.posted ? Palette.positive : Palette.textSecondary)
         }
     }
@@ -224,88 +241,111 @@ struct SchedulePickerSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    SectionLabel(text: "Time", accent: Palette.accent)
-                    Text("Evenings (around 6 PM) tend to land best for most niches.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                    MarqueTimePicker(time: $time)
-
-                    SectionLabel(text: "Platforms")
-                    HStack(spacing: Space.sm) {
-                        ForEach(SocialPlatform.allCases) { p in
-                            Button { toggle(p) } label: { Chip(text: p.label, selected: platforms.contains(p)) }
-                                .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    // Time — native-style picker inside a surface card (Rows + pickers).
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "Time").padding(.horizontal, Space.rowPad)
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            MarqueTimePicker(time: $time)
+                            Text("Evenings (around 6 PM) tend to land best for most niches.")
+                                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                     }
 
-                    if !hasPostableAccount {
-                        // Be honest up front: with nothing connected, "scheduling" only saves
-                        // a reminder locally — it can't reach Instagram or TikTok.
-                        Button { showConnect = true } label: {
-                            HStack(spacing: Space.sm) {
-                                Image(systemName: "link").font(.system(size: 13, weight: .semibold))
-                                Text("Connect an account to actually post, otherwise this just saves to your calendar.")
-                                    .font(AppFont.caption).multilineTextAlignment(.leading)
-                                Spacer(minLength: 0)
-                                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold))
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "Platforms").padding(.horizontal, Space.rowPad)
+                        HStack(spacing: Space.sm) {
+                            ForEach(SocialPlatform.allCases) { p in
+                                DSChip(title: p.label, isSelected: platforms.contains(p)) { toggle(p) }
                             }
-                            .foregroundStyle(Palette.textSecondary)
-                            .padding(Space.md)
-                            .background(Palette.warning.opacity(0.12))
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("schedule.connectBanner")
+
+                        if !hasPostableAccount {
+                            // Be honest up front: with nothing connected, "scheduling" only saves
+                            // a reminder locally — it can't reach Instagram or TikTok.
+                            Button { showConnect = true } label: {
+                                HStack(alignment: .top, spacing: Space.md) {
+                                    Image(systemName: "exclamationmark.circle")
+                                        .font(.system(size: 17, weight: .regular))
+                                    Text("Connect an account to actually post, otherwise this just saves to your calendar.")
+                                        .font(AppFont.supporting).multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                                        .padding(.top, 2)
+                                }
+                                .foregroundStyle(Palette.textPrimary)
+                                .padding(Space.rowPad)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                    .fill(Palette.surfaceSunken))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(PressableStyle(dim: 0.7))
+                            .accessibilityIdentifier("schedule.connectBanner")
+                            .padding(.top, Space.xs)
+                        }
                     }
 
-                    MarqueToggleRow(title: "Auto-captions",
+                    DSGroup {
+                        DSToggleRow(title: "Auto-captions",
                                     subtitle: "Burn captions onto the clip before posting",
                                     isOn: $autoCaptions)
-
-                    SectionLabel(text: "Pick a clip")
-                    // I-6: schedule a video you didn't film on Yunicorn.
-                    if preselectClipId == nil {
-                        PhotosPicker(selection: $importPick, matching: .videos) {
-                            HStack(spacing: Space.sm) {
-                                if importing { ProgressView().tint(Palette.textSecondary) }
-                                else { Image(systemName: "plus").font(.system(size: 13, weight: .medium)) }
-                                Text(importing ? "Importing…" : "Import a video").font(AppFont.callout)
-                            }
-                            .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 46)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                .strokeBorder(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-                        }
-                        .accessibilityIdentifier("schedule.importClip")
-                        .onChange(of: importPick) { _, item in
-                            guard let item else { return }
-                            importing = true
-                            Task {
-                                if let data = try? await item.loadTransferable(type: Data.self) {
-                                    await store.importExternalClip(data: data, title: "Imported clip")
-                                }
-                                importPick = nil; importing = false
-                            }
-                        }
+                            .padding(.vertical, Space.xs)
                     }
-                    if ready.isEmpty {
-                        EmptyStateView(icon: "rectangle.stack", title: "No ready clips",
-                                       message: "Render a clip, or import a video above.")
-                    } else {
-                        ForEach(ready) { c in
-                            Button { schedule(c) } label: { ClipCell(clip: c) }
-                                .buttonStyle(.plain)
-                                .accessibilityIdentifier("schedule.pickClip")
+
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "Pick a clip").padding(.horizontal, Space.rowPad)
+                        // I-6: schedule a video you didn't film on Yunicorn.
+                        if preselectClipId == nil {
+                            PhotosPicker(selection: $importPick, matching: .videos) {
+                                HStack(spacing: Space.sm) {
+                                    if importing { ProgressView().tint(Palette.textSecondary) }
+                                    else { Image(systemName: "plus").font(.system(size: 15, weight: .medium)) }
+                                    Text(importing ? "Importing…" : "Import a video").font(AppFont.headline)
+                                }
+                                .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 52)
+                                .background(Capsule().fill(Palette.surface))
+                                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                                .contentShape(Capsule())
+                            }
+                            .accessibilityIdentifier("schedule.importClip")
+                            .onChange(of: importPick) { _, item in
+                                guard let item else { return }
+                                importing = true
+                                Task {
+                                    if let data = try? await item.loadTransferable(type: Data.self) {
+                                        await store.importExternalClip(data: data, title: "Imported clip")
+                                    }
+                                    importPick = nil; importing = false
+                                }
+                            }
+                        }
+                        if ready.isEmpty {
+                            EmptyStateView(icon: "rectangle.stack", title: "No ready clips",
+                                           message: "Render a clip, or import a video above.")
+                        } else {
+                            VStack(spacing: Space.stack) {
+                                ForEach(ready) { c in
+                                    Button { schedule(c) } label: { ClipCell(clip: c) }
+                                        .buttonStyle(.plain)
+                                        .accessibilityIdentifier("schedule.pickClip")
+                                }
+                            }
                         }
                     }
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.lg).padding(.bottom, Space.xxl)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle(day.formatted(.dateTime.weekday().month().day()))
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() }.fontWeight(.semibold) } }
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
+            .tint(Palette.ink)
             .sheet(isPresented: $showConnect) { ConnectAccountsView() }
             .alert("No account connected", isPresented: Binding(
                 get: { pendingClip != nil }, set: { if !$0 { pendingClip = nil } })) {
@@ -367,64 +407,86 @@ struct PostEditorSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
+                VStack(alignment: .leading, spacing: Space.xl) {
                     if let clip {
                         LocalVideoPlayer(path: clip.localVideoPath, remoteURL: clip.remoteURL)
                             .frame(height: 280)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                            .frame(maxWidth: .infinity)
+                            .background(Palette.night)
+                            .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
                     }
-                    SectionLabel(text: "Caption", accent: Palette.accent)
-                    TextField("Caption", text: $caption, axis: .vertical)
-                        .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                        .lineLimit(2...5)
-                        .padding(Space.md)
-                        .background(Palette.surfaceRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .strokeBorder(Palette.hairline, lineWidth: 1))
 
-                    SectionLabel(text: "When")
-                    MarqueTimePicker(time: $time, includeDate: true)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "Caption").padding(.horizontal, Space.rowPad)
+                        TextField("Caption", text: $caption, axis: .vertical)
+                            .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                            .lineLimit(2...5)
+                            .padding(Space.rowPad)
+                            .frame(minHeight: 52, alignment: .topLeading)
+                            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .fill(Palette.surface))
+                    }
 
-                    SectionLabel(text: "Platforms")
-                    HStack(spacing: Space.sm) {
-                        ForEach(SocialPlatform.allCases) { p in
-                            Button { toggle(p) } label: { Chip(text: p.label, selected: platforms.contains(p)) }
-                                .buttonStyle(.plain)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "When").padding(.horizontal, Space.rowPad)
+                        MarqueTimePicker(time: $time, includeDate: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
+                    }
+
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "Platforms").padding(.horizontal, Space.rowPad)
+                        HStack(spacing: Space.sm) {
+                            ForEach(SocialPlatform.allCases) { p in
+                                DSChip(title: p.label, isSelected: platforms.contains(p)) { toggle(p) }
+                            }
                         }
                     }
 
-                    MarqueToggleRow(title: "Auto-captions", isOn: $autoCaptions)
+                    DSGroup {
+                        DSToggleRow(title: "Auto-captions", isOn: $autoCaptions)
+                    }
 
                     // Build 68: results are never hand-typed — the backend polls the
                     // connected Instagram/TikTok account and metrics flow in on their own.
                     if let m = post.metrics {
-                        HStack(spacing: Space.sm) {
-                            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.positive)
+                        HStack(alignment: .top, spacing: Space.sm) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 15, weight: .regular))
+                                .foregroundStyle(Palette.positive)
                             Text("\(compactNumber(m.views)) views · \(compactNumber(m.likes)) likes, synced from your account")
-                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                            Spacer()
+                                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: 0)
                         }
-                        .padding(.vertical, Space.xs)
+                        .padding(.horizontal, Space.xs)
                     } else if post.outcome == .posted {
                         Text("Results sync automatically from your connected account once views come in.")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, Space.xs)
                     }
 
+                    // Destructive = black text + trash glyph + confirm dialog (no red).
                     Button(role: .destructive) { showRemoveConfirm = true } label: {
-                        Text("Remove from schedule").font(AppFont.callout).foregroundStyle(Palette.critical)
+                        HStack(spacing: Space.sm) {
+                            Image(systemName: "trash").font(.system(size: 15, weight: .regular))
+                            Text("Remove from schedule").font(AppFont.bodyText)
+                        }
+                        .foregroundStyle(Palette.critical)
+                        .frame(maxWidth: .infinity)
                     }
-                    .padding(.top, Space.sm)
+                    .buttonStyle(.dsLink)
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.lg).padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Edit post").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("edit post.").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() }.fontWeight(.semibold) }
             }
+            .tint(Palette.ink)
             .marqueConfirm($showRemoveConfirm, title: "Remove this post from your schedule?",
                            confirm: "Remove", destructive: true) { store.deleteScheduledPost(post); dismiss() }
             .safeAreaInset(edge: .bottom) {
@@ -434,33 +496,27 @@ struct PostEditorSheet: View {
                         let p = current
                         Task { await store.postNow(p); posting = false; dismiss() }
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
+                    .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.sm)
+                    .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
                 } else if store.canPublish {
                     // Subscribed but nothing to post TO — don't offer a "Post now" that
                     // silently does nothing. Send them to connect an account instead.
                     Button { showConnect = true } label: {
                         Label("Connect an account to post", systemImage: "link")
-                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            .frame(maxWidth: .infinity).padding(Space.md)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
+                    .buttonStyle(DSCapsuleStyle(kind: .outline, fullWidth: true))
+                    .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.sm)
+                    .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
                     .accessibilityIdentifier("post.connectToPost")
                     .sheet(isPresented: $showConnect) { ConnectAccountsView() }
                 } else {
                     // C-07: the real subscription gate (StoreKit2), not the dead PaywallView.
                     Button { showSubscribe = true } label: {
                         Label("Upgrade to publish", systemImage: "lock.fill")
-                            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                            .frame(maxWidth: .infinity).padding(Space.md)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
+                    .buttonStyle(DSCapsuleStyle(kind: .outline, fullWidth: true))
+                    .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.sm)
+                    .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
                     // Wall 2 of the dual-paywall shape: the free tier ends exactly here,
                     // where the user has already made something worth posting. Same
                     // PaymentScreen as the onboarding soft wall, sheet-dismissible.
