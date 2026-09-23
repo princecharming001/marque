@@ -1149,25 +1149,26 @@ struct MediaSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             VStack(alignment: .leading, spacing: Space.xs) {
-                SectionLabel(text: "Your media", accent: Palette.accent)
+                SectionLabel(text: "Your media")
                 Text("Your photos and videos. The editor pulls from these for B-roll.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            // A hairline ghost, not a hero button — importing reference media is a
-            // secondary action; the big ink slab overpowered the whole section.
+            // Stoic primary capsule, content-sized and centered (not a full-width slab).
             PhotosPicker(selection: $picked, maxSelectionCount: 40, matching: .any(of: [.images, .videos])) {
                 HStack(spacing: Space.sm) {
-                    if importing { ProgressView().tint(Palette.textSecondary) }
-                    else { Image(systemName: "plus").font(.system(size: 13, weight: .medium)) }
-                    Text(importing ? "Importing…" : "Import media").font(AppFont.callout)
+                    if importing { ProgressView().tint(Palette.onInk) }
+                    else { Image(systemName: "plus").font(.system(size: 15, weight: .semibold)) }
+                    Text(importing ? "Importing…" : "Import media").font(AppFont.headline)
                 }
-                .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 48)
-                .background(Palette.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                .foregroundStyle(Palette.onInk)
+                .padding(.horizontal, Space.xl).frame(height: 48)
+                .background(Capsule().fill(Palette.ink))
+                .contentShape(Capsule())
             }
+            .buttonStyle(PressableStyle())
+            .frame(maxWidth: .infinity)
             .accessibilityIdentifier("library.importMedia")
             .onChange(of: picked) { _, items in
                 guard !items.isEmpty else { return }
@@ -1183,7 +1184,7 @@ struct MediaSection: View {
                                message: "Import a batch above to build your reference library.")
             } else {
                 Text("\(store.media.count) item\(store.media.count == 1 ? "" : "s") in your media library")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 LazyVGrid(columns: cols, spacing: Space.sm) {
                     ForEach(store.media) { m in
                         Button { edit = m } label: { mediaCell(m) }
@@ -1200,35 +1201,49 @@ struct MediaSection: View {
     private func mediaCell(_ m: MediaAsset) -> some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
-            .overlay(LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo).scaledToFill())
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo,
+                                    cornerRadius: Radius.tile).scaledToFill())
+            .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
             .overlay(alignment: .bottomLeading) { kindChip(m) }
             .overlay(alignment: .topTrailing) { analysisBadge(m) }
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .overlay(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 0.5))
             .accessibilityIdentifier("library.mediaCell")
     }
 
+    /// Kind label as a tracked eyebrow on a dark scrim capsule (sits over the photo).
     private func kindChip(_ m: MediaAsset) -> some View {
-        Text(m.kind.label).font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.white).padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Palette.ink.opacity(0.6)).clipShape(Capsule()).padding(4)
+        Text(m.kind.label.uppercased()).font(AppFont.eyebrow).tracking(0.8)
+            .lineLimit(1).minimumScaleFactor(0.7)
+            .foregroundStyle(Palette.onNight)
+            .padding(.horizontal, 7).frame(height: 20)
+            .background(Capsule().fill(Color.black.opacity(0.55)))
+            .padding(6)
     }
 
-    /// I-5: analysis-state badge — ✓ analyzed, spinner while running, ! on failure, nothing yet.
+    /// I-5: analysis-state badge — ✓ analyzed, spinner while running, ! on failure, nothing
+    /// yet. Monochrome over the photo: done = dark disc + white check; failed = INVERTED
+    /// (white disc + black "!") so it stands apart without a red.
     @ViewBuilder private func analysisBadge(_ m: MediaAsset) -> some View {
         switch (store.media.first { $0.id == m.id }?.analysisStatus ?? m.analysisStatus) {
         case .done:
-            Image(systemName: "checkmark").font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white).frame(width: 16, height: 16)
-                .background(Circle().fill(Palette.ink)).padding(4)
+            Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Palette.onNight).frame(width: 20, height: 20)
+                .background(Circle().fill(Color.black.opacity(0.6)))
+                .padding(6)
+                .accessibilityLabel("Analyzed")
         case .analyzing:
-            ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
-                .background(Circle().fill(Palette.ink.opacity(0.5))).padding(4)
+            ProgressView().tint(Palette.onNight).scaleEffect(0.6).frame(width: 20, height: 20)
+                .background(Circle().fill(Color.black.opacity(0.5)))
+                .padding(6)
+                .accessibilityLabel("Analyzing")
         case .failed:
-            Image(systemName: "exclamationmark").font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white).frame(width: 16, height: 16)
-                .background(Circle().fill(Palette.critical)).padding(4)
+            Image(systemName: "exclamationmark").font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.black).frame(width: 20, height: 20)
+                .background(Circle().fill(Palette.onNight))
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.25), lineWidth: 0.5))
+                .padding(6)
+                .accessibilityLabel("Analysis failed")
         case .none:
             EmptyView()
         }
