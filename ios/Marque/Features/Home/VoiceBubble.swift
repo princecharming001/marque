@@ -1,6 +1,9 @@
 import SwiftUI
 
-// The Home centerpiece — the Yunicorn voice orb you tap to talk to Yuni.
+// The Home centerpiece — the Yunicorn voice orb you tap to talk to Yuni. Drawn as the
+// screen's one hero card (DESIGN.md §5): a near-black card that stays dark in both
+// schemes, the orb as a white drop centered on it, the caption in onNightSecondary.
+// The whole card is the tap target.
 struct VoiceBubble: View {
     let onTap: () -> Void
     @State private var taps = 0
@@ -11,15 +14,18 @@ struct VoiceBubble: View {
             taps += 1
             onTap()
         } label: {
-            VStack(spacing: Space.sm) {
-                VoiceOrb(mode: .idle, size: 124)
-                    .scaleEffect(isPressed ? 0.96 : 1)
-                Text("Tap to talk")
-                    .font(Typeface.body(13, .medium))
-                    .foregroundStyle(Palette.textTertiary)
+            DSHeroCard(padding: Space.xl) {
+                VStack(spacing: Space.md) {
+                    VoiceOrb(mode: .idle, size: 128, onDark: true)
+                        .scaleEffect(isPressed ? 0.96 : 1)
+                    Text("Tap to talk")
+                        .font(AppFont.supporting)
+                        .foregroundStyle(Palette.onNightSecondary)
+                }
+                .padding(.vertical, Space.md)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
+            .contentShape(RoundedRectangle(cornerRadius: Radius.hero, style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("home.voiceBubble")
@@ -29,6 +35,6 @@ struct VoiceBubble: View {
                 .onChanged { _ in isPressed = true }
                 .onEnded { _ in isPressed = false }
         )
-        .animation(.spring(response: 0.28, dampingFraction: 0.6), value: isPressed)
+        .animation(Motion.quick, value: isPressed)
     }
 }
