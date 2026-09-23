@@ -1286,72 +1286,79 @@ struct ProEditorView: View {
             // .accessibilityElement(children: .contain) on this panel's outer VStack
             // below for the actual root-cause explanation.
             HStack {
-                Text("Add media").font(AppFont.headline).foregroundStyle(.white)
+                Text("add media.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Button { withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false } } label: {
-                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("editorPro.mediaPanel.cancel")
             }
-            .padding(.horizontal, Space.lg).padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.leading, Space.screenH + Space.xs).padding(.trailing, Space.xs)
+            .padding(.top, Space.md).padding(.bottom, Space.sm)
 
-            VStack(spacing: Space.sm) {
+            VStack(spacing: Space.stack) {
+              // Stoic grouped list: three glyph rows in one surface card.
+              DSGroup {
                 PhotosPicker(selection: $mediaPickerItem, matching: .any(of: [.images, .videos])) {
                     mediaRow("Photo or video", "photo.on.rectangle.angled",
                              "Drop your own shot over the cut")
                 }
+                .buttonStyle(DSRowPressStyle())
                 .accessibilityIdentifier("editorPro.media.photo")
+                DSRowDivider(inset: Space.rowPad + 24 + Space.md)
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
                     editDraft = ""; showStockInput = true
                 } label: {
                     mediaRow("Stock clip", "film.stack", "Describe it, we find the footage")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DSRowPressStyle())
                 .accessibilityIdentifier("editorPro.media.stock")
+                DSRowDivider(inset: Space.rowPad + 24 + Space.md)
                 Button {
                     withAnimation(.easeOut(duration: 0.15)) { showMediaPanel = false }
                     showMusicSheet = true
                 } label: {
                     mediaRow("Music", "music.note", "A track under the whole cut")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(DSRowPressStyle())
                 .accessibilityIdentifier("editorPro.media.music")
+              }
                 if uploadingMedia {
                     HStack(spacing: Space.sm) {
-                        ProgressView().tint(Palette.accent)
-                        Text("Adding your media…").font(AppFont.caption).foregroundStyle(.white.opacity(0.7))
+                        ProgressView().tint(Palette.textPrimary)
+                        Text("Adding your media…").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     }
-                    .padding(.top, Space.sm)
                 }
             }
-            .padding(.horizontal, Space.lg)
+            .padding(.horizontal, Space.screenH)
             Spacer(minLength: 0)
         }
         .frame(height: 300, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.mediaPanel")
     }
 
     private func mediaRow(_ title: String, _ icon: String, _ subtitle: String) -> some View {
         HStack(spacing: Space.md) {
-            Image(systemName: icon).font(.system(size: 18)).foregroundStyle(Palette.accent)
-                .frame(width: 34)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(AppFont.headline).foregroundStyle(.white)
-                Text(subtitle).font(AppFont.caption).foregroundStyle(.white.opacity(0.55))
+            Image(systemName: icon).font(.system(size: 18, weight: .regular)).foregroundStyle(Palette.textPrimary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .lineLimit(1).minimumScaleFactor(0.85)
             }
-            Spacer()
-            Image(systemName: "chevron.right").font(.system(size: 12)).foregroundStyle(.white.opacity(0.4))
+            Spacer(minLength: Space.sm)
+            Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Palette.textPrimary)
         }
-        .padding(.horizontal, Space.md).padding(.vertical, 10)
-        .background(Color.white.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .padding(.horizontal, Space.rowPad).padding(.vertical, 10)
+        .frame(minHeight: 60)
         .contentShape(Rectangle())
     }
 
