@@ -100,14 +100,12 @@ struct PipelineTimeline: View {
             }
             if showLine && !compact {
                 // Eyebrow phase names, one per dash (DESIGN.md eyebrow: 12 semibold, +2.4).
-                HStack(spacing: 8) {
-                    ForEach(PipelinePhase.allCases, id: \.rawValue) { phase in
-                        Text(phase.label.uppercased())
-                            .font(AppFont.eyebrow).tracking(Track.eyebrow)
-                            .foregroundStyle(phaseLabelColor(phase))
-                            .lineLimit(1).minimumScaleFactor(0.6)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                // Sized together: the first variant that fits wins, so all four labels
+                // always share one font size and tracking (no per-label scaling).
+                ViewThatFits(in: .horizontal) {
+                    phaseLabelsRow(font: AppFont.eyebrow, tracking: Track.eyebrow)
+                    phaseLabelsRow(font: AppFont.micro, tracking: Track.label)
+                    phaseLabelsRow(font: AppFont.micro, tracking: 0)
                 }
                 .accessibilityHidden(true)
             }
@@ -119,7 +117,7 @@ struct PipelineTimeline: View {
                         .foregroundStyle(Palette.textPrimary)
                         .opacity(progress.isFailed ? 1 : (pulse ? 1 : 0.5))
                     Text(progress.isFailed ? "Interrupted. Tap to retry." : progress.active.activeLine)
-                        .font(compact ? AppFont.caption : AppFont.supporting)
+                        .font(compact ? AppFont.caption : AppFont.bodyText)
                         .foregroundStyle(progress.isFailed ? Palette.textPrimary : Palette.textSecondary)
                         .lineLimit(1).minimumScaleFactor(0.85)
                 }
@@ -128,6 +126,21 @@ struct PipelineTimeline: View {
         .onAppear {
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) { pulse = true }
             withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { shimmer = true }
+        }
+    }
+
+    /// One row of eyebrow phase names, one per dash. Each label keeps its natural width
+    /// (fixedSize) so ViewThatFits can pick a single size for the whole row.
+    private func phaseLabelsRow(font: Font, tracking: CGFloat) -> some View {
+        HStack(spacing: 8) {
+            ForEach(PipelinePhase.allCases, id: \.rawValue) { phase in
+                Text(phase.label.uppercased())
+                    .font(font).tracking(tracking)
+                    .foregroundStyle(phaseLabelColor(phase))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

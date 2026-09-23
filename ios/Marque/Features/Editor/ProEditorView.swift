@@ -285,6 +285,7 @@ struct ProEditorView: View {
                     .accessibilityIdentifier("editorPro.save")
             }
         }
+        .flatStoicPill()
     }
 
     /// True when the save will re-render server-side. MUST mirror save()'s defer rule
@@ -403,7 +404,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.canvas)
+            .frame(height: 52).rootPanelCard()
         case .text:
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.md) {
@@ -417,7 +418,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.canvas)
+            .frame(height: 52).rootPanelCard()
         case .captions:
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.md) {
@@ -440,7 +441,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.canvas)
+            .frame(height: 52).rootPanelCard()
             if captionsOn {
                 captionStyleRow      // 10 popular styles
                 if showCaptionCustomize { captionOptionsRow }
@@ -465,7 +466,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.canvas)
+            .frame(height: 52).rootPanelCard()
         case .filters:
             // Build 69 "Look" model: the three color systems get NAMES instead of
             // disclosure layers — Filter (preset cards + intensity), Adjust (manual
@@ -1223,18 +1224,34 @@ struct ProEditorView: View {
             } else {
                 Image(systemName: "film").font(.system(size: 48)).foregroundStyle(Palette.onNight.opacity(0.3))
             }
-            // Stoic circular controls over media (translucent white on the video).
+            // Circular controls over media: a dark scrim disc keeps the white glyph readable
+            // on bright footage (media-surface exception to the palette rule).
             VStack {
                 HStack {
                     Spacer()
-                    DSCircleButton(systemName: "xmark", kind: .onNight, size: 44) { player?.pause(); showFullscreen = false }
+                    Button { player?.pause(); showFullscreen = false } label: {
+                        Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Palette.onNight)
+                            .frame(width: 44, height: 44)
+                            .background(Circle().fill(Color.black.opacity(0.4)))
+                            .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                     .padding(Space.md)
                     .accessibilityLabel("Close")
                     .accessibilityIdentifier("editorPro.fullscreen.close")
                 }
                 Spacer()
-                DSCircleButton(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill",
-                               kind: .onNight, size: 56) { player?.togglePlay() }
+                Button { player?.togglePlay() } label: {
+                    Image(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill")
+                        .font(.system(size: 22)).foregroundStyle(Palette.onNight)
+                        .frame(width: 56, height: 56)
+                        .background(Circle().fill(Color.black.opacity(0.4)))
+                        .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
                 .padding(.bottom, Space.xl)
                 .accessibilityLabel((player?.isPlaying ?? false) ? "Pause" : "Play")
             }
@@ -2620,5 +2637,31 @@ private struct BarTileLabel: View {
             Circle().fill(Palette.textPrimary).frame(width: 4, height: 4).opacity(dot ? 1 : 0)
         }
         .animation(Motion.quick, value: active)
+    }
+}
+
+/// iOS 26 wraps toolbar items in a Liquid Glass capsule; the Save/Render pill is already a
+/// DS capsule, so hide the shared glass background to keep it a flat Stoic pill.
+private extension ToolbarContent {
+    @ToolbarContentBuilder func flatStoicPill() -> some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            self.sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
+    }
+}
+
+/// SCREEN-MAP ProEditorView: root panels sit in a surface radiusGroup card, inset from the
+/// canvas. Height is untouched (the caller's .frame(height:) keeps timelineHeight math).
+private extension View {
+    func rootPanelCard() -> some View {
+        self
+            .background(Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
+            .padding(.horizontal, Space.sm)
+            .background(Palette.canvas)
     }
 }

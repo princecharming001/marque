@@ -991,7 +991,7 @@ extension ProEditorView {
         HStack(spacing: Space.sm) {
             Image(systemName: "info.circle").font(.system(size: 13, weight: .regular)).foregroundStyle(Palette.textPrimary)
             Text(t).font(AppFont.caption).foregroundStyle(Palette.textPrimary)
-                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }.padding(.horizontal, Space.screenH).padding(.vertical, 6).background(Palette.surfaceSunken)
     }
@@ -1028,17 +1028,16 @@ extension ProEditorView {
                             // dialog floats above and the row updates in place on commit.
                             beginPhraseEdit(p)
                         } label: {
+                            // Stoic row: phrase leading, timecode trailing (caption tone).
                             HStack(alignment: .firstTextBaseline, spacing: Space.md) {
-                                Text(timecode(forPhrase: p))
-                                    .font(AppFont.caption.monospacedDigit())
-                                    .foregroundStyle(Palette.textSecondary)
-                                    .frame(width: 44, alignment: .leading)
                                 Text(p.text)
                                     .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                                     .multilineTextAlignment(.leading)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 13, weight: .regular)).foregroundStyle(Palette.textSecondary)
+                                Text(timecode(forPhrase: p))
+                                    .font(AppFont.caption.monospacedDigit())
+                                    .foregroundStyle(Palette.textSecondary)
+                                    .fixedSize()
                             }
                             .padding(.horizontal, Space.rowPad).padding(.vertical, 14)
                             .frame(minHeight: 52)
@@ -1046,7 +1045,7 @@ extension ProEditorView {
                         }
                         .buttonStyle(DSRowPressStyle())
                         .accessibilityIdentifier("editorPro.captionRow.\(p.startFrame)")
-                        if p.id != phrases.last?.id { DSRowDivider(inset: Space.rowPad + 44 + Space.md) }
+                        if p.id != phrases.last?.id { DSRowDivider(inset: Space.rowPad) }
                     }
                 }
                 .padding(.horizontal, Space.screenH)
@@ -1150,7 +1149,6 @@ extension ProEditorView {
                                     }
                                     Text(t.blurb).font(AppFont.caption)
                                         .foregroundStyle(on ? Palette.onInk.opacity(0.8) : Palette.textSecondary)
-                                        .lineLimit(3)
                                         .fixedSize(horizontal: false, vertical: true)
                                     Spacer(minLength: 0)
                                 }
