@@ -1,12 +1,12 @@
 import SwiftUI
 
-// The payment-plan screen, ported from maxapp's PaymentScreen.tsx structure
-// beat-for-beat: full-bleed hero art with a slow Ken Burns drift under a 4-stop
-// scrim, a pulsing dot ring, a serif headline with one italic word, a PREMIUM
-// pill, a glass feature checklist that absorbs the leftover height, ONE price
-// card, a solid white CTA pill, a reassurance line, and a Terms/Privacy footer.
-// Restore lives top-right because App Review Guideline 3.1.1 requires a working
-// restore control on any screen that sells a subscription.
+// The payment-plan screen, in the Stoic paywall layout (DESIGN.md §6): canvas page,
+// Yunicorn's line mark in the badge slot, a lowercase title, ONE selected plan tile
+// inside a surface container (we sell one product, so no fake plan grid), the feature
+// list as grouped rows, and a sticky footer (summary, the billed-amount CTA, the
+// free-tier escape, Terms/Privacy). Restore lives in the top bar because App Review
+// Guideline 3.1.1 requires a working restore control on any screen that sells a
+// subscription, and it must stay visible without scrolling on iPhone SE.
 //
 // PRICING HIERARCHY IS A REVIEW REQUIREMENT, not a taste call. App Review rejected
 // 1.0 (build 82) under 3.1.2(c): the old layout made "Free" the 19pt hero of a
@@ -33,17 +33,18 @@ struct PaymentScreen: View {
 
     @State private var busy = false
     @State private var restoring = false
+    // Kept from the retired cinematic hero (Ken Burns / dot pulse); nothing reads them now.
     @State private var bgScale: CGFloat = 1.0
     @State private var bgOffset: CGFloat = 0
     @State private var dotPhase: Double = 0
 
-    private struct Feature { let title: String; let sub: String }
+    private struct Feature { let title: String; let sub: String; var glyph: String = "checkmark" }
     private let features: [Feature] = [
-        .init(title: "Unlimited edits", sub: "Every take, cut and captioned by the AI editor"),
-        .init(title: "Your voice, learned", sub: "Scripts that sound like you, not like a template"),
-        .init(title: "Daily post ideas", sub: "Fresh angles from what's working in your niche"),
-        .init(title: "Auto-posting", sub: "Straight to Instagram and TikTok on your schedule"),
-        .init(title: "No watermark", sub: "Your clips ship clean"),
+        .init(title: "Unlimited edits", sub: "Every take, cut and captioned by the AI editor", glyph: "scissors"),
+        .init(title: "Your voice, learned", sub: "Scripts that sound like you, not like a template", glyph: "waveform"),
+        .init(title: "Daily post ideas", sub: "Fresh angles from what's working in your niche", glyph: "lightbulb"),
+        .init(title: "Auto-posting", sub: "Straight to Instagram and TikTok on your schedule", glyph: "paperplane"),
+        .init(title: "No watermark", sub: "Your clips ship clean", glyph: "checkmark.seal"),
     ]
 
     /// Localized price straight from StoreKit when products are loaded; the fallback
@@ -81,160 +82,47 @@ struct PaymentScreen: View {
     }
 
     var body: some View {
-        ZStack {
-            Palette.night.ignoresSafeArea()
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 0) {
+                // Badge line (Stoic's laurel slot) holds Yunicorn's own line mark.
+                GateMonoMark(size: 48)
+                    .padding(.top, Space.sm)
 
-            // Hero art with a slow Ken Burns drift (maxapp: scale 1→1.07 over 9s,
-            // x 0→9pt over 12s, both auto-reversing). MUST be geometry-bound and
-            // clipped: an unclipped scaledToFill sizes the whole ZStack to the
-            // image's intrinsic width, which shoved every sibling off both edges.
-            GeometryReader { geo in
-                // PaywallDust, not UnicornHero: the unicorn is a centered product
-                // shot on a flat white field, so the scrim had nothing to bite on
-                // and the body copy sat on a washed-out glare. A full-bleed
-                // portrait plate survives a scrim.
-                Image("PaywallDust")
-                    .resizable().scaledToFill()
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .scaleEffect(bgScale)
-                    .offset(x: bgOffset)
-                    .clipped()
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            LinearGradient(stops: [
-                .init(color: Palette.night.opacity(0.86), location: 0),
-                .init(color: Palette.night.opacity(0.30), location: 0.32),
-                .init(color: Palette.night.opacity(0.40), location: 0.60),
-                .init(color: Palette.night.opacity(0.94), location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            VStack(spacing: 8) {
-                pulseDotRing
-                    .padding(.bottom, 6)
-
-                (Text("Unlock your ") + Text("everything").italic())
-                    .font(Typeface.display(32, .semibold))
-                    .tracking(-0.8)
-                    .foregroundStyle(.white)
+                Text("unlock your everything.")
+                    .font(AppFont.title1).tracking(-0.3)
+                    .foregroundStyle(Palette.textPrimary)
                     .multilineTextAlignment(.center)
-
-                Text("PREMIUM")
-                    .font(Typeface.sans(11, .semibold)).tracking(1.4)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 14).padding(.vertical, 5)
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.14), lineWidth: 1))
+                    .lineLimit(2).minimumScaleFactor(0.8)
+                    .padding(.top, Space.stack)
+                    .accessibilityAddTraits(.isHeader)
 
                 Text(personalLine)
-                    .font(Typeface.sans(13, .medium)).tracking(0.1)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .font(AppFont.supporting)
+                    .foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 8)
-                    .padding(.bottom, 14)
+                    .padding(.top, Space.sm)
                     .accessibilityIdentifier("payment.personalLine")
 
-                featureCard
-
+                // One product, one selected tile: no fake plan options.
                 priceCard
+                    .padding(Space.sm)
+                    .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                        .fill(Palette.surface))
+                    .padding(.top, Space.lg)
 
-                Button { Task { await subscribe() } } label: {
-                    Group {
-                        if busy { ProgressView().tint(Palette.night) }
-                        else { Text(ctaLabel).font(Typeface.sans(16, .semibold)).tracking(0.1) }
-                    }
-                    .foregroundStyle(Palette.night)
-                    .frame(maxWidth: .infinity).frame(height: 56)
-                    .background(Capsule().fill(.white))
-                }
-                .buttonStyle(.plain)
-                .disabled(busy)
-                .opacity(busy ? 0.5 : 1)
-                .shadow(color: .black.opacity(0.30), radius: 16, y: 6)
-                .padding(.top, 4)
-                .accessibilityIdentifier("payment.cta")
-
-                // Terms live in the price card directly above; keep this to one line so the
-                // Restore control and the free-tier escape stay on-screen on iPhone.
-                Text("Cancel anytime")
-                    .font(Typeface.sans(13, .medium)).tracking(0.1)
-                    .foregroundStyle(.white.opacity(0.58))
-                    .padding(.top, 2)
-
-                // A failed/unavailable purchase must say so — silently staying on
-                // the wall reads as a frozen app.
-                if !store.subscription.lastError.isEmpty {
-                    Text(store.subscription.lastError)
-                        .font(Typeface.sans(13, .medium))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .multilineTextAlignment(.center)
-                        .padding(.top, 6)
-                        .accessibilityIdentifier("payment.error")
-                }
-
-                HStack(spacing: 14) {
-                    Link("Terms of Service", destination: LegalURLs.terms)
-                    Link("Privacy Policy", destination: LegalURLs.privacy)
-                }
-                .font(Typeface.sans(11, .regular))
-                .foregroundStyle(.white.opacity(0.42))
-                .underline()
-
-                // The soft-wall escape: quiet, below the fold of attention, but real.
-                // Free tier = scripts/recording/editing with the watermark; the hard
-                // re-ask happens at publish/export where sunk cost is highest.
-                if let onContinueFree {
-                    Button {
-                        store.backend.reportClientEvent("paywall_action", detail: "continue_free")
-                        onContinueFree()
-                    } label: {
-                        Text("Continue with the watermark for now")
-                            .font(Typeface.sans(13, .medium)).tracking(0.1)
-                            .foregroundStyle(.white.opacity(0.58))
-                            .underline()
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 8)
-                    .accessibilityIdentifier("payment.continueFree")
-                }
+                featureCard
+                    .padding(.top, Space.sectionGap)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 72).padding(.bottom, 36)
-
-            // Top bar: close (only when dismissible) · Restore (always — 3.1.1).
-            VStack {
-                HStack {
-                    if dismissible {
-                        Button { dismiss() } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 32, height: 32)
-                                .background(Circle().fill(.white.opacity(0.12)))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("payment.close")
-                    } else {
-                        Spacer().frame(width: 32, height: 32)
-                    }
-                    Spacer()
-                    Button { Task { await restore() } } label: {
-                        Text(restoring ? "Restoring…" : "Restore")
-                            .font(Typeface.sans(13.5, .medium))
-                            .foregroundStyle(.white.opacity(0.58))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(busy || restoring)
-                    .accessibilityIdentifier("payment.restore")
-                }
-                .padding(.horizontal, 20)
-                Spacer()
-            }
-            .padding(.top, 8)
+            .padding(.horizontal, Space.screenH)
+            .padding(.bottom, Space.xl)
         }
+        .background(Palette.canvas.ignoresSafeArea())
+        // Top bar: Restore (always — 3.1.1) · close (only when dismissible).
+        .safeAreaInset(edge: .top, spacing: 0) { topBar }
+        // Sticky footer: summary, the billed-amount CTA, the free-tier escape and the legal
+        // links, so every one of them is on screen without scrolling (iPhone SE included).
+        .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .task {
             await store.subscription.load()
             // FUNNEL: paywall impression — the denominator for every conversion rate.
@@ -248,78 +136,146 @@ struct PaymentScreen: View {
 
     // MARK: pieces
 
-    /// Six dots chasing around a 13pt-radius ring (maxapp's PulseDotRing).
-    private var pulseDotRing: some View {
-        TimelineView(.animation) { ctx in
-            let t = ctx.date.timeIntervalSinceReferenceDate / 1.8
-            ZStack {
-                ForEach(0..<6, id: \.self) { i in
-                    let angle = Double(i) / 6 * 2 * .pi
-                    let phase = t * 2 * .pi + Double(i) * (.pi / 3)
-                    Circle().fill(.white)
-                        .frame(width: 5, height: 5)
-                        .opacity(0.28 + 0.72 * ((sin(phase) + 1) / 2))
-                        .offset(x: cos(angle) * 13, y: sin(angle) * 13)
-                }
+    private var topBar: some View {
+        HStack {
+            Button { Task { await restore() } } label: {
+                Text(restoring ? "Restoring…" : "Restore")
             }
-            .frame(width: 30, height: 30)
+            .buttonStyle(DSTextLinkStyle(color: Palette.textPrimary))
+            .disabled(busy || restoring)
+            .padding(.leading, Space.screenH)
+            .accessibilityIdentifier("payment.restore")
+
+            Spacer()
+
+            if dismissible {
+                DSIconButton(systemName: "xmark") { dismiss() }
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("payment.close")
+                    .padding(.trailing, Space.xs)
+            }
         }
+        .frame(height: 44)
+        .background(Palette.canvas)
+    }
+
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Palette.hairline).frame(height: 1)
+            VStack(spacing: Space.sm) {
+                VStack(spacing: 2) {
+                    Text("Yunicorn Pro · \(price)/month")
+                        .font(AppFont.bodyText)
+                        .foregroundStyle(Palette.textPrimary)
+                    // Terms live in the price tile above; keep this to one line so the
+                    // free-tier escape stays on-screen on iPhone SE.
+                    Text("Cancel anytime")
+                        .font(AppFont.supporting)
+                        .foregroundStyle(Palette.textSecondary)
+                }
+                .multilineTextAlignment(.center)
+                .lineLimit(1).minimumScaleFactor(0.85)
+
+                // A failed/unavailable purchase must say so — silently staying on
+                // the wall reads as a frozen app.
+                if !store.subscription.lastError.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.circle")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(store.subscription.lastError)
+                            .font(AppFont.caption)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .foregroundStyle(Palette.textPrimary)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("payment.error")
+                }
+
+                Button { Task { await subscribe() } } label: {
+                    if busy { ProgressView().tint(Palette.textPrimary) }
+                    else { Text(ctaLabel) }
+                }
+                .buttonStyle(DSCapsuleStyle(kind: .primary))
+                .disabled(busy)
+                .accessibilityIdentifier("payment.cta")
+
+                // The soft-wall escape: quiet, but real. Free tier = scripts/recording/
+                // editing with the watermark; the hard re-ask happens at publish/export
+                // where sunk cost is highest.
+                if let onContinueFree {
+                    Button {
+                        store.backend.reportClientEvent("paywall_action", detail: "continue_free")
+                        onContinueFree()
+                    } label: {
+                        Text("Continue with the watermark for now")
+                    }
+                    .buttonStyle(.dsGhost)
+                    .accessibilityIdentifier("payment.continueFree")
+                }
+
+                HStack(spacing: Space.lg) {
+                    Link("Terms of Service", destination: LegalURLs.terms)
+                    Link("Privacy Policy", destination: LegalURLs.privacy)
+                }
+                .font(AppFont.caption)
+                .foregroundStyle(Palette.textSecondary)
+                .frame(minHeight: 28)
+            }
+            .padding(.horizontal, Space.screenH)
+            .padding(.top, Space.stack)
+            .padding(.bottom, Space.sm)
+        }
+        .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
     }
 
     private var featureCard: some View {
-        VStack(spacing: 0) {
+        DSSection(eyebrow: "What you get") {
             ForEach(Array(features.enumerated()), id: \.offset) { i, f in
-                if i > 0 { Rectangle().fill(.white.opacity(0.08)).frame(height: 0.5) }
-                HStack(spacing: 16) {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                        .overlay(Circle().strokeBorder(.white.opacity(0.14), lineWidth: 1))
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(f.title).font(Typeface.sans(14.5, .semibold)).tracking(-0.1)
-                            .foregroundStyle(.white)
-                        Text(f.sub).font(Typeface.sans(12, .regular))
-                            .foregroundStyle(.white.opacity(0.58))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .frame(maxHeight: .infinity)
-                .padding(.vertical, 4)
+                if i > 0 { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
+                DSRow(title: f.title, subtitle: f.sub, systemImage: f.glyph, showsChevron: false)
+                    .padding(.vertical, 6)
             }
         }
-        .padding(.horizontal, 18).padding(.vertical, 6)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(LiquidGlassFill(radius: 22, sheen: 0.7))
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .strokeBorder(.white.opacity(0.24), lineWidth: 1))
-        .shadow(color: .black.opacity(0.36), radius: 26, y: 14)
     }
 
-    /// The one pricing surface. The monthly amount is the largest text on the whole
-    /// screen after the headline; the trial is a single subordinate line beneath it.
+    /// The one pricing surface: the selected (and only) plan tile. The monthly amount is
+    /// the largest pricing text on the screen; the trial is a single subordinate line.
     private var priceCard: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(spacing: Space.xs) {
+            Text("YUNICORN PRO")
+                .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                .foregroundStyle(Palette.onInk.opacity(0.72))
             HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(price).font(Typeface.sans(30, .semibold)).tracking(-0.8)
-                    .foregroundStyle(.white)
-                Text("/ month").font(Typeface.sans(15, .medium)).tracking(0.1)
-                    .foregroundStyle(.white.opacity(0.72))
+                Text(price).font(AppFont.pageTitle).tracking(-0.5)
+                    .foregroundStyle(Palette.onInk)
+                Text("/ month").font(AppFont.headline)
+                    .foregroundStyle(Palette.onInk.opacity(0.8))
             }
+            .lineLimit(1).minimumScaleFactor(0.7)
+            .accessibilityElement(children: .combine)
             .accessibilityIdentifier("payment.price")
             Text("Billed \(price) monthly after a 7-day free trial. Cancel anytime.")
-                .font(Typeface.sans(12.5, .regular))
-                .foregroundStyle(.white.opacity(0.58))
+                .font(AppFont.caption)
+                .foregroundStyle(Palette.onInk.opacity(0.75))
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .fill(.white.opacity(0.09)))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .strokeBorder(.white.opacity(0.55), lineWidth: 1))
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Space.cardPad).padding(.vertical, Space.cardPad)
+        .background(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+            .fill(Palette.ink))
+        .overlay(alignment: .topTrailing) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Palette.ink)
+                .frame(width: 22, height: 22)
+                .background(Circle().fill(Palette.onInk))
+                .padding(Space.stack)
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isSelected)
         .accessibilityIdentifier("payment.plan.selected")
     }
 
@@ -352,5 +308,27 @@ struct PaymentScreen: View {
         await store.subscription.restore()
         restoring = false
         if store.subscription.isSubscribed, dismissible { dismiss() }
+    }
+}
+
+/// Yunicorn's line-drawn unicorn mark, monochrome in both schemes. The asset is black
+/// line art on an opaque white square, so it is turned into an alpha mask (invert, then
+/// luminance -> alpha) and filled with textPrimary: black lines on light, white on dark,
+/// never a white tile.
+struct GateMonoMark: View {
+    var size: CGFloat = 48
+    var body: some View {
+        Palette.textPrimary
+            .frame(width: size, height: size)
+            .mask(
+                // The line art fills ~45% of its square canvas: scale it up and clip so
+                // `size` is roughly the visible drawing.
+                Image("YunicornMark").resizable().scaledToFit()
+                    .scaleEffect(1.8)
+                    .frame(width: size, height: size)
+                    .clipped()
+                    .colorInvert()
+                    .luminanceToAlpha())
+            .accessibilityHidden(true)
     }
 }
