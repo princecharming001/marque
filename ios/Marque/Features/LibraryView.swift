@@ -1639,7 +1639,13 @@ struct BulkScheduleSheet: View {
                     .font(AppFont.headline).tint(Palette.textPrimary)
                 }
             }
-            .sheet(isPresented: $showConnect) { ConnectAccountsView() }
+            .sheet(isPresented: $showConnect) {
+                ConnectAccountsView()
+                    .padding(Space.screenH)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .presentationBackground(Palette.canvas)
+                    .presentationDragIndicator(.visible)
+            }
             .sheet(isPresented: $showUpgrade) { PaymentScreen(dismissible: true) }
         }
     }

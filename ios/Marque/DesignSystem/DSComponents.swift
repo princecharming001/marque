@@ -47,7 +47,7 @@ private struct DSCapsuleBody: View {
     }
 
     private var fill: Color {
-        guard isEnabled else { return Palette.surfaceSunken }
+        guard isEnabled else { return kind == .inverse ? Palette.onNight.opacity(0.55) : Palette.surfaceSunken }
         switch kind {
         case .primary: return Palette.ink
         case .outline: return Palette.surface
@@ -56,7 +56,7 @@ private struct DSCapsuleBody: View {
         }
     }
     private var foreground: Color {
-        guard isEnabled else { return Palette.textTertiary }
+        guard isEnabled else { return kind == .inverse ? Color(hex: 0x0A0A0A).opacity(0.7) : Palette.textTertiary }
         switch kind {
         case .primary: return Palette.onInk
         case .outline: return Palette.textPrimary

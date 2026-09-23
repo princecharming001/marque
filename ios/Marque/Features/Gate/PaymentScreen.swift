@@ -19,9 +19,9 @@ import SwiftUI
 // both paths bought the SAME product and StoreKit applies the intro offer purely
 // by eligibility, so "start today" was a choice that didn't exist.
 //
-// Yunicorn differences from maxapp, all deliberate: our own hero art + copy, our
-// font stack (Fraunces is shared; maxapp's Matter isn't bundled here), and the
-// purchase/restore calls go through StoreKitBilling instead of react-native-iap.
+// Yunicorn differences from maxapp, all deliberate: our own copy and mascot mark, the
+// black-and-white Matter system from DESIGN.md, and purchase/restore calls go through
+// StoreKitBilling instead of react-native-iap.
 struct PaymentScreen: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss

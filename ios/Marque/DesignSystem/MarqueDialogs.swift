@@ -33,12 +33,12 @@ struct MarqueDialogCard: View {
                 .onTapGesture { if actions.contains(where: { $0.kind == .cancel }) { dismiss() } }
             VStack(alignment: .leading, spacing: Space.md) {
                 Text(title)
-                    .font(Typeface.sans(22, .semibold)).tracking(Track.title)
+                    .font(AppFont.title2).tracking(Track.tight)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let message {
                     Text(message)
-                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                         .lineSpacing(3).fixedSize(horizontal: false, vertical: true)
                 }
                 if let content { content }
@@ -59,8 +59,8 @@ struct MarqueDialogCard: View {
             .padding(Space.xl)
             .frame(maxWidth: 340)
             .background(Palette.surface)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 1))
             .shadow(color: .black.opacity(0.08), radius: 24, x: 0, y: 8)
             .padding(Space.xl)
@@ -73,16 +73,16 @@ struct MarqueDialogCard: View {
         case .primary:
             Text(a.label).font(AppFont.headline).foregroundStyle(Palette.onInk)
                 .frame(maxWidth: .infinity).frame(height: 50)
-                .background(Palette.ink).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .background(Palette.ink).clipShape(Capsule())
         case .destructive:
             Text(a.label).font(AppFont.headline).foregroundStyle(Palette.onInk)
                 .frame(maxWidth: .infinity).frame(height: 50)
-                .background(Palette.critical).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                .background(Palette.critical).clipShape(Capsule())
         case .cancel:
             Text(a.label).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                 .frame(maxWidth: .infinity).frame(height: 50)
-                .background(Palette.surfaceRaised).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                .background(Palette.surfaceRaised).clipShape(Capsule())
+                .overlay(Capsule()
                     .strokeBorder(Palette.hairline, lineWidth: 1))
         }
     }
@@ -156,7 +156,7 @@ struct MarqueToggle: View {
     /// Off-state track color. Defaults suit a light surface; pass a lighter value on dark backgrounds.
     var offTrack: Color = Palette.textTertiary.opacity(0.35)
     var body: some View {
-        Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) { isOn.toggle() } } label: {
+        Button { withAnimation(Motion.quick) { isOn.toggle() } } label: {
             Capsule()
                 .fill(isOn ? Palette.ink : offTrack)
                 .frame(width: 46, height: 28)
@@ -179,7 +179,7 @@ struct MarqueToggleRow: View {
     var body: some View {
         HStack(spacing: Space.md) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                Text(title).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                 if let subtitle {
                     Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

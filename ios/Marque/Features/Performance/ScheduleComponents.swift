@@ -346,7 +346,13 @@ struct SchedulePickerSheet: View {
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() }.fontWeight(.semibold) } }
             .toolbarBackground(Palette.canvas, for: .navigationBar)
             .tint(Palette.ink)
-            .sheet(isPresented: $showConnect) { ConnectAccountsView() }
+            .sheet(isPresented: $showConnect) {
+                ConnectAccountsView()
+                    .padding(Space.screenH)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .presentationBackground(Palette.canvas)
+                    .presentationDragIndicator(.visible)
+            }
             .alert("No account connected", isPresented: Binding(
                 get: { pendingClip != nil }, set: { if !$0 { pendingClip = nil } })) {
                 Button("Connect") { pendingClip = nil; showConnect = true }
@@ -508,7 +514,13 @@ struct PostEditorSheet: View {
                     .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.sm)
                     .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
                     .accessibilityIdentifier("post.connectToPost")
-                    .sheet(isPresented: $showConnect) { ConnectAccountsView() }
+                    .sheet(isPresented: $showConnect) {
+                ConnectAccountsView()
+                    .padding(Space.screenH)
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .presentationBackground(Palette.canvas)
+                    .presentationDragIndicator(.visible)
+            }
                 } else {
                     // C-07: the real subscription gate (StoreKit2), not the dead PaywallView.
                     Button { showSubscribe = true } label: {
