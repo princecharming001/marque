@@ -1148,24 +1148,31 @@ extension ProEditorView {
         let secs = Double(picked.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
         return VStack(spacing: 0) {
             HStack {
-                Text("Restore").font(AppFont.headline).foregroundStyle(.white)
+                Text("restore.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Button { withAnimation(.easeOut(duration: 0.15)) { showRestore = false } } label: {
-                    Text("Done").font(AppFont.headline).foregroundStyle(Palette.accent)
+                    Text("Done").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityIdentifier("editorPro.restore.done")
             }
-            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.leading, Space.screenH + Space.xs).padding(.trailing, Space.xs)
+            .padding(.top, Space.md).padding(.bottom, Space.sm)
 
             if drops.isEmpty {
                 Spacer()
-                Text("Nothing was cut, the whole take is on the timeline.")
-                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
-                    .multilineTextAlignment(.center).padding(Space.xl)
+                VStack(spacing: Space.sm) {
+                    Image(systemName: "film").font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(Palette.textSecondary)
+                    Text("Nothing was cut, the whole take is on the timeline.")
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Space.xl)
                 Spacer()
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    DSGroup {
                         ForEach(drops, id: \.srcIn) { d in
                             let on = restoreSelected.contains(d.srcIn)
                             let dur = Double(d.srcOut - d.srcIn) / 30.0
@@ -1174,38 +1181,41 @@ extension ProEditorView {
                                 else { restoreSelected.insert(d.srcIn) }
                             } label: {
                                 HStack(spacing: Space.md) {
-                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
-                                    VStack(alignment: .leading, spacing: 1) {
+                                    Image(systemName: "scissors")
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
                                         Text(String(format: "%.1fs, %@", dur, restoreReasonLabel(d.reason)))
-                                            .font(AppFont.callout).foregroundStyle(.white)
+                                            .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                                         Text(String(format: "at %d:%02d in your take",
                                                     d.srcIn / 1800, (d.srcIn / 30) % 60))
-                                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                                     }
-                                    Spacer()
-                                    Image(systemName: "scissors")
-                                        .foregroundStyle(.white.opacity(0.3))
+                                    Spacer(minLength: Space.sm)
+                                    DSCheckmark(isOn: on)
                                 }
-                                .padding(.horizontal, Space.lg).padding(.vertical, 10).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5).padding(.leading, Space.lg)
+                                .padding(.horizontal, Space.rowPad).padding(.vertical, 10)
+                                .frame(minHeight: 52).contentShape(Rectangle())
+                            }.buttonStyle(DSRowPressStyle())
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            if d.srcIn != drops.last?.srcIn { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
                         }
-                    }.padding(.vertical, Space.sm)
+                    }
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.vertical, Space.sm)
                 }
                 Button { applyRestore(picked) } label: {
                     Text(picked.isEmpty ? "Select a cut to bring back"
                                         : String(format: "Restore %d · %.1fs", picked.count, secs))
-                        .font(AppFont.headline).foregroundStyle(Palette.night)
-                        .frame(maxWidth: .infinity).frame(height: 48)
-                        .background(picked.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
-                }.buttonStyle(.plain).disabled(picked.isEmpty).padding(Space.md)
+                }.buttonStyle(.ds(.primary, height: 48)).disabled(picked.isEmpty)
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .accessibilityIdentifier("editorPro.restore.apply")
             }
         }
         .frame(height: 340, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
         // Same accessibility-flattening contract as cleanupPanel — without an explicit
         // container element, this id would clobber every descendant's identifier.
         .accessibilityElement(children: .contain)
