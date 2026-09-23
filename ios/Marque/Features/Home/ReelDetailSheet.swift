@@ -30,8 +30,8 @@ struct ReelDetailSheet: View {
         VStack(spacing: 0) {
             header
                 .padding(.horizontal, Space.screenH)
-                .padding(.top, Space.lg)
-                .padding(.bottom, Space.md)
+                .padding(.top, Space.xl)
+                .padding(.bottom, Space.lg)
 
             ScrollView {
                 Group {
@@ -61,15 +61,15 @@ struct ReelDetailSheet: View {
     private var platformGlyph: String { reel.platform == "instagram" ? "camera.fill" : "music.note" }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: Space.md) {
-            VStack(alignment: .leading, spacing: 3) {
+        ZStack(alignment: .top) {
+            VStack(spacing: Space.xs) {
+                Text(platformLabel.uppercased())
+                    .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .foregroundStyle(Palette.textSecondary)
                 Text("@\(reel.creatorHandle)")
-                    .font(AppFont.title).foregroundStyle(Palette.textPrimary)
-                    .lineLimit(1)
+                    .font(AppFont.title1).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
                 HStack(spacing: Space.md) {
-                    Text(platformLabel.uppercased())
-                        .font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.textTertiary)
                     HStack(spacing: 3) {
                         Image(systemName: "eye").font(.system(size: 10))
                         Text(compactNumber(reel.views)).font(AppFont.caption)
@@ -81,15 +81,21 @@ struct ReelDetailSheet: View {
                 }
                 .foregroundStyle(Palette.textSecondary)
             }
-            Spacer()
-            Button { dismiss() } label: {
-                Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(Palette.textSecondary)
-                    .frame(width: 30, height: 30)
-                    .background(Palette.surfaceSunken).clipShape(Circle())
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 44)
+            HStack {
+                Spacer()
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark").font(.system(size: 20, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle(dim: 0.6))
+                .accessibilityLabel("Close")
+                .accessibilityIdentifier("reel.close")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("reel.close")
+            .padding(.trailing, -Space.md + Space.xs)
         }
     }
 
@@ -112,36 +118,31 @@ struct ReelDetailSheet: View {
 
     @ViewBuilder private var performance: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            SectionLabel(text: "Performance", accent: Palette.accent)
+            SectionLabel(text: "Performance")
             // The headline metric creators optimize: engagement rate (likes+comments per view).
-            HStack(spacing: Space.md) {
+            HStack(spacing: Space.groupGap) {
                 statTile(String(format: "%.1f%%", engagementRate * 100), "engagement", strong: true)
                 statTile(compactNumber(reel.views), "views")
                 if reel.followerCount > 0 { statTile(compactNumber(reel.followerCount), "followers") }
             }
-            HStack(spacing: Space.md) {
+            HStack(spacing: Space.groupGap) {
                 statTile(compactNumber(reel.likes), "likes")
                 if reel.comments > 0 { statTile(compactNumber(reel.comments), "comments") }
                 if reel.durationS > 0 { statTile("\(reel.durationS)s", "length") }
             }
             if let ago = postedAgo {
-                Text("Posted \(ago)").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                Text("Posted \(ago)").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             }
             Text("Watch-time/retention isn't public for other creators' posts, engagement rate is the honest proxy.")
-                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
 
+    /// Stoic stat tile (sunken, big number, sentence-case label); engagement leads by
+    /// position, not color.
     private func statTile(_ value: String, _ label: String, strong: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(strong ? AppFont.title : AppFont.headline)
-                .foregroundStyle(strong ? Palette.accent : Palette.textPrimary)
-            Text(label).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Space.sm)
-        .background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+        DSStatTile(value: value, label: label.prefix(1).uppercased() + label.dropFirst())
     }
 
     // MARK: Detail — media + why it's working + structure
@@ -154,9 +155,9 @@ struct ReelDetailSheet: View {
 
             if !reel.whyTrending.isEmpty {
                 VStack(alignment: .leading, spacing: Space.sm) {
-                    SectionLabel(text: "Why it's working", accent: Palette.accent)
+                    SectionLabel(text: "Why it's working")
                     Text(reel.whyTrending)
-                        .font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                         .lineSpacing(4)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -168,7 +169,7 @@ struct ReelDetailSheet: View {
                     // spoken words — otherwise it's the post caption.
                     SectionLabel(text: reel.transcribed ? "Transcript" : "Caption", accent: nil)
                     Text(reel.transcript)
-                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
                         .lineSpacing(5)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -191,9 +192,7 @@ struct ReelDetailSheet: View {
                                 })
                 .aspectRatio(videoAspect ?? 9.0 / 16.0, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
         } else if !reel.thumbnailURL.isEmpty && !thumbFailed, let url = URL(string: reel.thumbnailURL) {
             // No playable footage but we do have the platform thumbnail (the same
             // one the feed's ReelCard shows) — a real preview beats a text panel.
@@ -208,7 +207,7 @@ struct ReelDetailSheet: View {
     /// typographic hook panel — never a dead gray box (same posture as W2-4).
     private func thumbnailPanel(_ url: URL) -> some View {
         ZStack {
-            Palette.surfaceRaised          // ground while the image loads
+            Palette.surface                // ground while the image loads
             AsyncImage(url: url) { imgPhase in
                 switch imgPhase {
                 case .success(let img):
@@ -216,7 +215,7 @@ struct ReelDetailSheet: View {
                 case .failure:
                     Color.clear.onAppear { thumbFailed = true }
                 default:
-                    ProgressView().tint(Palette.textTertiary)
+                    ProgressView().tint(Palette.textSecondary)
                 }
             }
             LinearGradient(stops: [.init(color: .black.opacity(0.30), location: 0),
@@ -227,14 +226,14 @@ struct ReelDetailSheet: View {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 5) {
                     Image(systemName: platformGlyph).font(.system(size: 10, weight: .semibold))
-                    Text("@\(reel.creatorHandle)").font(AppFont.micro).tracking(0.4).lineLimit(1)
+                    Text("@\(reel.creatorHandle)").font(AppFont.caption.weight(.semibold)).lineLimit(1)
                 }
-                .foregroundStyle(.white.opacity(0.85))
+                .foregroundStyle(Palette.onNight.opacity(0.9))
                 Spacer(minLength: 0)
                 Text(reel.hookText)
-                    .font(Typeface.sans(22, .semibold))
-                    .tracking(Track.title)
-                    .foregroundStyle(.white)
+                    .font(AppFont.title2)
+                    .tracking(-0.2)
+                    .foregroundStyle(Palette.onNight)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
                     .shadow(color: .black.opacity(0.35), radius: 6, y: 1)
@@ -244,9 +243,7 @@ struct ReelDetailSheet: View {
         }
         .aspectRatio(9.0 / 16.0, contentMode: .fit)
         .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
     }
 
     /// No footage in mock mode — the hook *is* the media. Larger cut of the ReelCard look.
@@ -254,15 +251,15 @@ struct ReelDetailSheet: View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(spacing: 5) {
                 Image(systemName: platformGlyph).font(.system(size: 10, weight: .semibold))
-                Text("@\(reel.creatorHandle)").font(AppFont.micro).tracking(0.4).lineLimit(1)
+                Text("@\(reel.creatorHandle)").font(AppFont.caption.weight(.semibold)).lineLimit(1)
             }
-            .foregroundStyle(Palette.textTertiary)
+            .foregroundStyle(Palette.textSecondary)
 
             Spacer(minLength: 0)
 
             Text(reel.hookText)
-                .font(Typeface.sans(24, .semibold))
-                .tracking(Track.title)
+                .font(AppFont.title1)
+                .tracking(-0.3)
                 .foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -274,7 +271,7 @@ struct ReelDetailSheet: View {
                 Text(compactNumber(reel.views)).font(AppFont.caption)
                 Spacer(minLength: 0)
                 if reel.fromWatched {
-                    Chip(text: "WATCHING", tint: Palette.accent)
+                    WatchingTag(overMedia: false)
                 }
             }
             .foregroundStyle(Palette.textSecondary)
@@ -283,21 +280,24 @@ struct ReelDetailSheet: View {
         .frame(maxWidth: .infinity, minHeight: 250, alignment: .leading)
         .background(
             ZStack {
-                Palette.surfaceRaised
-                LinearGradient(colors: [Palette.ink.opacity(0.04), Palette.ink.opacity(0.10)],
+                Palette.surface
+                LinearGradient(colors: [Palette.accentMuted.opacity(0), Palette.accentMuted],
                                startPoint: .top, endPoint: .bottom)
             }
         )
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
     }
 
     // MARK: Result — your version
 
     private func resultContent(_ script: Script, _ from: String) -> some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            SectionLabel(text: "Your version", accent: Palette.positive)
+            // Success is carried by a check glyph, not a green bar.
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Palette.textPrimary)
+                SectionLabel(text: "Your version")
+            }
 
             VStack(alignment: .leading, spacing: Space.sm) {
                 HStack {
@@ -305,23 +305,24 @@ struct ReelDetailSheet: View {
                     Spacer()
                 }
                 Text(script.title.isEmpty ? script.hook.text : script.title)
-                    .font(Typeface.sans(22, .semibold)).tracking(Track.title)
+                    .font(AppFont.title2).tracking(-0.2)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("\u{201C}\(script.hook.text)\u{201D}")
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 MarqueHairline()
                 Text(script.body)
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     .lineSpacing(5)
                     .lineLimit(5)
             }
-            .marqueCard()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .dsCard(.surface)
 
             Text("Structure from \(from), substance is all yours")
-                .font(AppFont.micro)
-                .foregroundStyle(Palette.textTertiary)
+                .font(AppFont.caption)
+                .foregroundStyle(Palette.textSecondary)
                 .padding(.leading, Space.xs)
         }
         .padding(.top, Space.sm)
@@ -348,7 +349,7 @@ struct ReelDetailSheet: View {
                     HStack(spacing: Space.sm) {
                         Image(systemName: "wifi.exclamationmark")
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Palette.warning)
+                            .foregroundStyle(Palette.textPrimary)
                         Text("Couldn't reach the studio just now, give it another try.")
                             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         Spacer(minLength: 0)
@@ -361,7 +362,8 @@ struct ReelDetailSheet: View {
         .padding(.horizontal, Space.screenH)
         .padding(.top, Space.md)
         .padding(.bottom, Space.md)
-        .background(.ultraThinMaterial)
+        .background(Palette.canvas)
+        .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1).opacity(0.6) }
         .animation(Motion.quick, value: phase)
     }
 
@@ -371,20 +373,16 @@ struct ReelDetailSheet: View {
         Button(action: runMimic) {
             HStack(spacing: Space.sm) {
                 if phase == .working {
-                    ProgressView().tint(Palette.onInk)
+                    // In flight the capsule is disabled (sunken fill): secondary-tone spinner.
+                    ProgressView().tint(Palette.textSecondary)
                     Text("Rewriting as you…").font(AppFont.headline)
                 } else {
                     Image(systemName: "wand.and.stars").font(.system(size: 16, weight: .semibold))
                     Text(phase == .failed ? "Try again" : "Mimic in my voice").font(AppFont.headline)
                 }
             }
-            .foregroundStyle(Palette.onInk)
-            .frame(maxWidth: .infinity).frame(height: 54)
-            .background(Palette.ink)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 4)
         }
-        .buttonStyle(PressableStyle())
+        .buttonStyle(.ds(.primary, fullWidth: true))
         .disabled(phase == .working)
         .accessibilityIdentifier("reel.mimic")
     }
