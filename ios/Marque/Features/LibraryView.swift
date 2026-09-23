@@ -1483,12 +1483,14 @@ extension ClipStatus {
     }
     var railColor: Color {
         switch self {
-        case .draft:     return Palette.warning
-        case .ready:     return Palette.accent
-        case .rendering: return Palette.textTertiary
-        case .scheduled: return Palette.scheduled
-        case .posted:    return Palette.positive
-        case .failed:    return Palette.critical
+        // Mono system: no status hues. Kept for API compatibility; status meaning is
+        // carried by `statusGlyph` + wording.
+        case .draft:     return Palette.textPrimary
+        case .ready:     return Palette.textPrimary
+        case .rendering: return Palette.textSecondary
+        case .scheduled: return Palette.textSecondary
+        case .posted:    return Palette.textPrimary
+        case .failed:    return Palette.textPrimary
         }
     }
     var whyLine: String {
