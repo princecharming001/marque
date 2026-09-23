@@ -17,15 +17,25 @@ struct HomeView: View {
     // Single-player grid: the one "Steal these" cell allowed to stream right now
     // (most-recently-appeared wins; see ReelCard).
     @State private var activeReelId: String?
+    // Presentation only: measured carousel width, so pick cards size to the phone.
+    @State private var carouselWidth: CGFloat = 375
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.xl) {
-                topBar
-                greetingBlock.staggerReveal(0)
+            VStack(alignment: .leading, spacing: Space.sectionGap) {
+                // Stoic "Today" header: streak · greeting · avatar, the date line, then the
+                // 7-day posting strip. Grouped so the header reads as one block.
+                VStack(spacing: Space.md) {
+                    topBar
+                    greetingBlock
+                    DSWeekStrip(days: weekDays)
+                }
+                .staggerReveal(0)
+                // The one hero card per screen: the voice orb (VoiceBubble draws the card).
                 VoiceBubble { showVoice = true }
                     .tourAnchor("tour.voiceBubble")
                     .staggerReveal(1)
+                    .padding(.top, -Space.sm)
                 picksSection.staggerReveal(2)
                 if let trend = feed.trend {
                     TrendTicker(trend: trend, all: store.trends).staggerReveal(3)
@@ -33,7 +43,7 @@ struct HomeView: View {
                 stealSection.staggerReveal(4)
             }
             .screenPadding()
-            .padding(.top, Space.lg)
+            .padding(.top, Space.sm)
             .padding(.bottom, MarqueTabBar.clearance + Space.xxl)
         }
         .background(Palette.canvas.ignoresSafeArea())
@@ -77,72 +87,113 @@ struct HomeView: View {
         }
     }
 
-    // MARK: Top bar — date + streak + profile avatar
+    // MARK: Top bar — streak · greeting · profile avatar (Stoic "Today" header)
 
     private var dateKicker: String {
-        Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day()).uppercased()
+        Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
     }
 
     private var topBar: some View {
-        HStack(alignment: .center) {
-            Text(dateKicker)
-                .font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(Palette.textTertiary)
-            Spacer()
-            if store.streak > 0 { StreakGlyph(count: store.streak).padding(.trailing, Space.xs) }
-            NavigationLink(value: "profile") {
-                avatarButton
+        ZStack {
+            // Centered lowercase greeting with a period ("good evening."). Side slots are
+            // reserved so a long greeting shrinks instead of running under the controls.
+            Text(greeting)
+                .font(AppFont.title2).tracking(-0.2)
+                .foregroundStyle(Palette.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.75)
+                .padding(.horizontal, 76)
+                .accessibilityAddTraits(.isHeader)
+            HStack(alignment: .center) {
+                DSStreakPill(count: store.streak)
+                Spacer()
+                NavigationLink(value: "profile") {
+                    avatarButton
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("home.profile")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("home.profile")
         }
     }
 
     private var avatarButton: some View {
         ZStack {
-            Circle().fill(Palette.accent.opacity(0.16)).frame(width: 34, height: 34)
+            Circle().fill(Palette.surfaceSunken).frame(width: 32, height: 32)
             if let url = store.primaryAccount?.avatarUrl, !url.isEmpty, let u = URL(string: url) {
                 AsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { initial }
-                    .frame(width: 34, height: 34).clipShape(Circle())
+                    .frame(width: 32, height: 32).clipShape(Circle())
             } else {
                 initial
             }
         }
-        // A brand-tinted ring (vs. a bare neutral hairline) reads as a deliberate
-        // identity mark instead of a placeholder — same restraint, more presence.
-        .overlay(Circle().strokeBorder(Palette.accent.opacity(0.35), lineWidth: 1.5))
-        .shadow(color: Palette.shadowWarm.opacity(0.10), radius: 4, x: 0, y: 2)
+        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
     }
 
     private var initial: some View {
         Text(String((store.primaryAccount?.handle ?? store.brand.niche).prefix(1)).uppercased())
-            .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.accent)
+            .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textPrimary)
     }
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
-        let part = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"
-        if let h = store.primaryAccount?.handle, !h.isEmpty { return "\(part), @\(h)" }
-        return part
+        return hour < 12 ? "good morning." : hour < 18 ? "good afternoon." : "good evening."
     }
 
+    /// The date + @handle line under the header (the handle used to ride in the greeting).
     private var greetingBlock: some View {
-        Text(greeting)
-            .font(Typeface.sans(34, .bold)).tracking(-0.8)
-            .foregroundStyle(Palette.textPrimary)
-            .fixedSize(horizontal: false, vertical: true)
+        HStack(spacing: 6) {
+            Text(dateKicker)
+            if let h = store.primaryAccount?.handle, !h.isEmpty {
+                Text("·")
+                Text("@\(h)").lineLimit(1).truncationMode(.middle)
+            }
+        }
+        .font(AppFont.caption)
+        .foregroundStyle(Palette.textSecondary)
+        .frame(maxWidth: .infinity)
+        .padding(.top, -Space.sm)
     }
 
-    // MARK: Today's picks — snap carousel of daily scripts (FeedStore page 0+)
+    /// This calendar week, read-only from the posting schedule: a day is checked when a
+    /// post actually went out that day; today is outlined; later days are muted.
+    private var weekDays: [DSWeekDay] {
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        guard let week = cal.dateInterval(of: .weekOfYear, for: today) else { return [] }
+        let postedDays = Set(store.schedule
+            .filter { $0.posted || $0.outcome?.didPost == true }
+            .map { cal.startOfDay(for: $0.date) })
+        let symbols = cal.shortWeekdaySymbols
+        return (0..<7).compactMap { i -> DSWeekDay? in
+            guard let d = cal.date(byAdding: .day, value: i, to: week.start) else { return nil }
+            let day = cal.startOfDay(for: d)
+            let sym = symbols[(cal.component(.weekday, from: day) - 1) % symbols.count]
+            return DSWeekDay(id: "\(Int(day.timeIntervalSince1970))",
+                             weekday: String(sym.prefix(2)),
+                             number: "\(cal.component(.day, from: day))",
+                             done: postedDays.contains(day),
+                             isToday: day == today,
+                             isFuture: day > today)
+        }
+    }
+
+    // MARK: Today's picks — peeking carousel of surface cards (FeedStore page 0+)
+
+    /// Card width: the page width less both margins, less a little more so the next card
+    /// visibly peeks past the trailing edge (Stoic's carousel). Measured, never fixed.
+    private var pickCardWidth: CGFloat {
+        max(240, carouselWidth - 2 * Space.screenH - Space.md)
+    }
 
     private var picksSection: some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            SectionLabel(text: "Today's picks", accent: Palette.accent)
+        VStack(alignment: .center, spacing: Space.md) {
+            DSEyebrow(text: "Today's picks")
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: Space.md) {
+                LazyHStack(spacing: Space.stack) {
                     if feed.scriptItems.isEmpty && feed.isLoading {
-                        FeedSkeletonCard()
-                        FeedSkeletonCard()
+                        FeedSkeletonCard().frame(width: pickCardWidth)
+                        FeedSkeletonCard().frame(width: pickCardWidth)
                     } else if feed.scriptItems.isEmpty {
                         picksOfflineCard
                     } else {
@@ -174,6 +225,7 @@ struct HomeView: View {
                                 onLike: { store.likePick(s) },
                                 onDismiss: { withAnimation(Motion.quick) { feed.dismiss(s, store: store) } }
                             )
+                            .frame(width: pickCardWidth)
                             .transition(.scale(scale: 0.92).combined(with: .opacity))
                         }
                         if feed.feedCursor >= 0 {
@@ -186,10 +238,12 @@ struct HomeView: View {
             .scrollTargetBehavior(.viewAligned)
             .contentMargins(.horizontal, Space.screenH, for: .scrollContent)
             .padding(.horizontal, -Space.screenH)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { carouselWidth = $0 }
         }
+        .frame(maxWidth: .infinity)
     }
 
-    /// Trailing "More" pill card — pulls the next mixed-feed page (scripts only land here).
+    /// Trailing "More" card — pulls the next mixed-feed page (scripts only land here).
     private var morePicksCard: some View {
         Button {
             Task { await feed.loadMoreScripts(store: store) }
@@ -199,17 +253,17 @@ struct HomeView: View {
                     ProgressView().tint(Palette.textSecondary)
                 } else {
                     Image(systemName: "arrow.right")
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.system(size: 17, weight: .regular))
                         .foregroundStyle(Palette.textPrimary)
-                    Text("More").font(AppFont.callout).foregroundStyle(Palette.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                    Text("More").font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                 }
             }
-            .frame(width: 96, height: 220)   // matches ScriptFeedCard's height
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
-            .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+            .frame(width: 96, height: FeedCardMetrics.pickHeight)   // matches ScriptFeedCard's height
+            .background(Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         }
         .buttonStyle(PressableStyle(dim: 0.7))
         .disabled(feed.isLoadingMoreScripts)
@@ -218,21 +272,21 @@ struct HomeView: View {
 
     /// Shown only when the initial feed load came back empty (offline / backend miss).
     private var picksOfflineCard: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(spacing: Space.sm) {
             Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 18)).foregroundStyle(Palette.textTertiary)
+                .font(.system(size: 22, weight: .regular)).foregroundStyle(Palette.textSecondary)
+                .padding(.bottom, Space.xs)
             Text("Couldn't load today's picks")
                 .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
             Text("Pull down to refresh when you're back online.")
-                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
         }
-        .padding(Space.lg)
-        .frame(width: 260, height: 220, alignment: .topLeading)   // matches ScriptFeedCard
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+        .padding(Space.cardPad)
+        .frame(width: pickCardWidth, height: FeedCardMetrics.pickHeight)   // matches ScriptFeedCard
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 
@@ -244,8 +298,8 @@ struct HomeView: View {
 
     private var stealSection: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            VStack(alignment: .leading, spacing: Space.xs) {
-                SectionLabel(text: "Steal these", accent: Palette.warning)
+            VStack(spacing: Space.xs) {
+                DSEyebrow(text: "Steal these")
                 // Only promise "your niche" when the server actually served it — a cold
                 // niche cache falls back to the cross-niche aggregate (off_niche flag),
                 // and claiming those are "from your niche" is how a photographer tester
@@ -253,8 +307,11 @@ struct HomeView: View {
                 Text(feed.reelsAreOffNiche
                      ? "Still scanning your niche, here's what's working elsewhere meanwhile."
                      : "Proven reels from your niche, mimic them in your voice.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity)
             if feed.reelItems.isEmpty && feed.isLoading {
                 LazyVGrid(columns: reelColumns, spacing: Space.md) {
                     ReelSkeletonCard()

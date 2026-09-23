@@ -6,7 +6,13 @@ import SwiftUI
 // first — thumbnails are often empty in mock mode, so the no-imagery card is the
 // primary design, not the fallback.
 
-// MARK: Script pick — 260×190 carousel card
+// MARK: Script pick — Stoic content card in the peeking carousel
+
+/// Shared carousel metrics (the pick card, its skeleton, the offline card and the "More"
+/// card all share one height so the row never jitters between states).
+enum FeedCardMetrics {
+    static let pickHeight: CGFloat = 240
+}
 
 struct ScriptFeedCard: View {
     let script: Script
@@ -21,38 +27,46 @@ struct ScriptFeedCard: View {
     var onDismiss: () -> Void = {}
 
     var body: some View {
-        // spacing sm (not md) + height 260 (not 190): the old fixed 190pt frame was
-        // SHORTER than the card's own minimum content (tag row + 2-3 line title +
-        // why-picked + buttons ≈ 250-260pt), so the clipShape cut the Film-this/save
-        // row clean off — the "formatting is wrong on Today's Picks" bug.
-        VStack(alignment: .leading, spacing: Space.sm) {
+        // Fixed height (FeedCardMetrics.pickHeight) is sized to the card's own minimum
+        // content (feedback row + 3-line title + CTA row), so nothing ever clips the
+        // Film-this/save row (the old "formatting is wrong on Today's Picks" bug).
+        VStack(spacing: Space.sm) {
             HStack(spacing: Space.sm) {
                 FormatTag(formatId: script.formatId)
-                Spacer()
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                Spacer(minLength: Space.xs)
                 Button(action: onLike) {
-                    Image(systemName: liked ? "checkmark.circle.fill" : "checkmark")
+                    // Selection = inversion: liked is an ink disc with an onInk check.
+                    Image(systemName: "checkmark")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(liked ? Palette.accent : Palette.textTertiary)
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(liked ? Palette.accent.opacity(0.12) : Palette.surfaceSunken))
+                        .foregroundStyle(liked ? Palette.onInk : Palette.textSecondary)
+                        .frame(width: 32, height: 32)
+                        .background(Circle().fill(liked ? Palette.ink : Palette.surfaceSunken))
+                        .animation(Motion.quick, value: liked)
                 }
-                .buttonStyle(PressableStyle()).accessibilityIdentifier("feed.like")
+                .buttonStyle(PressableStyle(scale: 0.92)).accessibilityIdentifier("feed.like")
+                .accessibilityLabel(liked ? "Liked" : "Like")
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Palette.textTertiary)
-                        .frame(width: 26, height: 26)
+                        .foregroundStyle(Palette.textSecondary)
+                        .frame(width: 32, height: 32)
                         .background(Circle().fill(Palette.surfaceSunken))
                 }
-                .buttonStyle(PressableStyle()).accessibilityIdentifier("feed.dismiss")
+                .buttonStyle(PressableStyle(scale: 0.92)).accessibilityIdentifier("feed.dismiss")
+                .accessibilityLabel("Dismiss")
             }
+            Spacer(minLength: 0)
             // Titles are clamped server-side (≤42 chars) so three lines always
             // fits the whole thing — never an ellipsis mid-word. Lowercase for the
             // editorial look — the classification above carries the caps.
             Text((script.title.isEmpty ? script.hook.text : script.title).lowercased())
-                .font(Typeface.sans(22, .semibold)).tracking(Track.title)
+                .font(AppFont.title2).tracking(-0.2)
                 .foregroundStyle(Palette.textPrimary)
-                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.center)
+                .lineLimit(3).minimumScaleFactor(0.85)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity)
             // v15 fluff mandate: the bandit's why-picked line ("contrarian hooks +
             // myth-buster tend to over-index...") is exactly the explainer class the
             // owner cut from the script popup — the card is title + Film this, nothing
@@ -60,32 +74,31 @@ struct ScriptFeedCard: View {
             Spacer(minLength: 0)
             HStack(spacing: Space.sm) {
                 Button(action: onFilm) {
-                    Text("Film this").font(AppFont.callout).foregroundStyle(Palette.onInk)
-                        .padding(.horizontal, Space.md).frame(height: 32)
-                        .background(Palette.ink).clipShape(Capsule())
+                    Text("Film this")
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.ds(.primary, height: 44))
                 Button(action: onSave) {
                     Image(systemName: saved ? "bookmark.fill" : "bookmark")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Palette.accent)
-                        .frame(width: 32, height: 32)
-                        .background(Palette.accent.opacity(0.08)).clipShape(Circle())
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .background(Circle().fill(Palette.surface))
+                        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                        .contentShape(Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(scale: 0.92))
+                .accessibilityLabel(saved ? "Saved" : "Save")
                 .accessibilityIdentifier("feed.save")
             }
         }
-        .padding(Space.lg)
-        .frame(width: 260, height: 220, alignment: .topLeading)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 12, x: 0, y: 6)
+        .padding(Space.cardPad)
+        .frame(maxWidth: .infinity)
+        .frame(height: FeedCardMetrics.pickHeight, alignment: .top)
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Palette.surface))
+        .shadow(color: Palette.shadowWarm.opacity(0.04), radius: 12, x: 0, y: 2)
         // Whole card opens the full script; the inner Film/Save buttons keep
         // their own hit areas (buttons beat a background tap gesture).
-        .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         .onTapGesture(perform: onOpen)
         // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
         // without .accessibilityElement(children: .contain), this card's own identifier
@@ -133,10 +146,8 @@ struct ReelCard: View {
                 .aspectRatio(9.0 / 16.0, contentMode: .fit)
                 .background(backdrop)
                 .overlay(content)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
         }
         .buttonStyle(PressableStyle())
         .onAppear {
@@ -195,7 +206,7 @@ struct ReelCard: View {
             ZStack {
                 Image(uiImage: poster).resizable().scaledToFill()
                     .blur(radius: 16).opacity(0.55)
-                    .overlay(Palette.ink.opacity(0.18))
+                    .overlay(Color.black.opacity(0.18))   // over media: stays dark in both schemes
                 Image(uiImage: poster).resizable().scaledToFit()
             }
         }
@@ -212,8 +223,8 @@ struct ReelCard: View {
 
     private var typographicGround: some View {
         ZStack {
-            Palette.surfaceRaised
-            LinearGradient(colors: [Palette.ink.opacity(0.04), Palette.ink.opacity(0.10)],
+            Palette.surface
+            LinearGradient(colors: [Palette.accentMuted.opacity(0), Palette.accentMuted],
                            startPoint: .top, endPoint: .bottom)
         }
     }
@@ -223,12 +234,12 @@ struct ReelCard: View {
             // Platform + handle
             HStack(spacing: Space.xs) {
                 Image(systemName: reel.platform == "instagram" ? "camera.fill" : "music.note")
-                    .font(.system(size: 9, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                 Text("@\(reel.creatorHandle)")
-                    .font(AppFont.micro).tracking(0.4)
+                    .font(AppFont.caption.weight(.semibold))
                     .lineLimit(1)
             }
-            .foregroundStyle(overImage ? Color.white.opacity(0.85) : Palette.textTertiary)
+            .foregroundStyle(overImage ? Color.white.opacity(0.9) : Palette.textSecondary)
 
             Spacer(minLength: 0)
 
@@ -237,10 +248,10 @@ struct ReelCard: View {
             // top just fights it (the idea lives in the detail sheet).
             if !overImage {
                 Text(reel.hookText)
-                    .font(Typeface.sans(17, .semibold))
+                    .font(AppFont.headline)
                     .tracking(Track.tight)
                     .foregroundStyle(Palette.textPrimary)
-                    .lineLimit(4)
+                    .lineLimit(4).minimumScaleFactor(0.85)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -253,12 +264,26 @@ struct ReelCard: View {
                 Text(compactNumber(reel.views)).font(AppFont.caption)
                 Spacer(minLength: 0)
                 if reel.fromWatched {
-                    Chip(text: "WATCHING", tint: overImage ? Color.white : Palette.accent)
+                    WatchingTag(overMedia: overImage)
                 }
             }
-            .foregroundStyle(overImage ? Color.white.opacity(0.8) : Palette.textSecondary)
+            .foregroundStyle(overImage ? Color.white.opacity(0.9) : Palette.textSecondary)
         }
         .padding(Space.md)
+    }
+}
+
+/// Monochrome "WATCHING" provenance tag: a sunken capsule on the typographic ground,
+/// a translucent white capsule over footage.
+struct WatchingTag: View {
+    var overMedia: Bool
+    var body: some View {
+        Text("WATCHING")
+            .font(AppFont.eyebrow).tracking(1)
+            .foregroundStyle(overMedia ? Palette.onNight : Palette.textSecondary)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(overMedia ? Color.white.opacity(0.18) : Palette.surfaceSunken))
+            .lineLimit(1).fixedSize()
     }
 }
 
@@ -299,63 +324,70 @@ struct TrendTicker: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            MarqueHairline()
-            Button {
-                // First tap is the ratchet: stop the ambient scroll, settle into the
-                // readable interval mode — and, same as always, toggle the why-detail.
-                engaged = true
-                withAnimation(Motion.quick) { expanded.toggle() }
-            } label: {
-                HStack(spacing: Space.sm) {
-                    Circle().fill(Palette.accent)
-                        .frame(width: 6, height: 6)
-                        .scaleEffect(pulse ? 1.0 : 0.7)
-                        .opacity(pulse ? 1.0 : 0.4)
-                    Text("TRENDING")
-                        .font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.textTertiary)
-                    Group {
-                        if engaged {
-                            ZStack(alignment: .leading) {
-                                Text(displayTrend.title)
-                                    .font(AppFont.callout)
-                                    .foregroundStyle(Palette.textPrimary)
-                                    .lineLimit(1)
-                                    .id("trend-title-\(currentIndex)")
-                                    .transition(slide)
+        VStack(alignment: .center, spacing: Space.md) {
+            // Stoic section eyebrow above the one surface card that holds the ticker.
+            Text("TRENDING")
+                .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                .foregroundStyle(Palette.textSecondary)
+            VStack(alignment: .leading, spacing: 0) {
+                Button {
+                    // First tap is the ratchet: stop the ambient scroll, settle into the
+                    // readable interval mode — and, same as always, toggle the why-detail.
+                    engaged = true
+                    withAnimation(Motion.quick) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: Space.md) {
+                        // Live marker: a quiet pulsing monochrome dot.
+                        Circle().fill(Palette.textPrimary)
+                            .frame(width: 6, height: 6)
+                            .scaleEffect(pulse ? 1.0 : 0.7)
+                            .opacity(pulse ? 1.0 : 0.4)
+                        Group {
+                            if engaged {
+                                ZStack(alignment: .leading) {
+                                    Text(displayTrend.title)
+                                        .font(AppFont.supporting)
+                                        .foregroundStyle(Palette.textPrimary)
+                                        .lineLimit(1)
+                                        .id("trend-title-\(currentIndex)")
+                                        .transition(slide)
+                                }
+                            } else {
+                                marquee
                             }
-                        } else {
-                            marquee
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .clipped()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Palette.textPrimary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                    }
+                    .padding(.horizontal, Space.rowPad)
+                    .frame(minHeight: 52)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("feed.trend")
+
+                if expanded {
+                    DSRowDivider()
+                    ZStack(alignment: .topLeading) {
+                        Text(displayTrend.why)
+                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .id("trend-why-\(currentIndex)")
+                            .transition(slide)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .clipped()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Palette.textTertiary)
-                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .padding(.horizontal, Space.rowPad)
+                    .padding(.vertical, Space.md)
                 }
-                .padding(.vertical, Space.md)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("feed.trend")
-
-            if expanded {
-                ZStack(alignment: .topLeading) {
-                    Text(displayTrend.why)
-                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .id("trend-why-\(currentIndex)")
-                        .transition(slide)
-                }
-                .clipped()
-                .padding(.leading, 14)
-                .padding(.bottom, Space.md)
-            }
-            MarqueHairline()
+            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
         }
         .contentShape(Rectangle())
         // Swipe to move between trends — works collapsed or expanded. HIGH priority
@@ -414,12 +446,12 @@ struct TrendTicker: View {
     private var marquee: some View {
         GeometryReader { windowGeo in
             HStack(spacing: 0) {
-                Text(marqueeText).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(marqueeText).font(AppFont.supporting).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .fixedSize()
                     .background(GeometryReader { g in
                         Color.clear.preference(key: TickerWidthKey.self, value: g.size.width)
                     })
-                Text(marqueeText).font(AppFont.callout).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Text(marqueeText).font(AppFont.supporting).foregroundStyle(Palette.textPrimary).lineLimit(1)
                     .fixedSize()
             }
             .offset(x: marqueeOffset)
@@ -464,8 +496,8 @@ struct SkeletonBlock: View {
     var cornerRadius: CGFloat = Radius.sm
     @State private var travel = false
 
-    private static let base = Color(hex: 0xE6E5E2)       // darker than canvas 0xF1F1EF → visible
-    private static let highlight = Color(hex: 0xF7F7F5)
+    private static let base = Palette.surfaceSunken      // gray block on the surface card
+    private static let highlight = Palette.surface
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -505,12 +537,10 @@ struct FeedSkeletonCard: View {
             Spacer(minLength: 0)
             SkeletonBlock(cornerRadius: Radius.pill).frame(width: 96, height: 30) // CTA pill
         }
-        .padding(Space.lg)
-        .frame(width: 260, height: 220, alignment: .topLeading)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .padding(Space.cardPad)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: FeedCardMetrics.pickHeight, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Palette.surface))
     }
 }
 
@@ -518,7 +548,7 @@ struct FeedSkeletonCard: View {
 /// reads as a reel thumbnail loading.
 struct ReelSkeletonCard: View {
     var body: some View {
-        SkeletonBlock(cornerRadius: Radius.lg)
+        SkeletonBlock(cornerRadius: Radius.tile)
             .aspectRatio(9.0 / 16.0, contentMode: .fit)
             .overlay(alignment: .bottomLeading) {
                 VStack(alignment: .leading, spacing: Space.sm) {
