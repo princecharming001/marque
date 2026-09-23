@@ -21,11 +21,16 @@ struct LibraryView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.lg) {
-                // Editorial inline header — kicker + Fraunces title (maxapp signature)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("YOUR CREATIVE VAULT").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                    Text("Library").font(Typeface.sans(40, .bold)).tracking(-1).foregroundStyle(Palette.textPrimary)
+            VStack(alignment: .leading, spacing: Space.xl) {
+                // Stoic pushed-page header: eyebrow over the display title, left aligned.
+                // The eyebrow is matched by Maestro flows, so it stays verbatim; the
+                // title carries the "Library" literal as its accessibility label.
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    DSEyebrow(text: "YOUR CREATIVE VAULT")
+                    Text("your library.").font(AppFont.pageTitle).tracking(-0.5)
+                        .foregroundStyle(Palette.textPrimary)
+                        .accessibilityLabel("Library")
+                        .accessibilityAddTraits(.isHeader)
                 }
                 UnderlineTabBar(tabs: tabs, index: $tabIndex)
                 switch tabIndex {
@@ -33,7 +38,10 @@ struct LibraryView: View {
                 default: ClipsSection(selecting: $selecting, selectedIDs: $selectedIDs)
                 }
             }
-            .screenPadding().padding(.vertical, Space.lg)
+            .screenPadding()
+            .padding(.top, Space.sm)
+            // Tab root: keep the last row clear of the overlaid MarqueTabBar.
+            .padding(.bottom, MarqueTabBar.clearance + Space.lg)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -69,35 +77,42 @@ struct LibraryView: View {
     private func exitSelection() { selecting = false; selectedIDs = [] }
 
     private var bulkBar: some View {
-        HStack(spacing: Space.lg) {
+        HStack(spacing: Space.md) {
             Text("\(selectedIDs.count) selected")
-                .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-            Spacer()
+                .font(AppFont.supporting.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+            Spacer(minLength: Space.xs)
             // Build 61: a plain Button into a sheet, NOT a Menu. The Menu only ever listed
             // groups that already existed, so on a fresh install it opened to a single
             // "New group…" row — the owner read that as "grouping isn't built yet". The
             // sheet always shows the full picture (groups, membership, create row).
             Button { showGroupAssign = true } label: {
-                bulkIcon("folder.badge.plus", "Group", enabled: !selectedIDs.isEmpty)
+                bulkIcon("folder.badge.plus", "Group", tint: Palette.textPrimary, enabled: !selectedIDs.isEmpty)
             }
-            .buttonStyle(.plain).disabled(selectedIDs.isEmpty)
+            .buttonStyle(PressableStyle(dim: 0.6)).disabled(selectedIDs.isEmpty)
             .accessibilityIdentifier("library.bulk.group")
-            Button { showBulkSchedule = true } label: {
-                bulkIcon("paperplane.fill", "Post", enabled: selectedReadyCount > 0)
-            }
-            .buttonStyle(.plain).disabled(selectedReadyCount == 0)
-            .accessibilityIdentifier("library.bulk.post")
+            // Destructive = black trash glyph + confirm dialog (no red in the mono system).
             Button { showBulkDelete = true } label: {
-                bulkIcon("trash", "Delete", tint: Palette.critical, enabled: !selectedIDs.isEmpty)
+                bulkIcon("trash", "Delete", tint: Palette.textPrimary, enabled: !selectedIDs.isEmpty)
             }
-            .buttonStyle(.plain).disabled(selectedIDs.isEmpty)
+            .buttonStyle(PressableStyle(dim: 0.6)).disabled(selectedIDs.isEmpty)
             .accessibilityIdentifier("library.bulk.delete")
+            // The forward action is the one filled capsule, trailing (Stoic CTA row).
+            Button { showBulkSchedule = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "paperplane.fill").font(.system(size: 13, weight: .semibold))
+                    Text("Post")
+                }
+            }
+            .buttonStyle(DSCapsuleStyle(kind: .primary, height: 40))
+            .disabled(selectedReadyCount == 0)
+            .accessibilityIdentifier("library.bulk.post")
         }
-        .padding(.horizontal, Space.lg).padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.leading, Space.lg).padding(.trailing, Space.sm).padding(.vertical, Space.sm)
+        .background(Capsule().fill(Palette.surface))
         .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowCool.opacity(0.18), radius: 16, y: 6)
-        .padding(.horizontal, Space.md)
+        .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 12, y: 2)
+        .padding(.horizontal, Space.screenH)
         // ABOVE the floating tab bar, not under it. RootTabView overlays MarqueTabBar on
         // top of tab content and screens own their clearance (see MarqueTabBar.clearance)
         // — with only Space.sm here the whole bulk bar rendered BEHIND the tab bar
@@ -108,15 +123,15 @@ struct LibraryView: View {
         .padding(.bottom, MarqueTabBar.clearance + Space.sm)
     }
 
-    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.accent,
+    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.textPrimary,
                           enabled: Bool = true) -> some View {
         VStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
-            Text(label).font(.system(size: 10, weight: .medium))
+            Image(systemName: icon).font(.system(size: 17, weight: .regular))
+            Text(label).font(AppFont.caption)
         }
-        .foregroundStyle(tint)
-        .opacity(enabled ? 1 : 0.35)
-        .frame(minWidth: 44)
+        .foregroundStyle(enabled ? tint : Palette.textTertiary)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
     }
 }
 
@@ -151,41 +166,56 @@ struct ClipsSection: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
+        VStack(alignment: .leading, spacing: Space.xl) {
             if store.clips.isEmpty {
                 EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
                                message: "Tap Film below to record your first script. Drafts and edited clips land here.",
                                graphic: "ClipsIcon")
                 Button { router.showFilm = true } label: {
                     Label("Create your first clip", systemImage: "video.badge.plus")
-                        .font(AppFont.headline).foregroundStyle(Palette.onInk)
-                        .frame(maxWidth: .infinity).frame(height: 52)
-                        .background(Palette.ink).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.dsPrimary)
+                .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("library.createFirst")
             } else {
                 controlRow
                 let visible = filteredClips
                 if visible.isEmpty {
+                    // Stoic outline (empty) card.
                     Text(groupFilter == .ungrouped ? "No ungrouped clips."
                                                     : "This group is empty. Select clips and add them here.")
-                        .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
-                        .padding(.vertical, Space.lg)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity)
+                        .dsCard(.outline, radius: Radius.group)
                 }
                 ForEach(ClipStatus.allOrder, id: \.self) { status in
                     let group = visible.filter { $0.status == status }
                     if !group.isEmpty {
                         VStack(alignment: .leading, spacing: Space.md) {
                             VStack(alignment: .leading, spacing: Space.xs) {
-                                SectionLabel(text: status.title)
+                                // Status used to be carried by color; now glyph + label.
+                                HStack(spacing: 6) {
+                                    Image(systemName: status.statusGlyph)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .accessibilityHidden(true)
+                                    SectionLabel(text: status.title)
+                                    Spacer(minLength: Space.sm)
+                                    Text("\(group.count)")
+                                        .font(AppFont.caption).monospacedDigit()
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .accessibilityHidden(true)
+                                }
                                 if status == .rendering {
                                     Text(renderingEtaLine(group))
-                                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
-                            let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
-                            LazyVGrid(columns: cols, spacing: 8) {
+                            let cols = Array(repeating: GridItem(.flexible(), spacing: Space.sm), count: 3)
+                            LazyVGrid(columns: cols, spacing: Space.sm) {
                                 ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
                                     Button { onCellTap(c) } label: {
                                         ClipGridCell(clip: c, groupColors: groupColors(for: c))
@@ -204,19 +234,18 @@ struct ClipsSection: View {
                 if !hasFinishedClips {
                     VStack(alignment: .leading, spacing: Space.sm) {
                         Text("Finished clips land here, ready to schedule.")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Button { router.showFilm = true } label: {
                             Label("Film another clip", systemImage: "video.badge.plus")
-                                .font(AppFont.caption).foregroundStyle(Palette.accent)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.dsGhost)
                         .accessibilityIdentifier("library.filmAnother")
                     }
-                    .padding(.top, Space.sm)
                 }
-                // Room so the floating action bar (now stacked above the tab bar) never
-                // covers the last row.
-                if selecting { Color.clear.frame(height: MarqueTabBar.clearance + 76) }
+                // Room so the floating action bar (stacked above the tab bar, whose
+                // clearance the page already reserves) never covers the last row.
+                if selecting { Color.clear.frame(height: 64) }
             }
         }
         .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
@@ -259,23 +288,31 @@ struct ClipsSection: View {
                 // Build 66: flush-left, no capsule — the pill's internal padding pushed
                 // the label off the left margin every other element on this screen sits
                 // on (owner: "line up with the rest of the stuff on the left").
-                HStack(spacing: 5) {
-                    Text(groupFilterLabel).font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Palette.textTertiary)
+                HStack(spacing: 6) {
+                    Text(groupFilterLabel).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1).truncationMode(.tail)
+                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.textPrimary)
                 }
-                .padding(.vertical, 8)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .accessibilityIdentifier("library.groupFilter")
-            Spacer()
+            Spacer(minLength: Space.sm)
+            // Selection = inversion: outline pill while browsing, ink pill while selecting.
             Button {
                 if selecting { exitSelection() } else { selecting = true }
             } label: {
                 Text(selecting ? "Done" : "Select")
-                    .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.accent)
+                    .font(AppFont.supporting.weight(.semibold))
+                    .foregroundStyle(selecting ? Palette.onInk : Palette.textPrimary)
+                    .padding(.horizontal, 16).frame(height: 36)
+                    .background(Capsule().fill(selecting ? Palette.ink : Palette.surface))
+                    .overlay(Capsule().strokeBorder(selecting ? .clear : Palette.hairline, lineWidth: 1))
+                    .contentShape(Capsule())
+                    .animation(Motion.quick, value: selecting)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.8))
             .accessibilityIdentifier("library.selectToggle")
         }
     }
@@ -297,19 +334,28 @@ struct ClipsSection: View {
 
     private func selectionOverlay(_ c: Clip) -> some View {
         let on = selectedIDs.contains(c.id)
+        // Over the poster (media), so the unselected ring is white-on-scrim; selected is
+        // the ink check (inverts in dark mode) with an ink frame around the tile.
         return ZStack(alignment: .topTrailing) {
-            RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                .fill(on ? Palette.accent.opacity(0.18) : Color.black.opacity(0.001))
+            RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                .fill(on ? Color.black.opacity(0.28) : Color.black.opacity(0.001))
                 .overlay { if on {
-                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                        .strokeBorder(Palette.accent, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                        .strokeBorder(Palette.ink, lineWidth: 3)
                 } }
-            Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(on ? Palette.accent : .white)
-                .background(Circle().fill(on ? .white : Color.black.opacity(0.28)).frame(width: 20, height: 20))
-                .padding(6)
+            ZStack {
+                Circle().fill(on ? Palette.ink : Color.black.opacity(0.28))
+                Circle().strokeBorder(on ? Palette.onInk : Palette.onNight, lineWidth: 1.5)
+                if on {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Palette.onInk)
+                }
+            }
+            .frame(width: 22, height: 22)
+            .padding(Space.sm)
         }
+        .animation(Motion.quick, value: on)
     }
 
     private func onCellTap(_ c: Clip) {
@@ -351,50 +397,44 @@ struct ClipsSection: View {
 struct ClipCell: View {
     let clip: Clip
     var body: some View {
-        HStack(spacing: 0) {
-            // Leading status rail — color-coded by clip state
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(clip.status.railColor)
-                .frame(width: 3)
-                .padding(.vertical, Space.sm)
-
-            HStack(spacing: Space.md) {
-                ZStack {
-                    LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true)
-                        .frame(width: 54, height: 72)
-                    if clip.status == .rendering { ProgressView().tint(Palette.accent) }
-                }
-                .frame(width: 54, height: 72)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(clip.title.isEmpty ? clip.caption : clip.title)
-                        .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
-                    HStack(spacing: Space.sm) {
-                        FormatTag(formatId: clip.formatId)
-                        Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        if clip.captioned {
-                            Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
-                        }
-                    }
-                    // Build 45: an in-pipeline clip shows the live PipelineTimeline (real
-                    // stage + progress) instead of a single frozen word; everything else
-                    // keeps its plain why-line.
-                    if let pp = PipelineProgress.from(clip), !pp.isFailed {
-                        PipelineTimeline(progress: pp).padding(.top, 2)
-                    } else {
-                        Text(clip.status.whyLine)
-                            .font(AppFont.micro).tracking(0.2)
-                            .foregroundStyle(clip.status.railColor.opacity(0.8))
-                    }
-                }
-                Spacer()
+        // Stoic timeline row: thumbnail leading, title + meta, status as glyph + wording
+        // (the old color-coded rail is gone: meaning is carried by the glyph and line).
+        HStack(spacing: Space.md) {
+            ZStack {
+                LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true,
+                               cornerRadius: Radius.cell)
+                    .frame(width: 54, height: 72)
+                if clip.status == .rendering { ProgressView().tint(Palette.textPrimary) }
             }
-            .padding(Space.md)
+            .frame(width: 54, height: 72)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(clip.title.isEmpty ? clip.caption : clip.title)
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                HStack(spacing: Space.sm) {
+                    FormatTag(formatId: clip.formatId)
+                    Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    if clip.captioned {
+                        Image(systemName: "captions.bubble").font(.system(size: 11))
+                            .foregroundStyle(Palette.textSecondary)
+                            .accessibilityLabel("Captioned")
+                    }
+                }
+                // Build 45: an in-pipeline clip shows the live PipelineTimeline (real
+                // stage + progress) instead of a single frozen word; everything else
+                // keeps its plain why-line.
+                if let pp = PipelineProgress.from(clip), !pp.isFailed {
+                    PipelineTimeline(progress: pp).padding(.top, 2)
+                } else {
+                    Label(clip.status.whyLine, systemImage: clip.status.statusGlyph)
+                        .font(AppFont.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                        .lineLimit(1).minimumScaleFactor(0.85)
+                }
+            }
+            Spacer(minLength: 0)
         }
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
+        .padding(Space.rowPad)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
     }
 }
 
@@ -405,66 +445,68 @@ struct ClipGridCell: View {
     var groupColors: [Color] = []
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Thumbnail
+            // Thumbnail (the only color on screen)
             LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true,
-                           remoteImageURL: clip.thumbnailURL)
+                           remoteImageURL: clip.thumbnailURL, cornerRadius: Radius.tile)
                 .aspectRatio(9/16, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
 
-            // Bottom gradient + status
-            LinearGradient(colors: [.clear, .black.opacity(0.6)],
-                           startPoint: .top, endPoint: .bottom)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            // Bottom scrim over the poster so the status strip reads on any frame.
+            LinearGradient(colors: [.clear, .black.opacity(0.65)],
+                           startPoint: .center, endPoint: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 // Build 45: compact rails on in-pipeline clips so a grid tile also shows
                 // live motion, not a frozen "UPLOADING".
                 if let pp = PipelineProgress.from(clip), !pp.isFailed {
                     PipelineTimeline(progress: pp, compact: true, showLine: false)
                 }
-                HStack {
-                    Text(statusLabel).font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Spacer()
-                    Text("\(clip.seconds)s").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
+                // Status = glyph + label (it used to be carried by color).
+                HStack(spacing: 4) {
+                    Image(systemName: clip.status.statusGlyph)
+                        .font(.system(size: 10, weight: .semibold))
+                        .accessibilityHidden(true)
+                    Text(statusLabel).font(AppFont.eyebrow).tracking(0.8)
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 }
-                // Very subtle "finished editing" timestamp so a finished clip is scannable by
-                // when it landed. Only shown once the edit is done and a stamp exists.
-                if let finishedAgo {
-                    Text(finishedAgo).font(.system(size: 8, weight: .medium)).monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(Palette.onNight)
+                HStack(spacing: 4) {
+                    Text("\(clip.seconds)s").font(AppFont.caption).monospacedDigit()
+                        .foregroundStyle(Palette.onNight.opacity(0.85))
+                    // Very subtle "finished editing" timestamp so a finished clip is scannable
+                    // by when it landed. Only shown once the edit is done and a stamp exists.
+                    if let finishedAgo {
+                        Text(finishedAgo).font(AppFont.caption).monospacedDigit()
+                            .foregroundStyle(Palette.onNight.opacity(0.7))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
                 }
             }
-            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Space.sm).padding(.bottom, Space.sm)
         }
-        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 0.5))
         // topLEADING on purpose: topTrailing is the selection checkmark and the bottom
-        // strip is the status/duration line, so the dots are the only thing in this corner.
+        // strip is the status/duration line, so the group badge is alone in this corner.
         .overlay(alignment: .topLeading) { groupDots }
     }
 
-    /// Overlapping group dots, capped at 3 + a "+N" so a clip in six groups doesn't
-    /// wallpaper its own poster. The canvas-colored stroke keeps them legible on any frame.
+    /// Group membership badge: a folder glyph + count on a dark scrim capsule (the old
+    /// per-group colored dots are gone; black and white only). Sits over the poster.
     @ViewBuilder private var groupDots: some View {
         if !groupColors.isEmpty {
-            HStack(spacing: -4) {
-                ForEach(Array(groupColors.prefix(3).enumerated()), id: \.offset) { _, c in
-                    Circle().fill(c)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().strokeBorder(Palette.canvas, lineWidth: 1.5))
-                }
-                if groupColors.count > 3 {
-                    Text("+\(groupColors.count - 3)")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(Palette.textSecondary)
-                        .padding(.horizontal, 4).frame(height: 12)
-                        .background(Palette.canvas, in: Capsule())
-                        .padding(.leading, 5)
-                }
+            HStack(spacing: 3) {
+                Image(systemName: "folder.fill").font(.system(size: 9, weight: .semibold))
+                Text("\(groupColors.count)").font(AppFont.caption.weight(.semibold)).monospacedDigit()
             }
-            .padding(6)
+            .foregroundStyle(Palette.onNight)
+            .padding(.horizontal, 6).frame(height: 20)
+            .background(Capsule().fill(Color.black.opacity(0.55)))
+            .padding(Space.sm)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("In \(groupColors.count) group\(groupColors.count == 1 ? "" : "s")")
         }
     }
@@ -541,19 +583,34 @@ struct ClipDetailSheet: View {
         return nil
     }
 
-    /// A custom, on-brand action pill (Share / Delete) — GhostButton's card look at a
-    /// compact height, tintable so Delete reads destructive.
+    /// Stoic text-link label (glyph + word, centered). Used for the destructive Delete:
+    /// black text + trash glyph, and the confirm dialog does the warning (no red).
     private func clipActionLabel(_ title: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: Space.xs) {
-            Image(systemName: systemImage).font(.system(size: 14, weight: .medium))
-            Text(title).font(AppFont.callout)
+        HStack(spacing: Space.sm) {
+            Image(systemName: systemImage).font(.system(size: 15, weight: .regular))
+            Text(title).font(AppFont.bodyText)
         }
         .foregroundStyle(tint)
-        .frame(maxWidth: .infinity).frame(height: 46)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .frame(maxWidth: .infinity).frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+
+    // Which rows the actions card shows (reads state only; same gates as before).
+    private var showsEditRow: Bool {
+        !isDraft && clip.jobId != nil && (current.status == .ready || current.status == .rendering)
+    }
+    private var showsVersionsRow: Bool {
+        !isDraft && clip.jobId != nil && !(current.renderHistory ?? []).isEmpty
+    }
+    private var showsShareRow: Bool { !isDraft && shareURL != nil }
+
+    /// Sheet footer surface: canvas with a hairline top edge (no blur material).
+    private func footerBar<V: View>(@ViewBuilder _ content: () -> V) -> some View {
+        content()
+            .padding(.horizontal, Space.screenH).padding(.top, Space.md).padding(.bottom, Space.sm)
+            .frame(maxWidth: .infinity)
+            .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
+            .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1) }
     }
 
     var body: some View {
@@ -568,6 +625,7 @@ struct ClipDetailSheet: View {
                         // for the committed cut.
                         ClipPreviewPlayer(path: current.previewURL == nil ? current.playbackLocalPath : nil,
                                           remoteURL: current.previewURL ?? current.playbackRemoteURL,
+                                          cornerRadius: Radius.tile,
                                           // Build 69: the manual editor covers this sheet —
                                           // pause the moment it opens (owner: video kept playing).
                                           suspended: showEditor)
@@ -578,17 +636,19 @@ struct ClipDetailSheet: View {
                         if current.previewURL != nil {
                             VStack {
                                 HStack {
-                                    Text("PREVIEW")
-                                        .font(.system(size: 10, weight: .bold)).tracking(1.0)
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 8).padding(.vertical, 4)
-                                        .background(Palette.accent.opacity(0.9))
-                                        .clipShape(Capsule())
+                                    // Over video: dark scrim capsule, white tracked label.
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "eye").font(.system(size: 10, weight: .semibold))
+                                        Text("PREVIEW").font(AppFont.eyebrow).tracking(1.2)
+                                    }
+                                    .foregroundStyle(Palette.onNight)
+                                    .padding(.horizontal, 10).frame(height: 24)
+                                    .background(Capsule().fill(Color.black.opacity(0.6)))
                                     Spacer()
                                 }
                                 Spacer()
                             }
-                            .padding(Space.sm)
+                            .padding(Space.md)
                             .allowsHitTesting(false)
                         }
                         if current.status == .rendering, let pp = PipelineProgress.from(current) {
@@ -597,14 +657,14 @@ struct ClipDetailSheet: View {
                             // reads on the video and matches the Library cards.
                             // build 52: rounded so the dim overlay follows the player's
                             // founder corners instead of squaring them off during editing.
-                            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                            RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
                                 .fill(.black.opacity(0.35))
                             VStack {
                                 Spacer()
                                 PipelineTimeline(progress: pp, compact: true)
                                     .padding(.horizontal, Space.md).padding(.vertical, 10)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                    .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                        .fill(Palette.surface))
                                     .padding(Space.md)
                             }
                         }
@@ -614,7 +674,7 @@ struct ClipDetailSheet: View {
                     // centered horizontally, it reads like a proper vertical reel.
                     .aspectRatio(9.0 / 16.0, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: 500)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
 
                     // UX-D1: the tweak chat is the clip's front door, not a buried menu
                     // entry — an input-shaped affordance right under the player. This is
@@ -623,29 +683,30 @@ struct ClipDetailSheet: View {
                     // gate left clips with a jobId but no remote render URL (e.g. the
                     // demo clip) with no AI entry at all once the duplicate button went.
                     if current.status == .ready && clip.jobId != nil && !isDraft {
+                        // Stoic search-capsule shape: sunken capsule, glyph + placeholder.
                         Button { showTweak = true } label: {
                             HStack(spacing: Space.sm) {
                                 Image(systemName: "wand.and.stars")
-                                    .font(.system(size: 14)).foregroundStyle(Palette.accent)
+                                    .font(.system(size: 17, weight: .regular))
+                                    .foregroundStyle(Palette.textPrimary)
                                 Text("Tell the editor what to change…")
-                                    .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
-                                Spacer()
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textTertiary)
+                                    .lineLimit(1).minimumScaleFactor(0.85)
+                                Spacer(minLength: 0)
                             }
-                            .padding(.horizontal, Space.md).padding(.vertical, 12)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous)
-                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                            .padding(.horizontal, Space.lg).frame(height: 52)
+                            .background(Capsule().fill(Palette.surfaceSunken))
+                            .contentShape(Capsule())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PressableStyle(dim: 0.8))
                         .accessibilityIdentifier("clip.tweakAffordance")
                     }
                     // Failed render → tell the creator WHY + let them retry (the
                     // backend still holds the source + EDL). No more silent spin.
                     if !isDraft, current.status == .failed {
-                        VStack(alignment: .leading, spacing: Space.sm) {
+                        VStack(alignment: .leading, spacing: Space.md) {
                             Label(store.friendlyRenderError(current.lastError, detail: current.lastErrorDetail), systemImage: "exclamationmark.triangle")
-                                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                                .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                                 .fixedSize(horizontal: false, vertical: true)
                             // Liveness v2: an upload that died before a job existed has
                             // jobId nil but the take on disk — retryClipJob recovers it via
@@ -658,61 +719,53 @@ struct ClipDetailSheet: View {
                                 .accessibilityIdentifier("clip.retry")
                             }
                         }
-                        .padding(Space.md)
-                        .background(Palette.surfaceRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                     }
 
-                    // Edit tooling — only for server-edited clips whose job is still
-                    // alive (jobId == nil means the offline mock engine). AI tweaks have
-                    // exactly ONE entry point: the input-shaped affordance under the
-                    // player above (a second "Tweak with AI" button here opened the
-                    // identical sheet — pure duplication, removed).
-                    if !isDraft, clip.jobId != nil, current.status == .ready || current.status == .rendering {
-                        GhostButton(title: "Edit manually", systemImage: "slider.horizontal.3") {
-                            showEditor = true
-                        }
-                        .accessibilityIdentifier("clip.editManual")
-                    }
-
-                    // Build 66: past edit versions — a timeline of every AI/manual edit,
-                    // any of which can be restored (server-side EDL undo + re-render).
-                    if !isDraft, clip.jobId != nil, !(current.renderHistory ?? []).isEmpty {
-                        GhostButton(title: "Versions", systemImage: "clock.arrow.circlepath") {
-                            showVersions = true
-                        }
-                        .accessibilityIdentifier("clip.versions")
-                    }
-
-                    // Custom Share / Delete actions — first-class, on-brand pills instead of
-                    // a buried Apple-native ellipsis menu. build 52: Delete now shows for
-                    // DRAFTS too (it was gated behind !isDraft, leaving drafts un-deletable
-                    // from the Library — the reported bug); Share stays non-draft only (a
-                    // half-finished take has nothing shareable yet).
-                    HStack(spacing: Space.sm) {
-                        if !isDraft, shareURL != nil {
-                            Button {
-                                guard !sharePreparing else { return }
-                                sharePreparing = true
-                                Task {
-                                    shareFileURL = await store.shareableRenderFile(for: clip.id)
-                                    sharePreparing = false
-                                }
-                            } label: {
-                                clipActionLabel(sharePreparing ? "Preparing…" : "Share",
-                                                systemImage: "square.and.arrow.up",
-                                                tint: Palette.textPrimary)
+                    // Actions as one Stoic grouped-rows card: Edit manually / Versions /
+                    // Share. Same gates as before, only the chrome changed.
+                    if showsEditRow || showsVersionsRow || showsShareRow {
+                        DSGroup {
+                            // Edit tooling — only for server-edited clips whose job is still
+                            // alive (jobId == nil means the offline mock engine). AI tweaks have
+                            // exactly ONE entry point: the input-shaped affordance under the
+                            // player above (a second "Tweak with AI" button here opened the
+                            // identical sheet — pure duplication, removed).
+                            if showsEditRow {
+                                DSRow(title: "Edit manually", systemImage: "slider.horizontal.3", action: {
+                                    showEditor = true
+                                })
+                                .accessibilityIdentifier("clip.editManual")
                             }
-                            .buttonStyle(PressableStyle(dim: 0.7))
-                            .disabled(sharePreparing)
-                            .accessibilityIdentifier("clip.share")
+                            if showsEditRow && (showsVersionsRow || showsShareRow) { DSRowDivider(inset: 56) }
+
+                            // Build 66: past edit versions — a timeline of every AI/manual edit,
+                            // any of which can be restored (server-side EDL undo + re-render).
+                            if showsVersionsRow {
+                                DSRow(title: "Versions", systemImage: "clock.arrow.circlepath", action: {
+                                    showVersions = true
+                                })
+                                .accessibilityIdentifier("clip.versions")
+                            }
+                            if showsVersionsRow && showsShareRow { DSRowDivider(inset: 56) }
+
+                            // Share stays non-draft only (a half-finished take has nothing
+                            // shareable yet).
+                            if showsShareRow {
+                                DSRow(title: sharePreparing ? "Preparing…" : "Share",
+                                      systemImage: "square.and.arrow.up", showsChevron: false, action: {
+                                    guard !sharePreparing else { return }
+                                    sharePreparing = true
+                                    Task {
+                                        shareFileURL = await store.shareableRenderFile(for: clip.id)
+                                        sharePreparing = false
+                                    }
+                                })
+                                .disabled(sharePreparing)
+                                .accessibilityIdentifier("clip.share")
+                            }
                         }
-                        Button { showDelete = true } label: {
-                            clipActionLabel(isDraft ? "Delete draft" : "Delete",
-                                            systemImage: "trash", tint: Palette.critical)
-                        }
-                        .buttonStyle(PressableStyle(dim: 0.7))
-                        .accessibilityIdentifier("clip.delete")
                     }
 
                     if isDraft {
@@ -723,37 +776,60 @@ struct ClipDetailSheet: View {
                         Text(hasFootage
                              ? "Your take is saved here. Send it to the editor whenever you're ready."
                              : "Saved mid-take. Pick up right where you left off; your script is queued in Film.")
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
                         // Editable caption — creators tweak the copy before it goes out.
                         VStack(alignment: .leading, spacing: Space.sm) {
-                            SectionLabel(text: "Caption", accent: Palette.accent)
+                            SectionLabel(text: "Caption")
+                                .padding(.horizontal, Space.rowPad)
                             TextField("Caption", text: $caption, axis: .vertical)
-                                .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                                .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                .tint(Palette.textPrimary)
                                 .lineLimit(2...6)
-                                .padding(Space.md)
-                                .background(Palette.surfaceRaised)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                                .padding(Space.rowPad)
+                                .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                    .fill(Palette.surface))
                                 .accessibilityIdentifier("clip.caption")
                         }
                     }
 
                     if !isDraft, !clip.captionLines.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            SectionLabel(text: "Auto-captions", accent: Palette.accent)
-                            ForEach(Array(clip.captionLines.enumerated()), id: \.offset) { _, line in
-                                Text(line).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            SectionLabel(text: "Auto-captions")
+                                .padding(.horizontal, Space.rowPad)
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(Array(clip.captionLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                         }
                     }
+
+                    // build 52: Delete shows for DRAFTS too (it was gated behind !isDraft,
+                    // leaving drafts un-deletable). Stoic destructive = text link + confirm.
+                    Button { showDelete = true } label: {
+                        clipActionLabel(isDraft ? "Delete draft" : "Delete",
+                                        systemImage: "trash", tint: Palette.textPrimary)
+                    }
+                    .buttonStyle(PressableStyle(dim: 0.5))
+                    .accessibilityIdentifier("clip.delete")
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.sm).padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle(isDraft ? "Draft" : "Clip").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
+                // Stoic sheet title: lowercase with a period, centered.
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle(isDraft ? "Draft" : "Clip"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 // Share + Delete moved to custom in-body pills (clip.share / clip.delete);
                 // the native ellipsis menu is gone.
                 ToolbarItem(placement: .topBarTrailing) {
@@ -761,6 +837,7 @@ struct ClipDetailSheet: View {
                         if !isDraft { store.updateClipCaption(clip, caption: caption) }
                         dismiss()
                     }
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -773,40 +850,41 @@ struct ClipDetailSheet: View {
                         FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path)
                     } ?? false
                     if hasFootage {
-                        PrimaryButton(title: "Send to editor", systemImage: "wand.and.stars") {
-                            store.submitDraft(clip)
-                            dismiss()
-                            router.selectedTab = .library
+                        footerBar {
+                            PrimaryButton(title: "Send to editor", systemImage: "wand.and.stars") {
+                                store.submitDraft(clip)
+                                dismiss()
+                                router.selectedTab = .library
+                            }
+                            .accessibilityIdentifier("library.sendDraftToEditor")
                         }
-                        .accessibilityIdentifier("library.sendDraftToEditor")
-                        .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                        .background(.ultraThinMaterial)
                     } else {
-                        PrimaryButton(title: "Finish this take", systemImage: "video.fill") {
-                            router.pendingFilmScriptId = clip.scriptId
-                            dismiss()
-                            router.showFilm = true
+                        footerBar {
+                            PrimaryButton(title: "Finish this take", systemImage: "video.fill") {
+                                router.pendingFilmScriptId = clip.scriptId
+                                dismiss()
+                                router.showFilm = true
+                            }
+                            .accessibilityIdentifier("library.finishDraft")
                         }
-                        .accessibilityIdentifier("library.finishDraft")
-                        .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                        .background(.ultraThinMaterial)
                     }
                 } else if current.status == .ready {
-                    HStack(spacing: Space.sm) {
-                        PrimaryButton(title: "Post now", systemImage: "paperplane.fill") {
-                            store.updateClipCaption(clip, caption: caption)
-                            showPostNow = true
+                    // Stoic CTA row: outline secondary leading, primary trailing.
+                    footerBar {
+                        HStack(spacing: Space.sm) {
+                            GhostButton(title: "Schedule", systemImage: "calendar") {
+                                store.updateClipCaption(clip, caption: caption)
+                                router.pendingScheduleClipId = clip.id
+                                dismiss(); router.selectedTab = .performance
+                            }
+                            .accessibilityIdentifier("clip.schedule")
+                            PrimaryButton(title: "Post now", systemImage: "paperplane.fill") {
+                                store.updateClipCaption(clip, caption: caption)
+                                showPostNow = true
+                            }
+                            .accessibilityIdentifier("clip.postNow")
                         }
-                        .accessibilityIdentifier("clip.postNow")
-                        GhostButton(title: "Schedule", systemImage: "calendar") {
-                            store.updateClipCaption(clip, caption: caption)
-                            router.pendingScheduleClipId = clip.id
-                            dismiss(); router.selectedTab = .performance
-                        }
-                        .accessibilityIdentifier("clip.schedule")
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
                 }
             }
             .marqueConfirm($showDelete, title: isDraft ? "Delete this draft?" : "Delete this clip?",
@@ -872,47 +950,55 @@ struct PostNowSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("POST NOW").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Text("Where should this go?")
-                    .font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
+            // Stoic sheet header: eyebrow over a centered lowercase title. One line, scaled
+            // down if needed, so the .medium detent still fits on an SE.
+            VStack(spacing: Space.xs) {
+                DSEyebrow(text: "POST NOW")
+                Text(dsTitle("Where should this go?"))
+                    .font(AppFont.title1).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .accessibilityAddTraits(.isHeader)
             }
-            VStack(spacing: 0) {
+            .frame(maxWidth: .infinity)
+            .padding(.top, Space.sm)
+            DSGroup {
                 ForEach(SocialPlatform.allCases) { p in
                     let isLinked = linked(p)
                     Button {
                         if chosen.contains(p) { chosen.remove(p) } else { chosen.insert(p) }
                     } label: {
                         HStack(spacing: Space.md) {
-                            Text(p.label).font(AppFont.body)
-                                .foregroundStyle(isLinked ? Palette.textPrimary : Palette.textTertiary)
-                            if !isLinked {
-                                Text("not connected").font(AppFont.caption)
-                                    .foregroundStyle(Palette.textTertiary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(p.label).font(AppFont.bodyText)
+                                    .foregroundStyle(isLinked ? Palette.textPrimary : Palette.textTertiary)
+                                if !isLinked {
+                                    Label("not connected", systemImage: "link")
+                                        .font(AppFont.caption)
+                                        .foregroundStyle(Palette.textSecondary)
+                                }
                             }
-                            Spacer()
-                            Image(systemName: chosen.contains(p) ? "checkmark.circle.fill" : "circle")
-                                .font(.system(size: 20, weight: .light))
-                                .foregroundStyle(chosen.contains(p) ? Palette.ink : Palette.textTertiary)
+                            Spacer(minLength: Space.sm)
+                            DSCheckmark(isOn: chosen.contains(p))
+                                .opacity(isLinked ? 1 : 0.4)
                         }
-                        .padding(Space.md).contentShape(Rectangle())
+                        .padding(.horizontal, Space.rowPad)
+                        .frame(minHeight: 52)
+                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(DSRowPressStyle())
                     .disabled(!isLinked)
+                    .accessibilityAddTraits(chosen.contains(p) ? .isSelected : [])
                     .accessibilityIdentifier("postNow.\(p.rawValue)")
                     if p != SocialPlatform.allCases.last {
-                        Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+                        DSRowDivider()
                     }
                 }
             }
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
             if let note {
-                Text(note).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.rowPad)
             }
             Spacer(minLength: 0)
             if store.canPublish {
@@ -943,8 +1029,8 @@ struct PostNowSheet: View {
                 .accessibilityIdentifier("postNow.upgrade")
             }
         }
-        .padding(Space.lg)
-        .background(Palette.canvas)
+        .padding(.horizontal, Space.screenH).padding(.top, Space.md).padding(.bottom, Space.sm)
+        .background(Palette.canvas.ignoresSafeArea())
         .sheet(isPresented: $showUpgrade) { PaymentScreen(dismissible: true) }
         .onAppear {
             chosen = Set(SocialPlatform.allCases.filter(linked))
@@ -974,15 +1060,22 @@ struct VersionTimelineSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("EDIT HISTORY").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Text("Versions").font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
+            // Stoic sheet header: eyebrow + centered lowercase title + quiet subtitle.
+            VStack(spacing: Space.xs) {
+                DSEyebrow(text: "EDIT HISTORY")
+                Text(dsTitle("Versions"))
+                    .font(AppFont.title1).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
                 Text("Every edit is kept. Restore any version and your video re-renders exactly as it was.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Space.xs)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.top, Space.md)
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: Space.sm) {
                     timelineRow(label: clip?.currentVersionLabel ?? "", date: clip?.finishedAt,
                                 isCurrent: true, isLast: history.isEmpty, index: nil)
                     ForEach(Array(history.enumerated()), id: \.element.id) { i, v in
@@ -992,13 +1085,15 @@ struct VersionTimelineSheet: View {
                 }
             }
             if let note {
-                Text(note).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.rowPad)
             }
         }
-        .padding(Space.lg)
+        .padding(.horizontal, Space.screenH).padding(.bottom, Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.canvas)
+        .background(Palette.canvas.ignoresSafeArea())
         .sheet(item: $previewing) { v in
             VersionPreviewSheet(version: v,
                                 index: history.firstIndex(where: { $0.id == v.id }) ?? 0,
@@ -1015,47 +1110,36 @@ struct VersionTimelineSheet: View {
 
     @ViewBuilder
     private func timelineRow(label: String, date: Date?, isCurrent: Bool, isLast: Bool, index: Int?) -> some View {
+        // Stoic Journey timeline row: glyph leading, eyebrow + headline title, date, and
+        // the row's actions as small capsules (outline Preview, ink Restore).
         HStack(alignment: .top, spacing: Space.md) {
-            VStack(spacing: 0) {
-                Circle()
-                    .strokeBorder(isCurrent ? Palette.ink : Palette.textTertiary, lineWidth: 1.5)
-                    .background(Circle().fill(isCurrent ? Palette.ink : Color.clear).padding(3))
-                    .frame(width: 14, height: 14)
-                if !isLast {
-                    Rectangle().fill(Palette.hairline).frame(width: 1)
-                        .frame(maxHeight: .infinity)
+            Image(systemName: isCurrent ? "checkmark.circle.fill" : "clock.arrow.circlepath")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                if isCurrent {
+                    DSEyebrow(text: "CURRENT")
                 }
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: Space.sm) {
-                    Text(label.isEmpty ? "Original edit" : "\u{201C}\(label)\u{201D}")
-                        .font(Typeface.sans(14, isCurrent ? .semibold : .medium))
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(2)
-                    if isCurrent {
-                        Text("CURRENT").font(.system(size: 9, weight: .bold)).tracking(0.6)
-                            .foregroundStyle(Palette.onInk)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Palette.ink).clipShape(Capsule())
-                    }
-                }
+                Text(label.isEmpty ? "Original edit" : "\u{201C}\(label)\u{201D}")
+                    .font(AppFont.headline)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let date {
                     Text(date.formatted(.relative(presentation: .named)))
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 }
                 if let index {
-                    HStack(spacing: Space.sm) {
+                    HStack(spacing: Space.lg) {
                     Button { previewing = history[index] } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "play.fill").font(.system(size: 9, weight: .bold))
-                            Text("Preview").font(Typeface.sans(12, .semibold))
+                        HStack(spacing: 6) {
+                            Image(systemName: "play.fill").font(.system(size: 10, weight: .semibold))
+                            Text("Preview")
                         }
-                        .foregroundStyle(Palette.textPrimary)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(Palette.surfaceRaised))
-                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.dsLink)
                     .accessibilityIdentifier("versions.preview.\(index)")
                     if clip?.status == .ready {
                     Button {
@@ -1073,23 +1157,24 @@ struct VersionTimelineSheet: View {
                         }
                     } label: {
                         Text(restoring == history[index].id ? "Restoring…" : "Restore")
-                            .font(Typeface.sans(12, .semibold))
-                            .foregroundStyle(Palette.ink)
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Capsule().strokeBorder(Palette.ink.opacity(0.4), lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.dsLink)
+                    .opacity(restoring != nil && restoring != history[index].id ? 0.4 : 1)
                     .disabled(restoring != nil)
                     .accessibilityIdentifier("versions.restore.\(index)")
                     }
                     }
-                    .padding(.top, 2)
+                    .padding(.top, Space.xs)
                 }
             }
-            .padding(.bottom, Space.lg)
             Spacer(minLength: 0)
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(Space.rowPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+            .fill(Palette.surface))
+        // (isLast no longer draws a connector: rows are separate cards, Journey style.)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1109,25 +1194,26 @@ struct MediaSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
             VStack(alignment: .leading, spacing: Space.xs) {
-                SectionLabel(text: "Your media", accent: Palette.accent)
+                SectionLabel(text: "Your media")
                 Text("Your photos and videos. The editor pulls from these for B-roll.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            // A hairline ghost, not a hero button — importing reference media is a
-            // secondary action; the big ink slab overpowered the whole section.
+            // Stoic primary capsule, content-sized and centered (not a full-width slab).
             PhotosPicker(selection: $picked, maxSelectionCount: 40, matching: .any(of: [.images, .videos])) {
                 HStack(spacing: Space.sm) {
-                    if importing { ProgressView().tint(Palette.textSecondary) }
-                    else { Image(systemName: "plus").font(.system(size: 13, weight: .medium)) }
-                    Text(importing ? "Importing…" : "Import media").font(AppFont.callout)
+                    if importing { ProgressView().tint(Palette.onInk) }
+                    else { Image(systemName: "plus").font(.system(size: 15, weight: .semibold)) }
+                    Text(importing ? "Importing…" : "Import media").font(AppFont.headline)
                 }
-                .foregroundStyle(Palette.textPrimary).frame(maxWidth: .infinity).frame(height: 48)
-                .background(Palette.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                .foregroundStyle(Palette.onInk)
+                .padding(.horizontal, Space.xl).frame(height: 48)
+                .background(Capsule().fill(Palette.ink))
+                .contentShape(Capsule())
             }
+            .buttonStyle(PressableStyle())
+            .frame(maxWidth: .infinity)
             .accessibilityIdentifier("library.importMedia")
             .onChange(of: picked) { _, items in
                 guard !items.isEmpty else { return }
@@ -1143,7 +1229,7 @@ struct MediaSection: View {
                                message: "Import a batch above to build your reference library.")
             } else {
                 Text("\(store.media.count) item\(store.media.count == 1 ? "" : "s") in your media library")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 LazyVGrid(columns: cols, spacing: Space.sm) {
                     ForEach(store.media) { m in
                         Button { edit = m } label: { mediaCell(m) }
@@ -1160,35 +1246,49 @@ struct MediaSection: View {
     private func mediaCell(_ m: MediaAsset) -> some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
-            .overlay(LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo).scaledToFill())
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(LocalThumbnail(path: m.thumbnailPath ?? m.localPath, isVideo: m.isVideo,
+                                    cornerRadius: Radius.tile).scaledToFill())
+            .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
             .overlay(alignment: .bottomLeading) { kindChip(m) }
             .overlay(alignment: .topTrailing) { analysisBadge(m) }
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .overlay(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 0.5))
             .accessibilityIdentifier("library.mediaCell")
     }
 
+    /// Kind label as a tracked eyebrow on a dark scrim capsule (sits over the photo).
     private func kindChip(_ m: MediaAsset) -> some View {
-        Text(m.kind.label).font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.white).padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Palette.ink.opacity(0.6)).clipShape(Capsule()).padding(4)
+        Text(m.kind.label.uppercased()).font(AppFont.eyebrow).tracking(0.8)
+            .lineLimit(1).minimumScaleFactor(0.7)
+            .foregroundStyle(Palette.onNight)
+            .padding(.horizontal, 7).frame(height: 20)
+            .background(Capsule().fill(Color.black.opacity(0.55)))
+            .padding(6)
     }
 
-    /// I-5: analysis-state badge — ✓ analyzed, spinner while running, ! on failure, nothing yet.
+    /// I-5: analysis-state badge — ✓ analyzed, spinner while running, ! on failure, nothing
+    /// yet. Monochrome over the photo: done = dark disc + white check; failed = INVERTED
+    /// (white disc + black "!") so it stands apart without a red.
     @ViewBuilder private func analysisBadge(_ m: MediaAsset) -> some View {
         switch (store.media.first { $0.id == m.id }?.analysisStatus ?? m.analysisStatus) {
         case .done:
-            Image(systemName: "checkmark").font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white).frame(width: 16, height: 16)
-                .background(Circle().fill(Palette.ink)).padding(4)
+            Image(systemName: "checkmark").font(.system(size: 9, weight: .bold))
+                .foregroundStyle(Palette.onNight).frame(width: 20, height: 20)
+                .background(Circle().fill(Color.black.opacity(0.6)))
+                .padding(6)
+                .accessibilityLabel("Analyzed")
         case .analyzing:
-            ProgressView().scaleEffect(0.6).frame(width: 16, height: 16)
-                .background(Circle().fill(Palette.ink.opacity(0.5))).padding(4)
+            ProgressView().tint(Palette.onNight).scaleEffect(0.6).frame(width: 20, height: 20)
+                .background(Circle().fill(Color.black.opacity(0.5)))
+                .padding(6)
+                .accessibilityLabel("Analyzing")
         case .failed:
-            Image(systemName: "exclamationmark").font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.white).frame(width: 16, height: 16)
-                .background(Circle().fill(Palette.critical)).padding(4)
+            Image(systemName: "exclamationmark").font(.system(size: 10, weight: .bold))
+                .foregroundStyle(Color.black).frame(width: 20, height: 20)
+                .background(Circle().fill(Palette.onNight))
+                .overlay(Circle().strokeBorder(Color.black.opacity(0.25), lineWidth: 0.5))
+                .padding(6)
+                .accessibilityLabel("Analysis failed")
         case .none:
             EmptyView()
         }
@@ -1212,88 +1312,134 @@ struct MediaEditSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    LocalThumbnail(path: asset.thumbnailPath ?? asset.localPath, isVideo: asset.isVideo)
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    LocalThumbnail(path: asset.thumbnailPath ?? asset.localPath, isVideo: asset.isVideo,
+                                   cornerRadius: Radius.tile)
                         .frame(height: 280)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-                    SectionLabel(text: "What is this?", accent: Palette.accent)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Space.sm) {
-                            ForEach(MediaKind.allCases) { k in
-                                Button { kind = k } label: { Chip(text: k.label, selected: kind == k) }.buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "What is this?")
+                            .padding(.horizontal, Space.rowPad)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: Space.sm) {
+                                ForEach(MediaKind.allCases) { k in
+                                    DSChip(title: k.label, isSelected: kind == k, action: { kind = k })
+                                }
                             }
                         }
                     }
-                    SectionLabel(text: "Tag (optional)")
-                    TextField("e.g. gym, office, on stage", text: $note).marqueField()
+
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "Tag (optional)")
+                            .padding(.horizontal, Space.rowPad)
+                        TextField("e.g. gym, office, on stage", text: $note).marqueField()
+                            .tint(Palette.textPrimary)
+                    }
+
                     // AI Analysis section (I-5: reads the LIVE asset so results appear reactively)
                     if live.analysisStatus == .analyzing {
-                        HStack(spacing: Space.sm) {
-                            ProgressView().scaleEffect(0.8)
-                            Text("Analyzing…").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                        }
+                        DSChecklistRow(title: "Analyzing…", state: .active)
                     } else if live.analysisStatus == .done {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            SectionLabel(text: "AI description", accent: Palette.accent)
-                            Text(live.aiDescription).font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                            if !live.onScreenText.isEmpty {
-                                SectionLabel(text: "On-screen text", accent: Palette.accent)
-                                Text(live.onScreenText).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                            }
-                            SectionLabel(text: "B-roll fit", accent: Palette.accent)
-                            HStack(spacing: Space.sm) {
-                                GeometryReader { geo in
-                                    ZStack(alignment: .leading) {
-                                        Capsule().fill(Palette.hairline).frame(height: 6)
-                                        Capsule()
-                                            .fill(live.brollSuitability > 60 ? Palette.accent : Palette.gold)
-                                            .frame(width: geo.size.width * CGFloat(live.brollSuitability) / 100, height: 6)
+                        VStack(alignment: .leading, spacing: Space.lg) {
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                SectionLabel(text: "AI description")
+                                    .padding(.horizontal, Space.rowPad)
+                                VStack(alignment: .leading, spacing: Space.md) {
+                                    Text(live.aiDescription).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if !live.onScreenText.isEmpty {
+                                        VStack(alignment: .leading, spacing: Space.xs) {
+                                            SectionLabel(text: "On-screen text")
+                                            Text(live.onScreenText).font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
                                     }
-                                }.frame(height: 6)
-                                Text("\(live.brollSuitability)%").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                             }
-                            if !live.brollSuitabilityReason.isEmpty {
-                                Text(live.brollSuitabilityReason).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+
+                            // B-roll fit as a Stoic stat tile: the number, a monochrome
+                            // meter, and the reason underneath.
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                SectionLabel(text: "B-roll fit")
+                                    .padding(.horizontal, Space.rowPad)
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    Text("\(live.brollSuitability)%").font(AppFont.stat).tracking(-0.3)
+                                        .foregroundStyle(Palette.textPrimary)
+                                    GeometryReader { geo in
+                                        ZStack(alignment: .leading) {
+                                            Capsule().fill(Palette.hairline).frame(height: 6)
+                                            Capsule()
+                                                .fill(Palette.ink)
+                                                .frame(width: geo.size.width * CGFloat(live.brollSuitability) / 100, height: 6)
+                                        }
+                                    }.frame(height: 6)
+                                    if !live.brollSuitabilityReason.isEmpty {
+                                        Text(live.brollSuitabilityReason).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Space.rowPad)
+                                .background(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                                    .fill(Palette.surfaceSunken))
                             }
+
                             if !live.aiTags.isEmpty {
-                                SectionLabel(text: "Auto-tags", accent: Palette.accent)
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: Space.sm) {
-                                        ForEach(live.aiTags, id: \.self) { tag in Chip(text: tag) }
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    SectionLabel(text: "Auto-tags")
+                                        .padding(.horizontal, Space.rowPad)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: Space.sm) {
+                                            ForEach(live.aiTags, id: \.self) { tag in Chip(text: tag) }
+                                        }
                                     }
                                 }
                             }
                         }
                     } else {
                         // .none / .failed — offer a manual analyze (retry on failed).
-                        Button { store.ensureMediaAnalyzed(live) } label: {
-                            Label(live.analysisStatus == .failed ? "Analysis failed, retry" : "Analyze with AI",
-                                  systemImage: "sparkles")
-                                .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                                .frame(maxWidth: .infinity).frame(height: 44)
-                                .background(Palette.surfaceRaised)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                        VStack(spacing: Space.sm) {
+                            Button { store.ensureMediaAnalyzed(live) } label: {
+                                Label(live.analysisStatus == .failed ? "Analysis failed, retry" : "Analyze with AI",
+                                      systemImage: "sparkles")
+                            }
+                            .buttonStyle(DSCapsuleStyle(kind: .outline, height: 48))
+                            .accessibilityIdentifier("media.analyzeNow")
                         }
-                        .buttonStyle(PressableStyle()).accessibilityIdentifier("media.analyzeNow")
+                        .frame(maxWidth: .infinity)
                     }
+
+                    // Destructive as a text link (black glyph + wording, no red).
                     Button(role: .destructive) { store.removeMedia(asset); dismiss() } label: {
-                        Text("Remove from library").font(AppFont.callout).foregroundStyle(Palette.critical)
+                        Label("Remove from library", systemImage: "trash")
+                            .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                            .frame(maxWidth: .infinity).frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .padding(.top, Space.sm)
+                    .buttonStyle(PressableStyle(dim: 0.5))
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Media").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .onAppear { store.ensureMediaAnalyzed(asset) }   // I-5: lazy — analyze on first open
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Media"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
                         var a = asset; a.kind = kind; a.note = note.trimmingCharacters(in: .whitespaces)
                         store.updateMedia(a); dismiss()
                     }
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                 }
             }
         }
@@ -1326,14 +1472,28 @@ extension ClipStatus {
         case .failed:    return "Failed"
         }
     }
+    /// Monochrome status glyph: in the black-and-white system this (plus the label) is what
+    /// carries a clip's state, where the old UI used a hue.
+    var statusGlyph: String {
+        switch self {
+        case .draft:     return "pencil.line"
+        case .ready:     return "checkmark.circle"
+        case .rendering: return "wand.and.stars"
+        case .scheduled: return "calendar"
+        case .posted:    return "paperplane"
+        case .failed:    return "exclamationmark.triangle"
+        }
+    }
     var railColor: Color {
         switch self {
-        case .draft:     return Palette.warning
-        case .ready:     return Palette.accent
-        case .rendering: return Palette.textTertiary
-        case .scheduled: return Palette.scheduled
-        case .posted:    return Palette.positive
-        case .failed:    return Palette.critical
+        // Mono system: no status hues. Kept for API compatibility; status meaning is
+        // carried by `statusGlyph` + wording.
+        case .draft:     return Palette.textPrimary
+        case .ready:     return Palette.textPrimary
+        case .rendering: return Palette.textSecondary
+        case .scheduled: return Palette.textSecondary
+        case .posted:    return Palette.textPrimary
+        case .failed:    return Palette.textPrimary
         }
     }
     var whyLine: String {
@@ -1373,64 +1533,95 @@ struct BulkScheduleSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
+                VStack(alignment: .leading, spacing: Space.xl) {
                     Text("^[\(readyCount) clip](inflect: true) will be scheduled to the same time and platforms.")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     // Build 60: preview strip — see exactly what's about to go out.
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Space.sm) {
                             ForEach(store.clips.filter { clipIDs.contains($0.id) && $0.status == .ready }) { c in
-                                VStack(spacing: 4) {
+                                VStack(spacing: 6) {
                                     LocalThumbnail(path: c.thumbnailPath ?? c.playbackLocalPath,
-                                                   isVideo: true, remoteImageURL: c.thumbnailURL)
+                                                   isVideo: true, remoteImageURL: c.thumbnailURL,
+                                                   cornerRadius: Radius.group)
                                         .aspectRatio(9/16, contentMode: .fill)
                                         .frame(width: 72, height: 128)
-                                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                                        .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
                                             .strokeBorder(Palette.hairline, lineWidth: 0.5))
                                     Text(c.title.isEmpty ? c.formatName : c.title)
-                                        .font(.system(size: 9, weight: .medium)).lineLimit(1)
-                                        .foregroundStyle(Palette.textTertiary).frame(width: 72)
+                                        .font(AppFont.caption).lineLimit(1)
+                                        .foregroundStyle(Palette.textSecondary).frame(width: 72)
                                 }
                             }
                         }
                     }
 
-                    SectionLabel(text: "When")
-                    MarqueTimePicker(time: $date)
+                    // Native-style pickers inside a surface card (Stoic time-picker card).
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "When")
+                            .padding(.horizontal, Space.rowPad)
+                        MarqueTimePicker(time: $date)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
+                    }
 
-                    SectionLabel(text: "Platforms")
-                    HStack(spacing: Space.sm) {
-                        ForEach(SocialPlatform.allCases) { p in
-                            Button {
-                                if platforms.contains(p) { platforms.remove(p) } else { platforms.insert(p) }
-                            } label: { Chip(text: p.label, selected: platforms.contains(p)) }
-                                .buttonStyle(.plain)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "Platforms")
+                            .padding(.horizontal, Space.rowPad)
+                        HStack(spacing: Space.sm) {
+                            ForEach(SocialPlatform.allCases) { p in
+                                DSChip(title: p.label, isSelected: platforms.contains(p), action: {
+                                    if platforms.contains(p) { platforms.remove(p) } else { platforms.insert(p) }
+                                })
+                            }
                         }
                     }
 
-                    Toggle(isOn: $autoCaptions) {
-                        Text("Auto-caption").font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                    }.tint(Palette.accent)
+                    DSGroup {
+                        DSToggleRow(title: "Auto-caption", systemImage: "captions.bubble",
+                                    isOn: $autoCaptions)
+                    }
 
                     if !hasPostableAccount {
+                        // Warning = black glyph + wording (no amber).
                         Button { showConnect = true } label: {
-                            HStack(spacing: Space.sm) {
-                                Image(systemName: "link").font(.system(size: 13, weight: .semibold))
+                            HStack(alignment: .top, spacing: Space.md) {
+                                Image(systemName: "link").font(.system(size: 17, weight: .regular))
+                                    .frame(width: 24)
                                 Text("Connect an account to actually post. Otherwise this just saves reminders.")
-                                    .font(AppFont.caption)
-                            }.foregroundStyle(Palette.warning)
-                        }.buttonStyle(.plain)
+                                    .font(AppFont.supporting)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Spacer(minLength: Space.sm)
+                                Image(systemName: "chevron.right").font(.system(size: 14, weight: .semibold))
+                                    .padding(.top, 2)
+                            }
+                            .foregroundStyle(Palette.textPrimary)
+                            .padding(Space.rowPad)
+                            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                            .contentShape(Rectangle())
+                        }.buttonStyle(PressableStyle(dim: 0.7))
                     }
                 }
-                .padding(Space.lg)
+                .padding(.horizontal, Space.screenH).padding(.vertical, Space.md)
             }
+            .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Schedule \(readyCount)")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Schedule \(readyCount)"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(posting ? "Scheduling…" : "Schedule") {
@@ -1445,6 +1636,7 @@ struct BulkScheduleSheet: View {
                             posting = false; onDone(); dismiss()
                         }
                     }.disabled(posting || platforms.isEmpty || readyCount == 0)
+                    .font(AppFont.headline).tint(Palette.textPrimary)
                 }
             }
             .sheet(isPresented: $showConnect) { ConnectAccountsView() }
@@ -1469,33 +1661,46 @@ struct VersionPreviewSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: Space.lg) {
-                ClipPreviewPlayer(path: nil, remoteURL: version.url)
+                ClipPreviewPlayer(path: nil, remoteURL: version.url, cornerRadius: Radius.tile)
                     .aspectRatio(9.0 / 16.0, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: 460)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-                VStack(spacing: 4) {
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+                VStack(spacing: Space.xs) {
                     Text(version.label.isEmpty ? "Original edit" : "\u{201C}\(version.label)\u{201D}")
-                        .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textPrimary)
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(version.date.formatted(.relative(presentation: .named)))
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(Space.lg)
+            .padding(.horizontal, Space.screenH).padding(.vertical, Space.md)
             .frame(maxWidth: .infinity)
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Preview").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                }
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Preview"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
             }
             .safeAreaInset(edge: .bottom) {
                 if canRestore {
                     PrimaryButton(title: "Restore this version", systemImage: "arrow.uturn.backward") {
                         onRestore(index)
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
+                    .padding(.horizontal, Space.screenH).padding(.top, Space.md).padding(.bottom, Space.sm)
+                    .frame(maxWidth: .infinity)
+                    .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
+                    .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1) }
                     .accessibilityIdentifier("versions.previewRestore")
                 }
             }

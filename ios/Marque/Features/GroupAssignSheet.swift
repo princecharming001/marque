@@ -1,9 +1,12 @@
 import SwiftUI
 
 extension ClipGroup {
-    /// SwiftUI accent for this group's dot. Lives here rather than on the model because
+    /// SwiftUI color for this group's marker. Lives here rather than on the model because
     /// Models.swift is deliberately Foundation-only (it's decoded off the main actor).
-    var displayColor: Color { Color(hex: displayColorHex) }
+    /// The mono redesign retires per-group hues: every group marker is primary ink, and a
+    /// group is identified by its name and a folder glyph instead (`displayColorHex` stays
+    /// on the model untouched).
+    var displayColor: Color { Palette.textPrimary }
 }
 
 /// Build 61 — the Library's "put these clips in a group" surface.
@@ -44,48 +47,58 @@ struct GroupAssignSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.md) {
+                VStack(alignment: .leading, spacing: Space.lg) {
                     Text("^[\(clipIDs.count) clip](inflect: true) selected. A clip can sit in as many groups as you like.")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, Space.rowPad)
 
                     if store.clipGroups.isEmpty {
                         emptyState
                     } else {
-                        VStack(spacing: 0) {
+                        // Stoic checklist rows in one grouped card.
+                        DSGroup {
                             ForEach(store.clipGroups) { g in
                                 groupRow(g)
                                 if g.id != store.clipGroups.last?.id {
-                                    Divider().overlay(Palette.hairline).padding(.leading, Space.md)
+                                    DSRowDivider(inset: 56)
                                 }
                             }
                         }
-                        .background(Palette.surfaceRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .strokeBorder(Palette.hairline, lineWidth: 1))
                     }
 
                     createRow
 
                     if anyGrouped {
+                        // Destructive as a text link: black glyph + wording, no red.
                         Button {
                             store.clearGroups(clipIDs)
                         } label: {
                             Label("Remove from all groups", systemImage: "folder.badge.minus")
-                                .font(AppFont.callout).foregroundStyle(Palette.critical)
+                                .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                .frame(maxWidth: .infinity).frame(minHeight: 44)
+                                .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
-                        .padding(.top, Space.sm)
+                        .buttonStyle(PressableStyle(dim: 0.5))
                         .accessibilityIdentifier("group.removeAll")
                     }
                 }
-                .padding(Space.lg)
+                .padding(.horizontal, Space.screenH).padding(.vertical, Space.md)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Groups")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Groups"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                }
             }
         }
         .presentationDetents([.medium, .large])
@@ -101,64 +114,95 @@ struct GroupAssignSheet: View {
             store.setGroupMembership(clipIDs, group: g.id, isMember: state != .all)
         } label: {
             HStack(spacing: Space.md) {
-                Circle().fill(g.displayColor).frame(width: 12, height: 12)
+                // Groups are told apart by name + folder glyph (no per-group hue).
+                Image(systemName: state == .none ? "folder" : "folder.fill")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(g.displayColor)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
                 Text(g.name)
-                    .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                Spacer()
-                Image(systemName: glyph(state))
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(state == .none ? Palette.textTertiary : Palette.accent)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).lineLimit(1)
+                Spacer(minLength: Space.sm)
+                triStateMark(state)
+                    .accessibilityHidden(true)
             }
-            .padding(.horizontal, Space.md).padding(.vertical, 13)
+            .padding(.horizontal, Space.rowPad)
+            .frame(minHeight: 52)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DSRowPressStyle())
+        .accessibilityValue(state == .all ? "In group" : (state == .some ? "Some selected clips in group" : "Not in group"))
         .accessibilityIdentifier("group.row")
     }
 
     private func glyph(_ state: Membership) -> String {
         switch state {
-        case .all:  return "checkmark.circle.fill"
-        case .some: return "minus.circle"
-        case .none: return "circle"
+        case .all:  return "checkmark"
+        case .some: return "minus"
+        case .none: return ""
         }
+    }
+
+    /// Stoic checklist mark, tri-state: outline circle (none), outline circle + minus
+    /// (partial), ink circle + check (all). Inversion carries "on", not color.
+    private func triStateMark(_ state: Membership) -> some View {
+        ZStack {
+            Circle().fill(state == .all ? Palette.ink : .clear)
+            Circle().strokeBorder(state == .all ? .clear
+                                  : (state == .some ? Palette.textPrimary : Palette.hairline),
+                                  lineWidth: 1.5)
+            if state != .none {
+                Image(systemName: glyph(state))
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(state == .all ? Palette.onInk : Palette.textPrimary)
+            }
+        }
+        .frame(width: 22, height: 22)
+        .animation(Motion.quick, value: state == .all)
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
+        // Stoic outline (empty) card.
+        VStack(spacing: Space.xs) {
+            Image(systemName: "folder")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(Palette.textSecondary)
+                .padding(.bottom, Space.xs)
             Text("No groups yet")
                 .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
             Text("Groups are just folders for your library, a client, a campaign, a month. Name one below and these clips go straight in.")
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Space.md)
-        .background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .frame(maxWidth: .infinity)
+        .dsCard(.outline, radius: Radius.group)
     }
 
     private var createRow: some View {
+        // Inline "New group" text-field row (Stoic form row: surface, 52pt).
         HStack(spacing: Space.md) {
-            Circle()
-                .strokeBorder(Palette.textTertiary, style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
-                .frame(width: 12, height: 12)
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 24)
+                .accessibilityHidden(true)
             TextField("New group", text: $newGroupName)
-                .font(AppFont.body).foregroundStyle(Palette.textPrimary)
+                .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                .tint(Palette.textPrimary)
                 .textInputAutocapitalization(.words)
                 .focused($newGroupFocused)
                 .submitLabel(.done)
                 .onSubmit(create)
                 .accessibilityIdentifier("group.newName")
             Button("Create", action: create)
-                .font(AppFont.callout.weight(.semibold))
-                .foregroundStyle(canCreate ? Palette.accent : Palette.textTertiary)
-                .buttonStyle(.plain).disabled(!canCreate)
+                .buttonStyle(DSCapsuleStyle(kind: .primary, height: 36))
+                .disabled(!canCreate)
                 .accessibilityIdentifier("group.create")
         }
-        .padding(.horizontal, Space.md).padding(.vertical, 13)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .padding(.leading, Space.rowPad).padding(.trailing, Space.sm)
+        .frame(minHeight: 52)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
     }
 
     private var canCreate: Bool {

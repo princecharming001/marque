@@ -207,7 +207,8 @@ struct LocalThumbnail: View {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Image(systemName: isVideo ? "play.fill" : "photo")
-                    .font(.system(size: 16)).foregroundStyle(Palette.textTertiary)
+                    .font(.system(size: 16)).foregroundStyle(Palette.textSecondary)
+                    .accessibilityHidden(true)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -258,8 +259,8 @@ struct LocalVideoPlayer: View {
                 ZStack {
                     Palette.surfaceSunken
                     VStack(spacing: Space.sm) {
-                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
-                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textSecondary)
+                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     }
                 }
             }
@@ -297,8 +298,8 @@ struct ClipPreviewPlayer: View {
                 ZStack {
                     Palette.surfaceSunken
                     VStack(spacing: Space.sm) {
-                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textTertiary)
-                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        Image(systemName: "video.slash").font(.system(size: 24)).foregroundStyle(Palette.textSecondary)
+                        Text("Preview unavailable").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
