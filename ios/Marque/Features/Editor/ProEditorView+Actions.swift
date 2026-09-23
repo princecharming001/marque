@@ -1122,26 +1122,57 @@ extension ProEditorView {
     /// since it only restamps caption/grade/duck and re-renders directly.
     var themeSheet: some View {
         NavigationStack {
-            List {
-                ForEach(themes) { t in
-                    Button {
-                        showThemeSheet = false
-                        retheme(to: t.id)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(t.label).font(.system(size: 15, weight: .semibold))
-                                if t.id == activeThemeId {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.accent)
+            // Stoic tiles: 2-column grid, the active bundle inverted to ink with a check.
+            ScrollView {
+                VStack(spacing: Space.stack) {
+                    DSSheetHeader(title: "theme.")
+                        .padding(.bottom, Space.sm)
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.stack),
+                                        GridItem(.flexible(), spacing: Space.stack)],
+                              spacing: Space.stack) {
+                        ForEach(themes) { t in
+                            let on = t.id == activeThemeId
+                            Button {
+                                showThemeSheet = false
+                                retheme(to: t.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(alignment: .top, spacing: 4) {
+                                        Text(t.label).font(AppFont.headline)
+                                            .foregroundStyle(on ? Palette.onInk : Palette.textPrimary)
+                                            .lineLimit(2).minimumScaleFactor(0.85)
+                                        Spacer(minLength: 0)
+                                        if t.id == activeThemeId {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.system(size: 16, weight: .regular))
+                                                .foregroundStyle(Palette.onInk)
+                                        }
+                                    }
+                                    Text(t.blurb).font(AppFont.caption)
+                                        .foregroundStyle(on ? Palette.onInk.opacity(0.8) : Palette.textSecondary)
+                                        .lineLimit(3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 0)
                                 }
+                                .padding(Space.md)
+                                .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+                                .background(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                                    .fill(on ? Palette.ink : Palette.surface))
+                                .contentShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
                             }
-                            Text(t.blurb).font(.system(size: 12)).foregroundStyle(.secondary)
+                            .buttonStyle(PressableStyle())
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            .accessibilityIdentifier("editorPro.theme.\(t.id)")
                         }
                     }
-                    .accessibilityIdentifier("editorPro.theme.\(t.id)")
                 }
-            }.navigationTitle("Theme").navigationBarTitleDisplayMode(.inline)
+                .padding(.horizontal, Space.screenH).padding(.bottom, Space.xl)
+            }
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Theme").navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }.presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 
