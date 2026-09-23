@@ -308,14 +308,12 @@ struct InsightsSection: View {
                 .accessibilityIdentifier("performance.platformToggle")
             }
 
-            // Stat tiles (Stats pattern, 2×2) — real numbers only. I-3: never show
-            // fabricated totals when the series is placeholder (no_data).
-            LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.sm),
-                                GridItem(.flexible(), spacing: Space.sm)], spacing: Space.sm) {
+            // Stat tiles (Stats pattern, one row of three) — real numbers only. I-3: never
+            // show fabricated totals when the series is placeholder (no_data).
+            HStack(spacing: Space.sm) {
                 statTile(hasRealData ? compactNumber(views(summary!)) : "", "Views")
                 statTile(hasRealData ? compactNumber(likes(summary!)) : "", "Likes")
                 statTile(hasRealData ? "+\(follows(summary!))" : "", "Follows")
-                statTile("\(periodDays[period])", "Days")
             }
 
             // I-3: interactive, dated graph — only for real data (a fabricated series is as

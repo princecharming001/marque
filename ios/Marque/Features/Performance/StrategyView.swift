@@ -19,15 +19,17 @@ struct StrategyView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.xl) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        if let doc, !doc.isTemplate, !loading {
+                            DSEyebrow(text: "Revision \(doc.revision)")
+                        }
+                        DSPageTitle(title: "your strategy.")
+                    }
                     if loading {
                         ProgressView().tint(Palette.textSecondary)
-                            .frame(maxWidth: .infinity).padding(.top, 80)
+                            .frame(maxWidth: .infinity).padding(.top, 48)
                     } else if let doc, !doc.isTemplate {
                         let model = StrategyModel.parse(doc.markdown)
-                        VStack(alignment: .leading, spacing: Space.xs) {
-                            DSEyebrow(text: "Revision \(doc.revision)")
-                            DSPageTitle(title: "your strategy.")
-                        }
                         if let plan = model.plan { heroCard(plan) }
                         if !model.insights.isEmpty {
                             section("What's working") {
@@ -91,7 +93,7 @@ struct StrategyView: View {
                         EmptyStateView(icon: "brain",
                                        title: "Not ready yet",
                                        message: "Film and analyze a few clips, your strategy builds from them.")
-                            .padding(.top, 60)
+                            .padding(.top, 32)
                     }
                 }
                 .screenPadding().padding(.top, Space.sm).padding(.bottom, Space.xxl)

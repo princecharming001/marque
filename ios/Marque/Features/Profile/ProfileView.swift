@@ -104,7 +104,7 @@ struct ProfileView: View {
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())
                 }
-                .accessibilityLabel("Settings")
+                .accessibilityLabel("Open settings")
                 .accessibilityIdentifier("profile.settings")
             }
         }
@@ -367,18 +367,15 @@ private struct WatchedCreatorSlot: View {
                         Text("@\(p.handle)" + (p.followers > 0 ? " · \(compactNumber(p.followers)) followers" : ""))
                             .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(1)
                     }
-                    Spacer(minLength: 0)
+                    Spacer(minLength: Space.sm)
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .accessibilityHidden(true)
                 }
                 .padding(Space.md)
                 .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
                     .fill(Palette.surfaceSunken))
-                .overlay(alignment: .topTrailing) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(Palette.textPrimary)
-                        .padding(Space.sm)
-                        .accessibilityHidden(true)
-                }
                 .accessibilityIdentifier("profile.creatorPreview\(index)")
             } else if lookupFailed {
                 HStack(alignment: .top, spacing: 6) {
@@ -524,7 +521,7 @@ struct BrandEditorSheet: View {
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Brand identity")
+            .navigationTitle("brand identity.")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
