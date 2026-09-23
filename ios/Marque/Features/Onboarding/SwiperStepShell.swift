@@ -184,11 +184,11 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
             stack
             VStack(spacing: Space.sm) {
                 Text("\(min(index + 1, cards.count)) OF \(cards.count)")
-                    .font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .foregroundStyle(Palette.textSecondary)
                 buttons
                 Text(payoff)
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -208,11 +208,11 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
             ForEach(visible.reversed(), id: \.1) { depth, i in
                 cardView(cards[i], context(depth: depth, cardIndex: i))
                     .frame(width: cardW, height: cardH)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                    .background(Palette.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.hero, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.hero, style: .continuous)
                         .strokeBorder(Palette.hairline, lineWidth: 1))
-                    .shadow(color: Palette.shadowCool.opacity(0.09), radius: 12, y: 6)
+                    .shadow(color: Palette.shadowCool.opacity(0.04), radius: 12, y: 2)
                     .scaleEffect(depth == 0 ? 1 : (depth == 1 ? 0.97 : 0.94))
                     .offset(y: CGFloat(depth) * 8)
                     .offset(depth == 0 ? offset : .zero)
@@ -269,7 +269,7 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
 
     private var buttons: some View {
         HStack(spacing: Space.lg) {
-            circleButton("xmark", size: 56, fill: Palette.surfaceRaised, tint: Palette.ink) {
+            circleButton("xmark", size: 56, fill: Palette.surface, tint: Palette.textPrimary) {
                 commit(liked: false)
             }
             .accessibilityIdentifier("swiper.pass")
@@ -277,19 +277,21 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
 
             Button { undo() } label: {
                 Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Palette.textSecondary)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(Palette.surfaceRaised))
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Palette.surface))
                     .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
             }
-            .buttonStyle(PressableStyle())
+            .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
             .disabled(history.isEmpty)
             .opacity(history.isEmpty ? 0.3 : 1)
             .accessibilityIdentifier("swiper.undo")
             .accessibilityLabel("Undo last swipe")
 
-            circleButton("heart.fill", size: 56, fill: Palette.ink, tint: Palette.onInk) {
+            circleButton("heart.fill", size: 56, fill: Palette.ink, tint: Palette.onInk, outlined: false) {
                 commit(liked: true)
             }
             .accessibilityIdentifier("swiper.like")
@@ -298,17 +300,19 @@ struct SwiperStepShell<Card: Identifiable, CardView: View>: View {
     }
 
     private func circleButton(_ symbol: String, size: CGFloat, fill: Color, tint: Color,
+                              outlined: Bool = true,
                               action: @escaping () -> Void) -> some View {
+        // DESIGN.md circular control: outline (surface + hairline) or filled ink.
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 19, weight: .semibold))
+                .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(tint)
                 .frame(width: size, height: size)
                 .background(Circle().fill(fill))
-                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
-                .shadow(color: Palette.shadowWarm.opacity(0.05), radius: 7, y: 3)
+                .overlay(Circle().strokeBorder(outlined ? Palette.hairline : .clear, lineWidth: 1))
+                .contentShape(Circle())
         }
-        .buttonStyle(PressableStyle())
+        .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
         .disabled(index >= cards.count)
     }
 

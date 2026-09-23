@@ -52,15 +52,9 @@ struct StyleTasteSwiper: View {
     }
 
     private var unavailable: some View {
-        VStack(spacing: Space.sm) {
-            Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 22, weight: .light)).foregroundStyle(Palette.textTertiary)
-            Text("Couldn't load the deck right now.")
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-            Text("Your editor starts on the proven defaults, you can teach it later in Profile.")
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                .multilineTextAlignment(.center)
-        }
+        DSEmptyState(systemImage: "wifi.exclamationmark",
+                     title: "Couldn't load the deck right now.",
+                     message: "Your editor starts on the proven defaults, you can teach it later in Profile.")
         .frame(maxWidth: .infinity, minHeight: 380)
         .onAppear { onUnavailable() }
     }
@@ -107,7 +101,7 @@ struct StyleTasteSwiper: View {
                     }
                 }
                 .overlay { if let player = ctx.player {
-                    PooledPlayerView(player: player, cornerRadius: Radius.xl)
+                    PooledPlayerView(player: player, cornerRadius: Radius.hero)
                 } }
                 .clipped()
             // Owner (build 63): "lighter everything". The old scrim was .black 0.72 from
@@ -121,7 +115,7 @@ struct StyleTasteSwiper: View {
                 // The WHY: what we measured about this edit, not what the video is about.
                 FlowWrapChips(items: reel.displayAttrs)
                 Text("@\(reel.author) · \(compactNumber(reel.views)) views")
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.92))
+                    .font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.92))
                     .lineLimit(1)
                     .shadow(color: .black.opacity(0.5), radius: 3, y: 1)
             }
@@ -170,15 +164,9 @@ struct CTAPickSwiper: View {
     }
 
     private var unavailable: some View {
-        VStack(spacing: Space.sm) {
-            Image(systemName: "wifi.exclamationmark")
-                .font(.system(size: 22, weight: .light)).foregroundStyle(Palette.textTertiary)
-            Text("Couldn't load the endings right now.")
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-            Text("Your videos will end clean, you can build a CTA library later.")
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                .multilineTextAlignment(.center)
-        }
+        DSEmptyState(systemImage: "wifi.exclamationmark",
+                     title: "Couldn't load the endings right now.",
+                     message: "Your videos will end clean, you can build a CTA library later.")
         .frame(maxWidth: .infinity, minHeight: 380)
         .onAppear { onUnavailable() }
     }
@@ -201,15 +189,16 @@ struct CTAPickSwiper: View {
             if style.isNone {
                 noCTAFace
             } else {
-                // Ink plate UNDER the player (not instead of it): a template whose preview
+                // Night plate UNDER the player (not instead of it): a template whose preview
                 // render hasn't been generated yet degrades to a labelled card rather than
-                // a black rectangle.
-                Palette.ink
+                // a black rectangle. Night stays dark in both schemes, so the white label
+                // below always reads.
+                Palette.night
                     .overlay(Image(systemName: "rectangle.on.rectangle")
                         .font(.system(size: 26, weight: .ultraLight))
-                        .foregroundStyle(Palette.onInk.opacity(0.35)))
+                        .foregroundStyle(Palette.onNight.opacity(0.35)))
                 if let player = ctx.player, !style.videoURL.isEmpty {
-                    PooledPlayerView(player: player, cornerRadius: Radius.xl)
+                    PooledPlayerView(player: player, cornerRadius: Radius.hero)
                 }
             }
             if !style.isNone {
@@ -218,11 +207,11 @@ struct CTAPickSwiper: View {
             }
             VStack(alignment: .leading, spacing: 2) {
                 Text(style.label)
-                    .font(Typeface.display(19, .semibold)).tracking(Track.title)
-                    .foregroundStyle(style.isNone ? Palette.textPrimary : .white)
+                    .font(AppFont.title3)
+                    .foregroundStyle(style.isNone ? Palette.textPrimary : Palette.onNight)
                 Text(style.blurb)
                     .font(AppFont.caption)
-                    .foregroundStyle(style.isNone ? Palette.textSecondary : .white.opacity(0.75))
+                    .foregroundStyle(style.isNone ? Palette.textSecondary : Palette.onNight.opacity(0.8))
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             .padding(Space.md)
@@ -237,11 +226,11 @@ struct CTAPickSwiper: View {
             Palette.canvas
             VStack(spacing: Space.sm) {
                 Text("No CTA")
-                    .font(Typeface.display(30, .semibold)).tracking(Track.title)
+                    .font(AppFont.title1).tracking(-0.3)
                     .foregroundStyle(Palette.textPrimary)
                 Rectangle().fill(Palette.hairline).frame(width: 44, height: 1)
                 Text("ends clean")
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
             }
             .offset(y: -30)
         }
@@ -260,13 +249,15 @@ struct FlowWrapChips: View {
         HStack(spacing: 6) {
             ForEach(items.prefix(3), id: \.self) { t in
                 Text(t)
-                    .font(Typeface.sans(10, .medium)).tracking(0.2)
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(1)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .font(AppFont.caption.weight(.medium))
+                    // Over media: a white pill with dark text in BOTH schemes (night,
+                    // not ink — ink inverts to light in dark mode).
+                    .foregroundStyle(Palette.night)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
                     // A light pill carries its own contrast, so the card underneath no
                     // longer needs a heavy scrim to make these readable.
-                    .background(Capsule().fill(.white.opacity(0.92)))
+                    .background(Capsule().fill(Palette.onNight.opacity(0.92)))
             }
         }
     }
