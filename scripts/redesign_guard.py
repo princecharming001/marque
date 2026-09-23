@@ -94,7 +94,7 @@ def maestro_strings():
                         continue
                     if any(c in val for c in '.*[]()|^$\\'):
                         # regex pattern: guard its literal prefix ("Subscribe for .*/month")
-                        prefix = re.split(r'[.*\[\]()|^$\\]', val, 1)[0].strip()
+                        prefix = re.split(r'[.*\[\]()|^$\\]', val, maxsplit=1)[0].strip()
                         if len(prefix) >= 6:
                             out.add(prefix)
                     else:
