@@ -511,7 +511,7 @@ struct OnboardingView: View {
         Group {
             switch store.starterScriptsState {
             case .ready:
-                OnboardingScaffold(headline: "Your first 3 scripts are ready",
+                OnboardingScaffold(headline: "your first 3 scripts are ready.",
                                    subtitle: "Record when you've got a few minutes. I'll do the editing.",
                                    showsBack: false) {
                     // The aha lands, then ONE more page: the notification primer
@@ -524,7 +524,7 @@ struct OnboardingView: View {
                 // forever — a dead end with no affordance. Own screen + retry
                 // (beginStarterScripts re-runs from .failed; the generator is local,
                 // so a retry costs ~3s and can't hang on the network).
-                OnboardingScaffold(headline: "That didn't build right",
+                OnboardingScaffold(headline: "that didn't build right.",
                                    subtitle: "One tap and I'll write your scripts again.",
                                    showsBack: false) {
                     // Stoic empty pattern: the mascot anchors it, then one primary
@@ -536,7 +536,7 @@ struct OnboardingView: View {
                     }
                 }
             case .idle, .running:
-                OnboardingScaffold(headline: "Building your content plan",
+                OnboardingScaffold(headline: "building your content plan.",
                                    subtitle: nil,
                                    showsBack: false) {
                     PlanBuildingView()
@@ -681,7 +681,7 @@ private struct PaceSlider: View {
             VStack(spacing: Space.lg) {
                 VStack(spacing: Space.xs) {
                     Text("\(weekly)")
-                        .font(AppFont.pageTitle).monospacedDigit()
+                        .font(AppFont.stat).monospacedDigit()
                         .foregroundStyle(Palette.textPrimary)
                         .contentTransition(.numericText())
                         .animation(Motion.quick, value: weekly)

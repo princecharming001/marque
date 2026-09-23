@@ -24,6 +24,8 @@ struct ConnectAccountsView: View {
                         LinkedAccountCard(account: acct) { store.removeConnectedAccount(acct) }
                     }
                 }
+                .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                    .strokeBorder(Palette.hairline, lineWidth: 1))
             }
 
             // The two platforms as grouped rows (Stoic list card): mark, name, the
@@ -35,6 +37,8 @@ struct ConnectAccountsView: View {
                 connectCard(platform: "tiktok", label: "TikTok",
                             benefit: "I'll learn your voice from your posts and hooks")
             }
+            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
 
             if let error {
                 // Monochrome error: the glyph carries the meaning, not a red hue.
@@ -214,6 +218,8 @@ private struct LinkedAccountCard: View {
                     }
                     .foregroundStyle(account.canPublish ? Palette.onInk : Palette.textSecondary)
                     .padding(.horizontal, 8).frame(height: 20)
+                    .fixedSize()
+                    .layoutPriority(1)
                     .background(Capsule().fill(account.canPublish ? Palette.ink : .clear))
                     .overlay(Capsule().strokeBorder(account.canPublish ? .clear : Palette.hairline, lineWidth: 1))
                 }
