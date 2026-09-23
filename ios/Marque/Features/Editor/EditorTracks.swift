@@ -65,15 +65,16 @@ struct CaptionClipStrip: View {
         // a forced minimum here made short phrases overlap their neighbors.
         let w = max(12, CGFloat(span.end - span.start) * pointsPerSecond - 1.5)
         Text(w >= 26 ? phrase.text : "")
-            .font(.system(size: 10, weight: .medium))
+            .font(AppFont.micro)
             .foregroundStyle(Palette.night)
             .lineLimit(1)
             .padding(.horizontal, 5)
             .frame(width: w, height: 26, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.88)))
-            // Accent (not white) selection ring — a white ring is invisible on the near-white fill.
+            // Captions = the LIGHTEST lane (near-white strips, dark text).
+            .background(RoundedRectangle(cornerRadius: 4).fill(Palette.onNight.opacity(selected ? 1 : 0.82)))
+            // Selection ring: a dark inner ring (a white ring is invisible on the light fill).
             .overlay(RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
+                .strokeBorder(selected ? Palette.night : .clear, lineWidth: 2))
             .offset(x: CGFloat(span.start) * pointsPerSecond)
             .onTapGesture(perform: onTap)
     }
@@ -90,7 +91,8 @@ struct VoiceStrip: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 4).fill(Palette.accent.opacity(volume <= 0.01 ? 0.10 : 0.22))
+            // Voice = a dark lane (waveform glyph in the gutter names it).
+            RoundedRectangle(cornerRadius: 4).fill(Palette.onNight.opacity(volume <= 0.01 ? 0.05 : 0.12))
             Canvas { ctx, size in
                 let barW: CGFloat = 2, gap: CGFloat = 1.5
                 let n = max(1, Int(size.width / (barW + gap)))
@@ -105,7 +107,7 @@ struct VoiceStrip: View {
                     if volume <= 0.01 { h = 2 } else { h *= CGFloat(min(1.0, 0.35 + volume * 0.65)) }
                     let rect = CGRect(x: x, y: (size.height - h) / 2, width: barW, height: h)
                     ctx.fill(Path(roundedRect: rect, cornerRadius: 1),
-                             with: .color(.white.opacity(volume <= 0.01 ? 0.25 : 0.75)))
+                             with: .color(Palette.onNight.opacity(volume <= 0.01 ? 0.25 : 0.75)))
                 }
             }
             .padding(.horizontal, 2)
@@ -114,7 +116,7 @@ struct VoiceStrip: View {
         .overlay(alignment: .leading) {
             if volume <= 0.01 {
                 Image(systemName: "speaker.slash.fill")
-                    .font(.system(size: 7, weight: .bold)).foregroundStyle(.white.opacity(0.7))
+                    .font(.system(size: 7, weight: .bold)).foregroundStyle(Palette.onNight.opacity(0.75))
                     .padding(.leading, 4)
             }
         }
@@ -142,7 +144,9 @@ struct MusicStrip: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 4).fill(Color(hex: 0x2E7D6B).opacity(0.85))
+            // Music = sunken gray lane + outline (was teal); named by the note glyph + title.
+            RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
+            RoundedRectangle(cornerRadius: 4).strokeBorder(Palette.hairline, lineWidth: 1)
             Canvas { ctx, size in
                 let barW: CGFloat = 2, gap: CGFloat = 1.5
                 let n = max(1, Int(size.width / (barW + gap)))
@@ -155,24 +159,24 @@ struct MusicStrip: View {
                     h *= CGFloat(min(1.0, 0.35 + volume * 0.65))
                     let rect = CGRect(x: x, y: (size.height - h) / 2, width: barW, height: h)
                     ctx.fill(Path(roundedRect: rect, cornerRadius: 1),
-                             with: .color(.white.opacity(0.35)))
+                             with: .color(Palette.onNight.opacity(0.28)))
                 }
             }
             .padding(.horizontal, 2)
             HStack(spacing: 4) {
                 Image(systemName: "music.note").font(.system(size: 8, weight: .semibold))
-                Text(name).font(.system(size: 9, weight: .medium)).lineLimit(1)
+                Text(name).font(AppFont.micro).lineLimit(1)
                 Spacer(minLength: 0)
                 Text("\(Int((volume * 100).rounded()))%")
-                    .font(.system(size: 8, weight: .semibold)).monospacedDigit().opacity(0.7)
+                    .font(AppFont.micro.monospacedDigit()).opacity(0.75)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(Palette.onNight)
             .padding(.horizontal, 6)
         }
         .frame(width: max(46, width), height: 30)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
-            .strokeBorder(selected ? Color.white : .clear, lineWidth: 2))
+            .strokeBorder(selected ? Palette.onNight : .clear, lineWidth: 2))
         .onTapGesture(perform: onTap)
     }
 }
@@ -187,13 +191,13 @@ struct AddLaneStrip: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "plus").font(.system(size: 8, weight: .bold))
-            Text(label).font(.system(size: 9, weight: .medium))
+            Text(label).font(AppFont.micro).lineLimit(1)
         }
-        .foregroundStyle(.white.opacity(0.55))
+        .foregroundStyle(Palette.textSecondary)
         .frame(width: max(80, width), height: height)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .strokeBorder(Color.white.opacity(0.25), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                .strokeBorder(Palette.textTertiary, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)

@@ -75,10 +75,11 @@ struct PipelineProgress {
     }
 }
 
-/// The compact horizontal stepper shown on in-pipeline clip cards. Aesthetic: four
-/// segmented rails in the ink/gold palette; completed rails fill solid, the active rail
-/// fills to `fraction` (or shimmers when indeterminate), upcoming rails stay hairline.
-/// A pulsing dot + icon marks the active phase.
+/// The compact horizontal stepper shown on in-pipeline clip cards. Stoic progress dashes:
+/// four thin monochrome rails (done = solid primary, active = filled to `fraction` or a
+/// quiet indeterminate sweep, upcoming = hairline), eyebrow phase names under them on the
+/// full variant, and one plain-English active line. Failure is carried by the warning
+/// glyph + wording and frozen, dimmed rails, never by a hue.
 struct PipelineTimeline: View {
     let progress: PipelineProgress
     var compact: Bool = false
@@ -87,26 +88,38 @@ struct PipelineTimeline: View {
     @State private var shimmer = false
     @State private var pulse = false
 
-    private var accent: Color { progress.isFailed ? Palette.critical : Palette.accent }
+    /// Rail fill: primary text tone; a failed run freezes its rails at secondary.
+    private var accent: Color { progress.isFailed ? Palette.textSecondary : Palette.textPrimary }
 
     var body: some View {
         VStack(alignment: .leading, spacing: compact ? 4 : 8) {
-            HStack(spacing: compact ? 4 : 6) {
+            HStack(spacing: compact ? 4 : 8) {
                 ForEach(PipelinePhase.allCases, id: \.rawValue) { phase in
                     rail(for: phase)
                 }
             }
+            if showLine && !compact {
+                // Eyebrow phase names, one per dash (DESIGN.md eyebrow: 12 semibold, +2.4).
+                // Sized together: the first variant that fits wins, so all four labels
+                // always share one font size and tracking (no per-label scaling).
+                ViewThatFits(in: .horizontal) {
+                    phaseLabelsRow(font: AppFont.eyebrow, tracking: Track.eyebrow)
+                    phaseLabelsRow(font: AppFont.micro, tracking: Track.label)
+                    phaseLabelsRow(font: AppFont.micro, tracking: 0)
+                }
+                .accessibilityHidden(true)
+            }
             if showLine {
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     Image(systemName: progress.isFailed ? "exclamationmark.triangle.fill"
                                                         : progress.active.icon)
-                        .font(.system(size: compact ? 9 : 10, weight: .semibold))
-                        .foregroundStyle(accent)
+                        .font(.system(size: compact ? 10 : 12, weight: .semibold))
+                        .foregroundStyle(Palette.textPrimary)
                         .opacity(progress.isFailed ? 1 : (pulse ? 1 : 0.5))
                     Text(progress.isFailed ? "Interrupted. Tap to retry." : progress.active.activeLine)
-                        .font(.system(size: compact ? 9.5 : 11))
-                        .foregroundStyle(Palette.textSecondary)
-                        .lineLimit(1)
+                        .font(compact ? AppFont.caption : AppFont.bodyText)
+                        .foregroundStyle(progress.isFailed ? Palette.textPrimary : Palette.textSecondary)
+                        .lineLimit(1).minimumScaleFactor(0.85)
                 }
             }
         }
@@ -116,33 +129,55 @@ struct PipelineTimeline: View {
         }
     }
 
+    /// One row of eyebrow phase names, one per dash. Each label keeps its natural width
+    /// (fixedSize) so ViewThatFits can pick a single size for the whole row.
+    private func phaseLabelsRow(font: Font, tracking: CGFloat) -> some View {
+        HStack(spacing: 8) {
+            ForEach(PipelinePhase.allCases, id: \.rawValue) { phase in
+                Text(phase.label.uppercased())
+                    .font(font).tracking(tracking)
+                    .foregroundStyle(phaseLabelColor(phase))
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func phaseLabelColor(_ phase: PipelinePhase) -> Color {
+        if phase.rawValue == progress.active.rawValue { return Palette.textPrimary }
+        if phase.rawValue < progress.active.rawValue && !progress.isFailed { return Palette.textSecondary }
+        return Palette.textTertiary      // upcoming steps: decorative / not yet reachable
+    }
+
     @ViewBuilder private func rail(for phase: PipelinePhase) -> some View {
         let isDone = phase.rawValue < progress.active.rawValue && !progress.isFailed
         let isActive = phase.rawValue == progress.active.rawValue
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Palette.hairline.opacity(0.5))            // track
+                Capsule().fill(Palette.hairline)                            // track
                 if isDone {
                     Capsule().fill(accent)
                 } else if isActive {
                     if let f = progress.fraction, !progress.isFailed {
                         Capsule().fill(accent)
                             .frame(width: max(4, geo.size.width * CGFloat(min(1, max(0.04, f)))))
-                            .animation(.spring(response: 0.5, dampingFraction: 0.85), value: f)
+                            .animation(Motion.standard, value: f)
                     } else if !progress.isFailed {
-                        // Indeterminate shimmer sweep — the "it's working" signal when there's
-                        // no byte %; a moving highlight over a partial fill.
-                        Capsule().fill(accent.opacity(0.35))
+                        // Indeterminate sweep — the "it's working" signal when there's no
+                        // byte %; a moving highlight over a partial fill.
+                        Capsule().fill(accent.opacity(0.3))
                         Capsule().fill(accent)
                             .frame(width: geo.size.width * 0.4)
                             .offset(x: shimmer ? geo.size.width * 0.6 : -geo.size.width * 0.4)
                             .mask(Capsule())
                     } else {
-                        Capsule().fill(accent.opacity(0.5))
+                        Capsule().fill(accent.opacity(0.6))
                     }
                 }
             }
         }
-        .frame(height: compact ? 3 : 4)
+        .frame(height: compact ? 2 : 3)
+        .clipShape(Capsule())
     }
 }

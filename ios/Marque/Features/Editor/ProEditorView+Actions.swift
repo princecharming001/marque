@@ -793,54 +793,67 @@ extension ProEditorView {
             // but wasn't the actual bug — see the .accessibilityElement(children: .contain)
             // at the bottom of this view for the real root cause and fix.
             HStack {
-                Text("Clean up").font(AppFont.headline).foregroundStyle(.white)
+                Text("clean up.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Button { withAnimation(.easeOut(duration: 0.15)) { showCleanup = false } } label: {
-                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityIdentifier("editorPro.cleanup.cancel")
             }
-            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.leading, Space.screenH + Space.xs).padding(.trailing, Space.xs)
+            .padding(.top, Space.md).padding(.bottom, Space.sm)
 
             if targets.isEmpty {
                 Spacer()
-                Text("Nothing to clean up, no filler words or long pauses found.")
-                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
-                    .multilineTextAlignment(.center).padding(Space.xl)
+                // Stoic empty state: glyph + secondary line.
+                VStack(spacing: Space.sm) {
+                    Image(systemName: "checkmark.circle").font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(Palette.textSecondary)
+                    Text("Nothing to clean up, no filler words or long pauses found.")
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Space.xl)
                 Spacer()
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    // Stoic checklist: one grouped card, trailing circular checks.
+                    DSGroup {
                         ForEach(targets) { t in
                             let on = !cleanupSkip.contains(t.id)
                             Button {
                                 if on { cleanupSkip.insert(t.id) } else { cleanupSkip.remove(t.id) }
                             } label: {
                                 HStack(spacing: Space.md) {
-                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(t.label).font(AppFont.callout).foregroundStyle(.white)
-                                            .strikethrough(on, color: .white.opacity(0.5))
-                                        Text(t.detail).font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
-                                    }
-                                    Spacer()
                                     Image(systemName: t.kind == "pause" ? "pause.circle" : "waveform")
-                                        .foregroundStyle(.white.opacity(0.3))
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(t.label).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                            .strikethrough(on, color: Palette.textSecondary)
+                                        Text(t.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                    }
+                                    Spacer(minLength: Space.sm)
+                                    DSCheckmark(isOn: on)
                                 }
-                                .padding(.horizontal, Space.lg).padding(.vertical, 10).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5).padding(.leading, Space.lg)
+                                .padding(.horizontal, Space.rowPad).padding(.vertical, 10)
+                                .frame(minHeight: 52).contentShape(Rectangle())
+                            }.buttonStyle(DSRowPressStyle())
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            if t.id != targets.last?.id { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
                         }
-                    }.padding(.vertical, Space.sm)
+                    }
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.vertical, Space.sm)
                 }
+                // Stoic primary capsule (ink / onInk; sunken + tertiary when disabled).
                 Button { applyCleanup() } label: {
                     Text(keep.isEmpty ? "Select something to remove"
                                       : String(format: "Remove %d · %.1fs", keep.count, secs))
-                        .font(AppFont.headline).foregroundStyle(Palette.night)
-                        .frame(maxWidth: .infinity).frame(height: 48)
-                        .background(keep.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
-                }.buttonStyle(.plain).disabled(keep.isEmpty).padding(Space.md)
+                }.buttonStyle(.ds(.primary, height: 48)).disabled(keep.isEmpty)
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .accessibilityIdentifier("editorPro.cleanup.apply")
                 // Build 69: Restore moved off the root bar — it only means something
                 // after a cleanup ran, so its home is here (plus the amber cut seams).
@@ -850,11 +863,12 @@ extension ProEditorView {
                         openRestorePanel()
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 13))
+                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 14, weight: .regular))
                             Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
-                                .font(AppFont.callout)
+                                .font(AppFont.supporting.weight(.semibold))
+                                .lineLimit(1).minimumScaleFactor(0.85)
                         }
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(Palette.textPrimary)
                         .frame(maxWidth: .infinity).frame(height: 36)
                         .contentShape(Rectangle())
                     }
@@ -866,7 +880,7 @@ extension ProEditorView {
         }
         .frame(height: 340, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
         // Root cause of editorPro.cleanup.cancel never surfacing (confirmed via a live
         // `maestro hierarchy` dump while this panel was on screen): without an explicit
         // .accessibilityElement(children:), applying .accessibilityIdentifier directly to
@@ -940,21 +954,24 @@ extension ProEditorView {
 
     var renderingView: some View {
         VStack(spacing: Space.md) {
-            ProgressView().tint(Palette.accent)
-            Text("Re-rendering your clip…").font(AppFont.body).foregroundStyle(.white.opacity(0.8))
+            ProgressView().tint(Palette.textPrimary)
+            Text("Re-rendering your clip…").font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
             if let renderStartedAt {
                 TimelineView(.periodic(from: renderStartedAt, by: 1)) { ctx in
-                    Text("\(Int(ctx.date.timeIntervalSince(renderStartedAt)))s").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).monospacedDigit()
+                    Text("\(Int(ctx.date.timeIntervalSince(renderStartedAt)))s").font(AppFont.caption).foregroundStyle(Palette.textSecondary).monospacedDigit()
                 }
             }
-            Button("Cancel") { dismiss() }.tint(.white).padding(.top, Space.sm)
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            Button("Cancel") { dismiss() }.buttonStyle(.ds(.outline, height: 44)).padding(.top, Space.sm)
+        }.padding(.horizontal, Space.screenH).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     func failedView(_ msg: String) -> some View {
         VStack(spacing: Space.md) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 32)).foregroundStyle(.white.opacity(0.5))
-            Text(msg).font(AppFont.body).foregroundStyle(.white.opacity(0.8)).multilineTextAlignment(.center)
+            // Stoic empty/error state: monochrome glyph carries the warning (no hue).
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 24, weight: .regular)).foregroundStyle(Palette.textPrimary)
+            Text(msg).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             if editorRecoverable {
                 // Re-create the edit from the local take (store.retryClipJob re-uploads +
                 // starts a fresh job in place when the server lost this one), then close so
@@ -962,20 +979,21 @@ extension ProEditorView {
                 Button("Re-create this edit") {
                     Task { await store.retryClipJob(clip) }
                     dismiss()
-                }.tint(Palette.accent).font(AppFont.callout.weight(.semibold))
-                Button("Close") { dismiss() }.tint(.white.opacity(0.5))
+                }.buttonStyle(.ds(.primary, height: 48)).padding(.top, Space.sm)
+                Button("Close") { dismiss() }.buttonStyle(DSTextLinkStyle(color: Palette.textSecondary))
             } else {
-                Button("Close") { dismiss() }.tint(Palette.accent)
+                Button("Close") { dismiss() }.buttonStyle(.ds(.outline, height: 48)).padding(.top, Space.sm)
             }
         }.padding(Space.xl).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     func transientBar(_ t: String) -> some View {
         HStack(spacing: Space.sm) {
-            Image(systemName: "info.circle").foregroundStyle(.white.opacity(0.7))
-            Text(t).font(AppFont.caption).foregroundStyle(.white.opacity(0.85))
-            Spacer()
-        }.padding(.horizontal, Space.md).padding(.vertical, 6).background(Palette.ink.opacity(0.8))
+            Image(systemName: "info.circle").font(.system(size: 13, weight: .regular)).foregroundStyle(Palette.textPrimary)
+            Text(t).font(AppFont.caption).foregroundStyle(Palette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }.padding(.horizontal, Space.screenH).padding(.vertical, 6).background(Palette.surfaceSunken)
     }
 
     // MARK: caption list sheet — the batch editor (rows: timecode + phrase, tap to fix)
@@ -984,12 +1002,14 @@ extension ProEditorView {
         VStack(spacing: 0) {
             // Custom header (CapCut's caption bar).
             ZStack {
-                Text("\(phrases.count) captions")
-                    .font(AppFont.headline).foregroundStyle(.white)
+                Text("\(phrases.count) captions.")
+                    .font(AppFont.title3).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .padding(.horizontal, 72)
                 HStack {
                     Spacer()
                     Button { showCaptionList = false } label: {
-                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.accent)
+                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                             .padding(.horizontal, Space.md).padding(.vertical, 8)
                             .contentShape(Rectangle())
                     }
@@ -1000,40 +1020,41 @@ extension ProEditorView {
             .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
 
             ScrollView {
-                VStack(spacing: 0) {
+                // Stoic grouped list: one surface card, inset hairline separators.
+                DSGroup {
                     ForEach(phrases) { p in
                         Button {
                             // List stays open — fixing captions is a serial workflow; the edit
                             // dialog floats above and the row updates in place on commit.
                             beginPhraseEdit(p)
                         } label: {
+                            // Stoic row: phrase leading, timecode trailing (caption tone).
                             HStack(alignment: .firstTextBaseline, spacing: Space.md) {
-                                Text(timecode(forPhrase: p))
-                                    .font(.system(size: 11, weight: .medium)).monospacedDigit()
-                                    .foregroundStyle(.white.opacity(0.45))
-                                    .frame(width: 44, alignment: .leading)
                                 Text(p.text)
-                                    .font(AppFont.callout).foregroundStyle(.white)
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                                     .multilineTextAlignment(.leading)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                Image(systemName: "pencil")
-                                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.35))
+                                Text(timecode(forPhrase: p))
+                                    .font(AppFont.caption.monospacedDigit())
+                                    .foregroundStyle(Palette.textSecondary)
+                                    .fixedSize()
                             }
-                            .padding(.horizontal, Space.lg).padding(.vertical, 12)
+                            .padding(.horizontal, Space.rowPad).padding(.vertical, 14)
+                            .frame(minHeight: 52)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(DSRowPressStyle())
                         .accessibilityIdentifier("editorPro.captionRow.\(p.startFrame)")
-                        Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5)
-                            .padding(.leading, Space.lg)
+                        if p.id != phrases.last?.id { DSRowDivider(inset: Space.rowPad) }
                     }
                 }
+                .padding(.horizontal, Space.screenH)
                 .padding(.vertical, Space.sm)
             }
         }
         .frame(height: 320, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
     }
 
     /// The phrase's output-time position as m:ss (where it plays in the cut, drops applied).
@@ -1047,17 +1068,52 @@ extension ProEditorView {
 
     var musicSheet: some View {
         NavigationStack {
-            List {
-                ForEach(Array(MusicCatalog.tracks.enumerated()), id: \.offset) { i, track in
-                    Button { pickMusic(track) } label: {
-                        HStack { Image(systemName: "music.note"); Text(track.name); Spacer() }
-                    }.accessibilityIdentifier("editorPro.track.\(i)")
+            // Stoic sheet: centered lowercase title, tracks as one grouped card with a
+            // trailing circular check on the current bed.
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.stack) {
+                    DSSheetHeader(title: "add sound.")
+                        .padding(.bottom, Space.sm)
+                    DSGroup {
+                        ForEach(Array(MusicCatalog.tracks.enumerated()), id: \.offset) { i, track in
+                            Button { pickMusic(track) } label: {
+                                HStack(spacing: Space.md) {
+                                    Image(systemName: "music.note").font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(Palette.textPrimary).frame(width: 24)
+                                    Text(track.name).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                        .lineLimit(1).minimumScaleFactor(0.85)
+                                    Spacer(minLength: Space.sm)
+                                    DSCheckmark(isOn: session?.draft.music?.url == track.url)
+                                }
+                                .padding(.horizontal, Space.rowPad).frame(minHeight: 52)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(DSRowPressStyle())
+                            .accessibilityIdentifier("editorPro.track.\(i)")
+                            if i < MusicCatalog.tracks.count - 1 { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
+                        }
+                    }
+                    if session?.draft.music != nil {
+                        // Destructive stays monochrome: black text + glyph (DESIGN.md §1).
+                        DSGroup {
+                            Button(role: .destructive) { removeMusic() } label: {
+                                Label("Remove music", systemImage: "speaker.slash")
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                    .padding(.horizontal, Space.rowPad)
+                                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(DSRowPressStyle())
+                        }
+                    }
                 }
-                if session?.draft.music != nil {
-                    Button(role: .destructive) { removeMusic() } label: { Label("Remove music", systemImage: "speaker.slash") }
-                }
-            }.navigationTitle("Add sound").navigationBarTitleDisplayMode(.inline)
+                .padding(.horizontal, Space.screenH).padding(.bottom, Space.xl)
+            }
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Add sound").navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }.presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     /// A7 feature #1: the style-bundle picker. Tapping a theme calls the SEPARATE
@@ -1065,26 +1121,56 @@ extension ProEditorView {
     /// since it only restamps caption/grade/duck and re-renders directly.
     var themeSheet: some View {
         NavigationStack {
-            List {
-                ForEach(themes) { t in
-                    Button {
-                        showThemeSheet = false
-                        retheme(to: t.id)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text(t.label).font(.system(size: 15, weight: .semibold))
-                                if t.id == activeThemeId {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.accent)
+            // Stoic tiles: 2-column grid, the active bundle inverted to ink with a check.
+            ScrollView {
+                VStack(spacing: Space.stack) {
+                    DSSheetHeader(title: "theme.")
+                        .padding(.bottom, Space.sm)
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.stack),
+                                        GridItem(.flexible(), spacing: Space.stack)],
+                              spacing: Space.stack) {
+                        ForEach(themes) { t in
+                            let on = t.id == activeThemeId
+                            Button {
+                                showThemeSheet = false
+                                retheme(to: t.id)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack(alignment: .top, spacing: 4) {
+                                        Text(t.label).font(AppFont.headline)
+                                            .foregroundStyle(on ? Palette.onInk : Palette.textPrimary)
+                                            .lineLimit(2).minimumScaleFactor(0.85)
+                                        Spacer(minLength: 0)
+                                        if t.id == activeThemeId {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .font(.system(size: 16, weight: .regular))
+                                                .foregroundStyle(Palette.onInk)
+                                        }
+                                    }
+                                    Text(t.blurb).font(AppFont.caption)
+                                        .foregroundStyle(on ? Palette.onInk.opacity(0.8) : Palette.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Spacer(minLength: 0)
                                 }
+                                .padding(Space.md)
+                                .frame(maxWidth: .infinity, minHeight: 112, alignment: .topLeading)
+                                .background(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                                    .fill(on ? Palette.ink : Palette.surface))
+                                .contentShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
                             }
-                            Text(t.blurb).font(.system(size: 12)).foregroundStyle(.secondary)
+                            .buttonStyle(PressableStyle())
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            .accessibilityIdentifier("editorPro.theme.\(t.id)")
                         }
                     }
-                    .accessibilityIdentifier("editorPro.theme.\(t.id)")
                 }
-            }.navigationTitle("Theme").navigationBarTitleDisplayMode(.inline)
+                .padding(.horizontal, Space.screenH).padding(.bottom, Space.xl)
+            }
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Theme").navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }.presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 
@@ -1126,24 +1212,31 @@ extension ProEditorView {
         let secs = Double(picked.reduce(0) { $0 + ($1.srcOut - $1.srcIn) }) / 30.0
         return VStack(spacing: 0) {
             HStack {
-                Text("Restore").font(AppFont.headline).foregroundStyle(.white)
+                Text("restore.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Button { withAnimation(.easeOut(duration: 0.15)) { showRestore = false } } label: {
-                    Text("Done").font(AppFont.headline).foregroundStyle(Palette.accent)
+                    Text("Done").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityIdentifier("editorPro.restore.done")
             }
-            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.leading, Space.screenH + Space.xs).padding(.trailing, Space.xs)
+            .padding(.top, Space.md).padding(.bottom, Space.sm)
 
             if drops.isEmpty {
                 Spacer()
-                Text("Nothing was cut, the whole take is on the timeline.")
-                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
-                    .multilineTextAlignment(.center).padding(Space.xl)
+                VStack(spacing: Space.sm) {
+                    Image(systemName: "film").font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(Palette.textSecondary)
+                    Text("Nothing was cut, the whole take is on the timeline.")
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Space.xl)
                 Spacer()
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    DSGroup {
                         ForEach(drops, id: \.srcIn) { d in
                             let on = restoreSelected.contains(d.srcIn)
                             let dur = Double(d.srcOut - d.srcIn) / 30.0
@@ -1152,38 +1245,41 @@ extension ProEditorView {
                                 else { restoreSelected.insert(d.srcIn) }
                             } label: {
                                 HStack(spacing: Space.md) {
-                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
-                                    VStack(alignment: .leading, spacing: 1) {
+                                    Image(systemName: "scissors")
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
                                         Text(String(format: "%.1fs, %@", dur, restoreReasonLabel(d.reason)))
-                                            .font(AppFont.callout).foregroundStyle(.white)
+                                            .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                                         Text(String(format: "at %d:%02d in your take",
                                                     d.srcIn / 1800, (d.srcIn / 30) % 60))
-                                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
+                                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                                     }
-                                    Spacer()
-                                    Image(systemName: "scissors")
-                                        .foregroundStyle(.white.opacity(0.3))
+                                    Spacer(minLength: Space.sm)
+                                    DSCheckmark(isOn: on)
                                 }
-                                .padding(.horizontal, Space.lg).padding(.vertical, 10).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5).padding(.leading, Space.lg)
+                                .padding(.horizontal, Space.rowPad).padding(.vertical, 10)
+                                .frame(minHeight: 52).contentShape(Rectangle())
+                            }.buttonStyle(DSRowPressStyle())
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            if d.srcIn != drops.last?.srcIn { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
                         }
-                    }.padding(.vertical, Space.sm)
+                    }
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.vertical, Space.sm)
                 }
                 Button { applyRestore(picked) } label: {
                     Text(picked.isEmpty ? "Select a cut to bring back"
                                         : String(format: "Restore %d · %.1fs", picked.count, secs))
-                        .font(AppFont.headline).foregroundStyle(Palette.night)
-                        .frame(maxWidth: .infinity).frame(height: 48)
-                        .background(picked.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
-                }.buttonStyle(.plain).disabled(picked.isEmpty).padding(Space.md)
+                }.buttonStyle(.ds(.primary, height: 48)).disabled(picked.isEmpty)
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .accessibilityIdentifier("editorPro.restore.apply")
             }
         }
         .frame(height: 340, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
         // Same accessibility-flattening contract as cleanupPanel — without an explicit
         // container element, this id would clobber every descendant's identifier.
         .accessibilityElement(children: .contain)
