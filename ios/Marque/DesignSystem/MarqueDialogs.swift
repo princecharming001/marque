@@ -161,7 +161,7 @@ struct MarqueToggle: View {
                 .fill(isOn ? Palette.ink : offTrack)
                 .frame(width: 46, height: 28)
                 .overlay(alignment: isOn ? .trailing : .leading) {
-                    Circle().fill(isOn ? Palette.onInk : Palette.surface).frame(width: 22, height: 22)
+                    Circle().fill(isOn ? Palette.onInk : DSToggleStyle.offKnob).frame(width: 22, height: 22)
                         .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
                         .padding(3)
                 }

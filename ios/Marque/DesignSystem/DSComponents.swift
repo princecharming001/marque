@@ -448,6 +448,9 @@ struct DSRowPressStyle: ButtonStyle {
 
 /// Monochrome switch: track ink when on (black light / white dark), knob is the opposite.
 struct DSToggleStyle: ToggleStyle {
+    /// Off-state knob: white on light, mid-gray on dark so the off switch stays visible on
+    /// near-black rows.
+    static let offKnob = Color(light: 0xFFFFFF, dark: 0x8E8E8E)
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             ZStack(alignment: configuration.isOn ? .trailing : .leading) {
@@ -456,7 +459,7 @@ struct DSToggleStyle: ToggleStyle {
                     .overlay(Capsule().strokeBorder(configuration.isOn ? .clear : Palette.hairline, lineWidth: 1))
                     .frame(width: 51, height: 31)
                 Circle()
-                    .fill(configuration.isOn ? Palette.onInk : Palette.surface)
+                    .fill(configuration.isOn ? Palette.onInk : Self.offKnob)
                     .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: configuration.isOn ? 0 : 1))
                     .frame(width: 27, height: 27)
                     .padding(2)
