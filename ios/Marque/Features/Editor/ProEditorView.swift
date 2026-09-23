@@ -134,11 +134,14 @@ struct ProEditorView: View {
                 // Full-screen dark fill FIRST so the editor stays immersive edge to
                 // edge — a .background() on the content only wraps its natural height
                 // and leaves the safe-area bands white. This fills everything.
-                Palette.night.ignoresSafeArea()
+                // Stoic dark: true-black canvas (the editor is a forced-dark media surface).
+                Palette.canvas.ignoresSafeArea()
                 Group {
                     switch phase {
                     case .loading:  ProgressView("Loading your edit…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .tint(Palette.textPrimary).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     case .applying: ProgressView("Applying…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .tint(Palette.textPrimary).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     case .rendering: renderingView
                     case .failed(let m): failedView(m)
                     case .editing:  editor
@@ -148,7 +151,7 @@ struct ProEditorView: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
-            .toolbarBackground(Palette.night, for: .navigationBar)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
@@ -230,12 +233,12 @@ struct ProEditorView: View {
             if let hint = activeHint {
                 HStack(spacing: 6) {
                     Image(systemName: hint.icon).font(.system(size: 12, weight: .semibold))
-                    Text(hint.text).font(Typeface.sans(12, .medium))
+                    Text(hint.text).font(AppFont.caption.weight(.semibold))
+                        .lineLimit(1).minimumScaleFactor(0.85)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Capsule().fill(.black.opacity(0.72)))
-                .overlay(Capsule().strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                .foregroundStyle(Palette.onInk)
+                .padding(.horizontal, 14).frame(height: 32)
+                .background(Capsule().fill(Palette.ink))
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                 .accessibilityIdentifier("editorPro.hint")
             }
@@ -262,7 +265,11 @@ struct ProEditorView: View {
             // is the single most rage-inducing mistake an editor can make.
             Button {
                 if phase == .editing, session?.isDirty == true { confirmDiscard = true } else { dismiss() }
-            } label: { Image(systemName: "xmark") }.tint(.white)
+            } label: {
+                Image(systemName: "xmark").font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 36, height: 36).contentShape(Rectangle())
+            }
                 .accessibilityIdentifier("editorPro.close")
         }
         // R10: undo/redo moved to the transport strip (CapCut keeps them by the play head).
@@ -271,8 +278,10 @@ struct ProEditorView: View {
                 // Label the cost up front: nearly every edit re-renders (~1 min); only a
                 // pure split-only batch commits instantly (#6/#43). So a cut/overlay/caption
                 // shows "Render", a bare split shows "Save".
-                Button { save() } label: { Text(saveNeedsRender ? "Render" : "Save").fontWeight(.semibold) }
-                    .tint(Palette.accent).disabled(!(session?.isDirty ?? false))
+                // Stoic card capsule: ink fill / onInk label; disabled = sunken + tertiary.
+                Button { save() } label: { Text(saveNeedsRender ? "Render" : "Save") }
+                    .buttonStyle(.ds(.primary, height: 34))
+                    .disabled(!(session?.isDirty ?? false))
                     .accessibilityIdentifier("editorPro.save")
             }
         }
@@ -326,33 +335,49 @@ struct ProEditorView: View {
     private var transportRow: some View {
         VStack(spacing: 0) {
             HStack(spacing: Space.lg) {
-                Text(timeReadout).font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.85))
+                Text(timeReadout).font(AppFont.caption.monospacedDigit())
+                    .foregroundStyle(Palette.textSecondary)
+                    .lineLimit(1)
                     .accessibilityIdentifier("editorPro.timeReadout")
                 Spacer()
+                // Stoic circular control: the one filled (ink) circle on the strip.
                 Button { player?.togglePlay() } label: {
                     Image(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill")
-                        .font(.system(size: 17))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Palette.onInk)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(Palette.ink))
+                        .contentShape(Circle())
                 }
-                .tint(.white).accessibilityIdentifier("editorPro.playPause")
+                .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+                .accessibilityIdentifier("editorPro.playPause")
                 Spacer()
-                Button { doUndo() } label: { Image(systemName: "arrow.uturn.backward") }
-                    .tint(.white).disabled(!(session?.canUndo ?? false))
+                Button { doUndo() } label: { transportGlyph("arrow.uturn.backward") }
+                    .buttonStyle(PressableStyle(dim: 0.6))
+                    .disabled(!(session?.canUndo ?? false))
                     .opacity((session?.canUndo ?? false) ? 1 : 0.35)
                     .accessibilityIdentifier("editorPro.undo")
-                Button { doRedo() } label: { Image(systemName: "arrow.uturn.forward") }
-                    .tint(.white).disabled(!(session?.canRedo ?? false))
+                Button { doRedo() } label: { transportGlyph("arrow.uturn.forward") }
+                    .buttonStyle(PressableStyle(dim: 0.6))
+                    .disabled(!(session?.canRedo ?? false))
                     .opacity((session?.canRedo ?? false) ? 1 : 0.35)
                     .accessibilityIdentifier("editorPro.redo")
                 Button { player?.pause(); showFullscreen = true } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    transportGlyph("arrow.up.left.and.arrow.down.right")
                 }
-                .tint(.white).accessibilityIdentifier("editorPro.fullscreen")
+                .buttonStyle(PressableStyle(dim: 0.6))
+                .accessibilityIdentifier("editorPro.fullscreen")
             }
-            .font(.system(size: 15))
-            .padding(.horizontal, Space.md).frame(height: 32)
+            .padding(.horizontal, Space.screenH).frame(height: 32)
         }
-        .background(Palette.night)
+        .background(Palette.canvas)
+    }
+
+    /// A bare monochrome transport glyph (Stoic icon button, sized to the 32pt strip).
+    private func transportGlyph(_ name: String) -> some View {
+        Image(systemName: name).font(.system(size: 15, weight: .regular))
+            .foregroundStyle(Palette.textPrimary)
+            .frame(width: 30, height: 30).contentShape(Rectangle())
     }
 
     // MARK: root panels — the content rows a root tile opens (render ABOVE the one bar)
@@ -366,19 +391,19 @@ struct ProEditorView: View {
                         .accessibilityIdentifier("editorPro.addSound")
                     if session?.draft.music != nil {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Music volume").font(.system(size: 9)).foregroundStyle(.white.opacity(0.6))
+                            Text("Music volume").font(AppFont.micro).foregroundStyle(Palette.textSecondary)
                             // UX-4: one op per DRAG (EditorSession's one-gesture-one-undo-step
                             // invariant) — the draft value tracks the thumb; the op commits on release.
                             Slider(value: $musicVolDraft, in: 0.0...0.5, onEditingChanged: { editing in
                                 if editing { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                                 else { setMusicVolume(musicVolDraft) }
-                            }).frame(width: 120).tint(Palette.accent)
+                            }).frame(width: 120).tint(Palette.textPrimary)
                                 .onAppear { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                         }
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.ink.opacity(0.25))
+            .frame(height: 52).background(Palette.canvas)
         case .text:
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.md) {
@@ -392,7 +417,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.ink.opacity(0.25))
+            .frame(height: 52).background(Palette.canvas)
         case .captions:
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: Space.md) {
@@ -415,7 +440,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.ink.opacity(0.25))
+            .frame(height: 52).background(Palette.canvas)
             if captionsOn {
                 captionStyleRow      // 10 popular styles
                 if showCaptionCustomize { captionOptionsRow }
@@ -440,7 +465,7 @@ struct ProEditorView: View {
                     }
                 }.padding(.horizontal, Space.md)
             }
-            .frame(height: 52).background(Palette.ink.opacity(0.25))
+            .frame(height: 52).background(Palette.canvas)
         case .filters:
             // Build 69 "Look" model: the three color systems get NAMES instead of
             // disclosure layers — Filter (preset cards + intensity), Adjust (manual
@@ -466,12 +491,7 @@ struct ProEditorView: View {
             ForEach(Array(["Filter", "Adjust", "Theme"].enumerated()), id: \.offset) { i, label in
                 if i != 2 || !themes.isEmpty {
                     Button { withAnimation(.easeOut(duration: 0.15)) { lookTab = i }; bumpHaptic() } label: {
-                        Text(label)
-                            .font(.system(size: 11, weight: lookTab == i ? .bold : .medium))
-                            .foregroundStyle(lookTab == i ? Palette.ink : .white)
-                            .padding(.horizontal, 10).frame(height: 28)
-                            .background(lookTab == i ? Palette.onInk : Color.white.opacity(0.12))
-                            .clipShape(Capsule())
+                        EditorChipLabel(text: label, active: lookTab == i)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.look.\(label.lowercased())")
@@ -497,7 +517,7 @@ struct ProEditorView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, Space.md)
-        .frame(height: 38).background(Palette.ink.opacity(0.25))
+        .frame(height: 38).background(Palette.canvas)
     }
 
     /// CapCut filter cards — each shows a representative frame with the look applied, a name
@@ -514,7 +534,7 @@ struct ProEditorView: View {
             }
             .padding(.horizontal, Space.md)
         }
-        .frame(height: 74).background(Palette.ink.opacity(0.25))
+        .frame(height: 74).background(Palette.canvas)
         .accessibilityIdentifier("editorPro.filterCards")
     }
 
@@ -527,7 +547,7 @@ struct ProEditorView: View {
                         if let img = filterPreviewImage {
                             Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
                         } else {
-                            LinearGradient(colors: [Color(hex: 0x4A5568), Color(hex: 0x8B95A5)],
+                            LinearGradient(colors: [Palette.surfaceSunken, Palette.textTertiary],
                                            startPoint: .top, endPoint: .bottom)
                         }
                     }
@@ -535,14 +555,15 @@ struct ProEditorView: View {
                     .saturation(p.sat).contrast(p.con).brightness(p.bri).hueRotation(.degrees(p.hue))
                     if filter == nil {
                         Image(systemName: "slash.circle").font(.system(size: 15))
-                            .foregroundStyle(.white.opacity(0.85))
+                            .foregroundStyle(Palette.onNight.opacity(0.85))
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .strokeBorder(active ? Palette.accent : Color.white.opacity(0.18), lineWidth: active ? 2 : 1))
-                Text(label).font(.system(size: 9, weight: active ? .bold : .regular))
-                    .foregroundStyle(active ? Palette.accent : .white.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous)
+                    .strokeBorder(active ? Palette.textPrimary : Palette.hairline, lineWidth: active ? 2 : 1))
+                Text(label).font(AppFont.micro)
+                    .foregroundStyle(active ? Palette.textPrimary : Palette.textSecondary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
             }
         }
         .buttonStyle(.plain)
@@ -551,16 +572,16 @@ struct ProEditorView: View {
 
     private var filterIntensityRow: some View {
         HStack(spacing: Space.md) {
-            Text("INTENSITY").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+            Text("INTENSITY").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
             Slider(value: $filterIntensityDraft, in: 0...1, onEditingChanged: { editing in
                 if editing { filterIntensityDraft = session?.draft.look.intensity ?? 1.0 }
                 else { setFilterIntensity(filterIntensityDraft) }
-            }).tint(Palette.accent)
+            }).tint(Palette.textPrimary)
             Text("\(Int(filterIntensityDraft * 100))")
-                .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.white).frame(width: 30)
+                .font(AppFont.micro.monospacedDigit()).foregroundStyle(Palette.textPrimary).frame(width: 30)
         }
         .padding(.horizontal, Space.md).frame(height: 38)
-        .background(Palette.ink.opacity(0.25))
+        .background(Palette.canvas)
         .onAppear { filterIntensityDraft = session?.draft.look.intensity ?? 1.0 }
         // Build 69: always present on the Filter tab, quietly disabled at "None" —
         // an appearing/vanishing row read as broken.
@@ -580,19 +601,20 @@ struct ProEditorView: View {
                     Button { mutate([.editSticker(index: i, color: hex)]); bumpHaptic() } label: {
                         Circle().fill(Color(hex: UInt(hex, radix: 16) ?? 0xFFFFFF))
                             .frame(width: 24, height: 24)
-                            .overlay(Circle().strokeBorder(active ? Palette.accent : .white.opacity(0.3),
+                            // Swatch fill = the user's render color (content); ring = monochrome selection.
+                            .overlay(Circle().strokeBorder(active ? Palette.textPrimary : Palette.hairline,
                                                            lineWidth: active ? 2 : 1))
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.sticker.color.\(hex)")
                 }
-                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 20)
+                optDivider
                 let hasBg = (o?.bg ?? "none") != "none" && !(o?.bg ?? "").isEmpty
                 optChip("Background", active: hasBg) {
                     mutate([.editSticker(index: i, bg: hasBg ? "none" : "111111")]); bumpHaptic()
                 }
                 .accessibilityIdentifier("editorPro.sticker.bg")
-                Rectangle().fill(.white.opacity(0.15)).frame(width: 1, height: 20)
+                optDivider
                 ForEach(["inter", "archivo", "serif"], id: \.self) { f in
                     optChip(f.capitalized, active: (o?.font ?? "inter") == f) {
                         mutate([.editSticker(index: i, font: f)]); bumpHaptic()
@@ -628,7 +650,7 @@ struct ProEditorView: View {
             .padding(.horizontal, Space.md)
         }
         .frame(height: 52)
-        .background(Palette.ink.opacity(0.25))
+        .background(Palette.canvas)
         .accessibilityIdentifier("editorPro.adjustRow")
     }
 
@@ -652,14 +674,16 @@ struct ProEditorView: View {
                             captionPresetSample(p)
                                 .frame(height: 16)
                             Text(p.label)
-                                .font(.system(size: 9, weight: activeId == p.id ? .bold : .medium))
-                                .foregroundStyle(activeId == p.id ? Palette.accent : .white.opacity(0.55))
+                                .font(AppFont.micro)
+                                .foregroundStyle(activeId == p.id ? Palette.textPrimary : Palette.textSecondary)
+                                .lineLimit(1)
                         }
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(Color.white.opacity(activeId == p.id ? 0.16 : 0.07))
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                            .strokeBorder(activeId == p.id ? Palette.accent : .clear, lineWidth: 1.5))
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous)
+                            .fill(activeId == p.id ? Palette.surfaceSunken : Palette.surface))
+                        .overlay(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous)
+                            .strokeBorder(activeId == p.id ? Palette.textPrimary : Palette.hairline,
+                                          lineWidth: activeId == p.id ? 1.5 : 1))
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.capPreset.\(p.id)")
@@ -668,7 +692,7 @@ struct ProEditorView: View {
             .padding(.horizontal, Space.md)
         }
         .frame(height: 52)
-        .background(Palette.ink.opacity(0.25))
+        .background(Palette.canvas)
         .accessibilityIdentifier("editorPro.captionStyleRow")
     }
 
@@ -719,7 +743,7 @@ struct ProEditorView: View {
                            // UX-4: one op per drag — commit on release only.
                            if !editing, let v = capSizeDraft { mutate([.captionOptions(scale: v)]); capSizeDraft = nil }
                        })
-                    .frame(width: 104).tint(Palette.accent)
+                    .frame(width: 104).tint(Palette.textPrimary)
                     .accessibilityIdentifier("editorPro.capSizeSlider")
                 optDivider
                 // POSITION — shift ALL captions at once (one track-wide pos_y). Also draggable on canvas.
@@ -759,21 +783,17 @@ struct ProEditorView: View {
             .padding(.horizontal, Space.md)
         }
         .frame(height: 44)
-        .background(Palette.ink.opacity(0.25))
+        .background(Palette.canvas)
         .accessibilityIdentifier("editorPro.captionOptions")
     }
 
     private var optDivider: some View {
-        Rectangle().fill(Color.white.opacity(0.15)).frame(width: 1, height: 20)
+        Rectangle().fill(Palette.hairline).frame(width: 1, height: 20)
     }
 
     private func optChip(_ label: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
-                .foregroundStyle(active ? Palette.ink : .white)
-                .padding(.horizontal, 10).frame(height: 28)
-                .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                .clipShape(Capsule())
+            EditorChipLabel(text: label, active: active)
         }
         .buttonStyle(.plain)
     }
@@ -783,14 +803,15 @@ struct ProEditorView: View {
             mutate([.captionOptions(accent: hex ?? "default")])
         } label: {
             ZStack {
-                Circle().fill(hex.map { colorFromHex($0) } ?? Color.white.opacity(0.15))
+                // Fill = the caption accent the render uses (content, not chrome).
+                Circle().fill(hex.map { colorFromHex($0) } ?? Palette.surfaceSunken)
                     .frame(width: 24, height: 24)
                 if hex == nil {
                     Image(systemName: "slash.circle").font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.7))
+                        .foregroundStyle(Palette.textSecondary)
                 }
             }
-            .overlay(Circle().strokeBorder(active ? Palette.accent : Color.white.opacity(0.25),
+            .overlay(Circle().strokeBorder(active ? Palette.textPrimary : Palette.hairline,
                                            lineWidth: active ? 2 : 1))
         }
         .buttonStyle(.plain)
@@ -805,12 +826,18 @@ struct ProEditorView: View {
 
     private func drawerButton(_ label: String, _ icon: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) { Image(systemName: icon); Text(label).font(AppFont.caption) }
-                .foregroundStyle(active ? Palette.ink : .white)
-                .padding(.horizontal, Space.md).frame(height: 34)
-                .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                .clipShape(Capsule())
+            // Stoic chip: surface + hairline capsule; selected inverts to ink/onInk.
+            HStack(spacing: 6) {
+                Image(systemName: icon).font(.system(size: 13, weight: .regular))
+                Text(label).font(AppFont.caption.weight(.semibold)).lineLimit(1)
+            }
+                .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
+                .padding(.horizontal, 14).frame(height: 34)
+                .background(Capsule().fill(active ? Palette.ink : Palette.surface))
+                .overlay(Capsule().strokeBorder(active ? Color.clear : Palette.hairline, lineWidth: 1))
+                .contentShape(Capsule())
         }
+        .buttonStyle(PressableStyle(dim: 0.8))
     }
 
     private func clipVolume(_ segIdx: Int) -> Double {
@@ -844,8 +871,8 @@ struct ProEditorView: View {
                         PlayerLayerView(player: player.player)
                     } else {
                         // Placeholder mode (keyless mock clip has no source video) — still fully editable.
-                        Rectangle().fill(Palette.ink.opacity(0.85))
-                            .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(.white.opacity(0.3)))
+                        Rectangle().fill(Palette.night)
+                            .overlay(Image(systemName: "film").font(.system(size: 40)).foregroundStyle(Palette.onNight.opacity(0.3)))
                     }
                 }
                 // Canvas transform preview of the clip under the playhead (CapCut model):
@@ -912,9 +939,10 @@ struct ProEditorView: View {
                 VStack {
                     Spacer()
                     Text(toast)
-                        .font(.system(size: 12, weight: .medium)).foregroundStyle(.white)
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .background(.black.opacity(0.78)).clipShape(Capsule())
+                        .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.onInk)
+                        .lineLimit(1).minimumScaleFactor(0.85)
+                        .padding(.horizontal, 14).frame(height: 32)
+                        .background(Capsule().fill(Palette.ink))
                         .padding(.bottom, 24)
                         .transition(.opacity)
                         .accessibilityIdentifier("editorPro.toast")
@@ -966,9 +994,9 @@ struct ProEditorView: View {
             ZStack {
                 // Same "no source to show" treatment as the placeholder player below —
                 // this band has no react clip to render client-side.
-                Rectangle().fill(Palette.ink.opacity(0.85))
+                Rectangle().fill(Palette.night)
                 Image(systemName: "film")
-                    .font(.system(size: 32)).foregroundStyle(.white.opacity(0.3))
+                    .font(.system(size: 32)).foregroundStyle(Palette.onNight.opacity(0.3))
             }
             .frame(width: canvas.width, height: h)
             .position(x: canvas.width / 2, y: h / 2)
@@ -1419,12 +1447,12 @@ struct ProEditorView: View {
                 RemoteRollFill(urlString: url)
             } else {
                 ZStack {
-                    Rectangle().fill(Color(hex: 0xB56635).opacity(0.30))
+                    Rectangle().fill(Palette.onNightSecondary.opacity(0.30))
                     VStack(spacing: 6) {
                         Image(systemName: roll.source == "own_media" ? "photo" : "film")
-                            .font(.system(size: 26)).foregroundStyle(.white.opacity(0.8))
+                            .font(.system(size: 26)).foregroundStyle(Palette.onNight.opacity(0.85))
                         Text(roll.source == "own_media" ? "Your media" : roll.cueText)
-                            .font(AppFont.caption).foregroundStyle(.white.opacity(0.8))
+                            .font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.85))
                             .lineLimit(1)
                     }
                 }
@@ -1701,7 +1729,7 @@ struct ProEditorView: View {
                 // Guide line while snapped to an anchor (yellow safe-zone line, Edits-style)
                 .overlay {
                     if let y = capDragY, LayoutConstants.captionAnchorY.values.contains(y) {
-                        Rectangle().fill(Color(hex: 0xFFD60A).opacity(0.8))
+                        Rectangle().fill(Palette.onNight.opacity(0.8))
                             .frame(height: 1)
                             .position(x: geo.size.width / 2, y: y * geo.size.height)
                             .allowsHitTesting(false)
@@ -1910,17 +1938,18 @@ struct ProEditorView: View {
             showVoice: showVoiceLane
         )
         .frame(height: timelineHeight)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.surface)
         // Build 69: the pinch-zoom gesture gets VISIBLE backup (Norman: invisible
         // gestures fail) — a magnifier that cycles fit → default → close, plus a
         // transient seconds-per-screen pill whenever the zoom level changes.
         .overlay(alignment: .topTrailing) {
             Button { cycleZoom() } label: {
                 Image(systemName: "plus.magnifyingglass")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
+                    .font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
                     .frame(width: 34, height: 30)
-                    .background(.black.opacity(0.45), in: Capsule())
+                    .background(Capsule().fill(Palette.surfaceSunken))
+                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -1929,10 +1958,10 @@ struct ProEditorView: View {
         }
         .overlay(alignment: .top) {
             if let z = zoomPill {
-                Text(z).font(Typeface.sans(11, .semibold)).monospacedDigit()
-                    .foregroundStyle(.white)
+                Text(z).font(AppFont.micro.monospacedDigit())
+                    .foregroundStyle(Palette.onInk)
                     .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(Capsule().fill(.black.opacity(0.7)))
+                    .background(Capsule().fill(Palette.ink))
                     .transition(.opacity)
                     .accessibilityIdentifier("editorPro.zoomPill")
             }
@@ -2070,27 +2099,28 @@ struct ProEditorView: View {
             // round-trip. Root state only; selection states keep the chevron there.
             if atPlainRoot {
                 Button { quickSplitAtPlayhead() } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: "scissors").font(.system(size: 19))
-                        Text("Split").font(.system(size: 10))
-                    }
-                    .foregroundStyle(.white)
-                    .frame(width: 52, height: 64)
-                    .contentShape(Rectangle())
+                    BarTileLabel(label: "Split", icon: "scissors", active: false, dot: false)
+                        .frame(width: 60, height: 64)
+                        .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(dim: 0.7))
                 .accessibilityIdentifier("editorPro.quickSplit")
-                Rectangle().fill(.white.opacity(0.12)).frame(width: 1, height: 40)
+                Rectangle().fill(Palette.hairline).frame(width: 1, height: 40)
             }
             // Fixed deselect tile — hidden at plain root (nothing to pop). Topmost layer
             // only: expansion → selection → rootPanel (see chevronTap).
             if !atPlainRoot {
                 Button { chevronTap() } label: {
-                    Image(systemName: "chevron.down").font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white).frame(width: 44, height: 64)
+                    // Stoic circular control (outline) — drill out one layer.
+                    Image(systemName: "chevron.down").font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(Palette.surface))
+                        .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                        .frame(width: 52, height: 64)
                         .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
                 .accessibilityIdentifier("editorPro.ctx.back")
             }
             ScrollViewReader { proxy in
@@ -2104,7 +2134,7 @@ struct ProEditorView: View {
                 .onChange(of: vocabularyKey) { _, _ in proxy.scrollTo("barStart", anchor: .leading) }
             }
         }
-        .frame(height: 84).background(Palette.ink)
+        .frame(height: 84).background(Palette.canvas)
     }
 
     /// Chevron pops the topmost layer only (CapCut drill-out): an open expansion first,
@@ -2213,19 +2243,15 @@ struct ProEditorView: View {
             barTile("Delete", "trash", id: "editorPro.ctx.deleteOverlay") { deleteOverlay(i); bumpHaptic() }
             if let o {
                 Text(String(format: "%.1fs", framesToSeconds(o.srcOut - o.srcIn)))
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).monospacedDigit()
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary).monospacedDigit()
             }
         case .boundary(let b):
             Text("TRANSITION").font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(Palette.textSecondary)
             ForEach([("None", "none"), ("Fade", "fade_black"), ("White", "fade_white"), ("Flash", "flash")], id: \.1) { label, v in
                 let active = (session?.draft.transitions.first { $0.afterSegment == b }?.style ?? "none") == v
                 Button { setTransition(after: b, style: v); bumpHaptic() } label: {
-                    Text(label).font(.system(size: 11, weight: active ? .bold : .medium))
-                        .foregroundStyle(active ? Palette.ink : .white)
-                        .padding(.horizontal, 10).frame(height: 28)
-                        .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                        .clipShape(Capsule())
+                    EditorChipLabel(text: label, active: active)
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("editorPro.ctx.transition.\(v)")
@@ -2239,7 +2265,7 @@ struct ProEditorView: View {
                     bumpHaptic()
                 }
                 Text(String(format: "%.1fs", Double(t.frames) / 30.0))
-                    .font(.system(size: 10, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .font(AppFont.micro.monospacedDigit()).foregroundStyle(Palette.textPrimary)
             }
         case .broll(let ri):
             barTile("Replace", "arrow.triangle.2.circlepath", id: "editorPro.ctx.replace") { replaceRoll(ri); bumpHaptic() }
@@ -2249,7 +2275,7 @@ struct ProEditorView: View {
             barTile("Delete", "trash", id: "editorPro.ctx.deleteRoll") { deleteRoll(ri); bumpHaptic() }
             if let roll = session?.draft.broll[safe: ri] {
                 Text(roll.source == "own_media" ? "Your media" : roll.cueText)
-                    .font(AppFont.caption).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(1)
             }
         }
     }
@@ -2296,16 +2322,11 @@ struct ProEditorView: View {
                          dot: Bool = false, disabled: Bool = false,
                          _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 19))
-                Text(label).font(.system(size: 10)).lineLimit(1)
-                Circle().fill(Color(hex: 0x34D399)).frame(width: 4, height: 4).opacity(dot ? 1 : 0)
-            }
-            .foregroundStyle(active ? Palette.accent : .white)
-            .frame(minWidth: 56)
-            .contentShape(Rectangle())
+            BarTileLabel(label: label, icon: icon, active: active, dot: dot)
+                .frame(minWidth: 56)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.7))
         .disabled(disabled)
         .opacity(disabled ? 0.35 : 1)
         .accessibilityIdentifier(id)
@@ -2316,7 +2337,7 @@ struct ProEditorView: View {
     // (right, closes). Sliders keep the UX-4 draft + one-op-on-release pattern.
 
     @ViewBuilder func expansionRow(_ e: Expansion) -> some View {
-        HStack(spacing: Space.md) {
+        HStack(spacing: Space.sm) {
             switch e {
             case .speed(let seg):
                 expansionReset {
@@ -2324,24 +2345,20 @@ struct ProEditorView: View {
                     if abs(cur - 1.0) > 0.01 { setSpeed(seg, 1.0) }
                     speedDraft = 1.0
                 }
-                Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
                 Slider(value: $speedDraft, in: 0.5...3.0, onEditingChanged: { editing in
                     if !editing { setSpeed(seg, speedDraft) }
                 })
-                .tint(Palette.accent)
+                .tint(Palette.textPrimary)
                 .accessibilityIdentifier("editorPro.speedSlider")
                 Text(String(format: "%.1fx", speedDraft))
-                    .font(.system(size: 12, weight: .bold)).monospacedDigit().foregroundStyle(.white)
+                    .font(AppFont.caption.weight(.semibold).monospacedDigit()).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
                     .frame(width: 38)
                 ForEach([1.0, 1.5, 2.0], id: \.self) { v in
                     let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
                     Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
-                        Text(v == 1.5 ? "1.5x" : String(format: "%.0fx", v))
-                            .font(.system(size: 11, weight: active ? .bold : .medium))
-                            .foregroundStyle(active ? Palette.ink : .white)
-                            .padding(.horizontal, 10).frame(height: 28)
-                            .background(active ? Palette.onInk : Color.white.opacity(0.12))
-                            .clipShape(Capsule())
+                        EditorChipLabel(text: v == 1.5 ? "1.5x" : String(format: "%.0fx", v), active: active)
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.speed.\(v)")
@@ -2352,15 +2369,15 @@ struct ProEditorView: View {
                     if abs(clipVolume(seg) - 1.0) > 0.01 { setClipVolume(seg, 1.0) }
                     clipVolDraft = 1.0
                 }
-                Text("VOLUME").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Text("VOLUME").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
                 Slider(value: $clipVolDraft, in: 0.0...2.0, onEditingChanged: { editing in
                     if editing { clipVolDraft = clipVolume(seg) }
                     else { setClipVolume(seg, clipVolDraft) }
                 })
-                .tint(Palette.accent)
+                .tint(Palette.textPrimary)
                 .accessibilityIdentifier("editorPro.clipVolume")
                 Text("\(Int((clipVolDraft * 100).rounded()))%")
-                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .font(AppFont.micro.monospacedDigit()).foregroundStyle(Palette.textPrimary)
                     .frame(width: 42)
                 expansionConfirm()
             case .musicVolume:
@@ -2368,15 +2385,15 @@ struct ProEditorView: View {
                     if let m = session?.draft.music, abs(m.volume - 0.15) > 0.001 { setMusicVolume(0.15) }
                     musicVolDraft = 0.15
                 }
-                Text("MUSIC").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Text("MUSIC").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
                 Slider(value: $musicVolDraft, in: 0.0...0.5, onEditingChanged: { editing in
                     if editing { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                     else { setMusicVolume(musicVolDraft) }
                 })
-                .tint(Palette.accent)
+                .tint(Palette.textPrimary)
                 .accessibilityIdentifier("editorPro.musicVolume")
                 Text("\(Int((musicVolDraft * 100).rounded()))%")
-                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .font(AppFont.micro.monospacedDigit()).foregroundStyle(Palette.textPrimary)
                     .frame(width: 42)
                 expansionConfirm()
             case .stickerStyle(let i):
@@ -2399,30 +2416,30 @@ struct ProEditorView: View {
                        t.frames != 12 { setTransitionDuration(after: b, seconds: 0.4) }
                     transDurDraft = 0.4
                 }
-                Text("DUR").font(AppFont.micro).tracking(Track.label).foregroundStyle(.white.opacity(0.5))
+                Text("DUR").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
                 // Draft + commit-on-release (UX-4) — the old inline slider committed one op
                 // per drag TICK, spraying undo steps.
                 Slider(value: $transDurDraft, in: 0.1...1.5, onEditingChanged: { editing in
                     if !editing { setTransitionDuration(after: b, seconds: transDurDraft) }
                 })
-                .tint(Palette.accent)
+                .tint(Palette.textPrimary)
                 .accessibilityIdentifier("editorPro.transitionDuration")
                 Text(String(format: "%.1fs", transDurDraft))
-                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().foregroundStyle(.white)
+                    .font(AppFont.micro.monospacedDigit()).foregroundStyle(Palette.textPrimary)
                     .frame(width: 36)
                 expansionConfirm()
             }
         }
         .padding(.horizontal, Space.md)
         .frame(height: 84).frame(maxWidth: .infinity)
-        .background(Palette.ink)
+        .background(Palette.canvas)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier({ if case .speed = e { return "editorPro.speedRow" } else { return "editorPro.expansionRow" } }())
     }
 
     private func expansionReset(_ action: @escaping () -> Void) -> some View {
         Button { action(); bumpHaptic() } label: {
-            Text("Reset").font(.system(size: 12, weight: .medium)).foregroundStyle(.white.opacity(0.7))
+            Text("Reset").font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textSecondary)
                 .padding(.vertical, 8).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -2434,11 +2451,13 @@ struct ProEditorView: View {
             withAnimation(.easeOut(duration: 0.15)) { expansion = nil }
             bumpHaptic()
         } label: {
-            Image(systemName: "checkmark").font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white).frame(width: 36, height: 36)
-                .contentShape(Rectangle())
+            // Stoic "next" circle: the filled ink control confirms.
+            Image(systemName: "checkmark").font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Palette.onInk).frame(width: 36, height: 36)
+                .background(Circle().fill(Palette.ink))
+                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
         .accessibilityIdentifier("editorPro.expansion.confirm")
     }
 
@@ -2532,9 +2551,9 @@ private struct AdjustKnob: View {
             Slider(value: $value, in: range, onEditingChanged: { editing in
                 if !editing { commit(value) }
             })
-            .frame(width: 104).tint(Palette.accent)
+            .frame(width: 104).tint(Palette.textPrimary)
             Text("\(label) \(value == 0 ? "" : String(format: "%+.0f", value * 100))")
-                .font(.system(size: 9)).foregroundStyle(.white.opacity(0.65))
+                .font(AppFont.micro).foregroundStyle(Palette.textSecondary).lineLimit(1)
         }
         .onAppear { if !seeded { value = initial; seeded = true } }
         .accessibilityIdentifier("editorPro.adjust.\(label.lowercased())")
@@ -2550,10 +2569,51 @@ struct RemoteRollFill: View {
     var body: some View {
         Group {
             if let img { Image(uiImage: img).resizable().scaledToFill() }
-            else { Rectangle().fill(Color(hex: 0xB56635).opacity(0.30)) }
+            else { Rectangle().fill(Palette.onNightSecondary.opacity(0.30)) }
         }
         .task(id: urlString) {
             if img == nil { img = await RemoteRollThumbCache.shared.thumb(for: urlString) }
         }
+    }
+}
+
+
+/// Stoic capsule chip label (DESIGN.md §5 chips): selection is inversion (ink / onInk),
+/// unselected is sunken + hairline. Height stays at the rows' tuned 28pt.
+private struct EditorChipLabel: View {
+    let text: String
+    var active: Bool
+    var height: CGFloat = 28
+    var body: some View {
+        Text(text)
+            .font(AppFont.caption.weight(active ? .semibold : .regular))
+            .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
+            .lineLimit(1)
+            .padding(.horizontal, 12).frame(height: height)
+            .background(Capsule().fill(active ? Palette.ink : Palette.surfaceSunken))
+            .overlay(Capsule().strokeBorder(active ? Color.clear : Palette.hairline, lineWidth: 1))
+            .contentShape(Capsule())
+            .animation(Motion.quick, value: active)
+    }
+}
+
+/// One-bar tile: glyph in a 36pt circle over a label. Selected = inverted circle (ink /
+/// onInk); the "modified from default" marker is a small monochrome dot (was green).
+private struct BarTileLabel: View {
+    let label: String
+    let icon: String
+    var active: Bool
+    var dot: Bool
+    var body: some View {
+        VStack(spacing: 4) {
+            Image(systemName: icon).font(.system(size: 17, weight: .regular))
+                .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
+                .frame(width: 36, height: 36)
+                .background(Circle().fill(active ? Palette.ink : Color.clear))
+            Text(label).font(AppFont.micro).lineLimit(1).minimumScaleFactor(0.85)
+                .foregroundStyle(active ? Palette.textPrimary : Palette.textSecondary)
+            Circle().fill(Palette.textPrimary).frame(width: 4, height: 4).opacity(dot ? 1 : 0)
+        }
+        .animation(Motion.quick, value: active)
     }
 }

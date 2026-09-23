@@ -148,7 +148,7 @@ struct EditorTimeline: View {
                 laneGutter                     // CapCut track heads, pinned at the left edge
                 // Fixed center playhead — white (reference), not accent: the accent line read
                 // as related to the accent selection border it often crossed.
-                Rectangle().fill(Color.white).frame(width: 2)
+                Rectangle().fill(Palette.textPrimary).frame(width: 2)
                     .frame(maxHeight: .infinity).offset(x: mid - 1)
             }
             .contentShape(Rectangle())
@@ -190,14 +190,17 @@ struct EditorTimeline: View {
                 let leading = cs[i].segIdx
                 let has = document.transitions.contains { $0.afterSegment == leading }
                 let selected = selectedBoundary == leading
+                // Monochrome states (was yellow/accent): none = dark hollow diamond,
+                // transition set = white disc + filled diamond, selected = night disc with a
+                // heavy white ring (inversion of the set state).
                 Button { onTapBoundary(leading) } label: {
                     Image(systemName: has ? "square.fill" : "square")
                         .font(.system(size: 8, weight: .bold))
                         .rotationEffect(.degrees(45))
-                        .foregroundStyle(selected ? Palette.night : (has ? Palette.night : .white.opacity(0.8)))
+                        .foregroundStyle(selected ? Palette.onNight : (has ? Palette.night : Palette.onNight.opacity(0.85)))
                         .frame(width: 18, height: 18)
-                        .background(Circle().fill(selected ? Palette.accent : (has ? Color(hex: 0xFFD60A) : Color.black.opacity(0.6))))
-                        .overlay(Circle().strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+                        .background(Circle().fill(selected ? Palette.night : (has ? Palette.onNight : Color.black.opacity(0.6))))
+                        .overlay(Circle().strokeBorder(Palette.onNight.opacity(selected ? 1 : 0.5), lineWidth: selected ? 2 : 1))
                 }
                 .buttonStyle(.plain)
                 .offset(x: x - 9, y: 23)   // re-centered for the 64pt filmstrip
@@ -208,9 +211,10 @@ struct EditorTimeline: View {
                     Button(action: onTapCutSeam) {
                         Image(systemName: "scissors")
                             .font(.system(size: 7, weight: .bold))
-                            .foregroundStyle(.black)
+                            .foregroundStyle(Palette.night)
                             .frame(width: 14, height: 14)
-                            .background(Circle().fill(Color(hex: 0xFFB020)))
+                            .background(Circle().fill(Palette.onNight))
+                            .overlay(Circle().strokeBorder(Palette.night.opacity(0.6), lineWidth: 1))
                     }
                     .buttonStyle(.plain)
                     .offset(x: x - 7, y: 52)
@@ -232,7 +236,8 @@ struct EditorTimeline: View {
         let interval = [1, 2, 5, 10].first { CGFloat($0) * pointsPerSecond >= 36 } ?? 10
         return HStack(spacing: 0) {
             ForEach(0..<max(1, Int(totalSeconds / Double(interval)) + 1), id: \.self) { i in
-                Text("\(i * interval)s").font(.system(size: 8)).foregroundStyle(.white.opacity(0.4))
+                Text("\(i * interval)s").font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                    .lineLimit(1).minimumScaleFactor(0.7)
                     .frame(width: CGFloat(interval) * pointsPerSecond, alignment: .leading)
             }
         }.frame(height: 12)
@@ -278,7 +283,7 @@ struct EditorTimeline: View {
             FilmstripThumbs(filmstrip: filmstrip, srcIn: srcIn, srcOut: srcOut, width: w, zoomBucket: zoomBucket)
                 .frame(width: w, height: 64).clipped()
             // Hard WHITE selection frame (reference) — accent is reserved for effect objects.
-            RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Color.white : .white.opacity(0.15),
+            RoundedRectangle(cornerRadius: 6).strokeBorder(selected ? Palette.textPrimary : Palette.hairline,
                                                            lineWidth: selected ? 2.5 : 1)
         }
         .frame(width: w, height: 64)
@@ -289,10 +294,10 @@ struct EditorTimeline: View {
         .overlay(alignment: .topLeading) {
             if selected, w >= 44 {
                 Text(String(format: "%.1fs", Double(outputFrames(frames, speed: speed)) / 30.0))
-                    .font(.system(size: 8, weight: .semibold)).monospacedDigit()
-                    .foregroundStyle(.white.opacity(0.9))
-                    .padding(.horizontal, 4).padding(.vertical, 1.5)
-                    .background(Color.black.opacity(0.45)).clipShape(Capsule())
+                    .font(AppFont.micro.monospacedDigit())
+                    .foregroundStyle(Palette.onNight)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Color.black.opacity(0.55)).clipShape(Capsule())
                     .padding(.leading, 14).padding(.top, 3)
             }
         }
@@ -301,10 +306,12 @@ struct EditorTimeline: View {
         .overlay(alignment: .topTrailing) {
             if abs(speed - 1.0) > 0.01 {
                 Text(String(format: speed.truncatingRemainder(dividingBy: 1) == 0 ? "%.0fx" : "%.1fx", speed))
-                    .font(.system(size: 8, weight: .bold)).monospacedDigit()
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 4).padding(.vertical, 1.5)
-                    .background(Color(hex: 0xFFD60A)).clipShape(Capsule())
+                    // Inverted badge (white on the footage) — reads apart from the dark
+                    // duration badge by tone, not hue (was yellow).
+                    .font(AppFont.micro.monospacedDigit())
+                    .foregroundStyle(Palette.night)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(Palette.onNight).clipShape(Capsule())
                     .padding(.trailing, selected ? 14 : 3).padding(.top, 3)
             }
         }
@@ -314,7 +321,7 @@ struct EditorTimeline: View {
             if document.volumeRanges.contains(where: { $0.srcIn <= srcIn && $0.srcOut >= srcOut && $0.volume == 0 }) {
                 Image(systemName: "speaker.slash.fill")
                     .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(Palette.onNight)
                     .padding(3)
                     .background(Color.black.opacity(0.55)).clipShape(Circle())
                     .padding(.trailing, selected ? 14 : 3).padding(.bottom, 3)
@@ -325,10 +332,10 @@ struct EditorTimeline: View {
         .overlay(alignment: edgeAlignment) {
             if trimming {
                 Text(String(format: "%.1fs", Double(outputFrames(frames, speed: speed)) / 30.0))
-                    .font(.system(size: 11, weight: .bold)).monospacedDigit()
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Palette.accent).clipShape(Capsule())
+                    .font(AppFont.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(Palette.night)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(Palette.onNight).clipShape(Capsule())
                     .offset(y: -40)
             }
         }
@@ -379,19 +386,21 @@ struct EditorTimeline: View {
     private func gutterIcon(_ name: String) -> some View {
         Image(systemName: name)
             .font(.system(size: 8, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.6))
+            .foregroundStyle(Palette.textSecondary)
             .frame(width: 15, height: 15)
-            .background(Circle().fill(Color.black.opacity(0.55)))
+            .background(Circle().fill(Palette.surfaceSunken))
+            .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 0.5))
     }
 
     /// CapCut's "+" at the end of the main track — the fast path to add media.
     private var addMediaTile: some View {
         Button(action: onTapAddMedia) {
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color.white.opacity(0.12))
+                .fill(Palette.surfaceSunken)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Palette.hairline, lineWidth: 1))
                 .frame(width: 40, height: 64)
-                .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white))
+                .overlay(Image(systemName: "plus").font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("editorPro.addMedia")
@@ -463,24 +472,25 @@ struct EditorTimeline: View {
                 RemoteRollThumb(urlString: remote).frame(width: w, height: 26).clipped()
                 Color.black.opacity(0.15)
             } else {
-                Color(hex: 0xB56635).opacity(selected ? 1 : 0.9)
+                // Rolls = the MID gray of the lane stack (captions light, voice/music dark).
+                Palette.onNightSecondary.opacity(selected ? 0.75 : 0.55)
             }
             HStack(spacing: 3) {
                 Image(systemName: roll.source == "own_media" ? "photo.fill" : "film.fill")
                     .font(.system(size: 9, weight: .semibold))
-                Text(w > 64 ? "\(letter)-roll" : letter).font(.system(size: 10, weight: .bold))
+                Text(w > 64 ? "\(letter)-roll" : letter).font(AppFont.micro).lineLimit(1)
                 if w > 120, thumbPath == nil, !roll.cueText.isEmpty {
-                    Text(roll.cueText).font(.system(size: 9)).lineLimit(1).opacity(0.8)
+                    Text(roll.cueText).font(AppFont.micro).lineLimit(1).opacity(0.85)
                 }
                 Spacer(minLength: 0)
             }
-            .foregroundStyle(.white).shadow(radius: thumbPath != nil ? 2 : 0)
+            .foregroundStyle(Palette.onNight).shadow(radius: 2)
             .padding(.horizontal, 5).frame(width: w, alignment: .leading)
         }
         .frame(width: w, height: 26, alignment: .leading)
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
-            .strokeBorder(selected ? Color(hex: 0x30D6C4) : Color.white.opacity(0.15),
+            .strokeBorder(selected ? Palette.onNight : Palette.hairline,
                           lineWidth: selected ? 2 : 0.5))
         // Build 54: a SELECTED roll drags to move its whole window in time (CapCut). The
         // hit-area overlay exists ONLY while selected, so unselected strips keep plain
@@ -604,7 +614,9 @@ struct EditorTimeline: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var zoomPurple: Color { Color(hex: 0x8B5CF6) }
+    // Zoom blocks and text cards used to differ by hue (purple vs white); now by glyph
+    // (magnifier vs textformat) AND gray value (zoom = lighter, card = darker).
+    private var zoomGray: Color { Palette.onNight.opacity(0.30) }
 
     private func overlayChip(idx: Int, overlay o: EditorOverlay, span: (start: Double, end: Double)) -> some View {
         let w = max(26, CGFloat(span.end - span.start) * pointsPerSecond)
@@ -613,20 +625,20 @@ struct EditorTimeline: View {
             Image(systemName: o.type == "punch_in" ? "plus.magnifyingglass" : "textformat")
                 .font(.system(size: 9, weight: .semibold))
             if o.type == "text_card", w > 54 {
-                Text(String(o.text.prefix(8))).font(.system(size: 9, weight: .semibold)).lineLimit(1)
+                Text(String(o.text.prefix(8))).font(AppFont.micro).lineLimit(1)
             }
         }
         // Zoom blocks read purple (the effect-block color: Screen Studio's zoom track,
         // CapCut effect clips); text cards stay neutral white.
-        .foregroundStyle(selected ? .white : (o.type == "punch_in" ? zoomPurple : .white))
+        .foregroundStyle(selected ? Palette.night : Palette.onNight)
         .frame(width: w, height: 24)
         .background(
             RoundedRectangle(cornerRadius: 4)
-                .fill(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent)
-                               : (o.type == "punch_in" ? zoomPurple.opacity(0.25) : Color.white.opacity(0.16)))
+                .fill(selected ? Palette.onNight
+                               : (o.type == "punch_in" ? zoomGray : Palette.surfaceSunken))
         )
         .overlay(RoundedRectangle(cornerRadius: 4)
-            .strokeBorder(selected ? (o.type == "punch_in" ? zoomPurple : Palette.accent) : Color.white.opacity(0.2),
+            .strokeBorder(selected ? Palette.onNight : Palette.hairline,
                           lineWidth: selected ? 1.5 : 0.5))
         .offset(x: CGFloat(span.start) * pointsPerSecond, y: 1)
         .onTapGesture { onTapOverlay(idx) }
@@ -768,7 +780,7 @@ struct TrimBracket: View {
                 bottomTrailingRadius: edge == .trailing ? 5 : 0,
                 topTrailingRadius: edge == .trailing ? 5 : 0,
                 style: .continuous)
-                .fill(Color.white)
+                .fill(Palette.onNight)
             Capsule().fill(Palette.night.opacity(0.55))
                 .frame(width: 2, height: min(height - 6, 14))
         }
@@ -783,7 +795,7 @@ struct RollThumb: View {
     var body: some View {
         Group {
             if let img { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
-            else { Color(hex: 0xB56635).opacity(0.9) }
+            else { Palette.onNightSecondary.opacity(0.55) }
         }
         .task(id: path) {
             if img == nil, let i = UIImage(contentsOfFile: MediaStore.url(for: path).path) { img = i }
@@ -831,7 +843,7 @@ struct RemoteRollThumb: View {
     var body: some View {
         Group {
             if let img { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
-            else { Color(hex: 0xB56635).opacity(0.9) }
+            else { Palette.onNightSecondary.opacity(0.55) }
         }
         .task(id: urlString) {
             if img == nil { img = await RemoteRollThumbCache.shared.thumb(for: urlString) }
@@ -865,7 +877,7 @@ struct FilmstripThumbs: View {
             ForEach(sampleSeconds, id: \.self) { sec in
                 Group {
                     if let img = images[sec] { Image(uiImage: img).resizable().aspectRatio(contentMode: .fill) }
-                    else { Palette.ink.opacity(0.7) }
+                    else { Palette.surfaceSunken }
                 }
                 .frame(maxWidth: .infinity).frame(height: 64).clipped()
             }

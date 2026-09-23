@@ -940,21 +940,24 @@ extension ProEditorView {
 
     var renderingView: some View {
         VStack(spacing: Space.md) {
-            ProgressView().tint(Palette.accent)
-            Text("Re-rendering your clip…").font(AppFont.body).foregroundStyle(.white.opacity(0.8))
+            ProgressView().tint(Palette.textPrimary)
+            Text("Re-rendering your clip…").font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                .multilineTextAlignment(.center)
             if let renderStartedAt {
                 TimelineView(.periodic(from: renderStartedAt, by: 1)) { ctx in
-                    Text("\(Int(ctx.date.timeIntervalSince(renderStartedAt)))s").font(AppFont.caption).foregroundStyle(.white.opacity(0.5)).monospacedDigit()
+                    Text("\(Int(ctx.date.timeIntervalSince(renderStartedAt)))s").font(AppFont.caption).foregroundStyle(Palette.textSecondary).monospacedDigit()
                 }
             }
-            Button("Cancel") { dismiss() }.tint(.white).padding(.top, Space.sm)
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            Button("Cancel") { dismiss() }.buttonStyle(.ds(.outline, height: 44)).padding(.top, Space.sm)
+        }.padding(.horizontal, Space.screenH).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     func failedView(_ msg: String) -> some View {
         VStack(spacing: Space.md) {
-            Image(systemName: "exclamationmark.triangle").font(.system(size: 32)).foregroundStyle(.white.opacity(0.5))
-            Text(msg).font(AppFont.body).foregroundStyle(.white.opacity(0.8)).multilineTextAlignment(.center)
+            // Stoic empty/error state: monochrome glyph carries the warning (no hue).
+            Image(systemName: "exclamationmark.triangle").font(.system(size: 24, weight: .regular)).foregroundStyle(Palette.textPrimary)
+            Text(msg).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             if editorRecoverable {
                 // Re-create the edit from the local take (store.retryClipJob re-uploads +
                 // starts a fresh job in place when the server lost this one), then close so
@@ -962,20 +965,21 @@ extension ProEditorView {
                 Button("Re-create this edit") {
                     Task { await store.retryClipJob(clip) }
                     dismiss()
-                }.tint(Palette.accent).font(AppFont.callout.weight(.semibold))
-                Button("Close") { dismiss() }.tint(.white.opacity(0.5))
+                }.buttonStyle(.ds(.primary, height: 48)).padding(.top, Space.sm)
+                Button("Close") { dismiss() }.buttonStyle(DSTextLinkStyle(color: Palette.textSecondary))
             } else {
-                Button("Close") { dismiss() }.tint(Palette.accent)
+                Button("Close") { dismiss() }.buttonStyle(.ds(.outline, height: 48)).padding(.top, Space.sm)
             }
         }.padding(Space.xl).frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     func transientBar(_ t: String) -> some View {
         HStack(spacing: Space.sm) {
-            Image(systemName: "info.circle").foregroundStyle(.white.opacity(0.7))
-            Text(t).font(AppFont.caption).foregroundStyle(.white.opacity(0.85))
-            Spacer()
-        }.padding(.horizontal, Space.md).padding(.vertical, 6).background(Palette.ink.opacity(0.8))
+            Image(systemName: "info.circle").font(.system(size: 13, weight: .regular)).foregroundStyle(Palette.textPrimary)
+            Text(t).font(AppFont.caption).foregroundStyle(Palette.textPrimary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }.padding(.horizontal, Space.screenH).padding(.vertical, 6).background(Palette.surfaceSunken)
     }
 
     // MARK: caption list sheet — the batch editor (rows: timecode + phrase, tap to fix)
