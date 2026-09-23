@@ -580,7 +580,9 @@ struct DSStatTile: View {
     let label: String
     var body: some View {
         VStack(spacing: 4) {
-            Text(value).font(AppFont.stat).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+            // No data yet renders as a muted dash rather than an empty tile.
+            Text(value.isEmpty ? "—" : value).font(AppFont.stat).tracking(-0.3)
+                .foregroundStyle(value.isEmpty ? Palette.textTertiary : Palette.textPrimary)
                 .lineLimit(1).minimumScaleFactor(0.6)
             Text(label).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center).lineLimit(2)

@@ -20,6 +20,10 @@ name: Pick card plain tag + refine chat composer
     visible:
       id: "script.record"
     timeout: 8000
+# The reader's journal-style body can push the refine field under the sticky Record
+# button; scroll it clear first (a covered element still counts as "visible").
+- swipe: { start: "50%,70%", end: "50%,25%", duration: 500 }
+- swipe: { start: "50%,70%", end: "50%,25%", duration: 500 }
 - scrollUntilVisible:
     element:
       id: "script.refineField"
