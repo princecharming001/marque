@@ -2,33 +2,19 @@ import SwiftUI
 import UIKit
 import AuthenticationServices
 
-// Sign-in, ported from maxapp's CreateAccountScreen.tsx — the DARK cinematic
-// treatment, not the light LoginScreen one. Full-bleed hero plate drifting under
-// a 4-stop near-black scrim, a centered serif headline with one real italic
-// word, a tracked capsule pill, glass fields, a solid white CTA pill, an OR
-// divider, then two IDENTICAL glass social buttons.
+// Sign-in, in the Stoic onboarding language (DESIGN.md §6): canvas page, an eyebrow
+// over a centered lowercase title, the two fields as rows in one grouped surface card,
+// a primary capsule, an OR rule, then two IDENTICAL outline social capsules.
 //
-// The auth behavior is unchanged from the light version: same state machine,
-// same validation, same AuthManager calls, same accessibility identifiers.
+// The auth behavior is unchanged: same state machine, same validation, same
+// AuthManager calls, same accessibility identifiers.
 //
 // The Apple button is deliberately NOT SignInWithAppleButton. That control
 // renders its own label with its own (larger, uncontrollable) font, so it never
 // matched the Google pill sitting directly above it — the owner's complaint.
 // AppleSignInCoordinator below drives ASAuthorizationController by hand so the
-// button is just a view we style like any other.
-
-/// maxapp's dark palette (CreateAccountScreen.tsx :32-39).
-private enum DarkParity {
-    static let ink = Color(hex: 0x0B0B0D)
-    static let hair = Color.white.opacity(0.14)
-    static let hairSoft = Color.white.opacity(0.08)
-    static let muted = Color.white.opacity(0.58)
-    static let mutedSoft = Color.white.opacity(0.42)
-    static let field = Color.white.opacity(0.06)
-    static let err = Color(hex: 0xFF6B5E)
-    static let glassFill = Color.white.opacity(0.14)
-    static let glassBorder = Color.white.opacity(0.45)
-}
+// button is just a view we style like any other. It keeps Apple's glyph, the
+// "Continue with Apple" wording and a 56pt (>= 44pt HIG) height.
 
 struct SignInScreen: View {
     @Environment(AppStore.self) private var store
@@ -45,7 +31,8 @@ struct SignInScreen: View {
     @State private var password = ""
     @State private var showPassword = false
     @State private var currentMode: Mode = .signIn
-    @State private var entered = false        // maxapp's fade + 18pt slide-up on mount
+    @State private var entered = false        // fade + slide-up on mount
+    // Kept from the retired cinematic hero (Ken Burns); nothing reads them now.
     @State private var bgScale: CGFloat = 1.0
     @State private var bgOffset: CGFloat = 0
     @FocusState private var focus: Field?
@@ -55,69 +42,34 @@ struct SignInScreen: View {
     private var apiError: String { store.auth.lastError }
 
     var body: some View {
-        ZStack {
-            DarkParity.ink.ignoresSafeArea()
-
-            // Hero plate with the paywall's Ken Burns drift (scale 1→1.07 / 9s,
-            // x 0→9pt / 12s, auto-reversing). MUST be geometry-bound and clipped:
-            // an unclipped scaledToFill sizes the whole ZStack to the image's
-            // intrinsic width and shoves every sibling off both edges.
-            GeometryReader { geo in
-                Image("AuthHero")
-                    .resizable().scaledToFill()
-                    .frame(width: geo.size.width, height: geo.size.height)
-                    .scaleEffect(bgScale)
-                    .offset(x: bgOffset)
-                    .clipped()
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            LinearGradient(stops: [
-                .init(color: DarkParity.ink.opacity(0.90), location: 0),
-                .init(color: DarkParity.ink.opacity(0.42), location: 0.34),
-                .init(color: DarkParity.ink.opacity(0.52), location: 0.62),
-                .init(color: DarkParity.ink.opacity(0.96), location: 1),
-            ], startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-
-            VStack(spacing: 0) {
-                if showsBack {
-                    HStack {
-                        Button { dismiss() } label: {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .frame(width: 34, height: 34)
-                                .background(Circle().fill(Color.white.opacity(0.12)))
-                        }
-                        .buttonStyle(.plain)
+        VStack(spacing: 0) {
+            if showsBack {
+                HStack {
+                    DSIconButton(systemName: "chevron.left") { dismiss() }
+                        .accessibilityLabel("Back")
                         .accessibilityIdentifier("auth.back")
-                        Spacer()
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 8)
+                    Spacer()
                 }
+                .padding(.horizontal, Space.xs)
+            }
 
-                // maxapp vertically CENTERS the form in the space below the nav
-                // (contentContainer: justifyContent 'center') rather than
-                // top-aligning it — the min-height frame reproduces that while
-                // staying scrollable under the keyboard.
-                GeometryReader { proxy in
-                    ScrollView {
-                        formColumn
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 40)
-                            .frame(maxWidth: .infinity)
-                            .frame(minHeight: proxy.size.height)   // centers like maxapp's flex
-                            .opacity(entered ? 1 : 0)
-                            .offset(y: entered ? 0 : 18)           // 500ms fade + slide, 80ms delay
-                    }
-                    .scrollDismissesKeyboard(.interactively)
+            // Vertically CENTER the form in the space below the nav rather than
+            // top-aligning it — the min-height frame does that while staying
+            // scrollable under the keyboard.
+            GeometryReader { proxy in
+                ScrollView {
+                    formColumn
+                        .padding(.horizontal, Space.screenH)
+                        .padding(.vertical, Space.xxl)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: proxy.size.height)
+                        .opacity(entered ? 1 : 0)
+                        .offset(y: entered ? 0 : 18)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
         }
+        .background(Palette.canvas.ignoresSafeArea())
         .onAppear {
             currentMode = mode
             withAnimation(.easeOut(duration: 0.5).delay(0.08)) { entered = true }
@@ -130,52 +82,46 @@ struct SignInScreen: View {
 
     private var formColumn: some View {
         VStack(spacing: 0) {
-            // The italic word is a REAL italic cut, not a synthesized slant:
-            // Fraunces-Italic.ttf ships under the PostScript name
-            // Fraunces-9ptBlackItalic (verified against the bundled file).
+            DSEyebrow(text: currentMode == .signIn ? "GOOD TO SEE YOU" : "ALMOST THERE")
+
             title
                 .multilineTextAlignment(.center)
-
-            Text(currentMode == .signIn ? "GOOD TO SEE YOU" : "ALMOST THERE")
-                .font(Typeface.sans(11, .semibold)).tracking(1.4)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 14).padding(.vertical, 5)
-                .overlay(Capsule().strokeBorder(DarkParity.hair, lineWidth: 1))
-                .padding(.top, 12)
+                .padding(.top, Space.xs)
 
             Text(currentMode == .signIn
                  ? "Pick up right where you left off."
                  : "Your voice and your scripts, saved to your account.")
-                .font(Typeface.sans(15))
-                .foregroundStyle(DarkParity.muted)
+                .font(AppFont.bodyText)
+                .foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)
-                .lineSpacing(4)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 16)
-                .padding(.bottom, 26)
+                .padding(.top, Space.sm)
+                .padding(.bottom, Space.xl)
 
-            VStack(spacing: 10) {
+            // Both fields as rows in one grouped surface card.
+            VStack(spacing: 0) {
                 // "Email or username", default keyboard (usernames are valid).
                 TextField("", text: $identifier,
-                          prompt: Text("Email or username").foregroundColor(DarkParity.mutedSoft))
+                          prompt: Text("Email or username").foregroundColor(Palette.textTertiary))
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .textContentType(.username)
                     .focused($focus, equals: .identifier)
                     .submitLabel(.next)
                     .onSubmit { focus = .password }
-                    .modifier(DarkFieldStyle(focused: focus == .identifier,
-                                             error: !apiError.isEmpty))
+                    .modifier(FieldRowStyle())
                     .accessibilityIdentifier("auth.email")
+
+                DSRowDivider()
 
                 HStack(spacing: 0) {
                     Group {
                         if showPassword {
                             TextField("", text: $password,
-                                      prompt: Text("Password").foregroundColor(DarkParity.mutedSoft))
+                                      prompt: Text("Password").foregroundColor(Palette.textTertiary))
                         } else {
                             SecureField("", text: $password,
-                                        prompt: Text("Password").foregroundColor(DarkParity.mutedSoft))
+                                        prompt: Text("Password").foregroundColor(Palette.textTertiary))
                         }
                     }
                     .textInputAutocapitalization(.never)
@@ -184,91 +130,89 @@ struct SignInScreen: View {
                     .focused($focus, equals: .password)
                     .submitLabel(.go)
                     .onSubmit { Task { await submit() } }
-                    .font(Typeface.sans(16))
-                    .foregroundStyle(.white)
-                    .tint(.white)
-                    .padding(.horizontal, 16)
+                    .modifier(FieldRowStyle())
                     .accessibilityIdentifier("auth.password")
 
                     Button { showPassword.toggle() } label: {
                         Image(systemName: showPassword ? "eye.slash" : "eye")
                             .font(.system(size: 18))
-                            .foregroundStyle(DarkParity.muted)
-                            .padding(.horizontal, 14)
+                            .foregroundStyle(Palette.textSecondary)
+                            .frame(width: 44, height: 52)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .padding(.trailing, Space.xs)
+                    .accessibilityLabel(showPassword ? "Hide password" : "Show password")
                     .accessibilityIdentifier("auth.togglePassword")
                 }
-                .frame(height: 54)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(DarkParity.field))
-                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(fieldStroke(focused: focus == .password,
-                                              error: !apiError.isEmpty), lineWidth: 1))
             }
+            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .fill(Palette.surface))
+            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .strokeBorder(fieldStroke(focused: focus != nil, error: !apiError.isEmpty),
+                              lineWidth: apiError.isEmpty ? 1 : 1.5))
+            .animation(Motion.quick, value: focus)
 
             if currentMode == .signIn {
                 HStack {
                     Spacer()
                     Button("Forgot password?") { }
-                        .font(Typeface.sans(13, .medium))
-                        .foregroundStyle(DarkParity.muted)
+                        .font(AppFont.supporting)
+                        .foregroundStyle(Palette.textSecondary)
                         .buttonStyle(.plain)
+                        .frame(minHeight: 44)
                 }
-                .padding(.top, 10)
+                .padding(.top, Space.xs)
             }
 
-            // Plain centered line, not a box: on a dark plate a tinted error card
-            // reads as a second surface fighting the glass.
+            // Monochrome error: a glyph + wording instead of a red line.
             if !apiError.isEmpty {
-                Text(apiError)
-                    .font(Typeface.sans(13.5))
-                    .foregroundStyle(DarkParity.err)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 12)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(apiError)
+                        .font(AppFont.supporting)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(Palette.textPrimary)
+                .accessibilityElement(children: .combine)
+                .padding(.top, Space.stack)
             }
 
             Button { Task { await submit() } } label: {
                 Text(busy ? (currentMode == .signIn ? "Signing in…" : "Creating…") : "Continue")
-                    .font(Typeface.sans(16, .semibold)).tracking(0.1)
-                    .foregroundStyle(DarkParity.ink)
-                    .frame(maxWidth: .infinity).frame(height: 56)
-                    .background(Capsule().fill(.white))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(DSCapsuleStyle(kind: .primary, fullWidth: true))
             .disabled(busy)
-            .opacity(busy ? 0.45 : 1)
-            .shadow(color: .black.opacity(0.30), radius: 16, y: 6)
-            .padding(.top, 22)
+            .padding(.top, Space.lg)
             .accessibilityIdentifier("auth.continue")
 
-            HStack(spacing: 12) {
-                Rectangle().fill(DarkParity.hair).frame(height: 1)
-                Text("OR").font(Typeface.sans(11)).tracking(1.2)
-                    .foregroundStyle(DarkParity.mutedSoft)
-                Rectangle().fill(DarkParity.hair).frame(height: 1)
+            HStack(spacing: Space.stack) {
+                Rectangle().fill(Palette.hairline).frame(height: 1)
+                Text("OR").font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .foregroundStyle(Palette.textSecondary)
+                Rectangle().fill(Palette.hairline).frame(height: 1)
             }
-            .padding(.top, 22).padding(.bottom, 14)
+            .padding(.top, Space.xl).padding(.bottom, Space.md)
 
-            // Google + Apple, IDENTICAL chrome. Apple is required for App Store
+            // Google + Apple, IDENTICAL outline capsules. Apple is required for App Store
             // submission (guideline 4.8 — offering Google alone requires an
             // equivalent privacy-focused option). The AuthManager plumbing
             // (prepareAppleRequest / handleAppleCompletion → Supabase id_token
             // grant) shipped in builds ≤70 and is known-good; only the button
             // that feeds it changed.
-            VStack(spacing: 10) {
-                GlassAuthButton(icon: AnyView(GoogleGMark(size: 18, color: .white)),
-                                label: "Continue with Google") {
+            VStack(spacing: Space.stack) {
+                AuthOutlineButton(icon: AnyView(GoogleGMark(size: 18, color: Palette.textPrimary)),
+                                  label: "Continue with Google") {
                     Task { await store.auth.signInWithGoogle() }
                 }
                 .disabled(busy)
                 .accessibilityIdentifier("auth.google")
 
-                GlassAuthButton(icon: AnyView(Image(systemName: "apple.logo")
-                                                .font(.system(size: 18))
-                                                .foregroundStyle(.white)),
-                                label: "Continue with Apple") {
+                AuthOutlineButton(icon: AnyView(Image(systemName: "apple.logo")
+                                                    .font(.system(size: 18))),
+                                  label: "Continue with Apple") {
                     Task {
                         let result = await apple.signIn { store.auth.prepareAppleRequest($0) }
                         await store.auth.handleAppleCompletion(result)
@@ -285,38 +229,42 @@ struct SignInScreen: View {
                 store.auth.lastError = ""
             } label: {
                 (Text(currentMode == .signIn ? "New here? " : "Already have an account? ")
-                    .foregroundStyle(DarkParity.muted)
+                    .foregroundStyle(Palette.textSecondary)
                  + Text(currentMode == .signIn ? "Create account" : "Sign in")
-                    .font(Typeface.sans(14, .semibold))
-                    .foregroundStyle(.white)
+                    .font(AppFont.supporting.weight(.semibold))
+                    .foregroundStyle(Palette.textPrimary)
                     .underline())
-                    .font(Typeface.sans(14))
+                    .font(AppFont.supporting)
+                    .multilineTextAlignment(.center)
+                    .frame(minHeight: 44)
             }
             .buttonStyle(.plain)
-            .padding(.top, 20)
+            .padding(.top, Space.md)
             .accessibilityIdentifier("auth.toggleMode")
 
             if currentMode == .create {
                 Text("By tapping Continue, you agree to our Terms and Privacy Policy.")
-                    .font(Typeface.sans(11.5))
-                    .foregroundStyle(DarkParity.mutedSoft)
+                    .font(AppFont.caption)
+                    .foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
-                    .padding(.top, 18)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Space.sm)
             }
         }
     }
 
-    private var title: Text {
-        let head = currentMode == .signIn ? "Welcome " : "Save your "
-        let tail = currentMode == .signIn ? "back" : "brand"
-        return (Text(head) + Text(tail).font(.custom("Fraunces-9ptBlackItalic", size: 34)))
-            .font(Typeface.display(34))
-            .tracking(-0.8)
-            .foregroundColor(.white)
+    /// Lowercase-with-period signature title. VoiceOver reads the sentence-case wording.
+    private var title: some View {
+        Text(currentMode == .signIn ? "welcome back." : "save your brand.")
+            .font(AppFont.title1).tracking(-0.3)
+            .foregroundColor(Palette.textPrimary)
+            .lineLimit(2).minimumScaleFactor(0.8)
+            .accessibilityLabel(currentMode == .signIn ? "Welcome back" : "Save your brand")
+            .accessibilityAddTraits(.isHeader)
     }
 
     private func fieldStroke(focused: Bool, error: Bool) -> Color {
-        error ? DarkParity.err : (focused ? DarkParity.glassBorder : DarkParity.hairSoft)
+        error ? Palette.textPrimary : (focused ? Palette.textSecondary.opacity(0.6) : .clear)
     }
 
     private func submit() async {
@@ -334,31 +282,22 @@ struct SignInScreen: View {
     }
 }
 
-/// maxapp's dark field chrome: 54pt tall, radius 14 continuous, 6% white fill,
-/// an 8% hairline that goes 45% white on focus and red on error.
-private struct DarkFieldStyle: ViewModifier {
-    let focused: Bool
-    let error: Bool
+/// One 52pt text row inside the grouped field card.
+private struct FieldRowStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .font(Typeface.sans(16))
-            .foregroundStyle(.white)
-            .tint(.white)
-            .padding(.horizontal, 16)
-            .frame(height: 54)
-            .background(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(DarkParity.field))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(error ? DarkParity.err
-                                    : (focused ? DarkParity.glassBorder : DarkParity.hairSoft),
-                              lineWidth: 1))
+            .font(AppFont.bodyText)
+            .foregroundStyle(Palette.textPrimary)
+            .tint(Palette.textPrimary)
+            .padding(.horizontal, Space.rowPad)
+            .frame(height: 52)
     }
 }
 
-/// The one glass pill both social buttons wear. Google and Apple MUST share this
+/// The one outline capsule both social buttons wear. Google and Apple MUST share this
 /// — the whole point of dropping SignInWithAppleButton was that its private
 /// label font made the two rows visibly different sizes.
-private struct GlassAuthButton: View {
+private struct AuthOutlineButton: View {
     let icon: AnyView
     let label: String
     let action: () -> Void
@@ -368,15 +307,9 @@ private struct GlassAuthButton: View {
             HStack(spacing: 10) {
                 icon
                 Text(label)
-                    .font(Typeface.sans(15, .semibold)).tracking(0.3)
-                    .foregroundStyle(.white)
             }
-            .frame(maxWidth: .infinity).frame(height: 54)
-            .background(Capsule().fill(DarkParity.glassFill))
-            .overlay(Capsule().strokeBorder(DarkParity.glassBorder, lineWidth: 1))
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(DSCapsuleStyle(kind: .outline, fullWidth: true))
     }
 }
 
@@ -430,10 +363,10 @@ private final class AppleSignInCoordinator: NSObject, ASAuthorizationControllerD
 /// The monochrome Google "G" logo glyph (what Ionicons' logo-google renders in
 /// maxapp), drawn in code: a thick circular stroke open at the upper right,
 /// with the crossbar running from the center to the right edge. Single color —
-/// white here, so it matches the Apple mark beside it.
+/// textPrimary, so it matches the Apple mark beside it.
 struct GoogleGMark: View {
     var size: CGFloat = 18
-    var color: Color = Color(hex: 0x4285F4)
+    var color: Color = Palette.textPrimary
 
     var body: some View {
         let stroke = size * 0.21
