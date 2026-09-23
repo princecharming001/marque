@@ -1058,15 +1058,22 @@ struct VersionTimelineSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("EDIT HISTORY").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Text("Versions").font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
+            // Stoic sheet header: eyebrow + centered lowercase title + quiet subtitle.
+            VStack(spacing: Space.xs) {
+                DSEyebrow(text: "EDIT HISTORY")
+                Text(dsTitle("Versions"))
+                    .font(AppFont.title1).tracking(-0.3).foregroundStyle(Palette.textPrimary)
+                    .accessibilityAddTraits(.isHeader)
                 Text("Every edit is kept. Restore any version and your video re-renders exactly as it was.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, Space.xs)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.top, Space.md)
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: Space.sm) {
                     timelineRow(label: clip?.currentVersionLabel ?? "", date: clip?.finishedAt,
                                 isCurrent: true, isLast: history.isEmpty, index: nil)
                     ForEach(Array(history.enumerated()), id: \.element.id) { i, v in
@@ -1076,13 +1083,15 @@ struct VersionTimelineSheet: View {
                 }
             }
             if let note {
-                Text(note).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                Label(note, systemImage: "exclamationmark.circle")
+                    .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.rowPad)
             }
         }
-        .padding(Space.lg)
+        .padding(.horizontal, Space.screenH).padding(.bottom, Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.canvas)
+        .background(Palette.canvas.ignoresSafeArea())
         .sheet(item: $previewing) { v in
             VersionPreviewSheet(version: v,
                                 index: history.firstIndex(where: { $0.id == v.id }) ?? 0,
@@ -1099,47 +1108,36 @@ struct VersionTimelineSheet: View {
 
     @ViewBuilder
     private func timelineRow(label: String, date: Date?, isCurrent: Bool, isLast: Bool, index: Int?) -> some View {
+        // Stoic Journey timeline row: glyph leading, eyebrow + headline title, date, and
+        // the row's actions as small capsules (outline Preview, ink Restore).
         HStack(alignment: .top, spacing: Space.md) {
-            VStack(spacing: 0) {
-                Circle()
-                    .strokeBorder(isCurrent ? Palette.ink : Palette.textTertiary, lineWidth: 1.5)
-                    .background(Circle().fill(isCurrent ? Palette.ink : Color.clear).padding(3))
-                    .frame(width: 14, height: 14)
-                if !isLast {
-                    Rectangle().fill(Palette.hairline).frame(width: 1)
-                        .frame(maxHeight: .infinity)
+            Image(systemName: isCurrent ? "checkmark.circle.fill" : "clock.arrow.circlepath")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                if isCurrent {
+                    DSEyebrow(text: "CURRENT")
                 }
-            }
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: Space.sm) {
-                    Text(label.isEmpty ? "Original edit" : "\u{201C}\(label)\u{201D}")
-                        .font(Typeface.sans(14, isCurrent ? .semibold : .medium))
-                        .foregroundStyle(Palette.textPrimary)
-                        .lineLimit(2)
-                    if isCurrent {
-                        Text("CURRENT").font(.system(size: 9, weight: .bold)).tracking(0.6)
-                            .foregroundStyle(Palette.onInk)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Palette.ink).clipShape(Capsule())
-                    }
-                }
+                Text(label.isEmpty ? "Original edit" : "\u{201C}\(label)\u{201D}")
+                    .font(AppFont.headline)
+                    .foregroundStyle(Palette.textPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                 if let date {
                     Text(date.formatted(.relative(presentation: .named)))
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 }
                 if let index {
                     HStack(spacing: Space.sm) {
                     Button { previewing = history[index] } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "play.fill").font(.system(size: 9, weight: .bold))
-                            Text("Preview").font(Typeface.sans(12, .semibold))
+                        HStack(spacing: 6) {
+                            Image(systemName: "play.fill").font(.system(size: 10, weight: .semibold))
+                            Text("Preview")
                         }
-                        .foregroundStyle(Palette.textPrimary)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(Palette.surfaceRaised))
-                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(DSCapsuleStyle(kind: .outline, height: 36))
                     .accessibilityIdentifier("versions.preview.\(index)")
                     if clip?.status == .ready {
                     Button {
@@ -1157,23 +1155,23 @@ struct VersionTimelineSheet: View {
                         }
                     } label: {
                         Text(restoring == history[index].id ? "Restoring…" : "Restore")
-                            .font(Typeface.sans(12, .semibold))
-                            .foregroundStyle(Palette.ink)
-                            .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Capsule().strokeBorder(Palette.ink.opacity(0.4), lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(DSCapsuleStyle(kind: .primary, height: 36))
                     .disabled(restoring != nil)
                     .accessibilityIdentifier("versions.restore.\(index)")
                     }
                     }
-                    .padding(.top, 2)
+                    .padding(.top, Space.xs)
                 }
             }
-            .padding(.bottom, Space.lg)
             Spacer(minLength: 0)
         }
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(Space.rowPad)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+            .fill(Palette.surface))
+        // (isLast no longer draws a connector: rows are separate cards, Journey style.)
+        .accessibilityElement(children: .contain)
     }
 }
 
