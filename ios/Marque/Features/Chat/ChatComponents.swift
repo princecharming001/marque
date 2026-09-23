@@ -12,7 +12,7 @@ func marqueMarkdown(_ s: String) -> AttributedString? {
                           options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))
 }
 
-// MARK: - User bubble
+// MARK: - User bubble (DESIGN.md: surfaceSunken, radiusCard, body)
 
 struct ChatUserBubble: View {
     let text: String
@@ -22,21 +22,35 @@ struct ChatUserBubble: View {
     var body: some View {
         HStack(spacing: 0) {
             Spacer(minLength: 0)
-            Text(text)
-                .font(AppFont.bodyL)
-                .lineSpacing(5)
+            displayText
+                .font(AppFont.bodyText)
+                .lineSpacing(4)
                 .foregroundStyle(Palette.textPrimary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 11)
-                .background(Palette.surfaceSunken)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, Space.stack)
+                .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                    .fill(Palette.surfaceSunken))
                 .frame(maxWidth: maxWidth, alignment: .trailing)
         }
-        .padding(.bottom, Space.sm)
+        .padding(.bottom, Space.stack)
+    }
+
+    /// No emoji in UI: the attach turns ChatStore writes carry a paperclip emoji, which is
+    /// drawn here as the SF Symbol instead (the stored message text is untouched).
+    private var displayText: Text {
+        let clip = "\u{1F4CE}"
+        guard text.contains(clip) else { return Text(text) }
+        let parts = text.components(separatedBy: clip)
+        var out = Text(parts[0])
+        for part in parts.dropFirst() {
+            out = out + Text(Image(systemName: "paperclip")) + Text(part)
+        }
+        return out
     }
 }
 
-// MARK: - Assistant message (typewriter reveal + markdown + intent cards)
+// MARK: - Assistant message (Stoic journal voice: plain bodyLarge on the canvas,
+// typewriter reveal + markdown + intent cards)
 
 struct ChatAssistantMessage: View {
     let message: ChatMessage
@@ -56,21 +70,21 @@ struct ChatAssistantMessage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             textBlock
-                .font(AppFont.bodyL)
-                .lineSpacing(7)
+                .font(AppFont.bodyLarge)
+                .lineSpacing(6)
                 .foregroundStyle(Palette.textPrimary)
+                .tint(Palette.textPrimary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 4)
-                .padding(.top, 6)
-                .padding(.bottom, (showCards && hasCards) ? 0 : 8)
+                .padding(.top, Space.xs)
+                .padding(.bottom, (showCards && hasCards) ? 0 : Space.md)
             if showCards, hasCards {
                 cards
-                    .padding(.bottom, Space.md)
+                    .padding(.bottom, Space.lg)
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.3), value: showCards)
+        .animation(Motion.standard, value: showCards)
         .task(id: isTypewriting) { await typewrite() }
     }
 
@@ -133,22 +147,22 @@ struct ChatTypingIndicator: View {
             HStack(spacing: 4) {
                 ForEach(0..<3) { i in
                     Circle()
-                        .fill(Palette.textTertiary)
-                        .frame(width: 5, height: 5)
+                        .fill(Palette.textSecondary)
+                        .frame(width: 6, height: 6)
                         .opacity(dotsOn ? 0.95 : 0.35)
                         .animation(.easeInOut(duration: 0.35).repeatForever(autoreverses: true)
                             .delay(Double(i) * 0.2333), value: dotsOn)
                 }
             }
             Text(Self.phrases[phrase])
-                .font(AppFont.caption)
+                .font(AppFont.supporting)
                 .foregroundStyle(Palette.textSecondary)
                 .id(phrase)
                 .transition(.opacity)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 10)
+        .padding(.vertical, Space.stack)
+        .accessibilityElement(children: .combine)
         .onAppear { dotsOn = true }
         .task {
             while !Task.isCancelled {
@@ -475,13 +489,14 @@ struct ChatSuggestedChips: View {
     }
 }
 
-// MARK: - Morphing send button (mic ↔ arrow ↔ stop)
+// MARK: - Morphing send button (mic ↔ arrow ↔ stop) — DESIGN.md circular control, ink fill
 
 enum ComposerSendState: Equatable { case empty, ready, streaming }
 
 struct MorphSendButton: View {
     let state: ComposerSendState
     let action: () -> Void
+    var size: CGFloat = 48
     @State private var pulsing = false
 
     var body: some View {
@@ -491,8 +506,8 @@ struct MorphSendButton: View {
                 switch state {
                 case .streaming:
                     RoundedRectangle(cornerRadius: 3.5, style: .continuous)
-                        .fill(Color.white)
-                        .frame(width: 13, height: 13)
+                        .fill(Palette.onInk)
+                        .frame(width: 14, height: 14)
                         .opacity(pulsing ? 0.55 : 1)
                         .onAppear {
                             pulsing = false
@@ -502,20 +517,21 @@ struct MorphSendButton: View {
                         }
                         .transition(.scale.combined(with: .opacity))
                 case .empty:
-                    Circle().fill(Palette.onInk.opacity(0.35))
-                        .frame(width: 6, height: 6)
+                    Image(systemName: "mic")
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(Palette.onInk)
                         .transition(.scale.combined(with: .opacity))
                 case .ready:
                     Image(systemName: "arrow.up")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(Palette.onInk)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
-            .frame(width: 36, height: 36)
+            .frame(width: size, height: size)
             .contentShape(Circle())
         }
-        .buttonStyle(PressableStyle())
+        .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
         .animation(Motion.quick, value: state)
         .accessibilityIdentifier("chat.send")
         .accessibilityLabel(state == .streaming ? "Stop" : state == .ready ? "Send" : "Voice input")

@@ -73,8 +73,8 @@ struct ChatView: View {
                                            draft = ""
                                            composerFocused = true
                                        })
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 4)
+                        .padding(.horizontal, Space.screenH)
+                        .padding(.bottom, Space.sm)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
                 composer
@@ -155,48 +155,32 @@ struct ChatView: View {
         .onDisappear { router.hideTabBar = false }
     }
 
-    // MARK: Header — menu / serif wordmark / new chat, over a 1px hairline
+    // MARK: Header — drawer glyph / lowercase title / new chat, on the canvas (no bar)
 
     private var header: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                Button { showDrawer = true } label: {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(Palette.textSecondary)
-                        .frame(width: 40, height: 40)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle(dim: 0.6))
+        HStack(spacing: 0) {
+            DSIconButton(systemName: "line.3.horizontal", size: 20) { showDrawer = true }
                 .accessibilityIdentifier("chat.drawer")
                 .accessibilityLabel("Conversations")
 
-                Spacer()
+            Spacer()
 
-                Button {
-                    chat.newConversation(in: store)
-                } label: {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 20, weight: .regular))
-                        .foregroundStyle(Palette.textSecondary)
-                        .frame(width: 40, height: 40)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle(dim: 0.6))
-                .accessibilityIdentifier("chat.newChat")
-                .accessibilityLabel("New chat")
+            DSIconButton(systemName: "square.and.pencil", size: 20) {
+                chat.newConversation(in: store)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 52)
-            .overlay(
-                Text("Yunicorn")
-                    .font(Typeface.sans(17, .semibold))
-                    .tracking(-0.2)
-                    .foregroundStyle(Palette.textPrimary)
-            )
-            Rectangle().fill(Palette.hairline).frame(height: 1)
+            .accessibilityIdentifier("chat.newChat")
+            .accessibilityLabel("New chat")
         }
-        .background(Palette.surface)
+        .padding(.horizontal, Space.xs)
+        .frame(height: 52)
+        .overlay(
+            Text("chat.")
+                .font(AppFont.title2)
+                .tracking(-0.2)
+                .foregroundStyle(Palette.textPrimary)
+                .accessibilityAddTraits(.isHeader)
+        )
+        .background(Palette.canvas)
         .contentShape(Rectangle())
         .onTapGesture { composerFocused = false }
     }
@@ -215,8 +199,8 @@ struct ChatView: View {
                         if showTyping { ChatTypingIndicator() }
                         Color.clear.frame(height: 1).id(Self.bottomAnchor)
                     }
-                    .padding(.horizontal, Space.xl)
-                    .padding(.top, Space.xl)
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.top, Space.md)
                     .padding(.bottom, Space.xxl)
                 }
                 .scrollIndicators(.hidden)
@@ -254,7 +238,7 @@ struct ChatView: View {
     private func row(_ message: ChatMessage, containerWidth: CGFloat, proxy: ScrollViewProxy) -> some View {
         if message.role == .user {
             ChatUserBubble(text: message.content,
-                           maxWidth: max(220, (containerWidth - Space.xl * 2) * 0.84))
+                           maxWidth: max(220, (containerWidth - Space.screenH * 2) * 0.84))
         } else {
             ChatAssistantMessage(
                 message: message,
@@ -274,59 +258,48 @@ struct ChatView: View {
         }
     }
 
-    // MARK: Empty state
+    // MARK: Empty state — Stoic editor voice: a left-aligned prompt, capsule starters
 
     private var emptyState: some View {
-        VStack(spacing: Space.xl) {
+        VStack(alignment: .leading, spacing: Space.xl) {
             Spacer()
             Text("What can I help with?")
-                .font(Typeface.sans(24, .semibold))
-                .tracking(Track.tight)
+                .font(AppFont.title1)
+                .tracking(-0.3)
                 .foregroundStyle(Palette.textPrimary)
-            VStack(spacing: Space.sm) {
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: Space.sm) {
                 ForEach(Self.starters, id: \.self) { starter in
-                    Button { chat.send(starter, store: store) } label: {
-                        Text(starter)
-                            .font(AppFont.callout)
-                            .foregroundStyle(Palette.textPrimary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(Palette.surface)
-                            .clipShape(Capsule())
-                            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                    }
-                    .buttonStyle(PressableStyle(dim: 0.7))
+                    DSChip(title: starter) { chat.send(starter, store: store) }
                 }
             }
             Spacer()
             Spacer()
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, Space.screenH)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { composerFocused = false }
     }
 
-    // MARK: Composer — pill with attach / field / morphing mic-send-stop
+    // MARK: Composer — outline "+" circle / sunken capsule field / ink morph circle
 
     private var composer: some View {
-        HStack(alignment: .bottom, spacing: 6) {
-            Button { showAttach = true } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 24, weight: .regular))
-                    .foregroundStyle(Palette.textSecondary)
-                    .frame(width: 36, height: 36)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(PressableStyle(dim: 0.6))
-            .accessibilityIdentifier("chat.attach")
-            .accessibilityLabel("Add")
+        HStack(alignment: .bottom, spacing: Space.sm) {
+            DSCircleButton(systemName: "plus", kind: .outline, size: 48) { showAttach = true }
+                .accessibilityIdentifier("chat.attach")
+                .accessibilityLabel("Add")
 
             TextField("Ask Yunicorn anything", text: $draft, axis: .vertical)
-                .font(AppFont.bodyL)
+                .font(AppFont.bodyText)
                 .foregroundStyle(Palette.textPrimary)
+                .tint(Palette.textPrimary)
                 .lineLimit(1...5)
-                .frame(minHeight: 36)
-                .padding(.horizontal, 4)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, 13)
+                .frame(minHeight: 48)
+                .background(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Palette.surfaceSunken))
                 .focused($composerFocused)
                 .accessibilityIdentifier("chat.composer")
 
@@ -338,19 +311,13 @@ struct ChatView: View {
                 }
             }
         }
-        .padding(7)
-        .frame(minHeight: 50)
-        .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous)
-            .strokeBorder(Palette.divider, lineWidth: 1))
-        .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 2)
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
+        .padding(.horizontal, Space.screenH)
+        .padding(.top, Space.sm)
         // The tab bar is a plain bottom overlay (never a safeAreaInset) — the composer
         // owns its clearance. When the keyboard is up the bar hides (composerFocused →
         // hideTabBar) so only a small margin is needed.
         .padding(.bottom, router.hideTabBar ? Space.sm : MarqueTabBar.clearance)
+        .background(Palette.canvas)
         .animation(Motion.quick, value: router.hideTabBar)
     }
 
