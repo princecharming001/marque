@@ -793,54 +793,67 @@ extension ProEditorView {
             // but wasn't the actual bug — see the .accessibilityElement(children: .contain)
             // at the bottom of this view for the real root cause and fix.
             HStack {
-                Text("Clean up").font(AppFont.headline).foregroundStyle(.white)
+                Text("clean up.").font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                 Spacer()
                 Button { withAnimation(.easeOut(duration: 0.15)) { showCleanup = false } } label: {
-                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.accent)
+                    Text("Cancel").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .padding(.horizontal, Space.md).padding(.vertical, 8).contentShape(Rectangle())
                 }.buttonStyle(.plain).accessibilityIdentifier("editorPro.cleanup.cancel")
             }
-            .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.leading, Space.screenH + Space.xs).padding(.trailing, Space.xs)
+            .padding(.top, Space.md).padding(.bottom, Space.sm)
 
             if targets.isEmpty {
                 Spacer()
-                Text("Nothing to clean up, no filler words or long pauses found.")
-                    .font(AppFont.callout).foregroundStyle(.white.opacity(0.6))
-                    .multilineTextAlignment(.center).padding(Space.xl)
+                // Stoic empty state: glyph + secondary line.
+                VStack(spacing: Space.sm) {
+                    Image(systemName: "checkmark.circle").font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(Palette.textSecondary)
+                    Text("Nothing to clean up, no filler words or long pauses found.")
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Space.xl)
                 Spacer()
             } else {
                 ScrollView {
-                    VStack(spacing: 0) {
+                    // Stoic checklist: one grouped card, trailing circular checks.
+                    DSGroup {
                         ForEach(targets) { t in
                             let on = !cleanupSkip.contains(t.id)
                             Button {
                                 if on { cleanupSkip.insert(t.id) } else { cleanupSkip.remove(t.id) }
                             } label: {
                                 HStack(spacing: Space.md) {
-                                    Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                                        .foregroundStyle(on ? Palette.accent : .white.opacity(0.3))
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(t.label).font(AppFont.callout).foregroundStyle(.white)
-                                            .strikethrough(on, color: .white.opacity(0.5))
-                                        Text(t.detail).font(AppFont.caption).foregroundStyle(.white.opacity(0.5))
-                                    }
-                                    Spacer()
                                     Image(systemName: t.kind == "pause" ? "pause.circle" : "waveform")
-                                        .foregroundStyle(.white.opacity(0.3))
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .frame(width: 24)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(t.label).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                            .strikethrough(on, color: Palette.textSecondary)
+                                        Text(t.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                    }
+                                    Spacer(minLength: Space.sm)
+                                    DSCheckmark(isOn: on)
                                 }
-                                .padding(.horizontal, Space.lg).padding(.vertical, 10).contentShape(Rectangle())
-                            }.buttonStyle(.plain)
-                            Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5).padding(.leading, Space.lg)
+                                .padding(.horizontal, Space.rowPad).padding(.vertical, 10)
+                                .frame(minHeight: 52).contentShape(Rectangle())
+                            }.buttonStyle(DSRowPressStyle())
+                            .accessibilityAddTraits(on ? .isSelected : [])
+                            if t.id != targets.last?.id { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
                         }
-                    }.padding(.vertical, Space.sm)
+                    }
+                    .padding(.horizontal, Space.screenH)
+                    .padding(.vertical, Space.sm)
                 }
+                // Stoic primary capsule (ink / onInk; sunken + tertiary when disabled).
                 Button { applyCleanup() } label: {
                     Text(keep.isEmpty ? "Select something to remove"
                                       : String(format: "Remove %d · %.1fs", keep.count, secs))
-                        .font(AppFont.headline).foregroundStyle(Palette.night)
-                        .frame(maxWidth: .infinity).frame(height: 48)
-                        .background(keep.isEmpty ? Color.white.opacity(0.2) : Color.white).clipShape(Capsule())
-                }.buttonStyle(.plain).disabled(keep.isEmpty).padding(Space.md)
+                }.buttonStyle(.ds(.primary, height: 48)).disabled(keep.isEmpty)
+                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
                     .accessibilityIdentifier("editorPro.cleanup.apply")
                 // Build 69: Restore moved off the root bar — it only means something
                 // after a cleanup ran, so its home is here (plus the amber cut seams).
@@ -850,11 +863,12 @@ extension ProEditorView {
                         openRestorePanel()
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 13))
+                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 14, weight: .regular))
                             Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
-                                .font(AppFont.callout)
+                                .font(AppFont.supporting.weight(.semibold))
+                                .lineLimit(1).minimumScaleFactor(0.85)
                         }
-                        .foregroundStyle(.white.opacity(0.85))
+                        .foregroundStyle(Palette.textPrimary)
                         .frame(maxWidth: .infinity).frame(height: 36)
                         .contentShape(Rectangle())
                     }
@@ -866,7 +880,7 @@ extension ProEditorView {
         }
         .frame(height: 340, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
         // Root cause of editorPro.cleanup.cancel never surfacing (confirmed via a live
         // `maestro hierarchy` dump while this panel was on screen): without an explicit
         // .accessibilityElement(children:), applying .accessibilityIdentifier directly to
