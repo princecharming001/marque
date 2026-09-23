@@ -21,11 +21,14 @@ struct LibraryView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Space.lg) {
-                // Editorial inline header — kicker + Fraunces title (maxapp signature)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("YOUR CREATIVE VAULT").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                    Text("Library").font(Typeface.sans(40, .bold)).tracking(-1).foregroundStyle(Palette.textPrimary)
+            VStack(alignment: .leading, spacing: Space.xl) {
+                // Stoic pushed-page header: eyebrow over the display title, left aligned.
+                // (Both strings are matched by Maestro flows, so they stay verbatim.)
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    DSEyebrow(text: "YOUR CREATIVE VAULT")
+                    Text("Library").font(AppFont.pageTitle).tracking(-0.5)
+                        .foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
                 }
                 UnderlineTabBar(tabs: tabs, index: $tabIndex)
                 switch tabIndex {
@@ -33,7 +36,10 @@ struct LibraryView: View {
                 default: ClipsSection(selecting: $selecting, selectedIDs: $selectedIDs)
                 }
             }
-            .screenPadding().padding(.vertical, Space.lg)
+            .screenPadding()
+            .padding(.top, Space.sm)
+            // Tab root: keep the last row clear of the overlaid MarqueTabBar.
+            .padding(.bottom, MarqueTabBar.clearance + Space.lg)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
@@ -69,35 +75,42 @@ struct LibraryView: View {
     private func exitSelection() { selecting = false; selectedIDs = [] }
 
     private var bulkBar: some View {
-        HStack(spacing: Space.lg) {
+        HStack(spacing: Space.md) {
             Text("\(selectedIDs.count) selected")
-                .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.textSecondary)
-            Spacer()
+                .font(AppFont.supporting.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                .lineLimit(1).minimumScaleFactor(0.8)
+            Spacer(minLength: Space.xs)
             // Build 61: a plain Button into a sheet, NOT a Menu. The Menu only ever listed
             // groups that already existed, so on a fresh install it opened to a single
             // "New group…" row — the owner read that as "grouping isn't built yet". The
             // sheet always shows the full picture (groups, membership, create row).
             Button { showGroupAssign = true } label: {
-                bulkIcon("folder.badge.plus", "Group", enabled: !selectedIDs.isEmpty)
+                bulkIcon("folder.badge.plus", "Group", tint: Palette.textPrimary, enabled: !selectedIDs.isEmpty)
             }
-            .buttonStyle(.plain).disabled(selectedIDs.isEmpty)
+            .buttonStyle(PressableStyle(dim: 0.6)).disabled(selectedIDs.isEmpty)
             .accessibilityIdentifier("library.bulk.group")
-            Button { showBulkSchedule = true } label: {
-                bulkIcon("paperplane.fill", "Post", enabled: selectedReadyCount > 0)
-            }
-            .buttonStyle(.plain).disabled(selectedReadyCount == 0)
-            .accessibilityIdentifier("library.bulk.post")
+            // Destructive = black trash glyph + confirm dialog (no red in the mono system).
             Button { showBulkDelete = true } label: {
-                bulkIcon("trash", "Delete", tint: Palette.critical, enabled: !selectedIDs.isEmpty)
+                bulkIcon("trash", "Delete", tint: Palette.textPrimary, enabled: !selectedIDs.isEmpty)
             }
-            .buttonStyle(.plain).disabled(selectedIDs.isEmpty)
+            .buttonStyle(PressableStyle(dim: 0.6)).disabled(selectedIDs.isEmpty)
             .accessibilityIdentifier("library.bulk.delete")
+            // The forward action is the one filled capsule, trailing (Stoic CTA row).
+            Button { showBulkSchedule = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "paperplane.fill").font(.system(size: 13, weight: .semibold))
+                    Text("Post")
+                }
+            }
+            .buttonStyle(DSCapsuleStyle(kind: .primary, height: 40))
+            .disabled(selectedReadyCount == 0)
+            .accessibilityIdentifier("library.bulk.post")
         }
-        .padding(.horizontal, Space.lg).padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
+        .padding(.leading, Space.lg).padding(.trailing, Space.sm).padding(.vertical, Space.sm)
+        .background(Capsule().fill(Palette.surface))
         .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowCool.opacity(0.18), radius: 16, y: 6)
-        .padding(.horizontal, Space.md)
+        .shadow(color: Palette.shadowWarm.opacity(0.06), radius: 12, y: 2)
+        .padding(.horizontal, Space.screenH)
         // ABOVE the floating tab bar, not under it. RootTabView overlays MarqueTabBar on
         // top of tab content and screens own their clearance (see MarqueTabBar.clearance)
         // — with only Space.sm here the whole bulk bar rendered BEHIND the tab bar
@@ -108,15 +121,15 @@ struct LibraryView: View {
         .padding(.bottom, MarqueTabBar.clearance + Space.sm)
     }
 
-    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.accent,
+    private func bulkIcon(_ icon: String, _ label: String, tint: Color = Palette.textPrimary,
                           enabled: Bool = true) -> some View {
         VStack(spacing: 2) {
-            Image(systemName: icon).font(.system(size: 16, weight: .semibold))
-            Text(label).font(.system(size: 10, weight: .medium))
+            Image(systemName: icon).font(.system(size: 17, weight: .regular))
+            Text(label).font(AppFont.caption)
         }
-        .foregroundStyle(tint)
-        .opacity(enabled ? 1 : 0.35)
-        .frame(minWidth: 44)
+        .foregroundStyle(enabled ? tint : Palette.textTertiary)
+        .frame(minWidth: 44, minHeight: 44)
+        .contentShape(Rectangle())
     }
 }
 
@@ -151,41 +164,56 @@ struct ClipsSection: View {
         }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
+        VStack(alignment: .leading, spacing: Space.xl) {
             if store.clips.isEmpty {
                 EmptyStateView(icon: "rectangle.stack", title: "No clips yet",
                                message: "Tap Film below to record your first script. Drafts and edited clips land here.",
                                graphic: "ClipsIcon")
                 Button { router.showFilm = true } label: {
                     Label("Create your first clip", systemImage: "video.badge.plus")
-                        .font(AppFont.headline).foregroundStyle(Palette.onInk)
-                        .frame(maxWidth: .infinity).frame(height: 52)
-                        .background(Palette.ink).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.dsPrimary)
+                .frame(maxWidth: .infinity)
                 .accessibilityIdentifier("library.createFirst")
             } else {
                 controlRow
                 let visible = filteredClips
                 if visible.isEmpty {
+                    // Stoic outline (empty) card.
                     Text(groupFilter == .ungrouped ? "No ungrouped clips."
                                                     : "This group is empty. Select clips and add them here.")
-                        .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
-                        .padding(.vertical, Space.lg)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity)
+                        .dsCard(.outline, radius: Radius.group)
                 }
                 ForEach(ClipStatus.allOrder, id: \.self) { status in
                     let group = visible.filter { $0.status == status }
                     if !group.isEmpty {
                         VStack(alignment: .leading, spacing: Space.md) {
                             VStack(alignment: .leading, spacing: Space.xs) {
-                                SectionLabel(text: status.title)
+                                // Status used to be carried by color; now glyph + label.
+                                HStack(spacing: 6) {
+                                    Image(systemName: status.statusGlyph)
+                                        .font(.system(size: 12, weight: .semibold))
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .accessibilityHidden(true)
+                                    SectionLabel(text: status.title)
+                                    Spacer(minLength: Space.sm)
+                                    Text("\(group.count)")
+                                        .font(AppFont.caption).monospacedDigit()
+                                        .foregroundStyle(Palette.textSecondary)
+                                        .accessibilityHidden(true)
+                                }
                                 if status == .rendering {
                                     Text(renderingEtaLine(group))
-                                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
-                            let cols = Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
-                            LazyVGrid(columns: cols, spacing: 8) {
+                            let cols = Array(repeating: GridItem(.flexible(), spacing: Space.sm), count: 3)
+                            LazyVGrid(columns: cols, spacing: Space.sm) {
                                 ForEach(Array(group.enumerated()), id: \.element.id) { i, c in
                                     Button { onCellTap(c) } label: {
                                         ClipGridCell(clip: c, groupColors: groupColors(for: c))
@@ -204,19 +232,18 @@ struct ClipsSection: View {
                 if !hasFinishedClips {
                     VStack(alignment: .leading, spacing: Space.sm) {
                         Text("Finished clips land here, ready to schedule.")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Button { router.showFilm = true } label: {
                             Label("Film another clip", systemImage: "video.badge.plus")
-                                .font(AppFont.caption).foregroundStyle(Palette.accent)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.dsGhost)
                         .accessibilityIdentifier("library.filmAnother")
                     }
-                    .padding(.top, Space.sm)
                 }
-                // Room so the floating action bar (now stacked above the tab bar) never
-                // covers the last row.
-                if selecting { Color.clear.frame(height: MarqueTabBar.clearance + 76) }
+                // Room so the floating action bar (stacked above the tab bar, whose
+                // clearance the page already reserves) never covers the last row.
+                if selecting { Color.clear.frame(height: 64) }
             }
         }
         .sheet(item: $detail) { ClipDetailSheet(clip: $0) }
@@ -259,23 +286,31 @@ struct ClipsSection: View {
                 // Build 66: flush-left, no capsule — the pill's internal padding pushed
                 // the label off the left margin every other element on this screen sits
                 // on (owner: "line up with the rest of the stuff on the left").
-                HStack(spacing: 5) {
-                    Text(groupFilterLabel).font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Palette.textTertiary)
+                HStack(spacing: 6) {
+                    Text(groupFilterLabel).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1).truncationMode(.tail)
+                    Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Palette.textPrimary)
                 }
-                .padding(.vertical, 8)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
             .accessibilityIdentifier("library.groupFilter")
-            Spacer()
+            Spacer(minLength: Space.sm)
+            // Selection = inversion: outline pill while browsing, ink pill while selecting.
             Button {
                 if selecting { exitSelection() } else { selecting = true }
             } label: {
                 Text(selecting ? "Done" : "Select")
-                    .font(AppFont.callout.weight(.semibold)).foregroundStyle(Palette.accent)
+                    .font(AppFont.supporting.weight(.semibold))
+                    .foregroundStyle(selecting ? Palette.onInk : Palette.textPrimary)
+                    .padding(.horizontal, 16).frame(height: 36)
+                    .background(Capsule().fill(selecting ? Palette.ink : Palette.surface))
+                    .overlay(Capsule().strokeBorder(selecting ? .clear : Palette.hairline, lineWidth: 1))
+                    .contentShape(Capsule())
+                    .animation(Motion.quick, value: selecting)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.8))
             .accessibilityIdentifier("library.selectToggle")
         }
     }
@@ -297,19 +332,28 @@ struct ClipsSection: View {
 
     private func selectionOverlay(_ c: Clip) -> some View {
         let on = selectedIDs.contains(c.id)
+        // Over the poster (media), so the unselected ring is white-on-scrim; selected is
+        // the ink check (inverts in dark mode) with an ink frame around the tile.
         return ZStack(alignment: .topTrailing) {
-            RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                .fill(on ? Palette.accent.opacity(0.18) : Color.black.opacity(0.001))
+            RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                .fill(on ? Color.black.opacity(0.28) : Color.black.opacity(0.001))
                 .overlay { if on {
-                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
-                        .strokeBorder(Palette.accent, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                        .strokeBorder(Palette.ink, lineWidth: 3)
                 } }
-            Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(on ? Palette.accent : .white)
-                .background(Circle().fill(on ? .white : Color.black.opacity(0.28)).frame(width: 20, height: 20))
-                .padding(6)
+            ZStack {
+                Circle().fill(on ? Palette.ink : Color.black.opacity(0.28))
+                Circle().strokeBorder(on ? Palette.onInk : Palette.onNight, lineWidth: 1.5)
+                if on {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Palette.onInk)
+                }
+            }
+            .frame(width: 22, height: 22)
+            .padding(Space.sm)
         }
+        .animation(Motion.quick, value: on)
     }
 
     private func onCellTap(_ c: Clip) {
@@ -351,50 +395,44 @@ struct ClipsSection: View {
 struct ClipCell: View {
     let clip: Clip
     var body: some View {
-        HStack(spacing: 0) {
-            // Leading status rail — color-coded by clip state
-            RoundedRectangle(cornerRadius: 2, style: .continuous)
-                .fill(clip.status.railColor)
-                .frame(width: 3)
-                .padding(.vertical, Space.sm)
-
-            HStack(spacing: Space.md) {
-                ZStack {
-                    LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true)
-                        .frame(width: 54, height: 72)
-                    if clip.status == .rendering { ProgressView().tint(Palette.accent) }
-                }
-                .frame(width: 54, height: 72)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(clip.title.isEmpty ? clip.caption : clip.title)
-                        .font(AppFont.body).foregroundStyle(Palette.textPrimary).lineLimit(2)
-                    HStack(spacing: Space.sm) {
-                        FormatTag(formatId: clip.formatId)
-                        Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                        if clip.captioned {
-                            Image(systemName: "captions.bubble").font(.system(size: 11)).foregroundStyle(Palette.accent)
-                        }
-                    }
-                    // Build 45: an in-pipeline clip shows the live PipelineTimeline (real
-                    // stage + progress) instead of a single frozen word; everything else
-                    // keeps its plain why-line.
-                    if let pp = PipelineProgress.from(clip), !pp.isFailed {
-                        PipelineTimeline(progress: pp).padding(.top, 2)
-                    } else {
-                        Text(clip.status.whyLine)
-                            .font(AppFont.micro).tracking(0.2)
-                            .foregroundStyle(clip.status.railColor.opacity(0.8))
-                    }
-                }
-                Spacer()
+        // Stoic timeline row: thumbnail leading, title + meta, status as glyph + wording
+        // (the old color-coded rail is gone: meaning is carried by the glyph and line).
+        HStack(spacing: Space.md) {
+            ZStack {
+                LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true,
+                               cornerRadius: Radius.cell)
+                    .frame(width: 54, height: 72)
+                if clip.status == .rendering { ProgressView().tint(Palette.textPrimary) }
             }
-            .padding(Space.md)
+            .frame(width: 54, height: 72)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(clip.title.isEmpty ? clip.caption : clip.title)
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary).lineLimit(2)
+                HStack(spacing: Space.sm) {
+                    FormatTag(formatId: clip.formatId)
+                    Text("\(clip.seconds)s").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    if clip.captioned {
+                        Image(systemName: "captions.bubble").font(.system(size: 11))
+                            .foregroundStyle(Palette.textSecondary)
+                            .accessibilityLabel("Captioned")
+                    }
+                }
+                // Build 45: an in-pipeline clip shows the live PipelineTimeline (real
+                // stage + progress) instead of a single frozen word; everything else
+                // keeps its plain why-line.
+                if let pp = PipelineProgress.from(clip), !pp.isFailed {
+                    PipelineTimeline(progress: pp).padding(.top, 2)
+                } else {
+                    Label(clip.status.whyLine, systemImage: clip.status.statusGlyph)
+                        .font(AppFont.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                        .lineLimit(1).minimumScaleFactor(0.85)
+                }
+            }
+            Spacer(minLength: 0)
         }
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
-        .shadow(color: Palette.shadowWarm.opacity(0.07), radius: 18, x: 0, y: 8)
+        .padding(Space.rowPad)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
     }
 }
 
@@ -405,66 +443,68 @@ struct ClipGridCell: View {
     var groupColors: [Color] = []
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Thumbnail
+            // Thumbnail (the only color on screen)
             LocalThumbnail(path: clip.thumbnailPath ?? clip.playbackLocalPath, isVideo: true,
-                           remoteImageURL: clip.thumbnailURL)
+                           remoteImageURL: clip.thumbnailURL, cornerRadius: Radius.tile)
                 .aspectRatio(9/16, contentMode: .fill)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
 
-            // Bottom gradient + status
-            LinearGradient(colors: [.clear, .black.opacity(0.6)],
-                           startPoint: .top, endPoint: .bottom)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+            // Bottom scrim over the poster so the status strip reads on any frame.
+            LinearGradient(colors: [.clear, .black.opacity(0.65)],
+                           startPoint: .center, endPoint: .bottom)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 // Build 45: compact rails on in-pipeline clips so a grid tile also shows
                 // live motion, not a frozen "UPLOADING".
                 if let pp = PipelineProgress.from(clip), !pp.isFailed {
                     PipelineTimeline(progress: pp, compact: true, showLine: false)
                 }
-                HStack {
-                    Text(statusLabel).font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.9))
-                    Spacer()
-                    Text("\(clip.seconds)s").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7))
+                // Status = glyph + label (it used to be carried by color).
+                HStack(spacing: 4) {
+                    Image(systemName: clip.status.statusGlyph)
+                        .font(.system(size: 10, weight: .semibold))
+                        .accessibilityHidden(true)
+                    Text(statusLabel).font(AppFont.eyebrow).tracking(0.8)
+                        .lineLimit(1).minimumScaleFactor(0.7)
                 }
-                // Very subtle "finished editing" timestamp so a finished clip is scannable by
-                // when it landed. Only shown once the edit is done and a stamp exists.
-                if let finishedAgo {
-                    Text(finishedAgo).font(.system(size: 8, weight: .medium)).monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.45))
+                .foregroundStyle(Palette.onNight)
+                HStack(spacing: 4) {
+                    Text("\(clip.seconds)s").font(AppFont.caption).monospacedDigit()
+                        .foregroundStyle(Palette.onNight.opacity(0.85))
+                    // Very subtle "finished editing" timestamp so a finished clip is scannable
+                    // by when it landed. Only shown once the edit is done and a stamp exists.
+                    if let finishedAgo {
+                        Text(finishedAgo).font(AppFont.caption).monospacedDigit()
+                            .foregroundStyle(Palette.onNight.opacity(0.7))
+                            .lineLimit(1).minimumScaleFactor(0.7)
+                    }
                 }
             }
-            .padding(6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Space.sm).padding(.bottom, Space.sm)
         }
-        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
             .strokeBorder(Palette.hairline, lineWidth: 0.5))
         // topLEADING on purpose: topTrailing is the selection checkmark and the bottom
-        // strip is the status/duration line, so the dots are the only thing in this corner.
+        // strip is the status/duration line, so the group badge is alone in this corner.
         .overlay(alignment: .topLeading) { groupDots }
     }
 
-    /// Overlapping group dots, capped at 3 + a "+N" so a clip in six groups doesn't
-    /// wallpaper its own poster. The canvas-colored stroke keeps them legible on any frame.
+    /// Group membership badge: a folder glyph + count on a dark scrim capsule (the old
+    /// per-group colored dots are gone; black and white only). Sits over the poster.
     @ViewBuilder private var groupDots: some View {
         if !groupColors.isEmpty {
-            HStack(spacing: -4) {
-                ForEach(Array(groupColors.prefix(3).enumerated()), id: \.offset) { _, c in
-                    Circle().fill(c)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().strokeBorder(Palette.canvas, lineWidth: 1.5))
-                }
-                if groupColors.count > 3 {
-                    Text("+\(groupColors.count - 3)")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(Palette.textSecondary)
-                        .padding(.horizontal, 4).frame(height: 12)
-                        .background(Palette.canvas, in: Capsule())
-                        .padding(.leading, 5)
-                }
+            HStack(spacing: 3) {
+                Image(systemName: "folder.fill").font(.system(size: 9, weight: .semibold))
+                Text("\(groupColors.count)").font(AppFont.caption.weight(.semibold)).monospacedDigit()
             }
-            .padding(6)
+            .foregroundStyle(Palette.onNight)
+            .padding(.horizontal, 6).frame(height: 20)
+            .background(Capsule().fill(Color.black.opacity(0.55)))
+            .padding(Space.sm)
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("In \(groupColors.count) group\(groupColors.count == 1 ? "" : "s")")
         }
     }
@@ -1324,6 +1364,18 @@ extension ClipStatus {
         case .scheduled: return "Scheduled"
         case .posted:    return "Posted"
         case .failed:    return "Failed"
+        }
+    }
+    /// Monochrome status glyph: in the black-and-white system this (plus the label) is what
+    /// carries a clip's state, where the old UI used a hue.
+    var statusGlyph: String {
+        switch self {
+        case .draft:     return "pencil.line"
+        case .ready:     return "checkmark.circle"
+        case .rendering: return "wand.and.stars"
+        case .scheduled: return "calendar"
+        case .posted:    return "paperplane"
+        case .failed:    return "exclamationmark.triangle"
         }
     }
     var railColor: Color {

@@ -1,9 +1,12 @@
 import SwiftUI
 
 extension ClipGroup {
-    /// SwiftUI accent for this group's dot. Lives here rather than on the model because
+    /// SwiftUI color for this group's marker. Lives here rather than on the model because
     /// Models.swift is deliberately Foundation-only (it's decoded off the main actor).
-    var displayColor: Color { Color(hex: displayColorHex) }
+    /// The mono redesign retires per-group hues: every group marker is primary ink, and a
+    /// group is identified by its name and a folder glyph instead (`displayColorHex` stays
+    /// on the model untouched).
+    var displayColor: Color { Palette.textPrimary }
 }
 
 /// Build 61 — the Library's "put these clips in a group" surface.
