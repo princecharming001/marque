@@ -21,85 +21,76 @@ struct ProfileView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 0) {
-                // Header — identity only (Mobbin/Airbnb anatomy: avatar, name, ONE quiet
-                // meta line). The rank became a word here; its bar lives in the Creator
-                // profile sheet. No cards, no prose above the fold.
+            VStack(alignment: .leading, spacing: Space.xl) {
+                // Header — identity only: avatar, name (title2), ONE quiet meta line.
+                // The rank is a word here; its bar lives in the Creator profile sheet.
                 VStack(spacing: Space.md) {
                     avatarHero
                     VStack(spacing: 4) {
                         Text(displayName)
-                            .font(Typeface.sans(24, .semibold)).tracking(-0.5)
+                            .font(AppFont.title2).tracking(-0.2)
                             .foregroundStyle(Palette.textPrimary)
+                            .lineLimit(1).minimumScaleFactor(0.8)
                         Text(metaLine)
                             .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                            .lineLimit(1)
+                            .lineLimit(1).minimumScaleFactor(0.85)
                     }
+                    .multilineTextAlignment(.center)
                 }
-                .padding(.vertical, Space.xl)
-                .padding(.horizontal, Space.screenH)
+                .frame(maxWidth: .infinity)
+                .padding(.top, Space.sm)
 
-                // Evidence — Strava-style plain typographic numbers, hairline-divided.
+                // Evidence — three stat tiles (Stats pattern).
                 statRow
-                    .padding(.horizontal, Space.screenH)
-                    .padding(.bottom, Space.lg)
 
-                MarqueHairline()
-
-                // Brand group — editorial rows: serif label on a hairline, no icon
-                // squares (the tinted-square-plus-chevron pattern reads as template UI).
-                VStack(alignment: .leading, spacing: 0) {
+                // Brand — doors as grouped rows under an eyebrow.
+                VStack(alignment: .leading, spacing: Space.sm) {
                     sectionHeader("Brand")
-                    // The AI summary + rank progression, demoted from an on-page card to
-                    // a door (Strava collapses Athlete Intelligence the same way).
-                    profileRow(label: "Creator profile") { showCreatorProfile = true }
-                    MarqueHairline()
-                    profileRow(label: "Brand identity") { showBrandEditor = true }
-                    MarqueHairline()
-                    profileRow(label: "Voice & tone") { showVoiceEditor = true }
-                    MarqueHairline()
-                    profileRow(label: "Content pillars") { showPillarsEditor = true }
-                    if !store.pillars.isEmpty {
-                        pillarsStrip
-                            .padding(.bottom, Space.md)
-                    } else {
-                        // Build 67: pillars are never invented. Cold start says so plainly
-                        // instead of showing five generic buckets as if they were yours.
-                        Text("No pillars yet, connect your Instagram or TikTok and they're built from your real posts, or write your own.")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.bottom, Space.md)
-                            .accessibilityIdentifier("profile.pillarsEmpty")
+                    DSGroup {
+                        // The AI summary + rank progression, demoted from an on-page card
+                        // to a door.
+                        profileRow(label: "Creator profile", systemImage: "person.crop.circle") { showCreatorProfile = true }
+                        DSRowDivider(inset: rowTextInset)
+                        profileRow(label: "Brand identity", systemImage: "textformat") { showBrandEditor = true }
+                        DSRowDivider(inset: rowTextInset)
+                        profileRow(label: "Voice & tone", systemImage: "waveform") { showVoiceEditor = true }
+                        DSRowDivider(inset: rowTextInset)
+                        profileRow(label: "Content pillars", systemImage: "square.grid.2x2") { showPillarsEditor = true }
+                        Group {
+                            if !store.pillars.isEmpty {
+                                pillarsStrip
+                            } else {
+                                // Build 67: pillars are never invented. Cold start says so
+                                // plainly instead of showing generic buckets as if yours.
+                                Text("No pillars yet, connect your Instagram or TikTok and they're built from your real posts, or write your own.")
+                                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .accessibilityIdentifier("profile.pillarsEmpty")
+                            }
+                        }
+                        .padding(.leading, rowTextInset).padding(.trailing, Space.rowPad)
+                        .padding(.bottom, Space.rowPad)
+                        DSRowDivider(inset: rowTextInset)
+                        // Build 61: the single home for every standing craft dial.
+                        profileRow(label: "Editing style", systemImage: "scissors") { showEditingStyle = true }
+                        // H-05: "Your formats" editor removed — the server infers style
+                        // per take now; there is no preferred-styles knob to set.
                     }
-                    MarqueHairline()
-                    // Build 61: the single home for every standing craft dial (was split
-                    // between Settings → Editing and the record screen's per-take pickers).
-                    profileRow(label: "Editing style") { showEditingStyle = true }
-                    // H-05: "Your formats" editor removed — the server infers style
-                    // per take now; there is no preferred-styles knob to set.
                 }
-                .padding(.horizontal, Space.screenH)
-                .padding(.bottom, Space.lg)
-
-                MarqueHairline()
 
                 // Creators to watch — feeds the mimic engine
                 creatorsSection
-                    .padding(.horizontal, Space.screenH)
-                    .padding(.bottom, Space.lg)
-    
-                MarqueHairline()
 
                 // Accounts group
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: Space.sm) {
                     sectionHeader("Accounts")
                     ConnectAccountsView()
                 }
-                .padding(.horizontal, Space.screenH)
-                .padding(.bottom, Space.lg)
-
-                Spacer().frame(height: 120)
             }
+            .screenPadding()
+            .padding(.top, Space.sm)
+            .padding(.bottom, MarqueTabBar.clearance + Space.xl)
         }
         .background(Palette.canvas.ignoresSafeArea())
         .navigationTitle("Profile")
@@ -107,8 +98,13 @@ struct ProfileView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { showSettings = true } label: {
-                    Image(systemName: "gearshape").foregroundStyle(Palette.textSecondary)
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
+                .accessibilityLabel("Settings")
                 .accessibilityIdentifier("profile.settings")
             }
         }
@@ -121,6 +117,9 @@ struct ProfileView: View {
 
     }
 
+    /// Leading inset of row text inside the Brand group (row pad + glyph column + gap).
+    private var rowTextInset: CGFloat { Space.rowPad + 24 + Space.md }
+
     // MARK: - Header meta + stats
 
     private var metaLine: String {
@@ -132,43 +131,32 @@ struct ProfileView: View {
     }
 
     private var statRow: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: Space.sm) {
             stat(value: "\(store.reelsShot)", label: store.reelsShot == 1 ? "reel" : "reels")
-            Rectangle().fill(Palette.hairline).frame(width: 1, height: 28)
             stat(value: "\(store.creatorXP)", label: "xp")
-            Rectangle().fill(Palette.hairline).frame(width: 1, height: 28)
             stat(value: "\(store.brand.connectedAccounts.count)", label: store.brand.connectedAccounts.count == 1 ? "account" : "accounts")
         }
     }
 
     private func stat(value: String, label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value).font(Typeface.sans(18, .semibold)).monospacedDigit()
-                .foregroundStyle(Palette.textPrimary)
-            Text(label.uppercased()).font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(Palette.textTertiary)
-        }
-        .frame(maxWidth: .infinity)
+        DSStatTile(value: value, label: label)
+            .monospacedDigit()
     }
 
-    // MARK: - Pillars glance (read-only; tap opens the editor)
+    // MARK: - Pillars glance (read-only; tap opens the editor). Monochrome: a pillar's
+    // stored colorHex is never rendered as a hue.
 
     private var pillarsStrip: some View {
         FlowWrap(spacing: Space.sm) {
             ForEach(store.pillars) { p in
                 Button { showPillarsEditor = true } label: {
-                    HStack(spacing: 6) {
-                        Circle().fill(Color(hex: p.colorHex)).frame(width: 8, height: 8)
-                        Text(p.name)
-                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                            .lineLimit(1)
-                    }
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    Text(p.name)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 12).frame(height: 32)
+                        .background(Capsule().fill(Palette.surfaceSunken))
                 }
-                .buttonStyle(PressableStyle())
+                .buttonStyle(PressableStyle(dim: 0.8))
             }
         }
         .accessibilityIdentifier("profile.pillarsStrip")
@@ -178,14 +166,16 @@ struct ProfileView: View {
 
     private var creatorsSection: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            SectionLabel(text: "Creators to watch")
-                .padding(.top, Space.lg)
+            sectionHeader("Creators to watch")
             Text("Two creators you love. Yunicorn studies their reels and feeds you mimicable ones.")
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, Space.rowPad)
                 .padding(.bottom, Space.xs)
-            WatchedCreatorSlot(store: store, index: 0)
-            WatchedCreatorSlot(store: store, index: 1)
+            VStack(spacing: Space.groupGap) {
+                WatchedCreatorSlot(store: store, index: 0)
+                WatchedCreatorSlot(store: store, index: 1)
+            }
         }
     }
 
@@ -195,11 +185,11 @@ struct ProfileView: View {
     private var avatarHero: some View {
         ZStack {
             Circle()
-                .fill(Palette.accent.opacity(0.12))
-                .frame(width: 88, height: 88)
+                .fill(Palette.surfaceSunken)
+                .frame(width: 64, height: 64)
             if let url = account?.avatarUrl, !url.isEmpty, let u = URL(string: url) {
                 AsyncImage(url: u) { img in img.resizable().scaledToFill() } placeholder: { monogram }
-                    .frame(width: 88, height: 88)
+                    .frame(width: 64, height: 64)
                     .clipShape(Circle())
             } else {
                 monogram
@@ -210,33 +200,18 @@ struct ProfileView: View {
 
     private var monogram: some View {
         Text(String(displayName.prefix(1)).uppercased())
-            .font(Typeface.sans(32, .bold))
-            .foregroundStyle(Palette.accent)
+            .font(AppFont.title2)
+            .foregroundStyle(Palette.textPrimary)
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title.uppercased())
-            .font(AppFont.micro).tracking(Track.label)
-            .foregroundStyle(Palette.textTertiary)
+        DSEyebrow(text: title)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, Space.lg).padding(.bottom, Space.sm)
+            .padding(.horizontal, Space.rowPad)
     }
 
-    private func profileRow(label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Text(label)
-                    .font(Typeface.sans(18, .semibold)).tracking(Track.title)
-                    .foregroundStyle(Palette.textPrimary)
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.textTertiary)
-            }
-            .padding(.vertical, 15)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PressableStyle(dim: 0.6))
+    private func profileRow(label: String, systemImage: String? = nil, action: @escaping () -> Void) -> some View {
+        DSRow(title: label, systemImage: systemImage, action: action)
     }
 }
 
@@ -282,28 +257,30 @@ private struct WatchedCreatorSlot: View {
                         .font(AppFont.caption).foregroundStyle(Palette.textSecondary).lineLimit(1)
                     if let f = creator.followers, f > 0 {
                         Text("· \(compactNumber(f)) followers")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            .lineLimit(1)
                     }
                     Text("· \(creator.platform.label)")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .lineLimit(1)
                 }
+                .minimumScaleFactor(0.85)
             }
             Spacer(minLength: 0)
             Button { withAnimation(Motion.quick) { clear() } } label: {
                 Image(systemName: "trash")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Palette.textTertiary)
-                    .frame(width: 32, height: 32)
+                    .font(.system(size: 16, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 44, height: 44)
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.6))
+            .accessibilityLabel("Remove creator")
             .accessibilityIdentifier("profile.clearCreator\(index)")
         }
-        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .padding(.leading, Space.rowPad).padding(.trailing, Space.xs).padding(.vertical, Space.sm)
+        .frame(minHeight: 60)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
     }
 
     /// Rows saved before build 67 (or added from the reel feed without profile data)
@@ -330,11 +307,11 @@ private struct WatchedCreatorSlot: View {
                     img.resizable().scaledToFill()
                 } placeholder: {
                     Text(String(handle.prefix(1)).uppercased())
-                        .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.headline).foregroundStyle(Palette.textSecondary)
                 }
             } else {
                 Text(String(handle.prefix(1)).uppercased())
-                    .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.headline).foregroundStyle(Palette.textSecondary)
             }
         }
         .frame(width: size, height: size)
@@ -344,22 +321,21 @@ private struct WatchedCreatorSlot: View {
 
     private var addRow: some View {
         Button { withAnimation(Motion.quick) { expanded = true } } label: {
-            HStack(spacing: Space.sm) {
+            HStack(spacing: Space.md) {
                 Image(systemName: "plus.circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Palette.textSecondary)
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 24)
                 Text("Add a creator")
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                 Spacer()
             }
-            .padding(.horizontal, Space.md).frame(height: 50)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .padding(.horizontal, Space.rowPad).frame(height: 52)
+            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                .strokeBorder(Palette.hairline, lineWidth: 1))
             .contentShape(Rectangle())
         }
-        .buttonStyle(PressableStyle())
+        .buttonStyle(PressableStyle(dim: 0.7))
         .accessibilityIdentifier("profile.addCreator\(index)")
     }
 
@@ -370,17 +346,15 @@ private struct WatchedCreatorSlot: View {
                                            set: { platform = SocialPlatform.allCases[$0] }))
 
             HStack(spacing: 4) {
-                Text("@").foregroundStyle(Palette.textTertiary)
+                Text("@").foregroundStyle(Palette.textSecondary)
                 TextField("\(platform.label) handle", text: $handle)
+                    .foregroundStyle(Palette.textPrimary)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityIdentifier("profile.watchCreator\(index)")
             }
-            .font(AppFont.bodyL)
-            .padding(.horizontal, Space.md).frame(height: 50)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
+            .font(AppFont.bodyText)
+            .padding(.horizontal, Space.rowPad).frame(height: 52)
+            .background(Capsule().fill(Palette.surfaceSunken))
 
             // The verified profile, shown BEFORE anything is added — this is the
             // preview the whole flow exists for.
@@ -396,14 +370,26 @@ private struct WatchedCreatorSlot: View {
                     Spacer(minLength: 0)
                 }
                 .padding(Space.md)
-                .background(Palette.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .strokeBorder(Palette.ink.opacity(0.25), lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                    .fill(Palette.surfaceSunken))
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .padding(Space.sm)
+                        .accessibilityHidden(true)
+                }
                 .accessibilityIdentifier("profile.creatorPreview\(index)")
             } else if lookupFailed {
-                Text("Couldn't find that account, check the handle and platform.")
-                    .font(AppFont.caption).foregroundStyle(Palette.critical)
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.system(size: 14, weight: .regular))
+                    Text("Couldn't find that account, check the handle and platform.")
+                        .font(AppFont.supporting)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(Palette.critical)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             HStack {
@@ -412,23 +398,21 @@ private struct WatchedCreatorSlot: View {
                         expanded = false; handle = ""; preview = nil; lookupFailed = false
                     }
                 }
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .buttonStyle(DSTextLinkStyle(color: Palette.textSecondary))
                 Spacer()
                 Button { preview == nil ? verify() : confirmAdd() } label: {
                     HStack(spacing: 6) {
-                        if verifying { ProgressView().controlSize(.small).tint(Palette.onInk) }
+                        if verifying { ProgressView().controlSize(.small).tint(Palette.textSecondary) }
                         Text(preview == nil ? (verifying ? "Checking…" : "Preview") : "Add")
-                            .font(AppFont.callout).foregroundStyle(Palette.onInk)
                     }
-                    .padding(.horizontal, Space.lg).frame(height: 40)
-                    .background(Palette.ink).clipShape(Capsule())
                 }
-                .buttonStyle(PressableStyle())
+                .buttonStyle(DSCapsuleStyle(kind: .primary, height: 44))
                 .disabled(handle.trimmingCharacters(in: .whitespaces).isEmpty || verifying)
                 .accessibilityIdentifier("profile.saveCreator\(index)")
             }
         }
-        .padding(.vertical, Space.xs)
+        .padding(Space.rowPad)
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
         .onChange(of: handle) { _, _ in preview = nil; lookupFailed = false }
         .onChange(of: platform) { _, _ in preview = nil; lookupFailed = false }
     }
@@ -531,7 +515,7 @@ struct BrandEditorSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
+                VStack(alignment: .leading, spacing: Space.xl) {
                     fieldGroup("Your niche", placeholder: "e.g. fitness, personal finance, cooking", text: $niche)
                     fieldGroup("What you do", placeholder: "Your day-to-day work", text: $whatYouDo)
                     fieldGroup("Who you serve", placeholder: "Your target audience", text: $audience)
@@ -544,14 +528,15 @@ struct BrandEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("Save") { save() }.fontWeight(.semibold) }
             }
+            .tint(Palette.ink)
         }
     }
 
     private func fieldGroup(_ label: String, placeholder: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text(label).font(AppFont.caption).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+        VStack(alignment: .leading, spacing: Space.sm) {
+            DSEyebrow(text: label).padding(.horizontal, Space.rowPad)
             TextField(placeholder, text: text).marqueField()
                 .accessibilityIdentifier(label == "Known for" ? "profile.knownFor" : "profile.\(label.lowercased().replacingOccurrences(of: " ", with: ""))")
         }
@@ -590,38 +575,41 @@ struct VoiceEditorSheet: View {
         NavigationStack {
             @Bindable var store = store
             ScrollView {
-                VStack(spacing: Space.lg) {
-                    VStack(spacing: Space.lg) {
-                        voiceRow("Funny", "Serious", value: $store.brand.voice.funnyToSerious)
-                        MarqueHairline()
-                        voiceRow("Polished", "Raw", value: $store.brand.voice.polishedToRaw)
-                        MarqueHairline()
-                        voiceRow("Teacher", "Peer", value: $store.brand.voice.teacherToPeer)
-                    }
-                    .marqueCard()
+                VStack(spacing: Space.stack) {
+                    voiceRow("Funny", "Serious", value: $store.brand.voice.funnyToSerious)
+                    voiceRow("Polished", "Raw", value: $store.brand.voice.polishedToRaw)
+                    voiceRow("Teacher", "Peer", value: $store.brand.voice.teacherToPeer)
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Voice & tone")
+            .navigationTitle("voice & tone.")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { store.save(); dismiss() }
+                    Button("Done") { store.save(); dismiss() }.fontWeight(.semibold)
                 }
             }
+            .tint(Palette.ink)
         }
     }
 
     private func voiceRow(_ l: String, _ r: String, value: Binding<Double>) -> some View {
-        VStack(spacing: Space.xs) {
+        // One surface card per dial: eyebrow, the two poles (the leaning pole bold in
+        // primary ink, the other secondary), monochrome track.
+        VStack(alignment: .leading, spacing: Space.sm) {
+            DSEyebrow(text: "\(l) to \(r)")
             HStack {
-                Text(l).font(AppFont.callout).foregroundStyle(value.wrappedValue < 0.4 ? Palette.accent : Palette.textTertiary)
+                Text(l).font(value.wrappedValue < 0.4 ? AppFont.headline : AppFont.bodyText)
+                    .foregroundStyle(value.wrappedValue < 0.4 ? Palette.textPrimary : Palette.textSecondary)
                 Spacer()
-                Text(r).font(AppFont.callout).foregroundStyle(value.wrappedValue > 0.6 ? Palette.accent : Palette.textTertiary)
+                Text(r).font(value.wrappedValue > 0.6 ? AppFont.headline : AppFont.bodyText)
+                    .foregroundStyle(value.wrappedValue > 0.6 ? Palette.textPrimary : Palette.textSecondary)
             }
-            Slider(value: value).tint(Palette.accent)
+            Slider(value: value).tint(Palette.ink)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsCard(.surface, radius: Radius.group)
     }
 }
 
@@ -649,9 +637,12 @@ struct PillarsEditorSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.md) {
+                VStack(alignment: .leading, spacing: Space.stack) {
                     Text("Rename, retune the mix, add or remove, these shape every script Yunicorn writes.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, Space.xs)
+                        .padding(.bottom, Space.xs)
 
                     ForEach($draft) { $p in
                         PillarEditRow(pillar: $p,
@@ -664,12 +655,13 @@ struct PillarsEditorSheet: View {
                     if draft.count < 6 {
                         GhostButton(title: "Add pillar", systemImage: "plus") { addPillar() }
                             .accessibilityIdentifier("pillars.add")
+                            .padding(.top, Space.xs)
                     }
 
                     // Build 67: AI refresh derives from REAL posts only — without a
                     // connected account there is nothing honest to generate from.
                     if store.brand.connectedAccounts.contains(where: { !$0.handle.isEmpty }) {
-                    GhostButton(title: regenerating ? "Regenerating…" : "Refresh with AI", systemImage: "sparkles") {
+                    PrimaryButton(title: regenerating ? "Regenerating…" : "Refresh with AI", systemImage: "sparkles") {
                         confirmRefresh = true
                     }
                     .disabled(regenerating)
@@ -682,14 +674,15 @@ struct PillarsEditorSheet: View {
                     }
                     } else {
                         Text("Connect your Instagram or TikTok and Yunicorn builds pillars from your real posts.")
-                            .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                            .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, Space.xs)
                     }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Content pillars")
+            .navigationTitle("content pillars.")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -700,6 +693,7 @@ struct PillarsEditorSheet: View {
                         .accessibilityIdentifier("pillars.done")
                 }
             }
+            .tint(Palette.ink)
         }
         // Root-level host: full-screen scrim, nothing clips it, Delete is tappable.
         .marqueConfirm(Binding(get: { pendingDelete != nil },
@@ -765,16 +759,15 @@ private struct PillarEditRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: Space.sm) {
-                Circle().fill(Color(hex: pillar.colorHex)).frame(width: 12, height: 12)
                 TextField("Pillar name", text: $pillar.name)
                     .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                     .focused(focusedNew, equals: pillar.id)
                     .accessibilityIdentifier("pillars.name")
                 Spacer(minLength: 0)
                 Button { onDelete() } label: {
-                    Image(systemName: "trash").font(.system(size: 15))
-                        .foregroundStyle(Palette.textTertiary)
-                        .frame(width: 34, height: 34)          // real 34pt tap target
+                    Image(systemName: "trash").font(.system(size: 16, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(width: 44, height: 44)          // real 44pt tap target
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -782,21 +775,23 @@ private struct PillarEditRow: View {
                 .opacity(canDelete ? 1 : 0.3)
                 .accessibilityIdentifier("pillars.delete")
             }
+            Rectangle().fill(Palette.hairline).frame(height: 1)
             TextField("One-line summary", text: $pillar.summary, axis: .vertical)
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...2)
+                .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).lineLimit(1...2)
             TextField("Your angle, why it's yours", text: $pillar.angle, axis: .vertical)
-                .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...3)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary).lineLimit(1...3)
             HStack(spacing: Space.sm) {
-                Text("Mix").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                DSEyebrow(text: "Mix")
                 Slider(value: $pillar.weight, in: 0.05...0.5)
-                    .tint(Color(hex: pillar.colorHex))
+                    .tint(Palette.ink)
                     .accessibilityIdentifier("pillars.weight")
                 Text("\(Int((pillar.weight / max(total, 0.0001) * 100).rounded()))%")
-                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                    .frame(width: 38, alignment: .trailing)
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    .monospacedDigit()
+                    .frame(width: 48, alignment: .trailing)
             }
         }
-        .marqueCard(padding: Space.md)
+        .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
     }
 }
 
@@ -815,103 +810,119 @@ struct CreatorProfileSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    // The Marque Path — seal, rail, one meta line.
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    // The Marque Path — seal, ink rail, one meta line, in one surface card.
                     let rank = store.creatorRank
                     let xp = max(store.creatorXP, rank.minXP)
                     let progress = RankSystem.progress(xp: xp, in: rank)
-                    HStack(spacing: Space.md) {
-                        RankSeal(level: rank.level, size: 40)
-                        VStack(alignment: .leading, spacing: 5) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(rank.title).font(Typeface.sans(15, .semibold))
+                    HStack(alignment: .top, spacing: Space.md) {
+                        RankSeal(level: rank.level, size: 48)
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(rank.title).font(AppFont.title3)
                                     .foregroundStyle(Palette.textPrimary)
-                                Spacer(minLength: Space.sm)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 if let next = rank.nextXP, !rank.isMax {
                                     Text("\(max(0, next - xp)) XP to \(RankSystem.rank(atLevel: rank.level + 1).title)")
-                                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                                 } else {
-                                    Text("Top rank").font(AppFont.micro).foregroundStyle(Palette.gold)
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "crown").font(.system(size: 11, weight: .semibold))
+                                        Text("Top rank").font(AppFont.caption.weight(.semibold))
+                                    }
+                                    .foregroundStyle(Palette.textPrimary)
                                 }
                             }
                             GeometryReader { geo in
                                 ZStack(alignment: .leading) {
                                     Capsule().fill(Palette.surfaceSunken)
-                                    Capsule().fill(Palette.gold)
-                                        .frame(width: max(3, geo.size.width * progress))
+                                    Capsule().fill(Palette.ink)
+                                        .frame(width: max(4, geo.size.width * progress))
                                 }
                             }
-                            .frame(height: 3)
-                            Text(rank.subtitle).font(AppFont.caption)
+                            .frame(height: 4)
+                            Text(rank.subtitle).font(AppFont.supporting)
                                 .foregroundStyle(Palette.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .dsCard(.surface, radius: Radius.card)
 
-                    MarqueHairline()
-
-                    HStack {
-                        Text("WHAT YUNICORN KNOWS").font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(Palette.textTertiary)
-                        Spacer()
-                        Button {
-                            Task { await refresh() }
-                        } label: {
-                            if refreshing {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(Palette.textTertiary)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        HStack {
+                            DSEyebrow(text: "What Yunicorn knows")
+                            Spacer()
+                            Button {
+                                Task { await refresh() }
+                            } label: {
+                                Group {
+                                    if refreshing {
+                                        ProgressView().controlSize(.small).tint(Palette.textSecondary)
+                                    } else {
+                                        Image(systemName: "arrow.clockwise")
+                                            .font(.system(size: 16, weight: .regular))
+                                            .foregroundStyle(Palette.textPrimary)
+                                    }
+                                }
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                             }
+                            .buttonStyle(PressableStyle(dim: 0.6))
+                            .disabled(refreshing)
+                            .accessibilityLabel("Refresh")
+                            .accessibilityIdentifier("profile.refreshSummary")
                         }
-                        .buttonStyle(.plain)
-                        .disabled(refreshing)
-                        .accessibilityIdentifier("profile.refreshSummary")
-                    }
+                        .padding(.leading, Space.rowPad)
 
-                    if let card = store.brandSummary {
-                        Text(card.summary)
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                            .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
-                        if !card.traits.isEmpty {
-                            FlowWrap(spacing: Space.sm) {
-                                ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
-                                    Text(trait)
-                                        .font(Typeface.sans(11, .medium)).tracking(0.2)
-                                        .foregroundStyle(Palette.textSecondary)
-                                        .padding(.horizontal, 10).padding(.vertical, 4)
-                                        .background(Capsule().fill(Palette.surfaceRaised))
-                                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            if let card = store.brandSummary {
+                                Text(card.summary)
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                    .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                                if !card.traits.isEmpty {
+                                    FlowWrap(spacing: Space.sm) {
+                                        ForEach(Array(card.traits.enumerated()), id: \.offset) { _, trait in
+                                            Text(trait)
+                                                .font(AppFont.supporting)
+                                                .foregroundStyle(Palette.textPrimary)
+                                                .lineLimit(1)
+                                                .padding(.horizontal, 12).frame(height: 32)
+                                                .background(Capsule().fill(Palette.surfaceSunken))
+                                        }
+                                    }
+                                }
+                                if !card.workingOn.isEmpty {
+                                    VStack(alignment: .leading, spacing: Space.xs) {
+                                        DSEyebrow(text: "Working on")
+                                        Text(card.workingOn).font(AppFont.supporting)
+                                            .foregroundStyle(Palette.textSecondary).lineSpacing(3)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(.top, Space.xs)
+                                }
+                            } else {
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    RoundedRectangle(cornerRadius: Radius.cell).fill(Palette.surfaceSunken)
+                                        .frame(height: 12).frame(maxWidth: .infinity)
+                                    RoundedRectangle(cornerRadius: Radius.cell).fill(Palette.surfaceSunken)
+                                        .frame(height: 12).frame(maxWidth: 220)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
                                 }
                             }
                         }
-                        if !card.workingOn.isEmpty {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("WORKING ON").font(AppFont.micro).tracking(Track.label)
-                                    .foregroundStyle(Palette.textTertiary)
-                                Text(card.workingOn).font(AppFont.caption)
-                                    .foregroundStyle(Palette.textSecondary).lineSpacing(3)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    } else {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
-                                .frame(height: 12).frame(maxWidth: .infinity)
-                            RoundedRectangle(cornerRadius: 4).fill(Palette.surfaceSunken)
-                                .frame(height: 12).frame(maxWidth: 220)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .dsCard(.surface, radius: Radius.card)
                     }
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.lg).padding(.bottom, Space.xxl)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Creator profile").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("creator profile.").navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() }.fontWeight(.semibold) }
             }
+            .tint(Palette.ink)
             .task { if store.brandSummary == nil { await refresh() } }
         }
     }
