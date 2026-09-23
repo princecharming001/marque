@@ -53,14 +53,16 @@ struct TweakChatSheet: View {
                         }
                         if sending {
                             HStack(spacing: Space.sm) {
-                                ProgressView().tint(Palette.accent)
-                                Text("Thinking…").font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                ProgressView().controlSize(.small).tint(Palette.textPrimary)
+                                Text("Thinking…").font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                             }
+                            .padding(.vertical, Space.xs)
                         }
                         if previewLive { applyDiscardBar }
                     }
                     .screenPadding().padding(.vertical, Space.lg)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: messages.count) { _, _ in
                     if let last = messages.last {
                         withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
@@ -68,10 +70,16 @@ struct TweakChatSheet: View {
                 }
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Tweak this edit").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("tweak this edit.").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("tweak this edit.").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                 }
             }
             .safeAreaInset(edge: .bottom) { composer }
@@ -88,11 +96,11 @@ struct TweakChatSheet: View {
         .onAppear { if autoFocus { composerFocused = true } }
     }
 
-    // MARK: rows
+    // MARK: rows (Stoic journal voice, same as the Chat tab)
 
     private var intro: some View {
         Text("Tell me what to change: captions, cuts, zooms, b-roll. I'll re-edit just this clip.")
-            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+            .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -111,36 +119,43 @@ struct TweakChatSheet: View {
             HStack {
                 Spacer(minLength: Space.huge)
                 Text(msg.text)
-                    .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, Space.md).padding(.vertical, 10)
-                    .background(Palette.surfaceSunken)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                    .lineSpacing(4)
+                    .padding(.horizontal, Space.md).padding(.vertical, Space.stack)
+                    .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                        .fill(Palette.surfaceSunken))
             }
         case .assistant:
             Text(msg.text)
-                .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                .lineSpacing(4)
+                .font(AppFont.bodyLarge).foregroundStyle(Palette.textPrimary)
+                .lineSpacing(6)
                 .fixedSize(horizontal: false, vertical: true)
         case .status:
-            HStack(spacing: Space.sm) {
-                if rendering { ProgressView().tint(Palette.accent) }
-                else { Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(Palette.positive) }
-                Text(msg.text).font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                if rendering { ProgressView().controlSize(.small).tint(Palette.textPrimary) }
+                else {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                }
+                Text(msg.text).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
     private var composer: some View {
-        HStack(spacing: Space.sm) {
+        HStack(alignment: .bottom, spacing: Space.sm) {
             TextField("Change something…", text: $input, axis: .vertical)
                 .focused($composerFocused)
-                .font(AppFont.bodyL)
+                .font(AppFont.bodyText)
+                .foregroundStyle(Palette.textPrimary)
+                .tint(Palette.textPrimary)
                 .lineLimit(1...4)
-                .padding(.horizontal, Space.md).padding(.vertical, 12)
-                .background(Palette.surfaceRaised)
-                .clipShape(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                .padding(.horizontal, Space.md).padding(.vertical, 13)
+                .frame(minHeight: 48)
+                .background(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(Palette.surfaceSunken))
                 .accessibilityIdentifier("tweak.input")
             Button {
                 let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -149,16 +164,19 @@ struct TweakChatSheet: View {
                 send(text)
             } label: {
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Palette.onInk)
-                    .frame(width: 38, height: 38)
-                    .background(Circle().fill(Palette.ink))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(sending ? Palette.textTertiary : Palette.onInk)
+                    .frame(width: 48, height: 48)
+                    .background(Circle().fill(sending ? Palette.surfaceSunken : Palette.ink))
+                    .contentShape(Circle())
             }
+            .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
             .disabled(sending)
+            .accessibilityLabel("Send")
             .accessibilityIdentifier("tweak.send")
         }
         .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-        .background(.ultraThinMaterial)
+        .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
     }
 
     // MARK: actions
@@ -166,26 +184,21 @@ struct TweakChatSheet: View {
     /// UX-D2: Apply / Discard for a staged preview — the whole point of preview-first:
     /// see the change BEFORE committing a full render to it.
     private var applyDiscardBar: some View {
+        // DESIGN.md CTA row: outline secondary + primary capsule.
         HStack(spacing: Space.sm) {
-            Button { applyPreview() } label: {
-                Text("Apply this change")
-                    .font(AppFont.headline).foregroundStyle(Palette.onInk)
-                    .frame(maxWidth: .infinity).padding(.vertical, 12)
-                    .background(Palette.ink)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("tweak.apply")
             Button { discardPreview() } label: {
                 Text("Discard")
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                    .padding(.horizontal, Space.lg).padding(.vertical, 12)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.ds(.outline, height: 48))
+            .fixedSize()
             .accessibilityIdentifier("tweak.discard")
+            Button { applyPreview() } label: {
+                Text("Apply this change")
+            }
+            .buttonStyle(.ds(.primary, height: 48, fullWidth: true))
+            .accessibilityIdentifier("tweak.apply")
         }
+        .padding(.top, Space.xs)
     }
 
     private func send(_ text: String) {
@@ -376,16 +389,8 @@ private struct FlowChips: View {
     var body: some View {
         FlexWrap(spacing: Space.sm) {
             ForEach(items, id: \.self) { chip in
-                Button { onTap(chip) } label: {
-                    Text(chip)
-                        .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                        .padding(.horizontal, Space.md).padding(.vertical, Space.sm)
-                        .background(Palette.surfaceRaised)
-                        .clipShape(Capsule())
-                        .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                }
-                .buttonStyle(PressableStyle(dim: 0.7))
-                .accessibilityIdentifier("tweak.chip")
+                DSChip(title: chip) { onTap(chip) }
+                    .accessibilityIdentifier("tweak.chip")
             }
         }
     }
