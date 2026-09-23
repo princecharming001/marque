@@ -7,7 +7,7 @@ import SwiftUI
 struct InteractiveSparkline: View {
     let points: [BackendClient.PerformanceSummary.DailyPoint]
     var windowDays: Int = 30
-    var color: Color = Palette.accent
+    var color: Color = Palette.textPrimary
 
     @State private var on = false
     @State private var scrubIndex: Int? = nil
@@ -27,7 +27,7 @@ struct InteractiveSparkline: View {
                             p.addLine(to: CGPoint(x: pts[pts.count - 1].x, y: geo.size.height))
                             p.closeSubpath()
                         }
-                        .fill(LinearGradient(colors: [color.opacity(0.18), color.opacity(0.0)],
+                        .fill(LinearGradient(colors: [color.opacity(0.12), color.opacity(0.0)],
                                              startPoint: .top, endPoint: .bottom))
                         // line
                         Path { p in
@@ -38,7 +38,7 @@ struct InteractiveSparkline: View {
 
                         // scrub guide + marker + badge
                         if let i = scrubIndex, i < pts.count {
-                            Rectangle().fill(Palette.textTertiary.opacity(0.5))
+                            Rectangle().fill(Palette.hairline)
                                 .frame(width: 1).position(x: pts[i].x, y: geo.size.height / 2)
                                 .frame(height: geo.size.height)
                             Circle().fill(color).frame(width: 7, height: 7).position(pts[i])
@@ -62,9 +62,9 @@ struct InteractiveSparkline: View {
 
             // first/last date labels
             HStack {
-                Text(label(for: 0)).font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                Text(label(for: 0)).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 Spacer()
-                Text(label(for: points.count - 1)).font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                Text(label(for: points.count - 1)).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             }
         }
         .onAppear { withAnimation(.easeOut(duration: 0.8)) { on = true } }
@@ -73,14 +73,14 @@ struct InteractiveSparkline: View {
 
     private func scrubBadge(for i: Int) -> some View {
         VStack(spacing: 1) {
-            Text(label(for: i)).font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
+            Text(label(for: i).uppercased()).font(AppFont.eyebrow).tracking(1.2)
+                .foregroundStyle(Palette.onInk.opacity(0.75))
             Text(compactNumber(points[i].views) + " views")
-                .font(Typeface.sans(13, .semibold)).foregroundStyle(Palette.textPrimary)
+                .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.onInk)
         }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous).strokeBorder(Palette.hairline, lineWidth: 1))
+        .lineLimit(1)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .background(Capsule().fill(Palette.ink))
     }
 
     private func coords(in size: CGSize) -> [CGPoint] {
