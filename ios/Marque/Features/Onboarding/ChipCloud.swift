@@ -44,10 +44,13 @@ struct ChipCloud: View {
         let rows = Self.pack(items, availableWidth: width)
         LazyVStack(spacing: Space.sm + Space.xs) {
             if !rows.isEmpty {
-                ForEach(0..<Self.cycles, id: \.self) { cycle in
-                    ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
-                        rowView(row, index: i, cycle: cycle)
-                    }
+                // ONE flat ForEach over every (cycle, row) slot. LazyVStack flattens
+                // nested ForEach children, so a per-cycle loop keyed by row offset
+                // gave every cycle the same IDs 0…n ("ID used by multiple child
+                // views"). `slot` is unique across all cycles.
+                ForEach(0..<(Self.cycles * rows.count), id: \.self) { slot in
+                    rowView(rows[slot % rows.count], index: slot % rows.count,
+                            cycle: slot / rows.count)
                 }
             }
         }
