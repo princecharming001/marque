@@ -68,7 +68,6 @@ struct ScriptReaderView: View {
             .padding(.bottom, Space.xl)
         }
         .background(Palette.canvas.ignoresSafeArea())
-        .scrollDismissesKeyboard(.interactively)
         .safeAreaInset(edge: .bottom) {
             PrimaryButton(title: "Record this script", systemImage: "record.circle", fullWidth: false) { showRecord = true }
                 .accessibilityIdentifier("script.record")

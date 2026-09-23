@@ -57,6 +57,16 @@ CONTROLS = [r'\bButton\s*[({]', r'\bToggle\s*\(', r'\bTextField\s*\(', r'\bSecur
             r'\bMarqueToggle\w*\s*\(', r'\bDSRow\s*\([^)]*action:', r'\bDSEmptyState\s*\([^)]*action:']
 
 
+BEHAVIOR = [r'\.scrollDismissesKeyboard\(', r'\.onSubmit\b', r'\.submitLabel\(', r'\.keyboardType\(',
+            r'\.textInputAutocapitalization\(', r'\.autocorrectionDisabled\b', r'\.disabled\(',
+            r'\.allowsHitTesting\(', r'\.interactiveDismissDisabled\b', r'\.presentationDetents\(',
+            r'\.refreshable\b', r'\.swipeActions\b', r'\.contextMenu\b', r'\.onTapGesture\b',
+            r'\.gesture\(', r'\.simultaneousGesture\(', r'\.highPriorityGesture\(', r'\.onLongPressGesture\b',
+            r'\.task\b', r'\.onChange\(', r'\.onReceive\(', r'\.focused\(', r'\.defaultFocus\(',
+            r'\.scrollDisabled\(', r'\.scrollPosition\(', r'\.scrollTo\(', r'\bscrollTo\(',
+            r'\.sensoryFeedback\(', r'\.onDrop\b', r'\.draggable\b', r'withAnimation\b']
+
+
 def git(*args):
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
 
@@ -157,6 +167,14 @@ def check(path, base, mstrings):
     kb, ka = controls(b), controls(a)
     if ka < kb:
         fails.append(f'interactive controls dropped: {kb} -> {ka}')
+
+    # Behavior-affecting modifiers that went UP: a redesign should not add behavior.
+    # (Some additions are legitimate presentation, e.g. .onAppear driving an entrance
+    # animation; each one must be reviewed.)
+    ba, bb = counts(a, BEHAVIOR), counts(b, BEHAVIOR)
+    added = [f'{p} {bb[p]}->{ba[p]}' for p in BEHAVIOR if ba[p] > bb[p]]
+    if added:
+        warns.append(f'behavior modifiers ADDED (review each): {added}')
     return rel, fails, warns
 
 
