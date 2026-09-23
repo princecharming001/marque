@@ -168,7 +168,7 @@ struct ChatTypingIndicator: View {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_800_000_000)
                 guard !Task.isCancelled else { break }
-                withAnimation(.easeInOut(duration: 0.45)) {
+                withAnimation(Motion.standard) {
                     phrase = (phrase + 1) % Self.phrases.count
                 }
             }

@@ -65,7 +65,7 @@ struct TweakChatSheet: View {
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: messages.count) { _, _ in
                     if let last = messages.last {
-                        withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(last.id, anchor: .bottom) }
+                        withAnimation(Motion.quick) { proxy.scrollTo(last.id, anchor: .bottom) }
                     }
                 }
             }
