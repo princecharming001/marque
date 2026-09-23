@@ -374,38 +374,54 @@ struct ChatAttachSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("ADD TO CHAT").font(AppFont.micro).tracking(Track.label)
-                    .foregroundStyle(Palette.textTertiary)
-                Text("Attach a video").font(Typeface.sans(24, .semibold)).foregroundStyle(Palette.textPrimary)
+        VStack(alignment: .leading, spacing: Space.xl) {
+            // Sheet header (DESIGN.md): eyebrow + centered lowercase title.
+            VStack(spacing: 4) {
+                DSEyebrow(text: "Add to chat")
+                Text("attach a video.").font(AppFont.title1).tracking(-0.3)
+                    .foregroundStyle(Palette.textPrimary)
+                    .multilineTextAlignment(.center)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.top, Space.lg)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
+
             MarqueSegmented(options: ["Photos", "Your library"], index: $source)
                 .accessibilityIdentifier("chat.attachSource")
             if source == 0 {
-                VStack(spacing: Space.md) {
+                VStack(spacing: Space.sm) {
                     Image(systemName: "photo.on.rectangle")
-                        .font(.system(size: 26, weight: .ultraLight))
-                        .foregroundStyle(Palette.textTertiary)
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(Palette.textSecondary)
+                        .padding(.bottom, Space.xs)
+                        .accessibilityHidden(true)
                     Text("Pick up to 4 videos from your camera roll. Yunicorn stitches and edits them.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                         .multilineTextAlignment(.center)
-                    PrimaryButton(title: "Choose from Photos", systemImage: "photo") { onPhotos() }
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 300)
+                    PrimaryButton(title: "Choose from Photos", systemImage: "photo", fullWidth: false) { onPhotos() }
                         .accessibilityIdentifier("chat.attachPhotos")
+                        .padding(.top, Space.md)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.top, Space.xl)
+                .padding(.top, Space.md)
             } else if libraryClips.isEmpty {
                 VStack(spacing: Space.sm) {
                     Image(systemName: "rectangle.stack")
-                        .font(.system(size: 26, weight: .ultraLight))
-                        .foregroundStyle(Palette.textTertiary)
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(Palette.textSecondary)
+                        .padding(.bottom, Space.xs)
+                        .accessibilityHidden(true)
                     Text("Nothing in your library yet, film or upload a clip first.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                         .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 300)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.top, Space.xl)
+                .padding(.top, Space.md)
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: Space.sm)],
@@ -418,24 +434,32 @@ struct ChatAttachSheet: View {
                                         .overlay(LocalThumbnail(path: c.thumbnailPath ?? c.playbackLocalPath,
                                                                 isVideo: true, remoteImageURL: c.thumbnailURL)
                                             .scaledToFill())
-                                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                        .overlay(alignment: .bottom) {
+                                            // Legibility scrim for the title over the (full-color) thumbnail.
+                                            LinearGradient(colors: [.clear, Color.black.opacity(0.55)],
+                                                           startPoint: .top, endPoint: .bottom)
+                                                .frame(height: 56)
+                                        }
+                                        .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
                                     Text(c.title.isEmpty ? c.formatName : c.title)
-                                        .font(Typeface.sans(11, .medium)).lineLimit(1)
-                                        .foregroundStyle(.white)
-                                        .shadow(color: .black.opacity(0.6), radius: 3, y: 1)
-                                        .padding(6)
+                                        .font(AppFont.caption.weight(.semibold)).lineLimit(1)
+                                        .foregroundStyle(Palette.onNight)
+                                        .padding(Space.sm)
                                 }
+                                .contentShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(PressableStyle(dim: 0.85))
                             .accessibilityIdentifier("chat.attachClip")
                         }
                     }
+                    .padding(.bottom, Space.xl)
                 }
+                .scrollIndicators(.hidden)
             }
             Spacer(minLength: 0)
         }
-        .padding(Space.lg)
+        .padding(.horizontal, Space.screenH)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.canvas)
+        .background(Palette.canvas.ignoresSafeArea())
     }
 }
