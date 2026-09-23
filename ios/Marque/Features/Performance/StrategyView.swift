@@ -18,40 +18,47 @@ struct StrategyView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
+                VStack(alignment: .leading, spacing: Space.xl) {
                     if loading {
-                        ProgressView().frame(maxWidth: .infinity).padding(.top, 80)
+                        ProgressView().tint(Palette.textSecondary)
+                            .frame(maxWidth: .infinity).padding(.top, 80)
                     } else if let doc, !doc.isTemplate {
                         let model = StrategyModel.parse(doc.markdown)
-                        Text("REVISION \(doc.revision)")
-                            .font(AppFont.micro).tracking(Track.label)
-                            .foregroundStyle(Palette.textTertiary)
+                        VStack(alignment: .leading, spacing: Space.xs) {
+                            DSEyebrow(text: "Revision \(doc.revision)")
+                            DSPageTitle(title: "your strategy.")
+                        }
                         if let plan = model.plan { heroCard(plan) }
                         if !model.insights.isEmpty {
-                            SectionLabel(text: "What's working", accent: Palette.accent)
-                            ForEach(Array(model.insights.enumerated()), id: \.offset) { i, insight in
-                                insightCard(insight, index: i)
+                            section("What's working") {
+                                VStack(spacing: Space.stack) {
+                                    ForEach(Array(model.insights.enumerated()), id: \.offset) { i, insight in
+                                        insightCard(insight, index: i)
+                                    }
+                                }
                             }
                         }
                         if !model.buckets.isEmpty {
-                            SectionLabel(text: "Make these", accent: Palette.accent)
-                            listCard {
-                                ForEach(Array(model.buckets.enumerated()), id: \.offset) { i, b in
-                                    bucketRow(b)
-                                    if i < model.buckets.count - 1 { rowDivider }
+                            section("Make these") {
+                                listCard {
+                                    ForEach(Array(model.buckets.enumerated()), id: \.offset) { i, b in
+                                        bucketRow(b)
+                                        if i < model.buckets.count - 1 { rowDivider }
+                                    }
                                 }
                             }
                         }
                         if !model.bets.isEmpty || !model.notDoing.isEmpty {
-                            SectionLabel(text: "Do / don't", accent: Palette.accent)
-                            listCard {
-                                ForEach(Array(model.bets.enumerated()), id: \.offset) { i, line in
-                                    doDontRow(line, isDo: true)
-                                    if i < model.bets.count - 1 || !model.notDoing.isEmpty { rowDivider }
-                                }
-                                ForEach(Array(model.notDoing.enumerated()), id: \.offset) { i, line in
-                                    doDontRow(line, isDo: false)
-                                    if i < model.notDoing.count - 1 { rowDivider }
+                            section("Do / don't") {
+                                listCard {
+                                    ForEach(Array(model.bets.enumerated()), id: \.offset) { i, line in
+                                        doDontRow(line, isDo: true)
+                                        if i < model.bets.count - 1 || !model.notDoing.isEmpty { rowDivider }
+                                    }
+                                    ForEach(Array(model.notDoing.enumerated()), id: \.offset) { i, line in
+                                        doDontRow(line, isDo: false)
+                                        if i < model.notDoing.count - 1 { rowDivider }
+                                    }
                                 }
                             }
                         }
@@ -61,19 +68,22 @@ struct StrategyView: View {
                             proseCard(title: s.title, body: s.body)
                         }
                         if !doc.updates.isEmpty {
-                            SectionLabel(text: "What changed recently", accent: Palette.accent)
-                            listCard {
-                                ForEach(Array(doc.updates.prefix(6).enumerated()), id: \.offset) { i, u in
-                                    HStack(alignment: .top, spacing: Space.sm) {
-                                        Image(systemName: "arrow.triangle.2.circlepath")
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundStyle(Palette.accent)
-                                            .padding(.top, 3)
-                                        Text(u).font(AppFont.caption)
-                                            .foregroundStyle(Palette.textSecondary)
-                                            .fixedSize(horizontal: false, vertical: true)
+                            section("What changed recently") {
+                                listCard {
+                                    ForEach(Array(doc.updates.prefix(6).enumerated()), id: \.offset) { i, u in
+                                        HStack(alignment: .top, spacing: Space.md) {
+                                            Image(systemName: "arrow.triangle.2.circlepath")
+                                                .font(.system(size: 14, weight: .regular))
+                                                .foregroundStyle(Palette.textPrimary)
+                                                .frame(width: 20)
+                                                .padding(.top, 2)
+                                            Text(u).font(AppFont.supporting)
+                                                .foregroundStyle(Palette.textSecondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        if i < min(doc.updates.count, 6) - 1 { rowDivider }
                                     }
-                                    if i < min(doc.updates.count, 6) - 1 { rowDivider }
                                 }
                             }
                         }
@@ -84,16 +94,17 @@ struct StrategyView: View {
                             .padding(.top, 60)
                     }
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.sm).padding(.bottom, Space.xxl)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Your Strategy")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
+                    Button("Done") { dismiss() }.fontWeight(.semibold)
                 }
             }
+            .tint(Palette.ink)
         }
         .task {
             #if DEBUG
@@ -112,54 +123,53 @@ struct StrategyView: View {
         }
     }
 
-    // MARK: Hero — the Plan as a verdict, not a paragraph
+    // MARK: Hero — the Plan as a verdict (the one night card on the page)
 
     private func heroCard(_ plan: StrategyModel.Plan) -> some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            regimeLadder(current: plan.regimeIndex)
-            if !plan.regimeNote.isEmpty {
-                Text(plan.regimeNote).font(AppFont.caption)
-                    .foregroundStyle(Palette.onInk.opacity(0.65))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            if !plan.lever.isEmpty {
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    Text("YOUR ONE MOVE")
-                        .font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.onInk.opacity(0.55))
-                    Text(plan.lever)
-                        .font(Typeface.sans(21, .semibold))
-                        .foregroundStyle(Palette.onInk)
+        DSHeroCard(radius: Radius.card, padding: Space.cardPad) {
+            VStack(alignment: .leading, spacing: Space.md) {
+                regimeLadder(current: plan.regimeIndex)
+                if !plan.regimeNote.isEmpty {
+                    Text(plan.regimeNote).font(AppFont.supporting)
+                        .foregroundStyle(Palette.onNight.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if !plan.lever.isEmpty {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        DSEyebrow(text: "Your one move", color: Palette.onNightSecondary)
+                        Text(plan.lever)
+                            .font(AppFont.title2).tracking(-0.2)
+                            .foregroundStyle(Palette.onNight)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                if !plan.priority.isEmpty {
+                    Text(plan.priority).font(AppFont.supporting)
+                        .foregroundStyle(Palette.onNight.opacity(0.8))
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            if !plan.priority.isEmpty {
-                Text(plan.priority).font(AppFont.caption)
-                    .foregroundStyle(Palette.onInk.opacity(0.75))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Space.lg)
-        .background(Palette.ink)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
         .accessibilityIdentifier("strategy.hero")
     }
 
     /// Where the channel sits on the growth ladder — the regime as a 3-step track, not a
-    /// word buried in prose.
+    /// word buried in prose. Active step inverts (white pill, dark label).
     private func regimeLadder(current: Int?) -> some View {
         HStack(spacing: 6) {
             ForEach(Array(StrategyModel.regimes.enumerated()), id: \.offset) { i, name in
                 let active = i == current
-                Text(name.uppercased())
-                    .font(Typeface.sans(9, active ? .bold : .medium)).tracking(0.6)
-                    .foregroundStyle(active ? Palette.ink : Palette.onInk.opacity(0.45))
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Capsule().fill(active ? Palette.onInk : Palette.onInk.opacity(0.10)))
+                Text(name)
+                    .font(AppFont.caption.weight(active ? .semibold : .regular))
+                    .foregroundStyle(active ? Palette.night : Palette.onNightSecondary)
+                    .lineLimit(1).minimumScaleFactor(0.75)
+                    .padding(.horizontal, 10).frame(height: 28)
+                    .background(Capsule().fill(active ? Palette.onNight : Color.white.opacity(0.10)))
+                    .accessibilityAddTraits(active ? .isSelected : [])
                 if i < StrategyModel.regimes.count - 1 {
-                    Rectangle().fill(Palette.onInk.opacity(0.25))
-                        .frame(width: 10, height: 1)
+                    Rectangle().fill(Color.white.opacity(0.25))
+                        .frame(width: 8, height: 1)
                 }
             }
             Spacer(minLength: 0)
@@ -170,10 +180,10 @@ struct StrategyView: View {
 
     private func insightCard(_ insight: StrategyModel.Insight, index: Int) -> some View {
         let expanded = expandedInsights.contains(index)
-        return VStack(alignment: .leading, spacing: Space.sm) {
+        return VStack(alignment: .leading, spacing: Space.md) {
             HStack(alignment: .top, spacing: Space.sm) {
                 Text(insight.claim)
-                    .font(Typeface.sans(15, .semibold))
+                    .font(AppFont.headline)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
@@ -183,70 +193,73 @@ struct StrategyView: View {
                 Spacer()
                 if !insight.evidence.isEmpty {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
+                        withAnimation(Motion.quick) {
                             if expanded { expandedInsights.remove(index) }
                             else { expandedInsights.insert(index) }
                         }
                     } label: {
-                        HStack(spacing: 3) {
-                            Text("Why").font(AppFont.caption)
+                        HStack(spacing: 4) {
+                            Text("Why").font(AppFont.supporting.weight(.semibold))
                             Image(systemName: "chevron.down")
-                                .font(.system(size: 9, weight: .semibold))
+                                .font(.system(size: 11, weight: .semibold))
                                 .rotationEffect(.degrees(expanded ? 180 : 0))
                         }
-                        .foregroundStyle(Palette.textTertiary)
+                        .foregroundStyle(Palette.textPrimary)
+                        .padding(.horizontal, 12).frame(height: 32)
+                        .background(Capsule().fill(Palette.surfaceSunken))
+                        .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableStyle(dim: 0.7))
                 }
             }
             if expanded, !insight.evidence.isEmpty {
-                Text(insight.evidence).font(AppFont.caption)
+                Text(insight.evidence).font(AppFont.supporting)
                     .foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
     }
 
     // MARK: Buckets — the format, its job, its provenness
 
     private func bucketRow(_ b: StrategyModel.Bucket) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: Space.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                 Text(b.name)
-                    .font(Typeface.sans(14, .semibold))
+                    .font(AppFont.headline)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
-                if let job = b.job { badge(job.uppercased(), tint: job == "experiment" ? Palette.textTertiary : Palette.accent) }
                 Spacer(minLength: 0)
+                if let job = b.job { badge(job.uppercased(), tint: job == "experiment" ? Palette.textSecondary : Palette.textPrimary) }
             }
             if !b.detail.isEmpty {
-                Text(b.detail).font(AppFont.caption)
+                Text(b.detail).font(AppFont.supporting)
                     .foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: Do / don't — scan-lists, not cards
+    // MARK: Do / don't — scan-lists, not cards (glyph shape carries do vs don't)
 
     private func doDontRow(_ line: StrategyModel.Line, isDo: Bool) -> some View {
-        HStack(alignment: .top, spacing: Space.sm) {
-            Image(systemName: isDo ? "plus" : "xmark")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(isDo ? Palette.accent : Palette.critical)
-                .frame(width: 16)
-                .padding(.top, 2)
+        HStack(alignment: .top, spacing: Space.md) {
+            Image(systemName: isDo ? "plus.circle" : "xmark.circle")
+                .font(.system(size: 17, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 20)
+                .padding(.top, 1)
+                .accessibilityLabel(isDo ? "Do" : "Don't")
             VStack(alignment: .leading, spacing: 2) {
                 Text(line.lead)
-                    .font(Typeface.sans(14, .medium))
+                    .font(AppFont.bodyText.weight(.medium))
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 if !line.rest.isEmpty {
-                    Text(line.rest).font(AppFont.caption)
+                    Text(line.rest).font(AppFont.supporting)
                         .foregroundStyle(Palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -257,24 +270,48 @@ struct StrategyView: View {
 
     // MARK: Shared bits
 
+    /// Monochrome provenance badge: outline capsule, glyph + tracked label.
     private func badge(_ text: String, tint: Color) -> some View {
-        Text(text)
-            .font(Typeface.sans(9, .bold)).tracking(0.5)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(Capsule().strokeBorder(tint.opacity(0.45), lineWidth: 1))
+        HStack(spacing: 4) {
+            if let glyph = badgeGlyph(text) {
+                Image(systemName: glyph).font(.system(size: 10, weight: .semibold))
+            }
+            Text(text).font(AppFont.eyebrow).tracking(1)
+                .lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 10).frame(height: 24)
+        .background(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+    }
+
+    private func badgeGlyph(_ label: String) -> String? {
+        switch label {
+        case "PROVEN IN NICHE": return "checkmark.seal"
+        case "YOUR DATA": return "chart.bar"
+        case "UNTESTED": return "questionmark.circle"
+        case "EXPERIMENT": return "testtube.2"
+        case "HEADLINE": return "star"
+        case "CORE": return "circle.fill"
+        default: return nil
+        }
+    }
+
+    /// Eyebrow-headed section (DESIGN.md: eyebrow 8pt above its card, aligned with row text).
+    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            DSEyebrow(text: title).padding(.horizontal, Space.rowPad)
+            content()
+        }
     }
 
     private func listCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: Space.sm) { content() }
+        VStack(alignment: .leading, spacing: Space.md) { content() }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Space.md)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
     }
 
     private var rowDivider: some View {
-        Divider().overlay(Palette.hairline)
+        Rectangle().fill(Palette.hairline).frame(height: 1)
     }
 
     private func proseCard(title: String, body text: String) -> some View {
@@ -282,14 +319,12 @@ struct StrategyView: View {
             if !title.isEmpty {
                 Text(title).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
             }
-            Text(text).font(AppFont.body)
+            Text(text).font(AppFont.bodyText)
                 .foregroundStyle(Palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Space.md)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+        .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
     }
 }
 
@@ -417,11 +452,11 @@ struct StrategyModel {
         let lower = text.lowercased()
         var confidence: Confidence?
         if lower.contains("niche-proven") || lower.contains("niche proven") {
-            confidence = Confidence(label: "PROVEN IN NICHE", tint: Palette.accent)
+            confidence = Confidence(label: "PROVEN IN NICHE", tint: Palette.textPrimary)
         } else if lower.contains("own-data") || lower.contains("own data") || lower.contains("own-proven") || lower.contains("your data") {
             confidence = Confidence(label: "YOUR DATA", tint: Palette.textSecondary)
         } else if lower.contains("untested") {
-            confidence = Confidence(label: "UNTESTED", tint: Palette.textTertiary)
+            confidence = Confidence(label: "UNTESTED", tint: Palette.textSecondary)
         }
         var cleaned = text
         for tag in ["(niche-proven)", "(niche proven)", "(own-data)", "(own data)", "(own-proven)", "(untested)",
