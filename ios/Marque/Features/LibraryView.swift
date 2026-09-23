@@ -1309,88 +1309,134 @@ struct MediaEditSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
-                    LocalThumbnail(path: asset.thumbnailPath ?? asset.localPath, isVideo: asset.isVideo)
+                VStack(alignment: .leading, spacing: Space.xl) {
+                    LocalThumbnail(path: asset.thumbnailPath ?? asset.localPath, isVideo: asset.isVideo,
+                                   cornerRadius: Radius.tile)
                         .frame(height: 280)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-                    SectionLabel(text: "What is this?", accent: Palette.accent)
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: Space.sm) {
-                            ForEach(MediaKind.allCases) { k in
-                                Button { kind = k } label: { Chip(text: k.label, selected: kind == k) }.buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "What is this?")
+                            .padding(.horizontal, Space.rowPad)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: Space.sm) {
+                                ForEach(MediaKind.allCases) { k in
+                                    DSChip(title: k.label, isSelected: kind == k, action: { kind = k })
+                                }
                             }
                         }
                     }
-                    SectionLabel(text: "Tag (optional)")
-                    TextField("e.g. gym, office, on stage", text: $note).marqueField()
+
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel(text: "Tag (optional)")
+                            .padding(.horizontal, Space.rowPad)
+                        TextField("e.g. gym, office, on stage", text: $note).marqueField()
+                            .tint(Palette.textPrimary)
+                    }
+
                     // AI Analysis section (I-5: reads the LIVE asset so results appear reactively)
                     if live.analysisStatus == .analyzing {
-                        HStack(spacing: Space.sm) {
-                            ProgressView().scaleEffect(0.8)
-                            Text("Analyzing…").font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                        }
+                        DSChecklistRow(title: "Analyzing…", state: .active)
                     } else if live.analysisStatus == .done {
-                        VStack(alignment: .leading, spacing: Space.sm) {
-                            SectionLabel(text: "AI description", accent: Palette.accent)
-                            Text(live.aiDescription).font(AppFont.body).foregroundStyle(Palette.textPrimary)
-                            if !live.onScreenText.isEmpty {
-                                SectionLabel(text: "On-screen text", accent: Palette.accent)
-                                Text(live.onScreenText).font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                            }
-                            SectionLabel(text: "B-roll fit", accent: Palette.accent)
-                            HStack(spacing: Space.sm) {
-                                GeometryReader { geo in
-                                    ZStack(alignment: .leading) {
-                                        Capsule().fill(Palette.hairline).frame(height: 6)
-                                        Capsule()
-                                            .fill(live.brollSuitability > 60 ? Palette.accent : Palette.gold)
-                                            .frame(width: geo.size.width * CGFloat(live.brollSuitability) / 100, height: 6)
+                        VStack(alignment: .leading, spacing: Space.lg) {
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                SectionLabel(text: "AI description")
+                                    .padding(.horizontal, Space.rowPad)
+                                VStack(alignment: .leading, spacing: Space.md) {
+                                    Text(live.aiDescription).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if !live.onScreenText.isEmpty {
+                                        VStack(alignment: .leading, spacing: Space.xs) {
+                                            SectionLabel(text: "On-screen text")
+                                            Text(live.onScreenText).font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
                                     }
-                                }.frame(height: 6)
-                                Text("\(live.brollSuitability)%").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                             }
-                            if !live.brollSuitabilityReason.isEmpty {
-                                Text(live.brollSuitabilityReason).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+
+                            // B-roll fit as a Stoic stat tile: the number, a monochrome
+                            // meter, and the reason underneath.
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                SectionLabel(text: "B-roll fit")
+                                    .padding(.horizontal, Space.rowPad)
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    Text("\(live.brollSuitability)%").font(AppFont.stat).tracking(-0.3)
+                                        .foregroundStyle(Palette.textPrimary)
+                                    GeometryReader { geo in
+                                        ZStack(alignment: .leading) {
+                                            Capsule().fill(Palette.hairline).frame(height: 6)
+                                            Capsule()
+                                                .fill(Palette.ink)
+                                                .frame(width: geo.size.width * CGFloat(live.brollSuitability) / 100, height: 6)
+                                        }
+                                    }.frame(height: 6)
+                                    if !live.brollSuitabilityReason.isEmpty {
+                                        Text(live.brollSuitabilityReason).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Space.rowPad)
+                                .background(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
+                                    .fill(Palette.surfaceSunken))
                             }
+
                             if !live.aiTags.isEmpty {
-                                SectionLabel(text: "Auto-tags", accent: Palette.accent)
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: Space.sm) {
-                                        ForEach(live.aiTags, id: \.self) { tag in Chip(text: tag) }
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    SectionLabel(text: "Auto-tags")
+                                        .padding(.horizontal, Space.rowPad)
+                                    ScrollView(.horizontal, showsIndicators: false) {
+                                        HStack(spacing: Space.sm) {
+                                            ForEach(live.aiTags, id: \.self) { tag in Chip(text: tag) }
+                                        }
                                     }
                                 }
                             }
                         }
                     } else {
                         // .none / .failed — offer a manual analyze (retry on failed).
-                        Button { store.ensureMediaAnalyzed(live) } label: {
-                            Label(live.analysisStatus == .failed ? "Analysis failed, retry" : "Analyze with AI",
-                                  systemImage: "sparkles")
-                                .font(AppFont.callout).foregroundStyle(Palette.textPrimary)
-                                .frame(maxWidth: .infinity).frame(height: 44)
-                                .background(Palette.surfaceRaised)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                        VStack(spacing: Space.sm) {
+                            Button { store.ensureMediaAnalyzed(live) } label: {
+                                Label(live.analysisStatus == .failed ? "Analysis failed, retry" : "Analyze with AI",
+                                      systemImage: "sparkles")
+                            }
+                            .buttonStyle(DSCapsuleStyle(kind: .outline, height: 48))
+                            .accessibilityIdentifier("media.analyzeNow")
                         }
-                        .buttonStyle(PressableStyle()).accessibilityIdentifier("media.analyzeNow")
+                        .frame(maxWidth: .infinity)
                     }
+
+                    // Destructive as a text link (black glyph + wording, no red).
                     Button(role: .destructive) { store.removeMedia(asset); dismiss() } label: {
-                        Text("Remove from library").font(AppFont.callout).foregroundStyle(Palette.critical)
+                        Label("Remove from library", systemImage: "trash")
+                            .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                            .frame(maxWidth: .infinity).frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
-                    .padding(.top, Space.sm)
+                    .buttonStyle(PressableStyle(dim: 0.5))
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Media").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .onAppear { store.ensureMediaAnalyzed(asset) }   // I-5: lazy — analyze on first open
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Media"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save") {
                         var a = asset; a.kind = kind; a.note = note.trimmingCharacters(in: .whitespaces)
                         store.updateMedia(a); dismiss()
                     }
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                 }
             }
         }
