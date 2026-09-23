@@ -23,7 +23,7 @@ struct CTALibrarySheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.md) {
                     Text("Your endings. The first one is the default on every new take, and the rest are one tap away.")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     ForEach($draft) { $cta in
@@ -36,10 +36,12 @@ struct CTALibrarySheet: View {
                     }
 
                     if draft.isEmpty {
+                        // Stoic outline (empty) card with a centered secondary line.
                         Text("Nothing saved yet, so your videos end clean.")
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                            .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, Space.lg)
+                            .dsCard(.outline, radius: Radius.group)
                     }
 
                     if draft.count < 8 {
@@ -47,15 +49,18 @@ struct CTALibrarySheet: View {
                             .accessibilityIdentifier("cta.add")
                     }
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .padding(.horizontal, Space.screenH).padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Your CTAs")
+            .navigationTitle("your ctas.")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }.tint(Palette.textPrimary)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { commit(); dismiss() }.fontWeight(.semibold)
+                        .tint(Palette.textPrimary)
                         .accessibilityIdentifier("cta.done")
                 }
             }
@@ -116,25 +121,34 @@ private struct CTAEditRow: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: Space.sm) {
                 TextField("Name", text: $cta.name)
-                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    .font(AppFont.title3).foregroundStyle(Palette.textPrimary)
                     .focused(focusedNew, equals: cta.id)
                     .accessibilityIdentifier("cta.name")
                 Spacer(minLength: 0)
                 if isDefault {
-                    Chip(text: "Default", tint: Palette.accent)
+                    // Selected = inversion: an ink capsule tag (was an accent-tinted chip).
+                    Text("Default")
+                        .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.onInk)
+                        .padding(.horizontal, 10).frame(height: 26)
+                        .background(Capsule().fill(Palette.ink))
                 } else {
                     Button { onMakeDefault() } label: {
                         Text("Make default")
-                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            .font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                            .padding(.horizontal, 10).frame(height: 26)
+                            .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                            .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableStyle(dim: 0.7))
                     .accessibilityIdentifier("cta.makeDefault")
                 }
                 Button { confirmDelete = true } label: {
-                    Image(systemName: "trash").font(.system(size: 14))
-                        .foregroundStyle(Palette.textTertiary)
+                    Image(systemName: "trash").font(.system(size: 15, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
+                        .frame(width: 32, height: 32).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(dim: 0.6))
+                .accessibilityLabel("Delete")
                 .accessibilityIdentifier("cta.delete")
                 .marqueConfirm($confirmDelete, title: "Delete this ending?",
                                confirm: "Delete", destructive: true) { onDelete() }
@@ -142,12 +156,12 @@ private struct CTAEditRow: View {
 
             if params.contains("text") {
                 TextField("Your call to action", text: $cta.text, axis: .vertical)
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary).lineLimit(1...2)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary).lineLimit(1...2)
                     .accessibilityIdentifier("cta.text")
             }
             if params.contains("handle") {
                 TextField("@handle (optional)", text: $cta.handle)
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .accessibilityIdentifier("cta.handle")
             }
@@ -155,8 +169,7 @@ private struct CTAEditRow: View {
 
             if !styles.isEmpty {
                 VStack(alignment: .leading, spacing: Space.xs) {
-                    Text("TEMPLATE").font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.textTertiary)
+                    DSEyebrow(text: "TEMPLATE")
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: Space.sm) {
                             ForEach(styles) { s in
@@ -167,7 +180,7 @@ private struct CTAEditRow: View {
                 }
             }
         }
-        .marqueCard(padding: Space.md)
+        .dsCard(.surface, radius: Radius.group, padding: Space.md)
         .onChange(of: logoItem) { _, item in
             if let item { Task { await uploadLogo(item) } }
         }
@@ -178,13 +191,15 @@ private struct CTAEditRow: View {
         return Button {
             withAnimation(.easeOut(duration: 0.12)) { cta.styleId = s.id }
         } label: {
+            // DESIGN.md chip: surface + hairline; selected = ink / onInk.
             Text(s.label)
-                .font(Typeface.sans(11, active ? .semibold : .regular))
-                .foregroundStyle(active ? Palette.onInk : Palette.textSecondary)
+                .font(AppFont.caption.weight(active ? .semibold : .regular))
+                .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
                 .lineLimit(1)
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(Capsule().fill(active ? Palette.ink : Palette.surfaceRaised))
-                .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                .padding(.horizontal, 14).frame(height: 34)
+                .background(Capsule().fill(active ? Palette.ink : Palette.surface))
+                .overlay(Capsule().strokeBorder(active ? Color.clear : Palette.hairline, lineWidth: 1))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("cta.style.\(s.id)")
@@ -201,26 +216,33 @@ private struct CTAEditRow: View {
                         AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: {
                             ProgressView().controlSize(.mini)
                         }
-                        .frame(width: 34, height: 34).clipShape(Circle())
+                        .frame(width: 40, height: 40).clipShape(Circle())
                     } else {
-                        Image(systemName: "plus").font(.system(size: 13, weight: .medium))
-                            .foregroundStyle(Palette.textTertiary)
+                        Image(systemName: "plus").font(.system(size: 14, weight: .regular))
+                            .foregroundStyle(Palette.textPrimary)
                     }
                 }
-                .frame(width: 34, height: 34)
+                .frame(width: 40, height: 40)
                 .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
             }
             .accessibilityIdentifier("cta.logo")
+            // Failure reads by glyph + wording, not red.
+            if logoFailed {
+                Image(systemName: "exclamationmark.circle").font(.system(size: 13, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+            }
             Text(logoFailed ? "Couldn't add that logo. Try another image."
                             : (cta.logoURL.isEmpty ? "Add a logo (optional)" : "Logo added"))
                 .font(AppFont.caption)
-                .foregroundStyle(logoFailed ? Palette.critical : Palette.textTertiary)
+                .foregroundStyle(logoFailed ? Palette.textPrimary : Palette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
             if !cta.logoURL.isEmpty {
                 Button { cta.logoURL = "" } label: {
-                    Text("Remove").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                    Text("Remove").font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                        .frame(minHeight: 32).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressableStyle(dim: 0.6))
             }
         }
     }
