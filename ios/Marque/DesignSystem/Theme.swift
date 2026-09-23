@@ -32,7 +32,9 @@ extension Color {
 
 enum Palette {
     // Surfaces
-    static let canvas = Color(light: 0xF2F2F4, dark: 0x000000)          // page background
+    // Light canvas is the brand off-white the mascot videos were rendered on (MP4 has no
+    // alpha, so any other value shows the clip's frame as a square). Stoic samples #F2F2F4.
+    static let canvas = Color(light: 0xF1F1EF, dark: 0x000000)          // page background
     static let surface = Color(light: 0xFFFFFF, dark: 0x111111)         // cards, grouped rows
     static let surfaceRaised = Color(light: 0xFFFFFF, dark: 0x111111)   // (alias of surface)
     static let surfaceSunken = Color(light: 0xEDEDEF, dark: 0x1C1C1C)   // search, tiles, ghost pills

@@ -22,7 +22,7 @@ Two palettes, mirror images of each other. Every token has a light and dark valu
 
 | Token | Light | Dark | Used for |
 |---|---|---|---|
-| `canvas` | `#F2F2F4` | `#000000` | page background (sampled; a hair cool, never pure white: cards need contrast against it) |
+| `canvas` | `#F1F1EF` | `#000000` | page background. Stoic samples `#F2F2F4`; we use the brand off-white because the mascot videos (MP4, no alpha) are rendered on it. Never pure white: cards need contrast against it |
 | `surface` | `#FFFFFF` | `#111111` | cards, grouped list rows, sheets' content cards |
 | `surfaceSunken` | `#EDEDEF` | `#1C1C1C` | search fields, unselected plan tiles, stat tiles, ghost pills, disabled fills |
 | `ink` | `#000000` | `#141414` | flat inverted surfaces: promo strips, selected plan tiles, tab center circle (sampled pure black) |

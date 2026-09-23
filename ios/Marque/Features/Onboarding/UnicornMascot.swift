@@ -39,7 +39,10 @@ struct UnicornMascot: View {
 
     var body: some View {
         Group {
-            if let r = videoResource {
+            // Videos carry an opaque light-canvas backdrop (MP4 has no alpha): on the black
+            // dark-mode canvas that would read as a bright square, so dark mode uses the
+            // transparent still for the same pose instead.
+            if let r = videoResource, scheme != .dark {
                 // Real performed animation — no procedural transform, and NO drop shadow
                 // (the clip bakes in its own soft contact shadow; an outer shadow would
                 // outline the square video frame and read as a card).
