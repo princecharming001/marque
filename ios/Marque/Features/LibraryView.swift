@@ -1578,33 +1578,46 @@ struct VersionPreviewSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: Space.lg) {
-                ClipPreviewPlayer(path: nil, remoteURL: version.url)
+                ClipPreviewPlayer(path: nil, remoteURL: version.url, cornerRadius: Radius.tile)
                     .aspectRatio(9.0 / 16.0, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: 460)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-                VStack(spacing: 4) {
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
+                VStack(spacing: Space.xs) {
                     Text(version.label.isEmpty ? "Original edit" : "\u{201C}\(version.label)\u{201D}")
-                        .font(Typeface.sans(15, .semibold)).foregroundStyle(Palette.textPrimary)
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                         .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(version.date.formatted(.relative(presentation: .named)))
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 }
                 Spacer(minLength: 0)
             }
-            .padding(Space.lg)
+            .padding(.horizontal, Space.screenH).padding(.vertical, Space.md)
             .frame(maxWidth: .infinity)
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Preview").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                }
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle("Preview"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
             }
             .safeAreaInset(edge: .bottom) {
                 if canRestore {
                     PrimaryButton(title: "Restore this version", systemImage: "arrow.uturn.backward") {
                         onRestore(index)
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
+                    .padding(.horizontal, Space.screenH).padding(.top, Space.md).padding(.bottom, Space.sm)
+                    .frame(maxWidth: .infinity)
+                    .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
+                    .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1) }
                     .accessibilityIdentifier("versions.previewRestore")
                 }
             }
