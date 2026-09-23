@@ -28,6 +28,7 @@ struct UnicornMascot: View {
 
     @State private var appeared = false
     @State private var breathing = false
+    @Environment(\.colorScheme) private var scheme
 
     private var videoResource: String? {
         guard let r = pose.videoResource,
@@ -54,9 +55,20 @@ struct UnicornMascot: View {
                     .shadow(color: Palette.shadowWarm.opacity(0.14), radius: 24, y: 12)
             }
         }
+        // The clay unicorn is matte black: on the true-black dark canvas it would
+        // vanish, so dark mode seats it on a soft grayscale halo (no hue, no motion).
+        .background {
+            if scheme == .dark {
+                Circle()
+                    .fill(RadialGradient(colors: [Palette.onNight.opacity(0.16), Palette.onNight.opacity(0)],
+                                         center: .center, startRadius: 0, endRadius: size * 0.55))
+                    .frame(width: size * 1.1, height: size * 1.1)
+                    .accessibilityHidden(true)
+            }
+        }
         .opacity(appeared ? 1 : 0)
         .onAppear {
-            withAnimation(Motion.spring) { appeared = true }
+            withAnimation(Motion.standard) { appeared = true }
             withAnimation(Motion.breath.delay(0.35)) { breathing = true }
         }
     }
