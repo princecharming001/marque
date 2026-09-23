@@ -1069,17 +1069,52 @@ extension ProEditorView {
 
     var musicSheet: some View {
         NavigationStack {
-            List {
-                ForEach(Array(MusicCatalog.tracks.enumerated()), id: \.offset) { i, track in
-                    Button { pickMusic(track) } label: {
-                        HStack { Image(systemName: "music.note"); Text(track.name); Spacer() }
-                    }.accessibilityIdentifier("editorPro.track.\(i)")
+            // Stoic sheet: centered lowercase title, tracks as one grouped card with a
+            // trailing circular check on the current bed.
+            ScrollView {
+                VStack(alignment: .leading, spacing: Space.stack) {
+                    DSSheetHeader(title: "add sound.")
+                        .padding(.bottom, Space.sm)
+                    DSGroup {
+                        ForEach(Array(MusicCatalog.tracks.enumerated()), id: \.offset) { i, track in
+                            Button { pickMusic(track) } label: {
+                                HStack(spacing: Space.md) {
+                                    Image(systemName: "music.note").font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(Palette.textPrimary).frame(width: 24)
+                                    Text(track.name).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                        .lineLimit(1).minimumScaleFactor(0.85)
+                                    Spacer(minLength: Space.sm)
+                                    DSCheckmark(isOn: session?.draft.music?.url == track.url)
+                                }
+                                .padding(.horizontal, Space.rowPad).frame(minHeight: 52)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(DSRowPressStyle())
+                            .accessibilityIdentifier("editorPro.track.\(i)")
+                            if i < MusicCatalog.tracks.count - 1 { DSRowDivider(inset: Space.rowPad + 24 + Space.md) }
+                        }
+                    }
+                    if session?.draft.music != nil {
+                        // Destructive stays monochrome: black text + glyph (DESIGN.md §1).
+                        DSGroup {
+                            Button(role: .destructive) { removeMusic() } label: {
+                                Label("Remove music", systemImage: "speaker.slash")
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                    .padding(.horizontal, Space.rowPad)
+                                    .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(DSRowPressStyle())
+                        }
+                    }
                 }
-                if session?.draft.music != nil {
-                    Button(role: .destructive) { removeMusic() } label: { Label("Remove music", systemImage: "speaker.slash") }
-                }
-            }.navigationTitle("Add sound").navigationBarTitleDisplayMode(.inline)
+                .padding(.horizontal, Space.screenH).padding(.bottom, Space.xl)
+            }
+            .background(Palette.canvas.ignoresSafeArea())
+            .navigationTitle("Add sound").navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }.presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 
     /// A7 feature #1: the style-bundle picker. Tapping a theme calls the SEPARATE
