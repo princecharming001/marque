@@ -14,7 +14,9 @@ struct ScriptVersionHistorySheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.md) {
+                // Journey-style timeline: the current version first (marked with a check),
+                // then every earlier snapshot as a tappable timeline row.
+                VStack(alignment: .leading, spacing: Space.stack) {
                     if let script {
                         currentRow(script)
                         ForEach(script.versionHistory) { version in
@@ -22,35 +24,55 @@ struct ScriptVersionHistorySheet: View {
                         }
                         if script.versionHistory.isEmpty {
                             Text("No earlier versions yet — refine or edit this script and they'll show up here.")
-                                .font(AppFont.body).foregroundStyle(Palette.textTertiary)
-                                .padding(.top, Space.sm)
+                                .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, Space.xl)
                         }
                     }
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.sm).padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle("Version history")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("version history.").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                }
+            }
         }
+        .tint(Palette.textPrimary)
     }
 
     private func currentRow(_ script: Script) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            HStack(spacing: Space.sm) {
-                Text("CURRENT").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.accent)
-                Spacer()
+        HStack(alignment: .top, spacing: Space.md) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 28)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                DSEyebrow(text: "CURRENT", color: Palette.textPrimary)
+                Text(script.title.isEmpty ? script.hook.text : script.title)
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(script.body).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .lineLimit(3)
             }
-            Text(script.title.isEmpty ? script.hook.text : script.title)
-                .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-            Text(script.body).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                .lineLimit(3)
         }
+        .padding(Space.rowPad)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .marqueCard()
-        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-            .strokeBorder(Palette.accent.opacity(0.4), lineWidth: 1.5))
+        .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+            .strokeBorder(Palette.textPrimary, lineWidth: 1.5))
+        .accessibilityElement(children: .combine)
     }
 
     private func versionRow(_ version: ScriptVersion, scriptId: UUID) -> some View {
@@ -58,24 +80,34 @@ struct ScriptVersionHistorySheet: View {
             store.revertScript(scriptId, to: version)
             dismiss()
         } label: {
-            VStack(alignment: .leading, spacing: Space.xs) {
-                HStack(spacing: Space.sm) {
-                    Text(version.label).font(AppFont.micro).tracking(Track.label)
-                        .foregroundStyle(Palette.textTertiary)
-                    Spacer()
-                    Text(version.savedAt, style: .relative)
-                        .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(Palette.accent)
+            HStack(alignment: .top, spacing: Space.md) {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 28)
+                    .padding(.top, 1)
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                        DSEyebrow(text: version.label)
+                            .lineLimit(1)
+                        Spacer(minLength: Space.sm)
+                        Text(version.savedAt, style: .relative)
+                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Text(version.title.isEmpty ? version.hook.text : version.title)
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(version.body).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(2)
                 }
-                Text(version.title.isEmpty ? version.hook.text : version.title)
-                    .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-                Text(version.body).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-                    .lineLimit(2)
             }
+            .padding(Space.rowPad)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .marqueCard()
+            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous).fill(Palette.surface))
+            .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
         .accessibilityIdentifier("script.revertVersion")
