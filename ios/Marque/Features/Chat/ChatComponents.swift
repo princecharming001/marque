@@ -535,10 +535,12 @@ struct MorphSendButton: View {
 
 // MARK: - Conversations drawer (maxapp pattern: floats from the LEFT, hugs its content
 // height — not a full-screen sheet — with the Coach persona + response-length picker
-// stacked at the bottom, exactly like maxapp's ChatConversationsDrawer.)
+// stacked at the bottom). Stoic has no drawer: the panel borrows its sheet content — a
+// surface card, eyebrow sections, rows, monochrome single-select.
 
 struct ConversationsDrawer: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.colorScheme) private var scheme
     @Binding var isPresented: Bool
     let chat: ChatStore
 
@@ -562,61 +564,50 @@ struct ConversationsDrawer: View {
 
             panel
                 .padding(.top, 54)
-                .padding(.leading, 10)
+                .padding(.leading, Space.sm)
         }
         .opacity(isPresented ? 1 : 0)
         .offset(x: isPresented ? 0 : -(Self.panelWidth + 28))
         .allowsHitTesting(isPresented)
-        .animation(Motion.spring, value: isPresented)
+        .animation(Motion.standard, value: isPresented)
         .ignoresSafeArea()
     }
 
     private var panel: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Yunicorn")
-                    .font(Typeface.sans(20, .semibold)).tracking(-0.3)
+                Text("yunicorn.")
+                    .font(AppFont.title2).tracking(-0.2)
                     .foregroundStyle(Palette.textPrimary)
                 Spacer()
-                Button { close() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Palette.textSecondary)
-                        .frame(width: 28, height: 28)
-                        .background(Circle().fill(Palette.surfaceSunken))
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("chat.drawerClose")
+                DSIconButton(systemName: "xmark", size: 17) { close() }
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("chat.drawerClose")
             }
-            .padding(.bottom, Space.md)
+            .padding(.leading, Space.xs)
+            .padding(.bottom, Space.sm)
 
             Button {
                 chat.newConversation(in: store)
                 close()
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus").font(.system(size: 13, weight: .semibold))
-                    Text("New chat").font(AppFont.callout).fontWeight(.semibold)
-                }
-                .foregroundStyle(Palette.textPrimary)
-                .frame(maxWidth: .infinity).frame(height: 38)
-                .background(Palette.surfaceSunken)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                Label("New chat", systemImage: "plus")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.ds(.outline, height: 44, fullWidth: true))
             .accessibilityIdentifier("chat.newChatRow")
-            .padding(.bottom, Space.md)
+            .padding(.bottom, Space.lg)
 
-            Text("RECENT")
-                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-                .padding(.bottom, Space.xs)
+            DSEyebrow(text: "Recent")
+                .padding(.leading, Space.xs)
+                .padding(.bottom, Space.sm)
 
             // ScrollView is greedy — it expands to any maxHeight even with one row,
             // leaving a dead gap in the panel. Collapse entirely when empty and cap
             // the height to the rows actually present otherwise.
             if sorted.isEmpty {
                 Text("No chats yet")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                    .padding(.horizontal, Space.xs)
                     .padding(.vertical, Space.sm)
                     .padding(.bottom, Space.md)
             } else {
@@ -645,19 +636,18 @@ struct ConversationsDrawer: View {
                 .padding(.bottom, Space.md)
             }
 
-            MarqueHairline().padding(.bottom, Space.md)
+            DSRowDivider(inset: 0).padding(.bottom, Space.lg)
 
             CoachPersonaPicker()
             LengthPicker()
         }
         .padding(Space.md)
         .frame(width: Self.panelWidth)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 30, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
-        .overlay(RoundedRectangle(cornerRadius: 30, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.18), radius: 26, x: 4, y: 10)
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        // Floats over content, so it needs a lift in light mode; dark mode separates by the hairline.
+        .shadow(color: Palette.shadowWarm.opacity(scheme == .dark ? 0 : 0.10), radius: 24, x: 0, y: 8)
     }
 
     private func close() { isPresented = false }
@@ -667,25 +657,25 @@ struct ConversationsDrawer: View {
             if convo.isVoiceNotes {
                 Image(systemName: "waveform")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Palette.accent)
-                    .frame(width: 26, height: 26)
-                    .background(Palette.accentMuted)
-                    .clipShape(Circle())
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(Palette.surfaceSunken))
             }
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(convo.title)
-                    .font(AppFont.callout).fontWeight(.medium)
+                    .font(AppFont.supporting.weight(convo.id == chat.currentConversationId ? .semibold : .regular))
                     .foregroundStyle(Palette.textPrimary)
                     .lineLimit(1)
                 Text(convo.updatedAt.formatted(.relative(presentation: .named)))
-                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
         }
-        .padding(.vertical, 9).padding(.horizontal, 10)
+        .padding(.vertical, Space.sm).padding(.horizontal, Space.sm)
+        .frame(minHeight: 48)
         .background(convo.id == chat.currentConversationId ? Palette.surfaceSunken : .clear)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.cell, style: .continuous))
         .contentShape(Rectangle())
     }
 
@@ -697,7 +687,8 @@ struct ConversationsDrawer: View {
 }
 
 // MARK: - Coach persona picker (3 original archetypes — same energy as the reference,
-// generated fresh rather than using real people's names/likeness)
+// generated fresh rather than using real people's names/likeness). Monochrome: the
+// selected persona is an inverted (ink) circle, the others are outline circles.
 
 private struct CoachPersonaPicker: View {
     @Environment(AppStore.self) private var store
@@ -707,49 +698,48 @@ private struct CoachPersonaPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            Text("COACH")
-                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-            HStack(spacing: Space.sm) {
+            DSEyebrow(text: "Coach").padding(.leading, Space.xs)
+            HStack(alignment: .top, spacing: Space.sm) {
                 ForEach(ChatPersona.allCases) { persona in
                     personaColumn(persona)
                 }
             }
             Text(current.tagline)
-                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.top, 2)
         }
-        .padding(.bottom, Space.md)
+        .padding(.bottom, Space.lg)
     }
 
     private func personaColumn(_ persona: ChatPersona) -> some View {
         let active = persona == current
-        let glow = Color(hex: persona.glow)
         return Button {
             withAnimation(Motion.quick) { store.chatPersona = persona }
             store.save()
         } label: {
             VStack(spacing: 6) {
-                ZStack {
-                    if active {
-                        Circle().fill(glow.opacity(0.22)).frame(width: 54, height: 54).blur(radius: 6)
-                    }
-                    Circle()
-                        .fill(Palette.surfaceRaised)
-                        .overlay(Circle().strokeBorder(active ? glow : Palette.hairline, lineWidth: active ? 2 : 1))
-                    Image(systemName: persona.icon)
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(active ? glow : Palette.textTertiary)
-                }
-                .frame(width: 46, height: 46)
+                Image(systemName: persona.icon)
+                    .font(.system(size: 17, weight: .regular))
+                    .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .background(Circle().fill(active ? Palette.ink : Palette.surface))
+                    .overlay(Circle().strokeBorder(active ? .clear : Palette.hairline, lineWidth: 1))
                 Text(persona.label)
-                    .font(.system(size: 10.5, weight: active ? .semibold : .medium))
-                    .foregroundStyle(active ? Palette.textPrimary : Palette.textTertiary)
-                    .lineLimit(1)
+                    .font(AppFont.caption.weight(active ? .semibold : .regular))
+                    .foregroundStyle(active ? Palette.textPrimary : Palette.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.8))
+        .animation(Motion.quick, value: active)
+        .accessibilityAddTraits(active ? .isSelected : [])
         .accessibilityIdentifier("chat.persona.\(persona.rawValue)")
     }
 }
@@ -760,9 +750,8 @@ private struct LengthPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.sm) {
-            Text("LENGTH")
-                .font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textTertiary)
-            HStack(spacing: Space.sm) {
+            DSEyebrow(text: "Length").padding(.leading, Space.xs)
+            HStack(spacing: 6) {
                 ForEach(ChatResponseLength.allCases) { opt in
                     let active = opt == current
                     Button {
@@ -770,20 +759,23 @@ private struct LengthPicker: View {
                         store.save()
                     } label: {
                         Text(opt.label)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(AppFont.supporting.weight(active ? .semibold : .regular))
                             .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
-                            .frame(maxWidth: .infinity).frame(height: 34)
-                            .background(active ? Palette.ink : Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(active ? Color.clear : Palette.hairline, lineWidth: 1))
+                            .lineLimit(1).minimumScaleFactor(0.85)
+                            .frame(maxWidth: .infinity).frame(height: 36)
+                            .background(Capsule().fill(active ? Palette.ink : Palette.surface))
+                            .overlay(Capsule().strokeBorder(active ? Color.clear : Palette.hairline, lineWidth: 1))
+                            .contentShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableStyle(dim: 0.8))
+                    .animation(Motion.quick, value: active)
+                    .accessibilityAddTraits(active ? .isSelected : [])
                     .accessibilityIdentifier("chat.length.\(opt.rawValue)")
                 }
             }
             Text(current.hint)
-                .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
     }
