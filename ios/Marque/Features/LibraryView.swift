@@ -23,11 +23,13 @@ struct LibraryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
                 // Stoic pushed-page header: eyebrow over the display title, left aligned.
-                // (Both strings are matched by Maestro flows, so they stay verbatim.)
+                // The eyebrow is matched by Maestro flows, so it stays verbatim; the
+                // title carries the "Library" literal as its accessibility label.
                 VStack(alignment: .leading, spacing: Space.xs) {
                     DSEyebrow(text: "YOUR CREATIVE VAULT")
-                    Text("Library").font(AppFont.pageTitle).tracking(-0.5)
+                    Text("your library.").font(AppFont.pageTitle).tracking(-0.5)
                         .foregroundStyle(Palette.textPrimary)
+                        .accessibilityLabel("Library")
                         .accessibilityAddTraits(.isHeader)
                 }
                 UnderlineTabBar(tabs: tabs, index: $tabIndex)
@@ -1130,14 +1132,14 @@ struct VersionTimelineSheet: View {
                         .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                 }
                 if let index {
-                    HStack(spacing: Space.sm) {
+                    HStack(spacing: Space.lg) {
                     Button { previewing = history[index] } label: {
                         HStack(spacing: 6) {
                             Image(systemName: "play.fill").font(.system(size: 10, weight: .semibold))
                             Text("Preview")
                         }
                     }
-                    .buttonStyle(DSCapsuleStyle(kind: .outline, height: 36))
+                    .buttonStyle(.dsLink)
                     .accessibilityIdentifier("versions.preview.\(index)")
                     if clip?.status == .ready {
                     Button {
@@ -1156,7 +1158,8 @@ struct VersionTimelineSheet: View {
                     } label: {
                         Text(restoring == history[index].id ? "Restoring…" : "Restore")
                     }
-                    .buttonStyle(DSCapsuleStyle(kind: .primary, height: 36))
+                    .buttonStyle(.dsLink)
+                    .opacity(restoring != nil && restoring != history[index].id ? 0.4 : 1)
                     .disabled(restoring != nil)
                     .accessibilityIdentifier("versions.restore.\(index)")
                     }

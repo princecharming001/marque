@@ -198,7 +198,7 @@ struct LocalThumbnail: View {
     let path: String?
     var isVideo: Bool = false
     var remoteImageURL: String? = nil
-    var cornerRadius: CGFloat = Radius.tile
+    var cornerRadius: CGFloat = Radius.sm
     @State private var image: UIImage?
     var body: some View {
         ZStack {
@@ -286,7 +286,7 @@ struct ClipPreviewPlayer: View {
     // clipShape doesn't clip an AVPlayerLayer, so an in-progress clip (no render URL yet,
     // showing the placeholder or the raw take at a different radius) read with square
     // corners. Now the component owns its rounding at the caller's exact radius.
-    var cornerRadius: CGFloat = Radius.tile
+    var cornerRadius: CGFloat = Radius.lg
     /// Build 69: presenter-driven pause (fullScreenCover leaves this view alive underneath).
     var suspended: Bool = false
     var body: some View {
