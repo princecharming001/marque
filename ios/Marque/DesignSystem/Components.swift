@@ -1,11 +1,15 @@
 import SwiftUI
 
-// MARK: - Shared components (maxapp recipes: ink-fill buttons, hairline surfaces, pill chips)
+// MARK: - Shared components (DESIGN.md §5: capsule buttons, tone-separated cards, no hue)
 
 struct PressableStyle: ButtonStyle {
     var dim: Double = 0.9
+    var scale: CGFloat = 0.97
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.opacity(configuration.isPressed ? dim : 1)
+        configuration.label
+            .opacity(configuration.isPressed ? dim : 1)
+            .scaleEffect(configuration.isPressed ? scale : 1)
+            .animation(Motion.quick, value: configuration.isPressed)
     }
 }
 
@@ -108,21 +112,22 @@ struct GlassButton: View {
                 if let s = systemImage { Image(systemName: s).font(.system(size: 15, weight: .semibold)) }
                 Text(title).font(AppFont.headline)
             }
-            .foregroundStyle(Palette.textPrimary)
-            .frame(maxWidth: .infinity).frame(height: 54)
-            .background(LiquidGlassFill(radius: Radius.md, corners: false))
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.5), lineWidth: 1))
+            .foregroundStyle(Palette.onNight)
+            .frame(maxWidth: .infinity).frame(height: 56)
+            .background(Capsule().fill(Color.white.opacity(0.14)))
+            .overlay(Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
         }
         .buttonStyle(PressableStyle(dim: 0.7))
     }
 }
 
+/// Primary capsule (DESIGN.md §5). Full width by default because every existing call site
+/// sits in a full-width slot; pass `fullWidth: false` for the centered content-sized capsule.
 struct PrimaryButton: View {
     let title: String
     var systemImage: String? = nil
-    var shine: Bool = false
+    var shine: Bool = false            // kept for call-site compatibility; no sweep in the mono system
+    var fullWidth: Bool = true
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -130,19 +135,16 @@ struct PrimaryButton: View {
                 if let s = systemImage { Image(systemName: s).font(.system(size: 16, weight: .semibold)) }
                 Text(title).font(AppFont.headline)
             }
-            .foregroundStyle(Palette.onInk)
-            .frame(maxWidth: .infinity).frame(height: 54)
-            .background(ZStack { Palette.ink; if shine { ShineSweep() } })
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .shadow(color: .black.opacity(0.12), radius: 10, x: 0, y: 4)
         }
-        .buttonStyle(PressableStyle())
+        .buttonStyle(DSCapsuleStyle(kind: .primary, fullWidth: fullWidth))
     }
 }
 
+/// Outline capsule: surface fill + hairline, primary text.
 struct GhostButton: View {
     let title: String
     var systemImage: String? = nil
+    var fullWidth: Bool = true
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -150,59 +152,41 @@ struct GhostButton: View {
                 if let s = systemImage { Image(systemName: s).font(.system(size: 15, weight: .medium)) }
                 Text(title).font(AppFont.headline)
             }
-            .foregroundStyle(Palette.textPrimary)
-            .frame(maxWidth: .infinity).frame(height: 54)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(Palette.hairline, lineWidth: 1))
         }
-        .buttonStyle(PressableStyle(dim: 0.7))
+        .buttonStyle(DSCapsuleStyle(kind: .outline, fullWidth: fullWidth))
     }
 }
 
 struct SectionTitle: View {
     let text: String
-    var body: some View {
-        Text(text.uppercased())
-            .font(AppFont.micro).tracking(Track.label)
-            .foregroundStyle(Palette.textTertiary)
-    }
+    var body: some View { DSEyebrow(text: text) }
 }
 
 /// Big editorial screen title. Case is left to the caller so it matches the
 /// hand-rolled titles on Film/Library ("Film", "Library" — capitalized).
 struct ScreenTitle: View {
     let text: String
-    var size: CGFloat = 30
+    var size: CGFloat = 34
     var body: some View {
         Text(text)
-            .font(Typeface.sans(size, size >= 28 ? .bold : .semibold))
-            .tracking(Track.title)
+            .font(Typeface.sans(size, .bold))
+            .tracking(size >= 28 ? -0.5 : Track.tight)
             .foregroundStyle(Palette.textPrimary)
     }
 }
 
-/// UPPERCASE tracked micro-label with an optional 3×14 accent bar (maxapp section eyebrow).
+/// Section eyebrow. `accent` is accepted for call-site compatibility and ignored: the mono
+/// system has no colored bars.
 struct SectionLabel: View {
     let text: String
     var accent: Color? = nil
-    var body: some View {
-        HStack(spacing: 8) {
-            if let accent {
-                RoundedRectangle(cornerRadius: 1.5).fill(accent).frame(width: 3, height: 14)
-            }
-            Text(text.uppercased())
-                .font(AppFont.micro).tracking(Track.label)
-                .foregroundStyle(Palette.textTertiary)
-        }
-    }
+    var body: some View { DSEyebrow(text: text) }
 }
 
 /// Warm hairline for zone breaks between sections (heavier than the shared card hairline).
 struct MarqueHairline: View {
     var body: some View {
-        Rectangle().fill(Palette.textPrimary.opacity(0.12)).frame(height: 0.5)
+        Rectangle().fill(Palette.hairline).frame(height: 1)
     }
 }
 
@@ -217,9 +201,9 @@ struct UnderlineTabBar: View {
                 Button { withAnimation(Motion.quick) { index = i } } label: {
                     VStack(spacing: 7) {
                         Text(t)
-                            .font(active ? AppFont.headline : Typeface.sans(15, .medium))
-                            .foregroundStyle(active ? Palette.textPrimary : Palette.textTertiary)
-                        Rectangle().fill(active ? Palette.ink : Color.clear).frame(height: 2)
+                            .font(active ? AppFont.headline : AppFont.bodyText)
+                            .foregroundStyle(active ? Palette.textPrimary : Palette.textSecondary)
+                        Rectangle().fill(active ? Palette.textPrimary : Color.clear).frame(height: 2)
                     }
                     .fixedSize()
                 }
@@ -240,7 +224,7 @@ struct StreakGlyph: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: "flame.fill").font(.system(size: 12)).foregroundStyle(Palette.textPrimary)
-            Text("\(count)").font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+            Text("\(count)").font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textPrimary)
         }
         .accessibilityLabel("\(count) day streak")
     }
@@ -252,27 +236,26 @@ struct Chip: View {
     var onDark: Bool = false          // over camera/media: translucent white instead of paper
     var tint: Color? = nil            // tiny tinted variant (e.g. provenance pill)
     var body: some View {
-        if let tint {
+        if tint != nil {
             Text(text)
-                .font(Typeface.sans(10, .medium))
-                .foregroundStyle(tint)
+                .font(Typeface.sans(10, .semibold))
+                .foregroundStyle(Palette.textSecondary)
                 .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Capsule().fill(tint.opacity(0.14)))
+                .background(Capsule().fill(Palette.surfaceSunken))
         } else {
             Text(text)
-                .font(AppFont.callout)
+                .font(AppFont.supporting)
                 .foregroundStyle(fg)
                 .padding(.horizontal, 14).padding(.vertical, 9)
                 .background(bg)
                 .clipShape(Capsule())
                 .overlay(Capsule().strokeBorder(stroke, lineWidth: 1))
-                .shadow(color: (selected || onDark) ? .clear : .black.opacity(0.05), radius: 8, x: 0, y: 2)
                 .accessibilityAddTraits(selected ? .isSelected : [])
         }
     }
     private var fg: Color {
         if selected { return Palette.onInk }
-        return onDark ? Color.white.opacity(0.6) : Palette.textSecondary
+        return onDark ? Color.white.opacity(0.85) : Palette.textPrimary
     }
     private var bg: Color {
         if selected { return Palette.ink }
@@ -289,8 +272,8 @@ struct PillarNode: View {
     var body: some View {
         VStack(spacing: Space.sm) {
             ZStack {
-                Circle().fill(Color(hex: pillar.colorHex).opacity(0.12))
-                Circle().strokeBorder(Color(hex: pillar.colorHex), lineWidth: 1.5)
+                Circle().fill(Palette.surfaceSunken)
+                Circle().strokeBorder(Palette.hairline, lineWidth: 1)
                 Text(String(pillar.name.prefix(1)))
                     .font(Typeface.sans(22, .semibold))
                     .foregroundStyle(Palette.textPrimary)
@@ -316,15 +299,15 @@ struct EmptyStateView: View {
     var body: some View {
         VStack(spacing: Space.sm) {
             Image(systemName: icon)
-                .font(.system(size: 19, weight: .light))
-                .foregroundStyle(Palette.textTertiary)
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(Palette.textSecondary)
                 .padding(.bottom, Space.xs)
             Text(title)
-                .font(Typeface.sans(21, .semibold)).tracking(Track.title)
+                .font(AppFont.headline)
                 .foregroundStyle(Palette.textPrimary)
                 .multilineTextAlignment(.center)
             Text(message)
-                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
                 .frame(maxWidth: 300)
@@ -341,8 +324,8 @@ struct FormatTag: View {
     let formatId: String
     var body: some View {
         Text(Catalog.format(formatId).name.uppercased())
-            .font(Typeface.sans(11, .semibold)).tracking(Track.label)
-            .foregroundStyle(Palette.textTertiary)
+            .font(AppFont.eyebrow).tracking(Track.eyebrow)
+            .foregroundStyle(Palette.textSecondary)
     }
 }
 
@@ -361,7 +344,7 @@ struct ProgressRing: View {
                 .rotationEffect(.degrees(-90))
             VStack(spacing: 1) {
                 Text(centerTop).font(Typeface.sans(26, .semibold)).foregroundStyle(Palette.textPrimary)
-                Text(centerBottom.uppercased()).font(AppFont.micro).tracking(1).foregroundStyle(Palette.textTertiary)
+                Text(centerBottom.uppercased()).font(AppFont.micro).tracking(1).foregroundStyle(Palette.textSecondary)
             }
         }
         .frame(width: size, height: size)
@@ -379,7 +362,7 @@ func compactNumber(_ n: Int) -> String {
 // Lightweight area sparkline for the Today momentum card.
 struct Sparkline: View {
     let values: [Double]
-    var color: Color = Palette.accent
+    var color: Color = Palette.textPrimary
     @State private var on = false
     var body: some View {
         GeometryReader { geo in
@@ -424,48 +407,39 @@ struct Sparkline: View {
 extension View {
     func marqueField() -> some View {
         self
-            .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
-            .padding(.horizontal, 16).frame(height: 54)
-            .background(Palette.surfaceRaised)
-            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+            .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+            .padding(.horizontal, Space.rowPad).frame(height: 52)
+            .background(Palette.surface)
+            .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 1))
     }
 }
 
 // MARK: - Onboarding chrome (docs/ONBOARDING-DESIGN.md §3)
 
-/// Alma-style segmented-dash progress: one capsule per quiz question.
-/// Filled = ink, remainder = warm neutral; fill animates as the index moves.
+/// Step progress as short dashes (DESIGN.md §5 flow header). Keeps its accessibility id.
 struct SegmentedProgress: View {
     let total: Int
     let index: Int
     var body: some View {
-        HStack(spacing: Space.xs) {
-            ForEach(0..<total, id: \.self) { i in
-                Capsule()
-                    .fill(i < index ? Palette.ink : Color(hex: 0xE2E1DE))
-                    .frame(height: 4)
-            }
-        }
-        .animation(.easeOut(duration: 0.38), value: index)
-        .accessibilityIdentifier("onboard.progress")
+        DSProgressDashes(total: total, current: index)
+            .accessibilityIdentifier("onboard.progress")
     }
 }
 
-/// Circled back chevron pinned top-left of every onboarding step.
+/// Bare back chevron (44pt hit area) pinned top-left of every onboarding step.
 struct BackCircle: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
             Image(systemName: "chevron.left")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(Palette.textPrimary)
-                .frame(width: 36, height: 36)
-                .background(Circle().fill(Palette.surface))
-                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(PressableStyle(dim: 0.7))
+        .buttonStyle(PressableStyle(dim: 0.6))
         .accessibilityLabel("Back")
         .accessibilityIdentifier("onboard.back")
     }

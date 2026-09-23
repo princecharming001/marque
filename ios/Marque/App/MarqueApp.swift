@@ -58,8 +58,7 @@ struct MarqueApp: App {
             // ASWebAuthenticationSession consumes its own marque://auth-callback).
             .onAppear { pushManager.onDeepLink = { url in router.handle(url: url) } }
             .onOpenURL { url in router.handle(url: url) }
-            .tint(Palette.accent)
-            .preferredColorScheme(.light)
+            .tint(Palette.ink)
         }
     }
 }

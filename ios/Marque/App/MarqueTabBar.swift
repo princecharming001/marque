@@ -1,23 +1,21 @@
 import SwiftUI
 
-// Custom floating tab bar — 4 verb-tabs with an INLINE center Film button (no raised FAB).
-// Clear Apple-style liquid glass: plain ultraThinMaterial capsule, hairline strokes, no
-// white washes. Labels kept as text so Maestro taps by name.
+// Tab bar (DESIGN.md §5): flat canvas bar, no border or blur. Outline glyph + caption label
+// per tab; the selected tab fills its glyph and bolds its label. The center Film action is a
+// raised ink circle with no label. Labels stay real text so Maestro taps by name.
 //
-// Geometry contract: the bar is rendered as a plain bottom OVERLAY (see RootTabView), never
-// a safeAreaInset — inset reservation proved flaky with this bar historically (see git
-// history), so screens own their clearance explicitly via `MarqueTabBar.clearance`.
+// Geometry contract: rendered as a plain bottom OVERLAY (see RootTabView), never a
+// safeAreaInset; screens own their clearance via `MarqueTabBar.clearance`.
 struct MarqueTabBar: View {
     @Binding var selected: AppTab
     var onCreateTap: () -> Void
     @State private var createTaps = 0
 
-    /// Total vertical space a screen must keep clear at the bottom (bar height + its
-    /// bottom margin + a breathing gap). Non-scrolling screens pad fixed bottom content
-    /// by this; scrolling screens keep generous bottom padding as before.
+    /// Vertical space a screen must keep clear at the bottom (bar + raised center + gap).
     static let clearance: CGFloat = 84
 
-    private let filmSize: CGFloat = 48
+    private let filmSize: CGFloat = 52
+    private let barHeight: CGFloat = 56
 
     private let leftItems: [(tab: AppTab, label: String, icon: String)] = [
         (.home, "Home", "sun.max"),
@@ -29,9 +27,8 @@ struct MarqueTabBar: View {
         (.performance, "Performance", "chart.bar"),
     ]
 
-    /// Tour anchor id for each tab, keyed by AppTab — matches TourManager.Step.id.
-    /// Home has no anchor here: its tour step points at the voice bubble inside
-    /// HomeView's own content, not at this tab-bar icon.
+    /// Tour anchor id for each tab — matches TourManager.Step.id. Home has none: its tour
+    /// step points at the voice bubble inside HomeView.
     private func tourAnchorId(for tab: AppTab) -> String? {
         switch tab {
         case .home: return nil
@@ -42,76 +39,60 @@ struct MarqueTabBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(alignment: .center, spacing: 0) {
             ForEach(leftItems, id: \.tab) { item in
                 tabButton(item).frame(maxWidth: .infinity)
             }
 
-            // Center Film button — solid blue circle with + icon (the one primary
-            // create action, so it pops against the neutral glass bar).
             Button {
                 createTaps += 1
                 onCreateTap()
             } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(Palette.onInk)
                     .frame(width: filmSize, height: filmSize)
-                    .background(
-                        Circle().fill(
-                            LinearGradient(colors: [Palette.accent,
-                                                    Palette.accent.opacity(0.82)],
-                                           startPoint: .top, endPoint: .bottom)))
-                    .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
-                    .shadow(color: Palette.accent.opacity(0.42), radius: 10, y: 4)
+                    .background(Circle().fill(Palette.ink))
+                    .contentShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.9, scale: 0.92))
             .accessibilityLabel("Film")
             .accessibilityIdentifier("film.open")
-            .sensoryFeedback(.impact(weight: .medium), trigger: createTaps)
-            .padding(.horizontal, 10)
+            .sensoryFeedback(.impact(weight: .light), trigger: createTaps)
+            .offset(y: -8)
+            .frame(maxWidth: .infinity)
             .tourAnchor("tour.film")
 
             ForEach(rightItems, id: \.tab) { item in
                 tabButton(item).frame(maxWidth: .infinity)
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 10)
-        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
-        .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.35), lineWidth: 1))
-        .overlay(Capsule(style: .continuous).strokeBorder(Palette.hairline, lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.08), radius: 18, x: 0, y: 8)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 4)
+        .frame(height: barHeight)
+        .padding(.horizontal, Space.sm)
+        .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
     }
 
     @ViewBuilder
     private func tabButton(_ item: (tab: AppTab, label: String, icon: String)) -> some View {
+        let isSelected = selected == item.tab
         Button {
             selected = item.tab
         } label: {
-            VStack(spacing: 3) {
-                // OWNER (2026-08-15): tab icons are blue — the selected one at full
-                // accent, the rest at 40% so the bar still reads as one blue family
-                // while the current tab stays obvious. Labels keep the neutral ink
-                // ramp: five blue words would fight the icons for attention.
-                Image(systemName: item.icon).font(.system(size: 20, weight: .regular))
-                    .foregroundStyle(selected == item.tab ? Palette.accent
-                                                          : Palette.accent.opacity(0.40))
+            VStack(spacing: 4) {
+                Image(systemName: isSelected ? item.icon + ".fill" : item.icon)
+                    .font(.system(size: 21, weight: .regular))
+                    .frame(height: 24)
                 Text(item.label)
-                    // "Inter-Medium" isn't a bundled face (the app ships Matter +
-                    // Fraunces), so this silently fell back to system at a size
-                    // that wrapped "Performance" onto two lines in the bar.
-                    .font(Typeface.sans(10, .medium))
+                    .font(Typeface.sans(12, isSelected ? .bold : .regular))
                     .lineLimit(1).minimumScaleFactor(0.8)
-                    .foregroundStyle(selected == item.tab ? Palette.textPrimary : Palette.textTertiary)
             }
+            .foregroundStyle(isSelected ? Palette.textPrimary : Palette.textSecondary)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 2)
+            .padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
         .modifier(OptionalTourAnchor(id: tourAnchorId(for: item.tab)))
     }
 }

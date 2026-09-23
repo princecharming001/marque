@@ -22,7 +22,7 @@ struct RootTabView: View {
             }
             .animation(Motion.quick, value: router.hideTabBar)
             .onChange(of: router.selectedTab) { _, _ in router.hideTabBar = false }
-            .background(Palette.surface.ignoresSafeArea())
+            .background(Palette.canvas.ignoresSafeArea())
             .sheet(isPresented: $store.showCelebration) { CelebrationView() }
             .fullScreenCover(isPresented: $router.showFilm) { NavigationStack { FilmView() } }
             // Sits above the tab bar + all tab content — resolves every `.tourAnchor`

@@ -6,7 +6,7 @@ import SwiftUI
 /// proportion to the voice.
 ///
 ///   idle       quiet breathing, faint ripple
-///   listening  ripple + swell track the mic; the rim takes the accent blue
+///   listening  ripple + swell track the mic; a gray rim ring thickens with the voice
 ///   thinking   the boil freezes, the body leans into a lopsided lump and turns: one
 ///              object at work, kneading slowly
 ///   speaking   the body pulses with TTS amplitude (low lobes); the rim stays ink
@@ -18,8 +18,15 @@ struct VoiceOrb: View {
     var mode: Mode = .idle
     var level: Double = 0
     var size: CGFloat = 132
+    /// True when the orb sits on a dark surface (the hero card). The drop is then white in
+    /// both color schemes; otherwise it is ink on light and white on dark.
+    var onDark: Bool = false
 
     @State private var physics = OrbPhysics()
+    @Environment(\.colorScheme) private var scheme
+    private var paint: InkDrop.Paint {
+        (onDark || scheme == .dark) ? .paper : .ink
+    }
     private var clampedLevel: Double { min(1, max(0, level)) }
 
     var body: some View {
@@ -27,7 +34,7 @@ struct VoiceOrb: View {
             let frame = physics.step(now: timeline.date.timeIntervalSinceReferenceDate,
                                      rawLevel: clampedLevel, mode: mode)
             Canvas { ctx, canvas in
-                InkDrop.draw(frame, in: &ctx, canvas: canvas, orbSize: size)
+                InkDrop.draw(frame, in: &ctx, canvas: canvas, orbSize: size, paint: paint)
             }
             // Overscan so spring overshoot and the shadow's blur tail never clip. SwiftUI
             // frames don't clip, so the layout footprint stays exactly `size`; the canvas
@@ -48,11 +55,19 @@ struct VoiceOrb: View {
 private enum InkDrop {
     static let overscan: CGFloat = 1.3
 
-    // Brand, hardcoded so the file is self-contained. Paper is 0xF1F1EF and is never
-    // drawn here: the orb is only ever ink, one accent, and its own warm shadow.
-    static let ink    = Color(red: 28 / 255.0, green: 26 / 255.0, blue: 23 / 255.0)   // 0x1C1A17
-    static let accent = Color(red: 44 / 255.0, green: 107 / 255.0, blue: 237 / 255.0) // 0x2C6BED
-    static let shadow = Color(red: 46 / 255.0, green: 42 / 255.0, blue: 32 / 255.0)   // 0x2E2A20
+    // Monochrome only. The drop is either ink (on light) or paper (on dark); the listening
+    // rim is a neutral gray ring, never a hue and never a blur (no glow of any kind).
+    struct Paint {
+        let fill: Color
+        let rim: Color
+        let shadow: Color?
+        static let ink = Paint(fill: Color(red: 10 / 255.0, green: 10 / 255.0, blue: 10 / 255.0),
+                               rim: Color(white: 0.55),
+                               shadow: Color.black)
+        static let paper = Paint(fill: Color.white,
+                                 rim: Color(white: 0.5),
+                                 shadow: nil)
+    }
 
     /// One radial harmonic; `k` is its lobe count around the rim. 6 and 7 carry the
     /// hand-drawn wobble, 2 and 3 lean the body, 9 adds grain. Rates differ in sign and
@@ -110,7 +125,8 @@ private enum InkDrop {
     static let rippleGain = 0.053   // full-level hit: about ±12%, more on overshoot
     static let swellGain  = 0.113   // whole-disc scale per unit of the main spring
 
-    static func draw(_ f: OrbPhysics.Frame, in ctx: inout GraphicsContext, canvas: CGSize, orbSize: CGFloat) {
+    static func draw(_ f: OrbPhysics.Frame, in ctx: inout GraphicsContext, canvas: CGSize, orbSize: CGFloat,
+                     paint: Paint = .ink) {
         let cx = Double(canvas.width) / 2
         let cy = Double(canvas.height) / 2
         let idle = max(0, 1 - f.listen - f.think - f.speak)
@@ -152,23 +168,25 @@ private enum InkDrop {
         }
         path.closeSubpath()
 
-        // Warm cast shadow: the drop sits on the paper instead of floating in it.
-        ctx.drawLayer { layer in
-            layer.addFilter(.blur(radius: orbSize * 0.045))
-            layer.translateBy(x: 0, y: orbSize * 0.035)
-            layer.fill(path, with: .color(shadow.opacity(0.22)))
+        // Cast shadow (light surfaces only): the drop sits on the paper instead of floating.
+        if let shadow = paint.shadow {
+            ctx.drawLayer { layer in
+                layer.addFilter(.blur(radius: orbSize * 0.045))
+                layer.translateBy(x: 0, y: orbSize * 0.035)
+                layer.fill(path, with: .color(shadow.opacity(0.18)))
+            }
         }
 
         // Listening rim: stroked under the fill so only the outer half shows, a clean
-        // accent edge that thickens with the voice. Eased by the mode blend, never popped.
+        // gray edge that thickens with the voice. Eased by the mode blend, never popped.
         if f.listen > 0.004 {
             let width = orbSize * (0.024 + 0.022 * f.envelope)
             ctx.stroke(path,
-                       with: .color(accent.opacity(f.listen * (0.75 + 0.25 * f.envelope))),
+                       with: .color(paint.rim.opacity(f.listen * (0.75 + 0.25 * f.envelope))),
                        style: StrokeStyle(lineWidth: width, lineJoin: .round))
         }
 
-        ctx.fill(path, with: .color(ink))
+        ctx.fill(path, with: .color(paint.fill))
     }
 }
 

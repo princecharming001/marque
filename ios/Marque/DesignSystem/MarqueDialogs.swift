@@ -29,7 +29,7 @@ struct MarqueDialogCard: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.45).ignoresSafeArea()
+            Palette.scrim.ignoresSafeArea()
                 .onTapGesture { if actions.contains(where: { $0.kind == .cancel }) { dismiss() } }
             VStack(alignment: .leading, spacing: Space.md) {
                 Text(title)
@@ -62,7 +62,7 @@ struct MarqueDialogCard: View {
             .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                 .strokeBorder(Palette.hairline, lineWidth: 1))
-            .shadow(color: .black.opacity(0.18), radius: 30, x: 0, y: 12)
+            .shadow(color: .black.opacity(0.08), radius: 24, x: 0, y: 8)
             .padding(Space.xl)
         }
         .transition(.opacity)
@@ -75,7 +75,7 @@ struct MarqueDialogCard: View {
                 .frame(maxWidth: .infinity).frame(height: 50)
                 .background(Palette.ink).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         case .destructive:
-            Text(a.label).font(AppFont.headline).foregroundStyle(.white)
+            Text(a.label).font(AppFont.headline).foregroundStyle(Palette.onInk)
                 .frame(maxWidth: .infinity).frame(height: 50)
                 .background(Palette.critical).clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         case .cancel:
@@ -158,10 +158,10 @@ struct MarqueToggle: View {
     var body: some View {
         Button { withAnimation(.spring(response: 0.28, dampingFraction: 0.7)) { isOn.toggle() } } label: {
             Capsule()
-                .fill(isOn ? Palette.accent : offTrack)
+                .fill(isOn ? Palette.ink : offTrack)
                 .frame(width: 46, height: 28)
                 .overlay(alignment: isOn ? .trailing : .leading) {
-                    Circle().fill(.white).frame(width: 22, height: 22)
+                    Circle().fill(isOn ? Palette.onInk : Palette.surface).frame(width: 22, height: 22)
                         .shadow(color: .black.opacity(0.15), radius: 2, x: 0, y: 1)
                         .padding(3)
                 }
@@ -181,7 +181,7 @@ struct MarqueToggleRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
                 if let subtitle {
-                    Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
