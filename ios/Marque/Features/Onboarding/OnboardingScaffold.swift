@@ -1,7 +1,7 @@
 import SwiftUI
 
-// The universal onboarding layout (docs/ONBOARDING-DESIGN.md §2):
-//   top bar (back + progress, fixed 44pt)
+// The universal onboarding layout (DESIGN.md §6 Onboarding, Stoic flow header):
+//   top bar (back chevron + centered progress dashes, fixed 44pt)
 //   ONE centered group: headline + subtitle + content, tight fixed gaps inside
 //   optional CTA slot (only multi-select / freeform / interstitial steps)
 //
@@ -33,29 +33,30 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Band 1 — chrome
-            HStack(spacing: Space.md) {
-                if showsBack, let onBack {
-                    BackCircle(action: onBack)
-                } else {
-                    // Keep the progress bar aligned across steps with/without back.
-                    Color.clear.frame(width: 36, height: 36)
-                }
+            // Band 1 — flow header (DESIGN.md §5): back chevron leading, progress
+            // dashes centered on the screen axis, an empty trailing slot.
+            ZStack {
                 if showsProgress {
                     SegmentedProgress(total: progressTotal, index: progressIndex)
-                } else {
-                    Spacer()
                 }
-                Color.clear.frame(width: 36, height: 36)   // symmetric right gutter
+                HStack(spacing: 0) {
+                    if showsBack, let onBack {
+                        BackCircle(action: onBack)
+                    } else {
+                        // Keep the band height identical across steps with/without back.
+                        Color.clear.frame(width: 44, height: 44)
+                    }
+                    Spacer(minLength: 0)
+                }
             }
             .frame(height: 44)
-            .padding(.horizontal, Space.screenH)
-            .padding(.top, Space.sm)
+            .padding(.horizontal, Space.xs)
+            .padding(.top, Space.xs)
 
             if scrollable {
                 // Header travels WITH the content down the scroll. The content gets
                 // no horizontal gutter of its own — a full-bleed cloud supplies its
-                // own edge bleed.
+                // own edge bleed. A canvas fade seats the pinned CTA over the cloud.
                 ScrollView {
                     VStack(spacing: 0) {
                         headerBlock
@@ -64,13 +65,19 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
                         content()
                     }
                     .frame(maxWidth: .infinity)
+                    .padding(.bottom, Space.xl)
                 }
                 .scrollIndicators(.hidden)
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [Palette.canvas.opacity(0), Palette.canvas],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: Space.xxl)
+                        .allowsHitTesting(false)
+                }
             } else {
                 // Centered group — header + content as ONE block, floating in the
                 // middle of the space between the chrome and the CTA. Internal gaps
-                // are fixed (Space.xxl between header and content) so the question and
-                // its choices always read as a unit wherever the block lands.
+                // are fixed so the question and its choices always read as a unit.
                 if topAligned {
                     Color.clear.frame(height: Space.lg)
                 } else {
@@ -87,34 +94,40 @@ struct OnboardingScaffold<Content: View, CTA: View>: View {
                 Spacer(minLength: Space.md)
             }
 
-            // CTA slot
+            // CTA slot — the primary capsule is content-sized and centered.
             cta()
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal, Space.screenH)
-                .padding(.bottom, Space.lg)
+                .padding(.top, Space.sm)
+                .padding(.bottom, Space.xl)
         }
         .background(Palette.canvas.ignoresSafeArea())
     }
 
     /// An empty headline means the step draws its own header (e.g. a typed-out
     /// reveal), so the scaffold skips its static one entirely.
+    /// Stoic onboarding prompt: centered `title1` question, `body` subtitle in
+    /// textSecondary, 24pt to the content.
     @ViewBuilder private var headerBlock: some View {
         if !headline.isEmpty {
             VStack(spacing: Space.sm) {
                 Text(headline)
-                    .font(Typeface.display(30)).tracking(-0.6)
+                    .font(AppFont.title1).tracking(-0.3)
                     .foregroundStyle(Palette.textPrimary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityAddTraits(.isHeader)
                     .staggerReveal(0)
                 if let subtitle {
                     Text(subtitle)
-                        .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .staggerReveal(1)
                 }
             }
-            .padding(.bottom, Space.xxl)
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, Space.xl)
         }
     }
 }

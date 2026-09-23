@@ -20,45 +20,32 @@ struct PlanBuildingView: View {
 
     var body: some View {
         VStack(spacing: Space.xl) {
-            UnicornMascot(pose: .thinking, size: 150)
+            UnicornMascot(pose: .thinking, size: 110)
 
-            VStack(alignment: .leading, spacing: Space.md) {
+            // Stoic "preparing" rows: earlier stages checked, current spinning,
+            // later ones muted.
+            VStack(spacing: Space.sm) {
                 ForEach(Array(Self.stages.enumerated()), id: \.offset) { i, label in
-                    HStack(spacing: Space.md) {
-                        if i < currentStage {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(Palette.textPrimary)
-                                .frame(width: 20, height: 20)
-                        } else if i == currentStage {
-                            ProgressView().tint(Palette.ink)
-                                .frame(width: 20, height: 20)
-                        } else {
-                            Circle().strokeBorder(Palette.hairline, lineWidth: 1.5)
-                                .frame(width: 20, height: 20)
-                        }
-                        Text(label)
-                            .font(AppFont.body)
-                            .foregroundStyle(i <= currentStage ? Palette.textPrimary : Palette.textTertiary)
-                    }
-                    .animation(Motion.quick, value: currentStage)
+                    DSChecklistRow(title: label,
+                                   state: i < currentStage ? .done : (i == currentStage ? .active : .pending))
                 }
             }
-            .frame(maxWidth: 300, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .animation(Motion.quick, value: currentStage)
 
             if case .failed = store.starterScriptsState {
                 Button {
                     store.retryStarterScripts()
                 } label: {
                     Text("Something hiccuped, tap to retry")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                        .underline()
                 }
+                .buttonStyle(.dsLink)
                 .accessibilityIdentifier("onboard.buildRetry")
             } else {
                 Text("Feel free to close the app. I'll notify you when it's ready.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .onAppear { store.resumeStarterDigestIfNeeded() }
@@ -83,17 +70,14 @@ struct PlanReadyView: View {
     }
 
     var body: some View {
-        VStack(spacing: Space.xl) {
-            UnicornMascot(pose: .celebrate, size: 150)
+        VStack(spacing: Space.lg) {
+            UnicornMascot(pose: .celebrate, size: 100)
                 .staggerReveal(0)
 
-            VStack(alignment: .leading, spacing: Space.md) {
+            // The building checklist, all checked: the transition reads as completion.
+            VStack(spacing: Space.sm) {
                 ForEach(Array(store.scripts.prefix(3).enumerated()), id: \.element.id) { i, script in
                     HStack(spacing: Space.md) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 20))
-                            .foregroundStyle(Palette.textPrimary)
-                            .frame(width: 20, height: 20)
                         VStack(alignment: .leading, spacing: 2) {
                             // Concise heading (script.title is the ≤6-word label); fall back to
                             // the hook only if the model didn't supply one, capped to one line.
@@ -103,10 +87,18 @@ struct PlanReadyView: View {
                             // Per-script descriptor, NOT the pillar name (which is identical for
                             // all three) — summary if present, else a format · length label.
                             Text(subtitle(script))
-                                .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                                .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                                 .lineLimit(1)
                         }
+                        Spacer(minLength: Space.sm)
+                        DSCheckmark(isOn: true)
                     }
+                    .padding(.horizontal, Space.rowPad)
+                    .padding(.vertical, Space.sm)
+                    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                        .fill(Palette.surface))
+                    .accessibilityElement(children: .combine)
                     .staggerReveal(i + 1)
                 }
             }

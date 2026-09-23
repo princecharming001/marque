@@ -25,27 +25,31 @@ struct VoiceInterviewView: View {
     var body: some View {
         if finalizing {
             VStack(spacing: Space.lg) {
-                ProgressView().tint(Palette.ink)
+                ProgressView().tint(Palette.textPrimary)
                 Text("Building your voice profile…")
-                    .font(AppFont.bodyL).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
             }
         } else {
             VStack(alignment: .leading, spacing: Space.md) {
+                // Stoic editor prompt: progress dashes, eyebrow count, title1 question.
+                DSProgressDashes(total: Self.questions.count, current: currentQ + 1)
                 Text("Q\(currentQ + 1) of \(Self.questions.count)")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.eyebrow).tracking(Track.eyebrow)
+                    .textCase(.uppercase)
+                    .foregroundStyle(Palette.textSecondary)
                 Text(Self.questions[currentQ])
-                    .font(Typeface.display(22)).tracking(-0.4)
+                    .font(AppFont.title1).tracking(-0.3)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 TextEditor(text: Binding(get: { answers[currentQ] },
                                          set: { answers[currentQ] = $0 }))
-                    .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                    .font(AppFont.bodyLarge).foregroundStyle(Palette.textPrimary)
                     .scrollContentBackground(.hidden)
                     .frame(minHeight: 110, maxHeight: 160)
                     .padding(Space.md)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                        .fill(Palette.surface))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
                         .strokeBorder(Palette.hairline, lineWidth: 1))
                     .accessibilityIdentifier("onboard.interview.answer")
 
@@ -59,6 +63,8 @@ struct VoiceInterviewView: View {
                     }
                 }
                 .accessibilityIdentifier("onboard.interview.next")
+                .frame(maxWidth: .infinity)
+                .padding(.top, Space.sm)
             }
         }
     }

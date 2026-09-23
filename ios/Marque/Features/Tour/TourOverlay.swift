@@ -119,16 +119,16 @@ struct TourOverlay: View {
             // resizes to the next control instead of snapping. Absorbs every touch so a
             // tour tap can never leak to a paywall-gated control behind it.
             Spotlight(hole: hole)
-                .fill(Color.black.opacity(0.62), style: FillStyle(eoFill: true))
+                .fill(Palette.night.opacity(0.66), style: FillStyle(eoFill: true))
                 .contentShape(Rectangle())
                 .onTapGesture { }
 
-            // Accent ring travels + resizes with the highlight.
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(Palette.accent, lineWidth: 3)
+            // Monochrome ring travels + resizes with the highlight: a white hairline
+            // on the always-dark scrim (no hue, no glow).
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Palette.onNight, lineWidth: 2)
                 .frame(width: hole.width, height: hole.height)
                 .position(x: hole.midX, y: hole.midY)
-                .shadow(color: Palette.accent.opacity(0.5), radius: 8)
                 .allowsHitTesting(false)
 
             // Bubble — stable identity, so its .position animates: it TRAVELS to the next
@@ -203,18 +203,14 @@ private struct TourSpeechBubble: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             progressDots
             // Title + message crossfade to the next step's copy while the card travels;
-            // the progress dots and controls stay put so buttons never double up.
-            VStack(alignment: .leading, spacing: Space.sm) {
-                // Sans, not the Fraunces Black display face: serif is reserved for
-                // screen titles, and the heavy cut wrapped these short titles onto
-                // two lines inside a narrow card — the main source of the cramped
-                // look. Sans at 18 fits every step's title on one line.
+            // the progress dashes and controls stay put so buttons never double up.
+            VStack(alignment: .leading, spacing: Space.xs) {
                 Text(step.title)
-                    .font(Typeface.sans(18, .semibold)).tracking(Track.tight)
+                    .font(AppFont.headline)
                     .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(step.message)
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -223,43 +219,37 @@ private struct TourSpeechBubble: View {
             controls
                 .padding(.top, Space.xs)
         }
-        .padding(Space.lg)
+        .padding(Space.cardPad)
         // Self-sizing: the old fixed 176pt left a hollow band under short steps and
         // squeezed long ones. Height now follows the copy.
         .frame(width: width, alignment: .topLeading)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
-        .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(Palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
     }
 
+    /// Stoic progress dashes, left-aligned in the card.
     private var progressDots: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<total, id: \.self) { i in
-                let isCurrent = i == index
-                Capsule()
-                    .fill(isCurrent ? Palette.accent : Palette.textTertiary.opacity(0.35))
-                    .frame(width: isCurrent ? 14 : 5, height: 5)
-            }
-        }
+        DSProgressDashes(total: total, current: index + 1)
+            .padding(.bottom, Space.xs)
     }
 
     private var controls: some View {
         HStack {
             Button("Skip", action: onSkip)
-                .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
+                .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                .frame(minHeight: 40)
                 .accessibilityIdentifier("tour.skip")
             Spacer()
             Button(action: onNext) { nextLabel }
-                .buttonStyle(PressableStyle())
+                .buttonStyle(.ds(.primary, height: 40))
                 .accessibilityIdentifier("tour.next")
         }
     }
 
     private var nextLabel: some View {
         Text(isLast ? "Got it" : "Next")
-            .font(AppFont.callout).foregroundStyle(Palette.onInk)
-            .padding(.horizontal, Space.lg).frame(height: 38)
-            .background(Palette.ink).clipShape(Capsule())
     }
 }
 
