@@ -109,16 +109,12 @@ struct ReelFeedPager: View {
     /// video is full-bleed, so this must re-add the REAL top inset instead of guessing
     /// with a fixed pad (which floats too low on a notch phone and clips on others).
     private func closeButton(topInset: CGFloat) -> some View {
+        // Circular onNight control (DESIGN.md §5): translucent white disc + rim over the video.
         Button { dismiss() } label: {
-            Image(systemName: "xmark").font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 36, height: 36)
-                // Glass, not flat black — reads as one material family with the
-                // action row and lets the video through behind it.
-                .background(.ultraThinMaterial, in: Circle())
-                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+            onNightCircle("xmark", size: 44)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+        .accessibilityLabel("Close")
         .padding(.top, topInset + Space.sm)
         .padding(.trailing, Space.md)
         .accessibilityIdentifier("reelPager.close")
@@ -145,7 +141,7 @@ struct ReelFeedPager: View {
                 creatorRow(reel)
                 if !reel.hookText.isEmpty {
                     Text(reel.hookText)
-                        .font(AppFont.body).foregroundStyle(.white.opacity(0.95))
+                        .font(AppFont.bodyText).foregroundStyle(Palette.onNight.opacity(0.95))
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         .padding(.trailing, Space.xl)   // never runs to the hard edge
                 }
@@ -163,7 +159,7 @@ struct ReelFeedPager: View {
             // the avatar clipped on the left, the Details button on the right, and the Mimic
             // button read "too wide". Filling first keeps every edge inside the screen.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
-            .padding(.horizontal, Space.lg)
+            .padding(.horizontal, Space.screenH)
             // Space.lg breathing room ABOVE the real home-indicator inset (build 53, B3) — so
             // the Mimic button sits ~24pt clear of the indicator on every device instead of the
             // old fixed 4pt guess that left it clipped. `bottomInset` is the true window inset,
@@ -186,7 +182,7 @@ struct ReelFeedPager: View {
             }
         }
         .font(AppFont.caption)
-        .foregroundStyle(.white.opacity(0.72))
+        .foregroundStyle(Palette.onNight.opacity(0.8))
         .lineLimit(1)
     }
 
@@ -204,20 +200,20 @@ struct ReelFeedPager: View {
                             .font(AppFont.headline).lineLimit(1)
                             .minimumScaleFactor(0.85)   // long handles shrink, never clip
                         Image(systemName: "arrow.up.right").font(.system(size: 10, weight: .bold)).opacity(0.7)
-                    }.foregroundStyle(.white)
+                    }.foregroundStyle(Palette.onNight)
                 }.buttonStyle(.plain).accessibilityIdentifier("reelPager.handle")
                 if let f = prof?.followers, f > 0 {
                     Text("\(compactNumber(f)) followers")
-                        .font(AppFont.micro).foregroundStyle(.white.opacity(0.75))
+                        .font(AppFont.caption).foregroundStyle(Palette.onNight.opacity(0.8))
                 }
             }
             .layoutPriority(1)
             if reel.fromWatched {
-                Text("WATCHING").font(AppFont.micro).tracking(0.5)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .foregroundStyle(.white)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(.white.opacity(0.20), lineWidth: 0.5))
+                Text("WATCHING").font(AppFont.eyebrow).tracking(1)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .foregroundStyle(Palette.onNight)
+                    .background(Capsule().fill(Color.white.opacity(0.16)))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.28), lineWidth: 1))
                     .fixedSize()
             }
             Spacer(minLength: 0)
@@ -225,7 +221,7 @@ struct ReelFeedPager: View {
     }
 
     @ViewBuilder private func avatar(_ reel: ReelItem, pfp: String) -> some View {
-        let ring = Circle().strokeBorder(.white.opacity(0.35), lineWidth: 1)
+        let ring = Circle().strokeBorder(Color.white.opacity(0.35), lineWidth: 1)
         Group {
             if let url = URL(string: pfp), !pfp.isEmpty {
                 AsyncImage(url: url) { img in img.resizable().scaledToFill() }
@@ -238,22 +234,28 @@ struct ReelFeedPager: View {
     }
 
     private func monogram(_ handle: String) -> some View {
-        Circle().fill(.ultraThinMaterial).overlay(
+        Circle().fill(Color.white.opacity(0.16)).overlay(
             Text(String(handle.prefix(1)).uppercased())
-                .font(AppFont.caption.weight(.bold)).foregroundStyle(.white))
+                .font(AppFont.caption.weight(.bold)).foregroundStyle(Palette.onNight))
     }
 
-    /// The two secondary controls share one glass chip treatment — 48pt square,
-    /// ultraThinMaterial over the video with a hairline rim, matching the tab bar's
-    /// material language instead of the old flat 15%-white block.
-    private func glassChip(_ symbol: String, tint: Color = .white) -> some View {
+    /// The secondary controls (close, track, stats) share the DS circular onNight control:
+    /// a 48pt translucent-white disc with a 1pt rim over the video. `inverted` = selected
+    /// (solid white disc, black glyph): selection by inversion, never by hue.
+    private func onNightCircle(_ symbol: String, size: CGFloat = 48, inverted: Bool = false) -> some View {
         Image(systemName: symbol)
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(tint)
-            .frame(width: 48, height: 48)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(.white.opacity(0.18), lineWidth: 0.5))
+            .font(.system(size: size * 0.38, weight: .regular))
+            .foregroundStyle(inverted ? Color.black : Palette.onNight)
+            .frame(width: size, height: size)
+            .background(Circle().fill(inverted ? Palette.onNight : Color.white.opacity(0.14)))
+            .overlay(Circle().strokeBorder(inverted ? Color.clear : Color.white.opacity(0.28), lineWidth: 1))
+            .contentShape(Circle())
+    }
+
+    // Unused since the chrome moved to onNightCircle; kept because the redesign guard
+    // forbids removing functions in a presentation-only pass.
+    private func glassChip(_ symbol: String, tint: Color = .white) -> some View {
+        onNightCircle(symbol)
     }
 
     /// Elegant, minimal "track this creator" pill — feeds their reels into the feed as
@@ -261,9 +263,9 @@ struct ReelFeedPager: View {
     private func trackButton(_ reel: ReelItem) -> some View {
         let tracked = isTracked(reel.creatorHandle)
         return Button { trackCreator(reel) } label: {
-            glassChip(tracked ? "checkmark" : "plus", tint: tracked ? Palette.accent : .white)
+            onNightCircle(tracked ? "checkmark" : "plus", inverted: tracked)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
         .disabled(tracked)
         .accessibilityLabel(tracked ? "Tracking this creator" : "Track this creator")
         .accessibilityIdentifier("reelPager.track")
@@ -274,7 +276,9 @@ struct ReelFeedPager: View {
             Button { runMimic(reel) } label: {
                 HStack(spacing: Space.sm) {
                     if mimicking == reel.id {
-                        ProgressView().tint(Palette.ink).controlSize(.small)
+                        // The capsule stays white while in flight (MimicCapsuleStyle ignores
+                        // isEnabled), so the spinner is black to match the label.
+                        ProgressView().tint(Color(hex: 0x0A0A0A)).controlSize(.small)
                         Text("Rewriting…").font(AppFont.headline)
                     } else {
                         Image(systemName: "wand.and.stars").font(.system(size: 15, weight: .semibold))
@@ -282,17 +286,13 @@ struct ReelFeedPager: View {
                             .font(AppFont.headline).lineLimit(1).minimumScaleFactor(0.85)
                     }
                 }
-                // OWNER (2026-08-12, "text on the biggest button is not visible"):
-                // this was Palette.onInk (pure white) on a WHITE pill — invisible.
-                // onInk means "text on an ink fill"; this fill is white, so the text
-                // is ink. The detail sheet's CTA (ink fill + onInk text) was right.
-                .foregroundStyle(Palette.ink)
-                .frame(maxWidth: .infinity).frame(height: 48)
-                // Capsule + the other two as squares gives the row a clear primary;
-                // three equal rounded rects read as a toolbar with no hierarchy.
-                .background(.white, in: Capsule())
+                // OWNER (2026-08-12, "text on the biggest button is not visible"): the
+                // label must contrast with a WHITE pill. MimicCapsuleStyle is a white fill
+                // with a black label in EVERY state (including disabled / in flight); the
+                // pager is forced dark, where Palette.ink would have inverted to near-white.
             }
-            .buttonStyle(PressableStyle())
+            // Capsule + the other two as circles gives the row a clear primary.
+            .buttonStyle(MimicCapsuleStyle())
             .disabled(mimicking == reel.id)
             .accessibilityIdentifier("reelPager.mimic")
 
@@ -303,9 +303,9 @@ struct ReelFeedPager: View {
                 if let p = profiles[reel.creatorHandle.lowercased()] { r.pfpURL = p.pfp; r.followerCount = p.followers }
                 detailReel = r
             } label: {
-                glassChip("chart.bar.fill")
+                onNightCircle("chart.bar")
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
             .accessibilityLabel("Stats")
             .accessibilityIdentifier("reelPager.details")
         }
@@ -378,11 +378,32 @@ private struct ReelPagerMedia: View {
             VStack {
                 Spacer()
                 Text(reel.hookText.isEmpty ? "@\(reel.creatorHandle)" : reel.hookText)
-                    .font(Typeface.sans(26, .semibold)).foregroundStyle(.white)
+                    .font(AppFont.title1).foregroundStyle(Palette.onNight)
                     .multilineTextAlignment(.center).padding(Space.xl)
                 Spacer()
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+}
+
+/// The pager's primary "Mimic in my voice" capsule: white fill, black label, always.
+/// Deliberately does NOT read `isEnabled` — while a rewrite is in flight the button is
+/// disabled, and the DS capsule's disabled look (sunken fill, tertiary label) would be
+/// unreadable over live video (owner, 2026-08-12: "text on the biggest button is not visible").
+private struct MimicCapsuleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(AppFont.headline)
+            .lineLimit(1).minimumScaleFactor(0.85)
+            .foregroundStyle(Color(hex: 0x0A0A0A))
+            .padding(.horizontal, 20)
+            .frame(maxWidth: .infinity)
+            .frame(height: 48)
+            .background(Capsule().fill(Palette.onNight))
+            .contentShape(Capsule())
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.9 : 1)
+            .animation(Motion.quick, value: configuration.isPressed)
     }
 }
