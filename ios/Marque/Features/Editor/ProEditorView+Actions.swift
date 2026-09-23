@@ -988,12 +988,14 @@ extension ProEditorView {
         VStack(spacing: 0) {
             // Custom header (CapCut's caption bar).
             ZStack {
-                Text("\(phrases.count) captions")
-                    .font(AppFont.headline).foregroundStyle(.white)
+                Text("\(phrases.count) captions.")
+                    .font(AppFont.title3).foregroundStyle(Palette.textPrimary)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .padding(.horizontal, 72)
                 HStack {
                     Spacer()
                     Button { showCaptionList = false } label: {
-                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.accent)
+                        Text("Done").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                             .padding(.horizontal, Space.md).padding(.vertical, 8)
                             .contentShape(Rectangle())
                     }
@@ -1004,7 +1006,8 @@ extension ProEditorView {
             .padding(.horizontal, Space.sm).padding(.top, Space.lg).padding(.bottom, Space.sm)
 
             ScrollView {
-                VStack(spacing: 0) {
+                // Stoic grouped list: one surface card, inset hairline separators.
+                DSGroup {
                     ForEach(phrases) { p in
                         Button {
                             // List stays open — fixing captions is a serial workflow; the edit
@@ -1013,31 +1016,32 @@ extension ProEditorView {
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: Space.md) {
                                 Text(timecode(forPhrase: p))
-                                    .font(.system(size: 11, weight: .medium)).monospacedDigit()
-                                    .foregroundStyle(.white.opacity(0.45))
+                                    .font(AppFont.caption.monospacedDigit())
+                                    .foregroundStyle(Palette.textSecondary)
                                     .frame(width: 44, alignment: .leading)
                                 Text(p.text)
-                                    .font(AppFont.callout).foregroundStyle(.white)
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                                     .multilineTextAlignment(.leading)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Image(systemName: "pencil")
-                                    .font(.system(size: 11)).foregroundStyle(.white.opacity(0.35))
+                                    .font(.system(size: 13, weight: .regular)).foregroundStyle(Palette.textSecondary)
                             }
-                            .padding(.horizontal, Space.lg).padding(.vertical, 12)
+                            .padding(.horizontal, Space.rowPad).padding(.vertical, 14)
+                            .frame(minHeight: 52)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(DSRowPressStyle())
                         .accessibilityIdentifier("editorPro.captionRow.\(p.startFrame)")
-                        Rectangle().fill(Color.white.opacity(0.08)).frame(height: 0.5)
-                            .padding(.leading, Space.lg)
+                        if p.id != phrases.last?.id { DSRowDivider(inset: Space.rowPad + 44 + Space.md) }
                     }
                 }
+                .padding(.horizontal, Space.screenH)
                 .padding(.vertical, Space.sm)
             }
         }
         .frame(height: 320, alignment: .top)
         .frame(maxWidth: .infinity)
-        .background(Palette.ink.opacity(0.6))
+        .background(Palette.canvas)
     }
 
     /// The phrase's output-time position as m:ss (where it plays in the cut, drops applied).
