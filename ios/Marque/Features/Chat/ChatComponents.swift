@@ -176,7 +176,8 @@ struct ChatTypingIndicator: View {
     }
 }
 
-// MARK: - Script card (compact — chat intent payload)
+// MARK: - Script card (DESIGN.md content card: eyebrow format tag, title3, body hook,
+// outline "Save" + ink "Film" capsules)
 
 struct ChatScriptCard: View {
     let script: Script
@@ -186,8 +187,9 @@ struct ChatScriptCard: View {
 
     var body: some View {
         ChatScriptCardContent(script: script, saveLabel: saveLabel, saveId: saveId, showChevron: onOpen != nil)
-            .marqueCard(padding: Space.md)
-            .contentShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .dsCard(.surface, radius: Radius.card, padding: Space.cardPad)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             .onTapGesture { onOpen?() }     // inner Film/Save buttons keep their own hit areas
             // Same accessibilityIdentifier-leak fix as cleanupPanel (ProEditorView+Actions.swift):
             // without .accessibilityElement(children: .contain), this card's own identifier
@@ -215,50 +217,53 @@ struct ChatScriptCardContent: View {
                 Spacer()
                 if showChevron {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Palette.textTertiary)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Palette.textSecondary)
+                        .accessibilityHidden(true)
                 }
             }
             Text(script.title.isEmpty ? script.hook.text : script.title)
-                .font(Typeface.sans(22, .semibold))
+                .font(AppFont.title3)
                 .foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             Text("\u{201C}\(script.hook.text)\u{201D}")
-                .font(AppFont.caption)
+                .font(AppFont.supporting)
                 .foregroundStyle(Palette.textSecondary)
                 .lineLimit(2)
-            HStack(spacing: Space.md) {
-                Button {
-                    store.readyScript(script, source: .chat)
-                    router.pendingFilmScriptId = script.id
-                    router.showFilm = true
-                } label: {
-                    Text("Film this")
-                        .font(AppFont.callout)
-                        .foregroundStyle(Palette.onInk)
-                        .padding(.horizontal, Space.md)
-                        .frame(height: 32)
-                        .background(Palette.ink)
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(PressableStyle())
-                Button {
-                    store.readyScript(script, source: .chat)
-                } label: {
-                    Label(isSaved ? "Saved" : saveLabel,
-                          systemImage: isSaved ? "bookmark.fill" : "bookmark")
-                        .font(AppFont.callout)
-                        .foregroundStyle(Palette.accent)
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier(saveId)
+            // Both capsules on one row when they fit; stacked on narrow widths (SE, or
+            // nested inside the analysis card with the longer "Save to film queue" label).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Space.sm) { saveButton; filmButton }
+                VStack(alignment: .leading, spacing: Space.sm) { filmButton; saveButton }
             }
-            .padding(.top, 2)
+            .padding(.top, Space.xs)
         }
+    }
+
+    private var filmButton: some View {
+        Button {
+            store.readyScript(script, source: .chat)
+            router.pendingFilmScriptId = script.id
+            router.showFilm = true
+        } label: {
+            Label("Film this", systemImage: "video")
+        }
+        .buttonStyle(.ds(.primary, height: 40))
+    }
+
+    private var saveButton: some View {
+        Button {
+            store.readyScript(script, source: .chat)
+        } label: {
+            Label(isSaved ? "Saved" : saveLabel,
+                  systemImage: isSaved ? "bookmark.fill" : "bookmark")
+        }
+        .buttonStyle(.ds(.outline, height: 40))
+        .accessibilityIdentifier(saveId)
     }
 }
 
-// MARK: - Clip-edit progress card (W5)
+// MARK: - Clip-edit progress card (W5) — surface card, monochrome step dashes, outline capsules
 
 struct ClipEditCard: View {
     let state: ClipEditState
@@ -292,43 +297,39 @@ struct ClipEditCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(spacing: Space.sm) {
-                if !isTerminal { ProgressView().controlSize(.small).tint(Palette.accent) }
+                if !isTerminal { ProgressView().controlSize(.small).tint(Palette.textPrimary) }
                 else {
-                    Image(systemName: state.stage == .ready ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                        .foregroundStyle(state.stage == .ready ? Palette.accent : Palette.textTertiary)
+                    // Meaning by glyph, not hue: check = done, exclamation = failed.
+                    Image(systemName: state.stage == .ready ? "checkmark.circle.fill" : "exclamationmark.circle")
+                        .font(.system(size: 18, weight: .regular))
+                        .foregroundStyle(Palette.textPrimary)
                 }
                 Text(stageLabel).font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if !isTerminal {
-                HStack(spacing: 6) {
+                HStack(spacing: Space.sm) {
                     ForEach(Self.steps, id: \.self) { s in
                         Capsule()
-                            .fill(stepDone(s) || stepActive(s) ? Palette.accent : Palette.hairline)
-                            .frame(height: 3)
-                            .opacity(stepActive(s) ? 0.7 : 1)
+                            .fill(stepDone(s) || stepActive(s) ? Palette.textPrimary : Palette.hairline)
+                            .frame(height: 2)
+                            .opacity(stepActive(s) ? 0.5 : 1)
                     }
                 }
+                .animation(Motion.standard, value: state.stage)
             }
 
             if state.stage == .failed, !state.detail.isEmpty {
-                Text(state.detail).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                Text(state.detail).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if state.stage == .failed, state.retryable, let onRetry {
                 Button { onRetry() } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "arrow.clockwise")
-                        Text("Try again").font(AppFont.callout.weight(.semibold))
-                    }
-                    .foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, 14).frame(height: 40)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    Label("Try again", systemImage: "arrow.clockwise")
                 }
-                .buttonStyle(PressableStyle(dim: 0.7))
+                .buttonStyle(.ds(.outline, height: 40))
                 .accessibilityIdentifier("chat.clipEdit.retry")
             }
 
@@ -336,26 +337,14 @@ struct ClipEditCard: View {
                 Button {
                     router.selectedTab = .library
                 } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "photo.stack")
-                        Text("View in Library").font(AppFont.callout.weight(.semibold))
-                    }
-                    .foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, 14).frame(height: 40)
-                    .background(Palette.surfaceRaised)
-                    .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
+                    Label("View in Library", systemImage: "photo.stack")
                 }
-                .buttonStyle(PressableStyle(dim: 0.7))
+                .buttonStyle(.ds(.outline, height: 40))
                 .accessibilityIdentifier("chat.clipEdit.viewInLibrary")
             }
         }
-        .padding(Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.surface)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .dsCard(.surface, radius: Radius.card, padding: Space.cardPad)
         // Same fix as cleanupPanel: without this, the card's own identifier clobbers the
         // conditional "View in Library" button's own "chat.clipEdit.viewInLibrary" identifier.
         .accessibilityElement(children: .contain)
@@ -363,31 +352,31 @@ struct ClipEditCard: View {
     }
 }
 
-// MARK: - Video-analysis card
+// MARK: - Video-analysis card — eyebrow sections inside one surface card
 
 struct ChatVideoAnalysisCard: View {
     let analysis: VideoAnalysis
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            SectionLabel(text: "Why it works")
+            DSEyebrow(text: "Why it works")
             if !analysis.hookAnalysis.isEmpty {
                 Text(analysis.hookAnalysis)
-                    .font(AppFont.body)
-                    .foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.bodyText)
+                    .foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !analysis.structureBeats.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: Space.sm) {
                     ForEach(Array(analysis.structureBeats.enumerated()), id: \.offset) { i, beat in
-                        HStack(alignment: .top, spacing: Space.sm) {
+                        HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                             Text("\(i + 1).")
-                                .font(AppFont.caption)
-                                .foregroundStyle(Palette.textTertiary)
-                                .frame(width: 18, alignment: .leading)
-                            Text(beat)
-                                .font(AppFont.caption)
+                                .font(AppFont.supporting.weight(.semibold))
                                 .foregroundStyle(Palette.textSecondary)
+                                .frame(width: 22, alignment: .leading)
+                            Text(beat)
+                                .font(AppFont.supporting)
+                                .foregroundStyle(Palette.textPrimary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -395,19 +384,20 @@ struct ChatVideoAnalysisCard: View {
             }
             if !analysis.whyItWorks.isEmpty {
                 Text(analysis.whyItWorks)
-                    .font(AppFont.body)
+                    .font(AppFont.bodyText)
                     .foregroundStyle(Palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let version = analysis.yourVersion {
-                MarqueHairline()
-                SectionLabel(text: "Your version")
+                MarqueHairline().padding(.vertical, Space.xs)
+                DSEyebrow(text: "Your version")
                 ChatScriptCardContent(script: version,
                                       saveLabel: "Save to film queue",
                                       saveId: "chat.saveVersion")
             }
         }
-        .marqueCard(padding: Space.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsCard(.surface, radius: Radius.card, padding: Space.cardPad)
     }
 }
 
