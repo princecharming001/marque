@@ -1221,24 +1221,22 @@ struct ProEditorView: View {
                 PlayerLayerView(player: player.player, gravity: .resizeAspect)
                     .aspectRatio(9.0/16.0, contentMode: .fit)
             } else {
-                Image(systemName: "film").font(.system(size: 48)).foregroundStyle(.white.opacity(0.3))
+                Image(systemName: "film").font(.system(size: 48)).foregroundStyle(Palette.onNight.opacity(0.3))
             }
+            // Stoic circular controls over media (translucent white on the video).
             VStack {
                 HStack {
                     Spacer()
-                    Button { player?.pause(); showFullscreen = false } label: {
-                        Image(systemName: "xmark").font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.white).frame(width: 40, height: 40)
-                            .background(.black.opacity(0.4)).clipShape(Circle())
-                    }.padding(Space.md)
+                    DSCircleButton(systemName: "xmark", kind: .onNight, size: 44) { player?.pause(); showFullscreen = false }
+                    .padding(Space.md)
+                    .accessibilityLabel("Close")
                     .accessibilityIdentifier("editorPro.fullscreen.close")
                 }
                 Spacer()
-                Button { player?.togglePlay() } label: {
-                    Image(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill")
-                        .font(.system(size: 22)).foregroundStyle(.white)
-                        .frame(width: 56, height: 56).background(.black.opacity(0.4)).clipShape(Circle())
-                }.padding(.bottom, Space.xl)
+                DSCircleButton(systemName: (player?.isPlaying ?? false) ? "pause.fill" : "play.fill",
+                               kind: .onNight, size: 56) { player?.togglePlay() }
+                .padding(.bottom, Space.xl)
+                .accessibilityLabel((player?.isPlaying ?? false) ? "Pause" : "Play")
             }
         }
     }
