@@ -401,7 +401,7 @@ struct ChatVideoAnalysisCard: View {
     }
 }
 
-// MARK: - Suggested chips (vertical card stack above the composer)
+// MARK: - Suggested chips (capsule chips stacked above the composer)
 
 /// One-tap suggested next messages. Tap sends; LONG-PRESS loads the chip into the
 /// composer for editing — so a suggestion can seed a custom answer instead of
@@ -416,64 +416,69 @@ struct ChatSuggestedChips: View {
 
     @State private var pressed: String?
 
+    /// Capsule at one line (22 = half the 44pt min height); longer suggestions wrap
+    /// inside the same rounded shape instead of truncating.
+    private let chipShape = RoundedRectangle(cornerRadius: 22, style: .continuous)
+
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             ForEach(chips, id: \.self) { chip in
                 HStack(spacing: Space.sm) {
                     Text(chip)
-                        .font(AppFont.callout)
+                        .font(AppFont.supporting)
                         .foregroundStyle(Palette.textPrimary)
                         .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: Space.sm)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Palette.textTertiary)
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Palette.textSecondary)
+                        .accessibilityHidden(true)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .padding(.horizontal, Space.md)
+                .padding(.vertical, 11)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(minHeight: 44)
-                .background(Palette.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Palette.hairline, lineWidth: 1))
-                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .opacity(pressed == chip ? 0.7 : 1)
+                .background(chipShape.fill(Palette.surface))
+                .overlay(chipShape.strokeBorder(Palette.hairline, lineWidth: 1))
+                .contentShape(chipShape)
+                .scaleEffect(pressed == chip ? 0.98 : 1)
+                .opacity(pressed == chip ? 0.8 : 1)
+                .animation(Motion.quick, value: pressed)
                 .onTapGesture { onTap(chip) }
                 .onLongPressGesture(minimumDuration: 0.35, perform: {
                     (onEdit ?? onTap)(chip)
                 }, onPressingChanged: { down in
                     pressed = down ? chip : nil
                 })
+                .accessibilityAddTraits(.isButton)
             }
-            if let onOther {
-                // Deliberately quieter than the real choices (dashed hairline, tertiary
-                // text) — an escape hatch, not another suggestion. Focuses the empty
-                // composer; never auto-sends.
-                HStack(spacing: Space.sm) {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 13))
-                        .foregroundStyle(Palette.textTertiary)
-                    Text("Type my own answer")
-                        .font(AppFont.callout)
-                        .foregroundStyle(Palette.textSecondary)
-                    Spacer(minLength: Space.sm)
+            HStack(alignment: .center, spacing: Space.md) {
+                if let onOther {
+                    // Text link (DESIGN.md): an escape hatch, not another suggestion.
+                    // Focuses the empty composer; never auto-sends.
+                    HStack(spacing: 6) {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 13, weight: .regular))
+                        Text("Type my own answer")
+                            .font(AppFont.supporting.weight(.semibold))
+                    }
+                    .foregroundStyle(Palette.textPrimary)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onOther() }
+                    .accessibilityAddTraits(.isButton)
+                    .accessibilityIdentifier("chat.chip.other")
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(minHeight: 44)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Palette.hairline, style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
-                .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .onTapGesture { onOther() }
-                .accessibilityIdentifier("chat.chip.other")
-            }
-            if onEdit != nil {
-                Text("Tap to send, hold to edit, or just type")
-                    .font(AppFont.micro)
-                    .foregroundStyle(Palette.textTertiary)
+                Spacer(minLength: 0)
+                if onEdit != nil {
+                    Text("Tap to send, hold to edit, or just type")
+                        .font(AppFont.caption)
+                        .foregroundStyle(Palette.textSecondary)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.85)
+                }
             }
         }
     }
