@@ -581,19 +581,34 @@ struct ClipDetailSheet: View {
         return nil
     }
 
-    /// A custom, on-brand action pill (Share / Delete) — GhostButton's card look at a
-    /// compact height, tintable so Delete reads destructive.
+    /// Stoic text-link label (glyph + word, centered). Used for the destructive Delete:
+    /// black text + trash glyph, and the confirm dialog does the warning (no red).
     private func clipActionLabel(_ title: String, systemImage: String, tint: Color) -> some View {
-        HStack(spacing: Space.xs) {
-            Image(systemName: systemImage).font(.system(size: 14, weight: .medium))
-            Text(title).font(AppFont.callout)
+        HStack(spacing: Space.sm) {
+            Image(systemName: systemImage).font(.system(size: 15, weight: .regular))
+            Text(title).font(AppFont.bodyText)
         }
         .foregroundStyle(tint)
-        .frame(maxWidth: .infinity).frame(height: 46)
-        .background(Palette.surfaceRaised)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-            .strokeBorder(Palette.hairline, lineWidth: 1))
+        .frame(maxWidth: .infinity).frame(minHeight: 44)
+        .contentShape(Rectangle())
+    }
+
+    // Which rows the actions card shows (reads state only; same gates as before).
+    private var showsEditRow: Bool {
+        !isDraft && clip.jobId != nil && (current.status == .ready || current.status == .rendering)
+    }
+    private var showsVersionsRow: Bool {
+        !isDraft && clip.jobId != nil && !(current.renderHistory ?? []).isEmpty
+    }
+    private var showsShareRow: Bool { !isDraft && shareURL != nil }
+
+    /// Sheet footer surface: canvas with a hairline top edge (no blur material).
+    private func footerBar<V: View>(@ViewBuilder _ content: () -> V) -> some View {
+        content()
+            .padding(.horizontal, Space.screenH).padding(.top, Space.md).padding(.bottom, Space.sm)
+            .frame(maxWidth: .infinity)
+            .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
+            .overlay(alignment: .top) { Rectangle().fill(Palette.hairline).frame(height: 1) }
     }
 
     var body: some View {
@@ -608,6 +623,7 @@ struct ClipDetailSheet: View {
                         // for the committed cut.
                         ClipPreviewPlayer(path: current.previewURL == nil ? current.playbackLocalPath : nil,
                                           remoteURL: current.previewURL ?? current.playbackRemoteURL,
+                                          cornerRadius: Radius.tile,
                                           // Build 69: the manual editor covers this sheet —
                                           // pause the moment it opens (owner: video kept playing).
                                           suspended: showEditor)
@@ -618,17 +634,19 @@ struct ClipDetailSheet: View {
                         if current.previewURL != nil {
                             VStack {
                                 HStack {
-                                    Text("PREVIEW")
-                                        .font(.system(size: 10, weight: .bold)).tracking(1.0)
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 8).padding(.vertical, 4)
-                                        .background(Palette.accent.opacity(0.9))
-                                        .clipShape(Capsule())
+                                    // Over video: dark scrim capsule, white tracked label.
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "eye").font(.system(size: 10, weight: .semibold))
+                                        Text("PREVIEW").font(AppFont.eyebrow).tracking(1.2)
+                                    }
+                                    .foregroundStyle(Palette.onNight)
+                                    .padding(.horizontal, 10).frame(height: 24)
+                                    .background(Capsule().fill(Color.black.opacity(0.6)))
                                     Spacer()
                                 }
                                 Spacer()
                             }
-                            .padding(Space.sm)
+                            .padding(Space.md)
                             .allowsHitTesting(false)
                         }
                         if current.status == .rendering, let pp = PipelineProgress.from(current) {
@@ -637,14 +655,14 @@ struct ClipDetailSheet: View {
                             // reads on the video and matches the Library cards.
                             // build 52: rounded so the dim overlay follows the player's
                             // founder corners instead of squaring them off during editing.
-                            RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                            RoundedRectangle(cornerRadius: Radius.tile, style: .continuous)
                                 .fill(.black.opacity(0.35))
                             VStack {
                                 Spacer()
                                 PipelineTimeline(progress: pp, compact: true)
                                     .padding(.horizontal, Space.md).padding(.vertical, 10)
-                                    .background(.ultraThinMaterial)
-                                    .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                    .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                        .fill(Palette.surface))
                                     .padding(Space.md)
                             }
                         }
@@ -654,7 +672,7 @@ struct ClipDetailSheet: View {
                     // centered horizontally, it reads like a proper vertical reel.
                     .aspectRatio(9.0 / 16.0, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: 500)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.tile, style: .continuous))
 
                     // UX-D1: the tweak chat is the clip's front door, not a buried menu
                     // entry — an input-shaped affordance right under the player. This is
@@ -663,29 +681,30 @@ struct ClipDetailSheet: View {
                     // gate left clips with a jobId but no remote render URL (e.g. the
                     // demo clip) with no AI entry at all once the duplicate button went.
                     if current.status == .ready && clip.jobId != nil && !isDraft {
+                        // Stoic search-capsule shape: sunken capsule, glyph + placeholder.
                         Button { showTweak = true } label: {
                             HStack(spacing: Space.sm) {
                                 Image(systemName: "wand.and.stars")
-                                    .font(.system(size: 14)).foregroundStyle(Palette.accent)
+                                    .font(.system(size: 17, weight: .regular))
+                                    .foregroundStyle(Palette.textPrimary)
                                 Text("Tell the editor what to change…")
-                                    .font(AppFont.callout).foregroundStyle(Palette.textTertiary)
-                                Spacer()
+                                    .font(AppFont.bodyText).foregroundStyle(Palette.textTertiary)
+                                    .lineLimit(1).minimumScaleFactor(0.85)
+                                Spacer(minLength: 0)
                             }
-                            .padding(.horizontal, Space.md).padding(.vertical, 12)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: Radius.pill, style: .continuous)
-                                .strokeBorder(Palette.hairline, lineWidth: 1))
+                            .padding(.horizontal, Space.lg).frame(height: 52)
+                            .background(Capsule().fill(Palette.surfaceSunken))
+                            .contentShape(Capsule())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PressableStyle(dim: 0.8))
                         .accessibilityIdentifier("clip.tweakAffordance")
                     }
                     // Failed render → tell the creator WHY + let them retry (the
                     // backend still holds the source + EDL). No more silent spin.
                     if !isDraft, current.status == .failed {
-                        VStack(alignment: .leading, spacing: Space.sm) {
+                        VStack(alignment: .leading, spacing: Space.md) {
                             Label(store.friendlyRenderError(current.lastError, detail: current.lastErrorDetail), systemImage: "exclamationmark.triangle")
-                                .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                                .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                                 .fixedSize(horizontal: false, vertical: true)
                             // Liveness v2: an upload that died before a job existed has
                             // jobId nil but the take on disk — retryClipJob recovers it via
@@ -698,61 +717,53 @@ struct ClipDetailSheet: View {
                                 .accessibilityIdentifier("clip.retry")
                             }
                         }
-                        .padding(Space.md)
-                        .background(Palette.surfaceRaised)
-                        .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                     }
 
-                    // Edit tooling — only for server-edited clips whose job is still
-                    // alive (jobId == nil means the offline mock engine). AI tweaks have
-                    // exactly ONE entry point: the input-shaped affordance under the
-                    // player above (a second "Tweak with AI" button here opened the
-                    // identical sheet — pure duplication, removed).
-                    if !isDraft, clip.jobId != nil, current.status == .ready || current.status == .rendering {
-                        GhostButton(title: "Edit manually", systemImage: "slider.horizontal.3") {
-                            showEditor = true
-                        }
-                        .accessibilityIdentifier("clip.editManual")
-                    }
-
-                    // Build 66: past edit versions — a timeline of every AI/manual edit,
-                    // any of which can be restored (server-side EDL undo + re-render).
-                    if !isDraft, clip.jobId != nil, !(current.renderHistory ?? []).isEmpty {
-                        GhostButton(title: "Versions", systemImage: "clock.arrow.circlepath") {
-                            showVersions = true
-                        }
-                        .accessibilityIdentifier("clip.versions")
-                    }
-
-                    // Custom Share / Delete actions — first-class, on-brand pills instead of
-                    // a buried Apple-native ellipsis menu. build 52: Delete now shows for
-                    // DRAFTS too (it was gated behind !isDraft, leaving drafts un-deletable
-                    // from the Library — the reported bug); Share stays non-draft only (a
-                    // half-finished take has nothing shareable yet).
-                    HStack(spacing: Space.sm) {
-                        if !isDraft, shareURL != nil {
-                            Button {
-                                guard !sharePreparing else { return }
-                                sharePreparing = true
-                                Task {
-                                    shareFileURL = await store.shareableRenderFile(for: clip.id)
-                                    sharePreparing = false
-                                }
-                            } label: {
-                                clipActionLabel(sharePreparing ? "Preparing…" : "Share",
-                                                systemImage: "square.and.arrow.up",
-                                                tint: Palette.textPrimary)
+                    // Actions as one Stoic grouped-rows card: Edit manually / Versions /
+                    // Share. Same gates as before, only the chrome changed.
+                    if showsEditRow || showsVersionsRow || showsShareRow {
+                        DSGroup {
+                            // Edit tooling — only for server-edited clips whose job is still
+                            // alive (jobId == nil means the offline mock engine). AI tweaks have
+                            // exactly ONE entry point: the input-shaped affordance under the
+                            // player above (a second "Tweak with AI" button here opened the
+                            // identical sheet — pure duplication, removed).
+                            if showsEditRow {
+                                DSRow(title: "Edit manually", systemImage: "slider.horizontal.3", action: {
+                                    showEditor = true
+                                })
+                                .accessibilityIdentifier("clip.editManual")
                             }
-                            .buttonStyle(PressableStyle(dim: 0.7))
-                            .disabled(sharePreparing)
-                            .accessibilityIdentifier("clip.share")
+                            if showsEditRow && (showsVersionsRow || showsShareRow) { DSRowDivider(inset: 56) }
+
+                            // Build 66: past edit versions — a timeline of every AI/manual edit,
+                            // any of which can be restored (server-side EDL undo + re-render).
+                            if showsVersionsRow {
+                                DSRow(title: "Versions", systemImage: "clock.arrow.circlepath", action: {
+                                    showVersions = true
+                                })
+                                .accessibilityIdentifier("clip.versions")
+                            }
+                            if showsVersionsRow && showsShareRow { DSRowDivider(inset: 56) }
+
+                            // Share stays non-draft only (a half-finished take has nothing
+                            // shareable yet).
+                            if showsShareRow {
+                                DSRow(title: sharePreparing ? "Preparing…" : "Share",
+                                      systemImage: "square.and.arrow.up", showsChevron: false, action: {
+                                    guard !sharePreparing else { return }
+                                    sharePreparing = true
+                                    Task {
+                                        shareFileURL = await store.shareableRenderFile(for: clip.id)
+                                        sharePreparing = false
+                                    }
+                                })
+                                .disabled(sharePreparing)
+                                .accessibilityIdentifier("clip.share")
+                            }
                         }
-                        Button { showDelete = true } label: {
-                            clipActionLabel(isDraft ? "Delete draft" : "Delete",
-                                            systemImage: "trash", tint: Palette.critical)
-                        }
-                        .buttonStyle(PressableStyle(dim: 0.7))
-                        .accessibilityIdentifier("clip.delete")
                     }
 
                     if isDraft {
@@ -763,37 +774,60 @@ struct ClipDetailSheet: View {
                         Text(hasFootage
                              ? "Your take is saved here. Send it to the editor whenever you're ready."
                              : "Saved mid-take. Pick up right where you left off; your script is queued in Film.")
-                            .font(AppFont.body).foregroundStyle(Palette.textSecondary)
+                            .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
                         // Editable caption — creators tweak the copy before it goes out.
                         VStack(alignment: .leading, spacing: Space.sm) {
-                            SectionLabel(text: "Caption", accent: Palette.accent)
+                            SectionLabel(text: "Caption")
+                                .padding(.horizontal, Space.rowPad)
                             TextField("Caption", text: $caption, axis: .vertical)
-                                .font(AppFont.bodyL).foregroundStyle(Palette.textPrimary)
+                                .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                                .tint(Palette.textPrimary)
                                 .lineLimit(2...6)
-                                .padding(Space.md)
-                                .background(Palette.surfaceRaised)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                                    .strokeBorder(Palette.hairline, lineWidth: 1))
+                                .padding(Space.rowPad)
+                                .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                    .fill(Palette.surface))
                                 .accessibilityIdentifier("clip.caption")
                         }
                     }
 
                     if !isDraft, !clip.captionLines.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            SectionLabel(text: "Auto-captions", accent: Palette.accent)
-                            ForEach(Array(clip.captionLines.enumerated()), id: \.offset) { _, line in
-                                Text(line).font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            SectionLabel(text: "Auto-captions")
+                                .padding(.horizontal, Space.rowPad)
+                            VStack(alignment: .leading, spacing: 6) {
+                                ForEach(Array(clip.captionLines.enumerated()), id: \.offset) { _, line in
+                                    Text(line).font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .dsCard(.surface, radius: Radius.group, padding: Space.rowPad)
                         }
                     }
+
+                    // build 52: Delete shows for DRAFTS too (it was gated behind !isDraft,
+                    // leaving drafts un-deletable). Stoic destructive = text link + confirm.
+                    Button { showDelete = true } label: {
+                        clipActionLabel(isDraft ? "Delete draft" : "Delete",
+                                        systemImage: "trash", tint: Palette.textPrimary)
+                    }
+                    .buttonStyle(PressableStyle(dim: 0.5))
+                    .accessibilityIdentifier("clip.delete")
                 }
-                .screenPadding().padding(.vertical, Space.lg)
+                .screenPadding().padding(.top, Space.sm).padding(.bottom, Space.xl)
             }
             .background(Palette.canvas.ignoresSafeArea())
             .navigationTitle(isDraft ? "Draft" : "Clip").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
             .toolbar {
+                // Stoic sheet title: lowercase with a period, centered.
+                ToolbarItem(placement: .principal) {
+                    Text(dsTitle(isDraft ? "Draft" : "Clip"))
+                        .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
                 // Share + Delete moved to custom in-body pills (clip.share / clip.delete);
                 // the native ellipsis menu is gone.
                 ToolbarItem(placement: .topBarTrailing) {
@@ -801,6 +835,7 @@ struct ClipDetailSheet: View {
                         if !isDraft { store.updateClipCaption(clip, caption: caption) }
                         dismiss()
                     }
+                    .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
                 }
             }
             .safeAreaInset(edge: .bottom) {
@@ -813,40 +848,41 @@ struct ClipDetailSheet: View {
                         FileManager.default.fileExists(atPath: MediaStore.url(for: $0).path)
                     } ?? false
                     if hasFootage {
-                        PrimaryButton(title: "Send to editor", systemImage: "wand.and.stars") {
-                            store.submitDraft(clip)
-                            dismiss()
-                            router.selectedTab = .library
+                        footerBar {
+                            PrimaryButton(title: "Send to editor", systemImage: "wand.and.stars") {
+                                store.submitDraft(clip)
+                                dismiss()
+                                router.selectedTab = .library
+                            }
+                            .accessibilityIdentifier("library.sendDraftToEditor")
                         }
-                        .accessibilityIdentifier("library.sendDraftToEditor")
-                        .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                        .background(.ultraThinMaterial)
                     } else {
-                        PrimaryButton(title: "Finish this take", systemImage: "video.fill") {
-                            router.pendingFilmScriptId = clip.scriptId
-                            dismiss()
-                            router.showFilm = true
+                        footerBar {
+                            PrimaryButton(title: "Finish this take", systemImage: "video.fill") {
+                                router.pendingFilmScriptId = clip.scriptId
+                                dismiss()
+                                router.showFilm = true
+                            }
+                            .accessibilityIdentifier("library.finishDraft")
                         }
-                        .accessibilityIdentifier("library.finishDraft")
-                        .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                        .background(.ultraThinMaterial)
                     }
                 } else if current.status == .ready {
-                    HStack(spacing: Space.sm) {
-                        PrimaryButton(title: "Post now", systemImage: "paperplane.fill") {
-                            store.updateClipCaption(clip, caption: caption)
-                            showPostNow = true
+                    // Stoic CTA row: outline secondary leading, primary trailing.
+                    footerBar {
+                        HStack(spacing: Space.sm) {
+                            GhostButton(title: "Schedule", systemImage: "calendar") {
+                                store.updateClipCaption(clip, caption: caption)
+                                router.pendingScheduleClipId = clip.id
+                                dismiss(); router.selectedTab = .performance
+                            }
+                            .accessibilityIdentifier("clip.schedule")
+                            PrimaryButton(title: "Post now", systemImage: "paperplane.fill") {
+                                store.updateClipCaption(clip, caption: caption)
+                                showPostNow = true
+                            }
+                            .accessibilityIdentifier("clip.postNow")
                         }
-                        .accessibilityIdentifier("clip.postNow")
-                        GhostButton(title: "Schedule", systemImage: "calendar") {
-                            store.updateClipCaption(clip, caption: caption)
-                            router.pendingScheduleClipId = clip.id
-                            dismiss(); router.selectedTab = .performance
-                        }
-                        .accessibilityIdentifier("clip.schedule")
                     }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
                 }
             }
             .marqueConfirm($showDelete, title: isDraft ? "Delete this draft?" : "Delete this clip?",
