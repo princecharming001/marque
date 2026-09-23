@@ -29,82 +29,106 @@ struct ChatEditConfigSheet: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: Space.lg) {
+                VStack(alignment: .leading, spacing: Space.xl) {
                     Text("\(clipCount) clip\(clipCount == 1 ? "" : "s") attached")
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                        .font(AppFont.supporting).foregroundStyle(Palette.textSecondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
 
                     if !styles.isEmpty {
-                        VStack(alignment: .leading, spacing: Space.xs) {
-                            SectionLabel(text: "B-roll style, pick a look")
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            DSEyebrow(text: "B-roll style, pick a look")
+                                .padding(.horizontal, Space.rowPad)
                             ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: Space.sm) {
+                                HStack(alignment: .top, spacing: Space.stack) {
                                     ForEach(Array(styles.enumerated()), id: \.element.id) { i, s in
                                         styleCard(s, index: i)
                                     }
                                 }
+                                .padding(.horizontal, Space.screenH)
                             }
+                            .padding(.horizontal, -Space.screenH)
                         }
                     }
 
                     if selectedStyle == "split_screen" {
-                        VStack(alignment: .leading, spacing: Space.xs) {
-                            SectionLabel(text: "What are you reacting to?")
+                        VStack(alignment: .leading, spacing: Space.sm) {
+                            DSEyebrow(text: "What are you reacting to?")
+                                .padding(.horizontal, Space.rowPad)
                             TextField("", text: $reactSourceURL,
-                                      prompt: Text("Paste a video link").foregroundStyle(.white.opacity(0.5)))
-                                .textFieldStyle(.plain).font(AppFont.body)
-                                .foregroundStyle(Palette.textPrimary)
-                                .padding(Space.md)
-                                .background(Palette.surfaceRaised)
-                                .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                                      prompt: Text("Paste a video link").foregroundStyle(Palette.textTertiary))
+                                .textFieldStyle(.plain)
+                                .tint(Palette.textPrimary)
+                                .marqueField()
                                 .accessibilityIdentifier("chatEdit.reactSource")
                         }
                     }
 
-                    VStack(spacing: Space.xs) {
-                        MarqueToggleRow(title: "B-roll cutaways", subtitle: nil, isOn: $toggles.broll)
-                        MarqueToggleRow(title: "Punch-ins for emphasis", subtitle: nil, isOn: $toggles.punchIns)
-                        MarqueToggleRow(title: "Background music", subtitle: nil, isOn: $toggles.music)
-                        if toggles.broll {
-                            VStack(alignment: .leading, spacing: Space.xs) {
-                                HStack {
-                                    SectionLabel(text: "Meme energy")
-                                    Spacer(minLength: Space.md)
-                                    Text(["Off", "Subtle", "Memey", "Brainrot"][Int(memeLevel)])
-                                        .font(AppFont.caption).foregroundStyle(Palette.accent)
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSGroup {
+                            DSToggleRow(title: "B-roll cutaways", isOn: $toggles.broll)
+                            DSRowDivider()
+                            DSToggleRow(title: "Punch-ins for emphasis", isOn: $toggles.punchIns)
+                            DSRowDivider()
+                            DSToggleRow(title: "Background music", isOn: $toggles.music)
+                            if toggles.broll {
+                                DSRowDivider()
+                                VStack(alignment: .leading, spacing: Space.sm) {
+                                    HStack(alignment: .firstTextBaseline) {
+                                        DSEyebrow(text: "Meme energy")
+                                        Spacer(minLength: Space.md)
+                                        Text(["Off", "Subtle", "Memey", "Brainrot"][Int(memeLevel)])
+                                            .font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                                    }
+                                    Slider(value: $memeLevel, in: 0...3, step: 1)
+                                        .tint(Palette.textPrimary)
+                                        .accessibilityIdentifier("chatEdit.memeLevel")
                                 }
-                                Slider(value: $memeLevel, in: 0...3, step: 1)
-                                    .tint(Palette.accent)
-                                    .accessibilityIdentifier("chatEdit.memeLevel")
+                                .padding(.horizontal, Space.rowPad)
+                                .padding(.vertical, Space.md)
                             }
-                            .padding(Space.md)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: Space.xs) {
-                        SectionLabel(text: "Anything specific?")
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        DSEyebrow(text: "Anything specific?").padding(.horizontal, Space.rowPad)
                         TextField("", text: $instruction,
-                                  prompt: Text("e.g. keep it under 30s, punchy").foregroundStyle(.white.opacity(0.5)),
+                                  prompt: Text("e.g. keep it under 30s, punchy").foregroundStyle(Palette.textTertiary),
                                   axis: .vertical)
-                            .textFieldStyle(.plain).font(AppFont.body)
+                            .textFieldStyle(.plain).font(AppFont.bodyText)
                             .foregroundStyle(Palette.textPrimary)
-                            .padding(Space.md)
-                            .background(Palette.surfaceRaised)
-                            .clipShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+                            .tint(Palette.textPrimary)
+                            .lineLimit(1...5)
+                            .padding(.horizontal, Space.rowPad)
+                            .padding(.vertical, 15)
+                            .frame(minHeight: 52)
+                            .background(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .fill(Palette.surface))
+                            .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                                .strokeBorder(Palette.hairline, lineWidth: 1))
                             .accessibilityIdentifier("chatEdit.instruction")
                     }
                 }
                 .screenPadding().padding(.vertical, Space.lg)
             }
             .background(Palette.canvas.ignoresSafeArea())
-            .navigationTitle("Edit these clips").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
+            .navigationTitle("edit these clips.").navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(Palette.canvas, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("edit these clips.").font(AppFont.headline).foregroundStyle(Palette.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") { dismiss() }
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
+                }
+            }
             .safeAreaInset(edge: .bottom) {
-                PrimaryButton(title: "Create edit", systemImage: "wand.and.stars") { submit() }
-                    .padding(.horizontal, Space.screenH).padding(.vertical, Space.sm)
-                    .background(.ultraThinMaterial)
+                PrimaryButton(title: "Create edit", systemImage: "wand.and.stars", fullWidth: false) { submit() }
                     .accessibilityIdentifier("chatEdit.create")
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, Space.screenH).padding(.top, Space.sm).padding(.bottom, Space.sm)
+                    .background(Palette.canvas.ignoresSafeArea(edges: .bottom))
             }
             .task {
                 instruction = initialInstruction
@@ -117,9 +141,9 @@ struct ChatEditConfigSheet: View {
         let selected = selectedStyle == s.id
         let playable = !s.videoURL.isEmpty && !failedDemos.contains(s.id)
         return Button {
-            withAnimation(.easeOut(duration: 0.15)) { selectedStyle = s.id }
+            withAnimation(Motion.quick) { selectedStyle = s.id }
         } label: {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Space.sm) {
                 ZStack(alignment: .topTrailing) {
                     if playable, visibleDemos.contains(s.id), let url = URL(string: s.videoURL) {
                         FailableVideoPlayer(url: url, muted: true, showsControls: false,
@@ -127,30 +151,35 @@ struct ChatEditConfigSheet: View {
                             .frame(width: 112, height: 140)
                             .allowsHitTesting(false)
                     } else {
-                        Rectangle().fill(Color.white.opacity(0.08))
+                        Rectangle().fill(Palette.surfaceSunken)
                             .frame(width: 112, height: 140)
-                            .overlay(Image(systemName: "film").foregroundStyle(.white.opacity(0.3)))
+                            .overlay(Image(systemName: "film")
+                                .font(.system(size: 20, weight: .regular))
+                                .foregroundStyle(Palette.textSecondary))
                     }
                     if selected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(Palette.accent)
-                            .background(Circle().fill(.white).padding(2))
-                            .padding(5)
+                        DSCheckmark(isOn: true, size: 24)
+                            .background(Circle().fill(Palette.surface).padding(-2))
+                            .padding(Space.sm)
                     }
                 }
-                .clipShape(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: Radius.group, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Radius.group, style: .continuous)
+                    .strokeBorder(selected ? Palette.textPrimary : Palette.hairline, lineWidth: selected ? 2 : 1))
                 .onAppear { visibleDemos.insert(s.id) }
                 .onDisappear { visibleDemos.remove(s.id) }
-                Text(s.label).font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                Text(s.blurb).font(.system(size: 10)).foregroundStyle(Palette.textSecondary)
-                    .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(s.label).font(AppFont.caption.weight(.semibold)).foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                    Text(s.blurb).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
+                        .lineLimit(2, reservesSpace: true).multilineTextAlignment(.leading)
+                }
+                .padding(.horizontal, 2)
             }
-            .frame(width: 112).padding(4)
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .strokeBorder(selected ? Palette.accent : .clear, lineWidth: 2))
+            .frame(width: 112)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.85))
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityIdentifier("chatEdit.style.\(index)")
     }
 
