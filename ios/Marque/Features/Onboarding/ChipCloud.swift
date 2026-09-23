@@ -42,7 +42,7 @@ struct ChipCloud: View {
 
     var body: some View {
         let rows = Self.pack(items, availableWidth: width)
-        LazyVStack(spacing: Space.md) {
+        LazyVStack(spacing: Space.sm + Space.xs) {
             if !rows.isEmpty {
                 ForEach(0..<Self.cycles, id: \.self) { cycle in
                     ForEach(Array(rows.enumerated()), id: \.offset) { i, row in
@@ -89,8 +89,10 @@ struct ChipCloud: View {
     /// Estimated rendered width of a chip. Cheap arithmetic beats measuring 56
     /// text views: the cloud is deliberately ragged, so a few points of drift is
     /// invisible — and the 6% overflow allowance below turns it into the bleed.
+    /// Re-tuned for the monochrome chip (15pt text, 16pt side padding, no
+    /// category dot): ~7.9pt per character plus padding and the star slot.
     static func estimatedWidth(_ item: Item) -> CGFloat {
-        CGFloat(item.title.count) * 8.4 + 44 + (item.cat == nil ? 0 : 15)
+        CGFloat(item.title.count) * 7.9 + 46
     }
 
     /// Pack the items into rows, greedily, closing a row once the next chip would
@@ -134,9 +136,12 @@ private extension View {
     }
 }
 
-/// A content-hugging capsule chip for the cloud. `primary` marks the FIRST pick —
-/// the one the prompts treat as the creator's main niche/audience — with a star
-/// where the category dot would sit.
+/// A content-hugging capsule chip for the cloud (DESIGN.md §5 chips, sized up to a
+/// 44pt tap target). Unselected = surface + hairline; selected = inverted ink.
+/// `primary` marks the FIRST pick — the one the prompts treat as the creator's
+/// main niche/audience — with a star glyph. `dot` is accepted for call-site
+/// compatibility but no longer drawn: the black-and-white system carries no
+/// category hue on chips.
 struct CloudChip: View {
     let title: String
     let dot: Color?
@@ -146,25 +151,26 @@ struct CloudChip: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 if primary {
                     Image(systemName: "star.fill")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Palette.onInk.opacity(0.9))
-                } else if let dot {
-                    Circle().fill(dot).frame(width: 7, height: 7)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Palette.onInk)
+                        .accessibilityLabel("First pick")
                 }
                 Text(title)
-                    .font(Typeface.sans(16, selected ? .semibold : .regular))
+                    .font(AppFont.supporting.weight(selected ? .semibold : .regular))
                     .lineLimit(1).fixedSize()
             }
-            .foregroundStyle(selected ? Palette.canvas : Palette.textPrimary)
+            .foregroundStyle(selected ? Palette.onInk : Palette.textPrimary)
             .padding(.horizontal, Space.md)
-            .padding(.vertical, Space.md)
-            .background(selected ? Palette.ink : Palette.surfaceRaised, in: Capsule())
+            .frame(height: 44)
+            .background(Capsule().fill(selected ? Palette.ink : Palette.surface))
             .overlay(Capsule().strokeBorder(selected ? .clear : Palette.hairline, lineWidth: 1))
             .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressableStyle(dim: 0.8))
+        .animation(Motion.quick, value: selected)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

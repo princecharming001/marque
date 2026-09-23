@@ -201,10 +201,11 @@ struct OnboardingView: View {
     // and niches… slide left and right… mimic this format almost exactly"):
     // staggered horizontal bands of capsule chips that bleed off both screen
     // edges and scroll independently. Coverage by breadth — ~50 niches across
-    // three color-coded families — instead of typing; for connected users the
-    // page scan derives the true niche anyway, so the chip is a seed.
-    // cat: 0 = money & business (blue) · 1 = health & lifestyle (green) ·
-    //      2 = create & entertain (amber)
+    // three families — instead of typing; for connected users the page scan
+    // derives the true niche anyway, so the chip is a seed. Black-and-white
+    // redesign: the families are no longer color-coded on the chips; the legend
+    // names them as eyebrow labels instead.
+    // cat: 0 = money & business · 1 = health & lifestyle · 2 = create & entertain
     private static let nicheCloud: [(title: String, cat: Int)] = [
         ("Fitness", 1), ("Finance", 0), ("Comedy", 2), ("Beauty", 1),
         ("Startups", 0), ("Food & cooking", 1), ("Gaming", 2), ("Investing", 0),
@@ -221,7 +222,6 @@ struct OnboardingView: View {
         ("Outdoors", 1), ("Lifestyle", 1), ("Golf", 2), ("Basketball", 2),
         ("Interior design", 1), ("Streetwear", 1), ("Baking", 1), ("Soccer", 2),
     ]
-    private static let nicheCatColors: [Color] = [Palette.accent, Palette.positive, Palette.warning]
 
     /// MULTI-select (build 83): most creators are not one niche, and the old
     /// one-tap-then-auto-advance chip made them pick a lie. Every tap adds or
@@ -232,18 +232,22 @@ struct OnboardingView: View {
                  "Tap everything that fits. Your first pick leads.",
                  scrollable: true) {
             VStack(spacing: Space.md) {
-                // Category legend, Gymshark-style — inside the scroll, above the
-                // cloud, and gutter-padded (the cloud itself runs full-bleed).
-                HStack(spacing: Space.md) {
-                    legendDot(Self.nicheCatColors[0], "Money")
-                    legendDot(Self.nicheCatColors[1], "Lifestyle")
-                    legendDot(Self.nicheCatColors[2], "Create")
+                // Category legend — inside the scroll, above the cloud, and
+                // gutter-padded (the cloud itself runs full-bleed). Monochrome:
+                // three eyebrow labels, no colored dots.
+                HStack(spacing: Space.sm) {
+                    legendDot("Money")
+                    legendSeparator
+                    legendDot("Lifestyle")
+                    legendSeparator
+                    legendDot("Create")
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, Space.screenH)
+                .accessibilityElement(children: .combine)
 
                 ChipCloud(items: Self.nicheCloud.map { ChipCloud.Item(title: $0.title, cat: $0.cat) },
-                          catColors: Self.nicheCatColors,
+                          catColors: [],
                           idPrefix: "onboard.niche.",
                           isSelected: { store.brand.allNiches.contains($0) },
                           isPrimary: { store.brand.allNiches.first == $0 },
@@ -275,11 +279,13 @@ struct OnboardingView: View {
         selectionTick += 1
     }
 
-    private func legendDot(_ color: Color, _ label: String) -> some View {
-        HStack(spacing: 6) {
-            Circle().fill(color).frame(width: 8, height: 8)
-            Text(label).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
-        }
+    private func legendDot(_ label: String) -> some View {
+        DSEyebrow(text: label)
+    }
+
+    private var legendSeparator: some View {
+        Circle().fill(Palette.textTertiary).frame(width: 3, height: 3)
+            .accessibilityHidden(true)
     }
 
     // MARK: - Connect (hero) — the inference jackpot
@@ -292,27 +298,36 @@ struct OnboardingView: View {
                 // Named-provider AI consent (Apple 5.1.2(i)) — page content reaches
                 // Anthropic's Claude; say so where the connection happens.
                 Text("Your public posts are analyzed by Claude (Anthropic) to build your voice profile. Nothing is ever posted without you.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.sm)
                     .accessibilityIdentifier("onboard.connect.consent")
             }
         } cta: {
-            VStack(spacing: Space.md) {
-                OnbPill(title: "Read my posts",
-                        enabled: !store.brand.connectedAccounts.isEmpty) {
-                    beginScanHold()
-                    advance()
-                }
-                .accessibilityIdentifier("onboard.connect.continue")
-                Button {
-                    advance()
-                } label: {
-                    Text("Skip for now")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
-                }
-                .accessibilityIdentifier("onboard.connect.skip")
+            OnbPill(title: "Read my posts",
+                    enabled: !store.brand.connectedAccounts.isEmpty) {
+                beginScanHold()
+                advance()
             }
+            .accessibilityIdentifier("onboard.connect.continue")
+        }
+        // Stoic puts the skip affordance top-right in the flow header, opposite
+        // the back chevron (same action, same id, just a different spot).
+        .overlay(alignment: .topTrailing) {
+            Button {
+                advance()
+            } label: {
+                Text("Skip for now")
+                    .font(AppFont.supporting.weight(.semibold))
+                    .foregroundStyle(Palette.textPrimary)
+                    .padding(.horizontal, Space.screenH)
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableStyle(dim: 0.5))
+            .padding(.top, Space.xs)
+            .accessibilityIdentifier("onboard.connect.skip")
         }
     }
 
@@ -432,7 +447,7 @@ struct OnboardingView: View {
 
     private var goalStep: some View {
         scaffold("What are you here to do?", "This shapes every script I write for you.") {
-            VStack(spacing: Space.md) {
+            VStack(spacing: Space.stack) {
                 goalCard(.audience, "OnbIcon-goal-audience", "megaphone")
                 goalCard(.clients, "OnbIcon-goal-clients", "briefcase")
                 goalCard(.authority, "OnbIcon-goal-authority", "crown")
@@ -512,8 +527,10 @@ struct OnboardingView: View {
                 OnboardingScaffold(headline: "That didn't build right",
                                    subtitle: "One tap and I'll write your scripts again.",
                                    showsBack: false) {
+                    // Stoic empty pattern: the mascot anchors it, then one primary
+                    // capsule. The headline + subtitle above carry the message.
                     VStack(spacing: Space.xl) {
-                        UnicornMascot(pose: .proud, size: 130)
+                        UnicornMascot(pose: .proud, size: 120)
                         OnbPill(title: "Try again") { store.beginStarterScripts() }
                             .accessibilityIdentifier("onboard.buildRetry")
                     }
@@ -540,16 +557,20 @@ struct OnboardingView: View {
                           showsBack: false) {
             // One quiet mark, nothing else — the page is the ask, not a poster.
             Image(systemName: "bell.badge")
-                .font(.system(size: 30, weight: .medium))
-                .foregroundStyle(Palette.textTertiary)
+                .font(.system(size: 28, weight: .regular))
+                .foregroundStyle(Palette.textPrimary)
+                .frame(width: 72, height: 72)
+                .background(Circle().fill(Palette.surface))
+                .overlay(Circle().strokeBorder(Palette.hairline, lineWidth: 1))
+                .accessibilityHidden(true)
         } cta: {
-            VStack(spacing: Space.md) {
+            VStack(spacing: Space.xs) {
                 OnbPill(title: "Turn on notifications") { finishWithNotifications() }
                     .accessibilityIdentifier("onboard.notifications.enable")
                 Button { completeAll() } label: {
                     Text("Not now")
-                        .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
                 }
+                .buttonStyle(.dsLink)
                 .accessibilityIdentifier("onboard.notifications.skip")
             }
         }
@@ -591,20 +612,29 @@ private struct ScanTheaterView: View {
         "Finding your voice…",
     ]
     @State private var idx = 0
+    /// Presentation only: the furthest line reached, so the checklist never
+    /// un-checks when the rotation wraps back to the first line (the last row
+    /// keeps its spinner until the scan releases the screen).
+    @State private var reached = 0
 
     var body: some View {
         VStack(spacing: Space.xl) {
-            UnicornMascot(pose: .proud, size: 130)
-            Text(Self.lines[idx])
-                .font(Typeface.display(24)).tracking(-0.4)
-                .foregroundStyle(Palette.textPrimary)
-                .multilineTextAlignment(.center)
-                .id(idx)
-                .transition(.opacity)
-            ProgressView().tint(Palette.ink)
+            UnicornMascot(pose: .proud, size: 120)
+            // Stoic "preparing" rows: done lines check off, the current one spins.
+            VStack(spacing: Space.sm) {
+                ForEach(Array(Self.lines.enumerated()), id: \.offset) { i, line in
+                    DSChecklistRow(title: line,
+                                   state: i < reached ? .done : (i == reached ? .active : .pending))
+                }
+            }
+            .animation(Motion.standard, value: reached)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("onboard.scanTheater")
+        .onChange(of: idx) { _, v in
+            reached = max(reached, v == 0 ? Self.lines.count - 1 : v)
+        }
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2.4))
@@ -645,57 +675,65 @@ private struct PaceSlider: View {
     }
 
     var body: some View {
-        VStack(spacing: Space.xl) {
-            VStack(spacing: 2) {
-                Text("\(weekly)")
-                    .font(Typeface.display(64, .semibold)).monospacedDigit()
-                    .foregroundStyle(Palette.textPrimary)
-                    .contentTransition(.numericText())
-                    .animation(.snappy(duration: 0.2), value: weekly)
-                Text(weekly == 1 ? "post a week" : "posts a week")
-                    .font(AppFont.body).foregroundStyle(Palette.textSecondary)
-                if let perDay {
-                    Text(perDay)
-                        .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
-                }
-            }
-            VStack(spacing: Space.sm) {
-                Slider(value: $draft, in: 1...21, step: 1)
-                    .tint(Palette.ink)
-                    .accessibilityIdentifier("onboard.paceSlider")
-                    .onChange(of: draft) { _, v in
-                        let n = Int(v.rounded())
-                        if n != weekly {
-                            weekly = n
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                    }
-                // Tick labels at the answers people actually mean.
-                HStack {
-                    ForEach([1, 7, 14, 21], id: \.self) { t in
-                        Button { draft = Double(t); weekly = t } label: {
-                            Text("\(t)")
-                                .font(Typeface.sans(11, weekly == t ? .bold : .regular))
-                                .foregroundStyle(weekly == t ? Palette.textPrimary : Palette.textTertiary)
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("onboard.pace.\(t)")
+        VStack(spacing: Space.lg) {
+            // Stat card: the number is the answer, the slider and snap ticks sit
+            // under it inside one surface card (Stoic's picker-in-a-card).
+            VStack(spacing: Space.lg) {
+                VStack(spacing: Space.xs) {
+                    Text("\(weekly)")
+                        .font(AppFont.pageTitle).monospacedDigit()
+                        .foregroundStyle(Palette.textPrimary)
+                        .contentTransition(.numericText())
+                        .animation(Motion.quick, value: weekly)
+                    Text(weekly == 1 ? "post a week" : "posts a week")
+                        .font(AppFont.bodyText).foregroundStyle(Palette.textSecondary)
+                    if let perDay {
+                        Text(perDay)
+                            .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
                     }
                 }
+                VStack(spacing: Space.sm) {
+                    Slider(value: $draft, in: 1...21, step: 1)
+                        .tint(Palette.ink)
+                        .accessibilityIdentifier("onboard.paceSlider")
+                        .onChange(of: draft) { _, v in
+                            let n = Int(v.rounded())
+                            if n != weekly {
+                                weekly = n
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        }
+                    // Tick labels at the answers people actually mean.
+                    HStack {
+                        ForEach([1, 7, 14, 21], id: \.self) { t in
+                            Button { draft = Double(t); weekly = t } label: {
+                                Text("\(t)")
+                                    .font(AppFont.caption.weight(weekly == t ? .bold : .regular))
+                                    .foregroundStyle(weekly == t ? Palette.textPrimary : Palette.textSecondary)
+                                    .frame(maxWidth: .infinity, minHeight: 32)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("onboard.pace.\(t)")
+                        }
+                    }
+                }
             }
+            .frame(maxWidth: .infinity)
+            .dsCard(.surface)
+
             VStack(spacing: Space.xs) {
                 Text(meaning)
-                    .font(AppFont.callout).foregroundStyle(Palette.textSecondary)
+                    .font(AppFont.supporting).foregroundStyle(Palette.textPrimary)
                 // The answer visibly changing the output is the contract that earns
                 // the question (the cut brand-mirror screen carried this math before).
                 Text("\(weekly * 52) posts a year, every one in your voice.")
-                    .font(AppFont.caption).foregroundStyle(Palette.textTertiary)
+                    .font(AppFont.caption).foregroundStyle(Palette.textSecondary)
             }
             .multilineTextAlignment(.center)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity)
-            .animation(.easeOut(duration: 0.15), value: weekly)
+            .animation(Motion.quick, value: weekly)
         }
         .onAppear { draft = Double(weekly) }
     }
