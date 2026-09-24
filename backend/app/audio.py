@@ -29,6 +29,9 @@ AUDIO_ONLY_OUTPUT_ARGS = ("-vn", "-sn", "-dn")
 ANALYSIS_TIMEOUT_PER_MEDIA_S = 0.25
 
 
+ANALYSIS_TIMEOUT_CEIL_S = 900.0
+
+
 def analysis_timeout_s(duration_s: float | None, floor_s: float = 60.0,
                        per_media_s: float = ANALYSIS_TIMEOUT_PER_MEDIA_S) -> float:
     """Timeout for an ffmpeg pass over `duration_s` seconds of media: max(floor,
@@ -37,7 +40,9 @@ def analysis_timeout_s(duration_s: float | None, floor_s: float = 60.0,
         d = float(duration_s or 0.0)
     except (TypeError, ValueError):
         d = 0.0
-    return max(float(floor_s), per_media_s * d) if d > 0 else float(floor_s)
+    # Ceiling (verifier finding): the duration comes from a file header; a bogus huge value
+    # plus a stalled download must not keep ffmpeg alive for hours on a 0.5-CPU box.
+    return min(ANALYSIS_TIMEOUT_CEIL_S, max(float(floor_s), per_media_s * d)) if d > 0 else float(floor_s)
 
 
 def loudness_probe_args(url: str, target_lufs: float = DEFAULT_TARGET_LUFS) -> list[str]:

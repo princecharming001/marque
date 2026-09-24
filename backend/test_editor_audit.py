@@ -923,3 +923,16 @@ def test_undo_batch_is_all_or_nothing_when_history_is_short():
     r2 = client.post(f"/v1/clips/{jid}/tweak", json={"clip_id": "c1", "ops": [{"type": "undo"}] * 2})
     assert len(r2.json()["applied"]) == 2 and len(main._clip_jobs[jid]["edl_history"]) == 1
     main._clip_jobs.pop(jid, None)
+
+
+def test_probe_timeout_has_a_ceiling():
+    from app import audio
+    assert audio.analysis_timeout_s(10 ** 7) == audio.ANALYSIS_TIMEOUT_CEIL_S
+    assert audio.analysis_timeout_s(None) == 60.0
+
+
+def test_bad_storage_limit_never_advertises_zero(monkeypatch):
+    for bad in (0, -5):
+        monkeypatch.setattr(main, "STORAGE_OBJECT_LIMIT_BYTES", bad)
+        cap = main._advertised_upload_cap_bytes()
+        assert 0 < cap <= 52_428_800

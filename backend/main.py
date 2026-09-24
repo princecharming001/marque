@@ -163,10 +163,13 @@ def _advertised_upload_cap_bytes() -> int:
     """The `max_upload_bytes` every mint response carries (live and mock): the product
     ceiling, clamped under what storage will actually accept. The only source of that
     number — the iOS upload ladder compresses to fit whatever this returns."""
-    cap = min(MAX_UPLOAD_BYTES, STORAGE_OBJECT_LIMIT_BYTES - _UPLOAD_CAP_HEADROOM_BYTES)
+    # A non-positive limit is a misconfiguration: fall back to Supabase's real 50 MiB default
+    # rather than advertising 0/negative bytes (verifier finding).
+    limit = STORAGE_OBJECT_LIMIT_BYTES if STORAGE_OBJECT_LIMIT_BYTES > 0 else 52_428_800
+    cap = min(MAX_UPLOAD_BYTES, limit - _UPLOAD_CAP_HEADROOM_BYTES)
     # A storage limit smaller than the headroom itself (misconfiguration) degrades to the
     # raw limit rather than advertising zero/negative bytes.
-    return cap if cap > 0 else min(MAX_UPLOAD_BYTES, STORAGE_OBJECT_LIMIT_BYTES)
+    return cap if cap > 0 else min(MAX_UPLOAD_BYTES, limit)
 # Inference-time quality gate (generate -> judge -> targeted self-repair). On by
 # default; set AI_QUALITY=0 to fall back to raw single-shot generation.
 AI_QUALITY = os.environ.get("AI_QUALITY", "1") != "0"
