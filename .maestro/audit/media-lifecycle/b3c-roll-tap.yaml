@@ -1,0 +1,10 @@
+appId: com.getmarque.app
+name: media-lifecycle B3c — tap roll strips in the rolls lane (select) — diagnostic
+# env: OUT, TAG
+---
+- tapOn: { point: "228,734" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-6-tap-point-C
+- tapOn: { id: "editorPro.roll.2" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-7-tap-id-D

@@ -1,0 +1,27 @@
+appId: com.getmarque.app
+name: "Job 2 — fix a misheard caption word via Captions > Edit captions > row > dialog"
+---
+- runFlow: { file: open.yaml }
+- tapOn: { id: "editorPro.root.captions" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-1-captionsPanel
+- tapOn: { id: "editorPro.editCaptions" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-2-list
+- tapOn: { id: "editorPro.captionRow.*", index: 0 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-3-dialog
+- tapOn: { id: "dialog.input", point: "96%,50%" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-4-keyboard
+- eraseText: 4
+- inputText: "month"
+- takeScreenshot: ${OUT}/${SHOT}-5-typed
+- tapOn: { id: "dialog.save" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-6-saved
+- tapOn: { id: "editorPro.captionList.done" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- swipe: { start: "260,628", end: "215,628", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-7-preview

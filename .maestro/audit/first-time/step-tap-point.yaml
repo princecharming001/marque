@@ -1,0 +1,6 @@
+appId: com.getmarque.app
+name: First-time audit step — tap a point in pt (env X, Y), then screenshot (OUT, SHOT)
+---
+- tapOn: { point: "${X},${Y}" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}

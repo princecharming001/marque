@@ -1,0 +1,29 @@
+appId: com.getmarque.app
+name: "Job 3 — swap a b-roll insert (scrub to it, tap it on canvas, then in the lane, Replace, Stock clip)"
+# env: SWIPES target the 60s job's roll at ~29.6-32.1s output; ROLLX/ROLLY = the lane strip point after scrubbing.
+---
+- runFlow: { file: open.yaml }
+- swipe: { start: "390,628", end: "90,628", duration: 1500 }
+- waitForAnimationToEnd: { timeout: 800 }
+- swipe: { start: "390,628", end: "141,628", duration: 1500 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-1-atRoll
+- tapOn: { point: "201,300" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-2-canvasTap
+- tapOn: { point: "${ROLLX},${ROLLY}" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-3-laneTap
+- tapOn: { id: "editorPro.ctx.replace" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-4-mediaPanel
+- tapOn: { id: "editorPro.media.stock" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-5-stockDialog
+- tapOn: { id: "dialog.input" }
+- inputText: "city skyline"
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-6-typed
+- tapOn: { id: "dialog.add" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/${SHOT}-7-replaced

@@ -1,0 +1,9 @@
+appId: com.getmarque.app
+name: media-lifecycle PERF — repeated timeline scrubs (editor open, nothing selected)
+# env: N (pairs of swipes)
+---
+- repeat:
+    times: ${N}
+    commands:
+      - swipe: { start: "85%,72%", end: "12%,72%", duration: 700 }
+      - swipe: { start: "12%,72%", end: "85%,72%", duration: 700 }

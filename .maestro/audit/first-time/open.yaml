@@ -1,0 +1,26 @@
+appId: com.getmarque.app
+name: First-time audit — open the pro editor on a demo-src clip (env JOB, SECS, OUT, SHOT)
+# Usage: ./scripts/qa_maestro.sh <UDID> .maestro/audit/first-time/open.yaml -e JOB=demo-src-60-fx -e SECS=60 -e OUT=<dir> -e SHOT=name
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: ${JOB}
+      demoClipSeconds: ${SECS}
+      backend.url: "http://127.0.0.1:8001"
+    permissions:
+      all: allow
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Library", timeout: 20000 }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/${SHOT}-clipdetail
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/${SHOT}-editor

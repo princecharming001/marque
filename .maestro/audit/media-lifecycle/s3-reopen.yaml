@@ -1,0 +1,19 @@
+appId: com.getmarque.app
+name: media-lifecycle S3 — relaunch WITHOUT clearing state → Library → clip → Edit manually (saved edit should load)
+# env: OUT, TAG
+---
+- launchApp:
+    stopApp: true
+    arguments:
+      backend.url: "http://127.0.0.1:8001"
+- extendedWaitUntil: { visible: "Library", timeout: 30000 }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-1-library
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- takeScreenshot: ${OUT}/${TAG}-2-detail
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-3-editor

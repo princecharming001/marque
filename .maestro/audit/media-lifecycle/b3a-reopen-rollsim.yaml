@@ -1,0 +1,12 @@
+appId: com.getmarque.app
+name: media-lifecycle B3a — reopen editor after Save (rolls persisted?) → canvas roll (rollSim) tap-select
+# env: OUT, TAG  (app on clip detail)
+---
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 60000 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-1-reopened
+- assertVisible: { id: "editorPro.rollSim" }
+- tapOn: { id: "editorPro.rollSim" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${TAG}-2-rollsim-selected

@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+name: "text-look explore - overlay chip tap, clip tap, phrase tap"
+---
+- tapOn: { id: "editorPro.overlay.0" }
+- takeScreenshot: ${OUT}/x3-overlay-tap-immediate
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x3-overlay-tap-after
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { point: "400, 710" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x3-clip-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { point: "316, 758" }
+- takeScreenshot: ${OUT}/x3-phrase-tap-immediate
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x3-phrase-tap-after

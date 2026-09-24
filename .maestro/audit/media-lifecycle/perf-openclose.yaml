@@ -1,0 +1,13 @@
+appId: com.getmarque.app
+name: media-lifecycle PERF — open/close the editor N times from clip detail (no edits → no discard prompt)
+# env: N  (app on clip detail with clip.editManual visible)
+---
+- repeat:
+    times: ${N}
+    commands:
+      - tapOn: { id: "clip.editManual" }
+      - extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 90000 }
+      - waitForAnimationToEnd: { timeout: 3000 }
+      - tapOn: { id: "editorPro.close" }
+      - extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 30000 }
+      - waitForAnimationToEnd: { timeout: 3000 }

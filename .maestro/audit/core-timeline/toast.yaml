@@ -1,0 +1,7 @@
+appId: com.getmarque.app
+name: core-timeline helper — capture the named undo/redo toast (1.5s lifetime)
+# env: STEP
+---
+- evalScript: ${maestro.copiedText = '(none)'}
+- copyTextFrom: { id: "editorPro.toast", optional: true }
+- evalScript: ${console.log('[' + STEP + '] toast=' + maestro.copiedText)}

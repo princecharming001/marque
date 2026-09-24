@@ -1,0 +1,7 @@
+appId: com.getmarque.app
+name: "step — tap point A then point B"
+---
+- tapOn: { point: "${AX},${AY}" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { point: "${BX},${BY}" }
+- waitForAnimationToEnd: { timeout: 2500 }

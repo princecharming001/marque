@@ -1,0 +1,17 @@
+appId: com.getmarque.app
+name: media-lifecycle PERF — ~10 min soak on the long clip: scrub / zoom cycle / split / undo / play
+# env: N
+---
+- repeat:
+    times: ${N}
+    commands:
+      - swipe: { start: "88%,72%", end: "10%,72%", duration: 500 }
+      - swipe: { start: "88%,72%", end: "10%,72%", duration: 500 }
+      - tapOn: { id: "editorPro.zoomCycle" }
+      - swipe: { start: "88%,72%", end: "10%,72%", duration: 500 }
+      - tapOn: { id: "editorPro.zoomCycle" }
+      - tapOn: { id: "editorPro.quickSplit" }
+      - tapOn: { id: "editorPro.undo", optional: true }
+      - tapOn: { id: "editorPro.playPause" }
+      - swipe: { start: "10%,72%", end: "88%,72%", duration: 500 }
+      - tapOn: { id: "editorPro.zoomCycle" }

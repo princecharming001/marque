@@ -1,0 +1,14 @@
+appId: com.getmarque.app
+name: "media-lifecycle B3d — diagnostic, clip tap vs roll tap after canvas deselect"
+# env: OUT, TAG
+---
+- tapOn: { point: "300,628" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-8-tap-clip
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.rollSim", index: 1 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-9-canvas-deselected
+- tapOn: { point: "240,734" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-10-tap-roll-again

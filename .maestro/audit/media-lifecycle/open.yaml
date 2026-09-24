@@ -1,0 +1,27 @@
+appId: com.getmarque.app
+name: media-lifecycle — clean launch → Library → clip → Edit manually (timed)
+# env: JOB (e.g. demo-src-60-p17), SECS (60|600), OUT (screenshot dir), TAG (shot prefix)
+# Timing: maestro.log "Tap on id: clip.editManual RUNNING" → "Assert that id: editorPro.playPause is visible COMPLETED".
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: ${JOB}
+      demoClipSeconds: ${SECS}
+      backend.url: "http://127.0.0.1:8001"
+    permissions:
+      all: allow
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Library", timeout: 20000 }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-library
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- takeScreenshot: ${OUT}/${TAG}-clipdetail
+- tapOn: { id: "clip.editManual", waitToSettleTimeoutMs: 200 }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-editor-open

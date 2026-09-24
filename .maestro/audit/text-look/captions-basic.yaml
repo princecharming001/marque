@@ -1,0 +1,79 @@
+appId: com.getmarque.app
+name: "text-look A1 - captions toggle, list edit, canvas tap, lane select, delete-by-empty"
+# env: JOB, SECS, OUT, P (shot prefix)
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+# scrub the playhead to ~2.8s (phrase 2 "and film nothing so here is")
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- tapOn: { id: "editorPro.root.captions" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a01-panel
+# 1. toggle off / on
+- tapOn: { id: "editorPro.captionsToggle" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a02-captions-off
+- tapOn: { id: "editorPro.captionsToggle" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a03-captions-on
+# 2. caption list -> row -> dialog -> change a word -> save
+- tapOn: { id: "editorPro.editCaptions" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a04-list
+- tapOn: { id: "editorPro.captionRow.75" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a05-row-dialog
+- tapOn: { id: "dialog.input" }
+- eraseText: 60
+- inputText: "and film EVERYTHING so here is"
+- takeScreenshot: ${OUT}/${P}a06-typed
+- tapOn: { id: "dialog.save" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a07-list-after-save
+# 3. delete a caption phrase = edit it to empty (row 145 "The system that actually ships pick")
+- tapOn: { id: "editorPro.captionRow.145" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "dialog.input" }
+- eraseText: 80
+- takeScreenshot: ${OUT}/${P}a08-empty-typed
+- tapOn: { id: "dialog.save" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a09-list-after-empty
+- tapOn: { id: "editorPro.captionList.done" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a10-canvas-after-edit
+# 4. canvas caption: first tap selects the phrase, second tap opens the editor
+- tapOn: { id: "editorPro.captionSim" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a11-canvas-tap1
+- tapOn: { id: "editorPro.captionSim" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a12-canvas-tap2
+- tapOn: { id: "dialog.cancel", optional: true }
+- waitForAnimationToEnd: { timeout: 800 }
+# 5. caption lane phrase select + Edit
+- tapOn: "one idea write three lines hit"
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a13-lane-selected
+- tapOn: { id: "editorPro.phrase.edit" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "dialog.input" }
+- eraseText: 60
+- inputText: "one idea, write 3 lines, hit"
+- tapOn: { id: "dialog.save" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a14-lane-after-edit
+# 6. phrase Style expansion (presets + options stacked)
+- tapOn: { id: "editorPro.phrase.style" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}a15-style-expansion
+- tapOn: { id: "editorPro.expansion.confirm" }
+- waitForAnimationToEnd: { timeout: 800 }
+- tapOn: { id: "editorPro.ctx.back" }
+- waitForAnimationToEnd: { timeout: 800 }
+# 7. scrub into the emptied phrase (~5.6s) and look at the canvas
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}a16-canvas-in-emptied-phrase
+- swipe: { start: "330, 710", end: "300, 710", duration: 800 }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}a17-canvas-in-lane-edited-phrase

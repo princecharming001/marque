@@ -1,0 +1,14 @@
+appId: com.getmarque.app
+name: "text-look explore - hit-test at lane layout origin (offset hypothesis)"
+---
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/x7-root-zoomed
+- tapOn: { point: "60, 758" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x7-tap-caption-lane-origin
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { point: "60, 787" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x7-tap-overlay-lane-origin

@@ -1,0 +1,100 @@
+appId: com.getmarque.app
+name: core-timeline — quick split / select / trim / ctx split / speed / volume / mute / delete + undo-redo
+# env: JOB, SECS, OUT, TAG.  Geometry is the iPhone SE (375x667pt): clip lane centre y=455,
+# fixed playhead x=187.5, default zoom 18pt/s.
+---
+- runFlow: open-editor.yaml
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- evalScript: ${output.t0 = Date.now()}
+- runFlow: { file: log-edit.yaml, env: { STEP: "E00 baseline" } }
+# E01 quick split with the playhead parked at 0:00
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- takeScreenshot: ${OUT}/${TAG}-e01-quicksplit-at-0
+- runFlow: { file: log-edit.yaml, env: { STEP: "E01 quickSplit@0:00" } }
+# E02-E04 undo / redo / undo (named toasts)
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "E02 undo" } }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E02 after undo" } }
+- tapOn: { id: "editorPro.redo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "E03 redo" } }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E03 after redo" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E04 undo again (should be clean)" } }
+# E05 scrub ~180pt (≈10s) then quick split AT the playhead
+- swipe: { start: "300, 455", end: "120, 455", duration: 1500 }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E05 scrubbed ~10s" } }
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- takeScreenshot: ${OUT}/${TAG}-e05-quicksplit-at-10s
+- runFlow: { file: log-edit.yaml, env: { STEP: "E05 quickSplit@10s" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+# E06 root Edit selects the clip under the playhead → clip vocabulary
+- tapOn: { id: "editorPro.root.edit" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.split" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-e06-clip-selected
+# E07 what sits on the right handle's grip point? (tap it: a boundary selection = the diamond)
+- tapOn: { point: "362, 455" }
+- evalScript: ${output.hit = 'grip-tap = NOT the transition diamond'}
+- runFlow:
+    when: { visible: { id: "editorPro.ctx.transition.none" } }
+    commands: [ { evalScript: "${output.hit = 'grip-tap = selected the TRANSITION boundary (diamond covers the handle grip)'}" } ]
+- evalScript: ${console.log('[E07] ' + output.hit)}
+- takeScreenshot: ${OUT}/${TAG}-e07-grip-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.edit" }
+# E07b drag the RIGHT handle from its unobstructed top part (y=432) inward 36pt (≈2s)
+- swipe: { start: "362, 432", end: "326, 432", duration: 900 }
+- takeScreenshot: ${OUT}/${TAG}-e07b-trim-right-top
+- runFlow: { file: log-edit.yaml, env: { STEP: "E07b trim right from y=432 (expect total 0:57)" } }
+# E08 drag the LEFT handle (x≈13) from y=432 inward 36pt
+- swipe: { start: "13, 432", end: "49, 432", duration: 900 }
+- takeScreenshot: ${OUT}/${TAG}-e08-trim-left
+- runFlow: { file: log-edit.yaml, env: { STEP: "E08 trim left from y=432 (expect total 0:55)" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "E09 undo trim" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "E09b undo trim" } }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E09 after 2 undos (clean)" } }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# E10 select → ctx.split at the playhead (selection should stay on the first half)
+- tapOn: { id: "editorPro.root.edit" }
+- tapOn: { id: "editorPro.ctx.split", waitToSettleTimeoutMs: 300 }
+- takeScreenshot: ${OUT}/${TAG}-e10-ctx-split
+- runFlow: { file: log-edit.yaml, env: { STEP: "E10 ctx.split" } }
+# E11 speed row: 2x / 1.5x / 1x on the first half (≈10s)
+- tapOn: { id: "editorPro.ctx.speed" }
+- extendedWaitUntil: { visible: { id: "editorPro.speedRow" }, timeout: 5000 }
+- tapOn: { id: "editorPro.speed.2.0" }
+- takeScreenshot: ${OUT}/${TAG}-e11-speed-2x
+- runFlow: { file: log-edit.yaml, env: { STEP: "E11 speed 2x (expect total -5s)" } }
+- tapOn: { id: "editorPro.speed.1.5" }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E11b speed 1.5x" } }
+- tapOn: { id: "editorPro.speed.1.0" }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E11c speed 1x" } }
+- tapOn: { id: "editorPro.expansion.confirm" }
+# E12 clip volume row opens / closes
+- tapOn: { id: "editorPro.ctx.volume" }
+- extendedWaitUntil: { visible: { id: "editorPro.clipVolume" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-e12-volume-row
+- tapOn: { id: "editorPro.expansion.confirm" }
+# E13 mute toggle on / off
+- tapOn: { id: "editorPro.muteToggle" }
+- copyTextFrom: { id: "editorPro.muteToggle" }
+- evalScript: ${console.log('[E13] mute tile label after 1st tap=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-e13-muted
+- runFlow: { file: log-edit.yaml, env: { STEP: "E13 muted" } }
+- tapOn: { id: "editorPro.muteToggle" }
+- copyTextFrom: { id: "editorPro.muteToggle" }
+- evalScript: ${console.log('[E13b] mute tile label after 2nd tap=' + maestro.copiedText)}
+# E14 delete the selected first half
+- tapOn: { id: "editorPro.ctx.delete", waitToSettleTimeoutMs: 300 }
+- takeScreenshot: ${OUT}/${TAG}-e14-deleted
+- runFlow: { file: log-edit.yaml, env: { STEP: "E14 deleted first half (expect total -10s)" } }
+# E15 unwind everything, logging each named toast
+- repeat:
+    times: 9
+    commands:
+      - tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300, optional: true }
+      - runFlow: { file: toast.yaml, env: { STEP: "E15 undo-chain" } }
+- runFlow: { file: log-edit.yaml, env: { STEP: "E15 after unwinding (expect clean: save off, undo off)" } }
+- takeScreenshot: ${OUT}/${TAG}-e15-unwound

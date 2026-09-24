@@ -1,0 +1,11 @@
+appId: com.getmarque.app
+name: media-lifecycle P1a — media panel → Photo or video → system picker visible (editor open at root)
+# env: OUT, TAG
+---
+- swipe: { start: "92%,91%", end: "15%,91%", duration: 400 }
+- tapOn: { id: "editorPro.root.effects" }
+- tapOn: { id: "editorPro.addBroll" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 8000 }
+- tapOn: { id: "editorPro.media.photo" }
+- waitForAnimationToEnd: { timeout: 4000 }
+- takeScreenshot: ${OUT}/${TAG}-picker

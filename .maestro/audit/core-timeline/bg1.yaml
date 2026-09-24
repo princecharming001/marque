@@ -1,0 +1,10 @@
+appId: com.getmarque.app
+name: "core-timeline — background test step 1 - open, make a split (dirty draft), leave the editor open"
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: open-editor.yaml
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- swipe: { start: "300, 455", end: "120, 455", duration: 1500 }
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: log-edit.yaml, env: { STEP: "BG1 dirty draft before backgrounding" } }
+- takeScreenshot: ${OUT}/${TAG}-bg1-dirty

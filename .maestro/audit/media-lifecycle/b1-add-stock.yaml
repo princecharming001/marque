@@ -1,0 +1,19 @@
+appId: com.getmarque.app
+name: media-lifecycle B1 — Effects → Add b-roll → media panel → Stock clip → roll added (editor already open)
+# env: OUT, TAG, Q (stock query)
+---
+- swipe: { start: "92%,91%", end: "15%,91%", duration: 400 }
+- tapOn: { id: "editorPro.root.effects" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-effects-panel
+- tapOn: { id: "editorPro.addBroll" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 4000 }
+- takeScreenshot: ${OUT}/${TAG}-media-panel
+- tapOn: { id: "editorPro.media.stock" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 4000 }
+- tapOn: { id: "dialog.input" }
+- inputText: ${Q}
+- takeScreenshot: ${OUT}/${TAG}-stock-dialog
+- tapOn: { id: "dialog.add" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-stock-added

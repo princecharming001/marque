@@ -1,0 +1,48 @@
+appId: com.getmarque.app
+name: "core-timeline — trim handles - hit-target probes + working trims + clamps"
+# env: JOB, SECS, OUT, TAG.  SE geometry, default 18pt/s. After the scrub the playhead sits at ~10s,
+# so clip 0 is drawn x≈7.5..367.5 and clip 1 starts at x≈370.5.
+---
+- runFlow: open-editor.yaml
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- swipe: { start: "300, 470", end: "120, 470", duration: 1500 }
+- runFlow: { file: log-edit.yaml, env: { STEP: "T0 scrubbed" } }
+- tapOn: { id: "editorPro.root.edit" }
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- takeScreenshot: ${OUT}/${TAG}-t0-selected
+# T1 tap INSIDE clip 0's drawn right bracket (x=365, y=442: above the diamond, below the zoom button)
+- tapOn: { point: "365, 442" }
+- takeScreenshot: ${OUT}/${TAG}-t1-tap-on-right-bracket
+- evalScript: ${output.sel = 'root toolbar (deselected)'}
+- runFlow:
+    when: { visible: { id: "editorPro.ctx.split" } }
+    commands: [ { evalScript: "${output.sel = 'clip vocabulary still up (a clip is selected)'}" } ]
+- evalScript: ${console.log('[T1] after tapping clip 0 right bracket at x=365 → ' + output.sel)}
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.edit" }
+# T2 drag the right handle from x=352 (left of the overflow, clear of diamond/scissors) inward 36pt
+- swipe: { start: "352, 470", end: "316, 470", duration: 900 }
+- takeScreenshot: ${OUT}/${TAG}-t2-trim-right
+- runFlow: { file: log-edit.yaml, env: { STEP: "T2 trim right from x=352 (expect total 0:57)" } }
+# T3 drag the left handle (x≈13) inward 36pt at y=470
+- swipe: { start: "14, 470", end: "50, 470", duration: 900 }
+- takeScreenshot: ${OUT}/${TAG}-t3-trim-left
+- runFlow: { file: log-edit.yaml, env: { STEP: "T3 trim left (expect total 0:55)" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "T4 undo" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "T4b undo" } }
+- runFlow: { file: log-edit.yaml, env: { STEP: "T4 after undos" } }
+# T5 over-drag: pull the right handle far past the left edge (engine must clamp to ≥1s of clip)
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.edit" }
+- swipe: { start: "352, 470", end: "30, 470", duration: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-t5-overdrag
+- runFlow: { file: log-edit.yaml, env: { STEP: "T5 over-drag right handle to x=30" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300, optional: true }
+# T6 outward drag on an untrimmed edge (nothing to restore → flash, no op)
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.edit" }
+- swipe: { start: "352, 470", end: "372, 470", duration: 700 }
+- takeScreenshot: ${OUT}/${TAG}-t6-outward
+- runFlow: { file: log-edit.yaml, env: { STEP: "T6 outward drag on untrimmed edge" } }

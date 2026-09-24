@@ -1,0 +1,34 @@
+appId: com.getmarque.app
+name: core-timeline — clean launch → Library → clip → Edit manually (parameterized)
+# env: JOB (e.g. demo-src-60-se), SECS (60|600), OUT (screenshot dir), TAG (shot prefix)
+# Ends the moment the editor's transport is visible (no settle wait) so callers can
+# exercise "taps while still loading / first-run hint showing".
+# The first-run tour overlay appears on a delay and swallows taps — wait for it, skip it,
+# and re-tap Library if the tab switch was eaten.
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: ${JOB}
+      demoClipSeconds: ${SECS}
+      backend.url: "http://127.0.0.1:8001"
+    permissions:
+      all: allow
+- extendedWaitUntil: { visible: "Library", timeout: 20000 }
+- extendedWaitUntil: { visible: { id: "tour.skip" }, timeout: 6000, optional: true }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "tour.skip", optional: true }
+- runFlow:
+    when: { notVisible: { id: "library.clip" } }
+    commands:
+      - tapOn: "Library"
+      - waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }

@@ -1,0 +1,56 @@
+appId: com.getmarque.app
+name: media-lifecycle B2 body — (Effects panel open) add stock, duplicate, shorter/longer, replace, replace-cancel-then-add, Save
+# env: OUT, TAG
+---
+- tapOn: { id: "editorPro.addBroll" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 8000 }
+- tapOn: { id: "editorPro.media.stock" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 8000 }
+- tapOn: { id: "dialog.input" }
+- inputText: "city skyline"
+- tapOn: { id: "dialog.add" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.duplicate" }, timeout: 8000 }
+- assertVisible: "city skyline"
+- takeScreenshot: ${OUT}/${TAG}-1-added
+# 2) Duplicate (one window later)
+- tapOn: { id: "editorPro.ctx.duplicate" }
+- takeScreenshot: ${OUT}/${TAG}-2-duplicated
+# 3) Shorter then Longer then Longer (net +15 frames on the selected duplicate)
+- tapOn: { id: "editorPro.ctx.shorter" }
+- tapOn: { id: "editorPro.ctx.longer" }
+- tapOn: { id: "editorPro.ctx.longer" }
+- takeScreenshot: ${OUT}/${TAG}-3-longer
+# 4) Replace → Stock "ocean waves"
+- tapOn: { id: "editorPro.ctx.replace" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 8000 }
+- takeScreenshot: ${OUT}/${TAG}-4a-replace-panel
+- tapOn: { id: "editorPro.media.stock" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 8000 }
+- tapOn: { id: "dialog.input" }
+- inputText: "ocean waves"
+- tapOn: { id: "dialog.add" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.replace" }, timeout: 8000 }
+- assertVisible: "ocean waves"
+- takeScreenshot: ${OUT}/${TAG}-4b-replaced
+# 5) Replace → Cancel the panel → deselect → Add b-roll fresh → Stock "forest trail"
+- tapOn: { id: "editorPro.ctx.replace" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 8000 }
+- tapOn: { id: "editorPro.mediaPanel.cancel" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 8000 }
+- takeScreenshot: ${OUT}/${TAG}-5a-after-cancel
+- tapOn: { id: "editorPro.ctx.back" }
+- swipe: { start: "92%,91%", end: "15%,91%", duration: 400 }
+- tapOn: { id: "editorPro.root.effects" }
+- tapOn: { id: "editorPro.addBroll" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 8000 }
+- tapOn: { id: "editorPro.media.stock" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 8000 }
+- tapOn: { id: "dialog.input" }
+- inputText: "forest trail"
+- tapOn: { id: "dialog.add" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.deleteRoll" }, timeout: 8000 }
+- takeScreenshot: ${OUT}/${TAG}-5b-after-add
+# 6) Save (Render) → server EDL is the ground truth for the roll list
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-6-saved-detail

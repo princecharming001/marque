@@ -1,0 +1,14 @@
+appId: com.getmarque.app
+name: "text-look explore - fit zoom, roll strip tap vs overlay chip tap"
+---
+- tapOn: { id: "editorPro.zoomCycle" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x8-fit
+- tapOn: { point: "400, 815" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x8-roll-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { point: "240, 787" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x8-chip-tap-fit

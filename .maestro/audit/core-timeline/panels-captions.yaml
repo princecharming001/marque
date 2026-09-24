@@ -1,0 +1,111 @@
+appId: com.getmarque.app
+name: core-timeline — captions off→undo desync, undo after navigating, Clean up, Restore, cut seam, ctx.back, reorder
+# env: JOB, SECS, OUT, TAG (SE geometry: clip lane y=455)
+---
+- runFlow: open-editor.yaml
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- evalScript: ${output.t0 = Date.now()}
+# C01 captions: panel toggle reads the tracked state
+- tapOn: { id: "editorPro.root.captions" }
+- copyTextFrom: { id: "editorPro.captionsToggle" }
+- evalScript: ${console.log('[C01] toggle label at open=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-c01-captions-panel
+# C02 turn captions OFF
+- tapOn: { id: "editorPro.captionsToggle" }
+- copyTextFrom: { id: "editorPro.captionsToggle" }
+- evalScript: ${console.log('[C02] toggle label after tap=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-c02-captions-off
+# C03 UNDO the captions-off (undo closes the panel via select(nil))
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "C03 undo captions-off" } }
+- takeScreenshot: ${OUT}/${TAG}-c03-after-undo
+- evalScript: ${output.lane = 'lane:ABSENT'; output.sim = 'canvasCaption:ABSENT'}
+- runFlow:
+    when: { visible: { id: "editorPro.captionLane" } }
+    commands: [ { evalScript: "${output.lane = 'lane:present'}" } ]
+- runFlow:
+    when: { visible: { id: "editorPro.captionSim" } }
+    commands: [ { evalScript: "${output.sim = 'canvasCaption:present'}" } ]
+- evalScript: ${console.log('[C03] after undo ' + output.lane + ' ' + output.sim)}
+- tapOn: { id: "editorPro.root.captions" }
+- copyTextFrom: { id: "editorPro.captionsToggle" }
+- evalScript: ${console.log('[C03b] toggle label after undo=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-c03b-panel-after-undo
+# C04 redo the captions-off, then undo again, then tap the toggle (what does it do now?)
+- tapOn: { id: "editorPro.redo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "C04 redo" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- tapOn: { id: "editorPro.root.captions" }
+- tapOn: { id: "editorPro.captionsToggle" }
+- copyTextFrom: { id: "editorPro.captionsToggle" }
+- evalScript: ${console.log('[C04] toggle label after tapping it in the desynced state=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-c04-toggle-in-desync
+- runFlow: { file: log-edit.yaml, env: { STEP: "C04 state" } }
+# N01 undo after navigating: split → open Sound panel → undo
+- tapOn: { id: "editorPro.root.sound" }
+- tapOn: { id: "editorPro.root.sound" }
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- tapOn: { id: "editorPro.root.sound" }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "N01 undo with Sound panel open" } }
+- takeScreenshot: ${OUT}/${TAG}-n01-undo-sound-panel
+# N02 split → open Clean up → Cancel → undo
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300, optional: true }
+- tapOn: { id: "editorPro.cleanup" }
+- extendedWaitUntil: { visible: { id: "editorPro.cleanupPanel" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-n02-cleanup-panel
+- tapOn: "Cancel"
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "N02 undo after Clean up cancel" } }
+# N03 split → fullscreen → close → undo
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300, optional: true }
+- tapOn: { id: "editorPro.fullscreen" }
+- tapOn: { id: "editorPro.fullscreen.close" }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "N03 undo after fullscreen" } }
+- runFlow: { file: log-edit.yaml, env: { STEP: "N03 state" } }
+# K01 Clean up: apply (whatever it proposes) → undo
+- tapOn: { id: "editorPro.cleanup" }
+- extendedWaitUntil: { visible: { id: "editorPro.cleanupPanel" }, timeout: 5000 }
+- tapOn: { id: "editorPro.cleanup.apply", optional: true, waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "K01 cleanup apply" } }
+- takeScreenshot: ${OUT}/${TAG}-k01-cleanup-applied
+- runFlow: { file: log-edit.yaml, env: { STEP: "K01 after cleanup apply" } }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "K01b undo cleanup" } }
+# K02 Restore from the Clean up panel: pick every drop → Restore
+- tapOn: { id: "editorPro.cleanup" }
+- extendedWaitUntil: { visible: { id: "editorPro.cleanupPanel" }, timeout: 5000 }
+- scrollUntilVisible: { element: { id: "editorPro.cleanup.restore" }, direction: DOWN, timeout: 6000, optional: true }
+- tapOn: { id: "editorPro.cleanup.restore" }
+- extendedWaitUntil: { visible: { id: "editorPro.restorePanel" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-k02-restore-panel
+- tapOn: { text: "0.4s, Removed section", index: 0 }
+- tapOn: { text: "0.4s, Removed section", index: 1, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k02b-restore-picked
+- tapOn: { id: "editorPro.restore.apply" }
+- takeScreenshot: ${OUT}/${TAG}-k02c-restored
+- runFlow: { file: log-edit.yaml, env: { STEP: "K02 after restoring drops (expect total +0.8s)" } }
+- tapOn: { id: "editorPro.restore.done", optional: true }
+- tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "K02b undo restore" } }
+# K03 Restore via the amber cut-seam scissors on the timeline (zoom out so seam 0 is on screen)
+- tapOn: { id: "editorPro.zoomCycle" }
+- tapOn: { id: "editorPro.zoomCycle" }
+- tapOn: { id: "editorPro.cutSeam.0" }
+- extendedWaitUntil: { visible: { id: "editorPro.restorePanel" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-k03-restore-from-seam
+- tapOn: { id: "editorPro.restore.done" }
+# B01 ctx.back: select → chevron → root
+- tapOn: { id: "editorPro.root.edit" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.back" }, timeout: 5000 }
+- tapOn: { id: "editorPro.ctx.back" }
+- extendedWaitUntil: { visible: { id: "editorPro.quickSplit" }, timeout: 5000 }
+- evalScript: ${console.log('[B01] ctx.back returned to root (quickSplit visible)')}
+# R01 reorder: at 6pt/s the 2nd clip starts at x≈310; long-press-drag it left SLOWLY
+- takeScreenshot: ${OUT}/${TAG}-r01-before-reorder
+- swipe: { start: "345, 455", end: "205, 455", duration: 12000 }
+- takeScreenshot: ${OUT}/${TAG}-r01-after-reorder
+- runFlow: { file: log-edit.yaml, env: { STEP: "R01 after slow long-press drag" } }
+- tapOn: { id: "editorPro.undo", optional: true, waitToSettleTimeoutMs: 300 }
+- runFlow: { file: toast.yaml, env: { STEP: "R01b undo (Reorder expected)" } }

@@ -1,0 +1,11 @@
+appId: com.getmarque.app
+name: "Diag 2 — lane chip taps WITHOUT Maestro's retry-tap (a retried tap = a double tap)"
+---
+- tapOn: { point: "222,676", retryTapIfNoChange: false }
+- extendedWaitUntil: { visible: { id: "editorPro.phrase.edit" }, timeout: 4000, optional: true }
+- takeScreenshot: ${OUT}/${SHOT}-1-captionChip
+- tapOn: { id: "editorPro.ctx.back", optional: true, retryTapIfNoChange: false }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { point: "304,705", retryTapIfNoChange: false }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.zoomSubtle" }, timeout: 4000, optional: true }
+- takeScreenshot: ${OUT}/${SHOT}-2-zoomChip

@@ -1,0 +1,12 @@
+appId: com.getmarque.app
+name: "media-lifecycle M3 — voice lane tap (selects clip + volume?) and caption phrase tap, for lane-tap diagnosis"
+# env: OUT, TAG (Sound panel open)
+---
+- tapOn: { point: "300,654" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-6-voice-lane-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { point: "243,570" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-7-phrase-tap

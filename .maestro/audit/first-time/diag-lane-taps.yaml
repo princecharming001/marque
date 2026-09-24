@@ -1,0 +1,22 @@
+appId: com.getmarque.app
+name: "Diag — are caption / zoom / b-roll lane chips tappable at all? (fresh editor at 0:00)"
+---
+- runFlow: { file: open.yaml }
+- tapOn: { point: "222,676" }
+- extendedWaitUntil: { visible: { id: "editorPro.phrase.edit" }, timeout: 4000, optional: true }
+- takeScreenshot: ${OUT}/${SHOT}-1-captionChip
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { point: "304,705" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.zoomSubtle" }, timeout: 4000, optional: true }
+- takeScreenshot: ${OUT}/${SHOT}-2-zoomChip
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.captionLane" }
+- extendedWaitUntil: { visible: { id: "editorPro.phrase.edit" }, timeout: 4000, optional: true }
+- takeScreenshot: ${OUT}/${SHOT}-3-captionLaneById
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.overlay.0" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.zoomSubtle" }, timeout: 4000, optional: true }
+- takeScreenshot: ${OUT}/${SHOT}-4-overlayById

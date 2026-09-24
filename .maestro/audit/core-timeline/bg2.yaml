@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+name: "core-timeline — background test step 2 - return to the app (stopApp false) and check the draft"
+# run AFTER `xcrun simctl launch <UDID> com.apple.Preferences`
+---
+- launchApp:
+    stopApp: false
+    arguments:
+      backend.url: "http://127.0.0.1:8001"
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 2000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-bg2-returned
+- evalScript: ${output.ed = 'editor NOT visible'}
+- runFlow:
+    when: { visible: { id: "editorPro.playPause" } }
+    commands: [ { evalScript: "${output.ed = 'editor visible'}" } ]
+- evalScript: ${console.log('[BG2] after returning from background ' + output.ed)}
+- runFlow:
+    when: { visible: { id: "editorPro.playPause" } }
+    commands: [ { runFlow: { file: log-edit.yaml, env: { STEP: "BG2 draft after background (expect save ON / undo ON)" } } } ]

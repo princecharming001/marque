@@ -1,0 +1,10 @@
+appId: com.getmarque.app
+name: "text-look explore - phrase double tap discriminator"
+---
+- doubleTapOn: { point: "316, 758" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x4-phrase-doubletap
+- tapOn: { id: "dialog.cancel", optional: true }
+- doubleTapOn: { id: "editorPro.overlay.0" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x4-overlay-doubletap

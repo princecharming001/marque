@@ -1,0 +1,13 @@
+appId: com.getmarque.app
+name: "Job 2 debug — reopen list, tap row, focus the input and type"
+---
+- tapOn: { id: "editorPro.editCaptions" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.captionRow.*", index: 0 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "dialog.input" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-a-focused
+- inputText: "X"
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-b-typed

@@ -1,0 +1,60 @@
+appId: com.getmarque.app
+name: "core-timeline — LONG clip - open, playback rate, zoom extremes, swipes to reach the end, scrub lag"
+# env: JOB (demo-src-600-*), SECS=600, OUT, TAG.  SE geometry (clip lane y=455).
+---
+- runFlow: open-editor.yaml
+- evalScript: ${output.t0 = Date.now()}
+- runFlow: { file: log-state.yaml, env: { STEP: "L00 opened" } }
+- takeScreenshot: ${OUT}/${TAG}-l00-open
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+# L01 playback rate: play, sample the readout twice, pause
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 300 }
+- runFlow: { file: log-state.yaml, env: { STEP: "L01a playing" } }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 5000, optional: true }
+- runFlow: { file: log-state.yaml, env: { STEP: "L01b playing +5s" } }
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 300 }
+- runFlow: { file: log-state.yaml, env: { STEP: "L01c paused" } }
+- takeScreenshot: ${OUT}/${TAG}-l01-after-play
+# L02 zoom extremes on the 10-min clip
+- tapOn: { id: "editorPro.zoomCycle", waitToSettleTimeoutMs: 200 }
+- copyTextFrom: { id: "editorPro.zoomPill" }
+- evalScript: ${console.log('[L02a] zoom pill=' + maestro.copiedText)}
+- tapOn: { id: "editorPro.zoomCycle", waitToSettleTimeoutMs: 200 }
+- copyTextFrom: { id: "editorPro.zoomPill" }
+- evalScript: ${console.log('[L02b] zoom pill (most zoomed-out)=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-l02-most-zoomed-out
+# L03 reach the END at the most zoomed-out level: full-width swipes until the readout hits 9:4x / 9:48
+- evalScript: ${output.n = 0; output.ts = Date.now()}
+- repeat:
+    while: { notVisible: { id: "editorPro.timeReadout", text: "9:4[0-9] / 9:48" } }
+    times: 40
+    commands:
+      - swipe: { start: "350, 455", end: "25, 455", duration: 400 }
+      - evalScript: ${output.n = output.n + 1}
+- evalScript: ${console.log('[L03] swipes to reach the end at the widest zoom=' + output.n + ' in ' + (Date.now() - output.ts) + 'ms')}
+- runFlow: { file: log-state.yaml, env: { STEP: "L03 at end" } }
+- takeScreenshot: ${OUT}/${TAG}-l03-at-end
+# L03b play at the very end → should restart from 0:00 (UX-6)
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 300 }
+- runFlow: { file: log-state.yaml, env: { STEP: "L03b play pressed at end" } }
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 300 }
+# L04 lag: one big scrub back, screenshot at once and 2.5s later (does the picture catch up?)
+- swipe: { start: "25, 455", end: "350, 455", duration: 400 }
+- takeScreenshot: ${OUT}/${TAG}-l04a-scrub-immediate
+- runFlow: { file: log-state.yaml, env: { STEP: "L04 after big scrub back" } }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 2500, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-l04b-scrub-plus2500ms
+# L05 default zoom (double-tap), count swipes to travel back to the start
+- doubleTapOn: { point: "75%, 86%" }
+- copyTextFrom: { id: "editorPro.zoomPill", optional: true }
+- evalScript: ${console.log('[L05] pill after double-tap=' + maestro.copiedText)}
+- evalScript: ${output.n = 0; output.ts = Date.now()}
+- repeat:
+    while: { notVisible: { id: "editorPro.timeReadout", text: "0:0[0-9] / 9:48" } }
+    times: 60
+    commands:
+      - swipe: { start: "25, 455", end: "350, 455", duration: 400 }
+      - evalScript: ${output.n = output.n + 1}
+- evalScript: ${console.log('[L05] swipes to travel back to the start at default zoom=' + output.n + ' in ' + (Date.now() - output.ts) + 'ms')}
+- runFlow: { file: log-state.yaml, env: { STEP: "L05 back at start" } }
+- takeScreenshot: ${OUT}/${TAG}-l05-back-at-start

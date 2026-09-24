@@ -1,0 +1,22 @@
+appId: com.getmarque.app
+name: "core-timeline — relaunch test - kill + relaunch (no clearState) mid-edit, reopen the editor, is the draft there?"
+# run right after bg2 (the editor holds a dirty split)
+---
+- launchApp:
+    stopApp: true
+    clearState: false
+    arguments:
+      backend.url: "http://127.0.0.1:8001"
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 3000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-bg3-relaunched
+- extendedWaitUntil: { visible: { id: "tour.skip" }, timeout: 4000, optional: true }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: { text: "Library", optional: true }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-bg3-library
+- tapOn: { id: "library.clip", index: 0 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- takeScreenshot: ${OUT}/${TAG}-bg3-editor-reopened
+- runFlow: { file: log-edit.yaml, env: { STEP: "BG3 editor after relaunch (draft kept would be save ON / undo ON)" } }

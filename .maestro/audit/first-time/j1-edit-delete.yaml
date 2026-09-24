@@ -1,0 +1,13 @@
+appId: com.getmarque.app
+name: "Job 1d — workaround — deselect, scrub INTO the middle piece, root Edit (selects clip under playhead), Delete"
+---
+- tapOn: { id: "editorPro.ctx.back" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- swipe: { start: "200,628", end: "236,628", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.root.edit" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-1-editSelected
+- tapOn: { id: "editorPro.ctx.delete" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-2-deleted

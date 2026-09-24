@@ -1,0 +1,43 @@
+appId: com.getmarque.app
+name: "text-look X1 - walk every main panel (for Dynamic Type / appearance screenshots)"
+# env: JOB, SECS, OUT, P
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- takeScreenshot: ${OUT}/${P}h01-main
+- tapOn: { id: "editorPro.root.captions", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h02-captions
+- tapOn: { id: "editorPro.capCustomize", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h03-customize
+- tapOn: { id: "editorPro.editCaptions", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h04-caption-list
+- tapOn: { id: "editorPro.captionRow.12", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h05-edit-dialog
+- tapOn: { id: "dialog.cancel", optional: true }
+- tapOn: { id: "editorPro.captionList.done", optional: true }
+- waitForAnimationToEnd: { timeout: 800 }
+- tapOn: { id: "editorPro.root.text", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h06-text
+- tapOn: { id: "editorPro.root.text", optional: true }
+- swipe: { start: "420, 880", end: "120, 880", duration: 500 }
+- waitForAnimationToEnd: { timeout: 800 }
+- tapOn: { id: "editorPro.root.effects", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h07-effects
+- tapOn: { id: "editorPro.root.filters", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}h08-filters
+- tapOn: { id: "editorPro.look.adjust", optional: true }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}h09-adjust
+- tapOn: { id: "editorPro.look.theme", optional: true }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}h10-theme-tab
+- tapOn: { id: "editorPro.themeButton", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}h11-theme-sheet

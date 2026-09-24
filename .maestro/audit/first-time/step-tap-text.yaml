@@ -1,0 +1,6 @@
+appId: com.getmarque.app
+name: First-time audit step — tap visible text (env TEXT), then screenshot (OUT, SHOT)
+---
+- tapOn: "${TEXT}"
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}

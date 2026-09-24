@@ -1,0 +1,7 @@
+appId: com.getmarque.app
+name: "step — tap id A then id B"
+---
+- tapOn: { id: "${A}" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "${B}" }
+- waitForAnimationToEnd: { timeout: 2000 }

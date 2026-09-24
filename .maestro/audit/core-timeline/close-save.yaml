@@ -1,0 +1,68 @@
+appId: com.getmarque.app
+name: core-timeline — close with unsaved edits (keep/discard), Save split-only ("Save"), Save a cut ("Render"), Library card, reopen
+# env: JOB (use a PRISTINE tag — this flow Saves), SECS, OUT, TAG
+---
+- runFlow: open-editor.yaml
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- evalScript: ${output.t0 = Date.now()}
+# S01 clean editor: X closes straight away (no dialog)
+- tapOn: { id: "editorPro.close" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 8000 }
+- evalScript: ${console.log('[S01] clean close → back on clip detail')}
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+# S02 dirty close → dialog → Keep editing → edit still there
+- swipe: { start: "300, 455", end: "120, 455", duration: 1500 }
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- tapOn: { id: "editorPro.close" }
+- extendedWaitUntil: { visible: "Discard your edits?", timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-s02-discard-dialog
+- tapOn: { id: "dialog.keepediting" }
+- runFlow: { file: log-edit.yaml, env: { STEP: "S02 after Keep editing (expect save:ON undo:ON)" } }
+# S03 dirty close → Discard edits → reopen → the split is gone
+- tapOn: { id: "editorPro.close" }
+- extendedWaitUntil: { visible: "Discard your edits?", timeout: 5000 }
+- tapOn: { id: "dialog.discardedits" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 8000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- runFlow: { file: log-edit.yaml, env: { STEP: "S03 reopened after discard (expect clean)" } }
+# S04 split-only edit → the button must read "Save" → save → dismiss
+- swipe: { start: "300, 455", end: "120, 455", duration: 1500 }
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- runFlow: { file: log-edit.yaml, env: { STEP: "S04 split-only (expect saveLabel=Save)" } }
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 20000 }
+- takeScreenshot: ${OUT}/${TAG}-s04-after-save-split
+# S05 reopen: the split must be on the timeline (4 clips) and the session clean
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- tapOn: { id: "editorPro.zoomCycle" }
+- tapOn: { id: "editorPro.zoomCycle" }
+- takeScreenshot: ${OUT}/${TAG}-s05-reopened-after-split-save
+- runFlow: { file: log-edit.yaml, env: { STEP: "S05 reopened after split save" } }
+# S06 a cut (delete the clip under the playhead at 0:00) → button must read "Render"
+- tapOn: { id: "editorPro.root.edit" }
+- tapOn: { id: "editorPro.ctx.delete", waitToSettleTimeoutMs: 300 }
+- takeScreenshot: ${OUT}/${TAG}-s06-after-delete-first-clip
+- runFlow: { file: log-edit.yaml, env: { STEP: "S06 after deleting the first clip (expect saveLabel=Render)" } }
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 20000 }
+- takeScreenshot: ${OUT}/${TAG}-s06b-clipdetail-after-render-save
+# S07 Library card afterwards
+- tapOn: { text: "Done", optional: true }
+- extendedWaitUntil: { visible: { id: "library.clip" }, timeout: 8000 }
+- takeScreenshot: ${OUT}/${TAG}-s07-library-after-save
+# S08 reopen: first clip gone, total shorter; what frame does the canvas show at 0:00?
+- tapOn: { id: "library.clip", index: 0 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 3000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-s08-reopened-after-cut-save
+- runFlow: { file: log-edit.yaml, env: { STEP: "S08 reopened after cut save" } }
+# S09 nudge the playhead to exactly 0:00 via a tiny scrub; the canvas must now show the true first kept frame
+- swipe: { start: "150, 455", end: "300, 455", duration: 600 }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 2000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-s09-after-scrub-to-0
+- runFlow: { file: log-edit.yaml, env: { STEP: "S09 after scrub back to 0" } }

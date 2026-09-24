@@ -1,0 +1,9 @@
+appId: com.getmarque.app
+name: "Job 2c — save the corrected caption, close the list, verify on canvas + lane"
+---
+- tapOn: { id: "dialog.save" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-1-list
+- tapOn: { id: "editorPro.captionList.done" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-2-editor

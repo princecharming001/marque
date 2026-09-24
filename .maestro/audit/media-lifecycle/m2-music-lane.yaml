@@ -1,0 +1,10 @@
+appId: com.getmarque.app
+name: "media-lifecycle M2 — panel volume slider drag; music lane select → Volume expansion → Replace → Delete"
+# env: OUT, TAG (Sound panel open, music present)
+---
+- swipe: { start: "208,736", end: "280,736", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${TAG}-4-panel-volume
+- tapOn: { id: "editorPro.musicLane", index: 1 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-5-lane-tap

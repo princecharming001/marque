@@ -1,0 +1,12 @@
+appId: com.getmarque.app
+name: "media-lifecycle B4 — fresh editor, tap clip cell and roll strip (selection check)"
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+- tapOn: { id: "editorPro.clip.0" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-1-tap-clip0
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.roll.1", index: 1 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-2-tap-roll1

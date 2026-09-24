@@ -1,0 +1,59 @@
+appId: com.getmarque.app
+name: "text-look S1 - sheets over sheets (caption list + dialog + canvas taps; discard dialog over Theme tab; theme sheet over caption list)"
+# env: JOB, SECS, OUT, P
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- tapOn: { id: "editorPro.root.captions" }
+- tapOn: { id: "editorPro.editCaptions" }
+- waitForAnimationToEnd: { timeout: 1000 }
+# caption list is up; open the row dialog, then try the canvas caption behind the scrim
+- tapOn: { id: "editorPro.captionRow.12" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g01-list-plus-dialog
+- tapOn: { point: "220, 200" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g02-tap-scrim-over-canvas
+# dialog should be dismissed by the scrim tap; now canvas caption taps WITH the list open
+- tapOn: { id: "editorPro.captionSim", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g03-list-open-canvas-tap1
+- tapOn: { id: "editorPro.captionSim", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g04-list-open-canvas-tap2-dialog
+# with the canvas dialog up, tap a list row behind it
+- tapOn: { point: "220, 820" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g05-tap-row-behind-dialog
+- tapOn: { id: "dialog.cancel", optional: true }
+- waitForAnimationToEnd: { timeout: 800 }
+# tap the video (not the caption) while the list is open -> selects the clip invisibly?
+- tapOn: { point: "220, 250" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g06-list-open-video-tap
+- tapOn: { id: "editorPro.captionList.done" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g07-after-done
+# make the session dirty, go to Filters > Theme, raise the discard dialog, then tap where Theme is
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- swipe: { start: "420, 880", end: "120, 880", duration: 500 }
+- tapOn: { id: "editorPro.root.filters" }
+- tapOn: { id: "editorPro.filter.vivid" }
+- tapOn: { id: "editorPro.look.theme" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g08-theme-tab-dirty
+- tapOn: { id: "editorPro.close" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}g09-discard-dialog
+- tapOn: { id: "editorPro.themeButton", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}g10-theme-tap-while-dialog
+- tapOn: { id: "dialog.keepediting", optional: true }
+- waitForAnimationToEnd: { timeout: 800 }
+# theme sheet up, then try to reach the editor behind it (medium detent)
+- tapOn: { id: "editorPro.themeButton" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}g11-theme-sheet
+- tapOn: { point: "220, 300" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}g12-tap-above-sheet

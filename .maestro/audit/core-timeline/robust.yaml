@@ -1,0 +1,80 @@
+appId: com.getmarque.app
+name: "core-timeline — robustness - tap during load, rapid double taps on play / split / undo / Save"
+# env: JOB (PRISTINE tag — this flow Saves at the end), SECS, OUT, TAG
+---
+# X1 best effort: hit Play + Save positions the instant "Edit manually" is tapped (editor still loading)
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: ${JOB}
+      demoClipSeconds: ${SECS}
+      backend.url: "http://127.0.0.1:8001"
+    permissions: { all: allow }
+- extendedWaitUntil: { visible: "Library", timeout: 20000 }
+- extendedWaitUntil: { visible: { id: "tour.skip" }, timeout: 6000, optional: true }
+- tapOn: { id: "tour.skip", optional: true }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "tour.skip", optional: true }
+- runFlow:
+    when: { notVisible: { id: "library.clip" } }
+    commands: [ { tapOn: "Library" } ]
+- tapOn: { id: "library.clip", index: 0 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual", waitToSettleTimeoutMs: 0 }
+- tapOn: { point: "155, 385", waitToSettleTimeoutMs: 0, retryTapIfNoChange: false }
+- tapOn: { point: "318, 42", waitToSettleTimeoutMs: 0, retryTapIfNoChange: false }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 30000 }
+- evalScript: ${output.t0 = Date.now()}
+- takeScreenshot: ${OUT}/${TAG}-x1-after-load-taps
+- runFlow: { file: log-edit.yaml, env: { STEP: "X1 after taps during load" } }
+- runFlow: { file: log-state.yaml, env: { STEP: "X1 play state" } }
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+# X2 rapid double tap on Play (play → pause inside the async seek window)
+- doubleTapOn: { id: "editorPro.playPause" }
+- runFlow: { file: log-state.yaml, env: { STEP: "X2a right after double tap" } }
+- takeScreenshot: ${OUT}/${TAG}-x2a-after-doubletap-play
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 3000, optional: true }
+- runFlow: { file: log-state.yaml, env: { STEP: "X2b +3s" } }
+- takeScreenshot: ${OUT}/${TAG}-x2b-plus3s
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 3000, optional: true }
+- runFlow: { file: log-state.yaml, env: { STEP: "X2c +6s" } }
+- takeScreenshot: ${OUT}/${TAG}-x2c-plus6s
+# make sure we're paused before the next test (tap until the label reads Play)
+- runFlow:
+    when: { visible: { id: "editorPro.playPause", text: "Pause" } }
+    commands: [ { tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false } } ]
+# X3 rapid double tap on quick Split (scrub to ~5s first)
+- swipe: { start: "300, 455", end: "210, 455", duration: 1200 }
+- doubleTapOn: { id: "editorPro.quickSplit" }
+- takeScreenshot: ${OUT}/${TAG}-x3-doubletap-split
+- runFlow: { file: log-edit.yaml, env: { STEP: "X3 after double-tap split" } }
+# X4 rapid double tap on Undo (expect two undo steps → clean if X3 made 2 splits)
+- doubleTapOn: { id: "editorPro.undo" }
+- runFlow: { file: log-edit.yaml, env: { STEP: "X4 after double-tap undo" } }
+- evalScript: ${output.u = 0}
+- repeat:
+    while: { visible: { id: "editorPro.undo", enabled: true } }
+    times: 5
+    commands:
+      - tapOn: { id: "editorPro.undo", waitToSettleTimeoutMs: 300 }
+      - evalScript: ${output.u = output.u + 1}
+- evalScript: ${console.log('[X4] extra undos needed to get clean=' + output.u)}
+# X5 rapid double tap on Save with a split-only edit
+- tapOn: { id: "editorPro.quickSplit", waitToSettleTimeoutMs: 300 }
+- doubleTapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 3000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-x5-after-doubletap-save
+- evalScript: ${output.where = 'unknown screen'}
+- runFlow:
+    when: { visible: { id: "clip.editManual" } }
+    commands: [ { evalScript: "${output.where = 'clip detail (Edit manually visible)'}" } ]
+- runFlow:
+    when: { visible: { id: "library.clip" } }
+    commands: [ { evalScript: "${output.where = output.where + ' + library card visible'}" } ]
+- runFlow:
+    when: { visible: { id: "editorPro.playPause" } }
+    commands: [ { evalScript: "${output.where = output.where + ' + STILL IN EDITOR'}" } ]
+- evalScript: ${console.log('[X5] after double-tap Save → ' + output.where)}

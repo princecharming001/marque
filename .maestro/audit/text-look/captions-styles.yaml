@@ -1,0 +1,82 @@
+appId: com.getmarque.app
+name: "text-look A2 - 10 caption presets + Customize options (size, slider, position, accent, keywords, case, grouping, fonts)"
+# env: JOB, SECS, OUT, P
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- tapOn: { id: "editorPro.root.captions" }
+- waitForAnimationToEnd: { timeout: 1000 }
+# ---- presets (row at y~812)
+- tapOn: { id: "editorPro.capPreset.hormozi" }
+- takeScreenshot: ${OUT}/${P}b01-preset-hormozi
+- tapOn: { id: "editorPro.capPreset.karaoke" }
+- takeScreenshot: ${OUT}/${P}b02-preset-karaoke
+- tapOn: { id: "editorPro.capPreset.beast" }
+- takeScreenshot: ${OUT}/${P}b03-preset-beast
+- tapOn: { id: "editorPro.capPreset.boxed" }
+- takeScreenshot: ${OUT}/${P}b04-preset-boxed
+- tapOn: { id: "editorPro.capPreset.pop" }
+- takeScreenshot: ${OUT}/${P}b05-preset-pop
+- swipe: { start: "420, 812", end: "40, 812", duration: 500 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.capPreset.neon" }
+- takeScreenshot: ${OUT}/${P}b06-preset-neon
+- tapOn: { id: "editorPro.capPreset.bubble" }
+- takeScreenshot: ${OUT}/${P}b07-preset-bubble
+- tapOn: { id: "editorPro.capPreset.boldcaps" }
+- takeScreenshot: ${OUT}/${P}b08-preset-boldcaps
+- tapOn: { id: "editorPro.capPreset.editorial" }
+- takeScreenshot: ${OUT}/${P}b09-preset-editorial
+- swipe: { start: "40, 812", end: "420, 812", duration: 500 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.capPreset.clean" }
+- takeScreenshot: ${OUT}/${P}b10-preset-clean
+# ---- Customize (options row at y~816, presets move to y~768)
+- tapOn: { id: "editorPro.capCustomize" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}b11-customize-open
+- tapOn: { id: "editorPro.capSize.small" }
+- takeScreenshot: ${OUT}/${P}b12-size-S
+- tapOn: { id: "editorPro.capSize.large" }
+- takeScreenshot: ${OUT}/${P}b13-size-L
+- tapOn: { id: "editorPro.capSize.medium" }
+- takeScreenshot: ${OUT}/${P}b14-size-M
+- swipe: { from: { id: "editorPro.capSizeSlider" }, direction: RIGHT, duration: 600 }
+- takeScreenshot: ${OUT}/${P}b15-size-slider-right
+- tapOn: { id: "editorPro.capPos.Top" }
+- takeScreenshot: ${OUT}/${P}b16-pos-top
+- tapOn: { id: "editorPro.capPos.Mid" }
+- takeScreenshot: ${OUT}/${P}b17-pos-mid
+- tapOn: { id: "editorPro.capPos.Low" }
+- takeScreenshot: ${OUT}/${P}b18-pos-low
+- swipe: { start: "420, 816", end: "80, 816", duration: 700 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}b19-options-scrolled-1
+- tapOn: { id: "editorPro.capAccent.#34D399", optional: true }
+- takeScreenshot: ${OUT}/${P}b20-accent-green
+- tapOn: { id: "editorPro.capKeywords", optional: true }
+- takeScreenshot: ${OUT}/${P}b21-keywords-on
+- tapOn: { id: "editorPro.capCase", optional: true }
+- takeScreenshot: ${OUT}/${P}b22-case-AA
+- swipe: { start: "420, 816", end: "80, 816", duration: 700 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}b23-options-scrolled-2
+- tapOn: { id: "editorPro.capGroup.word", optional: true }
+- takeScreenshot: ${OUT}/${P}b24-group-word
+- tapOn: { id: "editorPro.capGroup.line", optional: true }
+- takeScreenshot: ${OUT}/${P}b25-group-line
+- tapOn: { id: "editorPro.capGroup.phrase", optional: true }
+- takeScreenshot: ${OUT}/${P}b26-group-phrase
+- swipe: { start: "420, 816", end: "80, 816", duration: 700 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}b27-options-scrolled-3
+- tapOn: { id: "editorPro.capFont.archivo", optional: true }
+- takeScreenshot: ${OUT}/${P}b28-font-impact
+- tapOn: { id: "editorPro.capFont.baloo", optional: true }
+- takeScreenshot: ${OUT}/${P}b29-font-round
+- tapOn: { id: "editorPro.capFont.montserrat", optional: true }
+- takeScreenshot: ${OUT}/${P}b30-font-bold
+- tapOn: { id: "editorPro.capFont.anton", optional: true }
+- takeScreenshot: ${OUT}/${P}b31-font-caps
+- tapOn: { id: "editorPro.capFont.inter", optional: true }
+- takeScreenshot: ${OUT}/${P}b32-font-inter

@@ -1,0 +1,11 @@
+appId: com.getmarque.app
+name: "media-lifecycle M1b — (Sound panel open) tap the dashed Add-sound lane strip → sheet → track.0 → lane"
+# env: OUT, TAG
+---
+- tapOn: { id: "editorPro.addSound" }
+- extendedWaitUntil: { visible: { id: "editorPro.track.0" }, timeout: 15000 }
+- takeScreenshot: ${OUT}/${TAG}-2-music-sheet
+- tapOn: { id: "editorPro.track.0" }
+- extendedWaitUntil: { visible: { id: "editorPro.musicLane" }, timeout: 15000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-track-added

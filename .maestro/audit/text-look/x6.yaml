@@ -1,0 +1,16 @@
+appId: com.getmarque.app
+name: "text-look explore - zoomed lane taps"
+---
+- tapOn: { point: "390, 757" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x6-zoomed-phrase-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { point: "400, 787" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x6-zoomed-overlay-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.captions" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { point: "390, 653" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x6-panel-phrase-tap

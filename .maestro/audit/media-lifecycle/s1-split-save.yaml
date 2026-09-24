@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+name: media-lifecycle S1 — split-only edit shows "Save"; Save dismisses to clip detail; card + Library state
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+# scrub ~8s into the first clip (drag the timeline left), then one-tap Split
+- swipe: { start: "80%,72%", end: "45%,72%", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.quickSplit" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- assertVisible: { id: "editorPro.save", text: "Save" }
+- takeScreenshot: ${OUT}/${TAG}-1-split-save-label
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-2-after-save-detail
+- tapOn: "Done"
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-library-card

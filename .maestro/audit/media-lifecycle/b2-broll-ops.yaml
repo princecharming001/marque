@@ -1,0 +1,9 @@
+appId: com.getmarque.app
+name: media-lifecycle B2 — stock add, duplicate, shorter/longer, replace, replace-cancel-then-add, delete, Save → verify EDL on server
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+# 1) Effects → Add b-roll → Stock "city skyline" (lands at the playhead 0:00, selected)
+- swipe: { start: "92%,91%", end: "15%,91%", duration: 400 }
+- tapOn: { id: "editorPro.root.effects" }
+- runFlow: { file: b2-body.yaml, env: { OUT: "${OUT}", TAG: "${TAG}" } }

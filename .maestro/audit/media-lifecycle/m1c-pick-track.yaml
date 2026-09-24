@@ -1,0 +1,8 @@
+appId: com.getmarque.app
+name: "media-lifecycle M1c — (music sheet open) tap first track row by point → sheet closes → music lane"
+# env: OUT, TAG
+---
+- tapOn: { point: "150,497" }
+- extendedWaitUntil: { visible: { id: "editorPro.musicLane" }, timeout: 15000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-track-added

@@ -1,0 +1,8 @@
+appId: com.getmarque.app
+name: core-timeline helper — log readout + play-button label with a wall-clock offset
+# env: STEP (label)
+---
+- copyTextFrom: { id: "editorPro.timeReadout" }
+- evalScript: ${output.ro = maestro.copiedText}
+- copyTextFrom: { id: "editorPro.playPause" }
+- evalScript: ${console.log('[' + STEP + '] +' + (Date.now() - output.t0) + 'ms readout=' + output.ro + ' play=' + maestro.copiedText)}

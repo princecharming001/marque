@@ -1,0 +1,5 @@
+appId: com.getmarque.app
+name: "step — tap id regex index 0 (ID)"
+---
+- tapOn: { id: "${ID}", index: 0 }
+- waitForAnimationToEnd: { timeout: 2000 }

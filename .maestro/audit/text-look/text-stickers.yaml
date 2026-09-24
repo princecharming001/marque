@@ -1,0 +1,102 @@
+appId: com.getmarque.app
+name: "text-look T1 - add text sticker + type, style row (colors, bg, fonts), duplicate, move, resize grip, corner handles, lane chip, delete; text card add/select/edit/delete"
+# env: JOB, SECS, OUT, P
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- tapOn: { id: "editorPro.root.text" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c01-text-panel
+# add sticker -> keyboard-first typing on canvas
+- tapOn: { id: "editorPro.addSticker" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}c02-sticker-added-typing
+- inputText: "HELLO WORLD"
+- takeScreenshot: ${OUT}/${P}c03-typed
+- pressKey: Enter
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}c04-after-enter
+# style expansion
+- tapOn: { id: "editorPro.sticker.style" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c05-style-row
+- tapOn: { id: "editorPro.sticker.color.FFD60A" }
+- takeScreenshot: ${OUT}/${P}c06-color-yellow
+- tapOn: { id: "editorPro.sticker.color.FF3B30" }
+- takeScreenshot: ${OUT}/${P}c07-color-red
+- tapOn: { id: "editorPro.sticker.color.111111" }
+- takeScreenshot: ${OUT}/${P}c08-color-black
+- tapOn: { id: "editorPro.sticker.color.0A84FF" }
+- takeScreenshot: ${OUT}/${P}c09-color-blue
+- tapOn: { id: "editorPro.sticker.color.FFFFFF" }
+- takeScreenshot: ${OUT}/${P}c10-color-white
+- tapOn: { id: "editorPro.sticker.bg" }
+- takeScreenshot: ${OUT}/${P}c11-bg-tap1
+- tapOn: { id: "editorPro.sticker.bg" }
+- takeScreenshot: ${OUT}/${P}c12-bg-tap2
+- tapOn: { id: "editorPro.sticker.font.inter", optional: true }
+- swipe: { start: "380, 880", end: "60, 880", duration: 600 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c13-style-row-scrolled
+- tapOn: { id: "editorPro.sticker.font.archivo", optional: true }
+- takeScreenshot: ${OUT}/${P}c14-font-archivo
+- tapOn: { id: "editorPro.sticker.font.serif", optional: true }
+- takeScreenshot: ${OUT}/${P}c15-font-serif
+- tapOn: { id: "editorPro.expansion.confirm" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c16-sticker-vocab
+# duplicate via toolbar
+- tapOn: { id: "editorPro.ctx.duplicate" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c17-duplicated
+# drag the ORIGINAL sticker (index 4) up on the canvas
+- swipe: { from: { id: "editorPro.sticker.4" }, direction: UP, duration: 700 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c18-moved
+# resize grip on the selected sticker
+- swipe: { from: { id: "editorPro.sticker.4.resize" }, direction: RIGHT, duration: 700 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c19-resized
+# corner handles: edit (retype), dup, delete
+- tapOn: { id: "editorPro.sticker.4.edit", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}c20-corner-edit
+- inputText: " AGAIN"
+- pressKey: Enter
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c21-corner-edit-done
+- tapOn: { id: "editorPro.sticker.4.dup", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c22-corner-dup
+# overlay lane chip select (sticker chip)
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c23-root-with-stickers
+- tapOn: { id: "editorPro.overlay.4", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}c24-lane-chip-tap
+# canvas tap select + corner delete
+- tapOn: { id: "editorPro.sticker.5", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c25-canvas-select-5
+- tapOn: { id: "editorPro.sticker.5.delete", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c26-corner-delete
+# toolbar delete
+- tapOn: { id: "editorPro.sticker.4", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.ctx.deleteOverlay", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c27-toolbar-delete
+# text card
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.text" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.addTextCard" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c28-textcard-dialog
+- tapOn: { id: "dialog.input" }
+- inputText: "CARD TEXT"
+- tapOn: { id: "dialog.add" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}c29-textcard-added

@@ -1,0 +1,16 @@
+appId: com.getmarque.app
+name: Job 1c — split twice then tap the middle piece (diagnose wrong-clip selection)
+---
+- runFlow: { file: open.yaml }
+- swipe: { start: "300,628", end: "120,628", duration: 1200 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.quickSplit" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- swipe: { start: "300,628", end: "210,628", duration: 1000 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.quickSplit" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-before-tap
+- tapOn: { point: "156,628" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-after-tap

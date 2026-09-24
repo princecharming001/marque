@@ -1,0 +1,9 @@
+appId: com.getmarque.app
+name: "step — double-tap a point (X,Y) to select a word, then type TEXT"
+---
+- doubleTapOn: { point: "${X},${Y}" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-selected
+- inputText: "${TEXT}"
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-typed

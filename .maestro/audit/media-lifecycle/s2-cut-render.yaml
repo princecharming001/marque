@@ -1,0 +1,19 @@
+appId: com.getmarque.app
+name: media-lifecycle S2 — a cut shows "Render"; Render dismisses; Library card rendering→ready?
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+- swipe: { start: "80%,72%", end: "45%,72%", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.root.edit" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.delete" }, timeout: 8000 }
+- tapOn: { id: "editorPro.ctx.delete" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- assertVisible: { id: "editorPro.save", text: "Render" }
+- takeScreenshot: ${OUT}/${TAG}-1-cut-render-label
+- tapOn: { id: "editorPro.save", waitToSettleTimeoutMs: 200 }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-2-after-render-detail
+- tapOn: "Done"
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-library-card

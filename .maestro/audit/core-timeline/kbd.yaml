@@ -1,0 +1,63 @@
+appId: com.getmarque.app
+name: "core-timeline — keyboard on the small screen - caption edit dialog, text card dialog, on-canvas sticker typing"
+# env: JOB, SECS, OUT, TAG.  SE geometry: first caption phrase chip at ~(208,503) with the playhead at 0.
+---
+- runFlow: open-editor.yaml
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- evalScript: ${output.t0 = Date.now()}
+# K1 caption phrase edit dialog
+- tapOn: { point: "208, 503" }
+- tapOn: { id: "editorPro.phrase.edit" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-k1a-caption-dialog
+- tapOn: { id: "dialog.input" }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1500, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k1b-caption-dialog-keyboard
+- evalScript: ${output.sv = 'dialog.save NOT in hierarchy'}
+- runFlow:
+    when: { visible: { id: "dialog.save" } }
+    commands: [ { evalScript: "${output.sv = 'dialog.save in hierarchy'}" } ]
+- evalScript: ${console.log('[K1] with keyboard up ' + output.sv)}
+- inputText: " EDITED"
+- takeScreenshot: ${OUT}/${TAG}-k1c-typed
+- tapOn: { id: "dialog.save" }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k1d-after-save
+- runFlow: { file: log-edit.yaml, env: { STEP: "K1 after caption Save (expect save ON / undo ON)" } }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# K2 text card dialog
+- tapOn: { id: "editorPro.root.text" }
+- tapOn: { id: "editorPro.addTextCard" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 5000 }
+- tapOn: { id: "dialog.input" }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1500, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k2a-textcard-keyboard
+- inputText: "Card"
+- tapOn: { id: "dialog.add" }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k2b-after-add
+- runFlow: { file: log-edit.yaml, env: { STEP: "K2 after text card Add" } }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# K3 on-canvas sticker typing (keyboard-first "Add text")
+- tapOn: { id: "editorPro.root.text", optional: true }
+- runFlow:
+    when: { notVisible: { id: "editorPro.addSticker" } }
+    commands: [ { tapOn: { id: "editorPro.root.text" } } ]
+- tapOn: { id: "editorPro.addSticker" }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1500, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k3a-sticker-keyboard
+- inputText: "Hello SE"
+- takeScreenshot: ${OUT}/${TAG}-k3b-sticker-typed
+- pressKey: Enter
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-k3c-after-return-key
+- evalScript: ${output.kb = 'no sticker on canvas'}
+- runFlow:
+    when: { visible: { id: "editorPro.sticker.[0-9]+" } }
+    commands: [ { evalScript: "${output.kb = 'a sticker is on the canvas'}" } ]
+- evalScript: ${output.tf = 'keyboard dismissed'}
+- runFlow:
+    when: { visible: "Hello SE" }
+    commands: [ { evalScript: "${output.tf = 'text Hello SE visible'}" } ]
+- evalScript: ${console.log('[K3] after Return key ' + output.kb + ' / ' + output.tf)}
+- runFlow: { file: log-edit.yaml, env: { STEP: "K3 after sticker typing + Return" } }

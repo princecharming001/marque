@@ -1,0 +1,64 @@
+appId: com.getmarque.app
+name: core-timeline — playback, readout, fullscreen, zoom cycle, double-tap, scrub
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: open-editor.yaml
+- evalScript: ${output.t0 = Date.now()}
+# P01: play tapped the instant the transport appears (first-run "Tap a clip" hint pill
+# is drawn over the transport row for 4.5s)
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 500 }
+- takeScreenshot: ${OUT}/${TAG}-p01-play-under-hint
+- runFlow: { file: log-state.yaml, env: { STEP: "P01 after first play tap" } }
+- extendedWaitUntil: { notVisible: { id: "editorPro.hint" }, timeout: 10000 }
+- runFlow: { file: log-state.yaml, env: { STEP: "P02 hint gone" } }
+# P03: explicit toggle — whatever state we are in, tap once and watch 3s
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 500 }
+- runFlow: { file: log-state.yaml, env: { STEP: "P03 toggled" } }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 3000, optional: true }
+- runFlow: { file: log-state.yaml, env: { STEP: "P03b +3s" } }
+- takeScreenshot: ${OUT}/${TAG}-p03-after-3s
+- tapOn: { id: "editorPro.playPause", retryTapIfNoChange: false, waitToSettleTimeoutMs: 500 }
+- runFlow: { file: log-state.yaml, env: { STEP: "P04 toggled again" } }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 2000, optional: true }
+- runFlow: { file: log-state.yaml, env: { STEP: "P04b +2s" } }
+# P05: fullscreen open → play inside → close (close pauses)
+- tapOn: { id: "editorPro.fullscreen" }
+- extendedWaitUntil: { visible: { id: "editorPro.fullscreen.close" }, timeout: 5000 }
+- takeScreenshot: ${OUT}/${TAG}-p05-fullscreen
+- tapOn: { text: "Play", retryTapIfNoChange: false, waitToSettleTimeoutMs: 500 }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 2500, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-p05b-fullscreen-playing
+- tapOn: { id: "editorPro.fullscreen.close" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 5000 }
+- runFlow: { file: log-state.yaml, env: { STEP: "P05c fullscreen closed" } }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1500, optional: true }
+- runFlow: { file: log-state.yaml, env: { STEP: "P05d +1.5s after close (should be frozen)" } }
+# P06: zoom cycle x3 — capture the pill text each time
+- tapOn: { id: "editorPro.zoomCycle", waitToSettleTimeoutMs: 200 }
+- copyTextFrom: { id: "editorPro.zoomPill" }
+- evalScript: ${console.log('[P06a] zoom pill=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-p06a-zoom1
+- tapOn: { id: "editorPro.zoomCycle", waitToSettleTimeoutMs: 200 }
+- copyTextFrom: { id: "editorPro.zoomPill" }
+- evalScript: ${console.log('[P06b] zoom pill=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-p06b-zoom2
+- tapOn: { id: "editorPro.zoomCycle", waitToSettleTimeoutMs: 200 }
+- copyTextFrom: { id: "editorPro.zoomPill" }
+- evalScript: ${console.log('[P06c] zoom pill=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-p06c-zoom3
+# P07: zoom in (18 → 60), then double-tap empty timeline background → back to 18
+- tapOn: { id: "editorPro.zoomCycle", waitToSettleTimeoutMs: 200 }
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1500, optional: true }
+- doubleTapOn: { point: "75%, 86%" }
+- copyTextFrom: { id: "editorPro.zoomPill", optional: true }
+- evalScript: ${console.log('[P07] after double-tap pill=' + maestro.copiedText)}
+- takeScreenshot: ${OUT}/${TAG}-p07-doubletap
+# P08: scrub forward (drag timeline right→left) and back
+- swipe: { start: "90%, 68%", end: "18%, 68%", duration: 1200 }
+- runFlow: { file: log-state.yaml, env: { STEP: "P08 scrub fwd ~270pt" } }
+- takeScreenshot: ${OUT}/${TAG}-p08-scrub-fwd
+- extendedWaitUntil: { visible: "zz-never-zz", timeout: 1500, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-p08b-scrub-fwd-1500ms
+- swipe: { start: "18%, 68%", end: "60%, 68%", duration: 1000 }
+- runFlow: { file: log-state.yaml, env: { STEP: "P09 scrub back ~160pt" } }
+- takeScreenshot: ${OUT}/${TAG}-p09-scrub-back

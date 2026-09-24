@@ -1,0 +1,68 @@
+appId: com.getmarque.app
+name: "text-look L1 - Filter cards + intensity, Adjust knobs, Theme tab, Advanced chip, theme sheet + retheme over an unsaved edit while playing"
+# env: JOB, SECS, OUT, P
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- swipe: { start: "420, 880", end: "120, 880", duration: 500 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- tapOn: { id: "editorPro.root.filters" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}f01-filter-tab
+- tapOn: { id: "editorPro.filter.vivid" }
+- takeScreenshot: ${OUT}/${P}f02-vivid
+- tapOn: { id: "editorPro.filter.film" }
+- takeScreenshot: ${OUT}/${P}f03-film
+- tapOn: { id: "editorPro.filter.mono" }
+- takeScreenshot: ${OUT}/${P}f04-mono
+- tapOn: { id: "editorPro.filter.golden" }
+- takeScreenshot: ${OUT}/${P}f05-golden
+- tapOn: { id: "editorPro.filter.warm" }
+- takeScreenshot: ${OUT}/${P}f06-warm
+- tapOn: { id: "editorPro.filter.cool" }
+- takeScreenshot: ${OUT}/${P}f07-cool
+- tapOn: { id: "editorPro.filter.mono" }
+- swipe: { from: { id: "editorPro.filterIntensity" }, direction: LEFT, duration: 600 }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}f08-mono-intensity-low
+- tapOn: { id: "editorPro.filter.none" }
+- takeScreenshot: ${OUT}/${P}f09-none
+# unsaved edit that the retheme must preserve: Mono filter
+- tapOn: { id: "editorPro.filter.mono" }
+- tapOn: { id: "editorPro.look.adjust" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}f10-adjust-tab
+- swipe: { from: { id: "editorPro.adjust.bright" }, direction: RIGHT, duration: 500 }
+- takeScreenshot: ${OUT}/${P}f11-adjust-bright
+- swipe: { from: { id: "editorPro.adjust.contrast" }, direction: RIGHT, duration: 500 }
+- takeScreenshot: ${OUT}/${P}f12-adjust-contrast
+- swipe: { from: { id: "editorPro.adjust.color" }, direction: LEFT, duration: 500 }
+- takeScreenshot: ${OUT}/${P}f13-adjust-color
+- swipe: { start: "420, 816", end: "60, 816", duration: 600 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}f14-adjust-scrolled
+- swipe: { from: { id: "editorPro.adjust.warmth" }, direction: RIGHT, duration: 500 }
+- takeScreenshot: ${OUT}/${P}f15-adjust-warmth
+- swipe: { from: { id: "editorPro.adjust.vignette" }, direction: RIGHT, duration: 500 }
+- takeScreenshot: ${OUT}/${P}f16-adjust-vignette
+- tapOn: { id: "editorPro.look.theme" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}f17-theme-tab
+- tapOn: { id: "editorPro.filterAdvanced" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}f18-advanced-on
+- tapOn: { id: "editorPro.filterAdvanced" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}f19-advanced-off
+# start playback, then open the theme sheet and pick a theme
+- tapOn: { id: "editorPro.playPause" }
+- tapOn: { id: "editorPro.themeButton" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}f20-theme-sheet
+- tapOn: { id: "editorPro.theme.hormozi_punch" }
+- takeScreenshot: ${OUT}/${P}f21-after-theme-tap
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${P}f22-after-theme-settled
+- tapOn: { id: "editorPro.playPause", optional: true }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}f23-paused

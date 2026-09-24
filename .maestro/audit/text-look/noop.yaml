@@ -1,0 +1,4 @@
+appId: com.getmarque.app
+name: text-look — noop (timing)
+---
+- waitForAnimationToEnd: { timeout: 500 }

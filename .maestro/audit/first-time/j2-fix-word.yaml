@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+name: "Job 2b — cancel, reopen the first caption, double-tap the misheard word, retype, save"
+---
+- tapOn: { id: "dialog.cancel" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.captionRow.*", index: 0 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "dialog.input" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- doubleTapOn: { point: "305,250" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-1-wordSelected
+- inputText: "month"
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-2-typed
+- tapOn: { id: "dialog.save" }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${SHOT}-3-listAfter

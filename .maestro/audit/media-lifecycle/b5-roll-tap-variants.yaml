@@ -1,0 +1,17 @@
+appId: com.getmarque.app
+name: "media-lifecycle B5 — roll strip tap variants (body tap, slow tap, after scrub)"
+# env: OUT, TAG (editor open at root, rolls C 0-3s and D 3-6.5s)
+---
+- tapOn: { point: "305,734" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-1-body-tap-D
+- longPressOn: { point: "305,734" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-2-longpress-D
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- swipe: { start: "70%,72%", end: "55%,72%", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-scrubbed
+- tapOn: { id: "editorPro.roll.2", index: 1 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-4-tap-D-after-scrub

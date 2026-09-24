@@ -1,0 +1,14 @@
+appId: com.getmarque.app
+name: "text-look explore - phrase taps at other spots + zoomed"
+---
+- tapOn: { point: "196, 758" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x5-phrase1-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { point: "240, 758" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x5-phrase2-tap
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.zoomCycle" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/x5-zoomed

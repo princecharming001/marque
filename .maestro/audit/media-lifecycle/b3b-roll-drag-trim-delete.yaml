@@ -1,0 +1,16 @@
+appId: com.getmarque.app
+name: media-lifecycle B3b — canvas drag of selected full-frame roll; timeline roll select, move-drag, trim, delete; Save
+# env: OUT, TAG  (editor open at 0:00; canvas roll C selected)
+---
+# canvas drag on the selected (full-frame) roll: expected no movement (clamped), ideally no dirty op
+- swipe: { start: "50%,45%", end: "50%,55%", duration: 600 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${TAG}-3-canvas-drag
+# timeline: select roll C (index 1) by its lane strip
+- tapOn: { id: "editorPro.roll.1", index: 1 }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.deleteRoll" }, timeout: 8000 }
+- takeScreenshot: ${OUT}/${TAG}-4-roll-selected
+# move-drag the selected strip right ~70pt (≈ +3.9s)
+- swipe: { start: "57%,84%", end: "75%,84%", duration: 900 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${TAG}-5-roll-moved

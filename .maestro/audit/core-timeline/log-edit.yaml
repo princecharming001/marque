@@ -1,0 +1,22 @@
+appId: com.getmarque.app
+name: core-timeline helper — log readout, Save label/enabled, Undo/Redo enabled
+# env: STEP
+---
+- copyTextFrom: { id: "editorPro.timeReadout" }
+- evalScript: ${output.ro = maestro.copiedText}
+- copyTextFrom: { id: "editorPro.save" }
+- evalScript: ${output.sv = maestro.copiedText; output.se = 'save:ON'; output.ue = 'undo:off'; output.re = 'redo:off'}
+# two elements carry editorPro.save (toolbar wrapper is always enabled) → probe the disabled one
+- runFlow:
+    when: { visible: { id: "editorPro.save", enabled: false } }
+    commands:
+      - evalScript: ${output.se = 'save:off'}
+- runFlow:
+    when: { visible: { id: "editorPro.undo", enabled: true } }
+    commands:
+      - evalScript: ${output.ue = 'undo:ON'}
+- runFlow:
+    when: { visible: { id: "editorPro.redo", enabled: true } }
+    commands:
+      - evalScript: ${output.re = 'redo:ON'}
+- evalScript: ${console.log('[' + STEP + '] readout=' + output.ro + ' saveLabel=' + output.sv + ' ' + output.se + ' ' + output.ue + ' ' + output.re)}

@@ -1,0 +1,7 @@
+appId: com.getmarque.app
+name: First-time audit step — tap an id then screenshot immediately (catches toasts) (ID, OUT, SHOT)
+---
+- tapOn: { id: "${ID}" }
+- takeScreenshot: ${OUT}/${SHOT}
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/${SHOT}-after

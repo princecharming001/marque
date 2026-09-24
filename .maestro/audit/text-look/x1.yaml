@@ -1,0 +1,11 @@
+appId: com.getmarque.app
+name: "text-look explore - open, scrub, captions panel"
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+- takeScreenshot: ${OUT}/x1-open
+- swipe: { start: "330, 710", end: "280, 710", duration: 800 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/x1-scrubbed
+- tapOn: { id: "editorPro.root.captions" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/x1-captions-panel

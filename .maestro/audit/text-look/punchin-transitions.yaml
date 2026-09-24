@@ -1,0 +1,76 @@
+appId: com.getmarque.app
+name: "text-look P1 - punch-in add/intensity/duration/delete/select-existing + transitions boundary/styles/duration"
+# env: JOB, SECS, OUT, P
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}" } }
+# scrub to ~10s (no existing punch-in there)
+- swipe: { start: "400, 710", end: "220, 710", duration: 900 }
+- waitForAnimationToEnd: { timeout: 800 }
+- tapOn: { id: "editorPro.root.effects" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}d01-effects-panel
+- tapOn: { id: "editorPro.addPunchIn" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}d02-punch-added
+- tapOn: { id: "editorPro.ctx.zoomSubtle" }
+- takeScreenshot: ${OUT}/${P}d03-subtle
+- tapOn: { id: "editorPro.ctx.zoomMedium" }
+- takeScreenshot: ${OUT}/${P}d04-medium
+- tapOn: { id: "editorPro.ctx.zoomStrong" }
+- takeScreenshot: ${OUT}/${P}d05-strong
+- tapOn: { id: "editorPro.ctx.shorter" }
+- takeScreenshot: ${OUT}/${P}d06-shorter
+- tapOn: { id: "editorPro.ctx.shorter" }
+- tapOn: { id: "editorPro.ctx.shorter" }
+- tapOn: { id: "editorPro.ctx.shorter" }
+- tapOn: { id: "editorPro.ctx.shorter" }
+- takeScreenshot: ${OUT}/${P}d07-shorter-x5-min
+- tapOn: { id: "editorPro.ctx.longer" }
+- tapOn: { id: "editorPro.ctx.longer" }
+- takeScreenshot: ${OUT}/${P}d08-longer-x2
+- tapOn: { id: "editorPro.ctx.deleteOverlay" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}d09-deleted
+# select existing: re-add at same playhead twice -> second tap selects existing
+- tapOn: { id: "editorPro.root.effects" }
+- tapOn: { id: "editorPro.addPunchIn" }
+- waitForAnimationToEnd: { timeout: 800 }
+- tapOn: { id: "editorPro.ctx.back" }
+- tapOn: { id: "editorPro.root.effects" }
+- tapOn: { id: "editorPro.addPunchIn" }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}d10-second-add-selects-existing
+- tapOn: { id: "editorPro.ctx.back" }
+# ---- transitions: zoom to fit so the first boundary diamond is on screen
+- tapOn: { id: "editorPro.zoomCycle" }
+- waitForAnimationToEnd: { timeout: 800 }
+- tapOn: { id: "editorPro.zoomCycle" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}e01-fit-zoom
+- tapOn: { id: "editorPro.boundary.0" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}e02-boundary-selected
+- tapOn: { id: "editorPro.ctx.transition.fade_black" }
+- takeScreenshot: ${OUT}/${P}e03-fade-black
+- tapOn: { id: "editorPro.ctx.transition.fade_white" }
+- takeScreenshot: ${OUT}/${P}e04-fade-white
+- tapOn: { id: "editorPro.ctx.transition.flash" }
+- takeScreenshot: ${OUT}/${P}e05-flash
+- tapOn: { id: "editorPro.ctx.transition.none" }
+- takeScreenshot: ${OUT}/${P}e06-none
+- tapOn: { id: "editorPro.ctx.transition.fade_black" }
+- tapOn: { id: "editorPro.ctx.duration" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${P}e07-duration-expansion
+- swipe: { from: { id: "editorPro.transitionDuration" }, direction: RIGHT, duration: 600 }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}e08-duration-slid
+- tapOn: { id: "editorPro.expansion.confirm" }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}e09-after-confirm
+# scrub the playhead onto the boundary to see the dip preview on the canvas
+- tapOn: { id: "editorPro.ctx.back" }
+- waitForAnimationToEnd: { timeout: 800 }
+- swipe: { start: "300, 710", end: "236, 710", duration: 900 }
+- waitForAnimationToEnd: { timeout: 800 }
+- takeScreenshot: ${OUT}/${P}e10-playhead-near-boundary

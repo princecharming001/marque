@@ -1,0 +1,53 @@
+appId: com.getmarque.app
+name: media-lifecycle T1 — tweak chat from clip detail; every starter chip (fresh sheet each), free text, Done
+# env: OUT, TAG  (app at Library tab with the demo clip; ends at clip detail)
+---
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/${TAG}-0-detail
+# chip 1: Karaoke captions
+- tapOn: { id: "clip.tweakAffordance" }
+- extendedWaitUntil: { visible: "Karaoke captions", timeout: 10000 }
+- takeScreenshot: ${OUT}/${TAG}-1a-sheet
+- tapOn: "Karaoke captions"
+- extendedWaitUntil: { notVisible: "Thinking…", timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-1b-karaoke
+- tapOn: "Done"
+- waitForAnimationToEnd: { timeout: 1500 }
+# chip 2: Bolder captions
+- tapOn: { id: "clip.tweakAffordance" }
+- extendedWaitUntil: { visible: "Bolder captions", timeout: 10000 }
+- tapOn: "Bolder captions"
+- extendedWaitUntil: { notVisible: "Thinking…", timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-2-bolder
+- tapOn: "Done"
+- waitForAnimationToEnd: { timeout: 1500 }
+# chip 3: Remove the zooms
+- tapOn: { id: "clip.tweakAffordance" }
+- extendedWaitUntil: { visible: "Remove the zooms", timeout: 10000 }
+- tapOn: "Remove the zooms"
+- extendedWaitUntil: { notVisible: "Thinking…", timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-zooms
+- tapOn: "Done"
+- waitForAnimationToEnd: { timeout: 1500 }
+# chip 4: Undo last tweak
+- tapOn: { id: "clip.tweakAffordance" }
+- extendedWaitUntil: { visible: "Undo last tweak", timeout: 10000 }
+- tapOn: "Undo last tweak"
+- extendedWaitUntil: { notVisible: "Thinking…", timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-4-undo
+# free text in the same sheet (chips gone after first message)
+- tapOn: { id: "tweak.input" }
+- inputText: "make the captions bigger"
+- tapOn: { id: "tweak.send" }
+- extendedWaitUntil: { notVisible: "Thinking…", timeout: 30000 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-5-freetext
+- assertNotVisible: { id: "tweak.apply" }
+- tapOn: "Done"
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-6-detail-after

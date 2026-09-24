@@ -1,0 +1,18 @@
+appId: com.getmarque.app
+name: "media-lifecycle M4 — Change sound (replace) via sheet → Groundwork; reopen sheet and scroll to Remove music"
+# env: OUT, TAG (clip selected, sound panel closed)
+---
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.root.sound" }
+- tapOn: { id: "editorPro.addSound" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- takeScreenshot: ${OUT}/${TAG}-1-sheet-with-check
+- tapOn: { point: "150,548" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- assertVisible: "Groundwork"
+- takeScreenshot: ${OUT}/${TAG}-2-replaced
+- tapOn: { id: "editorPro.addSound" }
+- waitForAnimationToEnd: { timeout: 2500 }
+- swipe: { start: "200,800", end: "200,380", duration: 700 }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-3-sheet-scrolled

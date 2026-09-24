@@ -24,23 +24,23 @@ appId: com.getmarque.app
 - extendedWaitUntil:
     visible: { id: tour.next }
     timeout: 5000
-- takeScreenshot: ${OUT}/tour-step1-voicebubble.png
+- takeScreenshot: ${OUT}/tour-step1-voicebubble
 - tapOn: { id: tour.next }
 - assertVisible: "rather type?"
-- takeScreenshot: ${OUT}/tour-step2-chat.png
+- takeScreenshot: ${OUT}/tour-step2-chat
 - tapOn: { id: tour.next }
 - assertVisible: "film yourself."
-- takeScreenshot: ${OUT}/tour-step3-film.png
+- takeScreenshot: ${OUT}/tour-step3-film
 - tapOn: { id: tour.next }
 - assertVisible: "your clips live here."
-- takeScreenshot: ${OUT}/tour-step4-library.png
+- takeScreenshot: ${OUT}/tour-step4-library
 - tapOn: { id: tour.next }
 - assertVisible: "see what's working."
-- takeScreenshot: ${OUT}/tour-step5-performance.png
+- takeScreenshot: ${OUT}/tour-step5-performance
 - tapOn: { id: tour.next }
 # Tour finished — overlay gone, plain Home again.
 - assertNotVisible: { id: tour.next }
-- takeScreenshot: ${OUT}/tour-finished.png
+- takeScreenshot: ${OUT}/tour-finished
 
 # Replay from Settings → should re-show step 1 even though the tour already completed once.
 - tapOn: { id: home.profile }
@@ -50,4 +50,4 @@ appId: com.getmarque.app
 - extendedWaitUntil:
     visible: { id: tour.next }
     timeout: 5000
-- takeScreenshot: ${OUT}/tour-replayed.png
+- takeScreenshot: ${OUT}/tour-replayed

@@ -1,0 +1,9 @@
+appId: com.getmarque.app
+name: "text-look explore - lane phrase tap"
+---
+- tapOn: "one idea write three lines hit"
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/x2-lane-tap-by-label
+- tapOn: { point: "316, 758" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/x2-lane-tap-by-point

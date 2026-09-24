@@ -1,0 +1,23 @@
+appId: com.getmarque.app
+name: Job 1b — cut a rambling section manually (scrub → Split → scrub → Split → tap middle → Delete)
+# Assumes the editor is open with the playhead at 0:00, default zoom (18 pt/s), iPhone 17 Pro (402pt wide).
+---
+- runFlow: { file: open.yaml }
+- swipe: { start: "300,628", end: "120,628", duration: 1200 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-1-scrub10s
+- tapOn: { id: "editorPro.quickSplit" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-2-split1
+- swipe: { start: "300,628", end: "210,628", duration: 1000 }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-3-scrub15s
+- tapOn: { id: "editorPro.quickSplit" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-4-split2
+- tapOn: { point: "156,628" }
+- waitForAnimationToEnd: { timeout: 1000 }
+- takeScreenshot: ${OUT}/${SHOT}-5-selectMiddle
+- tapOn: { id: "editorPro.ctx.delete" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${SHOT}-6-deleted
