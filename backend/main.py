@@ -12321,7 +12321,25 @@ async def _rehost_reel_media(posts: list[dict]) -> None:
     await asyncio.gather(*(_one(i, p) for i, p in enumerate(posts)), return_exceptions=True)
 
 
+# At most N niche refreshes run at once (2026-09-24). With re-hosting fixed, every refresh
+# really downloads/uploads videos; ten concurrent warm-ups plus normal traffic OOM-killed
+# the 512 MiB instance (Render event 07:58:10 UTC). Queued refreshes wait their turn.
+_niche_refresh_sem: asyncio.Semaphore | None = None
+
+
+def _refresh_slot() -> asyncio.Semaphore:
+    global _niche_refresh_sem
+    if _niche_refresh_sem is None:
+        _niche_refresh_sem = asyncio.Semaphore(int(os.environ.get("REEL_REFRESH_CONCURRENCY", "2")))
+    return _niche_refresh_sem
+
+
 async def _refresh_niche_reels(niche: str) -> None:
+    async with _refresh_slot():
+        await _refresh_niche_reels_inner(niche)
+
+
+async def _refresh_niche_reels_inner(niche: str) -> None:
     """Background: scrape trending niche posts → real reels in cache. B-9: PROGRESSIVE serve
     — write the scraped+annotated reels (caption transcript + CDN URLs) to cache IMMEDIATELY
     (partial), so "Steal these" fills in ~30-60s instead of waiting 2-4 min for transcription
