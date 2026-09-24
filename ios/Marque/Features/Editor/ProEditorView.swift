@@ -428,21 +428,33 @@ struct ProEditorView: View {
                 .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
                 .accessibilityIdentifier("editorPro.playPause")
                 Spacer()
-                Button { doUndo() } label: { transportGlyph("arrow.uturn.backward") }
+                HStack(spacing: Space.sm) {
+                    Button { doUndo() } label: { transportGlyph("arrow.uturn.backward") }
+                        .buttonStyle(PressableStyle(dim: 0.6))
+                        .disabled(!(session?.canUndo ?? false))
+                        .opacity((session?.canUndo ?? false) ? 1 : 0.35)
+                        .accessibilityLabel("Undo")
+                        .accessibilityIdentifier("editorPro.undo")
+                    Button { doRedo() } label: { transportGlyph("arrow.uturn.forward") }
+                        .buttonStyle(PressableStyle(dim: 0.6))
+                        .disabled(!(session?.canRedo ?? false))
+                        .opacity((session?.canRedo ?? false) ? 1 : 0.35)
+                        .accessibilityLabel("Redo")
+                        .accessibilityIdentifier("editorPro.redo")
+                    // Build 69's visible backup for pinch-zoom (fit → default → close). SE sweep
+                    // F2: it lived in the timeline's top-right corner, over the clip lane — right
+                    // where the last clip's trailing trim handle is grabbed. The strip is its home.
+                    Button { cycleZoom() } label: { transportGlyph("plus.magnifyingglass") }
+                        .buttonStyle(PressableStyle(dim: 0.6))
+                        .accessibilityLabel("Zoom timeline")
+                        .accessibilityIdentifier("editorPro.zoomCycle")
+                    Button { player?.pause(); showFullscreen = true } label: {
+                        transportGlyph("arrow.up.left.and.arrow.down.right")
+                    }
                     .buttonStyle(PressableStyle(dim: 0.6))
-                    .disabled(!(session?.canUndo ?? false))
-                    .opacity((session?.canUndo ?? false) ? 1 : 0.35)
-                    .accessibilityIdentifier("editorPro.undo")
-                Button { doRedo() } label: { transportGlyph("arrow.uturn.forward") }
-                    .buttonStyle(PressableStyle(dim: 0.6))
-                    .disabled(!(session?.canRedo ?? false))
-                    .opacity((session?.canRedo ?? false) ? 1 : 0.35)
-                    .accessibilityIdentifier("editorPro.redo")
-                Button { player?.pause(); showFullscreen = true } label: {
-                    transportGlyph("arrow.up.left.and.arrow.down.right")
+                    .accessibilityLabel("Full screen preview")
+                    .accessibilityIdentifier("editorPro.fullscreen")
                 }
-                .buttonStyle(PressableStyle(dim: 0.6))
-                .accessibilityIdentifier("editorPro.fullscreen")
             }
             .padding(.horizontal, Space.screenH).frame(height: 32)
         }
@@ -2119,22 +2131,9 @@ struct ProEditorView: View {
         .frame(height: timelineHeight)
         .background(Palette.surface)
         // Build 69: the pinch-zoom gesture gets VISIBLE backup (Norman: invisible
-        // gestures fail) — a magnifier that cycles fit → default → close, plus a
-        // transient seconds-per-screen pill whenever the zoom level changes.
-        .overlay(alignment: .topTrailing) {
-            Button { cycleZoom() } label: {
-                Image(systemName: "plus.magnifyingglass")
-                    .font(.system(size: 13, weight: .regular))
-                    .foregroundStyle(Palette.textPrimary)
-                    .frame(width: 34, height: 30)
-                    .background(Capsule().fill(Palette.surfaceSunken))
-                    .overlay(Capsule().strokeBorder(Palette.hairline, lineWidth: 1))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 8).padding(.top, 2)
-            .accessibilityIdentifier("editorPro.zoomCycle")
-        }
+        // gestures fail) — the magnifier (now in the transport strip) cycles fit →
+        // default → close, plus a transient seconds-per-screen pill whenever the zoom
+        // level changes.
         .overlay(alignment: .top) {
             if let z = zoomPill {
                 Text(z).font(AppFont.micro.monospacedDigit())

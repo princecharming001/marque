@@ -216,6 +216,9 @@ struct EditorTimeline: View {
                 let leading = cs[i].segIdx
                 let has = document.transitions.contains { $0.afterSegment == leading }
                 let selected = selectedBoundary == leading
+                // SE sweep F2: on the SELECTED clip's seams the diamond + cut marker sit on
+                // the trim handles' grip — step aside (dim, no hits) so the handle wins.
+                let yields = selectedSeg != nil && (selectedSeg == leading || selectedSeg == cs[i + 1].segIdx)
                 // Monochrome states (was yellow/accent): none = dark hollow diamond,
                 // transition set = white disc + filled diamond, selected = night disc with a
                 // heavy white ring (inversion of the set state).
@@ -230,6 +233,8 @@ struct EditorTimeline: View {
                 }
                 .buttonStyle(.plain)
                 .offset(x: x - 9, y: 23)   // re-centered for the 64pt filmstrip
+                .opacity(yields ? 0.3 : 1)
+                .allowsHitTesting(!yields)
                 .accessibilityIdentifier("editorPro.boundary.\(i)")
                 // Build 56: amber scissors under the diamond when AI-trimmed footage
                 // hides at this seam (a drop abuts either side). Tap → Restore panel.
@@ -244,6 +249,8 @@ struct EditorTimeline: View {
                     }
                     .buttonStyle(.plain)
                     .offset(x: x - 7, y: 52)
+                    .opacity(yields ? 0.3 : 1)
+                    .allowsHitTesting(!yields)
                     .accessibilityIdentifier("editorPro.cutSeam.\(i)")
                 }
             }
@@ -692,7 +699,9 @@ struct EditorTimeline: View {
 
     private func trimHandle(_ edge: TrimEdge, segIdx: Int, srcIn: Int, srcOut: Int) -> some View {
         TrimBracket(edge: edge, height: 64)
-            .contentShape(Rectangle().inset(by: -14))     // 44pt-ish hit target
+            // SE sweep F2: a full 45 pt wide target (was 39) that grows sideways, not 14 pt
+            // up into the ruler and down into the caption lane.
+            .contentShape(HitOutset(dx: 17, dy: 4))
             .highPriorityGesture(
                 DragGesture()
                     .updating($trimPreview) { g, live, _ in
@@ -821,6 +830,13 @@ struct EditorTimeline: View {
             }
             .onEnded { _ in lastSnapIndex = nil }
     }
+}
+
+/// A hit shape that extends a view's rect by (dx, dy) on each side.
+struct HitOutset: Shape {
+    var dx: CGFloat
+    var dy: CGFloat
+    func path(in rect: CGRect) -> Path { Path(rect.insetBy(dx: -dx, dy: -dy)) }
 }
 
 // CapCut trim bracket: a white rounded cap (rounded only on its outer edge) with a dark
