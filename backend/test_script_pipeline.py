@@ -233,3 +233,35 @@ def test_pillar_prose_is_dash_free_on_every_path(monkeypatch):
 def test_no_hardcoded_dash_in_baseline_reason():
     import inspect
     assert "niche baseline —" not in inspect.getsource(main)
+
+
+# --- planner topic memory -------------------------------------------------------------
+
+def test_avoid_topics_puts_dislikes_first_then_recent_pitches(monkeypatch):
+    cid = "c-topics"
+    main._pitched_titles.pop(cid, None); main._disliked_titles.pop(cid, None)
+    main._remember_titles(main._pitched_titles, cid, ["desk stretches", "posture myths", "grip"])
+    main._remember_titles(main._disliked_titles, cid, ["posture myths"])
+    assert main._avoid_topics(cid) == ["posture myths", "grip", "desk stretches"]
+    main._remember_titles(main._pitched_titles, "default", ["pooled"])     # shared bucket: never
+    assert "default" not in main._pitched_titles
+
+
+def test_first_paint_plans_around_what_was_already_pitched(monkeypatch):
+    cid = "qa-test-pipeline"
+    main._pitched_titles.pop(cid, None)
+    main._remember_titles(main._pitched_titles, cid, ["why desk workers skip leg day"])
+    seen = {}
+
+    async def plan(sreq, cursor=0, context="", avoid=None):
+        seen["avoid"] = avoid
+        return SLOTS3
+
+    async def writer(system, user, schema, model, max_tokens=4000, temperature=None):
+        return _script(next(s["topic"] for s in SLOTS3 if s["topic"] in user))
+
+    _wire_fast(monkeypatch, SLOTS3, writer)
+    monkeypatch.setattr(main, "_plan_slots", plan)
+    asyncio.run(main._fast_feed_scripts(_sreq(creator_id=cid)))
+    assert seen["avoid"] == ["why desk workers skip leg day"]
+    main._pitched_titles.pop(cid, None)

@@ -2438,7 +2438,8 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         # (the creator keeps the topics they already saw), else plan now. Planning runs
         # concurrently with the context fetches.
         plan_task = (None if (req.slots or req.count < 2) else asyncio.ensure_future(
-            _plan_slots(req, 0, await _account_context(req.creator_id))))
+            _plan_slots(req, 0, await _account_context(req.creator_id),
+                        avoid=_avoid_topics(req.creator_id) or None)))
         stats, emulation = await asyncio.gather(
             _arms_for_prompt(req.creator_id),
             _resolve_emulation_profiles(req.emulation_targets))
@@ -12814,6 +12815,36 @@ def _script_fingerprint(script: dict) -> str:
     ).hexdigest()[:16]
 
 
+# Topic memory for the planner (2026-09-23): what this creator was already pitched (and
+# what they disliked) goes into the planner's avoid list, so later pages and stale-page
+# re-plans don't circle the same sub-topic (prod: ~8 of 21 titles for one thin fitness
+# account were the same back/desk/stretch idea). In-memory, per real creator, capped.
+_pitched_titles: dict[str, "collections.deque"] = {}
+_disliked_titles: dict[str, "collections.deque"] = {}
+_TOPIC_MEMORY_CAP = 30
+
+
+def _remember_titles(store: dict, creator_id: str, titles) -> None:
+    if not palo_flags.real_creator(creator_id):
+        return
+    import collections
+    dq = store.get(creator_id)
+    if dq is None:
+        dq = store[creator_id] = collections.deque(maxlen=_TOPIC_MEMORY_CAP)
+    for t in titles:
+        t = str(t or "").strip()
+        if t and t not in dq:
+            dq.append(t)
+    _cap_evict(store, 5000)
+
+
+def _avoid_topics(creator_id: str, limit: int = 12) -> list[str]:
+    """Disliked titles first (never re-pitch those), then the most recent pitches."""
+    disliked = list(_disliked_titles.get(creator_id) or [])
+    recent = [t for t in reversed(list(_pitched_titles.get(creator_id) or [])) if t not in disliked]
+    return (disliked[-limit:] + recent)[:limit]
+
+
 def _record_dismissal(creator_id: str, fingerprint: str) -> None:
     # Per-creator taste, so never the shared pre-auth bucket: one signed-out user's
     # dislike would otherwise censor that pick out of EVERY other signed-out user's feed
@@ -13314,7 +13345,8 @@ async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
         context = await _account_context(sreq.creator_id)          # cached after first read
         # Plan concurrently with the other context reads (arms + compiled strategy) instead
         # of after them: the planner is the long pole of the first paint.
-        plan_coro = (_plan_slots(sreq, cursor, context) if not sreq.slots
+        plan_coro = (_plan_slots(sreq, cursor, context, avoid=_avoid_topics(sreq.creator_id) or None)
+                     if not sreq.slots
                      else asyncio.sleep(0, result=sreq.slots))
         stats, strategy, sreq.slots = await asyncio.gather(
             _arms_for_prompt(sreq.creator_id), _inject_strategy("", sreq.creator_id), plan_coro)
@@ -13430,6 +13462,8 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
     # pre-auth bucket means no filtering, i.e. the pre-B-7 behaviour, never a stranger's
     # dislikes silently thinning a signed-out user's picks.
     dismissed = _feed_dismissed.get(creator_id) if palo_flags.real_creator(creator_id) else None
+    _remember_titles(_pitched_titles, creator_id,
+                     [s.get("title") for s in script_result.get("scripts", [])[:3] if isinstance(s, dict)])
     items = []
     for s in script_result.get("scripts", [])[:3]:
         if isinstance(s, dict) and dismissed and _script_fingerprint(s) in dismissed:
@@ -13883,6 +13917,7 @@ async def feed_feedback(req: FeedFeedbackRequest):
         await _flush_arms(req.creator_id, tapped_arms)
     if verdict == "dislike":
         _record_dismissal(req.creator_id, fp)
+        _remember_titles(_disliked_titles, req.creator_id, [sc.get("title")])
     return {"mode": "live" if _supabase_client else "mock", "status": "recorded",
             "arms_updated": updated, "dismissed": verdict == "dislike"}
 
