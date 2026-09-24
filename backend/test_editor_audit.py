@@ -777,3 +777,104 @@ def test_polling_gets_share_the_resume_budget(monkeypatch):
     assert sum(1 for j in jobs.values() if j.get("resume_count")) == 2
     for jid in jobs:
         main._pipeline_tasks.pop(jid, None)
+
+
+# ---------------------------------------------------------------------------
+# LV-27 — probe the source duration once at pipeline start; transcription budget scales
+# ---------------------------------------------------------------------------
+
+def test_transcribe_budget_scales_with_duration(monkeypatch):
+    b = main._transcribe_budget_s
+    assert b(None) == 300 and b(30) == 300           # unknown / short → the old flat budget
+    assert b(300) == 450                             # 5-min take: 90 + 1.2*300
+    assert b(600) == 810 and b(1800) == 2250
+    assert b(3000) == 2400                           # capped
+    monkeypatch.setattr(main, "TRANSCRIBE_MAX_S", 3000)
+    assert b(600) == 3000                            # an operator floor is never reduced
+
+
+def test_source_duration_probe_is_http_only_and_fail_soft(monkeypatch):
+    async def must_not_run(src, timeout_s=30.0):
+        raise AssertionError("ffprobe must not run for a non-http source")
+    monkeypatch.setattr(main, "_ffprobe_duration_s", must_not_run)
+    assert _aio.run(main._probe_source_duration_s("mock://take.mov")) is None
+    assert _aio.run(main._probe_source_duration_s("")) is None
+
+    seen = []
+    results = iter([612.5, None, float("nan"), 0.0])
+
+    async def fake_ffprobe(src, timeout_s=30.0):
+        seen.append(timeout_s)
+        return next(results)
+    monkeypatch.setattr(main, "_ffprobe_duration_s", fake_ffprobe)
+    url = "https://proj.supabase.co/storage/v1/object/public/b/take.mov"
+    assert _aio.run(main._probe_source_duration_s(url)) == 612.5
+    assert [_aio.run(main._probe_source_duration_s(url)) for _ in range(3)] == [None] * 3
+    assert seen[0] == main.SOURCE_DURATION_PROBE_S == 10.0      # short, bounded
+
+
+def _live_transcribe_job(monkeypatch, jid, **over):
+    monkeypatch.setattr(main, "ASSEMBLY_KEY", "test-key")
+    job = {"job_id": jid, "status": "transcribing", "created_at": _time.time(),
+           "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "queued"}],
+           "script": {"hook": "h", "formatId": "myth-buster"}, "style": "talking_head",
+           "brand": {}, "media_context": "", "edl": None, "error": None, "edit_prefs": {},
+           "words": [], "edl_history": [], "tweaks": [], "custom_instructions": "",
+           "source_url": "https://proj.supabase.co/storage/v1/object/public/b/take.mov"}
+    job.update(over)
+    main._clip_jobs[jid] = job
+    return job
+
+
+def test_pipeline_probes_duration_once_and_scales_every_budget(monkeypatch):
+    probes, polls, loudness = [], [], []
+
+    async def ok_validate(url):
+        pass
+
+    async def fake_probe(url):
+        probes.append(url)
+        return 600.0                                      # a 10-minute take
+
+    async def submit(url):
+        return "tid-1"
+
+    async def poll(tid, max_wait_s=None):
+        polls.append(max_wait_s)
+        raise main.PipelineError("transcribe_timeout", "stop here", "transcribe")
+
+    async def fake_loudness(url, **kw):
+        loudness.append(kw.get("duration_s"))
+        return None
+    monkeypatch.setattr(main, "_validate_source_url", ok_validate)
+    monkeypatch.setattr(main, "_probe_source_duration_s", fake_probe)
+    monkeypatch.setattr(main, "_submit_transcription", submit)
+    monkeypatch.setattr(main, "_poll_transcription", poll)
+    monkeypatch.setattr(main.audio_mod, "probe_loudness", fake_loudness)
+    job = _live_transcribe_job(monkeypatch, "lv27-pipe")
+    _aio.run(main._run_pipeline("lv27-pipe"))
+    assert job["duration_ms"] == 600_000                 # written (was read but never set)
+    assert probes == [job["source_url"]]                 # probed exactly once
+    assert polls == [810]                                # 90 + 1.2*600, not the flat 300
+    assert loudness == [600.0]                           # known BEFORE the parallel probe
+    assert job["error"] == "transcribe_timeout"          # (the stub's stop signal)
+    main._clip_jobs.pop("lv27-pipe", None)
+
+
+def test_known_duration_is_never_reprobed_and_bad_sources_fail_first(monkeypatch):
+    probes = []
+
+    async def fake_probe(url):
+        probes.append(url)
+        return 99.0
+    monkeypatch.setattr(main, "_probe_source_duration_s", fake_probe)
+    job = {"job_id": "lv27-known", "duration_ms": 245_000, "source_url": "https://x/t.mov"}
+    assert _aio.run(main._ensure_source_duration(job)) == 245.0 and probes == []
+
+    async def dead_source(url):
+        raise main.PipelineError("source_unreachable", "404", "transcribe")
+    monkeypatch.setattr(main, "_validate_source_url", dead_source)
+    job = _live_transcribe_job(monkeypatch, "lv27-dead")
+    _aio.run(main._run_pipeline("lv27-dead"))
+    assert job["error"] == "source_unreachable" and probes == []   # no probe on a dead URL
+    main._clip_jobs.pop("lv27-dead", None)

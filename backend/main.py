@@ -5228,6 +5228,14 @@ ERROR_CODES = [
 # Fail-fast budgets — env-tunable, monkeypatchable in tests.
 SOURCE_PROBE_TIMEOUT_S = float(os.environ.get("SOURCE_PROBE_TIMEOUT_S", "5"))
 TRANSCRIBE_MAX_S = int(os.environ.get("TRANSCRIBE_MAX_S", "300"))
+# LV-27 (editor audit 2026-09-24): TRANSCRIBE_MAX_S is now the FLOOR of the poll budget.
+# Measured prod AssemblyAI turnaround is ~1x realtime (31s for a 30s take, 62s for 60s),
+# so a flat 300s timed out every take over ~5 min. The budget scales with the source
+# duration probed at pipeline start: max(TRANSCRIBE_MAX_S, 90 + 1.2 s per source
+# second), capped at TRANSCRIBE_CEIL_S (never below the configured floor).
+TRANSCRIBE_CEIL_S = int(os.environ.get("TRANSCRIBE_CEIL_S", "2400"))
+# ffprobe of the source's container header at pipeline start (fail-soft, bounded).
+SOURCE_DURATION_PROBE_S = float(os.environ.get("SOURCE_DURATION_PROBE_S", "10"))
 RENDER_POLL_MAX_S = int(os.environ.get("RENDER_POLL_MAX_S", "240"))
 RENDER_STALL_S = int(os.environ.get("RENDER_STALL_S", "75"))
 BRIDGE_CALL_TIMEOUT_S = float(os.environ.get("BRIDGE_CALL_TIMEOUT_S", "30"))
@@ -5847,14 +5855,61 @@ def _transcript_cache_path(source_url: str) -> str:
                         hashlib.sha1(source_url.encode()).hexdigest() + ".json")
 
 
+def _transcribe_budget_s(duration_s: float | None) -> int:
+    """AssemblyAI poll budget for a source of `duration_s` seconds (LV-27): the flat
+    TRANSCRIBE_MAX_S when the duration is unknown, else max(floor, 90 + 1.2 s/s),
+    capped at TRANSCRIBE_CEIL_S — but never below the configured floor."""
+    if not duration_s or duration_s <= 0:
+        return TRANSCRIBE_MAX_S
+    return max(TRANSCRIBE_MAX_S, min(TRANSCRIBE_CEIL_S, int(90 + 1.2 * float(duration_s))))
+
+
+async def _probe_source_duration_s(url: str) -> float | None:
+    """Source duration (seconds) from ffprobe's read of the container header — no decode,
+    SOURCE_DURATION_PROBE_S timeout (the child is killed on timeout). Fail-soft: None for
+    a non-http source (mock/dev paths), a missing ffprobe, or anything unparseable."""
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    dur = await _ffprobe_duration_s(url, timeout_s=SOURCE_DURATION_PROBE_S)
+    try:
+        dur = float(dur) if dur is not None else None
+    except (TypeError, ValueError):
+        return None
+    return dur if dur is not None and math.isfinite(dur) and dur > 0 else None
+
+
+async def _ensure_source_duration(job: dict) -> float | None:
+    """Probe the source duration ONCE per job and persist it as job["duration_ms"] (read by
+    the dossier, the transcription budget, the audio-probe timeouts and the live-pipeline
+    watchdog ceiling). A resumed/retried job that already knows it never re-probes."""
+    if job.get("duration_ms"):
+        return float(job["duration_ms"]) / 1000.0
+    try:
+        dur = await _probe_source_duration_s(job.get("source_url") or "")
+    except Exception as e:                     # belt+braces: the probe is already fail-soft
+        logging.info("source duration probe failed for %s: %s", job.get("job_id"), e)
+        dur = None
+    if dur:
+        job["duration_ms"] = int(round(dur * 1000))
+    return dur
+
+
+async def _prepare_source(job: dict) -> None:
+    """Pipeline start (LV-27): validate the source (fails fast on a dead URL — before any
+    probe is spent on it), then learn its duration once so every budget downstream (the
+    parallel loudness probe included) can scale with the take."""
+    await _validate_source_url(job["source_url"])
+    await _ensure_source_duration(job)
+
+
 async def _transcribe_job(job_id: str) -> list[dict]:
     """Transcribe the job's source into word-frames (shared by the full pipeline and the
-    analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights."""
+    analyze-first flow). Sets job['words'] + stashes the transcript's auto_highlights.
+    The source was validated + duration-probed by _prepare_source before this runs."""
     job = _clip_jobs[job_id]
     _mark_stage(job, "transcribing")
     for c in job["clips"]:
         c["status"] = "transcribing"
-    await _validate_source_url(job["source_url"])
     if TRANSCRIPT_CACHE:
         cp = _transcript_cache_path(job["source_url"])
         try:
@@ -5869,7 +5924,9 @@ async def _transcribe_job(job_id: str) -> list[dict]:
     transcript_id = await _submit_transcription(job["source_url"])
     if not transcript_id:
         raise PipelineError("transcribe_submit_failed", "AssemblyAI rejected the submission", "transcribe")
-    transcript = await _poll_transcription(transcript_id)
+    # LV-27: the poll budget scales with the take (flat 300s timed out takes > ~5 min).
+    transcript = await _poll_transcription(
+        transcript_id, max_wait_s=_transcribe_budget_s(_source_duration_s(job)))
     job["words"] = transcript["words"]     # kept for conversational tweaks + the edit brief
     job["_auto_highlights"] = transcript.get("auto_highlights")
     if TRANSCRIPT_CACHE and transcript["words"]:
@@ -5913,6 +5970,9 @@ async def _analyze_to_brief(job_id: str, briefless_on_error: bool = False) -> li
     one-tap pipeline proceeds with edit_brief=None instead — a briefless auto edit
     still beats a dead job."""
     job = _clip_jobs[job_id]
+    # LV-27: validate + learn the source duration BEFORE the gather, so the parallel
+    # loudness probe and the transcription poll both get duration-scaled budgets.
+    await _prepare_source(job)
     # P0.6: measure the take's loudness IN PARALLEL with transcription (user accepts
     # the wait; overlapping it costs no extra wall-clock). Fails soft to None → no
     # gain. transcribe raising propagates to the caller; probe never raises.
@@ -6005,6 +6065,8 @@ async def _run_pipeline(job_id: str):
     job = _clip_jobs[job_id]
     my_pgen = job.get("pipeline_gen", 0)
     try:
+        # LV-27: validate + probe the source duration first (see _analyze_to_brief).
+        await _prepare_source(job)
         # P0.6: loudness probe parallel with transcription (same as _run_analysis).
         # P1.2: + visual dossier in the same gather (all fail-soft).
         with _timed(job, "transcribe"):
