@@ -217,11 +217,11 @@ final class EditorDraftAutosaver {
     }
 
     /// The user applied a theme and kept their edits: persist immediately, flagged so the
-    /// next load replays them onto the rethemed EDL (keep: false withdraws the flag when
-    /// the retheme never reached the server).
-    func persistForRetheme(_ gestures: [[WireOp]], keep: Bool = true) {
+    /// next load replays them onto the rethemed EDL. The flag stays up even if the retheme
+    /// request errors — a transport failure may still have landed server-side.
+    func persistForRetheme(_ gestures: [[WireOp]]) {
         guard !closed else { return }
-        carryAcrossRetheme = keep
+        carryAcrossRetheme = true
         work?.cancel(); work = nil
         pending = nil
         write(gestures)

@@ -64,6 +64,9 @@ extension ProEditorView {
         var url: URL?
         if let local = clip.localVideoPath { url = MediaStore.url(for: local) }
         if url == nil, let src = result["source_url"] as? String, let u = URL(string: src) { url = u }
+        // ED-3: a reload (after a retheme) replaces the controller — tear the old one down
+        // first, or its AVPlayer + music loop keep playing behind the new editor.
+        player?.teardown()
         let pc = EditorPlayerController(sourceURL: url)
         pc.update(document: sess.draft)
         player = pc
@@ -100,8 +103,21 @@ extension ProEditorView {
     // restamps caption/grade/duck, never touches segments/drops/overlays, so it
     // skips the local op-log entirely and re-renders directly).
 
-    func retheme(to themeId: String) {
+    /// Theme tile tap. Unsaved edits would be replaced by the reload, so a dirty session
+    /// asks first (ED-3); a clean one rethemes straight away as before.
+    func requestRetheme(_ themeId: String) {
+        if session?.isDirty == true { pendingThemeId = themeId } else { retheme(to: themeId) }
+    }
+
+    func retheme(to themeId: String, keepingEdits: Bool = false) {
         guard let jobId = clip.jobId, rethemeTask == nil, applyTask == nil else { return }
+        player?.pause()                              // ED-3: nothing plays behind the spinner
+        if keepingEdits, let session, session.isDirty {
+            // On disk and flagged BEFORE the request: the reload below — or the next launch,
+            // if the app dies mid-render — replays these ops onto the rethemed EDL (a
+            // retheme never touches segments/drops/overlays/broll, so they still fit).
+            draftAutosaver?.persistForRetheme(session.opLog)
+        }
         phase = .applying
         rethemeTask = Task {
             let resp = await store.backend.rethemeClip(jobId: jobId, themeId: themeId, clipId: clip.id.uuidString)
@@ -120,10 +136,16 @@ extension ProEditorView {
                 let (ready, message) = await pollClipUntilDone(jobId: jobId)
                 guard !Task.isCancelled else { return }
                 rethemeTask = nil
+                // Closed mid-render: the poll above already handed the result to the store;
+                // don't build a player/filmstrip for an editor nobody is looking at.
+                guard lifetime.visible else { return }
                 if ready { await load() } else { phase = .failed(message ?? "Couldn't finish that render.") }
             } else {
                 rethemeTask = nil
-                phase = .editing   // keyless/mock, or nothing needed re-rendering
+                // Keyless/mock, or nothing needed re-rendering: the EDL still changed
+                // server-side, so reload it (the kept edits replay on top) rather than keep
+                // editing a document that no longer matches the server.
+                await load()
             }
         }
     }
@@ -954,6 +976,7 @@ extension ProEditorView {
         let saver = draftAutosaver
         let verifyBase = saveNeedsBaseCheck
         saver?.flush()
+        player?.pause()                              // nothing plays behind "Applying…"
         withAnimation(.easeOut(duration: 0.15)) { saveError = nil }
         phase = .applying
         applyTask = Task {
@@ -1263,7 +1286,7 @@ extension ProEditorView {
                             let on = t.id == activeThemeId
                             Button {
                                 showThemeSheet = false
-                                retheme(to: t.id)
+                                requestRetheme(t.id)
                             } label: {
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack(alignment: .top, spacing: 4) {

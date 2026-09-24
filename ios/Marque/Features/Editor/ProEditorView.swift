@@ -134,6 +134,11 @@ struct ProEditorView: View {
     // Set after a failure that may have landed server-side (transport drop, 5xx): the next
     // attempt re-reads the job and refuses to re-send onto a base that moved.
     @State var saveNeedsBaseCheck = false
+    // ED-3: a theme picked while edits are unsaved waits here for the keep-edits confirm.
+    @State var pendingThemeId: String? = nil
+    // Outlives teardown (a reference box): the retheme poll checks it before reloading, so
+    // a render finishing after the editor closed never spins up a player nobody sees.
+    @State var lifetime = EditorLifetime()
 
     struct WordSpan: Identifiable { var id: Int { startFrame }; let text: String; let startFrame: Int; let endFrame: Int }
 
@@ -170,6 +175,14 @@ struct ProEditorView: View {
                        confirm: "Discard edits", destructive: true, cancel: "Keep editing") {
             draftAutosaver?.close()          // ED-2: a confirmed discard deletes the saved draft too
             dismiss()
+        }
+        // ED-3: a retheme reloads the clip from the server — with unsaved edits, ask first;
+        // the edits ride across the reload in the on-disk draft and replay on the new look.
+        .marqueConfirm(Binding(get: { pendingThemeId != nil }, set: { if !$0 { pendingThemeId = nil } }),
+                       title: "Apply the theme and keep your edits?",
+                       message: "The theme re-renders your clip first. Your unsaved edits stay in the editor on top of it, ready to save.",
+                       confirm: "Apply theme", cancel: "Cancel") {
+            if let id = pendingThemeId { retheme(to: id, keepingEdits: true) }
         }
         // Dialogs + sheets live on the ROOT, not modeToolbar — the toolbar swaps out while the
         // caption list is open (dialog would never render), and an .overlay hosted by a 64pt
@@ -213,7 +226,9 @@ struct ProEditorView: View {
         .onChange(of: stickerFieldFocused) { _, focused in
             if !focused, let idx = typingSticker { commitTyping(idx) }
         }
+        .onAppear { lifetime.visible = true }
         .onDisappear {
+            lifetime.visible = false
             draftAutosaver?.flush()          // ED-2: whatever was pending reaches disk
             // #47: do NOT cancel a save that's already committing/rendering. Once Save
             // fires, applyTask owns the server commit + render poll and writes the result
@@ -2572,6 +2587,11 @@ extension View {
             self
         }
     }
+}
+
+/// ED-3: whether the editor is still on screen, readable from tasks that outlive it.
+final class EditorLifetime {
+    var visible = true
 }
 
 /// DuetSplit.tsx: `edl.layout.split_fraction` sizes the top (reacted-to) band server-side;
