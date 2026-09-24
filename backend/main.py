@@ -4723,8 +4723,8 @@ def _demo_src_job(job_id: str) -> dict | None:
     lane and long-clip behavior are drivable deterministically in the simulator.
     Needs DEMO_MEDIA_DIR/<seconds>.mov (or .mp4) and only ever runs keyless."""
     media_dir = os.environ.get("DEMO_MEDIA_DIR", "")
-    try:
-        secs = int(job_id[len("demo-src-"):])
+    try:   # demo-src-<seconds>[-<tag>] — a tag gives each parallel QA run its own mutable job
+        secs = int(job_id[len("demo-src-"):].split("-", 1)[0])
     except ValueError:
         return None
     if not media_dir or secs <= 0:

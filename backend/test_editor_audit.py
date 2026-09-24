@@ -34,6 +34,15 @@ def test_demo_src_job_spans_real_duration(tmp_path, monkeypatch):
     assert len(b["edl"]["captions"]) == len(words)
 
 
+def test_demo_src_tagged_ids_are_independent_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEMO_MEDIA_DIR", _media_dir(tmp_path, 60))
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
+    for jid in ("demo-src-60-se", "demo-src-60-pm"):
+        main._clip_jobs.pop(jid, None)
+        assert client.get(f"/v1/clips/{jid}").json()["source_url"].endswith("/60.mov")
+    assert main._clip_jobs["demo-src-60-se"] is not main._clip_jobs["demo-src-60-pm"]
+
+
 def test_demo_src_without_media_falls_back_to_placeholder(tmp_path, monkeypatch):
     monkeypatch.delenv("DEMO_MEDIA_DIR", raising=False)
     monkeypatch.setattr(main, "ANTHROPIC_KEY", "")
