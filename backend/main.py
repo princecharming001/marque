@@ -2104,10 +2104,50 @@ _DRAFT_SLOP_OPENERS = (
 
 
 def _est_seconds(script: dict) -> int:
-    """Spoken length of a script at a talking-head pace (~150 wpm) across hook, body and
-    CTA. Drafts used to hard-code 30s regardless of what was written."""
+    """Spoken length of a script at a talking-head creator's pace (~165 wpm) across hook,
+    body and CTA. The model's own targetSeconds shipped everywhere else (119 words labelled
+    30s), and the iOS teleprompter scrolls at content height / targetSeconds, so a low
+    number ran the prompter too fast for the creator to read."""
     words = sum(len(str(script.get(k) or "").split()) for k in ("hook", "body", "cta"))
-    return max(10, min(120, round(words / 2.5)))
+    return max(10, min(120, round(words / 2.75)))
+
+
+# Words a title must never END on (the 42-char clamp produced "…train muscles twice a").
+_TITLE_TAIL_WORDS = frozenset(
+    "a an the to of and or for with in on at by as from into your my our their his her its "
+    "is are was be but so that this these those than then if when why how what".split())
+
+
+def _tidy_title(title: str, max_words: int = 8) -> str:
+    """Titles are plain spoken sentences of at most 8 words (TITLE_DOCTRINE). Enforce the
+    cap at a word boundary and never leave a dangling function word or punctuation."""
+    words = prompts.scrub_em_dashes((title or "").strip()).split()
+    if len(words) > max_words:
+        words = words[:max_words]
+    while len(words) > 2 and words[-1].lower().strip(",;:.!?") in _TITLE_TAIL_WORDS:
+        words.pop()
+    return " ".join(words).rstrip(" ,;:-–—(&/")
+
+
+def _finalize_script(s: dict) -> dict:
+    """The one finalize step every script path shares (it runs inside _ensure_speakable,
+    which the feed, /v1/scripts, steer, write-turn, from-brief, mimic, analyze-video, the
+    orb chain and the digest all flow through): measured seconds, a tidy title, and a
+    style/format the talking-head editor can actually render."""
+    if not isinstance(s, dict):
+        return s
+    secs = _est_seconds(s)
+    s["targetSeconds"] = secs
+    s["durationSeconds"] = secs
+    if isinstance(s.get("title"), str) and s["title"].strip():
+        s["title"] = _tidy_title(s["title"])
+    style = s.get("style")
+    if style not in prompts.ACTIVE_STYLES:
+        s["style"] = style = "talking_head"
+    fmts = (prompts.STYLES.get(style) or prompts.STYLES["talking_head"]).get("formats") or []
+    if fmts and s.get("formatId") not in fmts:
+        s["formatId"] = fmts[0]
+    return s
 
 
 def _draft_score(creator_id: str, script: dict) -> int:
@@ -2453,6 +2493,8 @@ async def _generate_scripts(req: ScriptRequest) -> dict:
         # shares the old lint's blind spots, so a deterministic drop is the real guard.
         # Never ship fewer than requested — backfill any drop from the mock templates.
         out = await _ensure_speakable(out, policy="repair_or_drop")
+        if _thin_profile(req):
+            out = await _ensure_honest(out)
         _lap("judge_repair")
         if req.slots and len(out) == len(req.slots):
             # Keep the plan's format on each script (a repair pass must not collapse the
@@ -12915,6 +12957,75 @@ _SPEAKABLE_REPAIR_SYS = (
 )
 
 
+# --- honesty guard (2026-09-23) ------------------------------------------------
+# For a creator with no posts and no memory facts, ANY first-person event or result in a
+# script is invented (GROUNDING allows lived experience only from those sources), and the
+# unjudged first paint shipped them ("We killed custom pricing and our revenue went up").
+# One bounded HAIKU rewrite reframes just those sentences; a script that still claims one
+# is dropped.
+_HONESTY_REPAIR_SYS = (
+    "You fix ONE problem in a short talking-head script: it makes the creator claim a personal "
+    "event, result, client story or number they never said happened. They read this on camera, "
+    "so that line would be a lie.\n"
+    "Rewrite ONLY the sentences that claim a personal event or result so they become the "
+    "viewer's experience ('you...'), a pattern most people hit, or the creator's opinion or "
+    "method ('here's what I'd do'). Keep every other sentence exactly as written. Keep the "
+    "length, the voice and the contractions. No em dashes or en dashes.\n"
+    'Return JSON {"hook": str, "body": str, "cta": str}.'
+)
+_HONESTY_REPAIR_JSON = {
+    "type": "object", "additionalProperties": False, "required": ["hook", "body", "cta"],
+    "properties": {"hook": {"type": "string"}, "body": {"type": "string"}, "cta": {"type": "string"}},
+}
+
+
+def _thin_profile(req) -> bool:
+    """No source a first-person event could honestly come from: no real posts and no
+    memory facts/perspective the creator told us."""
+    mem = getattr(req, "memory", None) or {}
+    told = isinstance(mem, dict) and any(
+        isinstance(x, str) and x.strip() for k in ("facts", "perspective") for x in (mem.get(k) or []))
+    return not (getattr(req, "posts", None) or told)
+
+
+async def _ensure_honest(scripts: list[dict], *, timeout_s: float = 8.0) -> list[dict]:
+    from app import honesty
+    flagged = [i for i, s in enumerate(scripts) if isinstance(s, dict) and honesty.script_claims(s)]
+    if not flagged:
+        return scripts
+
+    async def _fix(s: dict) -> dict | None:
+        if not ANTHROPIC_KEY:
+            return None
+        try:
+            out = await asyncio.wait_for(
+                anthropic_json(_HONESTY_REPAIR_SYS,
+                               json.dumps({k: s.get(k) or "" for k in ("hook", "body", "cta")}),
+                               _HONESTY_REPAIR_JSON, HAIKU, 900),
+                timeout=timeout_s)
+        except (HTTPException, asyncio.TimeoutError):
+            return None
+        if not isinstance(out, dict):
+            return None
+        fixed = {**s, **{k: prompts.scrub_em_dashes(str(out.get(k) or s.get(k) or ""))
+                         for k in ("hook", "body", "cta")}}
+        if honesty.script_claims(fixed) or prompts.flag_stage_direction(fixed.get("body") or ""):
+            return None
+        return _finalize_script(fixed)
+
+    fixes = dict(zip(flagged, await asyncio.gather(*(_fix(scripts[i]) for i in flagged))))
+    out: list[dict] = []
+    for i, s in enumerate(scripts):
+        if i not in fixes:
+            out.append(s)
+        elif fixes[i]:
+            logging.info("[honesty] i=%d outcome=repaired claim=%r", i, honesty.script_claims(s))
+            out.append(fixes[i])
+        else:
+            logging.info("[honesty] i=%d outcome=dropped claim=%r", i, honesty.script_claims(s))
+    return out
+
+
 async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_drop",
                             fallback=None, timeout_s: float = 8.0) -> list[dict]:
     """Runtime speakability guard for EVERY script-generation path. NEVER returns a
@@ -12941,11 +13052,7 @@ async def _ensure_speakable(scripts: list[dict], *, policy: str = "repair_or_dro
         # gets clamped to something sane.
         if isinstance(s, dict):
             s.pop("plan", None)
-            try:
-                d = int(s.get("durationSeconds") or 0)
-                s["durationSeconds"] = max(5, min(600, d)) if d else s.get("targetSeconds", 0)
-            except (TypeError, ValueError):
-                s["durationSeconds"] = s.get("targetSeconds", 0)
+            s = _finalize_script(s)
             # Global voice doctrine backstop. _ensure_speakable is the ONE hook every
             # script-generation path flows through (/v1/scripts, steer, fast feed,
             # write-turn, from-brief), so the dash scrub lives here. Whitelisted prose
@@ -13209,6 +13316,8 @@ async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
         # anything still dirty is dropped (policy repair_or_drop), unless that would
         # empty the page, in which case the mock keeps Home from going blank.
         out = await _ensure_speakable(out, policy="repair_or_drop")
+        if _thin_profile(sreq):
+            out = await _ensure_honest(out)
         if not out:
             return {"mode": "mock", "scripts": mock_scripts(sreq)}
         # "live_fast" (NOT "live"): a real-AI DRAFT (HAIKU, no judge pass). The client uses
@@ -13270,7 +13379,10 @@ def _clamp_title(title: str, limit: int = 42) -> str:
     cut = t[:limit + 1]
     if " " in cut:
         cut = cut[:cut.rfind(" ")]
-    return cut.rstrip(" ,;:-–—(&/").rstrip()
+    words = cut.rstrip(" ,;:-–—(&/").split()
+    while len(words) > 2 and words[-1].lower().strip(",;:.!?") in _TITLE_TAIL_WORDS:
+        words.pop()
+    return " ".join(words).rstrip(" ,;:-–—(&/")
 
 
 async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,

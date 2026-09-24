@@ -69,11 +69,13 @@ def test_ensure_speakable_strips_plan_and_clamps_duration():
          "plan": "internal", "durationSeconds": 10000, "targetSeconds": 30}
     (out,) = _run(main._ensure_speakable([s]))
     assert "plan" not in out
-    assert out["durationSeconds"] == 600            # clamped, never a wish
+    # 2026-09-23: both numbers are MEASURED from the spoken words (the finalize step), never
+    # the model's wish: the iOS teleprompter scrolls at content height / targetSeconds.
+    assert out["durationSeconds"] == out["targetSeconds"] == main._est_seconds(out)
     s2 = {"body": "I tried this opening and it worked in nine moves.", "style": "talking_head",
           "targetSeconds": 30}
     (out2,) = _run(main._ensure_speakable([s2]))
-    assert out2["durationSeconds"] == 30            # absent -> honest targetSeconds floor
+    assert out2["durationSeconds"] == out2["targetSeconds"] == main._est_seconds(out2)
 
 
 # --- voiceprint + opener dedup --------------------------------------------------

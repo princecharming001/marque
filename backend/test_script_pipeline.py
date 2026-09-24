@@ -205,7 +205,7 @@ def test_page_formats_rotate_by_cursor():
 
 
 def test_est_seconds_counts_spoken_words_and_clamps():
-    assert main._est_seconds({"hook": "a " * 10, "body": "b " * 100, "cta": "c " * 5}) == 46
+    assert main._est_seconds({"hook": "a " * 10, "body": "b " * 100, "cta": "c " * 5}) == 42   # 165 wpm
     assert main._est_seconds({"body": "short"}) == 10
     assert main._est_seconds({"body": "w " * 1000}) == 120
 
