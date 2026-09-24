@@ -1364,9 +1364,13 @@ final class AppStore {
     /// Swap the uploading placeholder for the real server-tracked clips, or mark it failed.
     private func reconcileInstantSubmit(placeholderId: UUID, resp: AnalyzeJobResponse?,
                                         script: Script, footagePath: String?) {
-        clips.removeAll { $0.id == placeholderId }
+        // LV-3: the placeholder is REPLACED in place by the server's clips (shared helper),
+        // carrying what the creator set on it while it uploaded. Gone ⇒ deleted mid-upload
+        // (deleteClip cancelled this submit) — never resurrect it, failed or tracked.
+        guard let placeholder = clips.first(where: { $0.id == placeholderId }) else { return }
         let journalEntry = UploadJournal.shared.entry(placeholderId: placeholderId.uuidString)
         guard let resp, let stubs = resp.clips, !stubs.isEmpty else {
+            clips.removeAll { $0.id == placeholderId }
             // Submit failed — surface a failed card the creator can retry, never a silent drop.
             // Breadcrumb → Render logs (client-side failures here previously left no trace).
             // The journal entry stays (state failedRetryable) so the reconcile sweep can resume
@@ -1405,47 +1409,62 @@ final class AppStore {
         // optimistically at submit time; don't repeat it here after the round-trip.
         trackSubmittedClips(jobId: resp.jobId, script: script, footagePath: footagePath,
                             stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
-                            etaSeconds: resp.etaSeconds, celebrate: false)
+                            etaSeconds: resp.etaSeconds, celebrate: false,
+                            replacing: placeholderId, carryOver: placeholder)
     }
 
+    /// LV-3: the script a re-tracked clip is filed under — its own when it still exists,
+    /// else a stand-in built from the card (the carried-over clip keeps its real scriptId).
+    private func trackingScript(for clip: Clip) -> Script {
+        scripts.first(where: { $0.id == clip.scriptId }) ?? Script(
+            pillarName: "Freestyle", title: clip.title, summary: "", style: VideoStyle.talkingHead.rawValue,
+            formatId: clip.formatId, hook: Hook(text: clip.title, signal: .narrative, strength: 70),
+            altHooks: [], body: "", cta: clip.caption, shotPlan: [], targetSeconds: max(1, clip.seconds),
+            predictedScore: clip.predictedScore)
+    }
+
+    /// The shared "clips are now in flight" tail for EVERY create-job response.
+    ///
+    /// LV-3: `replacing` is the local stand-in the response belongs to (upload placeholder,
+    /// failed card being re-submitted). It is swapped IN PLACE for rows carrying the
+    /// SERVER's clip ids — the ids every poll loop matches on — with the creator's card
+    /// metadata carried over (`carryOver`). Before this, the resubmit path kept the local
+    /// id, so no poll ever matched it and a finished job read as edit_timeout.
     func trackSubmittedClips(jobId: String, script: Script, footagePath: String?,
                              stubs: [(id: String, format: String, ready: Bool)],
-                             etaSeconds: Int? = nil, celebrate: Bool = true) {
-        let tagged = stubs.map { stub -> Clip in
-            // A clip_id that doesn't parse as a UUID can NEVER be reconciled: every poll
-            // loop matches responses on UUID(uuidString: clip_id) == clip.id, so the old
-            // random-UUID fallback minted a local id no server response would ever address
-            // — a permanent spinner, forever, across launches. Land it as .failed
-            // retryable instead. jobId is deliberately nil: that job's responses can't
-            // name this clip anyway, and a nil jobId routes retryClipJob straight to
-            // resubmitFailedClip (fresh upload from the local take → fresh job →
-            // server-minted id), the only path that can actually heal it.
-            let parsedId = UUID(uuidString: stub.id)
-            let formatId = stub.format.isEmpty ? script.formatId : stub.format
-            var c = Clip(id: parsedId ?? UUID(), scriptId: script.id, formatId: formatId,
-                         formatName: Catalog.format(formatId).name,
-                         title: script.title.isEmpty ? script.hook.text : script.title,
-                         caption: script.cta,
-                         predictedScore: script.predictedScore,
-                         status: parsedId == nil ? .failed : (stub.ready ? .ready : .rendering),
-                         seconds: Catalog.format(formatId).targetSeconds,
-                         jobId: parsedId == nil ? nil : jobId)
-            c.localVideoPath = footagePath
-            if parsedId == nil {
-                c.lastError = "internal_error"
-                c.lastErrorDetail = "unreadable clip id from the server"
-            }
-            if !stub.ready && parsedId != nil { c.etaSeconds = etaSeconds; c.etaSetAt = Date() }
-            return c
+                             etaSeconds: Int? = nil, celebrate: Bool = true,
+                             replacing localId: UUID? = nil, carryOver: Clip? = nil) {
+        // A stand-in that's gone was deleted mid-flight (deleteClip cancels its task) —
+        // re-creating it from a late response would resurrect a card the creator removed.
+        if let localId, !clips.contains(where: { $0.id == localId }) {
+            backend.reportClientEvent("adopt_skipped_deleted", detail: "job=\(jobId)")
+            return
         }
+        // A clip_id that doesn't parse as a UUID can NEVER be reconciled: every poll loop
+        // matches responses on UUID(uuidString: clip_id) == clip.id, so it lands .failed
+        // retryable with a nil jobId — which routes retryClipJob straight to
+        // resubmitFailedClip (fresh upload → fresh job → server-minted id), the only path
+        // that can actually heal it. (ServerClipAdoption.trackedClips.)
+        let tagged = ServerClipAdoption.trackedClips(
+            jobId: jobId, script: script, footagePath: footagePath,
+            stubs: stubs.map { ServerClipAdoption.Stub(id: $0.id, format: $0.format, ready: $0.ready) },
+            etaSeconds: etaSeconds, carryOver: carryOver)
         // Breadcrumb → Render logs: a malformed clip_id is a backend contract break we
         // want to hear about, not silently absorb.
         if let bad = stubs.first(where: { UUID(uuidString: $0.id) == nil }) {
             backend.reportClientEvent("clip_id_unparseable",
                                       detail: "job=\(jobId) | id=\(bad.id.prefix(36))")
         }
-        clips.insert(contentsOf: tagged, at: 0)
-        upgradeSocialCaption(for: script)
+        ServerClipAdoption.replace(localId, in: &clips, with: tagged)
+        if let localId, let first = tagged.first, first.id != localId {
+            ServerClipAdoption.repoint(&schedule, from: localId, to: first.id)
+            ServerClipAdoption.repoint(&pendingPublishes, from: localId, to: first.id)
+        }
+        // The stand-in's files nothing carried over (e.g. an old job's cached render).
+        if let carryOver { reclaimOrphanedMedia(from: carryOver) }
+        // Only when a row actually files under this script — a stand-in script (the card's
+        // own was deleted) must not trigger a caption rewrite of nothing.
+        if tagged.contains(where: { $0.scriptId == script.id }) { upgradeSocialCaption(for: script) }
         readiedScripts.removeAll { $0.script.id == script.id }
         save()
         if tagged.contains(where: { $0.status == .rendering }) {
@@ -1748,17 +1767,14 @@ final class AppStore {
             save()
             return
         }
-        clips.removeAll { $0.id == clip.id }
         UploadJournal.shared.update(uploadId: entry.uploadId) { $0.jobId = resp.jobId; $0.state = .jobCreated }
         UploadJournal.shared.remove(uploadId: entry.uploadId)
-        let effScript = script ?? Script(
-            pillarName: "Freestyle", title: clip.title, summary: "", style: VideoStyle.talkingHead.rawValue,
-            formatId: clip.formatId, hook: Hook(text: clip.title, signal: .narrative, strength: 70),
-            altHooks: [], body: "", cta: clip.caption, shotPlan: [], targetSeconds: max(1, clip.seconds),
-            predictedScore: clip.predictedScore)
-        trackSubmittedClips(jobId: resp.jobId, script: effScript, footagePath: clip.localVideoPath,
+        let current = clips.first(where: { $0.id == clip.id }) ?? clip
+        trackSubmittedClips(jobId: resp.jobId, script: script ?? trackingScript(for: current),
+                            footagePath: clip.localVideoPath,
                             stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
-                            etaSeconds: resp.etaSeconds, celebrate: false)
+                            etaSeconds: resp.etaSeconds, celebrate: false,
+                            replacing: clip.id, carryOver: current)
     }
 
     /// The chat-edit card sweep (unchanged behavior, factored out of reconcileTransientState).
@@ -2117,17 +2133,21 @@ final class AppStore {
                                                themeId: jp?.themeId, config: jp?.config,
                                                autoConfirm: true, toggles: toggles,
                                                idempotencyKey: uploadId),
-              !resp.jobId.isEmpty else {
+              !resp.jobId.isEmpty, let stubs = resp.clips, !stubs.isEmpty else {
             fail("Couldn't restart the edit. Tap Try again."); return true
-        }
-        if let i = clips.firstIndex(where: { $0.id == clip.id }) {
-            clips[i].jobId = resp.jobId
-            clips[i].uploading = false
         }
         UploadJournal.shared.update(uploadId: uploadId) { $0.jobId = resp.jobId; $0.state = .jobCreated }
         UploadJournal.shared.remove(uploadId: uploadId)
-        save()
-        await pollJob(jobId: resp.jobId, clipIds: [clip.id])
+        // LV-3: adopt the SERVER's clip ids exactly like the instant submit does. This used
+        // to stamp the new jobId on the LOCAL clip and poll [clip.id] — an id no response of
+        // the new job ever names, so every "Try again" / relaunch auto-resume spun for the
+        // whole poll ceiling and then read edit_timeout while the job had finished.
+        let current = clips.first(where: { $0.id == clip.id }) ?? clip
+        trackSubmittedClips(jobId: resp.jobId, script: script ?? trackingScript(for: current),
+                            footagePath: path,
+                            stubs: stubs.map { ($0.clipId, $0.format, $0.status == "ready") },
+                            etaSeconds: resp.etaSeconds, celebrate: false,
+                            replacing: clip.id, carryOver: current)
         return true
     }
 

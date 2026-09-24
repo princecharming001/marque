@@ -17,8 +17,11 @@ OUT=$(mktemp -d /tmp/marque-logictests.XXXXXX)
 trap 'rm -rf "$OUT"' EXIT
 
 SOURCES=(
+  "$S/Models/Models.swift"
+  "$S/Models/StyleProfileMapper.swift"
   "$S/Adapters/UploadRetryPolicy.swift"
   "$S/Adapters/CompressionPlan.swift"
+  "$S/Adapters/ServerClipAdoption.swift"
 )
 
 swiftc -O -o "$OUT/logictests" "${SOURCES[@]}" "$DIR"/*Tests.swift "$DIR/Support.swift" "$DIR/main.swift"
