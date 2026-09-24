@@ -2116,9 +2116,10 @@ _TITLE_TAIL_WORDS = frozenset(
     "is are was be but so that this these those than then if when why how what".split())
 
 
-def _tidy_title(title: str, max_words: int = 8) -> str:
-    """Titles are plain spoken sentences of at most 8 words (TITLE_DOCTRINE). Enforce the
-    cap at a word boundary and never leave a dangling function word or punctuation."""
+def _tidy_title(title: str, max_words: int = 10) -> str:
+    """Titles are plain spoken sentences (TITLE_DOCTRINE asks for 8 words). The hard cap is
+    10: cutting a 9-word title at 8 read as broken ("your bedtime routine doesn't have to
+    stay", v7a), which is worse than one extra word. Never leave a dangling function word."""
     words = prompts.scrub_em_dashes((title or "").strip()).split()
     if len(words) > max_words:
         words = words[:max_words]
@@ -13487,7 +13488,7 @@ def _scrub_voice_inner(obj, allowed: bool):
     return obj
 
 
-def _clamp_title(title: str, limit: int = 42) -> str:
+def _clamp_title(title: str, limit: int = 50) -> str:
     """Display-safe pick-card title: ≤limit chars, cut at a word boundary, no
     dangling punctuation. The prompts ask for ≤8 words but LLM/cached/mock paths
     can all exceed it — this is the enforcement so the card never truncates
@@ -13500,7 +13501,9 @@ def _clamp_title(title: str, limit: int = 42) -> str:
     if " " in cut:
         cut = cut[:cut.rfind(" ")]
     words = cut.rstrip(" ,;:-–—(&/").split()
-    while len(words) > 2 and words[-1].lower().strip(",;:.!?") in _TITLE_TAIL_WORDS:
+    # Never end on a function word ("…twice a") or inside an unclosed parenthetical ("(12").
+    while len(words) > 2 and (words[-1].lower().strip(",;:.!?") in _TITLE_TAIL_WORDS
+                              or (words[-1].startswith("(") and ")" not in words[-1])):
         words.pop()
     return " ".join(words).rstrip(" ,;:-–—(&/")
 

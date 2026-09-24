@@ -73,7 +73,7 @@ def test_finalize_measures_seconds_and_tidies_title_style_format():
                                "hook": "w " * 10, "body": "w " * 120, "cta": "w " * 8,
                                "targetSeconds": 30, "style": "faceless", "formatId": "broll-hook"})
     assert s["targetSeconds"] == s["durationSeconds"] == round(138 / 2.75)
-    assert len(s["title"].split()) <= 8 and not s["title"].endswith((" a", " the", " twice a"))
+    assert len(s["title"].split()) <= 10 and not s["title"].endswith((" a", " the", " twice a"))
     assert s["style"] == "talking_head" and s["formatId"] in main.prompts.STYLES["talking_head"]["formats"]
 
 

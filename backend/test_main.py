@@ -483,11 +483,12 @@ def test_tiktok_scrapes_request_video_downloads(monkeypatch):
 
 
 def test_clamp_title_word_boundary():
-    """Pick-card titles must be short enough to render un-truncated: ≤42 chars,
+    """Pick-card titles must be short enough to render un-truncated: ≤50 chars (the card
+    allows three lines; 42 cut real titles mid-phrase),
     cut at a word boundary, no trailing punctuation fragments."""
     long = "upper body home workout featuring push ups (12 reps), pike push ups (8 reps)"
     out = main._clamp_title(long)
-    assert len(out) <= 42
+    assert len(out) <= 50
     assert not out.endswith((" ", ",", "(", "-"))
     assert out == "upper body home workout featuring push ups"
     assert main._clamp_title("Short title") == "Short title"
@@ -504,7 +505,7 @@ def test_feed_scripts_titles_clamped(monkeypatch):
     result = {"mode": "live", "scripts": [{"title": long_title, "hook": {"text": "h"}}]}
     items, _ = asyncio.run(main._compose_feed_items(result, "fitness", "c1", "", 0))
     script_items = [i for i in items if i["type"] == "script"]
-    assert script_items and all(len(i["script"]["title"]) <= 42 for i in script_items)
+    assert script_items and all(len(i["script"]["title"]) <= 50 for i in script_items)
 
 
 class _FakeReelsPersistence:
@@ -7849,7 +7850,7 @@ def test_clamp_title_scrubs_dashes():
     assert not _has_dash(main._clamp_title("protein timing — the real rule"))
     # still clamps length at a word boundary
     long = main._clamp_title("a" + " word" * 30)
-    assert len(long) <= 42 and not long.endswith(" ")
+    assert len(long) <= 50 and not long.endswith(" ")
 
 
 
