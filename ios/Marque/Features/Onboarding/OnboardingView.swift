@@ -427,7 +427,12 @@ struct OnboardingView: View {
             // `allAudiences` so a scan-derived audience (which lands on the singular
             // field before the arrays exist) already counts as a pick.
             OnbPill(title: "Continue",
-                    enabled: !store.brand.allAudiences.isEmpty) { advance() }
+                    enabled: !store.brand.allAudiences.isEmpty) {
+                // Niche + audience are known: start the real starter drafts now, so the
+                // plan-building "aha" shows AI scripts instead of on-device templates.
+                store.prefetchStarterScripts()
+                advance()
+            }
                 .accessibilityIdentifier("onboard.audience.continue")
         }
     }

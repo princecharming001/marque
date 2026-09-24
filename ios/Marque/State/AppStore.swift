@@ -691,12 +691,53 @@ final class AppStore {
         startBackgroundDigestUpgrade() // real scrape/transcribe/derive, off the hot path
     }
 
-    /// The on-device generator (MockLLMRouter) — deterministic, brand-aware, no network.
-    /// Deliberately NOT `llm` (BackendClient): /v1/scripts is a multi-second Opus call
-    /// with a judge pass, which is exactly the wait we're removing from onboarding.
+    /// Real AI drafts for the onboarding "aha", fetched as soon as onboarding knows the
+    /// niche and audience (several screens before the plan-building step). The on-device
+    /// templates below were ~50-word generic bodies, the exact "not realistic, too short"
+    /// scripts the owner flagged, shown at the one moment meant to prove the product.
+    /// The feed's first paint is a ~11s planned draft, so it is almost always back by
+    /// the time the creator reaches the theater; it also warms Home's page 0.
+    private var starterPrefetch: Task<[Script], Never>?
+    static let starterMaxWaitSeconds = 6.0     // extra wait for real drafts at the theater
+
+    func prefetchStarterScripts() {
+        guard scripts.isEmpty, !brand.niche.isEmpty else { return }
+        starterPrefetch?.cancel()
+        let brand = self.brand, memory = self.memory, backend = self.backend
+        starterPrefetch = Task {
+            guard let page = await backend.fetchFeed(brand: brand, memory: memory, cursor: 0),
+                  page.mode != "mock" else { return [] }
+            return page.entries.compactMap { entry -> Script? in
+                if case .script(let s) = entry, !s.body.isEmpty, s.pillarName != "Idea" { return s }
+                return nil
+            }
+        }
+    }
+
+    private func prefetchedStarterScripts(maxWait: Double) async -> [Script] {
+        guard let task = starterPrefetch else { return [] }
+        return await withTaskGroup(of: [Script]?.self) { group in
+            group.addTask { await task.value }
+            group.addTask { try? await Task.sleep(for: .seconds(maxWait)); return nil }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? []
+        }
+    }
+
+    /// Real drafts when the early fetch is back in time; otherwise the on-device generator
+    /// (MockLLMRouter) — deterministic, brand-aware, no network. Deliberately NOT `llm`
+    /// (BackendClient): /v1/scripts is a multi-second Opus call with a judge pass, which
+    /// is exactly the wait we're removing from onboarding.
     private func generateStarterScriptsLocally() async {
         guard scripts.isEmpty else { return }
         isGenerating = true
+        let real = await prefetchedStarterScripts(maxWait: Self.starterMaxWaitSeconds)
+        if real.count >= 2 {
+            scripts.insert(contentsOf: Array(real.prefix(3)), at: 0)
+            isGenerating = false
+            return
+        }
         let local = MockLLMRouter()
         let new = await local.generateScripts(
             brand: brand, pillar: workingPillar, count: 3,

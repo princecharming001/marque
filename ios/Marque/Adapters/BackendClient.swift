@@ -198,6 +198,7 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
         let body: String; let cta: String; let shotPlan: [String]?
         let targetSeconds: Int?; let predictedScore: Int?; let altHooks: [HookDTO]?; let style: String?
         let why_picked: String?     // UX-G2: optional — absent on old backends
+        let pillar: String?         // the page's real pillar (feed picks); absent on old backends
     }
     struct PillarDTO: Decodable {
         let name: String; let summary: String?; let angle: String?
@@ -1062,7 +1063,9 @@ final class BackendClient: LLMRouting, @unchecked Sendable {
             case "script":
                 guard let dto = item.script else { return nil }
                 let style = VideoStyle(rawValue: dto.style ?? "") ?? .talkingHead
-                return .script(script(dto, pillar: dto.title ?? "Daily pick", style: style))
+                // The page's real pillar when the backend sends it. Using the card title
+                // here taught the learning loop "pillars" named after scripts.
+                return .script(script(dto, pillar: dto.pillar ?? "Daily pick", style: style))
             case "reel":
                 guard let dto = item.reel else { return nil }
                 return .reel(reel(dto))
