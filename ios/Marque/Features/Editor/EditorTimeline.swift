@@ -118,6 +118,23 @@ struct EditorTimeline: View {
         GeometryReader { geo in
             let mid = geo.size.width / 2
             ZStack(alignment: .leading) {
+                // FT-2: empty-area taps — single = deselect, double = reset zoom — live on this
+                // BOTTOM layer. As an ANCESTOR gesture (build 55's ExclusiveGesture on the
+                // ZStack) they swallowed every plain .onTapGesture in the lanes: caption strips,
+                // zoom/text chips, rolls, voice and music strips stopped selecting (clip cells
+                // survived only because they carry a second gesture). Down here they only get
+                // the taps nothing in front claims. Build 55 polish still holds: EXCLUSIVE
+                // double/single, so resetting zoom never also clears the selection, and both
+                // paths clear a stranded pinch (a system-cancelled Magnification never fires
+                // onEnded).
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(ExclusiveGesture(
+                        TapGesture(count: 2).onEnded {
+                            pinchBasePPS = nil
+                            withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 }
+                        },
+                        TapGesture().onEnded { pinchBasePPS = nil; onTapBackground() }))
                 // UX-9: the ruler and the clips scroll TOGETHER under the fixed playhead —
                 // the ruler used to stay pinned, so its tick marks lied about position.
                 VStack(alignment: .leading, spacing: 2) {
@@ -150,6 +167,7 @@ struct EditorTimeline: View {
                 // as related to the accent selection border it often crossed.
                 Rectangle().fill(Palette.textPrimary).frame(width: 2)
                     .frame(maxHeight: .infinity).offset(x: mid - 1)
+                    .allowsHitTesting(false)          // a tap on the line reaches the layer below
             }
             .contentShape(Rectangle())
             .gesture(scrubGesture(mid: mid))
@@ -157,17 +175,7 @@ struct EditorTimeline: View {
             // (one finger already moving when the second lands) claimed the sequence and
             // the pinch "didn't work". Range widened 8...60 → 6...110 for word-level trims.
             .simultaneousGesture(zoomGesture)
-            // Build 55 polish: EXCLUSIVE double/single tap — two separate onTapGesture
-            // modifiers fired BOTH handlers on a double tap, so resetting zoom also
-            // cleared the selection. Exclusivity costs the single tap ~0.25s of
-            // double-tap-wait, acceptable for a deselect. Both paths clear a stranded
-            // pinch (a system-cancelled Magnification never fires onEnded).
-            .gesture(ExclusiveGesture(
-                TapGesture(count: 2).onEnded {
-                    pinchBasePPS = nil
-                    withAnimation(.easeOut(duration: 0.2)) { pointsPerSecond = 18 }
-                },
-                TapGesture().onEnded { pinchBasePPS = nil; onTapBackground() }))
+            // (Empty-area single/double taps: the bottom layer inside the ZStack — FT-2.)
             .sensoryFeedback(.selection, trigger: snapTick)
             // Reorder-lift side effects, keyed off the auto-resetting gesture state.
             .onChange(of: reorderDrag?.segIdx) { _, seg in
@@ -471,12 +479,14 @@ struct EditorTimeline: View {
         // read); stock rolls keep the amber tint + film icon + cue text.
         let thumbPath = roll.resolvedURL.flatMap { rollThumbs[$0] }
         return ZStack {
+            // FT-2: the fill-scaled frames overflow their 26 pt slot (a ~77 pt tall tap
+            // target); `.clipped()` never clips hit testing, so they are non-interactive.
             if let thumbPath {
-                RollThumb(path: thumbPath).frame(width: w, height: 26).clipped()
+                RollThumb(path: thumbPath).frame(width: w, height: 26).clipped().allowsHitTesting(false)
                 Color.black.opacity(0.15)
             } else if let remote = roll.resolvedURL, remote.hasPrefix("http") {
                 // Server-resolved stock/KLIPY roll → show the ACTUAL footage frame.
-                RemoteRollThumb(urlString: remote).frame(width: w, height: 26).clipped()
+                RemoteRollThumb(urlString: remote).frame(width: w, height: 26).clipped().allowsHitTesting(false)
                 Color.black.opacity(0.15)
             } else {
                 // Rolls = the MID gray of the lane stack (captions light, voice/music dark).
@@ -495,6 +505,7 @@ struct EditorTimeline: View {
             .padding(.horizontal, 5).frame(width: w, alignment: .leading)
         }
         .frame(width: w, height: 26, alignment: .leading)
+        .contentShape(Rectangle())            // FT-2: the tap target is the visible strip
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? Palette.onNight : Palette.hairline,

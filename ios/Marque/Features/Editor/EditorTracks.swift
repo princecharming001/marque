@@ -177,7 +177,11 @@ struct MusicStrip: View {
         .clipShape(RoundedRectangle(cornerRadius: 4))
         .overlay(RoundedRectangle(cornerRadius: 4)
             .strokeBorder(selected ? Palette.onNight : .clear, lineWidth: 2))
+        .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        // FT-2: one element (its id was stamped on the name/percent Texts instead).
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -201,5 +205,8 @@ struct AddLaneStrip: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
+        // FT-2: one element, so editorPro.musicLane.add / rollsLane.add surface as buttons.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
     }
 }
