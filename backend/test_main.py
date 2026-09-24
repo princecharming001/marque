@@ -7168,8 +7168,8 @@ def test_default_bucket_is_skipped_by_every_fleet_cron(monkeypatch):
             # "identity-only": the row the channel-identity upsert creates (no niche); the
             # spend crons must skip it rather than ideate/compile with niche=None.
             return [{"creator_id": "default"}, {"creator_id": "demo-abc"},
-                    {"creator_id": "identity-only"},
-                    {"creator_id": "real-cron-1", "niche": "fitness"}]
+                    {"creator_id": "real-cron-1", "niche": "fitness"},
+                    {"creator_id": "identity-only"}]
 
         async def load_creator_tier(self, creator_id):
             self.touched.append(creator_id)
