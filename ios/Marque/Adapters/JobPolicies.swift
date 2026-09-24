@@ -52,3 +52,37 @@ enum RetryJobPolicy {
         }
     }
 }
+
+/// LV-6 (2026-09-24) — the store-owned watcher for a tweak / manual-edit / retheme
+/// re-render (AppStore.watchTweakRender).
+///
+/// It gave up after a flat 120 × 5 s (~10 min) — short of a long take's re-render — and on
+/// a 404/410 (the edit session is gone, so the render can never land) it simply stopped,
+/// leaving the Library card on "rendering" forever.
+enum TweakWatchPolicy {
+    static let baseCeiling: TimeInterval = 10 * 60
+
+    /// 10 min + 3× the clip's source length, capped like the job polls (90 min).
+    static func ceiling(sourceSeconds: Double?) -> TimeInterval {
+        guard let s = sourceSeconds, s.isFinite, s > 0 else { return baseCeiling }
+        return min(JobPollBudget.maxCeiling, baseCeiling + JobPollBudget.perSourceSecond * s)
+    }
+
+    enum Step: Equatable {
+        case keepWaiting                  // still rendering, or no readable answer this tick
+        case landed(renderFailed: Bool)   // "ready" — the new cut, or the previous one restored
+        case renderFailed                 // "failed" — the server kept the previous cut
+        case sessionGone                  // 404/410 — restore the previous cut; nothing will land
+    }
+
+    /// One poll tick. `clipStatus` is MY clip's status in the job response (nil when the
+    /// response didn't include it or didn't parse).
+    static func step(httpStatus: Int, clipStatus: String?, lastRenderFailed: Bool) -> Step {
+        if httpStatus == 404 || httpStatus == 410 { return .sessionGone }
+        switch clipStatus {
+        case "ready": return .landed(renderFailed: lastRenderFailed)
+        case "failed": return .renderFailed
+        default: return .keepWaiting
+        }
+    }
+}

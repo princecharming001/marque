@@ -6,6 +6,7 @@ runCompressionPlanTests()
 runServerClipAdoptionTests()
 runJobPoliciesTests()
 runUploadJournalTests()
+runTweakWatchPolicyTests()
 
 print("\n\(logicTestPasses) passed, \(logicTestFailures) failed")
 exit(logicTestFailures == 0 ? 0 : 1)

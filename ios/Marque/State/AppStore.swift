@@ -2499,17 +2499,24 @@ final class AppStore {
                 tweakWatchInFlight.remove(clipId)
                 activeRepolls.remove(jobId)
             }
-            for _ in 0..<120 {                                   // ~10 min at 5s
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+            // LV-6: the budget scales with the clip's source length (10 min + 3×, ≤ 90 min);
+            // the flat 120 × 5 s gave up on long-take re-renders that were still on track.
+            // Running out of budget still leaves the card .rendering on purpose: the next
+            // foreground / Library appear re-polls it (repollRenderingClips) to the truth.
+            let budget = TweakWatchPolicy.ceiling(sourceSeconds: await pollSourceSeconds(for: [clipId]))
+            let started = Date()
+            while Date().timeIntervalSince(started) < budget {
+                try? await Task.sleep(nanoseconds: pollInterval(elapsed: Date().timeIntervalSince(started)))
                 let (maybe, http) = await backend.pollClipJobWithStatus(jobId: jobId)
-                if http == 404 || http == 410 { break }          // session gone — leave card as-is
-                guard let result = maybe, let jobClips = result["clips"] as? [[String: Any]],
-                      let mine = jobClips.first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clipId })
-                else { continue }
-                switch mine["status"] as? String ?? "" {
-                case "ready":
-                    applyTweakResult(clipId, remoteURL: mine["render_url"] as? String, label: label)
-                    if mine["last_render_failed"] as? Bool == true {
+                let mine = (maybe?["clips"] as? [[String: Any]])?
+                    .first(where: { UUID(uuidString: ($0["clip_id"] as? String) ?? "") == clipId })
+                switch TweakWatchPolicy.step(httpStatus: http, clipStatus: mine?["status"] as? String,
+                                             lastRenderFailed: mine?["last_render_failed"] as? Bool == true) {
+                case .keepWaiting:
+                    continue
+                case .landed(let renderFailed):
+                    applyTweakResult(clipId, remoteURL: mine?["render_url"] as? String, label: label)
+                    if renderFailed {
                         notifyTweakRender("That edit couldn't render",
                                           "Your previous cut is untouched in the Library.",
                                           clipId: clipId, jobId: jobId)
@@ -2519,7 +2526,7 @@ final class AppStore {
                                           clipId: clipId, jobId: jobId)
                     }
                     return
-                case "failed":
+                case .renderFailed:
                     // The backend keeps the previous render on a failed tweak — restore
                     // the card so the Library plays the last good cut again.
                     applyTweakResult(clipId, remoteURL: nil)
@@ -2527,7 +2534,18 @@ final class AppStore {
                                       "Your previous cut is untouched in the Library.",
                                       clipId: clipId, jobId: jobId)
                     return
-                default: continue
+                case .sessionGone:
+                    // LV-6: the edit session is gone (404/410), so this render can never
+                    // land. This used to `break` with the card left on "rendering" forever;
+                    // restore the previous cut instead (ready, remoteURL untouched — the
+                    // re-render never replaced it) and say so.
+                    if let i = clips.firstIndex(where: { $0.id == clipId }), clips[i].status == .rendering {
+                        applyTweakResult(clipId, remoteURL: nil)
+                        notifyTweakRender("That edit couldn't finish",
+                                          "The edit session expired. Your previous cut is untouched in the Library.",
+                                          clipId: clipId, jobId: jobId)
+                    }
+                    return
                 }
             }
         }
