@@ -16,7 +16,7 @@ final class EditorSession {
     private(set) var committed: EditorDocument
     private(set) var draft: EditorDocument
 
-    private struct Step: Equatable { var doc: EditorDocument; var ops: [WireOp] }
+    private struct Step: Equatable { var doc: EditorDocument; var ops: [WireOp]; var label: String? = nil }
     private var undoStack: [Step] = []
     private var redoStack: [Step] = []
     private(set) var opLog: [[WireOp]] = []      // one entry per applied gesture
@@ -36,8 +36,12 @@ final class EditorSession {
 
     /// Apply a gesture's ops to the draft. Returns false (and mutates nothing) if EVERY op was
     /// rejected by the local engine (e.g. a cut that would leave < 2s) so the caller can snap back.
+    /// The user-facing name of the step the last undo()/redo() moved across ("Delete clip"),
+    /// nil when the gesture didn't name itself (the toast then names the op type).
+    private(set) var lastStepLabel: String? = nil
+
     @discardableResult
-    func perform(_ ops: [WireOp]) -> Bool {
+    func perform(_ ops: [WireOp], label: String? = nil) -> Bool {
         var next = draft
         var accepted: [WireOp] = []
         for op in ops {
@@ -49,7 +53,7 @@ final class EditorSession {
             }
         }
         guard !accepted.isEmpty else { return false }
-        undoStack.append(Step(doc: draft, ops: accepted))
+        undoStack.append(Step(doc: draft, ops: accepted, label: label))
         redoStack.removeAll()
         draft = next
         opLog.append(accepted)
@@ -70,7 +74,8 @@ final class EditorSession {
     @discardableResult
     func undo() -> String? {
         guard let step = undoStack.popLast() else { return nil }
-        redoStack.append(Step(doc: draft, ops: step.ops))
+        lastStepLabel = step.label
+        redoStack.append(Step(doc: draft, ops: step.ops, label: step.label))
         draft = step.doc
         if !opLog.isEmpty { opLog.removeLast() }
         revision += 1
@@ -80,7 +85,8 @@ final class EditorSession {
     @discardableResult
     func redo() -> String? {
         guard let step = redoStack.popLast() else { return nil }
-        undoStack.append(Step(doc: draft, ops: step.ops))
+        lastStepLabel = step.label
+        undoStack.append(Step(doc: draft, ops: step.ops, label: step.label))
         draft = step.doc
         opLog.append(step.ops)
         revision += 1

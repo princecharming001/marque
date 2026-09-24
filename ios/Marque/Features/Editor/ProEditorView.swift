@@ -1275,20 +1275,22 @@ struct ProEditorView: View {
 
     func doUndo() {
         guard let t = session?.undo() else { return }
+        let named = session?.lastStepLabel
         // An undo can remove the selected object (or the values an open expansion edits) —
         // clear EVERYTHING selection-shaped so the toolbar never shows a dead vocabulary.
         select(nil)
         refreshPlayer()
         syncDraftDerivedState()
-        showToast("Undo: \(opDisplayName(t))")
+        showToast("Undo: \(named ?? opDisplayName(t))")
     }
 
     func doRedo() {
         guard let t = session?.redo() else { return }
+        let named = session?.lastStepLabel
         select(nil)
         refreshPlayer()
         syncDraftDerivedState()
-        showToast("Redo: \(opDisplayName(t))")
+        showToast("Redo: \(named ?? opDisplayName(t))")
     }
 
     /// ED-7: view state that MIRRORS the draft — the captions toggle and the slider drafts —
@@ -1564,15 +1566,16 @@ struct ProEditorView: View {
                                                           by: g.translation, in: geo.size)
                                 }
                                 .onEnded { g in
-                                    commitRollRect(idx, Self.rollMoved(Self.normRect(baseRect, in: geo.size),
-                                                                       by: g.translation, in: geo.size))
+                                    let start = Self.normRect(baseRect, in: geo.size)
+                                    commitRollRect(idx, Self.rollMoved(start, by: g.translation, in: geo.size), from: start)
                                 })
                             .simultaneousGesture(MagnificationGesture()
                                 .updating($rollLiveRect) { v, live, _ in
                                     live = Self.rollScaled(Self.normRect(baseRect, in: geo.size), by: v)
                                 }
                                 .onEnded { v in
-                                    commitRollRect(idx, Self.rollScaled(Self.normRect(baseRect, in: geo.size), by: v))
+                                    let start = Self.normRect(baseRect, in: geo.size)
+                                    commitRollRect(idx, Self.rollScaled(start, by: v), from: start)
                                 })
                     } else {
                         interactive
@@ -1609,7 +1612,13 @@ struct ProEditorView: View {
                       width: w, height: h)
     }
 
-    private func commitRollRect(_ idx: Int, _ r: CGRect) {
+    private func commitRollRect(_ idx: Int, _ r: CGRect, from start: CGRect) {
+        // Media sweep: a gesture that leaves the rect where it was (a full-frame roll can't
+        // move at all) is not an edit — set_broll_rect anyway dirtied the session, forced a
+        // re-render and turned a full-frame roll into a framed card.
+        let eps = 0.002
+        guard abs(r.minX - start.minX) > eps || abs(r.minY - start.minY) > eps
+                || abs(r.width - start.width) > eps || abs(r.height - start.height) > eps else { return }
         mutate([.brollRect(index: idx, x: r.minX, y: r.minY, w: r.width, h: r.height)])
         bumpHaptic()
     }
@@ -2149,7 +2158,9 @@ struct ProEditorView: View {
                     .accessibilityIdentifier("editorPro.zoomPill")
             }
         }
-        .overlay(alignment: .top) { hintPill.offset(y: -34) }
+        // SE sweep F1: the hint floats over the transport strip for 4.5 s — tap-through, so
+        // it never swallows the first play/undo taps.
+        .overlay(alignment: .top) { hintPill.offset(y: -34).allowsHitTesting(false) }
         .onChange(of: pointsPerSecond) { _, pps in flashZoomPill(pps) }
     }
 
@@ -2345,7 +2356,7 @@ struct ProEditorView: View {
             // Build 69 frequency order (talking-head jobs: cut > captions > cleanup >
             // sound > overlays > effects > look). Restore left the root — it's only
             // meaningful after Clean up ran, and lives inside that panel + cut seams.
-            barTile("Edit", "scissors", id: "editorPro.root.edit") { rootEditTap() }
+            barTile("Edit", "slider.horizontal.below.rectangle", id: "editorPro.root.edit") { rootEditTap() }
             barTile("Captions", "captions.bubble", id: "editorPro.root.captions", active: rootPanel == .captions) { openRootPanel(.captions) }
             barTile("Clean up", "wand.and.sparkles", id: "editorPro.cleanup",
                     dot: !(session?.draft.drops.isEmpty ?? true)) {
@@ -2537,7 +2548,13 @@ struct ProEditorView: View {
                     if abs(cur - 1.0) > 0.01 { setSpeed(seg, 1.0) }
                     speedDraft = 1.0
                 }
-                Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
+                // SE sweep F3: Reset + label + slider + value + 3 chips + confirm overflowed a
+                // 375 pt row ("SPEE/D", collapsed slider, "…" chips). The label goes on compact
+                // widths (the "1.0x" value names the row); the rest never truncates.
+                if UIScreen.main.bounds.width >= 390 {
+                    Text("SPEED").font(AppFont.micro).tracking(Track.label).foregroundStyle(Palette.textSecondary)
+                        .fixedSize()
+                }
                 Slider(value: $speedDraft, in: 0.5...3.0, onEditingChanged: { editing in
                     if !editing { setSpeed(seg, speedDraft) }
                 })
@@ -2551,6 +2568,7 @@ struct ProEditorView: View {
                     let active = abs((session?.draft.segments[safe: seg]?.speed ?? 1.0) - v) < 0.01
                     Button { speedDraft = v; setSpeed(seg, v); bumpHaptic() } label: {
                         EditorChipLabel(text: v == 1.5 ? "1.5x" : String(format: "%.0fx", v), active: active)
+                            .fixedSize()
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("editorPro.speed.\(v)")

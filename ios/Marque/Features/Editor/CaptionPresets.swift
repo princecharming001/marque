@@ -15,9 +15,11 @@ struct CaptionPreset: Identifiable, Hashable {
     let strokePx: Double         // outline width
     let grouping: String         // word | phrase | line
     let bg: String               // background pill hex, or "" = none
-    /// A tiny swatch color for the picker chip (accent, else box, else white).
+    /// The picker chip's pill colour: the background pill when the preset has one (the chip
+    /// only paints this behind boxed presets — Bubble's white accent used to paint a white
+    /// pill under white text), else the accent, else white.
     var swatch: Color {
-        let s = (accent ?? (bg.isEmpty ? "#FFFFFF" : bg)).trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        let s = (bg.isEmpty ? (accent ?? "#FFFFFF") : bg).trimmingCharacters(in: CharacterSet(charactersIn: "#"))
         return UInt(s.prefix(6), radix: 16).map { Color(hex: $0) } ?? .white
     }
 

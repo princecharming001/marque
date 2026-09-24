@@ -174,9 +174,9 @@ extension ProEditorView {
 
     // MARK: gesture → op helpers (one gesture = one perform() = one undo step)
 
-    func mutate(_ ops: [WireOp], rejectMsg: String? = nil) {
+    func mutate(_ ops: [WireOp], rejectMsg: String? = nil, label: String? = nil) {
         guard let session else { return }
-        if session.perform(ops) { refreshPlayer() }
+        if session.perform(ops, label: label) { refreshPlayer() }
         else if let rejectMsg { flash(rejectMsg) }
     }
 
@@ -242,7 +242,7 @@ extension ProEditorView {
 
     func deleteSelected(_ segIdx: Int) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
-        mutate([.cut(seg.srcIn, seg.srcOut)], rejectMsg: "You can't delete the whole clip.")
+        mutate([.cut(seg.srcIn, seg.srcOut)], rejectMsg: "You can't delete the whole clip.", label: "Delete clip")
         // Every vocabulary's Delete clears its own selection (and any expansion on it).
         select(nil)
     }
@@ -279,7 +279,9 @@ extension ProEditorView {
     }
     func toggleMute(_ segIdx: Int) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
-        mutate([mutedState(segIdx) ? .segmentVolume(seg.srcIn, seg.srcOut, 1.0) : .mute(seg.srcIn, seg.srcOut)])
+        let muted = mutedState(segIdx)
+        mutate([muted ? .segmentVolume(seg.srcIn, seg.srcOut, 1.0) : .mute(seg.srcIn, seg.srcOut)],
+               label: muted ? "Unmute" : "Mute")
     }
     func setClipVolume(_ segIdx: Int, _ v: Double) {
         guard let seg = session?.draft.segments[safe: segIdx] else { return }
@@ -906,6 +908,9 @@ extension ProEditorView {
                 }
                 .padding(Space.xl)
                 Spacer()
+                // Nothing NEW to clean up doesn't mean nothing was cut: the Restore link (the
+                // only root path to it) must survive the empty state.
+                if !(session?.draft.drops.isEmpty ?? true) { cleanupRestoreLink }
             } else {
                 ScrollView {
                     // Stoic checklist: one grouped card, trailing circular checks.
@@ -947,25 +952,7 @@ extension ProEditorView {
                     .accessibilityIdentifier("editorPro.cleanup.apply")
                 // Build 69: Restore moved off the root bar — it only means something
                 // after a cleanup ran, so its home is here (plus the amber cut seams).
-                if !(session?.draft.drops.isEmpty ?? true) {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.15)) { showCleanup = false }
-                        openRestorePanel()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 14, weight: .regular))
-                            Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
-                                .font(AppFont.supporting.weight(.semibold))
-                                .lineLimit(1).minimumScaleFactor(0.85)
-                        }
-                        .foregroundStyle(Palette.textPrimary)
-                        .frame(maxWidth: .infinity).frame(height: 36)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.bottom, Space.sm)
-                    .accessibilityIdentifier("editorPro.cleanup.restore")
-                }
+                if !(session?.draft.drops.isEmpty ?? true) { cleanupRestoreLink }
             }
         }
         .frame(height: 340, alignment: .top)
@@ -985,6 +972,28 @@ extension ProEditorView {
         // full .maestro/format-audit.yaml re-run.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.cleanupPanel")
+    }
+
+    /// "Restore removed footage (N)" — shown under the checklist AND in the empty state.
+    private var cleanupRestoreLink: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { showCleanup = false }
+            openRestorePanel()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.backward.circle").font(.system(size: 14, weight: .regular))
+                    .accessibilityHidden(true)
+                Text("Restore removed footage (\(session?.draft.drops.count ?? 0))")
+                    .font(AppFont.supporting.weight(.semibold))
+                    .lineLimit(1).minimumScaleFactor(0.85)
+            }
+            .foregroundStyle(Palette.textPrimary)
+            .frame(maxWidth: .infinity).frame(height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.bottom, Space.sm)
+        .accessibilityIdentifier("editorPro.cleanup.restore")
     }
 
     // MARK: Save (flatten op log → one tweak POST → per-clip poll → reload)
