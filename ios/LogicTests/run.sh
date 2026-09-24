@@ -18,6 +18,7 @@ trap 'rm -rf "$OUT"' EXIT
 
 SOURCES=(
   "$S/Adapters/UploadRetryPolicy.swift"
+  "$S/Adapters/CompressionPlan.swift"
 )
 
 swiftc -O -o "$OUT/logictests" "${SOURCES[@]}" "$DIR"/*Tests.swift "$DIR/Support.swift" "$DIR/main.swift"

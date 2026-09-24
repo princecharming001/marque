@@ -1339,7 +1339,15 @@ final class AppStore {
                     try? FileManager.default.attributesOfItem(
                         atPath: MediaStore.url(for: $0).path)[.size] as? Int
                 }) ?? 0
-                let ceiling = UInt64(min(900, 480 + MediaCompressor.compressionBudget(bytes: srcBytes)))
+                // LV-2: the compression budget now also scales with the take's DURATION (one
+                // bitrate-targeted transcode for every length), so the ceiling follows it —
+                // 480s for mint + PUT + create-job on top, capped at 30 min instead of 15.
+                var srcSeconds = 0.0
+                if let p = footagePath, !p.isEmpty {
+                    srcSeconds = Double(await Self.assetDurationSeconds(MediaStore.url(for: p)))
+                }
+                let ceiling = UInt64(min(1800, 480 + MediaCompressor.compressionBudget(
+                    bytes: srcBytes, seconds: srcSeconds)))
                 group.addTask { try? await Task.sleep(nanoseconds: ceiling * 1_000_000_000); return nil }
                 let first = await group.next() ?? nil
                 group.cancelAll()

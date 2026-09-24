@@ -31,3 +31,14 @@ func expectEqual<T: Equatable>(_ got: T, _ want: T, _ name: String,
         print("  FAIL  \(name)  got \(got), want \(want)  (\(file):\(line))")
     }
 }
+
+func expectClose(_ got: Double, _ want: Double, _ name: String, tolerance: Double = 1e-6,
+                 file: String = #fileID, line: Int = #line) {
+    if abs(got - want) <= tolerance {
+        logicTestPasses += 1
+        print("  PASS  \(name)")
+    } else {
+        logicTestFailures += 1
+        print("  FAIL  \(name)  got \(got), want \(want)  (\(file):\(line))")
+    }
+}

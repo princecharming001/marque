@@ -489,16 +489,20 @@ struct LiveClipEngine: ClipEngineProtocol {
 // server-driven (mint response `max_upload_bytes`, default ~48MB).
 //
 // P0.1 — quality ladder: the old path compressed to 720p/540p, which the render then
-// UPSCALED to 1080p — soft faces, b-roll sharper than the speaker. Now short/medium
-// takes transcode to 1080p HEVC at an explicit bitrate that fits the cap (native
-// resolution preserved, no upscale), and only genuinely long takes (>150s, where a
-// fitting 1080p bitrate would look worse than clean 720p) fall to the export-preset
-// ladder. The preset ladder also stays as the safety net if the 1080p transcode
-// overshoots the cap or the writer fails.
+// UPSCALED to 1080p — soft faces, b-roll sharper than the speaker. Short takes transcode
+// to 1080p HEVC at an explicit bitrate that fits the cap (no upscale).
+//
+// LV-2 (2026-09-24): that bitrate-targeted transcode now runs for EVERY duration. Takes
+// over 150s used to skip it for fixed export presets whose output bitrate the preset
+// picks (measured ≈4.9 Mbps at 960×540 → a 5-min take 184 MB, 15-min 551 MB), so no long
+// take could ever fit a cap and every one ended on "too large, trim it" after minutes of
+// encoding. CompressionPlanner sizes the bitrate from the cap and steps the resolution
+// down to what it can carry (1080p ≥ 2.0 Mbps, 720p ≥ 0.9 Mbps, else 540p) — verified on
+// real footage: 3/5/10/15-min takes all land at 42–44 MB under a 50 MB cap. The export
+// presets remain only as the fallback when the transcode itself fails, and only those
+// that could actually fit the cap are tried.
 enum MediaCompressor {
     static let defaultMaxUploadBytes = StorageObjectLimit.defaultCapBytes
-    private static let audioBps = 96_000            // AAC voice budget subtracted from the cap
-    private static let longTakeThresholdSec = 150.0 // above this, 1080p bitrate would be too low → 720p ladder
 
     /// The journal/clip error code for "we could not get this take under the storage cap".
     /// Distinct from the generic upload failure so the card can tell the creator something
@@ -520,26 +524,14 @@ enum MediaCompressor {
         case tooLarge           // could not fit the cap — NEVER PUT this; surface `tooLargeErrorCode`
     }
 
-    /// Build 78 — wall-clock budget for the WHOLE device-side compression of a source of
-    /// `bytes`. The old numbers were fixed (90s HEVC deadline + 140s ladder budget) and were
-    /// sized for the in-app 1080p capture (~60–150MB for a 60–90s take). A Photos import can
-    /// be 4K HDR — 350–500MB for the same duration — which is 3–4× the pixel work: the flat
-    /// 90s deadline guillotined the HEVC pass shortly before it would have finished, and we
-    /// then paid the export ladder on top (~230s worst case) to redo the same work. Scale
-    /// with source BYTES (the quantity that actually predicts decode+encode time — HDR 10-bit
-    /// `copyNextSampleBuffer` is the bottleneck, and it's per-sample, not per-second), and
-    /// clamp to [240s, 420s]. The floor is 240s, NOT the 150s this budget first shipped with:
-    /// 150s is BELOW the old effective window (90s HEVC deadline + 140s ladder ≈ 230s), so
-    /// the "size-aware" budget quietly SHRANK the window for mid-size takes — footage that
-    /// used to compress fine started coming back .tooLarge with "trim it" copy for a take
-    /// nothing was wrong with. ≥240s guarantees no source ever gets less wall clock than the
-    /// old fixed pair gave it. The 420s ceiling keeps a pathological import bounded, and the
-    /// caller's submit ceiling is sized for it: AppStore.submitTakeInstant waits 480s + this
-    /// budget (capped at 900s total), so a full 420s compress still leaves the whole 480s
-    /// base for the PUT itself.
-    static func compressionBudget(bytes: Int) -> TimeInterval {
-        let perMB = 0.55                    // ≈2MB of SOURCE per second, worst case (A-series, 10-bit HDR)
-        return min(420, max(240, Double(bytes) / 1_000_000 * perMB))
+    /// Wall-clock budget for the WHOLE device-side compression of a source of `bytes` /
+    /// `seconds` (see CompressionPlanner.compressionBudget). Build 78 scaled it with source
+    /// BYTES (4K HDR decode is per-sample work) and clamped it to [240s, 420s]; LV-2 also
+    /// scales it with DURATION — the single transcode of a 15-minute take needs more than
+    /// the flat 420s ceiling. Takes up to 7 min keep exactly the old numbers. The caller's
+    /// submit ceiling (AppStore.submitTakeInstant) is sized from this same budget.
+    static func compressionBudget(bytes: Int, seconds: Double = 0) -> TimeInterval {
+        CompressionPlanner.compressionBudget(bytes: bytes, seconds: seconds)
     }
 
     /// `maxBytes` comes from the mint response so raising the storage tier is backend-only.
@@ -555,53 +547,51 @@ enum MediaCompressor {
         let srcSize = (try? FileManager.default.attributesOfItem(atPath: source.path))?[.size] as? Int
         if let srcSize, srcSize <= maxBytes { onProgress?(1.0); return .original }
 
-        // One budget for the whole ladder, started BEFORE any encoding: the HEVC pass gets
-        // the majority of it and whatever it leaves over funds the export presets, so the
-        // two stages can never chain two independent deadlines back to back the way the old
-        // fixed 90s + 140s pair could.
+        // One budget for the whole compression, started BEFORE any encoding: the transcode
+        // gets its (duration-scaled) share and whatever it leaves funds the preset fallback,
+        // so the stages never chain independent deadlines back to back.
         let startedAt = Date()
-        let budget = compressionBudget(bytes: srcSize ?? maxBytes)
-
         let asset = AVURLAsset(url: source)
         let seconds = CMTimeGetSeconds(asset.duration)
+        let budget = compressionBudget(bytes: srcSize ?? maxBytes, seconds: seconds)
+        let deadlineAt = startedAt.addingTimeInterval(budget)
 
-        // 1080p HEVC path for takes short enough that a cap-fitting bitrate still looks
-        // good. Budget = the cap's bits/sec minus audio, held under the cap with an 8%
-        // muxing-overhead margin; capped at a duration-tiered target so short takes don't
-        // get a needlessly huge bitrate.
-        if seconds.isFinite, seconds > 0, seconds <= longTakeThresholdSec {
-            let capBudgetBps = Int(Double(maxBytes) * 8.0 / seconds) - audioBps
-            let tierTarget = seconds <= 90 ? 3_800_000 : 2_600_000   // ≤90s vs 90–150s
-            let videoBps = max(1_200_000, min(tierTarget, Int(Double(capBudgetBps) * 0.92)))
-            // transcodeHEVC self-bounds via a reader/writer-cancel deadline, so an undecodable
-            // import can't hang here — it returns nil and we fall through to the robust export
-            // preset ladder (AVAssetExportSession tonemaps HDR→SDR / handles odd formats).
-            // Build 78: that deadline is 60% of the size-scaled budget rather than a flat 90s,
-            // which is what a big HDR import actually needs to reach `finishWriting` at all.
-            if let out = await transcodeHEVC(asset, videoBps: videoBps, into: outDir,
-                                             deadline: budget * 0.6),
-               let size = fileSize(out), size <= maxBytes {
-                return .compressed(out)
+        // LV-2: ONE bitrate-targeted HEVC transcode for every duration. transcodeHEVC
+        // self-bounds via a reader/writer-cancel deadline, so an undecodable import can't
+        // hang here — it returns nil and we fall through to the export presets
+        // (AVAssetExportSession tonemaps HDR→SDR / handles odd formats). An overshoot (VBR on
+        // high-motion footage) gets ONE re-planned pass at a proportionally lower bitrate.
+        if let vTrack = asset.tracks(withMediaType: .video).first {
+            let srcW = Double(vTrack.naturalSize.width), srcH = Double(vTrack.naturalSize.height)
+            var plan = CompressionPlanner.plan(seconds: seconds, maxBytes: maxBytes,
+                                               sourceWidth: srcW, sourceHeight: srcH)
+            let transcodeUntil = startedAt.addingTimeInterval(
+                CompressionPlanner.transcodeDeadline(budget: budget, seconds: seconds, maxBytes: maxBytes))
+            var passes = 0
+            while let p = plan, passes < 2 {
+                passes += 1
+                let window = transcodeUntil.timeIntervalSinceNow
+                guard window >= 30 else { break }
+                guard let out = await transcodeHEVC(asset, videoTrack: vTrack, plan: p, into: outDir,
+                                                    deadline: window, onProgress: onProgress) else { break }
+                let size = fileSize(out) ?? Int.max
+                if size <= maxBytes { onProgress?(1.0); return .compressed(out) }
+                try? FileManager.default.removeItem(at: out)
+                plan = CompressionPlanner.replan(p, outputBytes: size, maxBytes: maxBytes,
+                                                 sourceWidth: srcW, sourceHeight: srcH)
             }
-            // Overshoot / writer failure / transcode timeout → fall through to the preset ladder.
         }
 
-        // Long takes, or a 1080p transcode that overshot: the export-preset ladder
-        // (720p → 540p). A take that will obviously blow the cap at 720p (~2.5Mbps) skips
-        // straight to 540p instead of paying a wasted 720p export first.
-        var presets = [AVAssetExportPreset1280x720, AVAssetExportPreset960x540]
-        if seconds.isFinite, seconds * 2_500_000 / 8 > Double(maxBytes) {
-            presets = [AVAssetExportPreset960x540]
-        }
-        // Build 45: cap the WHOLE ladder to one export budget so it can't chain two
-        // 120s cancel-deadlines back to back (a stalled ladder used to burn ~4 min
-        // before the outer submit ceiling caught it — that's the "stuck" window).
-        // Build 78: the ceiling is now the size-scaled budget measured from BEFORE the HEVC
-        // pass, so HEVC + ladder together stay inside one bounded window (previously the
-        // ladder started its own fresh 140s after HEVC had already spent 90).
-        let ladderDeadline = startedAt.addingTimeInterval(budget)
+        // Fallback when the transcode failed: the export presets, but only those whose
+        // MEASURED output bitrate could land under the cap (a 540p preset runs ≈4.9 Mbps, so
+        // for anything longer than ~80s at 50 MB it's a guaranteed overshoot — skipping it
+        // saves minutes of encoding that could only end in "too large").
+        let presets = [(AVAssetExportPreset1280x720, CompressionPlanner.preset720Bps),
+                       (AVAssetExportPreset960x540, CompressionPlanner.preset540Bps)]
+            .filter { CompressionPlanner.presetMayFit(bps: $0.1, seconds: seconds, maxBytes: maxBytes) }
+            .map(\.0)
         for preset in presets {
-            let remaining = ladderDeadline.timeIntervalSinceNow
+            let remaining = deadlineAt.timeIntervalSinceNow
             if remaining <= 0 { break }
             // export() self-bounds via its own cancelExport() deadline — a wedged export drops
             // to the next preset / fails instead of hanging. Floor it at 45s: a deadline shorter
@@ -632,14 +622,17 @@ enum MediaCompressor {
         (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? Int
     }
 
-    /// Native-resolution HEVC transcode at an explicit average bitrate (AVAssetReader →
-    /// AVAssetWriter). Preserves the source dimensions + orientation so 1080p stays 1080p
-    /// (the whole point — no upscale in the render). Re-encodes audio to AAC at `audioBps`.
-    /// `deadline` (build 78) is seconds of wall clock this pass may spend — caller-scaled to
-    /// the source size instead of the old hard-coded 90s.
-    private static func transcodeHEVC(_ asset: AVURLAsset, videoBps: Int, into dir: URL,
-                                      deadline: TimeInterval) async -> URL? {
-        guard let vTrack = asset.tracks(withMediaType: .video).first else { return nil }
+    /// HEVC transcode at the plan's average bitrate and size (AVAssetReader → AVAssetWriter).
+    /// LV-2: the writer's width/height come from the plan, so a long take is downscaled to
+    /// the rung its bitrate can carry (never upscaled); the source's preferredTransform is
+    /// kept, so orientation is untouched. Audio is re-encoded to mono AAC at the plan's rate.
+    /// `deadline` is seconds of wall clock this pass may spend (duration-scaled by the
+    /// caller); `onProgress` gets 0–1 from the video presentation time, so a multi-minute
+    /// transcode moves the bar instead of sitting at zero.
+    private static func transcodeHEVC(_ asset: AVURLAsset, videoTrack vTrack: AVAssetTrack,
+                                      plan: CompressionPlan, into dir: URL,
+                                      deadline: TimeInterval,
+                                      onProgress: (@Sendable (Double) -> Void)? = nil) async -> URL? {
         let out = dir.appendingPathComponent(UUID().uuidString + ".mov")
         guard let reader = try? AVAssetReader(asset: asset),
               let writer = try? AVAssetWriter(outputURL: out, fileType: .mov) else { return nil }
@@ -653,16 +646,12 @@ enum MediaCompressor {
         guard reader.canAdd(readerVideoOut) else { return nil }
         reader.add(readerVideoOut)
 
-        // Encode at native size, but cap the short edge at 1080 so a >1080 source (e.g. a
-        // 4K capture) is downscaled to true 1080p rather than starved of bitrate at 4K.
-        let (outW, outH) = cappedDimensions(width: abs(vTrack.naturalSize.width),
-                                            height: abs(vTrack.naturalSize.height), cap: 1080)
         let writerVideoIn = AVAssetWriterInput(mediaType: .video, outputSettings: [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: outW,
-            AVVideoHeightKey: outH,
+            AVVideoWidthKey: plan.width,
+            AVVideoHeightKey: plan.height,
             AVVideoCompressionPropertiesKey: [
-                AVVideoAverageBitRateKey: videoBps,
+                AVVideoAverageBitRateKey: plan.videoBps,
                 AVVideoMaxKeyFrameIntervalKey: 60,
                 AVVideoExpectedSourceFrameRateKey: 30,
             ],
@@ -672,7 +661,7 @@ enum MediaCompressor {
         guard writer.canAdd(writerVideoIn) else { return nil }
         writer.add(writerVideoIn)
 
-        // Audio: re-encode to AAC at the voice budget (nil if the take has no audio track).
+        // Audio: re-encode to AAC at the plan's voice budget (nil if the take has no audio).
         var readerAudioOut: AVAssetReaderTrackOutput?
         var writerAudioIn: AVAssetWriterInput?
         if let aTrack = asset.tracks(withMediaType: .audio).first {
@@ -684,7 +673,7 @@ enum MediaCompressor {
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVNumberOfChannelsKey: 1,
                 AVSampleRateKey: 44_100,
-                AVEncoderBitRateKey: audioBps,
+                AVEncoderBitRateKey: plan.audioBps,
             ])
             aIn.expectsMediaDataInRealTime = false
             if reader.canAdd(aOut), writer.canAdd(aIn) {
@@ -702,14 +691,15 @@ enum MediaCompressor {
         // copyNextSampleBuffer can block forever and never resume its continuation. A plain
         // Task/taskGroup cancel does NOT interrupt that non-cooperative AVFoundation call —
         // cancelReading()/cancelWriting() DO (subsequent copyNextSampleBuffer returns nil, the
-        // pump resumes, reader.status != .completed, we bail to the robust export ladder).
+        // pump resumes, reader.status != .completed, we bail to the export fallback).
         let deadlineTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(max(30, deadline) * 1_000_000_000))
             reader.cancelReading(); writer.cancelWriting()
         }
         // Pump video + (optional) audio inputs concurrently; resume once both drain.
+        let seconds = plan.seconds
         await withTaskGroup(of: Void.self) { group in
-            group.addTask { await pump(writerVideoIn, from: readerVideoOut) }
+            group.addTask { await pump(writerVideoIn, from: readerVideoOut, seconds: seconds, onProgress: onProgress) }
             if let aIn = writerAudioIn, let aOut = readerAudioOut {
                 group.addTask { await pump(aIn, from: aOut) }
             }
@@ -726,23 +716,30 @@ enum MediaCompressor {
         return out
     }
 
-    /// Native dimensions with the short edge capped at `cap`, rounded to even numbers
-    /// (H.265 encoders require even width/height). Aspect ratio preserved.
-    private static func cappedDimensions(width: CGFloat, height: CGFloat, cap: CGFloat) -> (Int, Int) {
-        let shortEdge = min(width, height)
-        let scale = shortEdge > cap ? cap / shortEdge : 1.0
-        func even(_ v: CGFloat) -> Int { let n = Int((v * scale).rounded()); return n - (n % 2) }
-        return (max(2, even(width)), max(2, even(height)))
-    }
+    /// Last reported pump progress — a reference box because the pump's block runs on its
+    /// own serial queue and a captured `var` can't be mutated from there.
+    private final class ProgressMark: @unchecked Sendable { var last = 0.0 }
 
-    /// Drain one reader output into one writer input, honoring back-pressure.
-    private static func pump(_ input: AVAssetWriterInput, from output: AVAssetReaderTrackOutput) async {
+    /// Drain one reader output into one writer input, honoring back-pressure. With
+    /// `onProgress` + `seconds`, reports the drained fraction (by presentation time) in
+    /// ≥1% steps.
+    private static func pump(_ input: AVAssetWriterInput, from output: AVAssetReaderTrackOutput,
+                             seconds: Double = 0,
+                             onProgress: (@Sendable (Double) -> Void)? = nil) async {
         let queue = DispatchQueue(label: "mediacompressor.pump.\(UUID().uuidString)")
+        let mark = ProgressMark()
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             input.requestMediaDataWhenReady(on: queue) {
                 while input.isReadyForMoreMediaData {
                     guard let sample = output.copyNextSampleBuffer() else {
                         input.markAsFinished(); cont.resume(); return
+                    }
+                    if let onProgress, seconds > 0 {
+                        let t = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+                        if t.isFinite {
+                            let f = min(1, max(0, t / seconds))
+                            if f - mark.last >= 0.01 { mark.last = f; onProgress(f) }
+                        }
                     }
                     // append returns false if the writer failed mid-stream — stop cleanly
                     // (finishWriting will then report a non-.completed status → caller drops it).
