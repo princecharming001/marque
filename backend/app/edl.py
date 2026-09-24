@@ -3240,6 +3240,42 @@ def snap_cut_ends_to_takes(edl: dict, words: list[dict],
     return edl
 
 
+def retighten_restored_silence(edl: dict, words: list[dict],
+                               silent_spans: list[tuple[int, int]] | None,
+                               protect: list[tuple[int, int]] | None = None) -> dict:
+    """Re-apply the deterministic dead-air trims that now sit inside KEPT footage.
+
+    Ship check 2026-09-24 (prod multitake run): the plan's retake cut started just before a
+    1.44 s pause, so the pause's dead-air drop was coalesced into the content cut; then
+    enforce_sentence_integrity moved the cut start back to the sentence end (restoring the
+    words it had swallowed) and the pause came back with them, untrimmed. Run this after
+    snap_cut_ends_to_takes / enforce_sentence_integrity.
+
+    Only MEASURED silence is re-trimmed (silent_spans None → unchanged: an unmeasured gap may
+    hide a word the transcriber dropped), and only where the whole trim lies inside one kept
+    interval. A short beat inside a plan keep (`protect`) stays, exactly as in assemble_edl."""
+    if silent_spans is None:
+        return edl
+    _, found = strip_fillers(words, silent_spans=silent_spans)
+    drops = list(edl.get("drops") or [])
+    kept = _kept_intervals(edl.get("segments") or [], drops)
+    added: list[dict] = []
+    for d in found:
+        if d.reason != "dead_air":
+            continue
+        a, b = d.src_in, d.src_out
+        if not any(ka <= a and b <= kb for ka, kb in kept):
+            continue                     # already cut, or it straddles a seam
+        if protect and b - a < LONG_DEAD_AIR_DROP_FRAMES and _range_overlaps_any((a, b), protect):
+            continue                     # a short beat the plan asked to keep
+        added.append({"src_in": a, "src_out": b, "reason": "dead_air"})
+    if not added:
+        return edl
+    out = dict(edl)
+    out["drops"] = _coalesce_drops(drops + added)
+    return out
+
+
 def enforce_sentence_integrity(edl: dict, words: list[dict],
                                protected: list[tuple[int, int]] | None = None) -> dict:
     """Deterministic take-grammar guards (cut-loop round 2), run after

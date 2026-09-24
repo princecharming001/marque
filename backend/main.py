@@ -39,7 +39,7 @@ from app.edl import (EDL, safe_default_edl, validate_and_repair, strip_fillers,
                      assemble_edl, check_edl_invariants, clamp_edl_to_source,
                      _ENTERTAINMENT_VIDEO_TYPES,
                      _BROLL_MEME_CAPS, clamp_opening_overcut, snap_cut_ends_to_takes,
-                     enforce_sentence_integrity)
+                     enforce_sentence_integrity, retighten_restored_silence)
 from app import audio as audio_mod
 from app.subproc import communicate_or_kill
 from app import enhance as enhance_mod
@@ -6728,6 +6728,16 @@ async def _run_edit(job_id: str, words: list[dict]):
             edl_data = enforce_sentence_integrity(edl_data, words, protected=_protected)
         except Exception as e:
             logging.warning("enforce_sentence_integrity failed (%s) — keeping author cuts", e)
+        # Ship check 2026-09-24: a cut whose start the two steps above moved back restores
+        # the words it swallowed AND any pause with them — re-trim that measured silence.
+        if prefs.get("filler_trim") != "off":
+            try:
+                _plan_keeps = [(k[0], k[1]) for k in ((plan_data or {}).get("keeps") or [])
+                               if isinstance(k, (list, tuple)) and len(k) == 2]
+                edl_data = retighten_restored_silence(edl_data, words, job.get("_silent_spans"),
+                                                      protect=_plan_keeps or None)
+            except Exception as e:
+                logging.warning("retighten_restored_silence failed (%s) — keeping the cut", e)
         # Retention-editor upgrade: deterministic post-passes applied to WHATEVER EDL
         # either author path produced — so both the plan path and the legacy
         # direct-EDL author benefit identically. Flag-gated (RETENTION_PASSES env,

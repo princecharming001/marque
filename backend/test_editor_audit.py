@@ -1002,3 +1002,64 @@ def test_long_measured_pause_outside_keeps_still_tightened_and_fillers_in_keeps_
     assert _dead_air(d), "a long measured blank is tightened"
     assert not [x for x in d["drops"] if x["reason"] == "filler"
                 and x["src_in"] < E.ms_to_frame(3_300)], "a filler inside a keep stays protected"
+
+
+# ── Ship check 2026-09-24: a pause restored with a cut's words is re-trimmed ─────────────
+
+def _multitake_words():
+    before = _run("your story is just the frame you hang that".split(), 26_235)
+    return before + [_pw("proof", 28_990, 29_115), _pw("on.", 30_554, 30_570)] \
+        + _run("they buy the outcome they want".split(), 30_600) \
+        + _run("the identity they want to be seen with".split(), 32_600) \
+        + _run("and then the proof".split(), 35_600)
+
+
+def test_pause_swallowed_by_a_restored_cut_is_retrimmed_on_the_prod_chain():
+    # Prod (job 9c9aadb8), real transcript: the plan's retake cut began just before the
+    # 1.44 s pause (29.115 → 30.554 s), the pause's dead-air drop coalesced into it, and
+    # enforce_sentence_integrity moved the cut start back to the sentence end — restoring
+    # "on." AND the whole untrimmed pause (44 of 44 frames kept before this fix).
+    import json as _json, os as _os
+    from app import edl as E
+    fx = _json.load(open(_os.path.join(_os.path.dirname(__file__), "eval", "multitake_retake_join_words.json")))
+    words = [{"word": w, "start_ms": a, "end_ms": b, "type": t} for w, a, b, t in fx["words"]]
+    spans = [tuple(x) for x in fx["silent_spans_ms"]]
+    d = E.assemble_edl({"keeps": [], "cuts": [{"range": [873, 1194]}]},
+                       words, "talking_head", "myth-buster", silent_spans=spans).model_dump()
+    d = E.clamp_opening_overcut(d, words)
+    d = E.snap_cut_ends_to_takes(d, words, protected=[])
+    d = E.enforce_sentence_integrity(d, words, protected=[])
+    pa, pb = E.ms_to_frame(29_115), E.ms_to_frame(30_554)
+
+    def kept_in_pause(e):
+        return sum(max(0, min(b, pb) - max(a, pa)) for a, b in E._kept_intervals(e["segments"], e["drops"]))
+
+    assert kept_in_pause(d) == pb - pa, "precondition: the chain restores the whole pause"
+    d = E.retighten_restored_silence(d, words, spans)
+    assert kept_in_pause(d) <= 12, "only a natural pause (keep_pause_frames) survives"
+
+
+def test_retighten_leaves_cut_seams_and_unmeasured_gaps_alone():
+    from app import edl as E
+    words = _multitake_words()
+    total = E.ms_to_frame(words[-1]["end_ms"])
+    seg = [{"src_in": 0, "src_out": total}]
+    # the pause already lies inside a cut → nothing added
+    cut = {"segments": seg, "drops": [{"src_in": E.ms_to_frame(29_000), "src_out": E.ms_to_frame(31_000),
+                                        "reason": "false_start"}]}
+    assert E.retighten_restored_silence(cut, words, [(29_100, 30_564)]) == cut
+    # no silence measurement → unchanged (the gap may hide a dropped word)
+    open_ = {"segments": seg, "drops": []}
+    assert E.retighten_restored_silence(open_, words, None) == open_
+    # measured and kept → trimmed, leaving a natural pause
+    out = E.retighten_restored_silence(open_, words, [(29_100, 30_564)])
+    assert [x["reason"] for x in out["drops"]] == ["dead_air"]
+
+
+def test_retighten_keeps_a_short_protected_beat():
+    from app import edl as E
+    words = _run("one two three four five".split(), 0) + _run("six seven eight nine".split(), 2_400)
+    total = E.ms_to_frame(words[-1]["end_ms"])
+    e = {"segments": [{"src_in": 0, "src_out": total}], "drops": []}
+    out = E.retighten_restored_silence(e, words, [(1_560, 2_410)], protect=[(0, total)])
+    assert out == e
