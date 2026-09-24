@@ -4380,6 +4380,17 @@ async def tweak_clip(job_id: str, req: TweakRequest, preview: int = 0, defer_ren
     resolve_broll_needed = False
 
     # 2) undo is server-level (needs the history stack apply_edl_ops can't see)
+    # Editor audit ED-4: a batch that asks for MORE undos than the history holds (the app's
+    # version restore sends N undos; only 5 survive a restart) must be all-or-nothing. Popping
+    # what exists would rewind the server to the oldest version while the app keeps showing
+    # the current cut — the next edit would silently build on the wrong version.
+    undo_wanted = sum(1 for o in ops if o.get("type") == "undo")
+    if undo_wanted and not preview and undo_wanted > len(job["edl_history"]):
+        why = f"only {len(job['edl_history'])} earlier edits are still saved"
+        return {"mode": mode, "reply": reply, "applied": [],
+                "skipped": [{"type": o.get("type", ""), "applied": False, "reason": why} for o in ops],
+                "changed": False, "needs_render": False, "clip_status": clip["status"],
+                "undo_available": bool(job["edl_history"])}
     edit_ops = []
     for o in ops:
         if o.get("type") == "undo":

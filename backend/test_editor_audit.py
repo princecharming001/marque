@@ -899,3 +899,27 @@ def test_demo_src_tweak_models_a_finished_render(tmp_path, monkeypatch):
     r2 = client.post(f"/v1/clips/{jid}/tweak", params={"defer_render": 1}, json={
         "clip_id": cid, "ops": [{"type": "split_segment", "index": 0, "at_frame": seg["src_in"] + 60}]})
     assert r2.json()["needs_render"] is False
+
+
+def test_undo_batch_is_all_or_nothing_when_history_is_short():
+    """ED-4: the app restores version N by sending N+1 undos. If the server kept fewer (only 5
+    survive a restart), popping what exists silently rewinds the server to its OLDEST version
+    while the app keeps showing the current cut. The batch must be rejected untouched."""
+    jid = "audit-undo-batch"
+    edl = {"style": "talking_head", "format_id": "myth-buster",
+           "segments": [{"src_in": 0, "src_out": 900}], "drops": [], "captions": [], "overlays": [],
+           "broll": [], "layout": {}, "audio": {}}
+    hist = [dict(edl, segments=[{"src_in": 0, "src_out": 900 - 30 * i}]) for i in range(1, 4)]
+    main._clip_jobs[jid] = {"status": "ready", "style": "talking_head", "script": {},
+                            "source_url": "https://example.com/a.mov",
+                            "clips": [{"clip_id": "c1", "format": "myth-buster", "status": "ready"}],
+                            "edl": dict(edl), "edl_history": list(hist), "tweaks": [], "words": [],
+                            "created_at": 0}
+    r = client.post(f"/v1/clips/{jid}/tweak", json={"clip_id": "c1", "ops": [{"type": "undo"}] * 5})
+    b = r.json()
+    assert r.status_code == 200 and b["applied"] == [] and b["changed"] is False
+    assert len(main._clip_jobs[jid]["edl_history"]) == 3            # nothing popped
+    assert main._clip_jobs[jid]["edl"]["segments"][0]["src_out"] == 900
+    r2 = client.post(f"/v1/clips/{jid}/tweak", json={"clip_id": "c1", "ops": [{"type": "undo"}] * 2})
+    assert len(r2.json()["applied"]) == 2 and len(main._clip_jobs[jid]["edl_history"]) == 1
+    main._clip_jobs.pop(jid, None)
