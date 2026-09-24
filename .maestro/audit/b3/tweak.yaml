@@ -18,6 +18,9 @@ name: B3 tweak chat — open from clip detail, send a starter chip, get a reply,
 - tapOn: "Library"
 - tapOn: { id: "library.clip", index: 0 }
 - waitForAnimationToEnd: { timeout: 2500 }
+# centerElement: on SE the affordance can sit under the pinned Schedule / Post now footer,
+# where Maestro still counts it visible and the tap opens Schedule instead.
+- scrollUntilVisible: { element: { id: "clip.tweakAffordance" }, direction: DOWN, timeout: 10000, centerElement: true }
 - tapOn: { id: "clip.tweakAffordance" }
 - extendedWaitUntil: { visible: { id: "tweak.input" }, timeout: 15000 }
 - tapOn: { id: "tweak.input" }

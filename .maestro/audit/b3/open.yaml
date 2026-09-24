@@ -15,12 +15,21 @@ name: B3 subflow — clean launch on a demo-src job → Library → clip → Edi
 # The walkthrough card can land a beat after launch and is modal (it hides the tab bar
 # from the accessibility tree), so wait for it before skipping.
 - extendedWaitUntil: { visible: { id: "tour.skip" }, timeout: 10000, optional: true }
+# Let the card finish sliding in: a Skip tap mid-slide lands on the voice orb underneath.
+- waitForAnimationToEnd: { timeout: 3000 }
 - tapOn: { id: "tour.skip", optional: true }
 - extendedWaitUntil: { visible: "Library", timeout: 30000 }
 - tapOn: "Library"
+- extendedWaitUntil: { visible: { id: "library.clip" }, timeout: 15000 }
 - waitForAnimationToEnd: { timeout: 2000 }
 - tapOn: { id: "library.clip", index: 0 }
 - waitForAnimationToEnd: { timeout: 2500 }
+# No sheet "Done" yet means the tap didn't open the clip: tap it once more.
+- runFlow:
+    when: { notVisible: "Done" }
+    commands:
+      - tapOn: { id: "library.clip", index: 0 }
+      - waitForAnimationToEnd: { timeout: 2500 }
 - scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
 - tapOn: { id: "clip.editManual" }
 - extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 60000 }

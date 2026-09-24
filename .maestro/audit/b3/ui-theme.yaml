@@ -1,0 +1,25 @@
+appId: com.getmarque.app
+name: UI capture — only the "theme with unsaved edits" frame (re-run on the pre-fix build)
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}-t" } }
+- tapOn: { id: "editorPro.root.text", optional: true }
+- tapOn: { id: "editorPro.addSticker", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- inputText: "day one"
+- pressKey: Enter
+- tapOn: { point: "50%,12%", optional: true }   # top of the preview: the field loses focus and commits
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# Filters is the last root tile and sits past the edge on phone widths: scroll the bar.
+- swipe: { from: { id: "editorPro.root.captions" }, direction: LEFT, duration: 400, optional: true }
+- tapOn: { id: "editorPro.root.filters", optional: true }
+- tapOn: { id: "editorPro.look.theme", optional: true }   # Filter / Adjust / Theme tabs
+- tapOn: { id: "editorPro.themeButton", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+# The theme cards (like the music sheet's rows) are missing from the XCTest hierarchy inside
+# the editor's full-screen cover, by id and by text, so tap the "Hormozi Punch" card by position.
+- tapOn: { point: "${TPOINT}", optional: true }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-6-theme

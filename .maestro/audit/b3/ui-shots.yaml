@@ -3,6 +3,9 @@ name: UI capture — the editor surfaces this audit changed (same steps on the b
 # env: JOB, SECS, OUT, TAG. Every step past open is optional so the pre-fix build walks the same path.
 ---
 - runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+# Let the first frame and the filmstrip load before the reference shot (a 3 s settle).
+- extendedWaitUntil: { visible: "__settle__", timeout: 3000, optional: true }
+- takeScreenshot: ${OUT}/${TAG}-0b-open
 # 1) "fit" zoom (ED-12): the zoom button cycles close → fit → default.
 - tapOn: { id: "editorPro.zoomCycle", optional: true }
 - tapOn: { id: "editorPro.zoomCycle", optional: true }
@@ -18,6 +21,8 @@ name: UI capture — the editor surfaces this audit changed (same steps on the b
 - tapOn: { id: "editorPro.ctx.speed", optional: true }
 - waitForAnimationToEnd: { timeout: 1500 }
 - takeScreenshot: ${OUT}/${TAG}-3-speed
+# The Speed row replaces the whole bar (no Back): ✓ closes it.
+- tapOn: { id: "editorPro.expansion.confirm", optional: true }
 - tapOn: { id: "editorPro.ctx.back", optional: true }
 - tapOn: { id: "editorPro.ctx.back", optional: true }
 # 4) Caption row dialog (autofocus; the list shows the document's words).
@@ -35,19 +40,25 @@ name: UI capture — the editor surfaces this audit changed (same steps on the b
 - tapOn: { id: "editorPro.root.text", optional: true }
 - tapOn: { id: "editorPro.addSticker", optional: true }
 - waitForAnimationToEnd: { timeout: 1500 }
-- tapOn: { id: "dialog.input", optional: true }   # the pre-fix field isn't focused (4b shows that)
+# "Add text" types inline on the canvas (CapCut); Return commits it and selects the sticker.
 - inputText: "day one"
-- tapOn: { id: "dialog.add", optional: true }
+- pressKey: Enter
 - waitForAnimationToEnd: { timeout: 1500 }
 - tapOn: { id: "editorPro.sticker.style", optional: true }
 - waitForAnimationToEnd: { timeout: 1500 }
 - takeScreenshot: ${OUT}/${TAG}-5-sticker-style
+# Losing focus commits the sticker on either build (the pre-fix keyboard never closes on Return).
+- tapOn: { point: "50%,12%", optional: true }   # top of the preview: the field loses focus and commits
+- tapOn: { id: "editorPro.expansion.confirm", optional: true }
 - tapOn: { id: "editorPro.ctx.back", optional: true }
 - tapOn: { id: "editorPro.ctx.back", optional: true }
 # 6) Theme with unsaved edits (ED-3: ask before a theme replaces them).
+# Filters is the last root tile and sits past the edge on phone widths: scroll the bar.
+- swipe: { from: { id: "editorPro.root.captions" }, direction: LEFT, duration: 400, optional: true }
 - tapOn: { id: "editorPro.root.filters", optional: true }
+- tapOn: { id: "editorPro.look.theme", optional: true }   # Filter / Adjust / Theme tabs
 - tapOn: { id: "editorPro.themeButton", optional: true }
 - waitForAnimationToEnd: { timeout: 1500 }
-- tapOn: { id: "editorPro.theme.*", index: 1, optional: true }
+- tapOn: { text: "Hormozi Punch", optional: true }   # not in the XCTest tree here: see ui-theme.yaml (tap by position)
 - waitForAnimationToEnd: { timeout: 2000 }
 - takeScreenshot: ${OUT}/${TAG}-6-theme

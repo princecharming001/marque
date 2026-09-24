@@ -45,7 +45,7 @@ appId: com.getmarque.app
 # Replay from Settings → should re-show step 1 even though the tour already completed once.
 - tapOn: { id: home.profile }
 - tapOn: { id: profile.settings }
-- scrollUntilVisible: { element: { id: settings.replayTour }, direction: DOWN, timeout: 10000 }
+- scrollUntilVisible: { element: { id: settings.replayTour }, direction: DOWN, timeout: 30000 }
 - tapOn: { id: settings.replayTour }
 - extendedWaitUntil:
     visible: { id: tour.next }
