@@ -231,7 +231,10 @@ struct ProEditorView: View {
         .onChange(of: showStockInput) { _, shown in
             if !shown { replacingRoll = nil }
         }
-        .task { await load() }
+        // Load once per editor. A .fullScreenCover (our own fullscreen preview) can report this
+        // view as disappeared/re-appeared, which re-runs .task — a second load() would replace
+        // the live session mid-edit.
+        .task { if session == nil, phase == .loading { await load() } }
         .onChange(of: phase) { _, p in
             if p == .editing { maybeHint("tapClip", icon: "hand.tap", text: "Tap a clip to select it") }
         }
@@ -262,6 +265,9 @@ struct ProEditorView: View {
         }
         .onAppear { lifetime.visible = true }
         .onDisappear {
+            // Our own fullscreen preview covering the editor is not a dismissal: never tear the
+            // player down (or cancel work) under it.
+            guard !showFullscreen else { return }
             lifetime.visible = false
             filmstripWarm?.cancel()
             draftAutosaver?.flush()          // ED-2: whatever was pending reaches disk
