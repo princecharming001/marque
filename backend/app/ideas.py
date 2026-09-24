@@ -452,6 +452,10 @@ async def run_ideate_cron(store, now_epoch: float) -> int:
         # too rather than pay a tier lookup per cron for a creator that can never ideate.
         if not cid or not palo_flags.real_creator(cid):
             continue
+        # Identity-only rows (the channel-identity upsert creates a creators row with no
+        # niche) must not enroll the account in the 6-hourly ideate spend with niche=None.
+        if not (c.get("niche") or "").strip():
+            continue
         tier = await tiers.tier_for(cid, store)
         brand = {"niche": c.get("niche", ""), "goal": c.get("goal", "")}
         total += await run_ideate_for(store, cid, brand, tier, now_epoch)

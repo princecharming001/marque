@@ -298,6 +298,8 @@ async def run_compile_cron(store, now_epoch: float) -> int:
         # the first place (the live /v1/strategy?creator_id=default Beauty probe).
         if not cid or not palo_flags.real_creator(cid):
             continue
+        if not (c.get("niche") or "").strip():       # identity-only row (see ideas cron)
+            continue
         if not ai_usage.compile_allowed(cid, True):            # allowlist gate (cheap, first)
             continue
         tier = await tiers.tier_for(cid, store)

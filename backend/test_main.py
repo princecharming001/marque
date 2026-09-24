@@ -7165,8 +7165,11 @@ def test_default_bucket_is_skipped_by_every_fleet_cron(monkeypatch):
             self.touched: list[str] = []
 
         async def load_all_creators(self):
+            # "identity-only": the row the channel-identity upsert creates (no niche); the
+            # spend crons must skip it rather than ideate/compile with niche=None.
             return [{"creator_id": "default"}, {"creator_id": "demo-abc"},
-                    {"creator_id": "real-cron-1"}]
+                    {"creator_id": "identity-only"},
+                    {"creator_id": "real-cron-1", "niche": "fitness"}]
 
         async def load_creator_tier(self, creator_id):
             self.touched.append(creator_id)
@@ -7198,6 +7201,8 @@ def test_default_bucket_is_skipped_by_every_fleet_cron(monkeypatch):
             pass                       # the sweep may bail later; we only assert the skip
         assert "default" not in spy.touched, f"{fn} swept the shared pre-auth bucket"
         assert "demo-abc" not in spy.touched, f"{fn} swept a demo bucket"
+        if fn != "run_insights_cron":          # the metrics poller is keyed on handles, not niche
+            assert "identity-only" not in spy.touched, f"{fn} swept an identity-only row"
         assert "real-cron-1" in spy.touched, \
             f"{fn} never reached a real creator — the assertions above would be vacuous"
 

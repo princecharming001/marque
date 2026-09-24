@@ -203,6 +203,8 @@ async def run_exemplar_cron(store, now_epoch: float) -> int:
         # so the sweep doesn't spend a strategy read per cron on a row it can never build.
         if not cid or not palo_flags.real_creator(cid) or not ai_usage.compile_allowed(cid, True):
             continue
+        if not (c.get("niche") or "").strip():       # identity-only row (see ideas cron)
+            continue
         if not await should_rebuild(store, cid, now_epoch):
             continue
         loader = getattr(store, "load_clip_sessions", None)
