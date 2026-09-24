@@ -2529,7 +2529,8 @@ def test_hooks_prompt_injects_memory():
 def test_anthropic_passes_output_config_when_schema_given(monkeypatch):
     captured = {}
 
-    async def fake_post(self, url, headers=None, json=None):
+    # **kw: anthropic() now passes a per-request `timeout=` (LV-21, max_tokens-scaled).
+    async def fake_post(self, url, headers=None, json=None, **kw):
         captured["body"] = json
         class R:
             status_code = 200
@@ -4136,7 +4137,7 @@ def test_timing_middleware_does_not_break_requests():
 def test_anthropic_client_recreated_across_event_loops(monkeypatch):
     """The loop-aware shared client must not raise 'Event loop is closed' when
     reused across the asyncio.run()-per-test pattern this suite already uses."""
-    async def fake_post(self, url, headers=None, json=None):
+    async def fake_post(self, url, headers=None, json=None, **kw):   # **kw: LV-21 timeout=
         class R:
             status_code = 200
             def json(self_): return {"content": [{"text": "ok"}]}

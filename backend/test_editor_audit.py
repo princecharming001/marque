@@ -282,3 +282,39 @@ def test_no_unbounded_ffmpeg_wait_remains():
     in_main = len(pat.findall(_inspect.getsource(main))) - len(pat.findall(bridge))
     assert in_main == 0
     assert not pat.findall(_inspect.getsource(_audio))
+
+
+# ---------------------------------------------------------------------------
+# LV-21 — Anthropic read timeout scales with the call's own max_tokens
+# ---------------------------------------------------------------------------
+
+def test_anthropic_read_timeout_scales_with_max_tokens():
+    t = main._anthropic_timeout
+    assert t(0).read == 90.0 and t(1000).read == 90.0          # short calls keep the old 90s
+    assert t(3000).read == 135.0                              # 60 + 3000/40
+    assert t(main._plan_max_tokens(1500)).read == 285.0       # 9000-token plan (~10-min take)
+    assert t(16000).read == 420.0 and t(10 ** 6).read == 420.0  # clamped
+    for x in (t(0), t(16000)):
+        assert x.connect <= 15 and x.write <= 30 and x.pool <= 30   # the rest stay bounded
+
+
+def test_anthropic_passes_scaled_timeout_per_request(monkeypatch):
+    seen: list = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"content": [{"text": "{\"ok\": true}"}]}
+
+    class _Client:
+        async def post(self, url, headers=None, json=None, timeout=None):
+            seen.append((json["max_tokens"], timeout))
+            return _Resp()
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "_get_anthropic_client", lambda: _Client())
+    _aio.run(main.anthropic("s", "u", main.OPUS, 16000))
+    _aio.run(main.anthropic_json("s", "u", {"type": "object"}, main.OPUS,
+                                 main._plan_max_tokens(1500)))
+    _aio.run(main.anthropic("s", "u", main.HAIKU, 500))
+    assert [(mt, to.read) for mt, to in seen] == [(16000, 420.0), (9000, 285.0), (500, 90.0)]

@@ -1263,6 +1263,28 @@ def _get_anthropic_client() -> httpx.AsyncClient:
     return _anthropic_client
 
 
+# LV-21 (editor audit 2026-09-24): the shared client's flat 90s timeout also bounded the
+# READ of every non-streaming generation, while the edit calls' max_tokens scale with the
+# transcript (plan min(16000, 3000+4w), brief, legacy EDL). A long take's plan legitimately
+# needs minutes of generation, so it ReadTimeout'd on all 4 attempts (~370s burned) and
+# degraded to the safe-default cut / a silent mock brief. The read budget now scales with
+# the call's own output budget (~40 tok/s worst-case throughput + 60s of headroom),
+# clamped to [90, 420]; connect/write/pool stay short and fixed.
+ANTHROPIC_READ_TIMEOUT_MIN_S = 90.0
+ANTHROPIC_READ_TIMEOUT_MAX_S = float(os.environ.get("ANTHROPIC_READ_TIMEOUT_MAX_S", "420"))
+
+
+def _anthropic_timeout(max_tokens: int) -> httpx.Timeout:
+    """Per-request httpx timeout for a non-streaming Messages call of `max_tokens`."""
+    try:
+        mt = max(0, int(max_tokens or 0))
+    except (TypeError, ValueError):
+        mt = 0
+    read = min(ANTHROPIC_READ_TIMEOUT_MAX_S,
+               max(ANTHROPIC_READ_TIMEOUT_MIN_S, 60.0 + mt / 40.0))
+    return httpx.Timeout(connect=15.0, read=read, write=30.0, pool=30.0)
+
+
 _SCHEMA_STRIPPED_ONCE = False
 
 
@@ -1311,6 +1333,7 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
         # edit to the default cut. Strip the unsupported keywords (the corresponding
         # shape checks live in code) so no future schema edit can resurrect that class.
         body["output_config"] = {"format": {"type": "json_schema", "schema": _sanitize_schema(schema)}}
+    timeout = _anthropic_timeout(max_tokens)          # LV-21: read budget ∝ output budget
     for attempt, delay in enumerate(delays + [None]):
         try:
             client = _get_anthropic_client()
@@ -1319,6 +1342,7 @@ async def anthropic(system: str, user: str, model: str = OPUS, max_tokens: int =
                 headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01",
                          "content-type": "application/json"},
                 json=body,
+                timeout=timeout,
             )
             if r.status_code == 200:
                 try:
