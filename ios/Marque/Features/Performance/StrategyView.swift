@@ -110,6 +110,14 @@ struct StrategyView: View {
         }
         .task {
             #if DEBUG
+            // A doc shaped like real model drift (bold wrappers, "###" + numbered headers,
+            // "* " bullets, preambles, "Priority for the next month:") for regression QA.
+            if CommandLine.arguments.contains("-demoStrategyDrift") {
+                doc = .init(markdown: StrategyModel.demoMarkdownDrifted, revision: 6,
+                            updatedAt: "", updates: [], isTemplate: false)
+                loading = false
+                return
+            }
             if CommandLine.arguments.contains("-demoStrategy") {
                 doc = .init(markdown: StrategyModel.demoMarkdown, revision: 7,
                             updatedAt: "", updates: [
@@ -359,7 +367,37 @@ struct StrategyModel {
     var notDoing: [Line] = []
     var unparsed: [Prose] = []
 
-    static func parse(_ md: String) -> StrategyModel {
+    /// Model output drifts from the contract in ways that used to break the screen
+    /// (owner 2026-09-23: "asterisks and thick paragraphs"): **bold** wrappers ("**REGIME:**"
+    /// no longer matched, so the whole Plan fell into one prose blob), "* " bullets, and
+    /// "###"/numbered headers. Normalize those before parsing; the screen's own hierarchy
+    /// (bold leads, secondary rest) carries the emphasis, so the markers are dropped.
+    static func normalize(_ md: String) -> String {
+        var text = md.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "__", with: "")
+        var lines: [String] = []
+        for raw in text.components(separatedBy: "\n") {
+            var line = raw
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") {
+                // Any heading level, optional "1." numbering: "### 2. Plan" -> "## Plan".
+                var title = trimmed.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+                if let r = title.range(of: #"^\d+[.)]\s*"#, options: .regularExpression) {
+                    title.removeSubrange(r)
+                }
+                line = "## " + title
+            } else if trimmed.hasPrefix("* ") || trimmed.hasPrefix("• ") {
+                line = "- " + trimmed.dropFirst(2)
+            }
+            // Leftover single-asterisk emphasis: *adapted from…* -> adapted from…
+            line = line.replacingOccurrences(of: #"\*([^*\n]+)\*"#, with: "$1", options: .regularExpression)
+            lines.append(line)
+        }
+        text = lines.joined(separator: "\n")
+        return text
+    }
+
+    static func parse(_ raw: String) -> StrategyModel {
+        let md = normalize(raw)
         var model = StrategyModel()
         for (title, body) in sections(md) {
             switch title.lowercased() {
@@ -438,13 +476,28 @@ struct StrategyModel {
             } else if line.uppercased().hasPrefix("LEVER:") {
                 plan.lever = String(line.dropFirst("LEVER:".count)).trimmingCharacters(in: .whitespaces)
             } else if !line.isEmpty {
-                rest.append(line.hasPrefix("Priority:")
-                            ? String(line.dropFirst("Priority:".count)).trimmingCharacters(in: .whitespaces)
-                            : line)
+                // "Priority:" and the drifted "Priority for the next month:" both lead in.
+                if line.lowercased().hasPrefix("priority"), let colon = line.firstIndex(of: ":"),
+                   line.distance(from: line.startIndex, to: colon) <= 32 {
+                    rest.append(String(line[line.index(after: colon)...]).trimmingCharacters(in: .whitespaces))
+                } else {
+                    rest.append(line)
+                }
             }
         }
         plan.priority = rest.joined(separator: " ")
+        // The regime word is cut out of its line, so the note can start mid-sentence
+        // ("provisionally. With…"); leads read as sentences, so capitalize all three.
+        plan.regimeNote = sentenceCase(plan.regimeNote)
+        plan.lever = sentenceCase(plan.lever)
+        plan.priority = sentenceCase(plan.priority)
         return plan
+    }
+
+    static func sentenceCase(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first else { return t }
+        return first.uppercased() + t.dropFirst()
     }
 
     /// The synthesis prompt has each insight name its confidence source (niche-proven /
@@ -488,7 +541,9 @@ struct StrategyModel {
                 cleaned = cleaned.replacingOccurrences(of: wrapped, with: "", options: .caseInsensitive)
             }
         }
-        cleaned = cleaned.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespaces)
+        cleaned = cleaned.replacingOccurrences(of: "  ", with: " ")
+            .replacingOccurrences(of: " .", with: ".")   // tag stripped before a period leaves " ."
+            .trimmingCharacters(in: .whitespaces)
         // "Name: detail" or "Name. Detail" → title + secondary; otherwise the sentence split.
         if let colon = cleaned.firstIndex(of: ":"), cleaned.distance(from: cleaned.startIndex, to: colon) <= 48 {
             let name = String(cleaned[..<colon]).trimmingCharacters(in: .whitespaces)
@@ -512,6 +567,38 @@ struct StrategyModel {
     #if DEBUG
     /// A realistic compiled doc (mirrors the synthesis prompt's shapes) for the
     /// -demoStrategy sim seam — lets the screen be screenshot-verified without a backend.
+    static let demoMarkdownDrifted = """
+    ## Insights
+
+    Real talk first: the catalog is thin, so these are early reads, not verdicts.
+
+    - **Contrarian opens hold attention.** Your scripts that open on "what you think is wrong" keep people past the first line. Niche-proven as a structure, untested on you.
+    - **There is no readable performance signal yet.** Every video shows 0 views, so nothing separates a winner from a floor. (source: catalog)
+
+    ### 2. Plan
+
+    **REGIME:** sub-breakout, provisionally. With no readable own-data, proof has to come from the niche.
+
+    **LEVER:** pick one lane and ship **five measurable videos** in it before optimizing anything.
+
+    Priority for the next month: choose one topic and post five clean videos with real numbers.
+
+    ## Buckets
+
+    * **"You're doing X wrong" (experiment).** The common belief, the correction, the reveal.
+    * **One technique per video (experiment).** One concrete thing, shown clearly.
+
+    ## Brand Bets
+
+    - **The contrarian voice.** Every original script starts by telling people they're wrong about something. Make it your signature open.
+
+    ## Not-Doing
+
+    - **Stop spreading across three niches.** No viewer has a reason to follow a channel that jumps categories. (killed by: no niche contract)
+
+    Bottom line: get a clean catalog in one niche and the next revision gets sharper.
+    """
+
     static let demoMarkdown = """
     ## Insights
     - Your direct-to-camera confession openers hold attention past the 3-second mark. Both of your above-median videos open on a personal admission before any context, while every video that opens with setup sits at your floor (own-data).

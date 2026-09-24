@@ -23,11 +23,11 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.sectionGap) {
-                // Stoic "Today" header: streak · greeting · avatar, the date line, then the
-                // 7-day posting strip. Grouped so the header reads as one block.
+                // Stoic "Today" header: streak · greeting · avatar, then the 7-day posting
+                // strip. Grouped so the header reads as one block. (Owner 2026-09-23: no
+                // date or @handle line under the greeting.)
                 VStack(spacing: Space.md) {
                     topBar
-                    greetingBlock
                     DSWeekStrip(days: weekDays)
                 }
                 .staggerReveal(0)
@@ -43,7 +43,8 @@ struct HomeView: View {
                 stealSection.staggerReveal(4)
             }
             .screenPadding()
-            .padding(.top, Space.sm)
+            // Owner 2026-09-23: the greeting sat too tight under the status bar on device.
+            .padding(.top, Space.md)
             .padding(.bottom, MarqueTabBar.clearance + Space.xxl)
         }
         .background(Palette.canvas.ignoresSafeArea())
@@ -88,10 +89,6 @@ struct HomeView: View {
     }
 
     // MARK: Top bar — streak · greeting · profile avatar (Stoic "Today" header)
-
-    private var dateKicker: String {
-        Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
-    }
 
     private var topBar: some View {
         ZStack {
@@ -138,21 +135,6 @@ struct HomeView: View {
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
         return hour < 12 ? "good morning." : hour < 18 ? "good afternoon." : "good evening."
-    }
-
-    /// The date + @handle line under the header (the handle used to ride in the greeting).
-    private var greetingBlock: some View {
-        HStack(spacing: 6) {
-            Text(dateKicker)
-            if let h = store.primaryAccount?.handle, !h.isEmpty {
-                Text("·")
-                Text("@\(h)").lineLimit(1).truncationMode(.middle)
-            }
-        }
-        .font(AppFont.caption)
-        .foregroundStyle(Palette.textSecondary)
-        .frame(maxWidth: .infinity)
-        .padding(.top, -Space.sm)
     }
 
     /// This calendar week, read-only from the posting schedule: a day is checked when a

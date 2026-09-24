@@ -344,12 +344,15 @@ struct TrendTicker: View {
                         Group {
                             if engaged {
                                 ZStack(alignment: .leading) {
-                                    Text(displayTrend.title)
-                                        .font(AppFont.caption)
-                                        .foregroundStyle(Palette.textPrimary)
-                                        .lineLimit(1)
-                                        .id("trend-title-\(currentIndex)")
-                                        .transition(slide)
+                                    HStack(spacing: 6) {
+                                        trendGlyph
+                                        Text(Self.headline(displayTrend.title))
+                                            .font(AppFont.caption)
+                                            .foregroundStyle(Palette.textPrimary)
+                                            .lineLimit(1)
+                                    }
+                                    .id("trend-title-\(currentIndex)")
+                                    .transition(slide)
                                 }
                             } else {
                                 marquee
@@ -424,40 +427,81 @@ struct TrendTicker: View {
 
     // MARK: Ambient marquee (pre-engagement idle state)
 
-    /// A seamless, continuously-scrolling ticker tape of every trend title — the "always
-    /// moving, never switching at intervals" idle state. Two identical copies laid side by
-    /// side; animating the offset by exactly one copy's width and snapping back the instant
-    /// it lands makes the loop invisible (the second copy is already sitting where the
-    /// first one's continuation would be).
-    private var marqueeText: String {
-        (allTrends.isEmpty ? [trend] : allTrends).map(\.title).joined(separator: "      •      ")
-            + "      •      "
+    /// Trends read as trends, not as more video titles (owner 2026-09-23): each item is an
+    /// up-trend glyph + the trend in sentence case. The backend now writes trend headlines;
+    /// capitalizing here also fixes older lowercase ones still in caches.
+    static func headline(_ raw: String) -> String {
+        var t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        while t.hasSuffix(".") { t.removeLast() }
+        guard let first = t.first else { return t }
+        return first.uppercased() + t.dropFirst()
     }
 
-    /// The scrolling copies are `.fixedSize()` — deliberately far wider than their slot,
-    /// that's what makes the loop work. But a `.fixedSize()` view still reports that huge
-    /// WIDTH upward during layout even once it's clipped, so parked directly inside the
-    /// row's HStack it silently ate the row's own layout math and pushed the leading dot +
-    /// "TRENDING" label off past the left edge. Wrapping in GeometryReader breaks that
-    /// upward leak: a GeometryReader reports exactly the size ITS parent offers it, never
-    /// its children's — so the row sees a normal flexible slot, and the oversized scrolling
-    /// content only exists (and gets clipped) INSIDE that already-fixed window.
+    private var trendGlyph: some View {
+        Image(systemName: "arrow.up.right")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(Palette.textSecondary)
+            .accessibilityHidden(true)
+    }
+
+    private var tickerTrends: [TrendItem] { allTrends.isEmpty ? [trend] : allTrends }
+
+    /// Even spacing between items. It used to be a run of spaces around a "•" inside one
+    /// string: proportional-width spaces made the gaps uneven, and a separator dot landed
+    /// right next to the live dot.
+    private static let itemGap: CGFloat = 28
+
+    /// One copy of the tape: every trend, evenly spaced, with the same gap after the last
+    /// item, so copies laid end to end loop seamlessly.
+    private var tapeCopy: some View {
+        HStack(spacing: Self.itemGap) {
+            ForEach(Array(tickerTrends.enumerated()), id: \.offset) { _, t in
+                HStack(spacing: 6) {
+                    trendGlyph
+                    Text(Self.headline(t.title))
+                        .font(AppFont.caption)
+                        .foregroundStyle(Palette.textPrimary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.trailing, Self.itemGap)
+        .fixedSize()
+    }
+
+    /// A seamless, continuously-scrolling tape of every trend — the "always moving, never
+    /// switching at intervals" idle state. Identical copies laid side by side; animating the
+    /// offset by exactly one copy's width and snapping back the instant it lands makes the
+    /// loop invisible. Enough copies are laid down to cover the window even when the list
+    /// is short (one trend used to leave a blank run at the trailing edge).
+    ///
+    /// The copies are `.fixedSize()` — deliberately far wider than their slot. A fixed-size
+    /// view still reports that huge WIDTH upward during layout even once it's clipped, so
+    /// the GeometryReader wrapper is what stops it from pushing the leading dot off-screen:
+    /// a GeometryReader reports exactly the size ITS parent offers it, never its children's.
     private var marquee: some View {
         GeometryReader { windowGeo in
+            let copies = marqueeCopyWidth > 0
+                ? max(2, Int((windowGeo.size.width / marqueeCopyWidth).rounded(.up)) + 1) : 2
             HStack(spacing: 0) {
-                Text(marqueeText).font(AppFont.caption).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                    .fixedSize()
-                    .background(GeometryReader { g in
-                        Color.clear.preference(key: TickerWidthKey.self, value: g.size.width)
-                    })
-                Text(marqueeText).font(AppFont.caption).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                    .fixedSize()
+                tapeCopy.background(GeometryReader { g in
+                    Color.clear.preference(key: TickerWidthKey.self, value: g.size.width)
+                })
+                ForEach(1..<copies, id: \.self) { _ in tapeCopy }
             }
             .offset(x: marqueeOffset)
             .frame(width: windowGeo.size.width, alignment: .leading)
         }
         .frame(height: 20)
         .clipped()
+        // Soft edges: items fade in and out instead of being cut mid-word at the clip.
+        .mask(LinearGradient(stops: [.init(color: .clear, location: 0),
+                                     .init(color: .black, location: 0.07),
+                                     .init(color: .black, location: 0.93),
+                                     .init(color: .clear, location: 1)],
+                             startPoint: .leading, endPoint: .trailing))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tickerTrends.map { Self.headline($0.title) }.joined(separator: ", "))
         .onPreferenceChange(TickerWidthKey.self) { w in
             guard w > 0, w != marqueeCopyWidth else { return }
             marqueeCopyWidth = w
