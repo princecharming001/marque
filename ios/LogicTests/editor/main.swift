@@ -251,6 +251,49 @@ func runAll() {
     for s in [0, 408, 429, 500, 502, 503, 504, 401] {
         check(EditorLoadOutcome.classify(status: s, hasEDL: false) == .unreachable, "\(s) → unreachable (retry)")
     }
+
+    // MARK: ED-6 hex parsing + sticker style parity
+    section("hex parsing (ED-6)")
+    check(EditorHex.parse("#FFFFFF").map { $0.rgb == 0xFFFFFF && $0.alpha == 1 } == true, "#FFFFFF")
+    check(EditorHex.parse("FFFFFF")?.rgb == 0xFFFFFF, "bare FFFFFF is white (old parser gave 0x0FFFFF cyan)")
+    check(EditorHex.parse("#ffd60a")?.rgb == 0xFFD60A, "lowercase hex")
+    check(EditorHex.parse(" #0A84FF ")?.rgb == 0x0A84FF, "whitespace tolerated")
+    if let p = EditorHex.parse("#00000080") {
+        check(p.rgb == 0 && abs(p.alpha - 128.0 / 255.0) < 1e-9, "#RRGGBBAA splits alpha out of the blue channel")
+    } else { check(false, "#RRGGBBAA parses") }
+    for bad in ["", "#", "#12345", "#1234567", "#GGGGGG", "FFFFFFFFF", "#FFFFFF80FF"] {
+        check(EditorHex.parse(bad) == nil, "rejects \(bad.debugDescription)")
+    }
+    check(EditorHex.isStickerColor("#FFD60A") && !EditorHex.isStickerColor("FFD60A")
+          && !EditorHex.isStickerColor("#FFD60A80"), "sticker colour = server regex #[0-9a-fA-F]{6}")
+    check(EditorHex.stickerWire("ffd60a") == "#FFD60A", "swatch → wire form")
+    check(EditorHex.stickerWire("000000") == "#000000", "wire form keeps leading zeros")
+    check(EditorHex.stickerWire("#00000080") == nil, "translucent colours are not sticker colours")
+
+    section("sticker style ops match the server (ED-6)")
+    let sDoc = EditorDocument(edl: edl)
+    func sticker(_ op: WireOp) -> EditorOverlay? { LocalEDLEngine.apply(op, to: sDoc)?.overlays[0] }
+    for hex in ["FFFFFF", "FFD60A", "111111", "FF3B30", "0A84FF"] {
+        check(sticker(.editSticker(index: 0, color: "#" + hex))?.color == "#" + hex, "swatch #\(hex) applies")
+        check(LocalEDLEngine.apply(.editSticker(index: 0, color: hex), to: sDoc) == nil,
+              "bare \(hex) is rejected like the server")
+    }
+    check(sticker(.editSticker(index: 0, color: "default"))?.color == nil, "default resets colour")
+    check(sticker(.editSticker(index: 0, bg: "box"))?.bg == "box", "bg box applies")
+    check(LocalEDLEngine.apply(.editSticker(index: 0, bg: "111111"), to: sDoc) == nil, "bg 111111 rejected")
+    for f in ["inter", "archivo", "baloo"] {
+        check(sticker(.editSticker(index: 0, font: f))?.font == f, "font \(f) applies")
+    }
+    check(LocalEDLEngine.apply(.editSticker(index: 0, font: "serif"), to: sDoc) == nil, "font serif rejected")
+    check(LocalEDLEngine.apply(.editOverlay(index: 0, frameIn: 5000, frameOut: 6000), to: sDoc) == nil,
+          "out-of-bounds window rejects the whole op")
+    check(sticker(.editOverlay(index: 0, frameIn: 30, frameOut: 200))?.srcOut == 200, "valid window applies")
+    check(sticker(.editOverlayText(index: 0, text: "New"))?.text == "New", "text edit applies")
+    let added = LocalEDLEngine.apply(WireOp(type: "add_text_sticker", i: ["start_frame": 0, "end_frame": 60],
+                                            s: ["text": "x", "color": "FFFFFF", "bg": "111111", "font": "serif"]),
+                                     to: sDoc)?.overlays.last
+    check(added?.color == nil && added?.bg == "none" && added?.font == "inter",
+          "add_text_sticker drops invalid look values like the server")
 }
 
 MainActor.assumeIsolated { runAll() }

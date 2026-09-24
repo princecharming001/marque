@@ -630,13 +630,17 @@ struct ProEditorView: View {
 
     /// Build 69: sticker Style — color chips, background pill toggle, font chips.
     /// Every knob commits through the same edit_overlay op the server applies on Save.
+    /// ED-6: every value here is one the server accepts (edl.py edit_overlay): colours go
+    /// out as "#RRGGBB", the background toggles none/box, fonts are inter|archivo|baloo —
+    /// the old bare-hex / "111111" / "serif" values were silently dropped at Save.
     private func stickerStyleRow(_ i: Int) -> some View {
         let o = session?.draft.overlays[safe: i]
+        let current = EditorHex.parse(o?.color ?? "#FFFFFF")?.rgb ?? 0xFFFFFF
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: Space.sm) {
                 ForEach(["FFFFFF", "FFD60A", "111111", "FF3B30", "0A84FF"], id: \.self) { hex in
-                    let active = (o?.color ?? "FFFFFF").replacingOccurrences(of: "#", with: "").uppercased() == hex
-                    Button { mutate([.editSticker(index: i, color: hex)]); bumpHaptic() } label: {
+                    let active = current == (UInt(hex, radix: 16) ?? 0)
+                    Button { mutate([.editSticker(index: i, color: "#" + hex)]); bumpHaptic() } label: {
                         Circle().fill(Color(hex: UInt(hex, radix: 16) ?? 0xFFFFFF))
                             .frame(width: 24, height: 24)
                             // Swatch fill = the user's render color (content); ring = monochrome selection.
@@ -647,15 +651,19 @@ struct ProEditorView: View {
                     .accessibilityIdentifier("editorPro.sticker.color.\(hex)")
                 }
                 optDivider
-                let hasBg = (o?.bg ?? "none") != "none" && !(o?.bg ?? "").isEmpty
+                let hasBg = o?.bg == "box"
                 optChip("Background", active: hasBg) {
-                    mutate([.editSticker(index: i, bg: hasBg ? "none" : "111111")]); bumpHaptic()
+                    mutate([.editSticker(index: i, bg: hasBg ? "none" : "box")]); bumpHaptic()
                 }
                 .accessibilityIdentifier("editorPro.sticker.bg")
                 optDivider
-                ForEach(["inter", "archivo", "serif"], id: \.self) { f in
-                    optChip(f.capitalized, active: (o?.font ?? "inter") == f) {
-                        mutate([.editSticker(index: i, font: f)]); bumpHaptic()
+                // (label, automation id suffix, wire font). The third chip keeps its
+                // `serif` id, but no serif face ships in the renderer — it is the rounded
+                // Baloo face, labelled for what it renders.
+                ForEach([("Inter", "inter", "inter"), ("Archivo", "archivo", "archivo"),
+                         ("Round", "serif", "baloo")], id: \.1) { label, f, font in
+                    optChip(label, active: (o?.font ?? "inter") == font) {
+                        mutate([.editSticker(index: i, font: font)]); bumpHaptic()
                     }
                     .accessibilityIdentifier("editorPro.sticker.font.\(f)")
                 }
@@ -856,10 +864,12 @@ struct ProEditorView: View {
         .accessibilityIdentifier("editorPro.capAccent.\(hex ?? "default")")
     }
 
+    /// "#RRGGBB" / "#RRGGBBAA" (with or without '#') → Color. ED-6: the old version dropped
+    /// the first character unconditionally (white "FFFFFF" previewed as cyan) and pushed a
+    /// pill's alpha byte into the blue channel.
     func colorFromHex(_ hex: String) -> Color {
-        var v: UInt64 = 0
-        Scanner(string: String(hex.dropFirst())).scanHexInt64(&v)
-        return Color(hex: UInt(v))
+        guard let p = EditorHex.parse(hex) else { return .white }
+        return Color(hex: p.rgb, alpha: p.alpha)
     }
 
     private func drawerButton(_ label: String, _ icon: String, active: Bool = false, _ action: @escaping () -> Void) -> some View {
