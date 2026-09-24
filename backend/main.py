@@ -22,6 +22,7 @@ import random
 import logging
 import shutil
 import tempfile
+from collections import deque
 from datetime import datetime, timezone
 
 import httpx
@@ -5596,12 +5597,27 @@ async def _validate_source_url(url: str) -> None:
     raise PipelineError("source_unreachable", last or "unreachable", "transcribe")
 
 
-# Max orphan RESUMES per sweep pass (2026-08-22 post-mortem): the first liveness deploy
+# Max orphan RESUMES per window (2026-08-22 post-mortem): the first liveness deploy
 # resumed all 3 stranded jobs + 1 live job simultaneously on the 512MiB instance — the
 # stampede OOM'd the box, which killed the resumed runs, which burned everyone's resume
-# budget on self-inflicted crashes. The sweeper runs every 60s, so capping resumes per
-# pass staggers the backlog (2/min) at zero cost to the common one-orphan case.
-_RESUME_PER_SWEEP = int(os.environ.get("RESUME_PER_SWEEP", "2"))
+# budget on self-inflicted crashes. Capping resumes staggers the backlog (2/min) at zero
+# cost to the common one-orphan case.
+# LV-26 (editor audit 2026-09-24): the cap used to be a counter LOCAL to one
+# _sweep_stuck_renders call — but every GET /v1/clips/{id} poll runs a sweep too, so N
+# polling clients resumed 2N orphans at once: exactly the stampede the cap exists to
+# stop. It is now one process-wide rate limit shared by every caller (the 60s liveness
+# loop and every poll): at most _RESUME_RATE_MAX resumes per _RESUME_RATE_WINDOW_S.
+_RESUME_RATE_MAX = int(os.environ.get("RESUME_RATE_MAX",
+                                      os.environ.get("RESUME_PER_SWEEP", "2")))
+_RESUME_RATE_WINDOW_S = float(os.environ.get("RESUME_RATE_WINDOW_S", "60"))
+_resume_log: deque = deque()             # monotonic timestamps of recent resumes
+
+
+def _resume_slot_available(now: float) -> bool:
+    """True while fewer than _RESUME_RATE_MAX resumes happened in the trailing window."""
+    while _resume_log and now - _resume_log[0] >= _RESUME_RATE_WINDOW_S:
+        _resume_log.popleft()
+    return len(_resume_log) < _RESUME_RATE_MAX
 
 # LV-22 (editor audit 2026-09-24): the job watchdog failed ANY non-terminal job whose
 # stage outlived 2×RENDER_WATCHDOG_S (960s) — including jobs whose owning pipeline task
@@ -5630,7 +5646,7 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     task death, pre-finally crash) that used to leave clips spinning forever."""
     budget = max_render_s if max_render_s is not None else RENDER_WATCHDOG_S
     now = time.time()
-    resumed_this_pass = 0               # orphan-resume stampede cap (see _RESUME_PER_SWEEP)
+    mono = time.monotonic()             # the resume rate limit's clock (LV-26, process-wide)
     _touched: set[str] = set()          # jobs whose terminal state must be persisted (below)
 
     def _clip_budget(c: dict) -> float:
@@ -5714,21 +5730,22 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
             if job.get("status") != "rendering" and now - anchor > _ORPHAN_GRACE_S \
                     and not alive:
                 resumed = False
-                # Stagger the backlog: past the per-pass cap the orphan is simply left
-                # for the NEXT pass (60s) — untouched, not failed — so a post-deploy
-                # backlog drains at a pace the instance survives (see _RESUME_PER_SWEEP).
+                # Stagger the backlog: past the rate limit the orphan is simply left
+                # for a later sweep — untouched, not failed — so a post-deploy backlog
+                # drains at a pace the instance survives (see _RESUME_RATE_MAX; the
+                # limit is process-wide, so polling clients can't multiply it).
                 # Only a CAP-deferred orphan is skipped below; an orphan whose resume
                 # was ATTEMPTED and didn't take (budget exhausted, or a sync caller
                 # with no loop) falls through to the 2×budget fail — the pre-stagger
                 # semantics every existing watchdog test pins.
-                attempted = resumed_this_pass < _RESUME_PER_SWEEP
+                attempted = _resume_slot_available(mono)
                 if attempted:
                     try:
                         resumed = _try_resume_pipeline(job)
                     except RuntimeError:
                         pass                   # no running loop (sync test caller)
                 if resumed:
-                    resumed_this_pass += 1
+                    _resume_log.append(mono)
                     if job.get("job_id"): _touched.add(job["job_id"])
                     continue
                 if not attempted:

@@ -7247,8 +7247,10 @@ def test_cross_niche_reel_fallback_is_flagged_off_niche(monkeypatch):
 def test_sweep_staggers_orphan_resumes(monkeypatch):
     # Post-mortem 2026-08-22: the first liveness deploy resumed every orphan at once
     # and the stampede OOM'd the 512MiB instance, burning the whole fleet's resume
-    # budget on self-inflicted crashes. Max _RESUME_PER_SWEEP per pass; the rest are
-    # DEFERRED (untouched, never failed early) until a later pass.
+    # budget on self-inflicted crashes. Max _RESUME_RATE_MAX per window; the rest are
+    # DEFERRED (untouched, never failed early) until the window frees up.
+    # LV-26 (2026-09-24): the limit is process-wide, not per sweep call — a second
+    # sweep INSIDE the same window (e.g. the next GET poll) must not resume more.
     calls = []
 
     async def fake_auto(jid):
@@ -7267,24 +7269,30 @@ def test_sweep_staggers_orphan_resumes(monkeypatch):
         main._sweep_stuck_renders(jobs, max_render_s=1)
         await asyncio.sleep(0.01)
         first = list(calls), {k: (j["status"], j.get("resume_count")) for k, j in jobs.items()}
-        # Simulate the resumed tasks finishing before the next pass, then sweep again:
-        # the deferred third job gets its turn instead of being starved or failed.
+        # Simulate the resumed tasks finishing before the next pass.
         main._pipeline_tasks.clear()
         for j in jobs.values():
             if j["status"] == "processing" and j.get("resume_count"):
                 j["status"] = "ready"          # the two resumed runs completed
+        # Same window: the global limit still holds the deferred orphan back.
         main._sweep_stuck_renders(jobs, max_render_s=1)
         await asyncio.sleep(0.01)
-        return first, calls, jobs
-    (first_calls, first_states), all_calls, jobs = asyncio.run(run())
-    assert len(first_calls) == 0 or True  # (calls is a list; see assertions below)
+        within_window = list(calls)
+        # Window elapsed: the deferred third job gets its turn (starved/failed never).
+        for i in range(len(main._resume_log)):
+            main._resume_log[i] -= main._RESUME_RATE_WINDOW_S + 1
+        main._sweep_stuck_renders(jobs, max_render_s=1)
+        await asyncio.sleep(0.01)
+        return first, within_window, calls, jobs
+    (first_calls, first_states), within_window, all_calls, jobs = asyncio.run(run())
     resumed_first = [k for k, (s, rc) in first_states.items() if rc]
     deferred_first = [k for k, (s, rc) in first_states.items() if not rc]
-    assert len(resumed_first) == main._RESUME_PER_SWEEP, "cap must bound resumes per pass"
+    assert len(resumed_first) == main._RESUME_RATE_MAX, "cap must bound resumes per window"
     assert len(deferred_first) == 1
     d = deferred_first[0]
     assert first_states[d][0] == "processing", "deferred orphan must be untouched, never failed"
-    assert d in all_calls, "the deferred orphan is resumed on the NEXT pass"
+    assert d not in within_window, "a second sweep inside the window must not resume more"
+    assert d in all_calls, "the deferred orphan is resumed once the window frees up"
 
 
 # ---------------------------------------------------------------------------

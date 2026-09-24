@@ -722,3 +722,58 @@ def test_upsert_clip_job_sends_a_fresh_updated_at(monkeypatch):
     stamp = _dt.datetime.fromisoformat(row["updated_at"])
     assert stamp.tzinfo is not None and stamp.utcoffset() == _dt.timedelta(0)   # UTC
     assert before <= stamp <= after                      # "now", not the insert time
+
+
+# ---------------------------------------------------------------------------
+# LV-26 — the orphan-resume rate limit is process-wide, not per sweep call
+# ---------------------------------------------------------------------------
+
+def _orphans(n, prefix):
+    old = _time.time() - 3600
+    return {f"{prefix}{i}": {"job_id": f"{prefix}{i}", "status": "processing",
+                             "created_at": old, "stage_started_at": old, "clips": [],
+                             "pipeline_gen": 0, "auto_confirm": True} for i in range(n)}
+
+
+def _stub_resume_targets(monkeypatch):
+    async def fake_auto(jid):
+        pass
+    monkeypatch.setattr(main, "_run_auto_pipeline", fake_auto)
+
+    async def fake_persist(jid):
+        pass
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+
+
+def test_resume_rate_limit_is_global_across_sweep_callers(monkeypatch):
+    _stub_resume_targets(monkeypatch)
+    jobs = _orphans(5, "lv26-")
+
+    async def run():
+        for _caller in range(3):          # the liveness loop + two clients' GET polls
+            main._sweep_stuck_renders(jobs)
+            await _aio.sleep(0.01)
+        resumed_now = sum(1 for j in jobs.values() if j.get("resume_count"))
+        # One window later the backlog keeps draining at the same pace.
+        for i in range(len(main._resume_log)):
+            main._resume_log[i] -= main._RESUME_RATE_WINDOW_S + 1
+        main._sweep_stuck_renders(jobs)
+        await _aio.sleep(0.01)
+        return resumed_now, sum(1 for j in jobs.values() if j.get("resume_count"))
+    resumed_now, resumed_later = _aio.run(run())
+    assert resumed_now == main._RESUME_RATE_MAX == 2        # per-call counters allowed 5
+    assert resumed_later == 4
+    assert all(j["status"] == "processing" for j in jobs.values())   # deferred, never failed
+    for jid in jobs:
+        main._pipeline_tasks.pop(jid, None)
+
+
+def test_polling_gets_share_the_resume_budget(monkeypatch):
+    _stub_resume_targets(monkeypatch)
+    jobs = _orphans(4, "lv26g-")
+    monkeypatch.setattr(main, "_clip_jobs", jobs)            # isolate from other tests' jobs
+    for jid in list(jobs)[:3]:                               # three clients polling at once
+        assert client.get(f"/v1/clips/{jid}").status_code == 200
+    assert sum(1 for j in jobs.values() if j.get("resume_count")) == 2
+    for jid in jobs:
+        main._pipeline_tasks.pop(jid, None)
