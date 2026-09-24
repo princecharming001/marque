@@ -382,3 +382,115 @@ def test_live_ceiling_is_duration_earned_and_capped():
     words = [{"word": "w", "start_ms": 599_000, "end_ms": 600_000}]
     assert main._live_pipeline_ceiling_s({**base, "words": words}, 480) == 2760   # transcript
     assert main._live_pipeline_ceiling_s({"duration_ms": 3_600_000}, 480) == 3600  # capped
+
+
+# ---------------------------------------------------------------------------
+# LV-34 — a sub-frame filler must never produce a zero-frame drop, and a degenerate
+# drop must be repaired, not traded for the untailored safe default
+# ---------------------------------------------------------------------------
+
+from app.edl import (assemble_edl as _assemble_edl, check_edl_invariants as _check_inv,
+                     detect_disfluencies as _detect_disfluencies, strip_fillers as _strip_fillers)
+
+# Verbatim slice of the prod 5-minute take (job d300-fix-a5f9a674, words 359-367): the
+# 10ms "Um" at 115600-115610ms rounds to frame 3468 on both ends.
+_UM_SLICE = [
+    {"word": "and", "start_ms": 114550, "end_ms": 114695, "confidence": 0.99587655, "type": None},
+    {"word": "actually", "start_ms": 114695, "end_ms": 115160, "confidence": 0.9997335, "type": None},
+    {"word": "call", "start_ms": 115256, "end_ms": 115465, "confidence": 0.99967563, "type": None},
+    {"word": "them.", "start_ms": 115513, "end_ms": 115600, "confidence": 0.9907142, "type": None},
+    {"word": "Um", "start_ms": 115600, "end_ms": 115610, "confidence": 0.91404605, "type": None},
+    {"word": "Part", "start_ms": 116139, "end_ms": 116459, "confidence": 0.9962999, "type": None},
+    {"word": "3:", "start_ms": 116459, "end_ms": 116652, "confidence": 0.83016956, "type": None},
+    {"word": "Most", "start_ms": 117037, "end_ms": 117326, "confidence": 0.9890637, "type": None},
+    {"word": "fashion", "start_ms": 117342, "end_ms": 117711, "confidence": 0.9900121, "type": None},
+]
+
+
+def _degenerate(drops):
+    return [d for d in drops
+            if (d["src_out"] if isinstance(d, dict) else d.src_out)
+            <= (d["src_in"] if isinstance(d, dict) else d.src_in)]
+
+
+def test_sub_frame_filler_never_yields_a_degenerate_drop():
+    kept, drops = _strip_fillers(_UM_SLICE)
+    assert _degenerate(drops) == []                     # was [Drop(3468, 3468, 'filler')]
+    assert "Um" not in [w["word"] for w in kept]         # still removed from the captions
+
+
+def test_disfluency_detectors_never_emit_degenerate_drops():
+    words = [
+        {"word": "a", "start_ms": 72989, "end_ms": 73005},             # 16ms stutter "a a"
+        {"word": "a", "start_ms": 73020, "end_ms": 73200},
+        {"word": "plan", "start_ms": 73260, "end_ms": 73600},
+        {"word": "hmm", "start_ms": 74000, "end_ms": 74010, "confidence": 0.1},   # sub-frame garble
+        {"word": "works", "start_ms": 74100, "end_ms": 74500},
+    ]
+    for level in ("conservative", "default", "aggressive"):
+        assert _degenerate(_detect_disfluencies(words, level)) == []
+
+
+def test_assembled_real_slice_has_no_hard_drop_issue():
+    edl = _assemble_edl({}, _UM_SLICE, "talking_head", "myth-buster").model_dump()
+    assert [i for i in _check_inv(edl, _UM_SLICE) if "src_out<=src_in" in i] == []
+
+
+def test_repair_strips_degenerate_drop_and_keeps_plan():
+    edl = _assemble_edl({}, _UM_SLICE, "talking_head", "myth-buster").model_dump()
+    real_drops = list(edl["drops"])
+    edl["drops"] = real_drops + [{"src_in": 3468, "src_out": 3468, "reason": "filler"}]
+    repaired, hard = main._repair_edl_hard_issues(edl, _UM_SLICE)
+    assert hard == []
+    assert repaired["drops"] == real_drops               # only the zero-frame drop went
+
+
+def test_repair_strips_zero_length_segment_and_remaps_order():
+    edl = {"style": "talking_head", "drops": [], "overlays": [], "broll": [],
+           "segments": [{"src_in": 0, "src_out": 200}, {"src_in": 200, "src_out": 200},
+                        {"src_in": 200, "src_out": 400}],
+           "segment_order": [2, 1, 0]}
+    repaired, hard = main._repair_edl_hard_issues(edl, [])
+    assert hard == []
+    assert repaired["segments"] == [{"src_in": 0, "src_out": 200}, {"src_in": 200, "src_out": 400}]
+    assert repaired["segment_order"] == [1, 0]           # still the same playback order
+
+
+def test_repair_leaves_structural_issues_hard():
+    only = {"style": "talking_head", "drops": [], "segments": [{"src_in": 50, "src_out": 50}]}
+    assert main._repair_edl_hard_issues(only, [])[1]     # never strips the last segment
+    overlap = {"style": "talking_head", "drops": [],
+               "segments": [{"src_in": 0, "src_out": 300}, {"src_in": 100, "src_out": 400}]}
+    assert main._repair_edl_hard_issues(overlap, [])[1]  # a real overlap still → safe default
+
+
+def test_plan_author_keeps_tailored_edit_despite_degenerate_drop(monkeypatch):
+    real_assemble = main.assemble_edl
+
+    class _Dumped:
+        def __init__(self, d):
+            self._d = d
+
+        def model_dump(self):
+            return self._d
+
+    def assemble_with_degenerate_drop(*a, **k):
+        d = real_assemble(*a, **k).model_dump()
+        d["drops"] = list(d.get("drops") or []) + [
+            {"src_in": 3468, "src_out": 3468, "reason": "filler"}]
+        return _Dumped(d)
+
+    async def fake_plan(*a, **k):
+        return {"cuts": [], "keeps": [], "broll": []}      # a real (tailored) plan came back
+
+    monkeypatch.setattr(main, "ANTHROPIC_KEY", "k")
+    monkeypatch.setattr(main, "AI_QUALITY", True)
+    monkeypatch.setattr(main, "anthropic_json", fake_plan)
+    monkeypatch.setattr(main, "assemble_edl", assemble_with_degenerate_drop)
+    job = {"job_id": "lv34", "brand": {}, "edit_brief": None, "config": {},
+           "_silent_spans": None}
+    edl, llm_contributed, plan = _aio.run(main._author_edl_via_plan(
+        job, "talking_head", {"formatId": "myth-buster"}, _UM_SLICE, {}, None))
+    assert edl is not None, "a zero-frame drop must not discard the tailored edit"
+    assert llm_contributed is True and plan
+    assert _degenerate(edl["drops"]) == []

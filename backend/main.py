@@ -5995,6 +5995,54 @@ async def _log_shadow_diff(job_id: str, job: dict, legacy_edl: dict, style: str,
         logging.info("[shadow] job=%s shadow_diff_failed=%s", job_id, str(e)[:200])
 
 
+_REPAIRABLE_EDL_ISSUE = re.compile(
+    r"^(?:(overlay|broll) (\d+) window falls outside every kept segment"
+    r"|(drop|segment) (\d+) has src_out<=src_in)$")
+
+
+def _repair_edl_hard_issues(edl_data: dict, words: list[dict]) -> tuple[dict, list[str]]:
+    """Check the assembled EDL's invariants and STRIP the offenders that are local defects
+    rather than a broken edit, then re-check. Returns (edl, remaining hard issues); the
+    caller falls back to the safe default only if anything hard remains.
+
+    Repairable: an overlay/b-roll window outside every kept segment (a decoration bug —
+    nuking the tailored cut over one bad punch-in threw away the whole edit); a drop with
+    src_out<=src_in (LV-34: a zero-frame drop cuts nothing — a 10ms "Um" rounding to one
+    frame discarded a 5-minute take's entire tailored edit + b-roll for the generic
+    default); a zero-length segment when real segments remain (segment_order remapped).
+    Everything else (overlaps, out-of-bounds, bad permutation, no segments) stays hard."""
+    issues = check_edl_invariants(edl_data, words)
+    hard = [i for i in issues if "kept duration" not in i]
+    if not hard:
+        return edl_data, []
+    bad: dict[str, set[int]] = {"overlay": set(), "broll": set(), "drop": set(), "segment": set()}
+    for issue in hard:
+        m = _REPAIRABLE_EDL_ISSUE.match(issue)
+        if m:
+            kind, idx = (m.group(1), m.group(2)) if m.group(1) else (m.group(3), m.group(4))
+            bad[kind].add(int(idx))
+    segments = list(edl_data.get("segments") or [])
+    if bad["segment"] and len(bad["segment"]) >= len(segments):
+        bad["segment"] = set()           # stripping every segment is not a repair
+    if not any(bad.values()):
+        return edl_data, hard
+    repaired = dict(edl_data)
+    for key, kind in (("overlays", "overlay"), ("broll", "broll"), ("drops", "drop")):
+        if bad[kind]:
+            repaired[key] = [x for k, x in enumerate(edl_data.get(key) or []) if k not in bad[kind]]
+    if bad["segment"]:
+        keep_idx = [k for k in range(len(segments)) if k not in bad["segment"]]
+        repaired["segments"] = [segments[k] for k in keep_idx]
+        order = edl_data.get("segment_order")
+        if order is not None:
+            remap = {old: new for new, old in enumerate(keep_idx)}
+            repaired["segment_order"] = [remap[k] for k in order if k in remap]
+    logging.warning("assemble_edl repaired hard invariant issues by stripping %s",
+                    {k: sorted(v) for k, v in bad.items() if v})
+    issues = check_edl_invariants(repaired, words)
+    return repaired, [i for i in issues if "kept duration" not in i]
+
+
 async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[dict],
                                prefs: dict, emphasis_spans: list | None) -> tuple[dict | None, bool, dict]:
     """P3 authoring path: the LLM emits a typed EDIT PLAN; code assembles the EDL. The
@@ -6070,22 +6118,9 @@ async def _author_edl_via_plan(job: dict, style: str, script: dict, words: list[
     # so only HARD structural issues (overlaps, out-of-bounds, invalid perm) justify bailing
     # to the safe default — the "kept duration <3s" advisory is legitimate for a short take
     # and bailing there would only lose the assembler's brief-cut folds for nothing.
-    issues = check_edl_invariants(edl_data, words)
-    hard = [i for i in issues if "kept duration" not in i]
-    if hard and all(("overlay" in i or "broll" in i) for i in hard):
-        # A stray overlay/b-roll window is a DECORATION bug, not an edit bug —
-        # stripping the offenders keeps the tailored cut. Nuking the whole plan
-        # to the untailored safe default over one bad punch-in threw away the
-        # entire edit the creator was promised.
-        bad_ov = {int(m.group(1)) for i in hard if (m := re.match(r"overlay (\d+)", i))}
-        bad_br = {int(m.group(1)) for i in hard if (m := re.match(r"broll (\d+)", i))}
-        edl_data["overlays"] = [o for k, o in enumerate(edl_data.get("overlays") or [])
-                                if k not in bad_ov]
-        edl_data["broll"] = [b for k, b in enumerate(edl_data.get("broll") or [])
-                             if k not in bad_br]
-        logging.warning("assemble_edl stripped %d incoherent overlay/broll windows", len(hard))
-        issues = check_edl_invariants(edl_data, words)
-        hard = [i for i in issues if "kept duration" not in i]
+    # Repairable offenders (stray overlay/b-roll windows, zero-frame drops, a zero-length
+    # segment beside real ones) are stripped first — see _repair_edl_hard_issues.
+    edl_data, hard = _repair_edl_hard_issues(edl_data, words)
     if hard:
         logging.warning("assemble_edl hard invariant issues %s → safe default", hard[:4])
         return None, llm_contributed, plan
