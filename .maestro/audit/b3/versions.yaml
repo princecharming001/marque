@@ -1,0 +1,17 @@
+appId: com.getmarque.app
+name: B3 versions — save an edit (new version), preview the original, restore it
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+- tapOn: { id: "editorPro.root.edit" }
+- tapOn: { id: "editorPro.ctx.delete" }
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 60000 }
+- scrollUntilVisible: { element: { id: "clip.versions" }, direction: DOWN, timeout: 30000 }
+- tapOn: { id: "clip.versions" }
+- takeScreenshot: ${OUT}/${TAG}-1-versions
+- tapOn: { id: "versions.preview.*", index: 0 }   # row 0 = the newest non-current version
+- takeScreenshot: ${OUT}/${TAG}-2-preview
+- tapOn: { id: "versions.previewRestore" }
+- waitForAnimationToEnd: { timeout: 3000 }
+- takeScreenshot: ${OUT}/${TAG}-3-restored

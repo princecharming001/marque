@@ -1,0 +1,27 @@
+appId: com.getmarque.app
+name: B3 subflow — clean launch on a demo-src job → Library → clip → Edit manually
+# env: JOB (demo-src-<secs>-<tag>), SECS, OUT, TAG, CLEAR (true|false)
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: ${JOB}
+      demoClipSeconds: ${SECS}
+      backend.url: "http://127.0.0.1:8001"
+    permissions:
+      all: allow
+# The walkthrough card can land a beat after launch and is modal (it hides the tab bar
+# from the accessibility tree), so wait for it before skipping.
+- extendedWaitUntil: { visible: { id: "tour.skip" }, timeout: 10000, optional: true }
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Library", timeout: 30000 }
+- tapOn: "Library"
+- waitForAnimationToEnd: { timeout: 2000 }
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- scrollUntilVisible: { element: { id: "clip.editManual" }, direction: DOWN, timeout: 10000 }
+- tapOn: { id: "clip.editManual" }
+- extendedWaitUntil: { visible: { id: "editorPro.playPause" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-0-open

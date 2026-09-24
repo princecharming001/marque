@@ -1,0 +1,31 @@
+appId: com.getmarque.app
+name: B3 tweak chat — open from clip detail, send a starter chip, get a reply, apply
+# env: JOB, SECS, OUT, TAG
+---
+- launchApp:
+    clearState: true
+    stopApp: true
+    arguments:
+      demoClip: 1
+      demoClipJob: ${JOB}
+      demoClipSeconds: ${SECS}
+      backend.url: "http://127.0.0.1:8001"
+    permissions:
+      all: allow
+- extendedWaitUntil: { visible: { id: "tour.skip" }, timeout: 10000, optional: true }
+- tapOn: { id: "tour.skip", optional: true }
+- extendedWaitUntil: { visible: "Library", timeout: 30000 }
+- tapOn: "Library"
+- tapOn: { id: "library.clip", index: 0 }
+- waitForAnimationToEnd: { timeout: 2500 }
+- tapOn: { id: "clip.tweakAffordance" }
+- extendedWaitUntil: { visible: { id: "tweak.input" }, timeout: 15000 }
+- tapOn: { id: "tweak.input" }
+- inputText: "make the captions bigger"
+- tapOn: { id: "tweak.send" }
+# With a real renderer the chat shows a preview + Apply (tweak.apply); the keyless backend
+# can't render a preview, so the app applies directly — either way the turn must end on the
+# "new cut is live" confirmation.
+- tapOn: { id: "tweak.apply", optional: true }
+- extendedWaitUntil: { visible: ".*new cut is live.*", timeout: 90000 }
+- takeScreenshot: ${OUT}/${TAG}-1-applied

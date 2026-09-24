@@ -1,0 +1,53 @@
+appId: com.getmarque.app
+name: UI capture — the editor surfaces this audit changed (same steps on the before and after builds)
+# env: JOB, SECS, OUT, TAG. Every step past open is optional so the pre-fix build walks the same path.
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+# 1) "fit" zoom (ED-12): the zoom button cycles close → fit → default.
+- tapOn: { id: "editorPro.zoomCycle", optional: true }
+- tapOn: { id: "editorPro.zoomCycle", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-1-fit
+- tapOn: { id: "editorPro.zoomCycle", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+# 2) A selected clip: trim handles + the zoom button's new home (F2).
+- tapOn: { id: "editorPro.root.edit", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-2-clip
+# 3) Speed row (F3: fits the SE).
+- tapOn: { id: "editorPro.ctx.speed", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3-speed
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# 4) Caption row dialog (autofocus; the list shows the document's words).
+- tapOn: { id: "editorPro.root.captions", optional: true }
+- tapOn: { id: "editorPro.editCaptions", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-4a-caption-list
+- tapOn: { id: "editorPro.captionRow.*", index: 1, optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-4b-caption-dialog
+- tapOn: { id: "dialog.cancel", optional: true }
+- tapOn: { id: "editorPro.captionList.done", optional: true }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# 5) Text sticker → Style (ED-6: the colours/background the server accepts).
+- tapOn: { id: "editorPro.root.text", optional: true }
+- tapOn: { id: "editorPro.addSticker", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "dialog.input", optional: true }   # the pre-fix field isn't focused (4b shows that)
+- inputText: "day one"
+- tapOn: { id: "dialog.add", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.sticker.style", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-5-sticker-style
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# 6) Theme with unsaved edits (ED-3: ask before a theme replaces them).
+- tapOn: { id: "editorPro.root.filters", optional: true }
+- tapOn: { id: "editorPro.themeButton", optional: true }
+- waitForAnimationToEnd: { timeout: 1500 }
+- tapOn: { id: "editorPro.theme.*", index: 1, optional: true }
+- waitForAnimationToEnd: { timeout: 2000 }
+- takeScreenshot: ${OUT}/${TAG}-6-theme

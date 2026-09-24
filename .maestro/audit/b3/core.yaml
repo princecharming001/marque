@@ -1,0 +1,71 @@
+appId: com.getmarque.app
+name: B3 core — open → trim → edit caption → swap b-roll → undo → save → export (short + long)
+# env: JOB, SECS, OUT, TAG   e.g. -e JOB=demo-src-60-b3a -e SECS=60 / -e JOB=demo-src-600-b3b -e SECS=600
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+# 1) Trim: select the clip under the playhead, drag its LEFT trim handle right (the clip's
+#    right edge is off-screen at default zoom on every phone for a 20s first segment).
+- tapOn: { id: "editorPro.root.edit" }
+- extendedWaitUntil: { visible: { id: "editorPro.trimHandle.left" }, timeout: 8000 }
+- swipe: { from: { id: "editorPro.trimHandle.left" }, direction: RIGHT, duration: 700 }
+- waitForAnimationToEnd: { timeout: 1500 }
+- assertVisible: { id: "editorPro.save", text: "Render" }
+- takeScreenshot: ${OUT}/${TAG}-1-trimmed
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# One run (of 8) needed a second Back here; 6/6 single taps popped in a dedicated probe.
+# Retry once rather than fail the whole journey on it (tracked as a watch item).
+- runFlow:
+    when: { notVisible: { id: "editorPro.root.captions" } }
+    commands:
+      - tapOn: { id: "editorPro.ctx.back", optional: true }
+# 2) Edit a caption word from the captions list.
+- tapOn: { id: "editorPro.root.captions" }
+- tapOn: { id: "editorPro.editCaptions" }
+- tapOn: { id: "editorPro.captionRow.*", index: 1 }   # row 0 is the phrase the trim just cut
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 8000 }
+- tapOn: { id: "dialog.input" }
+- eraseText: 80
+- inputText: "Most people plan less"
+- tapOn: { id: "dialog.save" }
+- assertVisible: "Most people plan less"
+- tapOn: { id: "editorPro.captionList.done" }
+- takeScreenshot: ${OUT}/${TAG}-2-caption
+# 3) Swap the b-roll: fit the timeline, select the first roll, Replace → Stock.
+- tapOn: { id: "editorPro.ctx.back", optional: true }
+# zoomCycle goes close → fit → default; two taps = "fit" (ED-12: the whole cut is visible).
+- tapOn: { id: "editorPro.zoomCycle" }
+- tapOn: { id: "editorPro.zoomCycle" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- takeScreenshot: ${OUT}/${TAG}-3a-fit
+- tapOn: { id: "editorPro.roll.0" }
+- extendedWaitUntil: { visible: { id: "editorPro.ctx.replace" }, timeout: 8000 }
+- tapOn: { id: "editorPro.ctx.replace" }
+- extendedWaitUntil: { visible: { id: "editorPro.mediaPanel" }, timeout: 8000 }
+- tapOn: { id: "editorPro.media.stock" }
+- extendedWaitUntil: { visible: { id: "dialog.input" }, timeout: 8000 }
+- inputText: "city skyline"
+- tapOn: { id: "dialog.add" }
+- waitForAnimationToEnd: { timeout: 1500 }
+# The selected roll's name trails the Replace/Duplicate/… tiles; on SE it sits past the
+# screen edge, so scroll the tool bar before asserting it (a no-op where it already fits).
+- swipe: { from: { id: "editorPro.ctx.replace" }, direction: LEFT, duration: 500 }
+- assertVisible: "city skyline"
+- takeScreenshot: ${OUT}/${TAG}-3-broll
+# 4) Undo the swap.
+- tapOn: { id: "editorPro.undo" }
+- assertNotVisible: "city skyline"
+- takeScreenshot: ${OUT}/${TAG}-4-undo
+# 5) Save (a cut → Render) → back on the clip detail.
+- tapOn: { id: "editorPro.save" }
+- extendedWaitUntil: { visible: { id: "clip.editManual" }, timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-5-saved
+# Wait for the re-render to land (Post now appears only on a ready clip): tapping Share
+# mid-render races the layout shift when the pipeline card collapses.
+- extendedWaitUntil: { visible: { id: "clip.postNow" }, timeout: 120000 }
+# 6) Export: Share hands off the edited video as a FILE to the system sheet.
+# centerElement: on Pro Max the ready card's Share row can sit under the pinned Schedule /
+# Post now footer; Maestro counts it "visible" there and the tap lands on Post now.
+- scrollUntilVisible: { element: { id: "clip.share" }, direction: DOWN, timeout: 10000, centerElement: true }
+- tapOn: { id: "clip.share" }
+- extendedWaitUntil: { visible: ".*(Save Video|Save to Files|Copy|AirDrop).*", timeout: 60000 }
+- takeScreenshot: ${OUT}/${TAG}-6-share

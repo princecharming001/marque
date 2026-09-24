@@ -1,0 +1,13 @@
+appId: com.getmarque.app
+name: B3 relaunch — an unsaved edit survives killing the app mid-edit
+# env: JOB, SECS, OUT, TAG
+---
+- runFlow: { file: open.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}" } }
+- tapOn: { id: "editorPro.quickSplit" }
+- waitForAnimationToEnd: { timeout: 1500 }
+- assertVisible: { id: "editorPro.undo", enabled: true }
+- takeScreenshot: ${OUT}/${TAG}-1-edited
+# Kill + relaunch WITHOUT clearing state, reopen the same clip's editor.
+- runFlow: { file: reopen.yaml, env: { JOB: "${JOB}", SECS: "${SECS}", OUT: "${OUT}", TAG: "${TAG}-relaunched" } }
+- assertVisible: { id: "editorPro.undo", enabled: true }
+- takeScreenshot: ${OUT}/${TAG}-2-restored
