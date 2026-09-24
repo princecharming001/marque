@@ -88,18 +88,23 @@ struct ProEditorView: View {
     @State var showCaptionCustomize = false
     @State var showFilterAdvanced = false
     // FP1: canvas gestures — live drafts for caption drag/pinch + sticker drag/pinch.
-    @State var capDragY: Double? = nil
-    @State var capPinch: Double? = nil
+    // ED-8: every transient gesture visual is @GestureState, which the system resets when a
+    // gesture ends OR is CANCELLED (scroll steal, incoming call, system edge swipe). The old
+    // @State copies were cleared only in onEnded, so a cancelled gesture stranded the canvas
+    // mid-drag. Commits recompute from the gesture's final value in onEnded; side effects
+    // live in body-level .onChange (the reorder-lift pattern in EditorTimeline).
+    @GestureState var capDragY: Double? = nil
+    @GestureState var capPinch: Double? = nil
     // v6 direct manipulation of a b-roll inset on the canvas: tap selects, drag moves,
     // pinch resizes; the live rect (normalized) previews until the gesture commits.
     @State var selectedRoll: Int? = nil
-    @State var rollLiveRect: CGRect? = nil
-    @State var stickerDrag: (idx: Int, x: Double, y: Double)? = nil
-    @State var stickerPinch: (idx: Int, scale: Double)? = nil
+    @GestureState var rollLiveRect: CGRect? = nil
+    @GestureState var stickerDrag: (idx: Int, x: Double, y: Double)? = nil
+    @GestureState var stickerPinch: (idx: Int, scale: Double)? = nil
     // FP1b: the VIDEO itself is canvas-interactable — tap selects the clip under the
     // playhead, drag repositions it, pinch zooms it (CapCut preview transform).
-    @State var videoDrag: (seg: Int, x: Double, y: Double)? = nil
-    @State var videoPinch: (seg: Int, scale: Double)? = nil
+    @GestureState var videoDrag: (seg: Int, x: Double, y: Double)? = nil
+    @GestureState var videoPinch: (seg: Int, scale: Double)? = nil
     // FP1c: media rolls — selection, the add-media panel, photo/video import.
     @State var selectedBroll: Int? = nil
     @State var showMediaPanel = false
@@ -225,6 +230,11 @@ struct ProEditorView: View {
         // R10: keyboard-first text commits when the on-canvas field loses focus.
         .onChange(of: stickerFieldFocused) { _, focused in
             if !focused, let idx = typingSticker { commitTyping(idx) }
+        }
+        // ED-8: dragging an unselected sticker selects it — a side effect, so it hangs off
+        // the auto-resetting gesture state here instead of running inside the gesture.
+        .onChange(of: stickerDrag?.idx) { _, idx in
+            if let idx, selectedOverlay != idx { select(.overlay(idx)) }
         }
         .onAppear { lifetime.visible = true }
         .onDisappear {
@@ -1170,31 +1180,36 @@ struct ProEditorView: View {
     /// Drag the selected clip around the canvas → one set_segment_transform op.
     private func videoCanvasDrag(_ size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 4)
-            .onChanged { g in
-                guard let idx = clipUnderPlayhead, selectedSeg == idx,
-                      let seg = session?.draft.segments[safe: idx] else { return }
-                videoDrag = (idx,
-                             min(0.5, max(-0.5, seg.txX + g.translation.width / max(1, size.width))),
-                             min(0.5, max(-0.5, seg.txY + g.translation.height / max(1, size.height))))
+            .updating($videoDrag) { g, live, _ in live = videoDragTarget(g.translation, in: size) }
+            .onEnded { g in
+                if let d = videoDragTarget(g.translation, in: size) {
+                    commitVideoTransform(d.seg, offX: d.x, offY: d.y); bumpHaptic()
+                }
             }
-            .onEnded { _ in
-                if let d = videoDrag { commitVideoTransform(d.seg, offX: d.x, offY: d.y); bumpHaptic() }
-                videoDrag = nil
-            }
+    }
+
+    /// Where a canvas drag puts the playhead clip — nil unless that clip is selected.
+    private func videoDragTarget(_ t: CGSize, in size: CGSize) -> (seg: Int, x: Double, y: Double)? {
+        guard let idx = clipUnderPlayhead, selectedSeg == idx,
+              let seg = session?.draft.segments[safe: idx] else { return nil }
+        return (idx,
+                min(0.5, max(-0.5, seg.txX + t.width / max(1, size.width))),
+                min(0.5, max(-0.5, seg.txY + t.height / max(1, size.height))))
     }
 
     /// Pinch the selected clip to zoom it → one set_segment_transform op.
     private func videoCanvasPinch() -> some Gesture {
         MagnificationGesture()
-            .onChanged { v in
-                guard let idx = clipUnderPlayhead, selectedSeg == idx,
-                      let seg = session?.draft.segments[safe: idx] else { return }
-                videoPinch = (idx, min(3.0, max(0.5, seg.txScale * v)))
+            .updating($videoPinch) { v, live, _ in live = videoPinchTarget(v) }
+            .onEnded { v in
+                if let p = videoPinchTarget(v) { commitVideoTransform(p.seg, scale: p.scale); bumpHaptic() }
             }
-            .onEnded { _ in
-                if let p = videoPinch { commitVideoTransform(p.seg, scale: p.scale); bumpHaptic() }
-                videoPinch = nil
-            }
+    }
+
+    private func videoPinchTarget(_ v: CGFloat) -> (seg: Int, scale: Double)? {
+        guard let idx = clipUnderPlayhead, selectedSeg == idx,
+              let seg = session?.draft.segments[safe: idx] else { return nil }
+        return (idx, min(3.0, max(0.5, seg.txScale * v)))
     }
 
     private var timeReadout: String {
@@ -1481,34 +1496,32 @@ struct ProEditorView: View {
                         .accessibilityIdentifier("editorPro.rollSim")
                     if selected {
                         interactive
+                            // Translation is total-from-gesture-start, so it applies to the
+                            // COMMITTED base rect, never the live one.
                             .highPriorityGesture(DragGesture(minimumDistance: 3)
-                                .onChanged { g in
-                                    // Translation is total-from-gesture-start, so apply it
-                                    // to the COMMITTED base rect, never the live one.
-                                    let start = Self.normRect(baseRect, in: geo.size)
-                                    var r = start
-                                    r.origin.x = min(1 - r.width, max(0, start.minX + g.translation.width / max(1, geo.size.width)))
-                                    r.origin.y = min(1 - r.height, max(0, start.minY + g.translation.height / max(1, geo.size.height)))
-                                    rollLiveRect = r
+                                .updating($rollLiveRect) { g, live, _ in
+                                    live = Self.rollMoved(Self.normRect(baseRect, in: geo.size),
+                                                          by: g.translation, in: geo.size)
                                 }
-                                .onEnded { _ in commitRollRect(idx) })
+                                .onEnded { g in
+                                    commitRollRect(idx, Self.rollMoved(Self.normRect(baseRect, in: geo.size),
+                                                                       by: g.translation, in: geo.size))
+                                })
                             .simultaneousGesture(MagnificationGesture()
-                                .onChanged { v in
-                                    let start = Self.normRect(baseRect, in: geo.size)
-                                    let w = min(1.0, max(0.15, start.width * v))
-                                    let h = min(1.0, max(0.1, start.height * v))
-                                    let cx = start.midX, cy = start.midY
-                                    rollLiveRect = CGRect(x: min(1 - w, max(0, cx - w / 2)),
-                                                          y: min(1 - h, max(0, cy - h / 2)),
-                                                          width: w, height: h)
+                                .updating($rollLiveRect) { v, live, _ in
+                                    live = Self.rollScaled(Self.normRect(baseRect, in: geo.size), by: v)
                                 }
-                                .onEnded { _ in commitRollRect(idx) })
+                                .onEnded { v in
+                                    commitRollRect(idx, Self.rollScaled(Self.normRect(baseRect, in: geo.size), by: v))
+                                })
                     } else {
                         interactive
                     }
                 }
+                // (The live rect needs no reset here: a gesture on a view that leaves the
+                // hierarchy is cancelled, and @GestureState resets itself.)
                 .onChange(of: f >= roll.srcOut || f < roll.srcIn) { _, gone in
-                    if gone { selectedRoll = nil; rollLiveRect = nil }
+                    if gone { selectedRoll = nil }
                 }
             }
         }
@@ -1519,10 +1532,25 @@ struct ProEditorView: View {
                width: r.width / max(1, size.width), height: r.height / max(1, size.height))
     }
 
-    private func commitRollRect(_ idx: Int) {
-        guard let r = rollLiveRect else { return }
+    /// A roll dragged by `t` (points), kept inside the frame (normalized rect).
+    private static func rollMoved(_ start: CGRect, by t: CGSize, in size: CGSize) -> CGRect {
+        var r = start
+        r.origin.x = min(1 - r.width, max(0, start.minX + t.width / max(1, size.width)))
+        r.origin.y = min(1 - r.height, max(0, start.minY + t.height / max(1, size.height)))
+        return r
+    }
+
+    /// A roll pinched by `v` about its center, kept inside the frame (normalized rect).
+    private static func rollScaled(_ start: CGRect, by v: CGFloat) -> CGRect {
+        let w = min(1.0, max(0.15, start.width * v))
+        let h = min(1.0, max(0.1, start.height * v))
+        return CGRect(x: min(1 - w, max(0, start.midX - w / 2)),
+                      y: min(1 - h, max(0, start.midY - h / 2)),
+                      width: w, height: h)
+    }
+
+    private func commitRollRect(_ idx: Int, _ r: CGRect) {
         mutate([.brollRect(index: idx, x: r.minX, y: r.minY, w: r.width, h: r.height)])
-        rollLiveRect = nil
         bumpHaptic()
     }
 
@@ -1621,25 +1649,18 @@ struct ProEditorView: View {
         .shadow(radius: o.bg == "box" ? 0 : 3)
         .rotationEffect(.degrees(o.rotation))
         .position(x: liveX * geo.width, y: liveY * geo.height)
+        // (Dragging an unselected sticker selects it via the body-level onChange.)
         .highPriorityGestureIf(!typing,
             DragGesture(minimumDistance: 2)
-                .onChanged { g in
-                    stickerDrag = (idx,
-                                   min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, o.posX + g.translation.width / max(1, geo.width))),
-                                   min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, o.posY + g.translation.height / max(1, geo.height))))
-                    if selectedOverlay != idx { select(.overlay(idx)) }
-                }
-                .onEnded { _ in
-                    if let s = stickerDrag, s.idx == idx { commitStickerMove(idx, x: s.x, y: s.y) }
-                    stickerDrag = nil
+                .updating($stickerDrag) { g, live, _ in live = Self.stickerMoved(idx, o, by: g.translation, in: geo) }
+                .onEnded { g in
+                    let s = Self.stickerMoved(idx, o, by: g.translation, in: geo)
+                    commitStickerMove(idx, x: s.x, y: s.y)
                 })
         .simultaneousGestureIf(!typing,
             MagnificationGesture()
-                .onChanged { v in stickerPinch = (idx, min(3.0, max(0.4, o.scale * v))) }
-                .onEnded { _ in
-                    if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
-                    stickerPinch = nil
-                })
+                .updating($stickerPinch) { v, live, _ in live = (idx, min(3.0, max(0.4, o.scale * v))) }
+                .onEnded { v in commitStickerScale(idx, scale: min(3.0, max(0.4, o.scale * v))) })
         .onTapGesture {
             if typing { return }
             select(selectedOverlay == idx ? nil : .overlay(idx))
@@ -1650,6 +1671,14 @@ struct ProEditorView: View {
         // own identifier.
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.sticker.\(idx)")
+    }
+
+    /// A sticker dragged by `t` (points), clamped to the safe band (normalized position).
+    private static func stickerMoved(_ idx: Int, _ o: EditorOverlay, by t: CGSize,
+                                     in geo: CGSize) -> (idx: Int, x: Double, y: Double) {
+        (idx,
+         min(LayoutConstants.stickerPosXMax, max(LayoutConstants.stickerPosXMin, o.posX + t.width / max(1, geo.width))),
+         min(LayoutConstants.stickerPosYMax, max(LayoutConstants.stickerPosYMin, o.posY + t.height / max(1, geo.height))))
     }
 
     /// The four corner controls on a selected sticker (CapCut/TikTok selection box).
@@ -1690,15 +1719,14 @@ struct ProEditorView: View {
             .contentShape(Rectangle().inset(by: -10))
             .highPriorityGesture(
                 DragGesture()
-                    .onChanged { g in
-                        let delta = (g.translation.width + g.translation.height) / 200.0
-                        stickerPinch = (idx, min(3.0, max(0.4, o.scale + delta)))
-                    }
-                    .onEnded { _ in
-                        if let p = stickerPinch, p.idx == idx { commitStickerScale(idx, scale: p.scale) }
-                        stickerPinch = nil
-                    })
+                    .updating($stickerPinch) { g, live, _ in live = (idx, Self.gripScale(o.scale, g.translation)) }
+                    .onEnded { g in commitStickerScale(idx, scale: Self.gripScale(o.scale, g.translation)) })
             .accessibilityIdentifier("editorPro.sticker.\(idx).resize")
+    }
+
+    /// Grip drag distance → sticker scale (down-right grows, up-left shrinks).
+    private static func gripScale(_ base: Double, _ t: CGSize) -> Double {
+        min(3.0, max(0.4, base + (t.width + t.height) / 200.0))
     }
 
     // MARK: caption + punch-in local sim (L1 fidelity)
@@ -1793,26 +1821,21 @@ struct ProEditorView: View {
                 .position(x: geo.size.width / 2, y: effY * geo.size.height)
                 .highPriorityGesture(
                     DragGesture(minimumDistance: 3)
-                        .onChanged { g in
-                            let start = o.posY ?? discreteCaptionY(o.position)
-                            var y = start + g.translation.height / max(1, geo.size.height)
-                            // Snap to the three anchors (Edits' guide-line behavior).
-                            for anchor in LayoutConstants.captionAnchorY.values where abs(y - anchor) < 0.025 { y = anchor }
-                            capDragY = min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, y))
+                        .updating($capDragY) { g, live, _ in
+                            live = Self.captionDragY(from: o.posY ?? discreteCaptionY(o.position),
+                                                     dy: g.translation.height, height: geo.size.height)
                         }
-                        .onEnded { _ in
-                            if let y = capDragY { commitCaptionPosY(y); bumpHaptic() }
-                            capDragY = nil
+                        .onEnded { g in
+                            commitCaptionPosY(Self.captionDragY(from: o.posY ?? discreteCaptionY(o.position),
+                                                                dy: g.translation.height, height: geo.size.height))
+                            bumpHaptic()
                         })
                 .simultaneousGesture(
                     MagnificationGesture()
-                        .onChanged { v in
-                            let start = o.scale ?? discreteMult
-                            capPinch = min(2.0, max(0.5, start * v))
-                        }
-                        .onEnded { _ in
-                            if let s = capPinch { commitCaptionScale(s); bumpHaptic() }
-                            capPinch = nil
+                        .updating($capPinch) { v, live, _ in live = min(2.0, max(0.5, (o.scale ?? discreteMult) * v)) }
+                        .onEnded { v in
+                            commitCaptionScale(min(2.0, max(0.5, (o.scale ?? discreteMult) * v)))
+                            bumpHaptic()
                         })
                 // Guide line while snapped to an anchor (yellow safe-zone line, Edits-style)
                 .overlay {
@@ -1825,6 +1848,14 @@ struct ProEditorView: View {
                 }
             }
         }
+    }
+
+    /// A caption drag's landing Y: start + drag, snapped to the three anchors (Edits'
+    /// guide-line behavior), clamped to the safe band.
+    static func captionDragY(from start: Double, dy: CGFloat, height: CGFloat) -> Double {
+        var y = start + Double(dy / max(1, height))
+        for anchor in LayoutConstants.captionAnchorY.values where abs(y - anchor) < 0.025 { y = anchor }
+        return min(LayoutConstants.captionPosYMax, max(LayoutConstants.captionPosYMin, y))
     }
 
     /// L1 approximations of the render fonts (Inter / Archivo Black / Baloo 2 /

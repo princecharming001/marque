@@ -53,7 +53,11 @@ struct EditorTimeline: View {
     var onMoveRoll: (Int, Int) -> Void = { _, _ in }   // build 54: drag a selected roll in time
     var showVoice: Bool = true                // R10: collapse the voice lane when idle
 
-    @State private var dragBaseOffset: CGFloat?
+    // ED-8: the scrub anchor (playhead time + finger offset when anchored) is @GestureState —
+    // a CANCELLED scrub used to leave the old @State anchor behind, so the next scrub jumped
+    // to a stale position. Same for the roll-move offset and the trim rubber-band below.
+    struct ScrubAnchor: Equatable { var time: Double; var dx0: CGFloat }
+    @GestureState private var dragBaseOffset: ScrubAnchor? = nil
     // Build 54: pinch zoom anchors to the scale at GESTURE START (the old per-tick ratio
     // compounded rounding and dropped ticks); non-nil also means "a pinch is live", which
     // suppresses the one-finger scrub so two fingers never scrub-fight the zoom.
@@ -69,10 +73,11 @@ struct EditorTimeline: View {
     struct ReorderDragState: Equatable { var segIdx: Int; var translation: CGFloat }
     @GestureState private var reorderDrag: ReorderDragState? = nil
     // Build 54: a SELECTED roll drags horizontally to move its whole window in time.
-    @State private var rollDrag: (idx: Int, dx: CGFloat)? = nil
+    @GestureState private var rollDrag: (idx: Int, dx: CGFloat)? = nil
     // Live trim rubber-band: the in-flight drag's effect, applied to the selected cell's
     // width + a floating duration badge, committed as ONE op on release.
-    @State private var trimPreview: (segIdx: Int, edge: TrimEdge, deltaFrames: Int)?
+    struct TrimPreviewState: Equatable { var segIdx: Int; var edge: TrimEdge; var deltaFrames: Int }
+    @GestureState private var trimPreview: TrimPreviewState? = nil
     // Scrub snapping: haptic tick when the playhead locks onto a clip boundary.
     @State private var snapTick = 0
     @State private var lastSnapIndex: Int? = nil
@@ -180,6 +185,15 @@ struct EditorTimeline: View {
             // Reorder-lift side effects, keyed off the auto-resetting gesture state.
             .onChange(of: reorderDrag?.segIdx) { _, seg in
                 if seg != nil { snapTick += 1; player?.pause() }
+            }
+            // ED-8: scrub start pauses playback; scrub end OR cancel clears the snap latch.
+            .onChange(of: dragBaseOffset == nil) { _, idle in
+                if idle { lastSnapIndex = nil } else if let player { player.pause() }
+            }
+            // ED-8: a trim drag that ends OR is cancelled snaps the picture back from the
+            // trim-edge preview to the composition playhead.
+            .onChange(of: trimPreview == nil) { _, idle in
+                if idle, let p = player { p.seek(toOutput: p.currentOutputTime) }
             }
         }
     }
@@ -532,9 +546,8 @@ struct EditorTimeline: View {
     /// Build 54: horizontal drag on a selected roll = move the window (both edges) in time.
     private func rollMoveGesture(idx: Int) -> some Gesture {
         DragGesture(minimumDistance: 4)
-            .onChanged { g in rollDrag = (idx, g.translation.width) }
+            .updating($rollDrag) { g, live, _ in live = (idx, g.translation.width) }
             .onEnded { g in
-                rollDrag = nil
                 let delta = secondsToFrame(Double(g.translation.width / pointsPerSecond))
                 if delta != 0 { onMoveRoll(idx, delta) }
             }
@@ -668,24 +681,26 @@ struct EditorTimeline: View {
             .contentShape(Rectangle().inset(by: -14))     // 44pt-ish hit target
             .highPriorityGesture(
                 DragGesture()
-                    .onChanged { g in
+                    .updating($trimPreview) { g, live, _ in
                         // Live rubber-band: the cell resizes + shows its new duration as you
                         // drag; nothing commits until release.
-                        let deltaFrames = secondsToFrame(Double(g.translation.width / pointsPerSecond))
-                        trimPreview = (segIdx, edge, deltaFrames)
+                        live = TrimPreviewState(segIdx: segIdx, edge: edge,
+                                                deltaFrames: secondsToFrame(Double(g.translation.width / pointsPerSecond)))
+                    }
+                    .onChanged { g in
                         // UX-5: the PICTURE follows the trim edge (independent of the playhead)
                         // so you see the exact frame you're cutting on — the trim feedback for
                         // talking-head content.
+                        let deltaFrames = secondsToFrame(Double(g.translation.width / pointsPerSecond))
                         let candidate = edge == .leading ? srcIn + deltaFrames : srcOut + deltaFrames
                         player?.previewSourceSeconds(framesToSeconds(max(0, candidate)))
                     }
                     .onEnded { g in
-                        trimPreview = nil
                         let deltaFrames = secondsToFrame(Double(g.translation.width / pointsPerSecond))
                         let newFrame = edge == .leading ? srcIn + deltaFrames : srcOut + deltaFrames
                         onTrim(segIdx, edge, newFrame)
-                        // Snap the picture back to the composition playhead.
-                        if let p = player { p.seek(toOutput: p.currentOutputTime) }
+                        // (The picture snaps back to the playhead in the body-level onChange,
+                        // which also covers a cancelled drag.)
                     }
             )
             .accessibilityIdentifier("editorPro.trimHandle.\(edge == .leading ? "left" : "right")")
@@ -754,7 +769,8 @@ struct EditorTimeline: View {
     private var zoomGesture: some Gesture {
         MagnificationGesture()
             .onChanged { v in
-                if pinchBasePPS == nil { pinchBasePPS = pointsPerSecond; dragBaseOffset = nil }
+                // (A scrub in flight re-anchors itself while the pinch is live — see scrubGesture.)
+                if pinchBasePPS == nil { pinchBasePPS = pointsPerSecond }
                 pointsPerSecond = max(6, min(110, (pinchBasePPS ?? pointsPerSecond) * v))
             }
             .onEnded { _ in pinchBasePPS = nil }
@@ -762,12 +778,19 @@ struct EditorTimeline: View {
 
     private func scrubGesture(mid: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 6)
+            .updating($dragBaseOffset) { g, anchor, _ in
+                // Anchor at the first event — and keep re-anchoring while a pinch owns the
+                // touches, so the scrub resumes from wherever the zoom left the playhead.
+                if anchor == nil || pinchBasePPS != nil {
+                    anchor = ScrubAnchor(time: player?.currentOutputTime ?? 0, dx0: g.translation.width)
+                }
+            }
             .onChanged { g in
                 guard pinchBasePPS == nil, let player else { return }   // a live pinch owns the touches
-                if dragBaseOffset == nil { dragBaseOffset = CGFloat(player.currentOutputTime) * pointsPerSecond; player.pause() }
-                let base = dragBaseOffset ?? 0
-                let newOffset = base - g.translation.width
-                var target = Double(newOffset / pointsPerSecond)
+                // The first event may still read the pre-update anchor; anchoring at the live
+                // playhead is exactly what the updating closure computes, so fall back to it.
+                let anchor = dragBaseOffset ?? ScrubAnchor(time: player.currentOutputTime, dx0: g.translation.width)
+                var target = anchor.time - Double((g.translation.width - anchor.dx0) / pointsPerSecond)
                 // Magnetic boundaries: within ~8pt of a cut point the playhead locks on,
                 // with a selection tick the first time it engages (CapCut behavior — makes
                 // split/trim at exact cut points effortless).
@@ -781,7 +804,7 @@ struct EditorTimeline: View {
                 }
                 player.seek(toOutput: target)
             }
-            .onEnded { _ in dragBaseOffset = nil; lastSnapIndex = nil }
+            .onEnded { _ in lastSnapIndex = nil }
     }
 }
 
