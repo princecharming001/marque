@@ -579,15 +579,19 @@ struct ProEditorView: View {
     }
 
     /// Filters tools: the Theme sheet (one-tap coherent look — captions+grade+music) plus an
-    /// "Advanced" toggle that reveals the manual Adjust knobs. Keeps the idle Filters tab tidy.
+    /// "Advanced" chip that opens the manual Adjust knobs. Keeps the idle Filters tab tidy.
     private var filterToolsRow: some View {
         HStack(spacing: Space.sm) {
             if !themes.isEmpty {
                 optChip("Theme", active: !activeThemeId.isEmpty) { showThemeSheet = true }
                     .accessibilityIdentifier("editorPro.themeButton")
             }
-            optChip("Advanced", active: showFilterAdvanced) {
-                withAnimation(.easeOut(duration: 0.15)) { showFilterAdvanced.toggle() }
+            // ED-16: it toggled a flag nothing read. "Advanced" = the manual knobs, which live
+            // on the Look panel's Adjust tab since build 69 — take the user there.
+            optChip("Advanced", active: lookTab == 1) {
+                showFilterAdvanced = true
+                withAnimation(.easeOut(duration: 0.15)) { lookTab = 1 }
+                bumpHaptic()
             }
             .accessibilityIdentifier("editorPro.filterAdvanced")
             Spacer(minLength: 0)
