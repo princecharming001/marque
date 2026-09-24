@@ -552,6 +552,10 @@ struct EditorTimeline: View {
         .overlay(alignment: .trailing) { if selected { rollTrimHandle(.trailing, idx: idx) } }
         .offset(x: rollDrag?.idx == idx ? (rollDrag?.dx ?? 0) : 0)
         .onTapGesture { onTapBroll(idx) }
+        // ED-13: container semantics — without it this id was stamped onto every flattened
+        // descendant, hiding the selected roll's editorPro.rollTrim.left/right brackets
+        // (same leak as cleanupPanel / clip cells).
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("editorPro.roll.\(idx)")
     }
 
