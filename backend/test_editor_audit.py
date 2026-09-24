@@ -318,3 +318,67 @@ def test_anthropic_passes_scaled_timeout_per_request(monkeypatch):
                                  main._plan_max_tokens(1500)))
     _aio.run(main.anthropic("s", "u", main.HAIKU, 500))
     assert [(mt, to.read) for mt, to in seen] == [(16000, 420.0), (9000, 285.0), (500, 90.0)]
+
+
+# ---------------------------------------------------------------------------
+# LV-22 — the job watchdog spares LIVE pipelines up to a duration-scaled ceiling
+# ---------------------------------------------------------------------------
+
+def _stage_job(jid, age_s, **over):
+    now = _time.time()
+    job = {"job_id": jid, "status": "editing", "created_at": now - age_s,
+           "stage_started_at": now - age_s, "clips": [], "pipeline_gen": 0,
+           "duration_ms": 600_000}                        # a 10-minute take
+    job.update(over)
+    return job
+
+
+def _sweep_with_owner(monkeypatch, job, alive: bool):
+    """Run one sweep over {job}; when `alive`, a real task owns the job's pipeline."""
+    monkeypatch.setattr(main, "RENDER_WATCHDOG_S", 480)
+
+    async def fake_persist(jid):
+        pass
+    monkeypatch.setattr(main, "_persist_clip_job", fake_persist)
+
+    async def run():
+        t = None
+        if alive:
+            t = main._spawn(_aio.sleep(30))
+            main._pipeline_tasks[job["job_id"]] = t
+        try:
+            main._sweep_stuck_renders({job["job_id"]: job})
+            await _aio.sleep(0)
+        finally:
+            if t is not None:
+                t.cancel()
+                main._pipeline_tasks.pop(job["job_id"], None)
+    _aio.run(run())
+    return job
+
+
+def test_live_long_job_survives_flat_watchdog(monkeypatch):
+    job = _sweep_with_owner(monkeypatch, _stage_job("lv22-live", 1000), alive=True)
+    assert job["status"] == "editing" and job["pipeline_gen"] == 0   # untouched at 1000s
+
+
+def test_orphan_still_failed_at_flat_watchdog(monkeypatch):
+    job = _stage_job("lv22-orphan", 1000, resume_count=main._RESUME_MAX)   # resumes spent
+    job = _sweep_with_owner(monkeypatch, job, alive=False)
+    assert job["status"] == "failed" and job["error"] == "pipeline_interrupted"
+
+
+def test_live_job_past_scaled_ceiling_is_failed(monkeypatch):
+    assert main._live_pipeline_ceiling_s(_stage_job("x", 0), 480) == 960 + 3 * 600
+    job = _sweep_with_owner(monkeypatch, _stage_job("lv22-over", 2800), alive=True)
+    assert job["status"] == "failed" and job["error"] == "pipeline_interrupted"
+    assert job["pipeline_gen"] == 1                  # the live task can no longer write
+
+
+def test_live_ceiling_is_duration_earned_and_capped():
+    base = _stage_job("x", 0)
+    base.pop("duration_ms")
+    assert main._live_pipeline_ceiling_s(base, 480) == 960            # unknown → no exemption
+    words = [{"word": "w", "start_ms": 599_000, "end_ms": 600_000}]
+    assert main._live_pipeline_ceiling_s({**base, "words": words}, 480) == 2760   # transcript
+    assert main._live_pipeline_ceiling_s({"duration_ms": 3_600_000}, 480) == 3600  # capped

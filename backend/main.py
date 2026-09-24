@@ -5541,6 +5541,25 @@ async def _validate_source_url(url: str) -> None:
 # pass staggers the backlog (2/min) at zero cost to the common one-orphan case.
 _RESUME_PER_SWEEP = int(os.environ.get("RESUME_PER_SWEEP", "2"))
 
+# LV-22 (editor audit 2026-09-24): the job watchdog failed ANY non-terminal job whose
+# stage outlived 2×RENDER_WATCHDOG_S (960s) — including jobs whose owning pipeline task
+# is ALIVE and working. A long take legitimately spends longer than that in `editing`
+# (brief + plan + b-roll + self-review over thousands of words), so live edits were
+# killed as pipeline_interrupted mid-flight. A live pipeline now gets a ceiling scaled
+# by its source duration: 2×budget + JOB_LIVE_PER_SOURCE_S per source second, capped
+# at JOB_LIVE_CEIL_S. Orphans (no live task) keep the unchanged 2×budget backstop.
+JOB_LIVE_PER_SOURCE_S = float(os.environ.get("JOB_LIVE_PER_SOURCE_S", "3"))
+JOB_LIVE_CEIL_S = float(os.environ.get("JOB_LIVE_CEIL_S", "3600"))
+
+
+def _live_pipeline_ceiling_s(job: dict, budget: float) -> float:
+    """Stage-age ceiling for a job whose pipeline task is alive: 2×budget + 3 s per
+    second of source (e.g. 960 + 1800 = 2760s for a 10-min take), capped at 3600s,
+    never below the orphan backstop (2×budget). Unknown duration → 2×budget."""
+    base = float(budget) * 2
+    dur_s = _source_duration_s(job) or 0.0
+    return max(base, min(JOB_LIVE_CEIL_S, base + JOB_LIVE_PER_SOURCE_S * dur_s))
+
 
 def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
     """Watchdog, swept on every GET poll (same zero-background-task pattern as
@@ -5606,8 +5625,9 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
             # creator who wasn't polling never even got the failure). Resume it from
             # its persisted stage instead; the 2×budget fail below stays as the
             # backstop once resumes are exhausted.
+            alive = _pipeline_alive(job.get("job_id") or "")
             if job.get("status") != "rendering" and now - anchor > _ORPHAN_GRACE_S \
-                    and not _pipeline_alive(job.get("job_id") or ""):
+                    and not alive:
                 resumed = False
                 # Stagger the backlog: past the per-pass cap the orphan is simply left
                 # for the NEXT pass (60s) — untouched, not failed — so a post-deploy
@@ -5639,12 +5659,17 @@ def _sweep_stuck_renders(jobs: dict, max_render_s: float | None = None) -> None:
                 # and a stamp-less clip must not read as "actively rendering" forever.
                 and now - _render_anchor(c, job) <= _clip_budget(c)
                 for c in job.get("clips", []))
-            if now - anchor > budget * 2 and not clip_actively_rendering:
+            # LV-22: a LIVE pipeline is exempt up to its duration-scaled ceiling; the
+            # orphan backstop (no owning task) stays at 2×budget.
+            limit = _live_pipeline_ceiling_s(job, budget) if alive else budget * 2
+            if now - anchor > limit and not clip_actively_rendering:
                 # Take ownership before failing: the stalled task (if it's alive at
                 # all) must not overwrite this terminal state when it wakes up —
                 # same discipline as the clip sweep's _bump_render_gen above.
                 _bump_pipeline_gen(job)
                 _fail_job(job, "pipeline_interrupted",
+                          f"the edit ran past its {int(limit)}s time limit. Retry to restart it"
+                          if alive else
                           "the edit was interrupted (server restart or stall) — retry to restart it")
                 if job.get("job_id"): _touched.add(job["job_id"])
     # Persist the terminal writes (restart-fragility audit): the watchdog used to fail
