@@ -258,6 +258,14 @@ struct ProEditorView: View {
         .onChange(of: stickerFieldFocused) { _, focused in
             if !focused, let idx = typingSticker { commitTyping(idx) }
         }
+        // ED-20: Return on the canvas field means done. A vertical-axis TextField inserts
+        // "\n" instead of calling onSubmit, so catch the newline and commit.
+        .onChange(of: editDraft) { _, text in
+            if let idx = typingSticker, let done = StickerTyping.committedOnReturn(text) {
+                editDraft = done
+                commitTyping(idx)
+            }
+        }
         // ED-8: dragging an unselected sticker selects it — a side effect, so it hangs off
         // the auto-resetting gesture state here instead of running inside the gesture.
         .onChange(of: stickerDrag?.idx) { _, idx in

@@ -506,7 +506,7 @@ extension ProEditorView {
     func commitTyping(_ idx: Int) {
         typingSticker = nil
         stickerFieldFocused = false
-        let t = editDraft.trimmingCharacters(in: .whitespaces)
+        let t = StickerTyping.cleaned(editDraft)   // ED-20: a stray Return is not text
         if t.isEmpty { deleteOverlay(idx); return }
         if session?.draft.overlays[safe: idx]?.text != t { mutate([.editOverlayText(index: idx, text: t)]) }
     }

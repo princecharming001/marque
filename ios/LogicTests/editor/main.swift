@@ -424,6 +424,18 @@ func runAll() {
           "warm stride: 5 s on short takes, ≤ ~36 frames on long ones")
 }
 
-MainActor.assumeIsolated { runAll() }
+func runStickerTyping() {
+    // MARK: ED-20 on-canvas sticker typing
+    section("sticker typing: Return commits, line breaks never stored (ED-20)")
+    check(StickerTyping.committedOnReturn("day one") == nil, "no newline: still typing")
+    check(StickerTyping.committedOnReturn("day one\n") == "day one", "Return (trailing newline) commits the text without it")
+    check(StickerTyping.committedOnReturn("  day one \n") == "day one", "surrounding spaces trimmed on commit")
+    check(StickerTyping.committedOnReturn("\n") == "", "Return on an empty field commits blank (the sticker is discarded)")
+    check(StickerTyping.committedOnReturn("two\nlines") == nil, "a pasted line break mid-text does not commit")
+    check(StickerTyping.cleaned("hello\n") == "hello", "a stray Return is not saved when committing by tapping away")
+    check(StickerTyping.cleaned("two\nlines") == "two\nlines", "an inner line break the user kept survives")
+}
+
+MainActor.assumeIsolated { runAll(); runStickerTyping() }
 print(failures == 0 ? "PASS \(checks) checks" : "FAILED \(failures)/\(checks) checks")
 exit(failures == 0 ? 0 : 1)
