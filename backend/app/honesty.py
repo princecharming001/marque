@@ -36,6 +36,12 @@ _TIMEFRAME = re.compile(r"\b(?:i|we)\b[^.!?\n]{0,30}\bfor\s+(?:\d+|a|one|two|thr
                         r"(?:days?|weeks?|months?|years?)\b", re.I)
 _LAST_TIME = re.compile(r"\b(?:last|this past)\s+(?:week|month|year|summer|winter)\b[^.!?\n]{0,40}\b(?:i|we)\s+\w+ed\b", re.I)
 
+# An outside statistic the model made up ("a study found 73% of people…"): the creator
+# would be citing research that doesn't exist.
+_INVENTED_STAT = re.compile(
+    r"\b(?:study|studies|research|survey|data|scientists|researchers|experts)\b[^.!?\n]{0,60}?"
+    r"\b\d+(?:\.\d+)?\s*(?:%|percent\b|times\b|x\b)", re.I)
+
 # Opinions / methods / hypotheticals that share surface words with events.
 _SAFE = re.compile(
     r"\b(?:i'd|i would|i will|i'll|i think|i always|i never|i usually|i tell|i see|i want|i mean|"
@@ -50,7 +56,7 @@ def flag_first_person_claim(text: str) -> str | None:
         s = sentence.strip()
         if not s:
             continue
-        for rx in (_FROM_TO, _OUR_RESULT, _MY_CLIENT, _TIMEFRAME, _LAST_TIME, _I_EVENT):
+        for rx in (_FROM_TO, _OUR_RESULT, _MY_CLIENT, _TIMEFRAME, _LAST_TIME, _INVENTED_STAT, _I_EVENT):
             m = rx.search(s)
             if not m:
                 continue

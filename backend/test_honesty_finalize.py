@@ -117,3 +117,13 @@ def test_strategy_block_skips_template_and_thin_compiles(monkeypatch):
             _Store({"strategy_markdown": real, "strategy_footnotes": foot}), "c-real")) == ""
     assert asyncio.run(sc.strategy_block(
         _Store({"strategy_markdown": sc._template_strategy({"niche": "fitness"})}), "c-real")) == ""
+
+
+@pytest.mark.parametrize("text,claim", [
+    ("A study found 73% of people quit their gym by March.", True),
+    ("Research shows people who meal prep eat 2 times more vegetables.", True),
+    ("Most people quit their gym by March.", False),
+    ("Researchers keep arguing about this, and that's fine.", False),
+])
+def test_invented_statistics_are_claims(text, claim):
+    assert bool(honesty.flag_first_person_claim(text)) is claim

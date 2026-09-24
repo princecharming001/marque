@@ -13063,11 +13063,12 @@ _SPEAKABLE_REPAIR_SYS = (
 # is dropped.
 _HONESTY_REPAIR_SYS = (
     "You fix ONE problem in a short talking-head script: it makes the creator claim a personal "
-    "event, result, client story or number they never said happened. They read this on camera, "
-    "so that line would be a lie.\n"
-    "Rewrite ONLY the sentences that claim a personal event or result so they become the "
-    "viewer's experience ('you...'), a pattern most people hit, or the creator's opinion or "
-    "method ('here's what I'd do'). Keep every other sentence exactly as written. Keep the "
+    "event, result, client story or number they never said happened, or cite a study or "
+    "statistic nobody gave them. They read this on camera, so that line would be a lie.\n"
+    "Rewrite ONLY those sentences: a personal event or result becomes the viewer's experience "
+    "('you...'), a pattern most people hit, or the creator's opinion or method ('here's what "
+    "I'd do'); a made-up statistic loses its number ('most people', 'a lot of'). Keep every "
+    "other sentence exactly as written. Keep the "
     "length, the voice and the contractions. No em dashes or en dashes.\n"
     'Return JSON {"hook": str, "body": str, "cta": str}.'
 )
@@ -13385,10 +13386,12 @@ async def _fast_feed_scripts(sreq: "ScriptRequest", cursor: int = 0) -> dict:
         # Palo brain on the cold paint too: the compiled strategy (one cheap read) so the
         # first-ever picks reflect it; the full brain rides the background OPUS upgrade.
         # The explicit range matters: told only "full length", HAIKU drafts ran to ~200 words
-        # (realism eval v5, median 163) while the OPUS pass held the 90-140 budget.
+        # (realism eval v5, median 163) while the OPUS pass held the 90-140 budget. Even told
+        # "90 to 140" it landed ~160 (v6/smoke7), so it now aims at ~115 with 140 as a ceiling.
         suffix = strategy + (
-            "\n\nFIRST PAINT: write this script at the style's full spoken length, 90 to 140 words "
-            "across hook, body and CTA, not shorter and not longer. Speak it "
+            "\n\nFIRST PAINT: write this script at the style's full spoken length. Aim for about 115 "
+            "words across hook, body and CTA, and NEVER more than 140 (count them before you "
+            "answer; over 140 runs past a minute on camera). Speak it "
             "the way the creator would say it to a friend: contractions, varied sentence length, no "
             "chains of clipped fragments.")
         results = await asyncio.gather(*(

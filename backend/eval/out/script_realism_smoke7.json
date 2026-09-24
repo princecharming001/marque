@@ -1,0 +1,544 @@
+{
+ "config": {
+  "flags": {
+   "PALO_PORT": true,
+   "CHANNEL_IDENTITY": true,
+   "IDEA_BANK": true,
+   "STRATEGY_COMPILER": true,
+   "EXEMPLAR_BANK": true,
+   "MEMORY_V2": true,
+   "WRITE_AGENT": true
+  },
+  "models": {
+   "fast": "claude-haiku-4-5-20251001",
+   "full": "claude-opus-4-8"
+  },
+  "label": "smoke7"
+ },
+ "rows": [
+  {
+   "path": "fast",
+   "persona": "fitness-desk",
+   "mode": "live_fast",
+   "secs": 11.0,
+   "pillar": "",
+   "scripts": [
+    {
+     "title": "you don't need to train muscles twice",
+     "summary": "A myth-buster on training frequency for busy office workers.",
+     "hook": "Everyone says you need to hit every muscle group twice a week to get strong. That's not true.",
+     "hookSignal": "contrarian",
+     "formatId": "myth-buster",
+     "body": "The myth is that frequency is the main driver of muscle growth. It's not. The main driver is tension on the muscle, and you can create that tension once a week if you do it hard.\n\nHere's what actually happens. You take someone with a desk job, they squat heavy once a week for twelve weeks. You take someone else, same desk job, they squat twice a week at moderate weight. After three months, leg strength tests come back basically identical. One person did it in half the sessions.\n\nThe second person spent four hours in the gym. The first person spent two. Same result. If you've got three hours a week total, you use them on compound lifts done hard, once per muscle group per week. That's the whole system.",
+     "cta": "Do heavy compounds once a week for the next twelve weeks and track your lifts.",
+     "style": "talking_head",
+     "altHooks": [],
+     "shotPlan": [],
+     "targetSeconds": 60,
+     "predictedScore": 68,
+     "durationSeconds": 60
+    },
+    {
+     "title": "you're sore and you're fine",
+     "summary": "A talking-head POV story about mistaking DOMS for recovery damage and how that kills your next session.",
+     "hook": "You're three days post-leg day, sitting at your desk, barely able to walk down stairs, and you're convinced you're injured.",
+     "hookSignal": "narrative",
+     "formatId": "pov-story",
+     "body": "That soreness you feel, that's DOMS. Delayed onset muscle soreness. It's not a sign you damaged yourself. It's not a sign you're not recovering. It's literally just inflammation from the stimulus, and it shows up when your body's already rebuilding the muscle.\n\nHere's the part that kills you: most desk workers feel that soreness on Wednesday, panic, and then either skip Thursday's session or dial it way down. So now you've given yourself the stimulus but removed the follow-up work that actually locks in the strength gain.\n\nYou can be sore and fully recovered at the same time. Soreness doesn't mean you shouldn't train again. The only thing that matters is whether you can move and load the movement. If you can, go. Your muscles are already working.",
+     "cta": "Next time you're sore three days in, train anyway. Tell me if the soreness is gone by warm-up.",
+     "style": "talking_head",
+     "altHooks": [],
+     "shotPlan": [],
+     "targetSeconds": 60,
+     "predictedScore": 68,
+     "durationSeconds": 60
+    },
+    {
+     "title": "three things tanking your three day week",
+     "summary": "A listicle myth-buster on structural mistakes that stall progress in a three-day routine, not willpower failures.",
+     "hook": "You're training three days a week and going nowhere. It's probably not effort. It's one of these.",
+     "hookSignal": "stakes",
+     "formatId": "listicle",
+     "body": "First one: too many isolation exercises. You've got maybe nine hours a week in the gym. If you're spending three of those doing bicep curls and cable flyes, you're out of time for the compound lifts that actually build strength. Compounds compress progress into three sessions. Stick to one compound per day, then one isolation if you have fifteen minutes left.\n\nSecond: changing your lifts every two weeks. Your body doesn't adapt to a program in two weeks. It adapts in eight to twelve. Every time you switch, you reset. Pick a program, run it for at least eight weeks, then adjust based on actual data.\n\nThird: treating every session like a max-out. If you're grinding to absolute failure every rep, you're wrecked by day three. Leave two, maybe three reps in the tank on compounds. That's what lets you actually show up recovered and stack volume week to week.",
+     "cta": "Which one of these is your lifter right now? Be honest.",
+     "style": "talking_head",
+     "altHooks": [],
+     "shotPlan": [],
+     "targetSeconds": 65,
+     "predictedScore": 68,
+     "durationSeconds": 65
+    }
+   ],
+   "pages": [
+    [
+     {
+      "title": "you don't need to train muscles twice",
+      "summary": "A myth-buster on training frequency for busy office workers.",
+      "hook": "Everyone says you need to hit every muscle group twice a week to get strong. That's not true.",
+      "hookSignal": "contrarian",
+      "formatId": "myth-buster",
+      "body": "The myth is that frequency is the main driver of muscle growth. It's not. The main driver is tension on the muscle, and you can create that tension once a week if you do it hard.\n\nHere's what actually happens. You take someone with a desk job, they squat heavy once a week for twelve weeks. You take someone else, same desk job, they squat twice a week at moderate weight. After three months, leg strength tests come back basically identical. One person did it in half the sessions.\n\nThe second person spent four hours in the gym. The first person spent two. Same result. If you've got three hours a week total, you use them on compound lifts done hard, once per muscle group per week. That's the whole system.",
+      "cta": "Do heavy compounds once a week for the next twelve weeks and track your lifts.",
+      "style": "talking_head",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 60,
+      "predictedScore": 68,
+      "durationSeconds": 60
+     },
+     {
+      "title": "you're sore and you're fine",
+      "summary": "A talking-head POV story about mistaking DOMS for recovery damage and how that kills your next session.",
+      "hook": "You're three days post-leg day, sitting at your desk, barely able to walk down stairs, and you're convinced you're injured.",
+      "hookSignal": "narrative",
+      "formatId": "pov-story",
+      "body": "That soreness you feel, that's DOMS. Delayed onset muscle soreness. It's not a sign you damaged yourself. It's not a sign you're not recovering. It's literally just inflammation from the stimulus, and it shows up when your body's already rebuilding the muscle.\n\nHere's the part that kills you: most desk workers feel that soreness on Wednesday, panic, and then either skip Thursday's session or dial it way down. So now you've given yourself the stimulus but removed the follow-up work that actually locks in the strength gain.\n\nYou can be sore and fully recovered at the same time. Soreness doesn't mean you shouldn't train again. The only thing that matters is whether you can move and load the movement. If you can, go. Your muscles are already working.",
+      "cta": "Next time you're sore three days in, train anyway. Tell me if the soreness is gone by warm-up.",
+      "style": "talking_head",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 60,
+      "predictedScore": 68,
+      "durationSeconds": 60
+     },
+     {
+      "title": "three things tanking your three day week",
+      "summary": "A listicle myth-buster on structural mistakes that stall progress in a three-day routine, not willpower failures.",
+      "hook": "You're training three days a week and going nowhere. It's probably not effort. It's one of these.",
+      "hookSignal": "stakes",
+      "formatId": "listicle",
+      "body": "First one: too many isolation exercises. You've got maybe nine hours a week in the gym. If you're spending three of those doing bicep curls and cable flyes, you're out of time for the compound lifts that actually build strength. Compounds compress progress into three sessions. Stick to one compound per day, then one isolation if you have fifteen minutes left.\n\nSecond: changing your lifts every two weeks. Your body doesn't adapt to a program in two weeks. It adapts in eight to twelve. Every time you switch, you reset. Pick a program, run it for at least eight weeks, then adjust based on actual data.\n\nThird: treating every session like a max-out. If you're grinding to absolute failure every rep, you're wrecked by day three. Leave two, maybe three reps in the tank on compounds. That's what lets you actually show up recovered and stack volume week to week.",
+      "cta": "Which one of these is your lifter right now? Be honest.",
+      "style": "talking_head",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 65,
+      "predictedScore": 68,
+      "durationSeconds": 65
+     }
+    ],
+    [
+     {
+      "title": "three lifts that actually work for your desk",
+      "summary": "A listicle on the three compound movements that build strength and desk-posture carryover fastest for busy professionals, with the reasoning for skipping isolation work entirely.",
+      "hook": "Stop doing isolation exercises. Three lifts, three months, and your entire body changes.",
+      "hookSignal": "contrarian",
+      "formatId": "listicle",
+      "body": "First one is the squat [broll: person descending into a barbell squat, side angle]. Your legs are half your muscle mass. Squats wake up your glutes and quads, and that tension carries straight into how you sit. Your posture fixes before you even think about it.\n\nSecond is bench press [broll: hands gripping barbell at chest height, close-up]. It builds your chest, shoulders, and stabilizers all at once. One movement, three regions. That's the whole upper body in one set.\n\nThird is deadlift [broll: barbell rising from the floor, full body view]. It's the antidote to desk work. Your entire posterior chain gets strong. Your back straightens. Your hips open. Do these three for three months and skip every isolation exercise. Compound lifts build carryover. Isolation doesn't.",
+      "cta": "Follow for the full three-day program.",
+      "style": "broll_cutaway",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 53,
+      "predictedScore": 72,
+      "durationSeconds": 53
+     },
+     {
+      "title": "training the same movement too often kills",
+      "summary": "A do-this-not-that talking-head on spacing movement patterns instead of days to stay strong each session.",
+      "hook": "You think three days a week is enough because you're spacing out your sessions. You're wrong. The spacing that matters isn't days, it's the movement pattern.",
+      "hookSignal": "contrarian",
+      "formatId": "do-this-not-that",
+      "body": "Here's what most people do: Monday chest, Wednesday chest, Friday chest. Your shoulders are fresh on Friday. Your nervous system is toast. You're weaker, your form breaks, and you're building bad reps instead of good ones.\n\nDo this instead: hit hard [broll: barbell bench press side angle], then step away for 48 hours minimum before you train that same pattern again [broll: calendar with days marked]. Monday you bench. Wednesday you squat [broll: loaded squat rack setup]. Friday you deadlift [broll: deadlift lockout detail]. Each session you're at full capacity. Same volume, better results, and your joints recover instead of getting beat up.",
+      "cta": "Follow if you've got a packed schedule and three hours a week.",
+      "style": "broll_cutaway",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 51,
+      "predictedScore": 68,
+      "durationSeconds": 51
+     },
+     {
+      "title": "exercise variety won't fix your plateau",
+      "summary": "A myth-buster talking-head about why switching exercises constantly backfires; progressive overload on five core lifts beats novelty.",
+      "hook": "You hit a plateau, so you add new exercises. That's exactly backwards.",
+      "hookSignal": "contrarian",
+      "formatId": "myth-buster",
+      "body": "Your muscles don't need novelty. They need consistent challenge on the same lift. Every time you switch movements, you're resetting the load. You start light on the new exercise, and your body never gets stronger at anything because it's never doing the same thing twice.\n\nHere's what actually works: Pick one squat, one deadlift variation, one press, one row, one pull. Run those five lifts for six straight weeks. Add weight or reps every session. Not new machines. Not new angles. Same lift, heavier or more reps.\n\nYour desk job brain wants novelty. Your muscles want consistent tension they can adapt to.",
+      "cta": "Save this for your next training cycle.",
+      "style": "broll_cutaway",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 44,
+      "predictedScore": 72,
+      "durationSeconds": 44
+     }
+    ],
+    [
+     {
+      "title": "three lifts that fix desk posture",
+      "summary": "A listicle myth-buster on why compound barbell movements beat isolation work for office worker posture and fatigue.",
+      "hook": "Stop doing core isolation. Three barbell lifts fix your desk posture faster than any targeted ab work ever will.",
+      "hookSignal": "contrarian",
+      "formatId": "listicle",
+      "body": "Here's why. Isolation moves only work the one muscle. Compounds force your whole body to stabilize at once, which is what actually happens when you sit at a desk for eight hours.\n\nFirst one is the squat. Heavy squat forces your core to brace, your back to stay neutral, your chest to stay up. That's literally the posture you need at your desk.\n\nSecond is the deadlift. Pulls your shoulders back, chains your entire posterior chain into one unit. Desk job kills your posterior chain. This brings it back.\n\nThird is the bench press. Most desk workers round forward. Bench press pulls your shoulders back and teaches your chest to actually engage. You leave the gym sitting three inches taller.\n\nOne barbell session a week, you'll feel it in three weeks.",
+      "cta": "Pick one. Add it to your next session and tell me which one changed your back the most.",
+      "style": "talking_head",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 61,
+      "predictedScore": 68,
+      "durationSeconds": 61
+     },
+     {
+      "title": "everyone says train every muscle twice a week",
+      "summary": "A green-screen reaction to the viral twice-per-week training dogma, debunking it for desk workers who can't recover that fast on three sessions.",
+      "hook": "You've seen the post. 'Train every muscle twice a week.' Here's why that's terrible advice for people with actual jobs.",
+      "hookSignal": "contrarian",
+      "formatId": "green-screen",
+      "body": "That advice comes from people who train six days a week and recover like it's their job. You train three times. Three. If you're hitting each muscle twice in those three sessions, you're stacking volume that your desk-bound nervous system isn't equipped to handle.\n\nThe people selling 'twice a week per muscle' aren't managing your schedule. They're not sitting eight hours. You recover slower than that. Frequency doesn't matter more than the total work you're actually doing in the time you have.\n\nHere's what works instead. Hit each muscle once per session with quality volume. Rest three, four days between. Get strong. That's it.",
+      "cta": "You don't need more frequency. You need a plan that fits three sessions.",
+      "style": "talking_head",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 50,
+      "predictedScore": 68,
+      "durationSeconds": 50
+     },
+     {
+      "title": "you don't need 45-minute gym sessions",
+      "summary": "A talking-head myth-buster debunking the belief that longer workouts build more strength. The reality: three focused 30-minute sessions beat longer unfocused ones because consistency and fatigue management matter more than duration.",
+      "hook": "Everyone thinks longer sessions mean more strength. It's backwards.",
+      "hookSignal": "contrarian",
+      "formatId": "myth-buster",
+      "body": "The belief is that you need 45 to 60 minutes in the gym to actually get strong. Here's why that's wrong. Your nervous system has a fatigue budget. After about 30 to 35 minutes of real intensity, your form starts to slip, your numbers drop, and you're just grinding through the last 15 minutes without adding anything.\n\nMeanwhile, most desk workers don't do three consecutive weeks of long sessions anyway. You get one or two in, then work gets crazy, you miss a Wednesday, and suddenly you're back to square one.\n\nThree 30-minute sessions where you actually show up beats five 60-minute sessions you skip. Pick your lifts, hit them hard, get out. You're strong enough next week to add more weight. That's the whole system.",
+      "cta": "Pick three days this week and stick to 30 minutes. Tell me what your weight jumps look like.",
+      "style": "talking_head",
+      "altHooks": [],
+      "shotPlan": [],
+      "targetSeconds": 56,
+      "predictedScore": 72,
+      "durationSeconds": 56
+     }
+    ]
+   ],
+   "metrics": {
+    "total_words": [
+     164,
+     166,
+     178
+    ],
+    "body_words": [
+     131,
+     128,
+     150
+    ],
+    "est_seconds": [
+     66,
+     66,
+     71
+    ],
+    "formats": [
+     "myth-buster",
+     "pov-story",
+     "listicle"
+    ],
+    "distinct_formats": 3,
+    "topic_overlap_max": 0.14,
+    "fragment_ratio": [
+     0.31,
+     0.17,
+     0.0
+    ],
+    "tells": 0,
+    "dashes": 0,
+    "first_person_claims": [],
+    "dangling_titles": 0,
+    "seconds_off": [
+     0,
+     0,
+     0
+    ]
+   },
+   "judge": {
+    "scripts": [
+     {
+      "index": 0,
+      "spoken": 7,
+      "substance": 8,
+      "specificity": 7,
+      "hook": 8,
+      "honesty": 6,
+      "fit": 9,
+      "talking_head": 10,
+      "length": "right",
+      "note": "Strong myth-buster with a clean two-person comparison and a clear payoff; the fabricated study result ('strength tests come back identical') is presented as fact the creator may not have, hurting honesty. Sounds mostly like natural speech."
+     },
+     {
+      "index": 1,
+      "spoken": 8,
+      "substance": 8,
+      "specificity": 7,
+      "hook": 9,
+      "honesty": 8,
+      "fit": 9,
+      "talking_head": 10,
+      "length": "right",
+      "note": "Great relatable POV hook that names the exact desk-worker moment, and the DOMS mechanism is explained with a real payoff. Reads naturally out loud; the 'tell me if the soreness is gone by warm-up' CTA is specific and on-brand."
+     },
+     {
+      "index": 2,
+      "spoken": 8,
+      "substance": 9,
+      "specificity": 8,
+      "hook": 8,
+      "honesty": 9,
+      "fit": 10,
+      "talking_head": 10,
+      "length": "right",
+      "note": "Best of the three: concrete, ownable advice tied directly to the three-session promise with real reasoning and numbers. Natural spoken rhythm and a clean engagement CTA; the '(nine hours a week' math is slightly off but forgivable."
+     }
+    ],
+    "variety": 6,
+    "would_post": 3,
+    "fix": "Reframe invented study/test outcomes as the creator's coaching experience or general principle rather than stated hard data, so nothing requires claiming results they can't back up."
+   }
+  },
+  {
+   "path": "chat",
+   "persona": "fitness-desk",
+   "mode": "live",
+   "secs": 5.8,
+   "pillar": "",
+   "scripts": [
+    {
+     "title": "your desk job isn't the problem",
+     "summary": "A talking-head myth-buster that reframes the desk job excuse and shows how three weekly sessions beat frequency for busy professionals.",
+     "hook": "People tell me they can't get strong because they have desk jobs. That's not true. Your desk job isn't stopping you. Training like you've got eight free hours a week is.",
+     "hookSignal": "contrarian",
+     "formatId": "myth-buster",
+     "body": "The myth is that you need five or six days in the gym to build real strength. You don't. You need three solid sessions, heavy compound moves, and actual recovery between them.\n\nHere's the thing about desk workers. You're sitting all day, so your nervous system is already taxed. Adding more volume doesn't help it recover faster. It makes recovery slower. So instead of trying to fit six sessions into a packed schedule, you pick three days. Monday, Wednesday, Friday. One hour each. Squats, deadlifts, bench press, rows. Heavy. Done.\n\nThat's it. Three hours a week for eight to twelve weeks, and you'll add five to ten pounds of muscle and feel it everywhere. Your back stops hurting. Your posture improves. You have energy left for actual work.",
+     "cta": "Pick your three days this week and stick to them. That's stronger than any extra session ever will be.",
+     "style": "talking_head",
+     "altHooks": [],
+     "shotPlan": [],
+     "targetSeconds": 65,
+     "predictedScore": 68,
+     "durationSeconds": 65
+    },
+    {
+     "title": "your desk job is actually ruining your training",
+     "summary": "A POV story showing how office work quietly breaks your strength routine, and the one thing that fixes it.",
+     "hook": "You get home at seven. Your shoulders are up by your ears. You open your laptop, and suddenly it's nine.",
+     "hookSignal": "narrative",
+     "formatId": "pov-story",
+     "body": "You tell yourself you'll hit the gym, but your body's already fried before you walk in the door. That slouch at your desk for eight hours isn't just bad posture. It's actually rewiring how your muscles fire.\n\nSo here's what changes: before you even think about a workout, you spend two minutes resetting your posture. Stand up, chest out, shoulders back, hold it. That's it. Your nervous system gets the signal that you're not collapsing anymore.\n\nNow when you train, your muscles actually remember how to work. You'll pull harder, lift more, and feel it way less the next day. Your desk job didn't ruin you. You just forgot to reset between the two.",
+     "cta": "Stand up right now and hold that position for 20 seconds. You'll feel the difference before you leave your chair.",
+     "style": "talking_head",
+     "altHooks": [],
+     "shotPlan": [],
+     "targetSeconds": 56,
+     "predictedScore": 68,
+     "durationSeconds": 56
+    }
+   ],
+   "metrics": {
+    "total_words": [
+     178,
+     154
+    ],
+    "body_words": [
+     128,
+     114
+    ],
+    "est_seconds": [
+     71,
+     62
+    ],
+    "formats": [
+     "myth-buster",
+     "pov-story"
+    ],
+    "distinct_formats": 2,
+    "topic_overlap_max": 0.12,
+    "fragment_ratio": [
+     0.5,
+     0.09
+    ],
+    "tells": 1,
+    "dashes": 0,
+    "first_person_claims": [],
+    "dangling_titles": 0,
+    "seconds_off": [
+     0,
+     0
+    ]
+   },
+   "judge": {
+    "scripts": [
+     {
+      "index": 0,
+      "spoken": 7,
+      "substance": 8,
+      "specificity": 8,
+      "hook": 8,
+      "honesty": 9,
+      "fit": 9,
+      "talking_head": 10,
+      "length": "right",
+      "note": "Strong hook that names the audience's excuse then flips it; concrete prescription (3 days, MWF, named lifts, 8-12 weeks, 5-10 lbs). The clipped 'Squats, deadlifts, bench press, rows. Heavy. Done.' hurts spoken rhythm but the rest sounds natural and on-brand."
+     },
+     {
+      "index": 1,
+      "spoken": 8,
+      "substance": 6,
+      "specificity": 6,
+      "hook": 9,
+      "honesty": 8,
+      "fit": 7,
+      "talking_head": 10,
+      "length": "right",
+      "note": "Vivid, relatable POV hook and natural spoken cadence. But the core claim (a 2-minute posture reset makes muscles fire so you pull harder and feel it less next day) is soft, overstated, and drifts from the no-nonsense strength positioning into vague physiology."
+     }
+    ],
+    "variety": 4,
+    "would_post": 2,
+    "fix": "Keep both but push each toward one hard, specific mechanism\u2014and vary topics since both hinge on the same 'desk job isn't your excuse' angle; also break up the clipped fragment lists into full spoken sentences."
+   }
+  },
+  {
+   "path": "steer",
+   "persona": "fitness-desk",
+   "mode": "live",
+   "secs": 28.6,
+   "pillar": "",
+   "scripts": [
+    {
+     "title": "why three sessions beats five",
+     "summary": "Busy professionals don't need more gym days, they need fewer, better ones.",
+     "hook": "Five gym days a week is probably why you're not getting stronger.",
+     "hookSignal": "contrarian",
+     "formatId": "myth-buster",
+     "body": "More volume doesn't mean more progress. Not when you're already running on sixty-hour work weeks. If you're showing up exhausted, you're not training, you're just moving tired muscle around.\n\nThree full-body sessions a week. Compound lifts. Heavy. Four to six sets per exercise. Under an hour. That's the stimulus your muscles need to actually adapt, and it leaves enough space to recover before the next session.\n\nPush-pull-legs six days a week sounds serious. But most desk workers who try it burn out inside a few months and stall completely. Switch to three full-body sessions, sleep improves, lifts go up. It happens [your timeframe] in.",
+     "cta": "Cut your program in half. See what happens.",
+     "shotPlan": [
+      "Talking head, direct to camera, plain background or home gym",
+      "Lean in slightly on the hook line for emphasis",
+      "Stay steady and matter-of-fact through the program breakdown",
+      "Slight pause before the final line of the proof beat"
+     ],
+     "targetSeconds": 45,
+     "durationSeconds": 45,
+     "predictedScore": 72,
+     "altHooks": [
+      {
+       "text": "The more gym days you add, the slower you're probably progressing.",
+       "signal": "contrarian",
+       "strength": 70
+      },
+      {
+       "text": "Most people training five days a week are making slower gains than people training three.",
+       "signal": "specificity",
+       "strength": 68
+      },
+      {
+       "text": "Your six-day program isn't ambitious. It's why you've stalled.",
+       "signal": "patternInterrupt",
+       "strength": 74
+      }
+     ],
+     "style": "talking_head"
+    },
+    {
+     "title": "three sessions a week is already enough",
+     "summary": "Reframes 3x/week from 'not enough' to 'exactly right' by showing the real problem is programming, not frequency.",
+     "hook": "Three sessions a week feels like you're barely trying. It's actually all you need, if you're doing the right things inside them.",
+     "hookSignal": "contrarian",
+     "formatId": "myth-buster",
+     "body": "Here's how most weeks go. Monday you crush it, feel great. By Wednesday you've got a 6 PM call that ran long. Friday comes and you're annoyed at yourself, three sessions doesn't feel like 'real' training.\n\nBut that's the wrong problem. The issue isn't how often you're going. It's what you're doing when you get there. Three sessions a week is plenty. The people actually getting strong aren't spending six hours in the gym, they're spending three, and every hour is built around compound movements. Squats, deadlifts, rows, presses. One strength focus per session, then you're done.\n\nNo isolation work. No Instagram arms circuit. Just the movements that actually move the needle. Twelve weeks of that, three sessions, the right ones, and you'll be genuinely stronger than most people who go five days and wing it.",
+     "cta": "Save this. Next session: pick three compound movements and leave. That's it.",
+     "shotPlan": [
+      "Talking head, direct to camera, neutral background or gym setting",
+      "Stay on camera for guilt-spiral section \u2014 let the relatability land",
+      "Optional B-roll: quick cut of compound lifts (squat, deadlift, row, press) to illustrate",
+      "Back to talking head for the closer"
+     ],
+     "targetSeconds": 64,
+     "durationSeconds": 64,
+     "predictedScore": 74,
+     "altHooks": [
+      {
+       "text": "Most people going to the gym five days a week are getting weaker results than someone going three. Here's why.",
+       "signal": "contrarian",
+       "strength": 78
+      },
+      {
+       "text": "You're not undertrained. You're under-programmed. Three sessions a week is enough, you're just filling them with the wrong stuff.",
+       "signal": "callOut",
+       "strength": 75
+      },
+      {
+       "text": "The guilt you feel about only going three times a week? It's based on a lie the fitness industry really wants you to believe.",
+       "signal": "stakes",
+       "strength": 72
+      }
+     ],
+     "style": "talking_head"
+    }
+   ],
+   "metrics": {
+    "total_words": [
+     124,
+     170
+    ],
+    "body_words": [
+     104,
+     136
+    ],
+    "est_seconds": [
+     50,
+     68
+    ],
+    "formats": [
+     "myth-buster",
+     "myth-buster"
+    ],
+    "distinct_formats": 1,
+    "topic_overlap_max": 0.18,
+    "fragment_ratio": [
+     0.23,
+     0.2
+    ],
+    "tells": 0,
+    "dashes": 0,
+    "first_person_claims": [],
+    "dangling_titles": 0,
+    "seconds_off": [
+     0,
+     2
+    ]
+   },
+   "judge": {
+    "scripts": [
+     {
+      "index": 0,
+      "spoken": 5,
+      "substance": 6,
+      "specificity": 5,
+      "hook": 8,
+      "honesty": 8,
+      "fit": 9,
+      "talking_head": 9,
+      "length": "right",
+      "note": "Strong hook and on-brand, but the body collapses into clipped fragments ('Compound lifts. Heavy. Four to six sets.') that read like captions, and the literal '[your timeframe]' placeholder would be spoken as-is if not caught."
+     },
+     {
+      "index": 1,
+      "spoken": 8,
+      "substance": 8,
+      "specificity": 7,
+      "hook": 6,
+      "honesty": 9,
+      "fit": 9,
+      "talking_head": 9,
+      "length": "too_long",
+      "note": "Conversational, relatable Monday/Wednesday/Friday scenario gives real substance and rhythm, but the hook is two sentences long and buries the tension, and it runs past 60 seconds."
+     }
+    ],
+    "variety": 3,
+    "would_post": 1,
+    "fix": "Give the two scripts genuinely different angles and formats (one is a near-duplicate of the other's 'three beats five' thesis), and replace the placeholder and fragment-chains in Script 0 with spoken sentences."
+   }
+  }
+ ]
+}

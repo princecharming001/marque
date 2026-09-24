@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import main
+from app import honesty
 from prompts import OPUS
 
 PERSONAS = [
@@ -74,7 +75,8 @@ client stories, credentials or results the creator profile does not support.
 - fit: sounds like THIS creator for THIS audience (not a generic niche account).
 - talking_head: fully filmable as one person talking to camera, no demos/props/locations required.
 
-Also judge length: too_short (under ~30s spoken, feels thin), right, or too_long (over ~75s).
+Also judge length against the product's 35-55 second target, at about 165 spoken words per minute:
+too_short (under ~80 words / 30s, feels thin), right (~80-160 words), or too_long (over ~160 words / 60s).
 Then for the SET: variety 1-10 (different topics AND different formats/structures; three takes on one \
 idea scores low) and would_post: how many of the scripts a real creator would film as written (0-N).
 Give one sentence of the single most important fix."""
@@ -135,7 +137,26 @@ def metrics(scripts: list[dict]) -> dict:
         "fragment_ratio": [round(f, 2) for f in frag],
         "tells": sum(len(_TELLS.findall(_spoken(s))) for s in scripts),
         "dashes": sum(_spoken(s).count("—") + _spoken(s).count("–") for s in scripts),
+        # 2026-09-23 content-engine pass
+        "first_person_claims": [c for c in (honesty.script_claims(s) for s in scripts) if c],
+        "dangling_titles": sum(1 for s in scripts if (s.get("title") or "").split()
+                               and (s.get("title") or "").split()[-1].lower() in main._TITLE_TAIL_WORDS),
+        "seconds_off": [abs(int(s.get("targetSeconds") or 0) - round(len(_spoken(s).split()) / 2.75))
+                        for s in scripts],
     }
+
+
+def cross_page_dupes(pages: list[list[dict]], thresh: float = 0.35) -> int:
+    """Near-duplicate script pairs ACROSS pages (content-word Jaccard of title+hook)."""
+    items = [(pi, _content_words(f"{s.get('title', '')} {s.get('hook', '')}"))
+             for pi, pg in enumerate(pages) for s in pg]
+    n = 0
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            (pa, a), (pb, b) = items[i], items[j]
+            if pa != pb and a and b and len(a & b) / len(a | b) >= thresh:
+                n += 1
+    return n
 
 
 async def judge(persona: dict, scripts: list[dict]) -> dict:
@@ -160,6 +181,12 @@ async def judge(persona: dict, scripts: list[dict]) -> dict:
     return out
 
 
+CHAT_TOPICS = {"fashion-founders": "pricing your first collection", "mental-health": "exam stress",
+               "beauty-30": "retinol for beginners", "finance-genz": "your first budget",
+               "parenting": "toddler tantrums", "cooking-busy": "meal prep",
+               "fitness-desk": "training on a desk job", "saas-founder": "cold outreach"}
+
+
 async def run_path(path: str, persona: dict, cursor: int) -> dict:
     brand = {k: v for k, v in persona.items() if k != "id"}
     cid = f"qa-eval-{persona['id']}"
@@ -167,14 +194,45 @@ async def run_path(path: str, persona: dict, cursor: int) -> dict:
     # first request); build it up front here so the eval measures the steady state.
     await main._ensure_account_context(cid, brand)
     arms = await main._top_arms(cid, brand.get("niche", ""))
-    sreq, _why = main._feed_sreq(brand, "", cursor, cid, None, [], arms=arms)
     t0 = time.monotonic()
+    pages: list[list[dict]] = []
     if path == "fast":
-        res = await main._fast_feed_scripts(sreq, cursor)
-    else:
+        # Three pages like a scrolling creator: each page's titles feed the planner's
+        # topic memory exactly as _compose_feed_items does in the live feed.
+        main._pitched_titles.pop(cid, None)
+        res = {}
+        for c in range(cursor, cursor + 3):
+            sreq, _why = main._feed_sreq(brand, "", c, cid, None, [], arms=arms)
+            r = await main._fast_feed_scripts(sreq, c)
+            res = res or r
+            pages.append(r.get("scripts") or [])
+            main._remember_titles(main._pitched_titles, cid, [s.get("title") for s in pages[-1]])
+        secs = round((time.monotonic() - t0) / 3, 1)
+        return {"mode": res.get("mode"), "secs": secs, "pillar": "", "scripts": pages[0],
+                "pages": pages}
+    if path == "full":
+        sreq, _why = main._feed_sreq(brand, "", cursor, cid, None, [], arms=arms)
         res = await main._generate_scripts(sreq)
+    elif path == "chat":
+        req = main.ConverseRequest(creator_id=cid, brand=brand, memory={}, messages=[])
+        scripts = await main._chain_scripts(req, {"topic": CHAT_TOPICS.get(persona["id"], "your next post"),
+                                                  "count": 2})
+        res = {"mode": "live" if scripts else "empty", "scripts": scripts}
+    elif path == "steer":
+        sreq, _why = main._feed_sreq(brand, "", cursor, cid, None, [], arms=arms)
+        base = (await main._fast_feed_scripts(sreq, cursor)).get("scripts") or []
+        t0 = time.monotonic()
+        steered = []
+        for s in base[:2]:
+            r = await main.steer(main.SteerRequest(**brand, creator_id=cid, script=s,
+                                                   instruction="make it punchier and more specific"))
+            if r.get("script"):
+                steered.append(r["script"])
+        res = {"mode": "live" if steered else "empty", "scripts": steered}
+    else:
+        raise ValueError(path)
     return {"mode": res.get("mode"), "secs": round(time.monotonic() - t0, 1),
-            "pillar": sreq.pillar, "scripts": res.get("scripts") or []}
+            "pillar": "", "scripts": res.get("scripts") or []}
 
 
 async def main_async(paths: list[str], label: str, cursor: int, only: str | None) -> None:
@@ -191,7 +249,13 @@ async def main_async(paths: list[str], label: str, cursor: int, only: str | None
     rows = await asyncio.gather(*(one(p, per) for p in paths for per in personas))
     out = Path(__file__).parent / "out"
     out.mkdir(exist_ok=True)
-    (out / f"script_realism_{label}.json").write_text(json.dumps(rows, indent=1))
+    from app import palo_flags
+    config = {"flags": {f: bool(palo_flags.enabled(getattr(palo_flags, f)))
+                        for f in ("PALO_PORT", "CHANNEL_IDENTITY", "IDEA_BANK", "STRATEGY_COMPILER",
+                                  "EXEMPLAR_BANK", "MEMORY_V2", "WRITE_AGENT") if hasattr(palo_flags, f)},
+              "models": {"fast": main.HAIKU, "full": OPUS}, "label": label}
+    (out / f"script_realism_{label}.json").write_text(json.dumps({"config": config, "rows": rows}, indent=1))
+    print("config:", json.dumps(config["flags"]))
 
     for path in paths:
         pr = [r for r in rows if r["path"] == path]
@@ -210,16 +274,27 @@ async def main_async(paths: list[str], label: str, cursor: int, only: str | None
         print(f"\n===== {label} / {path}: {len(pr)} personas, modes={sorted({r['mode'] for r in pr})}, "
               f"latency p50={statistics.median([r['secs'] for r in pr]):.1f}s max={max(r['secs'] for r in pr):.1f}s")
         print("  judge:", " ".join(f"{a}={statistics.mean(v):.1f}" for a, v in per_axis.items() if v))
-        print(f"  set: variety={statistics.mean(variety):.1f}  would_post={sum(would)}/{posted_n}  "
+        print(f"  set: variety={statistics.mean(variety) if variety else 0:.1f}  would_post={sum(would)}/{posted_n}  "
               f"length: short={lengths.count('too_short')} right={lengths.count('right')} "
               f"long={lengths.count('too_long')}")
         allw = [w for x in m for w in x["total_words"]]
+        if not allw:
+            print("  (no scripts returned on this path)")
+            continue
         print(f"  words: median={statistics.median(allw)} min={min(allw)} max={max(allw)}  "
               f"est_sec median={statistics.median([s for x in m for s in x['est_seconds']])}  "
               f"distinct_formats/page={statistics.mean([x['distinct_formats'] for x in m]):.1f}  "
               f"topic_overlap_max={statistics.mean([x['topic_overlap_max'] for x in m]):.2f}  "
               f"fragments={statistics.mean([f for x in m for f in x['fragment_ratio']]):.2f}  "
               f"tells={sum(x['tells'] for x in m)} dashes={sum(x['dashes'] for x in m)}")
+        claims = [c for x in m for c in x["first_person_claims"]]
+        print(f"  honesty: first-person claims={len(claims)} {claims[:4]}  dangling titles="
+              f"{sum(x['dangling_titles'] for x in m)}  seconds off median="
+              f"{statistics.median([o for x in m for o in x['seconds_off']] or [0])}")
+        paged = [r["pages"] for r in pr if r.get("pages")]
+        if paged:
+            print(f"  cross-page near-duplicates (3 pages): total={sum(cross_page_dupes(p) for p in paged)} "
+                  f"per persona={[cross_page_dupes(p) for p in paged]}")
         for r in pr:
             if r["judge"].get("fix"):
                 print(f"   - {r['persona']}: {r['judge']['fix'][:170]}")
