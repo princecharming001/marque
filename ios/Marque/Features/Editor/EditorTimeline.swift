@@ -271,7 +271,8 @@ struct EditorTimeline: View {
         return HStack(spacing: 0) {
             ForEach(0..<max(1, Int(totalSeconds / Double(interval)) + 1), id: \.self) { i in
                 Text(TimelineZoom.rulerLabel(seconds: i * interval, interval: interval))
-                    .font(AppFont.micro).foregroundStyle(Palette.textTertiary)
+                    // Contrast: textTertiary on the timeline surface was 3.7:1 (below AA).
+                    .font(AppFont.micro).foregroundStyle(Palette.textSecondary)
                     .lineLimit(1).minimumScaleFactor(0.7)
                     .frame(width: CGFloat(interval) * pointsPerSecond, alignment: .leading)
             }
@@ -406,6 +407,7 @@ struct EditorTimeline: View {
         // "editorPro.trimHandle.left/right" identifiers — without .accessibilityElement
         // (children: .contain) those get clobbered by this cell's own identifier.
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("Clip \(pos + 1), \(String(format: "%.1f", Double(outputFrames(frames, speed: speed)) / 30.0)) seconds")
         .accessibilityIdentifier("editorPro.clip.\(pos)")
     }
 
@@ -429,6 +431,7 @@ struct EditorTimeline: View {
         }
         .padding(.leading, 3)
         .allowsHitTesting(false)
+        .accessibilityHidden(true)           // decorative lane heads
     }
 
     private func gutterIcon(_ name: String) -> some View {
@@ -619,6 +622,9 @@ struct EditorTimeline: View {
                            volume: effectiveVolume(srcIn: c.srcIn, srcOut: c.srcOut),
                            speechFrames: speechFrameSet)
                     .onTapGesture { onTapVoice(c.segIdx) }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Original audio, clip \(c.segIdx + 1)")
+                    .accessibilityAddTraits(.isButton)
             }
         }
         .accessibilityElement(children: .contain)
@@ -694,6 +700,9 @@ struct EditorTimeline: View {
                           lineWidth: selected ? 1.5 : 0.5))
         .offset(x: CGFloat(span.start) * pointsPerSecond, y: 1)
         .onTapGesture { onTapOverlay(idx) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(o.type == "punch_in" ? "Punch-in" : "Text card, \(o.text)")
+        .accessibilityAddTraits(.isButton)
         .accessibilityIdentifier("editorPro.overlay.\(idx)")
     }
 

@@ -426,6 +426,7 @@ struct ProEditorView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+                .accessibilityLabel((player?.isPlaying ?? false) ? "Pause" : "Play")
                 .accessibilityIdentifier("editorPro.playPause")
                 Spacer()
                 HStack(spacing: Space.sm) {
@@ -486,6 +487,8 @@ struct ProEditorView: View {
                                 if editing { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                                 else { setMusicVolume(musicVolDraft) }
                             }).frame(width: 120).tint(Palette.textPrimary)
+                                .accessibilityLabel("Music volume")
+                                .accessibilityIdentifier("editorPro.musicPanelVolume")
                                 .onAppear { musicVolDraft = session?.draft.music?.volume ?? 0.15 }
                         }
                     }
@@ -931,6 +934,7 @@ struct ProEditorView: View {
             // Stoic chip: surface + hairline capsule; selected inverts to ink/onInk.
             HStack(spacing: 6) {
                 Image(systemName: icon).font(.system(size: 13, weight: .regular))
+                    .accessibilityHidden(true)
                 Text(label).font(AppFont.caption.weight(.semibold)).lineLimit(1)
             }
                 .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
@@ -1494,6 +1498,7 @@ struct ProEditorView: View {
         HStack(spacing: Space.md) {
             Image(systemName: icon).font(.system(size: 18, weight: .regular)).foregroundStyle(Palette.textPrimary)
                 .frame(width: 24)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(AppFont.bodyText).foregroundStyle(Palette.textPrimary)
                 Text(subtitle).font(AppFont.caption).foregroundStyle(Palette.textSecondary)
@@ -2307,6 +2312,7 @@ struct ProEditorView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(PressableStyle(dim: 0.85, scale: 0.92))
+                .accessibilityLabel("Back")          // (read as "Go Down" from the glyph)
                 .accessibilityIdentifier("editorPro.ctx.back")
             }
             ScrollViewReader { proxy in
@@ -2828,6 +2834,7 @@ private struct BarTileLabel: View {
             Image(systemName: icon).font(.system(size: 17, weight: .regular))
                 .foregroundStyle(active ? Palette.onInk : Palette.textPrimary)
                 .frame(width: 36, height: 36)
+                .accessibilityHidden(true)       // the label below names the tile
                 .background(Circle().fill(active ? Palette.ink : Color.clear))
             Text(label).font(AppFont.micro).lineLimit(1).minimumScaleFactor(0.85)
                 .foregroundStyle(active ? Palette.textPrimary : Palette.textSecondary)

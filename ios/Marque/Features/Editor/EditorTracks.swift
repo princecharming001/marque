@@ -112,6 +112,9 @@ struct CaptionClipStrip: View {
                 .strokeBorder(selected ? Palette.night : .clear, lineWidth: 2))
             .offset(x: CGFloat(span.start) * pointsPerSecond)
             .onTapGesture(perform: onTap)
+            .accessibilityLabel(phrase.text.isEmpty ? "Caption" : phrase.text)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("editorPro.phrase.\(phrase.startFrame)")
     }
 }
 
