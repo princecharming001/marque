@@ -2622,39 +2622,58 @@ final class AppStore {
     /// Build 70: this used to fire undo ops WITH a re-render and sit in `.rendering`
     /// for minutes to reproduce a video we already had (owner: "reverting should be
     /// almost instantaneous"). The re-render was pure waste — same EDL, same output.
+    ///
+    /// ED-4: the server is asked FIRST. This used to swap the picture, delete the cached
+    /// render and trim the history before the rewind was confirmed — so a failed rewind
+    /// (offline, expired session, a render in flight) had already changed the picture and
+    /// thrown away the newer versions, and ANY applied undo reported success even when the
+    /// server's shorter history (5 durable entries vs 10 here) stopped short of the version
+    /// asked for. Now local state changes only on a FULL rewind; a partial or failed one
+    /// returns false (the sheet's "can't be restored" copy) with the picture untouched.
     @discardableResult
     func restoreEditVersion(clipId: UUID, index: Int) async -> Bool {
         guard let idx = clips.firstIndex(where: { $0.id == clipId }),
               let jobId = clips[idx].jobId,
               let history = clips[idx].renderHistory, index < history.count else { return false }
         let restored = history[index]
+        let requested = EditRestorePolicy.undosNeeded(forIndex: index)
 
-        // 1) Swap the picture NOW — the old render is already hosted.
-        clips[idx].remoteURL = restored.url
-        if let old = clips[idx].renderLocalPath {
-            try? FileManager.default.removeItem(at: MediaStore.url(for: old))
-        }
-        clips[idx].renderLocalPath = nil        // cached file belonged to the newer cut
-        clips[idx].previewURL = nil
-        clips[idx].thumbnailPath = nil          // poster too — regenerated from the restored render
-        clips[idx].durationMeasured = nil
-        clips[idx].currentVersionLabel = restored.label.isEmpty ? nil : restored.label
-        var trimmed = history
-        trimmed.removeFirst(min(index + 1, trimmed.count))
-        clips[idx].renderHistory = trimmed
-        clips[idx].status = .ready
-        save()
-        cacheRender(clipId: clipId)             // re-warm the local file + poster in the background
-
-        // 2) Rewind the server EDL to match — committed, NOT re-rendered.
-        let ops = Array(repeating: ["type": "undo"], count: index + 1)
+        // 1) Rewind the server EDL — committed, NOT re-rendered (the archived render exists).
+        let ops = Array(repeating: ["type": "undo"], count: requested)
         let resp = await backend.tweakClipOps(jobId: jobId, clipId: clipId.uuidString,
                                               ops: ops, deferRender: true)
-        let undos = (resp["applied"] as? [[String: Any]] ?? [])
+        let applied = (resp["applied"] as? [[String: Any]] ?? [])
             .filter { $0["type"] as? String == "undo" }.count
-        // The picture is already right either way; a failed rewind only means the NEXT
-        // tweak would branch from the newer EDL, so say so rather than silently diverge.
-        return undos > 0
+        let outcome = EditRestorePolicy.outcome(requestedUndos: requested, appliedUndos: applied,
+                                                error: resp["error"] as? Bool == true)
+        guard outcome == .restored else {
+            if case .partial(let a, let r) = outcome {
+                // The server rewound what it still had; the picture stays on the current cut.
+                backend.reportClientEvent("restore_partial",
+                                          detail: "job=\(jobId) | clip=\(clipId.uuidString.prefix(8)) | \(a)/\(r)")
+            }
+            return false
+        }
+
+        // 2) Only now swap the picture to the archived render. Re-locate the clip and the
+        //    version by id — both may have moved while the request was in flight.
+        guard let i = clips.firstIndex(where: { $0.id == clipId }),
+              let current = clips[i].renderHistory,
+              let at = current.firstIndex(where: { $0.id == restored.id }) else { return false }
+        clips[i].remoteURL = restored.url
+        if let old = clips[i].renderLocalPath {
+            try? FileManager.default.removeItem(at: MediaStore.url(for: old))
+        }
+        clips[i].renderLocalPath = nil          // cached file belonged to the newer cut
+        clips[i].previewURL = nil
+        clips[i].thumbnailPath = nil            // poster too — regenerated from the restored render
+        clips[i].durationMeasured = nil
+        clips[i].currentVersionLabel = restored.label.isEmpty ? nil : restored.label
+        clips[i].renderHistory = EditRestorePolicy.historyAfterRestoring(current, index: at)
+        clips[i].status = .ready
+        save()
+        cacheRender(clipId: clipId)             // re-warm the local file + poster in the background
+        return true
     }
 
     /// The current edit as a LOCAL video file for the share sheet. Sharing a remote URL

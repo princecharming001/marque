@@ -86,3 +86,33 @@ enum TweakWatchPolicy {
         }
     }
 }
+
+/// ED-4 (2026-09-24) — restoring an edit version (Library › Versions).
+///
+/// AppStore.restoreEditVersion swapped the picture, deleted the cached render and trimmed
+/// the history BEFORE the server confirmed the EDL rewind — on a failure the picture had
+/// already changed and the newer versions were gone — and it reported success for ANY
+/// applied undo, so a partial rewind (the server keeps only 5 durable history entries, the
+/// client shows up to 10) claimed a version it never reached. The server is asked first;
+/// local state changes only on a full rewind.
+enum EditRestorePolicy {
+    enum Outcome: Equatable {
+        case restored                                  // every requested undo applied
+        case partial(applied: Int, requested: Int)     // server history shorter than ours
+        case failed                                    // nothing applied / error / offline
+    }
+
+    /// Restoring history entry `index` takes `index + 1` server undos.
+    static func undosNeeded(forIndex index: Int) -> Int { index + 1 }
+
+    static func outcome(requestedUndos: Int, appliedUndos: Int, error: Bool) -> Outcome {
+        if error || appliedUndos <= 0 { return .failed }
+        if appliedUndos < requestedUndos { return .partial(applied: appliedUndos, requested: requestedUndos) }
+        return .restored
+    }
+
+    /// The version history after restoring entry `index`: it and everything newer go.
+    static func historyAfterRestoring<T>(_ history: [T], index: Int) -> [T] {
+        Array(history.dropFirst(min(index + 1, history.count)))
+    }
+}
