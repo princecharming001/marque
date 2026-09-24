@@ -559,20 +559,30 @@ extension ProEditorView {
     func importRollMedia(_ item: PhotosPickerItem) async {
         uploadingMedia = true
         defer { uploadingMedia = false; mediaPickerItem = nil }
-        guard var data = try? await item.loadTransferable(type: Data.self) else {
+        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+        let ext = isVideo ? "mov" : "jpg"
+        var savedPath: String? = nil
+        // LV-8: a picked VIDEO streams to a file (PickedVideoFile, the RecordView/Media path)
+        // and is moved into media/ — loadTransferable(type: Data.self) materialized the whole
+        // file in RAM, a memory kill for a multi-minute library clip. Data stays for stills
+        // and as the fallback for providers with no file representation.
+        if isVideo, let picked = try? await item.loadTransferable(type: PickedVideoFile.self) {
+            savedPath = MediaStore.adopt(fileAt: picked.url, ext: ext) ?? MediaStore.saveFile(from: picked.url, ext: ext)
+            try? FileManager.default.removeItem(at: picked.url)
+        } else if var data = try? await item.loadTransferable(type: Data.self) {
+            // Build 55 (audit): photo picks arrive as their ORIGINAL bytes — HEIC by default on
+            // iPhone — and Chromium (the Lambda renderer) can't decode HEIC, so the roll showed
+            // locally (UIImage reads HEIC) but rendered BLANK in the delivered video. Re-encode
+            // stills to real JPEG before upload; videos pass through untouched.
+            if !isVideo, let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.9) {
+                data = jpg
+            }
+            savedPath = MediaStore.save(data, ext: ext)
+        }
+        guard let path = savedPath else {
             flashPublic("Couldn't load that media, try another.")
             return
         }
-        let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
-        let ext = isVideo ? "mov" : "jpg"
-        // Build 55 (audit): photo picks arrive as their ORIGINAL bytes — HEIC by default on
-        // iPhone — and Chromium (the Lambda renderer) can't decode HEIC, so the roll showed
-        // locally (UIImage reads HEIC) but rendered BLANK in the delivered video. Re-encode
-        // stills to real JPEG before upload; videos pass through untouched.
-        if !isVideo, let img = UIImage(data: data), let jpg = img.jpegData(compressionQuality: 0.9) {
-            data = jpg
-        }
-        let path = MediaStore.save(data, ext: ext)
         guard let url = await LiveClipEngine.uploadMedia(path: path, filename: "roll.\(ext)") else {
             flashPublic("Couldn't upload that media, check your connection.")
             return
