@@ -13489,7 +13489,7 @@ def _clamp_title(title: str, limit: int = 42) -> str:
 
 async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
                               watched: str, cursor: int,
-                              why_picked: str = "") -> tuple[list[dict], int | None]:
+                              why_picked: str = "", pillar: str = "") -> tuple[list[dict], int | None]:
     """Shared item-composition body — the fast path, the cached path, and the
     background full-quality refresh all emit byte-identical FeedResp shapes.
     B-7: scripts whose fingerprint the creator dismissed are dropped here (serve-time)."""
@@ -13507,6 +13507,10 @@ async def _compose_feed_items(script_result: dict, niche: str, creator_id: str,
             s = {**s, "title": _clamp_title(str(s["title"]))}
         if isinstance(s, dict) and why_picked and not s.get("why_picked"):
             s = {**s, "why_picked": why_picked}   # UX-G1: every pick says WHY it's here
+        if isinstance(s, dict) and pillar and not s.get("pillar"):
+            # The page's REAL pillar. The app used each card's title as its pillar, so a
+            # like/dislike taught the bandit a "pillar" named after a script.
+            s = {**s, "pillar": pillar}
         items.append({"type": "script", "script": s})
 
     # A reels failure (Apify scrape flake, cache hydration error) must not 500 the
@@ -13587,7 +13591,7 @@ async def _refresh_feed_page(key: str, sreq: "ScriptRequest", niche: str, creato
                          key, script_result.get("mode"))
             return
         items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
-                                                       why_picked=why_picked)
+                                                       why_picked=why_picked, pillar=sreq.pillar)
         _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
                             "mode": "live", "ts": time.time()}
         _cap_evict(_feed_cache, _FEED_CACHE_CAP)
@@ -13608,7 +13612,7 @@ async def _prefetch_feed_page(key: str, sreq: "ScriptRequest", niche: str, creat
             return                            # already warm (a real fetch beat us here)
         script_result = await _fast_feed_scripts(sreq, cursor)
         items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
-                                                       why_picked=why_picked)
+                                                       why_picked=why_picked, pillar=sreq.pillar)
         if key not in _feed_cache:            # don't overwrite a fresher/higher-quality entry
             _feed_cache[key] = {"items": items, "next_cursor": next_cursor,
                                 "mode": script_result.get("mode", "mock"), "ts": time.time()}
@@ -13657,7 +13661,7 @@ async def _cold_feed_page(key: str, sreq: "ScriptRequest", niche: str, creator_i
     task instead of each burning its own generation budget."""
     script_result = await _fast_feed_scripts(sreq, cursor)
     items, next_cursor = await _compose_feed_items(script_result, niche, creator_id, watched, cursor,
-                                                   why_picked=why_picked)
+                                                   why_picked=why_picked, pillar=sreq.pillar)
     mode = script_result.get("mode", "mock")
     _feed_cache[key] = {"items": items, "next_cursor": next_cursor, "mode": mode, "ts": time.time()}
     _cap_evict(_feed_cache, _FEED_CACHE_CAP)

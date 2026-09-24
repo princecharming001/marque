@@ -292,3 +292,15 @@ def test_chat_scripts_write_the_topic_and_never_ship_template_copy(monkeypatch):
     req = main.ConverseRequest(creator_id="c-chat", brand={"niche": "Cooking"}, messages=[])
     out = asyncio.run(main._chain_scripts(req, {"topic": "meal prep", "count": 2}))
     assert out == [] and [s["topic"] for s in seen["slots"]] == ["meal prep", "meal prep"]
+
+
+def test_feed_picks_carry_the_page_pillar_not_their_title(monkeypatch):
+    async def no_reels(**kw):
+        return {"reels": [], "next_cursor": None}
+
+    monkeypatch.setattr(main, "reels", no_reels)
+    items, _ = asyncio.run(main._compose_feed_items(
+        {"scripts": [{"title": "why protein shakes are useless", "hook": "h"}]},
+        "fitness", "c-pillar", "", 0, why_picked="w", pillar="Myth-bust the common advice"))
+    script = next(i["script"] for i in items if i["type"] == "script")
+    assert script["pillar"] == "Myth-bust the common advice"
