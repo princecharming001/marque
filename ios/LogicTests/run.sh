@@ -20,6 +20,7 @@ SOURCES=(
   "$S/Models/Models.swift"
   "$S/Models/StyleProfileMapper.swift"
   "$S/Adapters/UploadRetryPolicy.swift"
+  "$S/Adapters/UploadJournal.swift"
   "$S/Adapters/CompressionPlan.swift"
   "$S/Adapters/ServerClipAdoption.swift"
   "$S/Adapters/JobPolicies.swift"

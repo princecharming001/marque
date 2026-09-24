@@ -1728,7 +1728,8 @@ final class AppStore {
                                           detail: "reattach=\(entry != nil) | \(clip.id.uuidString)")
                 let task = Task { [weak self] in
                     guard let self else { return }
-                    _ = await self.resubmitFailedClip(clip)
+                    // LV-5: automatic resume — the lifetime attempt cap still applies.
+                    _ = await self.resubmitFailedClip(clip, userInitiated: false)
                     self.backgroundSubmits[clip.id] = nil
                 }
                 backgroundSubmits[clip.id] = task
@@ -1879,7 +1880,7 @@ final class AppStore {
                    let hit = clips.first(where: { clipIds.contains($0.id)
                        && $0.status == .failed && $0.lastError == "pipeline_interrupted" }) {
                     autoRetriedJobs.insert(jobId)
-                    await retryClipJob(hit)
+                    await retryClipJob(hit, userInitiated: false)   // automatic, not the creator
                     return
                 }
                 if !clips.contains(where: { clipIds.contains($0.id) && $0.status == .rendering }) {
@@ -2082,10 +2083,15 @@ final class AppStore {
     /// Re-run a failed clip's render from the backend (the job still holds the
     /// source + EDL). Optimistically flips affected clips back to .rendering and
     /// resumes polling.
-    func retryClipJob(_ clip: Clip) async {
+    /// LV-5: `userInitiated` is true for the creator's taps (Library "Try again", the
+    /// editor's "Re-create"); the self-heal auto-retry passes false so its re-upload keeps
+    /// the lifetime attempt cap.
+    func retryClipJob(_ clip: Clip, userInitiated: Bool = true) async {
         // No server job at all (it failed before one was ever created) → recover straight
         // from the local take.
-        guard let jobId = clip.jobId else { _ = await resubmitFailedClip(clip); return }
+        guard let jobId = clip.jobId else {
+            _ = await resubmitFailedClip(clip, userInitiated: userInitiated); return
+        }
         let affected = clips.filter { $0.jobId == jobId && $0.status == .failed }.map { $0.id }
         for id in affected {
             if let idx = clips.firstIndex(where: { $0.id == id }) {
@@ -2118,7 +2124,7 @@ final class AppStore {
                 }
             }
             if !siblings.isEmpty { save() }
-            if !(await resubmitFailedClip(clip)) {
+            if !(await resubmitFailedClip(clip, userInitiated: userInitiated)) {
                 // No local footage to recover THIS clip from either — put it back to .failed too.
                 if let idx = clips.firstIndex(where: { $0.id == clip.id }) {
                     clips[idx].status = .failed
@@ -2133,7 +2139,9 @@ final class AppStore {
     /// copy was written): re-upload the local take and start a FRESH job in place, so the
     /// retry is actually doable end-to-end. Returns false when there's no local footage to
     /// recover from (caller then leaves the clip in .failed).
-    private func resubmitFailedClip(_ clip: Clip) async -> Bool {
+    /// LV-5: `userInitiated` (the creator tapped Try again / Re-create) resets the journal's
+    /// lifetime attempt budget; the automatic relaunch/foreground resume keeps the cap.
+    private func resubmitFailedClip(_ clip: Clip, userInitiated: Bool) async -> Bool {
         guard let path = clip.localVideoPath,
               let idx = clips.firstIndex(where: { $0.id == clip.id }) else { return false }
         clips[idx].status = .rendering
@@ -2155,7 +2163,13 @@ final class AppStore {
         let uploadId: String
         if let existing = UploadJournal.shared.entry(placeholderId: clip.id.uuidString) {
             uploadId = existing.uploadId
-            UploadJournal.shared.update(uploadId: uploadId) { $0.state = .queued; $0.lastErrorCode = nil }
+            UploadJournal.shared.update(uploadId: uploadId) {
+                if userInitiated {
+                    $0.resetForUserRetry()      // LV-5: a fresh budget for the creator's retry
+                } else {
+                    $0.state = .queued; $0.lastErrorCode = nil
+                }
+            }
         } else {
             uploadId = UUID().uuidString
             let payload = UploadPayload(

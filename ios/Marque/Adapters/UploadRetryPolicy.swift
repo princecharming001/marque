@@ -92,6 +92,14 @@ enum UploadRetryPolicy {
         return min(advertised, StorageObjectLimit.recompressTargetBytes)
     }
 
+    /// Build 53 (A5) lifetime ceiling: has an upload whose journal already counts `prior`
+    /// attempts used up its budget by this session's `sessionAttempt` (0-based)? LV-5: the
+    /// journal count is reset by a USER retry (UploadJournalEntry.resetForUserRetry), so
+    /// only the automatic resume path can exhaust it for good.
+    static func lifetimeExhausted(prior: Int, sessionAttempt: Int) -> Bool {
+        max(0, prior) + sessionAttempt >= maxLifetimeAttempts
+    }
+
     /// Full-jitter backoff for `attempt` (0-based). Honors a server `Retry-After` when
     /// present, clamped to [computed, computed+30] so a hostile header can't park us forever.
     static func backoff(attempt: Int, retryAfter: TimeInterval? = nil) -> TimeInterval {

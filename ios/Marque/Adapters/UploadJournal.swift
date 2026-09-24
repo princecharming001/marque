@@ -90,6 +90,19 @@ struct UploadJournalEntry: Codable, Hashable {
         let safeMargin = min(margin, expiresIn * 0.5)
         return elapsed >= expiresIn - safeMargin
     }
+
+    /// LV-5 (2026-09-24): a USER-initiated "Try again" starts a fresh attempt budget.
+    /// `attemptCount` is the lifetime count that stops the AUTOMATIC reconcile sweep from
+    /// retrying a doomed upload forever (UploadRetryPolicy.maxLifetimeAttempts) — but it was
+    /// never reset, so once a take had burned 10 attempts (e.g. a few relaunches while
+    /// offline, or the LV-1 size refusals) every later tap of "Try again" died on its first
+    /// iteration: the take was permanently un-uploadable. Automatic retries keep the cap.
+    mutating func resetForUserRetry() {
+        attemptCount = 0
+        bytesConfirmed = 0
+        state = .queued
+        lastErrorCode = nil
+    }
 }
 
 final class UploadJournal: @unchecked Sendable {

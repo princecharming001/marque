@@ -378,7 +378,7 @@ struct LiveClipEngine: ClipEngineProtocol {
         retryLoop: while attempt < UploadRetryPolicy.maxAttemptsPerSession {
             if Task.isCancelled { break }
             let lifetime = priorAttempts + attempt
-            if lifetime >= UploadRetryPolicy.maxLifetimeAttempts {
+            if UploadRetryPolicy.lifetimeExhausted(prior: priorAttempts, sessionAttempt: attempt) {
                 BackendClient.shared.reportClientEvent("upload_lifetime_exhausted",
                                                        detail: "uid=\(uploadId.prefix(8)) | \(lifetime)")
                 break retryLoop
